@@ -1,0 +1,32 @@
+schema_version: xhub_db_integrity_report.v1
+
+checked_at_ms: 1771838784316
+
+db_path: /Users/USER/Library/Containers/com.rel.flowhub/Data/RELFlowHub/hub_grpc/hub.sqlite3
+
+db_exists: 1
+
+db_bytes: 143360
+
+wal_exists: 1
+
+wal_bytes: 0
+
+shm_exists: 1
+
+shm_bytes: 32768
+
+sqlite3_launch_error: (none)
+
+sqlite3_exit_code: 0
+
+quick_check_elapsed_ms: 16
+
+quick_check_ok: 1
+
+quick_check_stdout:
+1500
+ok
+
+quick_check_stderr:
+(empty)

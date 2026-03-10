@@ -1,0 +1,93 @@
+{
+  "schema_version": "xterminal.split_flow_snapshot_fixture.v1",
+  "snapshots": [
+    {
+      "case_id": "proposed_clean",
+      "snapshot": {
+        "schema": "xterminal.split_flow_snapshot",
+        "version": "1",
+        "stateMachineVersion": "xterminal.split_flow_state_machine.v1",
+        "splitPlanId": "d1bfdb02-fc6b-4fa7-bcc6-a0328ff35083",
+        "flowState": "proposed",
+        "laneCount": 3,
+        "recommendedConcurrency": 2,
+        "tokenBudgetTotal": 36000,
+        "splitBlockingIssueCodes": [],
+        "promptStatus": null,
+        "promptCoverage": null,
+        "promptBlockingLintCodes": [],
+        "overrideCount": 0,
+        "overrideLaneIDs": [],
+        "replayConsistent": true,
+        "lastAuditEventType": "supervisor.split.proposed",
+        "lastAuditAt": "2026-03-01T09:30:00Z"
+      }
+    },
+    {
+      "case_id": "overridden_with_replay",
+      "snapshot": {
+        "schema": "xterminal.split_flow_snapshot",
+        "version": "1",
+        "stateMachineVersion": "xterminal.split_flow_state_machine.v1",
+        "splitPlanId": "d1bfdb02-fc6b-4fa7-bcc6-a0328ff35083",
+        "flowState": "overridden",
+        "laneCount": 3,
+        "recommendedConcurrency": 2,
+        "tokenBudgetTotal": 36000,
+        "splitBlockingIssueCodes": [],
+        "promptStatus": null,
+        "promptCoverage": null,
+        "promptBlockingLintCodes": [],
+        "overrideCount": 1,
+        "overrideLaneIDs": ["lane-2"],
+        "replayConsistent": true,
+        "lastAuditEventType": "supervisor.split.overridden",
+        "lastAuditAt": "2026-03-01T09:31:00Z"
+      }
+    },
+    {
+      "case_id": "blocked_by_prompt_lint",
+      "snapshot": {
+        "schema": "xterminal.split_flow_snapshot",
+        "version": "1",
+        "stateMachineVersion": "xterminal.split_flow_state_machine.v1",
+        "splitPlanId": "d1bfdb02-fc6b-4fa7-bcc6-a0328ff35083",
+        "flowState": "blocked",
+        "laneCount": 3,
+        "recommendedConcurrency": 2,
+        "tokenBudgetTotal": 36000,
+        "splitBlockingIssueCodes": [],
+        "promptStatus": "rejected",
+        "promptCoverage": 1,
+        "promptBlockingLintCodes": ["missing_goal"],
+        "overrideCount": 0,
+        "overrideLaneIDs": [],
+        "replayConsistent": true,
+        "lastAuditEventType": "supervisor.prompt.rejected",
+        "lastAuditAt": "2026-03-01T09:32:00Z"
+      }
+    },
+    {
+      "case_id": "confirmed_ready",
+      "snapshot": {
+        "schema": "xterminal.split_flow_snapshot",
+        "version": "1",
+        "stateMachineVersion": "xterminal.split_flow_state_machine.v1",
+        "splitPlanId": "d1bfdb02-fc6b-4fa7-bcc6-a0328ff35083",
+        "flowState": "confirmed",
+        "laneCount": 3,
+        "recommendedConcurrency": 2,
+        "tokenBudgetTotal": 36000,
+        "splitBlockingIssueCodes": [],
+        "promptStatus": "ready",
+        "promptCoverage": 1,
+        "promptBlockingLintCodes": [],
+        "overrideCount": 1,
+        "overrideLaneIDs": ["lane-2"],
+        "replayConsistent": true,
+        "lastAuditEventType": "supervisor.split.confirmed",
+        "lastAuditAt": "2026-03-01T09:33:00Z"
+      }
+    }
+  ]
+}

@@ -1,0 +1,377 @@
+name: XT Gates
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "Sources/**"
+      - "work-orders/**"
+      - "scripts/**"
+      - "Package.swift"
+      - ".github/workflows/xt-gates.yml"
+  push:
+    branches: [ "main", "master" ]
+    paths:
+      - "Sources/**"
+      - "work-orders/**"
+      - "scripts/**"
+      - "Package.swift"
+      - ".github/workflows/xt-gates.yml"
+
+jobs:
+  gate:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Swift Version
+        run: swift --version
+
+      - name: Prepare Strict Fixtures
+        run: |
+          set -euo pipefail
+          mkdir -p .axcoder/reports .axcoder/metrics .axcoder/release
+
+          cat > .axcoder/metrics/xt-kpi-latest.json <<JSON
+          {
+            "generated_at": "2026-02-28T00:00:00Z",
+            "queue_wait_p90_ms": 1200,
+            "token_budget_overrun_rate": 0.01
+          }
+          JSON
+
+          cat > .axcoder/release/current.manifest.json <<JSON
+          {
+            "release_id": "xt-release-current",
+            "artifact": "XTerminal.app",
+            "built_at": "2026-02-28T00:00:00Z"
+          }
+          JSON
+
+          cat > .axcoder/release/previous.manifest.json <<JSON
+          {
+            "release_id": "xt-release-stable",
+            "artifact": "XTerminal.app",
+            "built_at": "2026-02-27T00:00:00Z"
+          }
+          JSON
+
+          cat > .axcoder/reports/doctor-report.json <<JSON
+          {
+            "status": "pass",
+            "doctor": {
+              "dmPolicy": "allowlist",
+              "allowFrom": ["dm", "group"],
+              "ws_origin": "wss://terminal.local",
+              "shared_token_auth": true,
+              "authz_parity_for_all_ingress": true,
+              "non_message_ingress_policy_coverage": 1,
+              "unauthorized_flood_drop_count": 12
+            }
+          }
+          JSON
+
+          cat > .axcoder/reports/secrets-dry-run-report.json <<JSON
+          {
+            "status": "pass",
+            "dry_run": true,
+            "target_path": "/safe/path",
+            "missing_variables": [],
+            "permission_boundary": "workspace-only",
+            "applied": false
+          }
+          JSON
+
+          cat > .axcoder/reports/supervisor_doctor_report.json <<JSON
+          {
+            "schemaVersion": "supervisor_doctor.v1",
+            "ok": true,
+            "summary": {
+              "releaseBlockedByDoctorWithoutReport": 0,
+              "doctorReportPresent": 1,
+              "blockingCount": 0
+            }
+          }
+          JSON
+
+      - name: Split Audit Contract Check
+        env:
+          XT_GATE_REPORT_DIR: .axcoder/reports
+        run: |
+          set -euo pipefail
+          bash scripts/ci/xt_split_audit_contract_check.sh
+          test -f scripts/fixtures/split_audit_decode_result_guide.md
+
+      - name: Strict Fails Without Doctor Report
+        env:
+          XT_GATE_MODE: strict
+          XT_GATE_SKIP_BUILD: "1"
+          XT_GATE_SKIP_XT_READY_CONTRACT: "1"
+          XT_GATE_SKIP_XT_READY_EXECUTABLE: "1"
+          XT_DOCTOR_REPORT: .axcoder/reports/doctor-report.json
+          XT_SECRETS_DRY_RUN_REPORT: .axcoder/reports/secrets-dry-run-report.json
+        run: |
+          set -euo pipefail
+          rm -f .axcoder/reports/doctor-report.json
+
+          set +e
+          bash scripts/ci/xt_release_gate.sh
+          rc=$?
+          set -e
+
+          if [[ "${rc}" -eq 0 ]]; then
+            echo "expected strict gate failure when doctor report is missing"
+            exit 1
+          fi
+
+          rg -q "CM-W5-20 doctor report missing" .axcoder/reports/xt-gate-report.md
+          rg -q "decision: NO_GO" .axcoder/reports/xt-gate-report.md
+
+          cat > .axcoder/reports/doctor-report.json <<JSON
+          {
+            "status": "pass",
+            "doctor": {
+              "dmPolicy": "allowlist",
+              "allowFrom": ["dm", "group"],
+              "ws_origin": "wss://terminal.local",
+              "shared_token_auth": true,
+              "authz_parity_for_all_ingress": true,
+              "non_message_ingress_policy_coverage": 1,
+              "unauthorized_flood_drop_count": 12
+            }
+          }
+          JSON
+
+      - name: Strict Fails Without Secrets Dry-Run Report
+        env:
+          XT_GATE_MODE: strict
+          XT_GATE_SKIP_BUILD: "1"
+          XT_GATE_SKIP_XT_READY_CONTRACT: "1"
+          XT_GATE_SKIP_XT_READY_EXECUTABLE: "1"
+          XT_DOCTOR_REPORT: .axcoder/reports/doctor-report.json
+          XT_SECRETS_DRY_RUN_REPORT: .axcoder/reports/secrets-dry-run-report.json
+        run: |
+          set -euo pipefail
+          rm -f .axcoder/reports/secrets-dry-run-report.json
+
+          set +e
+          bash scripts/ci/xt_release_gate.sh
+          rc=$?
+          set -e
+
+          if [[ "${rc}" -eq 0 ]]; then
+            echo "expected strict gate failure when secrets dry-run report is missing"
+            exit 1
+          fi
+
+          rg -q "CM-W5-20 secrets dry-run report missing" .axcoder/reports/xt-gate-report.md
+          rg -q "decision: NO_GO" .axcoder/reports/xt-gate-report.md
+
+          cat > .axcoder/reports/secrets-dry-run-report.json <<JSON
+          {
+            "status": "pass",
+            "dry_run": true,
+            "target_path": "/safe/path",
+            "missing_variables": [],
+            "permission_boundary": "workspace-only",
+            "applied": false
+          }
+          JSON
+
+      - name: Strict Pass Requires Smoke + Static Checks
+        env:
+          XT_GATE_MODE: strict
+          XT_GATE_SKIP_BUILD: "1"
+          XT_GATE_SKIP_XT_READY_CONTRACT: "1"
+          XT_GATE_SKIP_XT_READY_EXECUTABLE: "1"
+          XT_DOCTOR_REPORT: .axcoder/reports/doctor-report.json
+          XT_SECRETS_DRY_RUN_REPORT: .axcoder/reports/secrets-dry-run-report.json
+        run: |
+          set -euo pipefail
+          bash scripts/ci/xt_release_gate.sh
+
+          rg -q "xt-grant-smoke + 新增静态检查同时通过" .axcoder/reports/xt-gate-report.md
+          rg -q "decision: GO" .axcoder/reports/xt-gate-report.md
+          rg -q "## 新增工单ID覆盖区块" .axcoder/reports/xt-gate-report.md
+          rg -q "XT-W3-08: PASS" .axcoder/reports/xt-gate-report.md
+          rg -q "CRK-W1-08: PASS" .axcoder/reports/xt-gate-report.md
+          rg -q "CM-W5-20: PASS" .axcoder/reports/xt-gate-report.md
+          node - <<'NODE'
+          const fs = require("fs");
+          const payload = JSON.parse(fs.readFileSync(".axcoder/reports/xt-report-index.json", "utf8"));
+          if (payload.schema_version !== "xt_report_index.v1") {
+            throw new Error(`unexpected xt-report-index schema_version: ${payload.schema_version || "(empty)"}`);
+          }
+          if (payload.release_decision !== "GO") {
+            throw new Error(`xt-report-index release_decision must be GO, got ${payload.release_decision || "(empty)"}`);
+          }
+          const coverage = payload.coverage || {};
+          const expected = ["XT-W3-08", "CRK-W1-08", "CM-W5-20"];
+          for (const id of expected) {
+            if (coverage[id] !== "PASS") {
+              throw new Error(`xt-report-index coverage ${id} must be PASS, got ${coverage[id] || "(empty)"}`);
+            }
+          }
+          NODE
+
+      - name: Matrix Validator Regression Unit
+        run: |
+          set -euo pipefail
+          node scripts/ci/xt_release_evidence_matrix_validator_regression.js
+
+      - name: Fast Check Trend Regression Unit
+        run: |
+          set -euo pipefail
+          node scripts/ci/xt_fast_check_trend_append_regression.js
+
+      - name: Fast Check Snapshot (Summary + Trend)
+        run: |
+          set -euo pipefail
+          bash scripts/ci/xt_gate_fast_checks.sh
+
+          test -f .axcoder/reports/xt-fast-check-summary.json
+          test -f .axcoder/reports/xt-fast-check-history.json
+          node - <<'NODE'
+          const fs = require("fs");
+          const summary = JSON.parse(fs.readFileSync(".axcoder/reports/xt-fast-check-summary.json", "utf8"));
+          const history = JSON.parse(fs.readFileSync(".axcoder/reports/xt-fast-check-history.json", "utf8"));
+          if (summary.schema_version !== "xt_fast_checks.v1") {
+            throw new Error(`unexpected fast check summary schema: ${summary.schema_version || "(empty)"}`);
+          }
+          if (history.schema_version !== "xt_fast_check_history.v1") {
+            throw new Error(`unexpected fast check history schema: ${history.schema_version || "(empty)"}`);
+          }
+          if (!Array.isArray(history.entries) || history.entries.length < 1) {
+            throw new Error("fast check history entries must contain at least one item");
+          }
+          if (typeof history.limit !== "number" || history.limit < 1) {
+            throw new Error(`invalid fast check history limit: ${history.limit}`);
+          }
+          if (!history.overview || typeof history.overview !== "object") {
+            throw new Error("fast check history overview is required");
+          }
+          const passCount = Number((history.overview || {}).pass_count || 0);
+          const failCount = Number((history.overview || {}).fail_count || 0);
+          if (passCount + failCount !== history.total_entries) {
+            throw new Error(`history overview count mismatch: pass=${passCount}, fail=${failCount}, total=${history.total_entries}`);
+          }
+          if (!history.step_status_counts || typeof history.step_status_counts !== "object") {
+            throw new Error("fast check history step_status_counts is required");
+          }
+          if (!history.latest_entry || typeof history.latest_entry !== "object") {
+            throw new Error("fast check history latest_entry is required");
+          }
+          if (!["pass", "fail"].includes(String((history.latest_entry || {}).overall_status || ""))) {
+            throw new Error(`invalid latest_entry overall_status: ${(history.latest_entry || {}).overall_status || "(empty)"}`);
+          }
+          NODE
+
+      - name: Release Evidence Matrix Regression (2x2)
+        env:
+          XT_GATE_MODE: baseline
+          XT_GATE_VALIDATE_RELEASE_EVIDENCE_MATRIX: "1"
+          XT_GATE_VALIDATE_SPLIT_FLOW_RUNTIME_POLICY: "1"
+        run: |
+          set -euo pipefail
+          bash scripts/ci/xt_release_gate.sh
+
+          rg -q "regression matrix passed" .axcoder/reports/xt-gate-report.md
+          rg -q "Split Flow Runtime Policy Regression: policy regression passed" .axcoder/reports/xt-gate-report.md
+          rg -q "evidence.release_evidence_matrix_log: .*xt-gate-release-evidence-matrix.log" .axcoder/reports/xt-gate-report.md
+          rg -q "evidence.release_evidence_matrix_summary: .*xt-gate-release-evidence-matrix.summary.json" .axcoder/reports/xt-gate-report.md
+          rg -q "evidence.release_evidence_matrix_validator_regression_log: .*xt-gate-release-evidence-matrix.validator-regression.log" .axcoder/reports/xt-gate-report.md
+          rg -q "evidence.split_flow_runtime_policy_regression: pass" .axcoder/reports/xt-gate-report.md
+          rg -q "evidence.split_flow_runtime_policy_regression_log: .*xt-gate-split-flow-runtime-policy.log" .axcoder/reports/xt-gate-report.md
+          test -f .axcoder/reports/xt-gate-release-evidence-matrix.log
+          test -f .axcoder/reports/xt-gate-release-evidence-matrix.summary.json
+          test -f .axcoder/reports/xt-gate-release-evidence-matrix.validator-regression.log
+          test -f .axcoder/reports/xt-gate-split-flow-runtime-policy.log
+          node - <<'NODE'
+          const fs = require("fs");
+          const payload = JSON.parse(fs.readFileSync(".axcoder/reports/xt-report-index.json", "utf8"));
+          const matrixLog = (((payload || {}).evidence || {}).release_evidence_matrix_log) || "";
+          const matrixSummary = (((payload || {}).evidence || {}).release_evidence_matrix_summary) || "";
+          const matrixValidatorRegression =
+            (((payload || {}).evidence || {}).release_evidence_matrix_validator_regression_log) || "";
+          if (!matrixLog.endsWith("xt-gate-release-evidence-matrix.log")) {
+            throw new Error(`invalid release_evidence_matrix_log path: ${matrixLog || "(empty)"}`);
+          }
+          if (!matrixSummary.endsWith("xt-gate-release-evidence-matrix.summary.json")) {
+            throw new Error(`invalid release_evidence_matrix_summary path: ${matrixSummary || "(empty)"}`);
+          }
+          if (!matrixValidatorRegression.endsWith("xt-gate-release-evidence-matrix.validator-regression.log")) {
+            throw new Error(
+              `invalid release_evidence_matrix_validator_regression_log path: ${matrixValidatorRegression || "(empty)"}`
+            );
+          }
+          const splitFlowPolicyLog =
+            (((payload || {}).evidence || {}).split_flow_runtime_policy_regression_log) || "";
+          if (!splitFlowPolicyLog.endsWith("xt-gate-split-flow-runtime-policy.log")) {
+            throw new Error(
+              `invalid split_flow_runtime_policy_regression_log path: ${splitFlowPolicyLog || "(empty)"}`
+            );
+          }
+
+          const summaryPayload = JSON.parse(fs.readFileSync(".axcoder/reports/xt-gate-release-evidence-matrix.summary.json", "utf8"));
+          if (summaryPayload.schema_version !== "xt_release_evidence_matrix.v1") {
+            throw new Error(`unexpected matrix summary schema: ${summaryPayload.schema_version || "(empty)"}`);
+          }
+          if ((summaryPayload.summary || {}).pass_count !== 4 || (summaryPayload.summary || {}).fail_count !== 0) {
+            throw new Error(`unexpected matrix summary counts: ${JSON.stringify(summaryPayload.summary || {})}`);
+          }
+          const splitFlowPolicyStatus = (((payload || {}).split_flow_runtime_policy_regression || {}).status) || "";
+          if (splitFlowPolicyStatus !== "pass") {
+            throw new Error(`split_flow_runtime_policy_regression.status must be pass, got ${splitFlowPolicyStatus || "(empty)"}`);
+          }
+          NODE
+
+      - name: Strict Release Preset Rehearsal (Auto Prepare)
+        env:
+          XT_GATE_MODE: strict
+          XT_GATE_RELEASE_PRESET: "1"
+          XT_GATE_AUTO_PREPARE_RELEASE_EVIDENCE: "1"
+        run: |
+          set -euo pipefail
+          bash scripts/ci/xt_release_gate.sh
+
+          rg -q "release preset enabled" .axcoder/reports/xt-gate-report.md
+          rg -q "Split Flow Runtime Policy Regression: enabled by default (release_preset=1)" .axcoder/reports/xt-gate-report.md
+          rg -q "Split Flow Runtime Policy Regression: policy regression passed" .axcoder/reports/xt-gate-report.md
+          rg -q "auto-prepared release evidence via XTerminal smoke" .axcoder/reports/xt-gate-report.md
+          rg -q "decision: GO" .axcoder/reports/xt-gate-report.md
+          rg -q "evidence.split_flow_runtime_policy_regression: pass" .axcoder/reports/xt-gate-report.md
+          test -f .axcoder/reports/xt-gate-split-flow-runtime-policy.log
+
+      - name: Rollback Apply Drill (Fixture)
+        run: |
+          set -euo pipefail
+          bash scripts/ci/xt_release_rollback_stub.sh --report-file .axcoder/reports/xt-rollback-last.json
+
+          rg -q '"status": "pass"' .axcoder/reports/xt-rollback-last.json
+          rg -q '"copied_previous_to_current": 1' .axcoder/reports/xt-rollback-last.json
+          rg -q '"release_id": "xt-release-stable"' .axcoder/reports/xt-rollback-last.json
+          rg -q '"release_id": "xt-release-stable"' .axcoder/release/current.manifest.json
+
+      - name: Upload XT Gate Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xt-gate-report
+          path: |
+            .axcoder/reports/xt-gate-report.md
+            .axcoder/reports/xt-report-index.json
+            .axcoder/reports/doctor-report.json
+            .axcoder/reports/secrets-dry-run-report.json
+            .axcoder/reports/split-audit-contract-report.json
+            .axcoder/reports/supervisor_doctor_report.json
+            .axcoder/reports/xt-rollback-verify.json
+            .axcoder/reports/xt-rollback-last.json
+            .axcoder/reports/xt-gate-release-evidence-matrix.log
+            .axcoder/reports/xt-gate-release-evidence-matrix.summary.json
+            .axcoder/reports/xt-gate-release-evidence-matrix.validator-regression.log
+            .axcoder/reports/xt-gate-split-flow-runtime-policy.log
+            .axcoder/reports/xt-fast-check-summary.json
+            .axcoder/reports/xt-fast-check-history.json
+            .axcoder/release/current.manifest.json
+            .axcoder/release/previous.manifest.json

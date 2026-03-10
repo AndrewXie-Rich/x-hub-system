@@ -1,0 +1,228 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://x-hub.local/schemas/memory-v3-canonical.schema.json",
+  "title": "X-Hub Memory v3 Canonical Model",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scope",
+    "logical_layers",
+    "physical_layers",
+    "mapping",
+    "config_keys",
+    "policy_defaults"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "memory_v3_canonical_1_0"
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "user_id",
+        "device_id",
+        "project_id",
+        "thread_id"
+      ],
+      "properties": {
+        "user_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "device_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "project_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "thread_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "logical_layers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "raw_vault",
+        "observations",
+        "longterm",
+        "canonical",
+        "working_set"
+      ],
+      "properties": {
+        "raw_vault": {
+          "$ref": "#/$defs/logicalLayer"
+        },
+        "observations": {
+          "$ref": "#/$defs/logicalLayer"
+        },
+        "longterm": {
+          "$ref": "#/$defs/logicalLayer"
+        },
+        "canonical": {
+          "$ref": "#/$defs/logicalLayer"
+        },
+        "working_set": {
+          "$ref": "#/$defs/logicalLayer"
+        }
+      }
+    },
+    "physical_layers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "l0_ultra_hot",
+        "l1_hot",
+        "l2_warm",
+        "l3_cold"
+      ],
+      "properties": {
+        "l0_ultra_hot": {
+          "$ref": "#/$defs/physicalLayer"
+        },
+        "l1_hot": {
+          "$ref": "#/$defs/physicalLayer"
+        },
+        "l2_warm": {
+          "$ref": "#/$defs/physicalLayer"
+        },
+        "l3_cold": {
+          "$ref": "#/$defs/physicalLayer"
+        }
+      }
+    },
+    "mapping": {
+      "type": "array",
+      "minItems": 5,
+      "items": {
+        "$ref": "#/$defs/layerMapping"
+      }
+    },
+    "config_keys": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "improvements_root"
+      ],
+      "properties": {
+        "improvements_root": {
+          "type": "string",
+          "const": "improvements_v3_0"
+        }
+      }
+    },
+    "policy_defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "audit_level",
+        "private_tag_mode"
+      ],
+      "properties": {
+        "audit_level": {
+          "type": "string",
+          "enum": [
+            "metadata_only",
+            "content_redacted",
+            "full_content"
+          ]
+        },
+        "private_tag_mode": {
+          "type": "string",
+          "enum": [
+            "drop",
+            "redact",
+            "allow_opt_in"
+          ]
+        }
+      }
+    }
+  },
+  "$defs": {
+    "logicalLayer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "purpose",
+        "inject_default"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inject_default": {
+          "type": "boolean"
+        }
+      }
+    },
+    "physicalLayer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "storage",
+        "latency_target_ms"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "storage": {
+          "type": "string",
+          "minLength": 1
+        },
+        "latency_target_ms": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "layerMapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "logical_layer",
+        "physical_layers"
+      ],
+      "properties": {
+        "logical_layer": {
+          "type": "string",
+          "enum": [
+            "raw_vault",
+            "observations",
+            "longterm",
+            "canonical",
+            "working_set"
+          ]
+        },
+        "physical_layers": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": [
+              "l0_ultra_hot",
+              "l1_hot",
+              "l2_warm",
+              "l3_cold"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

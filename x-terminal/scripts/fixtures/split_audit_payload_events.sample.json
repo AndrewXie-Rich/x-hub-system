@@ -1,0 +1,97 @@
+{
+  "schema_version": "xterminal.split_audit_fixture.v1",
+  "generated_at": "2026-02-28T00:00:00Z",
+  "events": [
+    {
+      "event_type": "supervisor.split.proposed",
+      "split_plan_id": "f5a1109e-70f3-4f2a-9f60-b65451216562",
+      "detail": "split proposal generated",
+      "payload": {
+        "payload_schema": "xterminal.split_audit_payload",
+        "payload_version": "1",
+        "event_type": "supervisor.split.proposed",
+        "state": "proposed",
+        "lane_count": "3",
+        "recommended_concurrency": "2",
+        "blocking_issue_count": "0",
+        "blocking_issue_codes": ""
+      }
+    },
+    {
+      "event_type": "supervisor.prompt.compiled",
+      "split_plan_id": "f5a1109e-70f3-4f2a-9f60-b65451216562",
+      "detail": "prompt contracts compiled",
+      "payload": {
+        "payload_schema": "xterminal.split_audit_payload",
+        "payload_version": "1",
+        "event_type": "supervisor.prompt.compiled",
+        "state": "confirmed",
+        "expected_lane_count": "3",
+        "contract_count": "3",
+        "coverage": "1.00",
+        "can_launch": "1",
+        "lint_issue_count": "0"
+      }
+    },
+    {
+      "event_type": "supervisor.split.confirmed",
+      "split_plan_id": "f5a1109e-70f3-4f2a-9f60-b65451216562",
+      "detail": "user confirmed split proposal",
+      "payload": {
+        "payload_schema": "xterminal.split_audit_payload",
+        "payload_version": "1",
+        "event_type": "supervisor.split.confirmed",
+        "state": "confirmed",
+        "user_decision": "confirm",
+        "lane_count": "3"
+      }
+    },
+    {
+      "event_type": "supervisor.split.overridden",
+      "split_plan_id": "f5a1109e-70f3-4f2a-9f60-b65451216562",
+      "detail": "split proposal overridden",
+      "payload": {
+        "payload_schema": "xterminal.split_audit_payload",
+        "payload_version": "1",
+        "event_type": "supervisor.split.overridden",
+        "state": "overridden",
+        "override_count": "1",
+        "override_lane_ids": "lane-2",
+        "reason": "user_override",
+        "blocking_issue_count": "0",
+        "blocking_issue_codes": "",
+        "high_risk_hard_to_soft_confirmed_count": "1",
+        "high_risk_hard_to_soft_confirmed_lane_ids": "lane-2",
+        "is_replay": "0"
+      }
+    },
+    {
+      "event_type": "supervisor.prompt.rejected",
+      "split_plan_id": "f5a1109e-70f3-4f2a-9f60-b65451216562",
+      "detail": "prompt lint blocked launch",
+      "payload": {
+        "payload_schema": "xterminal.split_audit_payload",
+        "payload_version": "1",
+        "event_type": "supervisor.prompt.rejected",
+        "state": "blocked",
+        "expected_lane_count": "1",
+        "contract_count": "1",
+        "blocking_lint_count": "2",
+        "blocking_lint_codes": "missing_goal,missing_dod"
+      }
+    },
+    {
+      "event_type": "supervisor.split.rejected",
+      "split_plan_id": "f5a1109e-70f3-4f2a-9f60-b65451216562",
+      "detail": "user rejected split proposal",
+      "payload": {
+        "payload_schema": "xterminal.split_audit_payload",
+        "payload_version": "1",
+        "event_type": "supervisor.split.rejected",
+        "state": "rejected",
+        "user_decision": "reject",
+        "reason": "user_rejected_for_review"
+      }
+    }
+  ]
+}

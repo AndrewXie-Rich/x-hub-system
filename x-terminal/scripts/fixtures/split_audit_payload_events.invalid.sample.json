@@ -1,0 +1,35 @@
+{
+  "schema_version": "xterminal.split_audit_fixture.v1",
+  "generated_at": "2026-02-28T00:00:00Z",
+  "events": [
+    {
+      "event_type": "supervisor.prompt.compiled",
+      "split_plan_id": "80d8f511-bdfa-48aa-8af3-e9cfba9ad0f8",
+      "detail": "invalid payload version sample",
+      "payload": {
+        "payload_schema": "xterminal.split_audit_payload",
+        "payload_version": "2",
+        "event_type": "supervisor.prompt.compiled",
+        "state": "confirmed",
+        "expected_lane_count": "1",
+        "contract_count": "1",
+        "coverage": "1.00",
+        "can_launch": "1",
+        "lint_issue_count": "0"
+      }
+    },
+    {
+      "event_type": "supervisor.split.confirmed",
+      "split_plan_id": "80d8f511-bdfa-48aa-8af3-e9cfba9ad0f8",
+      "detail": "invalid event type mismatch sample",
+      "payload": {
+        "payload_schema": "xterminal.split_audit_payload",
+        "payload_version": "1",
+        "event_type": "supervisor.split.rejected",
+        "state": "confirmed",
+        "user_decision": "confirm",
+        "lane_count": "1"
+      }
+    }
+  ]
+}

@@ -1,0 +1,2064 @@
+#!/bin/sh
+set -eu
+
+AXHUBCTL_VERSION="0.3.0"
+PROBE_LAST_ERROR=""
+
+die() {
+  echo "axhubctl: $*" >&2
+  exit 1
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "missing command: $1"
+}
+
+have_cmd() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+run_self() {
+  if [ -x "$0" ]; then
+    "$0" "$@"
+  else
+    /bin/sh "$0" "$@"
+  fi
+}
+
+trim() {
+  # shellcheck disable=SC2001
+  echo "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+}
+
+json_escape() {
+  # Escape for a JSON string value (very small subset; good enough for IDs/names/tokens).
+  # - backslash
+  # - double quote
+  echo "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+json_get_string() {
+  key="$1"
+  json="$2"
+  # Extract first match of: "key":"value" (tolerate spaces)
+  echo "$json" | tr -d '\n' | sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" | head -n 1
+}
+
+json_get_number() {
+  key="$1"
+  json="$2"
+  # Extract first integer match of: "key":123 (tolerate spaces)
+  echo "$json" | tr -d '\n' | sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\\(-\\{0,1\\}[0-9][0-9]*\\).*/\\1/p" | head -n 1
+}
+
+json_get_bool() {
+  key="$1"
+  json="$2"
+  # Extract first boolean match of: "key":true|false (tolerate spaces).
+  # Use two passes for POSIX/BSD sed portability.
+  v="$(echo "$json" | tr -d '\n' | sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\\(true\\).*/\\1/p" | head -n 1)"
+  if [ -n "$v" ]; then
+    echo "$v"
+    return 0
+  fi
+  echo "$json" | tr -d '\n' | sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\\(false\\).*/\\1/p" | head -n 1
+}
+
+is_uint() {
+  v="$(trim "${1:-}")"
+  case "$v" in
+    ''|*[!0-9]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+uint_or_default() {
+  raw="$(trim "${1:-}")"
+  def="$(trim "${2:-0}")"
+  if is_uint "$raw"; then
+    echo "$raw"
+    return 0
+  fi
+  echo "$def"
+}
+
+json_quote_or_null() {
+  v="$(trim "${1:-}")"
+  if [ -n "$v" ]; then
+    echo "\"$(json_escape "$v")\""
+    return 0
+  fi
+  echo "null"
+}
+
+random_secret() {
+  if command -v openssl >/dev/null 2>&1; then
+    # URL-safe base64 without padding.
+    openssl rand -base64 24 2>/dev/null | tr -d '\n' | tr '+/' '-_' | tr -d '='
+    return
+  fi
+  # Fallback (not cryptographically perfect but ok for local pairing secret).
+  dd if=/dev/urandom bs=1 count=24 2>/dev/null | base64 2>/dev/null | tr -d '\n' | tr '+/' '-_' | tr -d '='
+}
+
+usage() {
+  cat <<'EOF'
+axhubctl (MVP) - discover/pair/connect with AX Hub.
+
+Usage:
+  axhubctl discover [--pairing-port 50052] [--timeout-sec 2] [--hints "host1,host2"] [--quiet]
+  axhubctl bootstrap [--hub auto|<host>] [--pairing-port 50052] [--grpc-port 50051] [--app-id ax_terminal] [--device-name NAME] [--requested-scopes "a,b,c"] [--require-client-kit|--skip-install-client]
+  axhubctl knock [--hub auto|<host>] [--pairing-port 50052] [--grpc-port 50051] [--app-id ax_terminal] [--device-name NAME] [--requested-scopes "a,b,c"]
+  axhubctl wait [--hub <host>] [--pairing-port 50052] [--grpc-port 50051] [--id <pairing_request_id>] [--secret <pairing_secret>] [--timeout-sec 900] [--interval-sec 2]
+  axhubctl connect [--hub auto|<host>] [--grpc-port 50051] [--pairing-port 50052] [--auto-reconnect] [--max-backoff-sec 30] [--max-failures 0]
+  axhubctl install-client [--hub <host>] [--pairing-port 50052] [--dir <path>]
+  axhubctl new-chat [--project-id <id>] [--thread-key <key>]
+  axhubctl list-models
+  axhubctl skills search --query "<text>" [--source <id>] [--limit 20]
+  axhubctl skills upload --file <skill.tgz> [--source <id>] [--manifest <skill.json>]
+  axhubctl skills import --file <skill.tgz> --scope global|project [--project-id <id>] [--note "..."] [--source <id>] [--manifest <skill.json>]
+  axhubctl skills pin --scope global|project --skill <skill_id> --sha <package_sha256> [--project-id <id>] [--note "..."]
+  axhubctl skills resolved [--project-id <id>]
+  axhubctl remote list-models                  # use ~/.axhub/tunnel.env override
+  axhubctl chat-new --model <model_id> [--prompt "hi"] [other flags...]
+  axhubctl chat --model <model_id> [--prompt "hi"] [other flags...]
+  axhubctl remote chat --model <model_id> [--prompt "hi"] [other flags...]
+  axhubctl tunnel --hub <host> [--grpc-port 50051] [--local-port 50051] [--local-host 127.0.0.1] [--quiet] [--install|--uninstall|--status]
+  axhubctl env
+
+Notes:
+  - Pairing state is stored in ~/.axhub/pairing.env
+  - After approval, it writes ~/.axhub/hub.env (exports HUB_HOST/HUB_PORT/HUB_CLIENT_TOKEN/HUB_DEVICE_ID) and ~/.axhub/connection.json
+  - Chat state is stored in ~/.axhub/chat.env (exports HUB_PROJECT_ID/HUB_THREAD_KEY)
+  - Tunnel state is stored in ~/.axhub/tunnel.env (overrides HUB_HOST/HUB_PORT to the local tunnel)
+  - Tunnel service config is stored in ~/.axhub/tunnel_config.env (remote/local host+port)
+  - (macOS) Tunnel service logs: ~/.axhub/tunnel_service.out.log / ~/.axhub/tunnel_service.err.log
+  - install-client downloads a self-contained client kit from the Hub pairing port (no repo required; may include a bundled Node runtime)
+EOF
+}
+
+STATE_DIR="${AXHUBCTL_STATE_DIR:-$HOME/.axhub}"
+PAIRING_ENV="$STATE_DIR/pairing.env"
+HUB_ENV="$STATE_DIR/hub.env"
+CONNECTION_JSON="$STATE_DIR/connection.json"
+CHAT_ENV="$STATE_DIR/chat.env"
+TUNNEL_ENV="$STATE_DIR/tunnel.env"
+TUNNEL_CONFIG_ENV="$STATE_DIR/tunnel_config.env"
+TUNNEL_SERVICE_OUT_LOG="$STATE_DIR/tunnel_service.out.log"
+TUNNEL_SERVICE_ERR_LOG="$STATE_DIR/tunnel_service.err.log"
+
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+  -h|--help|help)
+    usage
+    exit 0
+    ;;
+  version)
+    echo "$AXHUBCTL_VERSION"
+    exit 0
+    ;;
+esac
+
+need_cmd curl
+
+base64_encode_file_one_line() {
+  fp="$(trim "${1:-}")"
+  [ -n "$fp" ] || die "base64_encode_file_one_line: missing file path"
+  [ -f "$fp" ] || die "base64_encode_file_one_line: file not found: $fp"
+  # macOS base64 wraps by default; strip newlines.
+  base64 <"$fp" 2>/dev/null | tr -d '\n'
+}
+
+base64_decode_to_file() {
+  b64="$(trim "${1:-}")"
+  out="$(trim "${2:-}")"
+  [ -n "$b64" ] || die "base64_decode_to_file: missing base64 data"
+  [ -n "$out" ] || die "base64_decode_to_file: missing output path"
+  mkdir -p "$(dirname "$out")"
+  umask 077
+  # GNU coreutils: base64 -d ; macOS: base64 -D
+  if echo "$b64" | tr -d '\n' | base64 -d >"$out" 2>/dev/null; then
+    return 0
+  fi
+  if echo "$b64" | tr -d '\n' | base64 -D >"$out" 2>/dev/null; then
+    return 0
+  fi
+  die "base64 decode failed (need base64 that supports -d or -D)"
+}
+
+ensure_tls_key_and_csr_b64() {
+  # Best-effort: generate a client key + CSR so the Hub can issue an mTLS client cert.
+  # If openssl is missing, return empty and proceed (Hub may be in insecure mode).
+  if ! have_cmd openssl; then
+    echo ""
+    return 0
+  fi
+
+  tls_dir="$STATE_DIR/tls"
+  key_path="$tls_dir/client.key.pem"
+  csr_path="$tls_dir/client.csr.pem"
+
+  mkdir -p "$tls_dir"
+  umask 077
+
+  if [ ! -f "$key_path" ]; then
+    openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:prime256v1 -pkeyopt ec_param_enc:named_curve -out "$key_path" >/dev/null 2>&1 || die "openssl genpkey failed"
+    chmod 600 "$key_path" 2>/dev/null || true
+  fi
+
+  # Always refresh CSR (safe; uses existing key).
+  openssl req -new -key "$key_path" -out "$csr_path" -subj "/CN=axhub-terminal" >/dev/null 2>&1 || die "openssl req (CSR) failed"
+  chmod 600 "$csr_path" 2>/dev/null || true
+
+  base64_encode_file_one_line "$csr_path"
+}
+
+sha256_verify() {
+  expected="$(trim "${1:-}")"
+  file="$(trim "${2:-}")"
+  [ -n "$expected" ] || die "sha256_verify: missing expected hash"
+  [ -n "$file" ] || die "sha256_verify: missing file path"
+
+  if have_cmd shasum; then
+    echo "$expected  $file" | shasum -a 256 -c - >/dev/null 2>&1 || return 1
+    return 0
+  fi
+  if have_cmd sha256sum; then
+    echo "$expected  $file" | sha256sum -c - >/dev/null 2>&1 || return 1
+    return 0
+  fi
+  die "missing shasum or sha256sum (needed to verify downloads)"
+}
+
+mktemp_dir() {
+  if have_cmd mktemp; then
+    d="$(mktemp -d 2>/dev/null || true)"
+    if [ -n "$d" ] && [ -d "$d" ]; then
+      echo "$d"
+      return 0
+    fi
+    d="$(mktemp -d -t axhubctl 2>/dev/null || true)"
+    if [ -n "$d" ] && [ -d "$d" ]; then
+      echo "$d"
+      return 0
+    fi
+  fi
+  d="/tmp/axhubctl.$$.$(date +%s)"
+  mkdir -p "$d"
+  echo "$d"
+}
+
+resolve_local_hub_grpc_server_dir() {
+  # Dev fallback when Hub does not expose /install/axhub_client_kit.* assets.
+  override="$(trim "${AXHUBCTL_LOCAL_HUB_GRPC_SERVER_DIR:-}")"
+  if [ -n "$override" ] && [ -d "$override/src" ] && [ -f "$override/package.json" ]; then
+    echo "$override"
+    return 0
+  fi
+
+  self_abs="$0"
+  case "$self_abs" in
+    /*) ;;
+    */*) self_abs="$(pwd)/$self_abs" ;;
+    *)
+      found="$(command -v "$self_abs" 2>/dev/null || true)"
+      if [ -n "$found" ] && [ -f "$found" ]; then
+        self_abs="$found"
+      else
+        self_abs="$(pwd)/$self_abs"
+      fi
+      ;;
+  esac
+
+  self_dir="$(dirname "$self_abs")"
+  c1="$(cd "$self_dir/.." 2>/dev/null && pwd || true)"
+  if [ -n "$c1" ] && [ -d "$c1/src" ] && [ -f "$c1/package.json" ]; then
+    echo "$c1"
+    return 0
+  fi
+
+  c2="$(cd "$self_dir/../.." 2>/dev/null && pwd || true)"
+  if [ -n "$c2" ] && [ -d "$c2/hub_grpc_server/src" ] && [ -f "$c2/hub_grpc_server/package.json" ]; then
+    echo "$c2/hub_grpc_server"
+    return 0
+  fi
+
+  return 1
+}
+
+resolve_local_hub_proto_path() {
+  override="$(trim "${AXHUBCTL_LOCAL_HUB_PROTO_PATH:-}")"
+  if [ -n "$override" ] && [ -f "$override" ]; then
+    echo "$override"
+    return 0
+  fi
+
+  grpc_dir="$(trim "${1:-}")"
+  [ -n "$grpc_dir" ] || return 1
+
+  p1="$grpc_dir/../protocol/hub_protocol_v1.proto"
+  [ -f "$p1" ] && { echo "$p1"; return 0; }
+
+  p2="$grpc_dir/../../protocol/hub_protocol_v1.proto"
+  [ -f "$p2" ] && { echo "$p2"; return 0; }
+
+  p3="$grpc_dir/../../../protocol/hub_protocol_v1.proto"
+  [ -f "$p3" ] && { echo "$p3"; return 0; }
+
+  return 1
+}
+
+install_client_kit_from_local_repo() {
+  # Best-effort fallback for dev builds that did not bundle axhub_client_kit.tgz.
+  dst="$(trim "${1:-}")"
+  [ -n "$dst" ] || return 1
+
+  grpc_dir="$(resolve_local_hub_grpc_server_dir || true)"
+  [ -n "$grpc_dir" ] || return 1
+  [ -d "$grpc_dir/src" ] || return 1
+  [ -f "$grpc_dir/package.json" ] || return 1
+
+  proto_path="$(resolve_local_hub_proto_path "$grpc_dir" || true)"
+  [ -n "$proto_path" ] || return 1
+
+  tmpdir="$(mktemp_dir)"
+  stage="$tmpdir/stage"
+  mkdir -p "$stage/hub_grpc_server" "$stage/protocol"
+
+  cp -R "$grpc_dir/src" "$stage/hub_grpc_server/" || return 1
+  cp "$grpc_dir/package.json" "$stage/hub_grpc_server/" || return 1
+  if [ -f "$grpc_dir/package-lock.json" ]; then
+    cp "$grpc_dir/package-lock.json" "$stage/hub_grpc_server/" || true
+  fi
+  if [ -d "$grpc_dir/node_modules" ]; then
+    cp -R "$grpc_dir/node_modules" "$stage/hub_grpc_server/" || return 1
+  fi
+  cp "$proto_path" "$stage/protocol/hub_protocol_v1.proto" || return 1
+
+  rm -rf "$dst" 2>/dev/null || true
+  mkdir -p "$(dirname "$dst")"
+  mv -f "$stage" "$dst" || return 1
+  clear_quarantine_flags "$dst"
+  sign_binary_if_possible "$dst/bin/relflowhub_node"
+
+  rm -rf "$tmpdir" 2>/dev/null || true
+  return 0
+}
+
+sh_escape_single_quotes() {
+  # Escape for a single-quoted shell string value.
+  # Example: foo'bar -> foo'\''bar
+  echo "$1" | sed "s/'/'\\\\''/g"
+}
+
+gen_id() {
+  if have_cmd uuidgen; then
+    uuidgen | tr '[:upper:]' '[:lower:]'
+    return 0
+  fi
+  random_secret
+}
+
+maybe_source_tunnel_env() {
+  # Optional: override HUB_HOST/HUB_PORT to the local tunnel endpoint (127.0.0.1:<port>).
+  #
+  # Enabled via:
+  #   AXHUBCTL_USE_TUNNEL=1 axhubctl list-models
+  #   AXHUBCTL_USE_TUNNEL=1 axhubctl chat ...
+  use="$(trim "${AXHUBCTL_USE_TUNNEL:-}")"
+  if [ "$use" = "1" ] || [ "$use" = "true" ] || [ "$use" = "yes" ]; then
+    [ -f "$TUNNEL_ENV" ] || die "tunnel override requested but not found: $TUNNEL_ENV (run: $0 tunnel ...)"
+    # shellcheck disable=SC1090
+    . "$TUNNEL_ENV"
+  fi
+}
+
+os_name() {
+  uname -s 2>/dev/null || echo ""
+}
+
+is_darwin() {
+  [ "$(os_name)" = "Darwin" ]
+}
+
+clear_quarantine_flags() {
+  target="$(trim "${1:-}")"
+  [ -n "$target" ] || return 0
+  if have_cmd xattr; then
+    xattr -dr com.apple.quarantine "$target" >/dev/null 2>&1 || true
+  fi
+}
+
+sign_binary_if_possible() {
+  bin_path="$(trim "${1:-}")"
+  [ -n "$bin_path" ] || return 0
+  [ -f "$bin_path" ] || return 0
+  chmod +x "$bin_path" 2>/dev/null || true
+  if is_darwin && have_cmd codesign; then
+    # Best-effort ad-hoc signing so macOS won't kill helper binaries in some environments.
+    codesign --force --sign - "$bin_path" >/dev/null 2>&1 || true
+  fi
+}
+
+run_node_script() {
+  n_bin="$(trim "${1:-}")"
+  n_script="$(trim "${2:-}")"
+  shift 2 || true
+  [ -n "$n_bin" ] || die "missing node binary"
+  [ -n "$n_script" ] || die "missing node script"
+
+  n_rc=0
+  "$n_bin" "$n_script" "$@" || n_rc=$?
+  [ "$n_rc" -eq 0 ] && return 0
+
+  case "$n_rc" in
+    126) die "node runtime is not executable: $n_bin" ;;
+    127) die "node runtime not found: $n_bin" ;;
+    130|134|137|139|143)
+      die "node runtime killed (exit=$n_rc, node=$n_bin)"
+      ;;
+  esac
+  return "$n_rc"
+}
+
+xml_escape() {
+  # Minimal XML escaping for plist string nodes.
+  echo "$1" | sed -e 's/&/&amp;/g' -e 's/</&lt;/g' -e 's/>/&gt;/g'
+}
+
+tunnel_service_label() {
+  echo "com.rel.flowhub.axhubctl.tunnel"
+}
+
+tunnel_service_plist_path() {
+  echo "$HOME/Library/LaunchAgents/$(tunnel_service_label).plist"
+}
+
+launchctl_domain() {
+  # Per-user GUI domain.
+  uid="$(id -u 2>/dev/null || echo "")"
+  [ -n "$uid" ] || uid="$(whoami 2>/dev/null || echo 0)"
+  echo "gui/$uid"
+}
+
+ensure_axhubctl_installed_path() {
+  # Launchd needs a stable absolute path; /tmp is not.
+  self_abs="$0"
+  case "$self_abs" in
+    /*) ;;
+    */*) self_abs="$(pwd)/$self_abs" ;;
+    *)
+      found="$(command -v "$self_abs" 2>/dev/null || true)"
+      if [ -n "$found" ] && [ -f "$found" ]; then
+        self_abs="$found"
+      else
+        self_abs="$(pwd)/$self_abs"
+      fi
+      ;;
+  esac
+
+  dst="${AXHUBCTL_INSTALL_PATH:-$HOME/.local/bin/axhubctl}"
+  dst_dir="$(dirname "$dst")"
+  mkdir -p "$dst_dir"
+  cp -f "$self_abs" "$dst" || die "failed to install axhubctl to $dst (copy from $self_abs)"
+  chmod +x "$dst" 2>/dev/null || true
+  echo "$dst"
+}
+
+tunnel_service_status() {
+  label="$(tunnel_service_label)"
+  plist="$(tunnel_service_plist_path)"
+  if ! is_darwin; then
+    echo "Tunnel service install/status is only supported on macOS (launchd)."
+    return 2
+  fi
+  if [ ! -f "$plist" ]; then
+    echo "Tunnel service: not installed ($plist missing)"
+    return 1
+  fi
+
+  dom="$(launchctl_domain)"
+  if launchctl print "$dom/$label" >/dev/null 2>&1; then
+    echo "Tunnel service: installed + loaded ($label)"
+    return 0
+  fi
+  echo "Tunnel service: installed but not loaded ($label)"
+  return 1
+}
+
+save_tunnel_env_override() {
+  local_host="$(trim "${1:-127.0.0.1}")"
+  local_port="$(trim "${2:-50051}")"
+  [ -n "$local_host" ] || local_host="127.0.0.1"
+  [ -n "$local_port" ] || local_port="50051"
+
+  mkdir -p "$STATE_DIR"
+  umask 077
+  lhost_esc="$(sh_escape_single_quotes "$local_host")"
+  lport_esc="$(sh_escape_single_quotes "$local_port")"
+  cat >"$TUNNEL_ENV" <<EOF
+export HUB_HOST='$lhost_esc'
+export HUB_PORT='$lport_esc'
+EOF
+  chmod 600 "$TUNNEL_ENV" 2>/dev/null || true
+}
+
+save_tunnel_config_env() {
+  local_host="$(trim "${1:-127.0.0.1}")"
+  local_port="$(trim "${2:-50051}")"
+  remote_host="$(trim "${3:-}")"
+  remote_port="$(trim "${4:-50051}")"
+  node_bin="$(trim "${5:-}")"
+  kit_dir="$(trim "${6:-}")"
+  [ -n "$remote_host" ] || die "save_tunnel_config_env: missing remote_host"
+  [ -n "$remote_port" ] || remote_port="50051"
+
+  mkdir -p "$STATE_DIR"
+  umask 077
+  lhost_esc="$(sh_escape_single_quotes "$local_host")"
+  lport_esc="$(sh_escape_single_quotes "$local_port")"
+  rhost_esc="$(sh_escape_single_quotes "$remote_host")"
+  rport_esc="$(sh_escape_single_quotes "$remote_port")"
+  cat >"$TUNNEL_CONFIG_ENV" <<EOF
+export AXHUB_TUNNEL_LOCAL_HOST='$lhost_esc'
+export AXHUB_TUNNEL_LOCAL_PORT='$lport_esc'
+export AXHUB_TUNNEL_REMOTE_HOST='$rhost_esc'
+export AXHUB_TUNNEL_REMOTE_PORT='$rport_esc'
+EOF
+  if [ -n "$node_bin" ]; then
+    node_esc="$(sh_escape_single_quotes "$node_bin")"
+    echo "export AXHUBCTL_NODE_BIN='$node_esc'" >>"$TUNNEL_CONFIG_ENV"
+  fi
+  if [ -n "$kit_dir" ]; then
+    kit_esc="$(sh_escape_single_quotes "$kit_dir")"
+    echo "export AXHUBCTL_CLIENT_KIT_DIR='$kit_esc'" >>"$TUNNEL_CONFIG_ENV"
+  fi
+  chmod 600 "$TUNNEL_CONFIG_ENV" 2>/dev/null || true
+}
+
+load_tunnel_config_env_if_present() {
+  if [ -f "$TUNNEL_CONFIG_ENV" ]; then
+    # shellcheck disable=SC1090
+    . "$TUNNEL_CONFIG_ENV"
+  fi
+}
+
+write_tunnel_service_plist() {
+  axhubctl_path="$(trim "${1:-}")"
+  [ -n "$axhubctl_path" ] || die "write_tunnel_service_plist: missing axhubctl_path"
+
+  if ! is_darwin; then
+    die "tunnel service install is only supported on macOS (launchd)"
+  fi
+
+  label="$(tunnel_service_label)"
+  plist="$(tunnel_service_plist_path)"
+  mkdir -p "$(dirname "$plist")"
+  mkdir -p "$STATE_DIR"
+
+  out_log="$TUNNEL_SERVICE_OUT_LOG"
+  err_log="$TUNNEL_SERVICE_ERR_LOG"
+
+  # launchd expects a plist with absolute paths.
+  axhubctl_esc="$(xml_escape "$axhubctl_path")"
+  out_log_esc="$(xml_escape "$out_log")"
+  err_log_esc="$(xml_escape "$err_log")"
+
+  cat >"$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>${label}</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>${axhubctl_esc}</string>
+      <string>tunnel</string>
+      <string>--from-config</string>
+      <string>--quiet</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>StandardOutPath</key>
+    <string>${out_log_esc}</string>
+    <key>StandardErrorPath</key>
+    <string>${err_log_esc}</string>
+  </dict>
+</plist>
+EOF
+  chmod 644 "$plist" 2>/dev/null || true
+  echo "$plist"
+}
+
+tunnel_service_install() {
+  if ! is_darwin; then
+    die "tunnel service install is only supported on macOS (launchd)"
+  fi
+  need_cmd launchctl
+
+  plist="$(tunnel_service_plist_path)"
+  dom="$(launchctl_domain)"
+  label="$(tunnel_service_label)"
+
+  # Reload (best-effort) so edits to the plist take effect.
+  launchctl bootout "$dom" "$plist" >/dev/null 2>&1 || true
+  launchctl bootstrap "$dom" "$plist" >/dev/null 2>&1 || die "launchctl bootstrap failed (plist=$plist)"
+  launchctl kickstart -k "$dom/$label" >/dev/null 2>&1 || true
+}
+
+tunnel_service_uninstall() {
+  if ! is_darwin; then
+    die "tunnel service uninstall is only supported on macOS (launchd)"
+  fi
+  need_cmd launchctl
+
+  plist="$(tunnel_service_plist_path)"
+  dom="$(launchctl_domain)"
+  launchctl bootout "$dom" "$plist" >/dev/null 2>&1 || true
+  rm -f "$plist" 2>/dev/null || true
+}
+
+save_chat_env() {
+  project_id="$(trim "${1:-}")"
+  thread_key="$(trim "${2:-}")"
+  [ -n "$thread_key" ] || die "save_chat_env: missing thread_key"
+
+  mkdir -p "$STATE_DIR"
+  umask 077
+
+  pid_esc="$(sh_escape_single_quotes "$project_id")"
+  tkey_esc="$(sh_escape_single_quotes "$thread_key")"
+  cat >"$CHAT_ENV" <<EOF
+export HUB_PROJECT_ID='$pid_esc'
+export HUB_THREAD_KEY='$tkey_esc'
+EOF
+  chmod 600 "$CHAT_ENV" 2>/dev/null || true
+}
+
+resolve_node_bin() {
+  kit_dir="$(trim "${1:-}")"
+  override="$(trim "${AXHUBCTL_NODE_BIN:-}")"
+  if [ -n "$override" ]; then
+    [ -x "$override" ] || die "AXHUBCTL_NODE_BIN is not executable: $override"
+    echo "$override"
+    return 0
+  fi
+  prefer_bundled="$(trim "${AXHUBCTL_PREFER_BUNDLED_NODE:-}")"
+  if [ "$prefer_bundled" = "1" ] || [ "$prefer_bundled" = "true" ] || [ "$prefer_bundled" = "yes" ]; then
+    if [ -n "$kit_dir" ] && [ -x "$kit_dir/bin/relflowhub_node" ]; then
+      echo "$kit_dir/bin/relflowhub_node"
+      return 0
+    fi
+  fi
+  self_dir="$(CDPATH= cd -- "$(dirname "$0")" 2>/dev/null && pwd -P || true)"
+  if [ -n "$self_dir" ] && [ -x "$self_dir/relflowhub_node" ]; then
+    echo "$self_dir/relflowhub_node"
+    return 0
+  fi
+  if command -v node >/dev/null 2>&1; then
+    command -v node
+    return 0
+  fi
+  if [ -n "$kit_dir" ] && [ -x "$kit_dir/bin/relflowhub_node" ]; then
+    echo "$kit_dir/bin/relflowhub_node"
+    return 0
+  fi
+  return 1
+}
+
+client_kit_info() {
+  hub="$(trim "${1:-}")"
+  pairing_port="$(trim "${2:-}")"
+  [ -n "$hub" ] || return 1
+  [ -n "$pairing_port" ] || pairing_port="50052"
+
+  # Preferred: JSON manifest (stable fields, URL can reflect reverse proxies).
+  json_url="http://${hub}:${pairing_port}/install/axhub_client_kit.json"
+  json="$(curl -fsS "$json_url" 2>/dev/null || true)"
+  if [ -n "$json" ]; then
+    kit_url="$(json_get_string url "$json")"
+    kit_sha="$(json_get_string sha256 "$json")"
+    if [ -n "$(trim "$kit_url")" ] && [ -n "$(trim "$kit_sha")" ]; then
+      echo "$(trim "$kit_url")|$(trim "$kit_sha")"
+      return 0
+    fi
+  fi
+
+  # Fallback: well-known paths.
+  kit_url="http://${hub}:${pairing_port}/install/axhub_client_kit.tgz"
+  sha_txt="$(curl -fsS "http://${hub}:${pairing_port}/install/axhub_client_kit.tgz.sha256" 2>/dev/null || true)"
+  kit_sha="$(echo "$sha_txt" | awk '{print $1}' | head -n 1)"
+  if [ -n "$(trim "$kit_sha")" ]; then
+    echo "$kit_url|$(trim "$kit_sha")"
+    return 0
+  fi
+  return 1
+}
+
+write_pairing_env_state() {
+  w_hub_host="$(trim "${1:-}")"
+  w_pairing_port="$(uint_or_default "${2:-50052}" "50052")"
+  w_grpc_port="$(uint_or_default "${3:-50051}" "50051")"
+  w_app_id="$(trim "${4:-ax_terminal}")"
+  w_device_name="$(trim "${5:-}")"
+  w_rid="$(trim "${6:-}")"
+  w_secret="$(trim "${7:-}")"
+
+  mkdir -p "$STATE_DIR"
+  umask 077
+
+  w_hub_host_esc="$(sh_escape_single_quotes "$w_hub_host")"
+  w_pairing_port_esc="$(sh_escape_single_quotes "$w_pairing_port")"
+  w_grpc_port_esc="$(sh_escape_single_quotes "$w_grpc_port")"
+  w_app_id_esc="$(sh_escape_single_quotes "$w_app_id")"
+  w_device_name_esc="$(sh_escape_single_quotes "$w_device_name")"
+  w_rid_esc="$(sh_escape_single_quotes "$w_rid")"
+  w_secret_esc="$(sh_escape_single_quotes "$w_secret")"
+
+  cat >"$PAIRING_ENV" <<EOF
+AXHUB_HUB_HOST='$w_hub_host_esc'
+AXHUB_PAIRING_PORT='$w_pairing_port_esc'
+AXHUB_GRPC_PORT='$w_grpc_port_esc'
+AXHUB_APP_ID='$w_app_id_esc'
+AXHUB_DEVICE_NAME='$w_device_name_esc'
+AXHUB_PAIRING_REQUEST_ID='$w_rid_esc'
+AXHUB_PAIRING_SECRET='$w_secret_esc'
+EOF
+  chmod 600 "$PAIRING_ENV" 2>/dev/null || true
+}
+
+write_hub_env_state() {
+  w_host="$(trim "${1:-}")"
+  w_port="$(uint_or_default "${2:-50051}" "50051")"
+  w_token="$(trim "${3:-}")"
+  w_device_id="$(trim "${4:-}")"
+  w_user_id="$(trim "${5:-}")"
+  w_app_id="$(trim "${6:-}")"
+  w_tls_mode="$(trim "${7:-}")"
+  w_tls_server_name="$(trim "${8:-}")"
+  w_tls_ca_path="$(trim "${9:-}")"
+  w_tls_client_cert_path="$(trim "${10:-}")"
+  w_tls_client_key_path="$(trim "${11:-}")"
+
+  [ -n "$w_host" ] || die "write_hub_env_state: missing hub host"
+  [ -n "$w_token" ] || die "write_hub_env_state: missing client token"
+
+  mkdir -p "$STATE_DIR"
+  umask 077
+
+  w_host_esc="$(sh_escape_single_quotes "$w_host")"
+  w_port_esc="$(sh_escape_single_quotes "$w_port")"
+  w_token_esc="$(sh_escape_single_quotes "$w_token")"
+  w_device_id_esc="$(sh_escape_single_quotes "$w_device_id")"
+
+  cat >"$HUB_ENV" <<EOF
+export HUB_HOST='$w_host_esc'
+export HUB_PORT='$w_port_esc'
+export HUB_CLIENT_TOKEN='$w_token_esc'
+export HUB_DEVICE_ID='$w_device_id_esc'
+EOF
+
+  if [ -n "$w_user_id" ]; then
+    w_user_id_esc="$(sh_escape_single_quotes "$w_user_id")"
+    echo "export HUB_USER_ID='$w_user_id_esc'" >>"$HUB_ENV"
+  fi
+  if [ -n "$w_app_id" ]; then
+    w_app_id_esc="$(sh_escape_single_quotes "$w_app_id")"
+    echo "export HUB_APP_ID='$w_app_id_esc'" >>"$HUB_ENV"
+  fi
+
+  if [ "$w_tls_mode" = "tls" ] || [ "$w_tls_mode" = "mtls" ]; then
+    w_tls_mode_esc="$(sh_escape_single_quotes "$w_tls_mode")"
+    w_tls_server_name_esc="$(sh_escape_single_quotes "${w_tls_server_name:-axhub}")"
+    w_tls_ca_path_esc="$(sh_escape_single_quotes "$w_tls_ca_path")"
+    echo "export HUB_GRPC_TLS_MODE='$w_tls_mode_esc'" >>"$HUB_ENV"
+    echo "export HUB_GRPC_TLS_SERVER_NAME='$w_tls_server_name_esc'" >>"$HUB_ENV"
+    if [ -n "$w_tls_ca_path" ]; then
+      echo "export HUB_GRPC_TLS_CA_CERT_PATH='$w_tls_ca_path_esc'" >>"$HUB_ENV"
+    fi
+    if [ "$w_tls_mode" = "mtls" ]; then
+      [ -n "$w_tls_client_cert_path" ] || die "write_hub_env_state: missing mtls client cert path"
+      [ -n "$w_tls_client_key_path" ] || die "write_hub_env_state: missing mtls client key path"
+      w_tls_client_cert_path_esc="$(sh_escape_single_quotes "$w_tls_client_cert_path")"
+      w_tls_client_key_path_esc="$(sh_escape_single_quotes "$w_tls_client_key_path")"
+      echo "export HUB_GRPC_TLS_CLIENT_CERT_PATH='$w_tls_client_cert_path_esc'" >>"$HUB_ENV"
+      echo "export HUB_GRPC_TLS_CLIENT_KEY_PATH='$w_tls_client_key_path_esc'" >>"$HUB_ENV"
+    fi
+  fi
+
+  chmod 600 "$HUB_ENV" 2>/dev/null || true
+}
+
+write_connection_profile() {
+  c_host="$(trim "${1:-}")"
+  c_grpc_port="$(uint_or_default "${2:-50051}" "50051")"
+  c_pairing_port="$(uint_or_default "${3:-50052}" "50052")"
+  c_device_id="$(trim "${4:-}")"
+  c_tls_mode="$(trim "${5:-insecure}")"
+  c_tls_server_name="$(trim "${6:-}")"
+  c_ca_path="$(trim "${7:-}")"
+  c_client_cert_path="$(trim "${8:-}")"
+  c_client_key_path="$(trim "${9:-}")"
+
+  c_now_s="$(date +%s)"
+  c_now_ms=$((c_now_s * 1000))
+
+  mkdir -p "$STATE_DIR"
+  umask 077
+  cat >"$CONNECTION_JSON" <<EOF
+{
+  "schema_version": "axhub_connection.v1",
+  "updated_at_ms": $c_now_ms,
+  "hub_env_path": "$(json_escape "$HUB_ENV")",
+  "hub_host": $(json_quote_or_null "$c_host"),
+  "grpc_port": $c_grpc_port,
+  "pairing_port": $c_pairing_port,
+  "device_id": $(json_quote_or_null "$c_device_id"),
+  "tls_mode": $(json_quote_or_null "$c_tls_mode"),
+  "tls_server_name": $(json_quote_or_null "$c_tls_server_name"),
+  "ca_cert_path": $(json_quote_or_null "$c_ca_path"),
+  "client_cert_path": $(json_quote_or_null "$c_client_cert_path"),
+  "client_key_path": $(json_quote_or_null "$c_client_key_path")
+}
+EOF
+  chmod 600 "$CONNECTION_JSON" 2>/dev/null || true
+}
+
+default_gateway_host() {
+  gw=""
+
+  if have_cmd route; then
+    gw="$(route -n get default 2>/dev/null | awk '/gateway:/{print $2; exit}' || true)"
+    gw="$(trim "$gw")"
+    [ -n "$gw" ] && {
+      echo "$gw"
+      return 0
+    }
+  fi
+
+  if have_cmd ip; then
+    gw="$(ip route 2>/dev/null | awk '/^default / {for(i=1;i<=NF;i++){ if($i=="via"){ print $(i+1); exit } }}' || true)"
+    gw="$(trim "$gw")"
+    [ -n "$gw" ] && {
+      echo "$gw"
+      return 0
+    }
+  fi
+
+  if have_cmd netstat; then
+    gw="$(netstat -rn 2>/dev/null | awk '($1=="default" || $1=="0.0.0.0"){print $2; exit}' || true)"
+    gw="$(trim "$gw")"
+    [ -n "$gw" ] && {
+      echo "$gw"
+      return 0
+    }
+  fi
+
+  return 1
+}
+
+discover_append_unique() {
+  d_cand="$(trim "${1:-}")"
+  [ -n "$d_cand" ] || return 0
+  case "${AXHUB_DISCOVERY_SEEN:-|}" in
+    *"|$d_cand|"*) return 0 ;;
+  esac
+  AXHUB_DISCOVERY_SEEN="${AXHUB_DISCOVERY_SEEN:-|}|$d_cand|"
+  if [ -z "${AXHUB_DISCOVERY_LIST:-}" ]; then
+    AXHUB_DISCOVERY_LIST="$d_cand"
+  else
+    AXHUB_DISCOVERY_LIST="${AXHUB_DISCOVERY_LIST}
+$d_cand"
+  fi
+}
+
+discover_add_csv_candidates() {
+  d_csv="$(trim "${1:-}")"
+  [ -n "$d_csv" ] || return 0
+  d_oldifs="$IFS"
+  IFS=","
+  for d_item in $d_csv; do
+    discover_append_unique "$d_item"
+  done
+  IFS="$d_oldifs"
+}
+
+probe_pairing_discovery_endpoint() {
+  p_host="$(trim "${1:-}")"
+  p_pairing_port="$(uint_or_default "${2:-50052}" "50052")"
+  p_timeout_sec="$(uint_or_default "${3:-2}" "2")"
+  [ -n "$p_host" ] || return 1
+
+  p_resp="$(curl -fsS --connect-timeout "$p_timeout_sec" --max-time "$p_timeout_sec" "http://${p_host}:${p_pairing_port}/pairing/discovery" 2>/dev/null || true)"
+  if [ -n "$p_resp" ]; then
+    p_ok="$(json_get_bool ok "$p_resp")"
+    p_service="$(json_get_string service "$p_resp")"
+    p_match="0"
+    if [ "$p_ok" = "true" ]; then
+      p_match="1"
+    fi
+    if [ "$p_match" != "1" ] && echo "$p_service" | grep -Eiq 'pair'; then
+      p_match="1"
+    fi
+    if [ "$p_match" = "1" ]; then
+      p_hint="$(trim "$(json_get_string hub_host_hint "$p_resp")")"
+      [ -n "$p_hint" ] || p_hint="$p_host"
+      p_pairing_port2="$(uint_or_default "$(json_get_number pairing_port "$p_resp")" "$p_pairing_port")"
+      p_grpc_port2="$(uint_or_default "$(json_get_number grpc_port "$p_resp")" "50051")"
+      p_tls_mode="$(trim "$(json_get_string tls_mode "$p_resp")")"
+      p_tls_name="$(trim "$(json_get_string tls_server_name "$p_resp")")"
+      echo "$p_hint|$p_pairing_port2|$p_grpc_port2|$p_tls_mode|$p_tls_name"
+      return 0
+    fi
+  fi
+
+  # Backward compatibility for old hubs without /pairing/discovery.
+  p_health="$(curl -fsS --connect-timeout "$p_timeout_sec" --max-time "$p_timeout_sec" "http://${p_host}:${p_pairing_port}/health" 2>/dev/null || true)"
+  if [ -n "$p_health" ]; then
+    p_ok2="$(json_get_bool ok "$p_health")"
+    p_service2="$(json_get_string service "$p_health")"
+    if [ "$p_ok2" = "true" ] && [ "$p_service2" = "pairing" ]; then
+      echo "$p_host|$p_pairing_port|50051||"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+discover_hub_endpoint() {
+  d_pairing_port="$(uint_or_default "${1:-50052}" "50052")"
+  d_timeout_sec="$(uint_or_default "${2:-2}" "2")"
+  d_hints_csv="$(trim "${3:-}")"
+
+  AXHUB_DISCOVERY_SEEN="|"
+  AXHUB_DISCOVERY_LIST=""
+
+  # Priority:
+  # 1) explicit hints
+  # 2) HUB_DISCOVERY_HINTS env
+  # 3) previously paired host(s)
+  # 4) axhub.local
+  # 5) default gateway
+  # 6) local machine
+  discover_add_csv_candidates "$d_hints_csv"
+  discover_add_csv_candidates "${HUB_DISCOVERY_HINTS:-}"
+
+  if [ -f "$PAIRING_ENV" ]; then
+    # shellcheck disable=SC1090
+    . "$PAIRING_ENV"
+    discover_append_unique "${AXHUB_HUB_HOST:-}"
+    prev_pairing_port="$(trim "${AXHUB_PAIRING_PORT:-}")"
+    if [ -n "$prev_pairing_port" ]; then
+      d_pairing_port="$(uint_or_default "$prev_pairing_port" "$d_pairing_port")"
+    fi
+  fi
+
+  if [ -f "$HUB_ENV" ]; then
+    # shellcheck disable=SC1090
+    . "$HUB_ENV"
+    discover_append_unique "${HUB_HOST:-}"
+  fi
+
+  discover_append_unique "axhub.local"
+  discover_append_unique "$(default_gateway_host || true)"
+  discover_append_unique "127.0.0.1"
+  discover_append_unique "localhost"
+
+  d_oldifs="$IFS"
+  IFS='
+'
+  for d_host in $AXHUB_DISCOVERY_LIST; do
+    d_row="$(probe_pairing_discovery_endpoint "$d_host" "$d_pairing_port" "$d_timeout_sec" || true)"
+    if [ -n "$d_row" ]; then
+      IFS="$d_oldifs"
+      echo "$d_row"
+      return 0
+    fi
+  done
+  IFS="$d_oldifs"
+
+  return 1
+}
+
+persist_discovery_result() {
+  p_host="$(trim "${1:-}")"
+  p_pairing_port="$(uint_or_default "${2:-50052}" "50052")"
+  p_grpc_port="$(uint_or_default "${3:-50051}" "50051")"
+  [ -n "$p_host" ] || return 1
+
+  p_app_id="ax_terminal"
+  p_device_name=""
+  p_rid=""
+  p_secret=""
+  if [ -f "$PAIRING_ENV" ]; then
+    # shellcheck disable=SC1090
+    . "$PAIRING_ENV"
+    p_app_id="${AXHUB_APP_ID:-$p_app_id}"
+    p_device_name="${AXHUB_DEVICE_NAME:-$p_device_name}"
+    p_rid="${AXHUB_PAIRING_REQUEST_ID:-$p_rid}"
+    p_secret="${AXHUB_PAIRING_SECRET:-$p_secret}"
+  fi
+  write_pairing_env_state "$p_host" "$p_pairing_port" "$p_grpc_port" "$p_app_id" "$p_device_name" "$p_rid" "$p_secret"
+}
+
+probe_pairing_health() {
+  h_host="$(trim "${1:-}")"
+  h_pairing_port="$(uint_or_default "${2:-50052}" "50052")"
+  h_timeout_sec="$(uint_or_default "${3:-2}" "2")"
+  [ -n "$h_host" ] || return 1
+  h_resp="$(curl -fsS --connect-timeout "$h_timeout_sec" --max-time "$h_timeout_sec" "http://${h_host}:${h_pairing_port}/health" 2>/dev/null || true)"
+  [ -n "$h_resp" ] || return 1
+  h_ok="$(json_get_bool ok "$h_resp")"
+  h_service="$(json_get_string service "$h_resp")"
+  [ "$h_ok" = "true" ] && [ "$h_service" = "pairing" ]
+}
+
+probe_list_models_once() {
+  l_host="$(trim "${1:-}")"
+  l_grpc_port="$(uint_or_default "${2:-50051}" "50051")"
+  l_token="$(trim "${3:-}")"
+  l_device_id="$(trim "${4:-}")"
+  l_user_id="$(trim "${5:-}")"
+  l_app_id="$(trim "${6:-}")"
+  l_tls_mode="$(trim "${7:-}")"
+  l_tls_server_name="$(trim "${8:-}")"
+  l_tls_ca_cert_path="$(trim "${9:-}")"
+  l_tls_client_cert_path="$(trim "${10:-}")"
+  l_tls_client_key_path="$(trim "${11:-}")"
+  [ -n "$l_host" ] || return 1
+
+  l_kit_dir="${AXHUBCTL_CLIENT_KIT_DIR:-$STATE_DIR/client_kit}"
+  [ -f "$l_kit_dir/hub_grpc_server/src/list_models_client.js" ] || return 2
+
+  l_node_bin="$(resolve_node_bin "$l_kit_dir" || true)"
+  [ -n "$l_node_bin" ] || return 2
+  [ -n "$l_token" ] || return 2
+
+  PROBE_LAST_ERROR=""
+  l_rc=0
+  l_out="$(
+    HUB_HOST="$l_host" \
+    HUB_PORT="$l_grpc_port" \
+    HUB_CLIENT_TOKEN="$l_token" \
+    HUB_DEVICE_ID="$l_device_id" \
+    HUB_USER_ID="$l_user_id" \
+    HUB_APP_ID="$l_app_id" \
+    HUB_GRPC_TLS_MODE="$l_tls_mode" \
+    HUB_GRPC_TLS_SERVER_NAME="$l_tls_server_name" \
+    HUB_GRPC_TLS_CA_CERT_PATH="$l_tls_ca_cert_path" \
+    HUB_GRPC_TLS_CLIENT_CERT_PATH="$l_tls_client_cert_path" \
+    HUB_GRPC_TLS_CLIENT_KEY_PATH="$l_tls_client_key_path" \
+    "$l_node_bin" "$l_kit_dir/hub_grpc_server/src/list_models_client.js" 2>&1
+  )" || l_rc=$?
+  [ "$l_rc" -eq 0 ] && return 0
+
+  if [ -n "$(trim "$l_out")" ]; then
+    PROBE_LAST_ERROR="$(printf '%s\n' "$l_out" | sed -n '1,4p')"
+  else
+    case "$l_rc" in
+      126) PROBE_LAST_ERROR="node runtime is not executable: $l_node_bin" ;;
+      127) PROBE_LAST_ERROR="node runtime not found: $l_node_bin" ;;
+      130|134|137|139|143)
+        PROBE_LAST_ERROR="node runtime killed (exit=$l_rc, node=$l_node_bin)"
+        ;;
+    esac
+  fi
+
+  case "$l_rc" in
+    # Treat process-level runtime failures as "gRPC probe unavailable" and
+    # fall back to pairing health for connect readiness.
+    126|127|130|134|137|139|143) return 2 ;;
+  esac
+  return "$l_rc"
+}
+
+case "$cmd" in
+  remote)
+    # Convenience wrapper: run any command using the local tunnel override (~/.axhub/tunnel.env).
+    sub="${1:-}"
+    [ -n "$(trim "$sub")" ] || die "remote: missing subcommand (try: $0 remote list-models)"
+    shift || true
+    export AXHUBCTL_USE_TUNNEL=1
+    if [ -x "$0" ]; then
+      exec "$0" "$sub" "$@"
+    else
+      exec /bin/sh "$0" "$sub" "$@"
+    fi
+    ;;
+
+  discover)
+    PAIRING_PORT="50052"
+    timeout_sec="2"
+    hints_csv=""
+    quiet="0"
+
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --pairing-port) PAIRING_PORT="${2:-}"; shift 2 ;;
+        --timeout-sec) timeout_sec="${2:-}"; shift 2 ;;
+        --hints) hints_csv="${2:-}"; shift 2 ;;
+        --quiet) quiet="1"; shift 1 ;;
+        *) die "unknown arg: $1" ;;
+      esac
+    done
+
+    PAIRING_PORT="$(uint_or_default "$PAIRING_PORT" "50052")"
+    timeout_sec="$(uint_or_default "$timeout_sec" "2")"
+
+    discovered="$(discover_hub_endpoint "$PAIRING_PORT" "$timeout_sec" "$hints_csv" || true)"
+    [ -n "$discovered" ] || die "hub discovery failed (checked hints/axhub.local/default gateway/local host)"
+
+    found_host="$(trim "${discovered%%|*}")"
+    tail1="${discovered#*|}"
+    found_pairing_port="$(trim "${tail1%%|*}")"
+    tail2="${tail1#*|}"
+    found_grpc_port="$(trim "${tail2%%|*}")"
+    tail3="${tail2#*|}"
+    found_tls_mode="$(trim "${tail3%%|*}")"
+    found_tls_name="$(trim "${tail3#*|}")"
+
+    found_pairing_port="$(uint_or_default "$found_pairing_port" "$PAIRING_PORT")"
+    found_grpc_port="$(uint_or_default "$found_grpc_port" "50051")"
+    [ -n "$found_host" ] || die "hub discovery returned empty host"
+
+    persist_discovery_result "$found_host" "$found_pairing_port" "$found_grpc_port" || true
+
+    if [ "$quiet" = "1" ]; then
+      echo "$found_host"
+      exit 0
+    fi
+
+    echo "Discovered Hub:"
+    echo "  host         : $found_host"
+    echo "  pairing_port : $found_pairing_port"
+    echo "  grpc_port    : $found_grpc_port"
+    if [ -n "$found_tls_mode" ]; then
+      echo "  tls_mode     : $found_tls_mode"
+    fi
+    if [ -n "$found_tls_name" ]; then
+      echo "  tls_server   : $found_tls_name"
+    fi
+    echo "Saved state: $PAIRING_ENV"
+    ;;
+
+  bootstrap)
+    # One-shot flow: knock -> wait -> install-client.
+    HUB_HOST="auto"
+    PAIRING_PORT="50052"
+    pairing_port_set="0"
+    GRPC_PORT="50051"
+    grpc_port_set="0"
+    APP_ID="ax_terminal"
+    DEVICE_NAME=""
+    REQUESTED_SCOPES=""
+    timeout_sec="900"
+    interval_sec="2"
+    client_kit_policy="best_effort"
+
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --hub) HUB_HOST="${2:-}"; shift 2 ;;
+        --pairing-port) PAIRING_PORT="${2:-}"; pairing_port_set="1"; shift 2 ;;
+        --grpc-port) GRPC_PORT="${2:-}"; grpc_port_set="1"; shift 2 ;;
+        --app-id) APP_ID="${2:-}"; shift 2 ;;
+        --device-name) DEVICE_NAME="${2:-}"; shift 2 ;;
+        --requested-scopes) REQUESTED_SCOPES="${2:-}"; shift 2 ;;
+        --timeout-sec) timeout_sec="${2:-}"; shift 2 ;;
+        --interval-sec) interval_sec="${2:-}"; shift 2 ;;
+        --require-client-kit) client_kit_policy="required"; shift 1 ;;
+        --skip-install-client) client_kit_policy="skip"; shift 1 ;;
+        *) die "unknown arg: $1" ;;
+      esac
+    done
+
+    HUB_HOST="$(trim "$HUB_HOST")"
+    [ -n "$HUB_HOST" ] || HUB_HOST="auto"
+    PAIRING_PORT="$(uint_or_default "$PAIRING_PORT" "50052")"
+    GRPC_PORT="$(uint_or_default "$GRPC_PORT" "50051")"
+
+    if [ "$HUB_HOST" = "auto" ]; then
+      discovered="$(discover_hub_endpoint "$PAIRING_PORT" "2" "" || true)"
+      [ -n "$discovered" ] || die "bootstrap discovery failed (use --hub <host> or set HUB_DISCOVERY_HINTS)"
+      HUB_HOST="$(trim "${discovered%%|*}")"
+      tail1="${discovered#*|}"
+      found_pairing_port="$(trim "${tail1%%|*}")"
+      tail2="${tail1#*|}"
+      found_grpc_port="$(trim "${tail2%%|*}")"
+      [ -n "$HUB_HOST" ] || die "bootstrap discovery returned empty host"
+      if [ "$pairing_port_set" != "1" ]; then
+        PAIRING_PORT="$(uint_or_default "$found_pairing_port" "$PAIRING_PORT")"
+      fi
+      if [ "$grpc_port_set" != "1" ]; then
+        GRPC_PORT="$(uint_or_default "$found_grpc_port" "$GRPC_PORT")"
+      fi
+      persist_discovery_result "$HUB_HOST" "$PAIRING_PORT" "$GRPC_PORT" || true
+      echo "Discovered Hub: ${HUB_HOST} (pairing=${PAIRING_PORT}, grpc=${GRPC_PORT})"
+    fi
+
+    self="$0"
+    run_self knock --hub "$HUB_HOST" --pairing-port "$PAIRING_PORT" --grpc-port "$GRPC_PORT" --app-id "$APP_ID" --device-name "$DEVICE_NAME" --requested-scopes "$REQUESTED_SCOPES"
+    run_self wait --hub "$HUB_HOST" --pairing-port "$PAIRING_PORT" --grpc-port "$GRPC_PORT" --timeout-sec "$timeout_sec" --interval-sec "$interval_sec"
+    if [ "$client_kit_policy" = "skip" ]; then
+      echo "Skip downloading client kit (--skip-install-client)."
+    else
+      install_rc=0
+      install_out="$(run_self install-client --hub "$HUB_HOST" --pairing-port "$PAIRING_PORT" 2>&1)" || install_rc=$?
+      if [ "$install_rc" -eq 0 ]; then
+        echo "$install_out"
+      else
+        echo "$install_out" >&2
+        if [ "$client_kit_policy" = "required" ]; then
+          die "install-client failed (required)"
+        fi
+        # Best effort by default: pairing/connect can still work without bundled client kit.
+        echo "Warning: install-client failed; continuing with pairing-only mode." >&2
+      fi
+    fi
+
+    echo ""
+    echo "Try:"
+    echo "  $self list-models"
+    echo "  $self new-chat && $self chat --model <model_id>"
+    echo "  $self chat --model <model_id> --prompt \"hello\" --max-tokens 64"
+    echo ""
+    echo "Remote (VPN/Tunnel) Mode 3:"
+    echo "  # Start a local TCP tunnel; keep gRPC clients on 127.0.0.1"
+    echo "  $self tunnel --hub <hub_vpn_or_tailnet_host> --grpc-port $GRPC_PORT --local-port $GRPC_PORT"
+    echo "  # (macOS) Install as a background service:"
+    echo "  $self tunnel --hub <hub_vpn_or_tailnet_host> --grpc-port $GRPC_PORT --local-port $GRPC_PORT --install"
+    echo "  # Status:"
+    echo "  $self tunnel --status"
+    echo "  # Use the tunnel:"
+    echo "  $self remote list-models"
+    ;;
+
+  knock|pair)
+    HUB_HOST="auto"
+    PAIRING_PORT="50052"
+    GRPC_PORT="50051"
+    APP_ID="ax_terminal"
+    DEVICE_NAME=""
+    REQUESTED_SCOPES=""
+
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --hub) HUB_HOST="${2:-}"; shift 2 ;;
+        --pairing-port) PAIRING_PORT="${2:-}"; shift 2 ;;
+        --grpc-port) GRPC_PORT="${2:-}"; shift 2 ;;
+        --app-id) APP_ID="${2:-}"; shift 2 ;;
+        --device-name) DEVICE_NAME="${2:-}"; shift 2 ;;
+        --requested-scopes) REQUESTED_SCOPES="${2:-}"; shift 2 ;;
+        *) die "unknown arg: $1" ;;
+      esac
+    done
+
+    HUB_HOST="$(trim "$HUB_HOST")"
+    [ -n "$HUB_HOST" ] || HUB_HOST="auto"
+    PAIRING_PORT="$(uint_or_default "$PAIRING_PORT" "50052")"
+    GRPC_PORT="$(uint_or_default "$GRPC_PORT" "50051")"
+
+    if [ "$HUB_HOST" = "auto" ]; then
+      discovered="$(discover_hub_endpoint "$PAIRING_PORT" "2" "" || true)"
+      [ -n "$discovered" ] || die "knock discovery failed (use --hub <host> or set HUB_DISCOVERY_HINTS)"
+      HUB_HOST="$(trim "${discovered%%|*}")"
+      tail1="${discovered#*|}"
+      found_pairing_port="$(trim "${tail1%%|*}")"
+      tail2="${tail1#*|}"
+      found_grpc_port="$(trim "${tail2%%|*}")"
+      [ -n "$HUB_HOST" ] || die "knock discovery returned empty host"
+      PAIRING_PORT="$(uint_or_default "$found_pairing_port" "$PAIRING_PORT")"
+      GRPC_PORT="$(uint_or_default "$found_grpc_port" "$GRPC_PORT")"
+      echo "Discovered Hub: ${HUB_HOST} (pairing=${PAIRING_PORT}, grpc=${GRPC_PORT})"
+    fi
+
+    secret="$(random_secret)"
+    [ -n "$secret" ] || die "failed to generate pairing secret"
+
+    scopes_json=""
+    if [ -n "$(trim "$REQUESTED_SCOPES")" ]; then
+      scopes_json="["
+      first="1"
+      oldIFS="$IFS"
+      IFS=","
+      # shellcheck disable=SC2086
+      set -- $REQUESTED_SCOPES
+      IFS="$oldIFS"
+      for raw in "$@"; do
+        s="$(trim "$raw")"
+        [ -n "$s" ] || continue
+        if [ "$first" = "1" ]; then
+          first="0"
+        else
+          scopes_json="${scopes_json},"
+        fi
+        scopes_json="${scopes_json}\"$(json_escape "$s")\""
+      done
+      scopes_json="${scopes_json}]"
+    fi
+
+    payload="{\"app_id\":\"$(json_escape "$APP_ID")\",\"device_name\":\"$(json_escape "$DEVICE_NAME")\",\"pairing_secret\":\"$(json_escape "$secret")\""
+    if [ -n "$scopes_json" ]; then
+      payload="${payload},\"requested_scopes\":${scopes_json}"
+    fi
+
+    # Optional: provide a CSR so the Hub can issue an mTLS client certificate.
+    # This does not leak the private key (it stays on the terminal device).
+    tls_csr_b64="$(ensure_tls_key_and_csr_b64 || true)"
+    if [ -n "$(trim "$tls_csr_b64")" ]; then
+      payload="${payload},\"tls_csr_b64\":\"$(json_escape "$tls_csr_b64")\""
+    fi
+    payload="${payload}}"
+
+    url="http://${HUB_HOST}:${PAIRING_PORT}/pairing/requests"
+    resp="$(curl -fsS -X POST "$url" -H 'Content-Type: application/json' -d "$payload" 2>&1)" || {
+      err="$resp"
+      if echo "$err" | grep -q "HTTP/0\\.9"; then
+        die "request failed (did you use the gRPC port? pairing port is usually HUB_PORT+1, e.g. 50052). curl: $err"
+      fi
+      if echo "$err" | grep -q "error: 403"; then
+        die "request failed (403). Your source IP may not be allowed. Ensure you're on the Hub LAN/VPN and use --pairing-port 50052. curl: $err"
+      fi
+      die "request failed: $err"
+    }
+    rid="$(json_get_string pairing_request_id "$resp")"
+    status="$(json_get_string status "$resp")"
+    [ -n "$rid" ] || die "could not parse pairing_request_id (response: $resp)"
+
+    write_pairing_env_state "$HUB_HOST" "$PAIRING_PORT" "$GRPC_PORT" "$APP_ID" "$DEVICE_NAME" "$rid" "$secret"
+
+    echo "Pairing request created: $rid (status=${status:-pending})"
+    echo "Saved state: $PAIRING_ENV"
+    echo "Next: wait for Hub approval, then run:"
+    echo "  $0 wait"
+    ;;
+
+  wait)
+    # Defaults (loaded from state file if present).
+    HUB_HOST=""
+    PAIRING_PORT=""
+    GRPC_PORT=""
+    rid=""
+    secret=""
+    timeout_sec="900"
+    interval_sec="2"
+
+    if [ -f "$PAIRING_ENV" ]; then
+      # shellcheck disable=SC1090
+      . "$PAIRING_ENV"
+      HUB_HOST="${AXHUB_HUB_HOST:-}"
+      PAIRING_PORT="${AXHUB_PAIRING_PORT:-}"
+      GRPC_PORT="${AXHUB_GRPC_PORT:-}"
+      rid="${AXHUB_PAIRING_REQUEST_ID:-}"
+      secret="${AXHUB_PAIRING_SECRET:-}"
+    fi
+
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --hub) HUB_HOST="${2:-}"; shift 2 ;;
+        --pairing-port) PAIRING_PORT="${2:-}"; shift 2 ;;
+        --grpc-port) GRPC_PORT="${2:-}"; shift 2 ;;
+        --id) rid="${2:-}"; shift 2 ;;
+        --secret) secret="${2:-}"; shift 2 ;;
+        --timeout-sec) timeout_sec="${2:-}"; shift 2 ;;
+        --interval-sec) interval_sec="${2:-}"; shift 2 ;;
+        *) die "unknown arg: $1" ;;
+      esac
+    done
+
+    HUB_HOST="$(trim "$HUB_HOST")"
+    [ -n "$HUB_HOST" ] || HUB_HOST="auto"
+    PAIRING_PORT="$(uint_or_default "${PAIRING_PORT:-50052}" "50052")"
+    GRPC_PORT="$(uint_or_default "${GRPC_PORT:-50051}" "50051")"
+    timeout_sec="$(uint_or_default "$timeout_sec" "900")"
+    interval_sec="$(uint_or_default "$interval_sec" "2")"
+    [ "$interval_sec" -gt 0 ] || interval_sec="2"
+
+    if [ "$HUB_HOST" = "auto" ]; then
+      discovered="$(discover_hub_endpoint "$PAIRING_PORT" "2" "" || true)"
+      [ -n "$discovered" ] || die "wait discovery failed (use --hub <host> or run knock first)"
+      HUB_HOST="$(trim "${discovered%%|*}")"
+      tail1="${discovered#*|}"
+      found_pairing_port="$(trim "${tail1%%|*}")"
+      tail2="${tail1#*|}"
+      found_grpc_port="$(trim "${tail2%%|*}")"
+      PAIRING_PORT="$(uint_or_default "$found_pairing_port" "$PAIRING_PORT")"
+      GRPC_PORT="$(uint_or_default "$found_grpc_port" "$GRPC_PORT")"
+      persist_discovery_result "$HUB_HOST" "$PAIRING_PORT" "$GRPC_PORT" || true
+      echo "Discovered Hub: ${HUB_HOST} (pairing=${PAIRING_PORT}, grpc=${GRPC_PORT})"
+    fi
+
+    rid="$(trim "$rid")"
+    secret="$(trim "$secret")"
+    [ -n "$rid" ] || die "--id is required (or run from a previous knock)"
+    [ -n "$secret" ] || die "--secret is required (or run from a previous knock)"
+
+    url="http://${HUB_HOST}:${PAIRING_PORT}/pairing/requests/${rid}"
+    start_ts="$(date +%s)"
+
+    echo "Waiting for approval… (request_id=$rid)"
+    while :; do
+      resp="$(curl -fsS "$url" -H "X-Pairing-Secret: $secret" 2>/dev/null || true)"
+      if [ -n "$resp" ]; then
+        status="$(json_get_string status "$resp")"
+        if [ "$status" = "approved" ]; then
+          tok="$(json_get_string client_token "$resp")"
+          dev_id="$(json_get_string device_id "$resp")"
+          user_id_from_resp="$(json_get_string user_id "$resp")"
+          [ -n "$tok" ] || die "approved but missing client_token (response: $resp)"
+
+          # Optional TLS bootstrap (Hub may be configured for TLS/mTLS).
+          tls_mode="$(trim "$(json_get_string mode "$resp")")"
+          case "$tls_mode" in
+            ""|insecure) tls_mode="insecure" ;;
+            tls|mtls) ;;
+            *)
+              echo "warning: unknown tls mode from hub ('$tls_mode'); fallback to insecure" >&2
+              tls_mode="insecure"
+              ;;
+          esac
+          tls_server_name="$(trim "$(json_get_string server_name "$resp")")"
+          [ -n "$tls_server_name" ] || tls_server_name="axhub"
+          ca_b64="$(json_get_string ca_cert_b64 "$resp")"
+          client_b64="$(json_get_string client_cert_b64 "$resp")"
+
+          tls_dir="$STATE_DIR/tls"
+          ca_path="$tls_dir/ca.cert.pem"
+          client_cert_path="$tls_dir/client.cert.pem"
+          client_key_path="$tls_dir/client.key.pem"
+          profile_ca_path=""
+          profile_client_cert_path=""
+          profile_client_key_path=""
+
+          if [ "$tls_mode" = "tls" ] || [ "$tls_mode" = "mtls" ]; then
+            [ -n "$(trim "$ca_b64")" ] || die "approved but missing ca_cert_b64 (response: $resp)"
+            base64_decode_to_file "$ca_b64" "$ca_path"
+            chmod 644 "$ca_path" 2>/dev/null || true
+            profile_ca_path="$ca_path"
+
+            if [ "$tls_mode" = "mtls" ]; then
+              [ -n "$(trim "$client_b64")" ] || die "approved but missing client_cert_b64 (response: $resp)"
+              [ -f "$client_key_path" ] || die "missing client private key (expected at $client_key_path); re-run: $0 knock"
+              base64_decode_to_file "$client_b64" "$client_cert_path"
+              chmod 644 "$client_cert_path" 2>/dev/null || true
+              chmod 600 "$client_key_path" 2>/dev/null || true
+              profile_client_cert_path="$client_cert_path"
+              profile_client_key_path="$client_key_path"
+            fi
+          fi
+
+          write_hub_env_state "$HUB_HOST" "$GRPC_PORT" "$tok" "${dev_id:-}" "${user_id_from_resp:-}" "${AXHUB_APP_ID:-ax_terminal}" "$tls_mode" "$tls_server_name" "$profile_ca_path" "$profile_client_cert_path" "$profile_client_key_path"
+          write_connection_profile "$HUB_HOST" "$GRPC_PORT" "$PAIRING_PORT" "${dev_id:-}" "$tls_mode" "$tls_server_name" "$profile_ca_path" "$profile_client_cert_path" "$profile_client_key_path"
+          persist_discovery_result "$HUB_HOST" "$PAIRING_PORT" "$GRPC_PORT" || true
+          echo "Approved."
+          echo "Saved env: $HUB_ENV"
+          echo "Saved connection profile: $CONNECTION_JSON"
+          echo "Use it with:"
+          echo "  . \"$HUB_ENV\""
+          echo "Next (download client kit from Hub):"
+          echo "  $0 install-client"
+          exit 0
+        fi
+        if [ "$status" = "denied" ]; then
+          reason="$(json_get_string deny_reason "$resp")"
+          die "denied: ${reason:-unknown}"
+        fi
+      fi
+
+      now_ts="$(date +%s)"
+      elapsed="$((now_ts - start_ts))"
+      if [ "$elapsed" -ge "$timeout_sec" ]; then
+        die "timeout waiting for approval (${timeout_sec}s)"
+      fi
+      sleep "$interval_sec"
+    done
+    ;;
+
+  connect)
+    HUB_HOST=""
+    GRPC_PORT=""
+    PAIRING_PORT="50052"
+    auto_reconnect="0"
+    max_backoff_sec="30"
+    max_failures="0" # 0 = infinite
+    timeout_sec="2"
+    quiet="0"
+    grpc_port_set="0"
+
+    hub_token=""
+    hub_device_id="terminal_device"
+    hub_user_id=""
+    hub_app_id="ax_terminal"
+    hub_tls_mode=""
+    hub_tls_server_name=""
+    hub_tls_ca_path=""
+    hub_tls_client_cert_path=""
+    hub_tls_client_key_path=""
+
+    if [ -f "$HUB_ENV" ]; then
+      # shellcheck disable=SC1090
+      . "$HUB_ENV"
+      HUB_HOST="${HUB_HOST:-}"
+      GRPC_PORT="${HUB_PORT:-$GRPC_PORT}"
+      hub_token="${HUB_CLIENT_TOKEN:-$hub_token}"
+      hub_device_id="${HUB_DEVICE_ID:-$hub_device_id}"
+      hub_user_id="${HUB_USER_ID:-$hub_user_id}"
+      hub_app_id="${HUB_APP_ID:-$hub_app_id}"
+      hub_tls_mode="${HUB_GRPC_TLS_MODE:-$hub_tls_mode}"
+      hub_tls_server_name="${HUB_GRPC_TLS_SERVER_NAME:-$hub_tls_server_name}"
+      hub_tls_ca_path="${HUB_GRPC_TLS_CA_CERT_PATH:-$hub_tls_ca_path}"
+      hub_tls_client_cert_path="${HUB_GRPC_TLS_CLIENT_CERT_PATH:-$hub_tls_client_cert_path}"
+      hub_tls_client_key_path="${HUB_GRPC_TLS_CLIENT_KEY_PATH:-$hub_tls_client_key_path}"
+    fi
+
+    if [ -f "$PAIRING_ENV" ]; then
+      # shellcheck disable=SC1090
+      . "$PAIRING_ENV"
+      if [ -z "$(trim "$HUB_HOST")" ]; then
+        HUB_HOST="${AXHUB_HUB_HOST:-$HUB_HOST}"
+      fi
+      PAIRING_PORT="${AXHUB_PAIRING_PORT:-$PAIRING_PORT}"
+      if [ -z "$(trim "$GRPC_PORT")" ]; then
+        GRPC_PORT="${AXHUB_GRPC_PORT:-$GRPC_PORT}"
+      fi
+      if [ -z "$(trim "$hub_app_id")" ]; then
+        hub_app_id="${AXHUB_APP_ID:-$hub_app_id}"
+      fi
+    fi
+
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --hub) HUB_HOST="${2:-}"; shift 2 ;;
+        --grpc-port) GRPC_PORT="${2:-}"; grpc_port_set="1"; shift 2 ;;
+        --pairing-port) PAIRING_PORT="${2:-}"; shift 2 ;;
+        --auto-reconnect) auto_reconnect="1"; shift 1 ;;
+        --max-backoff-sec) max_backoff_sec="${2:-}"; shift 2 ;;
+        --max-failures) max_failures="${2:-}"; shift 2 ;;
+        --timeout-sec) timeout_sec="${2:-}"; shift 2 ;;
+        --quiet) quiet="1"; shift 1 ;;
+        *) die "unknown arg: $1" ;;
+      esac
+    done
+
+    HUB_HOST="$(trim "$HUB_HOST")"
+    [ -n "$HUB_HOST" ] || HUB_HOST="auto"
+    GRPC_PORT="$(uint_or_default "${GRPC_PORT:-50051}" "50051")"
+    PAIRING_PORT="$(uint_or_default "${PAIRING_PORT:-50052}" "50052")"
+    max_backoff_sec="$(uint_or_default "$max_backoff_sec" "30")"
+    [ "$max_backoff_sec" -gt 0 ] || max_backoff_sec="30"
+    max_failures="$(uint_or_default "$max_failures" "0")"
+    timeout_sec="$(uint_or_default "$timeout_sec" "2")"
+    [ "$timeout_sec" -gt 0 ] || timeout_sec="2"
+
+    # Convenience: allow --hub 192.168.1.10:50051 when --grpc-port is omitted.
+    if [ "$grpc_port_set" != "1" ] && [ "$HUB_HOST" != "auto" ] && echo "$HUB_HOST" | grep -q ':[0-9][0-9]*$'; then
+      maybe_host="${HUB_HOST%:*}"
+      maybe_port="${HUB_HOST##*:}"
+      maybe_port="$(uint_or_default "$maybe_port" "$GRPC_PORT")"
+      if [ -n "$(trim "$maybe_host")" ]; then
+        HUB_HOST="$maybe_host"
+        GRPC_PORT="$maybe_port"
+      fi
+    fi
+
+    attempt=0
+    backoff_sec="1"
+    while :; do
+      target_host="$HUB_HOST"
+      target_pairing_port="$PAIRING_PORT"
+      target_grpc_port="$GRPC_PORT"
+      last_error="unknown"
+
+      if [ "$target_host" = "auto" ]; then
+        discovered="$(discover_hub_endpoint "$target_pairing_port" "$timeout_sec" "" || true)"
+        if [ -n "$discovered" ]; then
+          target_host="$(trim "${discovered%%|*}")"
+          tail1="${discovered#*|}"
+          discovered_pairing_port="$(trim "${tail1%%|*}")"
+          tail2="${tail1#*|}"
+          discovered_grpc_port="$(trim "${tail2%%|*}")"
+          target_pairing_port="$(uint_or_default "$discovered_pairing_port" "$target_pairing_port")"
+          target_grpc_port="$(uint_or_default "$discovered_grpc_port" "$target_grpc_port")"
+          persist_discovery_result "$target_host" "$target_pairing_port" "$target_grpc_port" || true
+        else
+          last_error="discovery_failed"
+        fi
+      fi
+
+      if [ "$last_error" != "discovery_failed" ]; then
+        probe_mode=""
+        probe_rc=0
+        probe_list_models_once \
+          "$target_host" \
+          "$target_grpc_port" \
+          "$hub_token" \
+          "$hub_device_id" \
+          "$hub_user_id" \
+          "$hub_app_id" \
+          "$hub_tls_mode" \
+          "$hub_tls_server_name" \
+          "$hub_tls_ca_path" \
+          "$hub_tls_client_cert_path" \
+          "$hub_tls_client_key_path" || probe_rc=$?
+
+        if [ "$probe_rc" -eq 0 ]; then
+          probe_mode="grpc"
+        elif [ "$probe_rc" -eq 2 ]; then
+          if probe_pairing_health "$target_host" "$target_pairing_port" "$timeout_sec"; then
+            probe_mode="pairing"
+          else
+            last_error="pairing_health_failed"
+          fi
+        else
+          probe_err="$(trim "${PROBE_LAST_ERROR:-}")"
+          if [ -n "$probe_err" ] && [ "$quiet" != "1" ]; then
+            echo "Probe error: $probe_err"
+          fi
+          if echo "$probe_err" | grep -Eiq "node_runtime_killed|node runtime killed|exit=137|exit=134"; then
+            last_error="node_runtime_killed"
+          elif echo "$probe_err" | grep -Eiq "unauthenticated|invalid token|permission denied"; then
+            last_error="unauthenticated"
+          elif echo "$probe_err" | grep -Eiq "forbidden|permission_denied|not authorized"; then
+            last_error="forbidden"
+          elif echo "$probe_err" | grep -Eiq "unavailable|failed to connect|connection refused|deadline exceeded|timeout"; then
+            last_error="grpc_unavailable"
+          elif echo "$probe_err" | grep -Eiq "certificate|tls|ssl"; then
+            last_error="tls_error"
+          else
+            last_error="grpc_probe_failed"
+          fi
+        fi
+
+        if [ -n "$probe_mode" ]; then
+          if [ "$probe_mode" = "grpc" ] && [ -n "$hub_token" ]; then
+            write_hub_env_state "$target_host" "$target_grpc_port" "$hub_token" "$hub_device_id" "$hub_user_id" "$hub_app_id" "$hub_tls_mode" "$hub_tls_server_name" "$hub_tls_ca_path" "$hub_tls_client_cert_path" "$hub_tls_client_key_path"
+          fi
+          write_connection_profile "$target_host" "$target_grpc_port" "$target_pairing_port" "$hub_device_id" "${hub_tls_mode:-insecure}" "$hub_tls_server_name" "$hub_tls_ca_path" "$hub_tls_client_cert_path" "$hub_tls_client_key_path"
+          if [ "$quiet" != "1" ]; then
+            echo "Connected (${probe_mode}): ${target_host}:${target_grpc_port}"
+            if [ "$probe_mode" = "pairing" ]; then
+              echo "Note: gRPC auth probe skipped (missing client kit/token)."
+            fi
+          fi
+          exit 0
+        fi
+      fi
+
+      if [ "$auto_reconnect" != "1" ]; then
+        die "connect failed (${last_error}). Try: $0 bootstrap --hub auto"
+      fi
+
+      attempt=$((attempt + 1))
+      if [ "$max_failures" -gt 0 ] && [ "$attempt" -ge "$max_failures" ]; then
+        die "connect failed after ${attempt} retries (${last_error}). Try: $0 knock --hub auto && $0 wait"
+      fi
+
+      jitter="$((attempt % 3))"
+      sleep_sec=$((backoff_sec + jitter))
+      if [ "$sleep_sec" -gt "$max_backoff_sec" ]; then
+        sleep_sec="$max_backoff_sec"
+      fi
+      if [ "$quiet" != "1" ]; then
+        echo "Reconnect retry #${attempt} in ${sleep_sec}s (${last_error})"
+      fi
+      sleep "$sleep_sec"
+
+      backoff_sec=$((backoff_sec * 2))
+      if [ "$backoff_sec" -gt "$max_backoff_sec" ]; then
+        backoff_sec="$max_backoff_sec"
+      fi
+    done
+    ;;
+
+  install-client)
+    # Download a self-contained client kit (hub_grpc_server + protocol + node_modules) from the Hub.
+    HUB_HOST=""
+    PAIRING_PORT="50052"
+    KIT_DIR="${AXHUBCTL_CLIENT_KIT_DIR:-$STATE_DIR/client_kit}"
+
+    if [ -f "$PAIRING_ENV" ]; then
+      # shellcheck disable=SC1090
+      . "$PAIRING_ENV"
+      HUB_HOST="${AXHUB_HUB_HOST:-$HUB_HOST}"
+      PAIRING_PORT="${AXHUB_PAIRING_PORT:-$PAIRING_PORT}"
+    fi
+
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --hub) HUB_HOST="${2:-}"; shift 2 ;;
+        --pairing-port) PAIRING_PORT="${2:-}"; shift 2 ;;
+        --dir) KIT_DIR="${2:-}"; shift 2 ;;
+        *) die "unknown arg: $1" ;;
+      esac
+    done
+
+    HUB_HOST="$(trim "$HUB_HOST")"
+    [ -n "$HUB_HOST" ] || die "--hub is required (or run after knock)"
+    PAIRING_PORT="$(trim "${PAIRING_PORT:-50052}")"
+    KIT_DIR="$(trim "$KIT_DIR")"
+    [ -n "$KIT_DIR" ] || die "--dir is required"
+
+    need_cmd tar
+
+    info="$(client_kit_info "$HUB_HOST" "$PAIRING_PORT" || true)"
+    if [ -z "$info" ]; then
+      if install_client_kit_from_local_repo "$KIT_DIR"; then
+        echo "Installed client kit from local repo fallback: $KIT_DIR"
+        echo "Warning: Hub did not provide /install/axhub_client_kit.*, using local fallback."
+        echo "Next:"
+        echo "  . \"$HUB_ENV\""
+        echo "  $0 list-models"
+        exit 0
+      fi
+      die "client kit not available on Hub yet"
+    fi
+    kit_url="${info%%|*}"
+    kit_sha="${info#*|}"
+    [ -n "$kit_url" ] || die "failed to resolve kit_url"
+    [ -n "$kit_sha" ] || die "failed to resolve kit_sha256"
+
+    tmpdir="$(mktemp_dir)"
+    tmp_tgz="$tmpdir/axhub_client_kit.tgz"
+
+    echo "Downloading client kit…"
+    echo "  $kit_url"
+    err="$(curl -fsSL "$kit_url" -o "$tmp_tgz" 2>&1)" || {
+      if echo "$err" | grep -q "error: 403"; then
+        die "download failed (403). Your source IP may not be allowed. Ensure you're on the Hub LAN/VPN and use --pairing-port 50052."
+      fi
+      die "download failed: $err"
+    }
+
+    echo "Verifying sha256…"
+    sha256_verify "$kit_sha" "$tmp_tgz" || die "sha256 mismatch (refusing to install)"
+
+    echo "Extracting…"
+    stage="$tmpdir/stage"
+    mkdir -p "$stage"
+    tar -xzf "$tmp_tgz" -C "$stage" || die "failed to extract client kit"
+
+    [ -f "$stage/hub_grpc_server/package.json" ] || die "bad kit: missing hub_grpc_server/package.json"
+    [ -f "$stage/protocol/hub_protocol_v1.proto" ] || die "bad kit: missing protocol/hub_protocol_v1.proto"
+
+    rm -rf "$KIT_DIR" 2>/dev/null || true
+    mkdir -p "$(dirname "$KIT_DIR")"
+    mv -f "$stage" "$KIT_DIR"
+    clear_quarantine_flags "$KIT_DIR"
+    if [ -f "$KIT_DIR/bin/relflowhub_node" ]; then
+      sign_binary_if_possible "$KIT_DIR/bin/relflowhub_node"
+    fi
+
+    echo "Installed client kit to: $KIT_DIR"
+    echo "Next:"
+    echo "  . \"$HUB_ENV\""
+    echo "  $0 list-models"
+    ;;
+
+  new-chat)
+    # Create a brand-new conversation identity (thread_key) for Hub-side memory.
+    project_id=""
+    thread_key=""
+
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --project-id) project_id="${2:-}"; shift 2 ;;
+        --thread-key) thread_key="${2:-}"; shift 2 ;;
+        *) die "unknown arg: $1" ;;
+      esac
+    done
+
+    # Best-effort: keep the existing project_id if present.
+    if [ -f "$CHAT_ENV" ]; then
+      # shellcheck disable=SC1090
+      . "$CHAT_ENV"
+      if [ -z "$(trim "$project_id")" ]; then
+        project_id="${HUB_PROJECT_ID:-}"
+      fi
+    fi
+
+    project_id="$(trim "$project_id")"
+    thread_key="$(trim "$thread_key")"
+
+    if [ -z "$project_id" ]; then
+      project_id="terminal_chat_$(gen_id)"
+    fi
+    if [ -z "$thread_key" ]; then
+      thread_key="thread_$(gen_id)"
+    fi
+
+    save_chat_env "$project_id" "$thread_key"
+    echo "New chat created."
+    echo "Saved chat env: $CHAT_ENV"
+    echo "  HUB_PROJECT_ID=$project_id"
+    echo "  HUB_THREAD_KEY=$thread_key"
+    echo "Next:"
+    echo "  $0 chat --model <model_id>"
+    ;;
+
+  list-models)
+    [ -f "$HUB_ENV" ] || die "no env file yet; run: $0 knock && $0 wait"
+    # shellcheck disable=SC1090
+    . "$HUB_ENV"
+    maybe_source_tunnel_env
+
+    KIT_DIR="${AXHUBCTL_CLIENT_KIT_DIR:-$STATE_DIR/client_kit}"
+    [ -f "$KIT_DIR/hub_grpc_server/src/list_models_client.js" ] || die "client kit not installed; run: $0 install-client"
+    NODE_BIN="$(resolve_node_bin "$KIT_DIR" || true)"
+    [ -n "$NODE_BIN" ] || die "missing node (install Node.js, or use a Hub build that bundles node in the client kit)"
+    run_node_script "$NODE_BIN" "$KIT_DIR/hub_grpc_server/src/list_models_client.js"
+    ;;
+
+  skills)
+    [ -f "$HUB_ENV" ] || die "no env file yet; run: $0 knock && $0 wait"
+    # shellcheck disable=SC1090
+    . "$HUB_ENV"
+    maybe_source_tunnel_env
+
+    sub="${1:-}"
+    [ -n "$(trim "$sub")" ] || die "missing skills subcommand (try: $0 skills search --query \"email\")"
+    shift || true
+
+    KIT_DIR="${AXHUBCTL_CLIENT_KIT_DIR:-$STATE_DIR/client_kit}"
+    [ -f "$KIT_DIR/hub_grpc_server/src/skills_client.js" ] || die "client kit not installed; run: $0 install-client"
+    NODE_BIN="$(resolve_node_bin "$KIT_DIR" || true)"
+    [ -n "$NODE_BIN" ] || die "missing node (install Node.js, or use a Hub build that bundles node in the client kit)"
+    run_node_script "$NODE_BIN" "$KIT_DIR/hub_grpc_server/src/skills_client.js" "$sub" "$@"
+    ;;
+
+  chat-new)
+    # Convenience: start a fresh conversation (new thread_key) then run chat.
+    "$0" new-chat
+    "$0" chat "$@"
+    ;;
+
+  chat)
+    [ -f "$HUB_ENV" ] || die "no env file yet; run: $0 knock && $0 wait"
+    # shellcheck disable=SC1090
+    . "$HUB_ENV"
+    maybe_source_tunnel_env
+    if [ -f "$CHAT_ENV" ]; then
+      # shellcheck disable=SC1090
+      . "$CHAT_ENV"
+    fi
+
+    KIT_DIR="${AXHUBCTL_CLIENT_KIT_DIR:-$STATE_DIR/client_kit}"
+    [ -f "$KIT_DIR/hub_grpc_server/src/chat_client.js" ] || die "client kit not installed; run: $0 install-client"
+    NODE_BIN="$(resolve_node_bin "$KIT_DIR" || true)"
+    [ -n "$NODE_BIN" ] || die "missing node (install Node.js, or use a Hub build that bundles node in the client kit)"
+    run_node_script "$NODE_BIN" "$KIT_DIR/hub_grpc_server/src/chat_client.js" "$@"
+    ;;
+
+  env)
+    if [ ! -f "$HUB_ENV" ]; then
+      die "no env file yet; run: $0 knock && $0 wait"
+    fi
+    cat "$HUB_ENV"
+    ;;
+
+  tunnel)
+    # Local TCP forwarder for "remote" Mode 3. Keep gRPC clients pointed at 127.0.0.1:<local_port>.
+    #
+    # Security note:
+    # - This tunnel is byte-forwarding only. It does NOT terminate TLS.
+    # - gRPC mTLS + token auth remains end-to-end between client and Hub.
+    remote_host=""
+    remote_port="50051"
+    local_host="127.0.0.1"
+    local_port="50051"
+    quiet="0"
+    action=""
+    from_config="0"
+    remote_set="0"
+
+    # Best-effort: use paired Hub env defaults if present.
+    if [ -f "$HUB_ENV" ]; then
+      # shellcheck disable=SC1090
+      . "$HUB_ENV"
+      remote_host="${HUB_HOST:-$remote_host}"
+      remote_port="${HUB_PORT:-$remote_port}"
+    fi
+
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --hub|--remote-host)
+          remote_host="${2:-}"
+          remote_set="1"
+          shift 2
+          ;;
+        --grpc-port|--remote-port) remote_port="${2:-}"; shift 2 ;;
+        --remote)
+          remote="$(trim "${2:-}")"
+          shift 2
+          if [ -n "$remote" ]; then
+            remote_set="1"
+            if echo "$remote" | grep -q ":"; then
+              remote_host="${remote%:*}"
+              remote_port="${remote##*:}"
+            else
+              remote_host="$remote"
+            fi
+          fi
+          ;;
+        --local-host) local_host="${2:-}"; shift 2 ;;
+        --local-port) local_port="${2:-}"; shift 2 ;;
+        -q|--quiet) quiet="1"; shift 1 ;;
+        --from-config) from_config="1"; shift 1 ;;
+        --install)
+          [ -z "$action" ] || die "tunnel: only one of --install/--uninstall/--status is allowed"
+          action="install"
+          shift 1
+          ;;
+        --uninstall)
+          [ -z "$action" ] || die "tunnel: only one of --install/--uninstall/--status is allowed"
+          action="uninstall"
+          shift 1
+          ;;
+        --status)
+          [ -z "$action" ] || die "tunnel: only one of --install/--uninstall/--status is allowed"
+          action="status"
+          shift 1
+          ;;
+        -h|--help)
+          echo "Usage:"
+          echo "  axhubctl tunnel --hub <host> [--grpc-port 50051] [--local-port 50051] [--local-host 127.0.0.1] [--quiet]"
+          echo "  axhubctl tunnel --remote <host:port> [--local-port 50051]"
+          echo "  axhubctl tunnel --hub <host> [--grpc-port 50051] [--local-port 50051] --install     # (macOS) background service"
+          echo "  axhubctl tunnel --uninstall                                                   # (macOS) remove service"
+          echo "  axhubctl tunnel --status                                                      # (macOS) service status"
+          exit 0
+          ;;
+        *) die "unknown arg: $1" ;;
+      esac
+    done
+
+    if [ "$action" = "status" ]; then
+      tunnel_service_status || true
+      if [ -f "$TUNNEL_CONFIG_ENV" ]; then
+        echo "Tunnel config: $TUNNEL_CONFIG_ENV"
+        # Safe to print (no tokens); only host/port.
+        cat "$TUNNEL_CONFIG_ENV" 2>/dev/null || true
+      else
+        echo "Tunnel config: not set (expected at $TUNNEL_CONFIG_ENV)"
+      fi
+      if [ -f "$TUNNEL_ENV" ]; then
+        echo "Tunnel override: $TUNNEL_ENV"
+        cat "$TUNNEL_ENV" 2>/dev/null || true
+      else
+        echo "Tunnel override: not set (expected at $TUNNEL_ENV)"
+      fi
+      exit 0
+    fi
+
+    if [ "$action" = "uninstall" ]; then
+      if is_darwin; then
+        tunnel_service_uninstall
+      else
+        echo "Tunnel service uninstall is only supported on macOS (launchd)."
+      fi
+      rm -f "$TUNNEL_CONFIG_ENV" "$TUNNEL_ENV" 2>/dev/null || true
+      echo "Tunnel service removed (best-effort)."
+      exit 0
+    fi
+
+    if [ "$from_config" = "1" ]; then
+      load_tunnel_config_env_if_present
+      remote_host="${AXHUB_TUNNEL_REMOTE_HOST:-$remote_host}"
+      remote_port="${AXHUB_TUNNEL_REMOTE_PORT:-$remote_port}"
+      local_host="${AXHUB_TUNNEL_LOCAL_HOST:-$local_host}"
+      local_port="${AXHUB_TUNNEL_LOCAL_PORT:-$local_port}"
+    fi
+
+    remote_host="$(trim "$remote_host")"
+    remote_port="$(trim "${remote_port:-50051}")"
+    local_host="$(trim "${local_host:-127.0.0.1}")"
+    local_port="$(trim "${local_port:-50051}")"
+    if [ "$action" = "install" ] && [ "$remote_set" != "1" ]; then
+      # Avoid accidentally installing a service that points at the LAN HUB_HOST from hub.env.
+      if [ -f "$TUNNEL_CONFIG_ENV" ]; then
+        load_tunnel_config_env_if_present
+        remote_host="${AXHUB_TUNNEL_REMOTE_HOST:-$remote_host}"
+        remote_port="${AXHUB_TUNNEL_REMOTE_PORT:-$remote_port}"
+        local_host="${AXHUB_TUNNEL_LOCAL_HOST:-$local_host}"
+        local_port="${AXHUB_TUNNEL_LOCAL_PORT:-$local_port}"
+      else
+        die "tunnel --install requires --hub (tailnet/VPN host), or an existing $TUNNEL_CONFIG_ENV"
+      fi
+    fi
+
+    [ -n "$remote_host" ] || die "--hub is required (or set HUB_HOST in $HUB_ENV, or use --from-config after --install)"
+
+    if [ "$action" = "install" ]; then
+      if ! is_darwin; then
+        die "tunnel --install is only supported on macOS (launchd)"
+      fi
+
+      KIT_DIR="${AXHUBCTL_CLIENT_KIT_DIR:-$STATE_DIR/client_kit}"
+      case "$KIT_DIR" in
+        /*) ;;
+        *) KIT_DIR="$(pwd)/$KIT_DIR" ;;
+      esac
+      [ -f "$KIT_DIR/hub_grpc_server/src/tcp_tunnel.js" ] || die "client kit not installed; run: $0 install-client"
+      NODE_BIN="$(resolve_node_bin "$KIT_DIR" || true)"
+      [ -n "$NODE_BIN" ] || die "missing node (install Node.js, or use a Hub build that bundles node in the client kit)"
+
+      save_tunnel_config_env "$local_host" "$local_port" "$remote_host" "$remote_port" "$NODE_BIN" "$KIT_DIR"
+      save_tunnel_env_override "$local_host" "$local_port"
+
+      axhubctl_path="$(ensure_axhubctl_installed_path)"
+      plist_written="$(write_tunnel_service_plist "$axhubctl_path")"
+      tunnel_service_install
+
+      echo "Tunnel service installed."
+      echo "  axhubctl : $axhubctl_path"
+      echo "  plist    : $plist_written"
+      echo "  config   : $TUNNEL_CONFIG_ENV"
+      echo "  override : $TUNNEL_ENV"
+      echo ""
+      echo "Verify:"
+      echo "  $axhubctl_path tunnel --status"
+      echo "Use (via tunnel):"
+      echo "  $axhubctl_path remote list-models"
+      exit 0
+    fi
+
+    KIT_DIR="${AXHUBCTL_CLIENT_KIT_DIR:-$STATE_DIR/client_kit}"
+    [ -f "$KIT_DIR/hub_grpc_server/src/tcp_tunnel.js" ] || die "client kit missing tcp_tunnel.js; re-run: $0 install-client (and rebuild Hub app to refresh the client kit)"
+    NODE_BIN="$(resolve_node_bin "$KIT_DIR" || true)"
+    [ -n "$NODE_BIN" ] || die "missing node (install Node.js, or use a Hub build that bundles node in the client kit)"
+
+    save_tunnel_env_override "$local_host" "$local_port"
+
+    if [ "$quiet" != "1" ]; then
+      echo "Tunnel starting…"
+      echo "  local : ${local_host}:${local_port}"
+      echo "  remote: ${remote_host}:${remote_port}"
+      echo "Saved tunnel override: $TUNNEL_ENV"
+      echo ""
+      echo "Use it:"
+      echo "  $0 remote list-models"
+      echo ""
+    fi
+
+    export AXHUB_TUNNEL_LOCAL_HOST="$local_host"
+    export AXHUB_TUNNEL_LOCAL_PORT="$local_port"
+    export AXHUB_TUNNEL_REMOTE_HOST="$remote_host"
+    export AXHUB_TUNNEL_REMOTE_PORT="$remote_port"
+
+    if [ "$quiet" = "1" ]; then
+      exec "$NODE_BIN" "$KIT_DIR/hub_grpc_server/src/tcp_tunnel.js" --quiet
+    fi
+    exec "$NODE_BIN" "$KIT_DIR/hub_grpc_server/src/tcp_tunnel.js"
+    ;;
+
+  *)
+    usage
+    die "unknown command: $cmd"
+    ;;
+esac

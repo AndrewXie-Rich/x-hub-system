@@ -1,0 +1,54 @@
+name: KQ Security Invariants
+
+on:
+  pull_request:
+    paths:
+      - "x-hub/grpc-server/hub_grpc_server/src/kq_security_invariants.test.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/pairing_http_preauth_replay.test.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/services.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/db.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/pairing_http.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/connector_ingress_authorizer.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/connector_ingress_authorizer.test.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/memory_remote_export_gate.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/at_rest_crypto.js"
+      - ".github/workflows/kq-security-invariants.yml"
+      - "docs/memory-new/xhub-kiro-spec-gates-work-orders-v1.md"
+      - "X_MEMORY.md"
+  push:
+    branches:
+      - main
+    paths:
+      - "x-hub/grpc-server/hub_grpc_server/src/kq_security_invariants.test.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/pairing_http_preauth_replay.test.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/services.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/db.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/pairing_http.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/connector_ingress_authorizer.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/connector_ingress_authorizer.test.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/memory_remote_export_gate.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/at_rest_crypto.js"
+      - ".github/workflows/kq-security-invariants.yml"
+      - "docs/memory-new/xhub-kiro-spec-gates-work-orders-v1.md"
+      - "X_MEMORY.md"
+
+jobs:
+  security-invariants:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run connector ingress + webhook pre-auth/replay tests
+        run: |
+          node ./x-hub/grpc-server/hub_grpc_server/src/connector_ingress_authorizer.test.js
+          node ./x-hub/grpc-server/hub_grpc_server/src/pairing_http_preauth_replay.test.js
+
+      - name: Run KQ security invariant tests (CP-Grant/Secret/Tamper)
+        run: |
+          node ./x-hub/grpc-server/hub_grpc_server/src/kq_security_invariants.test.js

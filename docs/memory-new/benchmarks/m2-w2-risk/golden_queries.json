@@ -1,0 +1,64 @@
+{
+  "schema_version": "xhub.memory.golden_queries.v1",
+  "generated_at_ms": 1772088038190,
+  "seed": "m2_w1_seed",
+  "k_default": 5,
+  "queries": [
+    {
+      "id": "gq_001",
+      "category": "semantic",
+      "query": "robot buy water photo price paycode approval flow",
+      "scope": {
+        "project_id": "proj-alpha"
+      },
+      "top_k": 5,
+      "relevant_ids": [
+        "syn_001_a"
+      ]
+    },
+    {
+      "id": "gq_002",
+      "category": "keyword",
+      "query": "heartbeat blocker next action queue wait",
+      "scope": {
+        "project_id": "proj-beta"
+      },
+      "top_k": 5,
+      "relevant_ids": [
+        "syn_004_b"
+      ]
+    },
+    {
+      "id": "gq_003",
+      "category": "security",
+      "query": "prompt bundle secondary dlp credential finding deny",
+      "scope": {
+        "project_id": "proj-gamma"
+      },
+      "top_k": 5,
+      "relevant_ids": [
+        "syn_007_c"
+      ]
+    },
+    {
+      "id": "gq_004",
+      "category": "workflow",
+      "query": "search_index timeline get_details default workflow token budget",
+      "scope": {},
+      "top_k": 5,
+      "relevant_ids": [
+        "syn_100"
+      ]
+    },
+    {
+      "id": "gq_005",
+      "category": "retrieval",
+      "query": "scope filter rerank gate fixed order",
+      "scope": {},
+      "top_k": 5,
+      "relevant_ids": [
+        "syn_101"
+      ]
+    }
+  ]
+}

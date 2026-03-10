@@ -1,0 +1,401 @@
+{
+  "schema_version": "xhub.memory.observability.dashboard.v1",
+  "generated_at_ms": 1772196324225,
+  "sources": {
+    "report_path": "docs/memory-new/benchmarks/m2-w1/report_baseline_week1.json",
+    "db_path": "data/hub.sqlite3",
+    "window_ms": 86400000,
+    "runtime_event_count": 0
+  },
+  "thresholds": {
+    "window_ms": 86400000,
+    "max_events": 5000,
+    "noise_control": {
+      "min_samples": 20,
+      "critical_margin_ratio": 0.2
+    },
+    "latency": {
+      "benchmark_p95_ms_max": 1500,
+      "benchmark_p99_ms_max": 2500,
+      "runtime_duration_p95_ms_max": 3000,
+      "runtime_queue_wait_p95_ms_max": 2000,
+      "runtime_queue_depth_p95_max": 64
+    },
+    "quality": {
+      "precision_at_k_min": 0.15,
+      "recall_at_k_min": 0.8
+    },
+    "freshness": {
+      "index_freshness_p95_ms_max": 300000,
+      "index_freshness_max_ms_max": 900000
+    },
+    "security": {
+      "adversarial_block_rate_min": 0.45,
+      "runtime_block_rate_max": 0.2,
+      "runtime_downgrade_rate_max": 0.3
+    },
+    "stage": {
+      "anomaly_score_warn": 40,
+      "anomaly_score_critical": 80
+    }
+  },
+  "panels": {
+    "latency": {
+      "benchmark": {
+        "samples": 5,
+        "p50": 0.037,
+        "p95": 0.234,
+        "p99": 0.234,
+        "max": 0.234,
+        "avg": 0.074
+      },
+      "runtime": {
+        "duration_ms": {
+          "samples": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "avg": null
+        },
+        "queue_wait_ms": {
+          "samples": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "avg": null
+        },
+        "queue_depth": {
+          "samples": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "avg": null
+        }
+      }
+    },
+    "quality": {
+      "benchmark": {
+        "queries": 5,
+        "precision_at_k_avg": 0.2,
+        "recall_at_k_avg": 1,
+        "mrr_at_k_avg": 1
+      },
+      "runtime": {
+        "result_count": {
+          "samples": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "avg": null
+        }
+      }
+    },
+    "cost": {
+      "runtime": {
+        "prompt_tokens": {
+          "samples": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "avg": null
+        },
+        "completion_tokens": {
+          "samples": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "avg": null
+        },
+        "total_tokens": {
+          "samples": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "avg": null
+        },
+        "totals": {
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0
+        }
+      }
+    },
+    "freshness": {
+      "runtime": {
+        "index_freshness_ms": {
+          "samples": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "avg": null
+        }
+      }
+    },
+    "security": {
+      "benchmark": {
+        "adversarial_queries": 48,
+        "adversarial_block_rate": 0.4792,
+        "adversarial_blocked_count": 23
+      },
+      "runtime": {
+        "ai_generate_events": 0,
+        "blocked_count": 0,
+        "downgraded_count": 0,
+        "blocked_rate": null,
+        "downgraded_rate": null
+      }
+    }
+  },
+  "pipeline_stages": {
+    "stages": [
+      {
+        "stage": "gate",
+        "trace_samples": 0,
+        "blocked_count": 0,
+        "deny_count": 22,
+        "in_total": 0,
+        "out_total": 0,
+        "avg_drop_ratio": 0,
+        "anomaly_score": 66,
+        "top_reasons": [
+          {
+            "reason": "no_block_pattern",
+            "count": 22
+          }
+        ]
+      }
+    ],
+    "top_anomalies": [
+      {
+        "stage": "gate",
+        "trace_samples": 0,
+        "blocked_count": 0,
+        "deny_count": 22,
+        "in_total": 0,
+        "out_total": 0,
+        "avg_drop_ratio": 0,
+        "anomaly_score": 66,
+        "top_reasons": [
+          {
+            "reason": "no_block_pattern",
+            "count": 22
+          }
+        ]
+      }
+    ]
+  },
+  "alerts": {
+    "summary": {
+      "pass": 5,
+      "warn": 1,
+      "critical": 0,
+      "no_data": 7,
+      "total": 13
+    },
+    "items": [
+      {
+        "id": "latency.benchmark.p95",
+        "panel": "latency",
+        "metric": "benchmark_p95_ms",
+        "status": "pass",
+        "severity": "none",
+        "value": 0.234,
+        "threshold": 1500,
+        "comparison": "max",
+        "samples": 5,
+        "stage_hint": "",
+        "hint": "golden benchmark p95 should stay under threshold",
+        "breached": false,
+        "suppressed_by_noise": false
+      },
+      {
+        "id": "latency.benchmark.p99",
+        "panel": "latency",
+        "metric": "benchmark_p99_ms",
+        "status": "pass",
+        "severity": "none",
+        "value": 0.234,
+        "threshold": 2500,
+        "comparison": "max",
+        "samples": 5,
+        "stage_hint": "",
+        "hint": "golden benchmark p99 should stay under threshold",
+        "breached": false,
+        "suppressed_by_noise": false
+      },
+      {
+        "id": "latency.runtime.duration.p95",
+        "panel": "latency",
+        "metric": "runtime_duration_p95_ms",
+        "status": "no_data",
+        "severity": "none",
+        "value": null,
+        "threshold": 3000,
+        "comparison": "max",
+        "samples": 0,
+        "stage_hint": "",
+        "hint": "runtime ai.generate duration p95",
+        "breached": false,
+        "suppressed_by_noise": false
+      },
+      {
+        "id": "queue.wait.p95",
+        "panel": "latency",
+        "metric": "runtime_queue_wait_p95_ms",
+        "status": "no_data",
+        "severity": "none",
+        "value": null,
+        "threshold": 2000,
+        "comparison": "max",
+        "samples": 0,
+        "stage_hint": "queue",
+        "hint": "runtime queue wait p95",
+        "breached": false,
+        "suppressed_by_noise": false
+      },
+      {
+        "id": "queue.depth.p95",
+        "panel": "latency",
+        "metric": "runtime_queue_depth_p95",
+        "status": "no_data",
+        "severity": "none",
+        "value": null,
+        "threshold": 64,
+        "comparison": "max",
+        "samples": 0,
+        "stage_hint": "queue",
+        "hint": "runtime queue depth p95",
+        "breached": false,
+        "suppressed_by_noise": false
+      },
+      {
+        "id": "quality.precision",
+        "panel": "quality",
+        "metric": "precision_at_k_avg",
+        "status": "pass",
+        "severity": "none",
+        "value": 0.2,
+        "threshold": 0.15,
+        "comparison": "min",
+        "samples": 5,
+        "stage_hint": "",
+        "hint": "golden precision_at_k_avg",
+        "breached": false,
+        "suppressed_by_noise": false
+      },
+      {
+        "id": "quality.recall",
+        "panel": "quality",
+        "metric": "recall_at_k_avg",
+        "status": "pass",
+        "severity": "none",
+        "value": 1,
+        "threshold": 0.8,
+        "comparison": "min",
+        "samples": 5,
+        "stage_hint": "",
+        "hint": "golden recall_at_k_avg",
+        "breached": false,
+        "suppressed_by_noise": false
+      },
+      {
+        "id": "freshness.index.p95",
+        "panel": "freshness",
+        "metric": "index_freshness_p95_ms",
+        "status": "no_data",
+        "severity": "none",
+        "value": null,
+        "threshold": 300000,
+        "comparison": "max",
+        "samples": 0,
+        "stage_hint": "",
+        "hint": "runtime index freshness p95",
+        "breached": false,
+        "suppressed_by_noise": false
+      },
+      {
+        "id": "freshness.index.max",
+        "panel": "freshness",
+        "metric": "index_freshness_max_ms",
+        "status": "no_data",
+        "severity": "none",
+        "value": null,
+        "threshold": 900000,
+        "comparison": "max",
+        "samples": 0,
+        "stage_hint": "",
+        "hint": "runtime index freshness max",
+        "breached": false,
+        "suppressed_by_noise": false
+      },
+      {
+        "id": "security.adversarial.block_rate",
+        "panel": "security",
+        "metric": "adversarial_block_rate",
+        "status": "pass",
+        "severity": "none",
+        "value": 0.4792,
+        "threshold": 0.45,
+        "comparison": "min",
+        "samples": 48,
+        "stage_hint": "gate",
+        "hint": "adversarial blocked rate should stay high",
+        "breached": false,
+        "suppressed_by_noise": false
+      },
+      {
+        "id": "security.runtime.block_rate",
+        "panel": "security",
+        "metric": "runtime_block_rate",
+        "status": "no_data",
+        "severity": "none",
+        "value": null,
+        "threshold": 0.2,
+        "comparison": "max",
+        "samples": 0,
+        "stage_hint": "gate",
+        "hint": "runtime blocked rate should remain stable",
+        "breached": false,
+        "suppressed_by_noise": false
+      },
+      {
+        "id": "security.runtime.downgrade_rate",
+        "panel": "security",
+        "metric": "runtime_downgrade_rate",
+        "status": "no_data",
+        "severity": "none",
+        "value": null,
+        "threshold": 0.3,
+        "comparison": "max",
+        "samples": 0,
+        "stage_hint": "gate",
+        "hint": "runtime downgrade rate should remain stable",
+        "breached": false,
+        "suppressed_by_noise": false
+      },
+      {
+        "id": "pipeline.stage.top_anomaly",
+        "panel": "pipeline",
+        "metric": "top_stage_anomaly_score",
+        "status": "warn",
+        "severity": "warn",
+        "value": 66,
+        "threshold": 40,
+        "comparison": "max",
+        "samples": 0,
+        "stage_hint": "gate",
+        "hint": "no_block_pattern",
+        "breached": true,
+        "suppressed_by_noise": false
+      }
+    ]
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "aiReady" : false,
+  "appBuild" : "131",
+  "appPath" : "\/private\/var\/folders\/h_\/yb6ly4116qb0gv0rj0t80yk80000gn\/T\/AppTranslocation\/839472B6-000F-4FB3-98EB-82E84C0BD9A4\/d\/X-Hub.app",
+  "appVersion" : "1.2.9",
+  "baseDir" : "\/Users\/USER\/Library\/Containers\/com.rel.flowhub\/Data\/RELFlowHub",
+  "ipcMode" : "file",
+  "ipcPath" : "\/Users\/USER\/Library\/Containers\/com.rel.flowhub\/Data\/RELFlowHub\/ipc_events",
+  "loadedModelCount" : 0,
+  "modelsUpdatedAt" : 1771838743.3440671,
+  "pid" : 47769,
+  "protocolVersion" : 1,
+  "startedAt" : 1771829063.1859632,
+  "updatedAt" : 1771838783.348824
+}

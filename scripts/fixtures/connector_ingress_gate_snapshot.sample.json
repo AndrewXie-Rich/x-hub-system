@@ -1,0 +1,72 @@
+{
+  "schema_version": "xt_ready_connector_ingress_gate_fetch.v1",
+  "fetched_at_ms": 1730000000000,
+  "request": {
+    "base_url": "http://127.0.0.1:50052",
+    "route_path": "/admin/pairing/connector-ingress/gate-snapshot",
+    "source": "auto",
+    "url": "http://127.0.0.1:50052/admin/pairing/connector-ingress/gate-snapshot?source=auto"
+  },
+  "source_used": "scan",
+  "data_ready": true,
+  "audit_row_count": 0,
+  "scan_entry_count": 1,
+  "snapshot": {
+    "schema_version": "xhub.connector.non_message_ingress_gate.v1",
+    "measured_at_ms": 1730000000000,
+    "pass": true,
+    "incident_codes": [],
+    "thresholds": {
+      "non_message_ingress_policy_coverage_min": 1,
+      "blocked_event_miss_rate_max_exclusive": 0.01
+    },
+    "checks": [
+      {
+        "key": "non_message_ingress_policy_coverage",
+        "pass": true,
+        "comparator": ">=",
+        "expected": 1,
+        "actual": 1
+      },
+      {
+        "key": "blocked_event_miss_rate",
+        "pass": true,
+        "comparator": "<",
+        "expected": 0.01,
+        "actual": 0
+      }
+    ],
+    "metrics": {
+      "ingress_total": 1,
+      "non_message_ingress_total": 1,
+      "non_message_ingress_policy_checked": 1,
+      "non_message_ingress_policy_coverage": 1,
+      "blocked_event_total": 1,
+      "blocked_event_audited": 1,
+      "blocked_event_miss_total": 0,
+      "blocked_event_miss_rate": 0
+    }
+  },
+  "snapshot_audit": {
+    "schema_version": "xhub.connector.non_message_ingress_gate.v1",
+    "pass": true,
+    "incident_codes": [],
+    "metrics": {
+      "non_message_ingress_policy_coverage": 1,
+      "blocked_event_miss_rate": 0
+    }
+  },
+  "snapshot_scan": {
+    "schema_version": "xhub.connector.non_message_ingress_gate.v1",
+    "pass": true,
+    "incident_codes": [],
+    "metrics": {
+      "non_message_ingress_policy_coverage": 1,
+      "blocked_event_miss_rate": 0
+    }
+  },
+  "summary": {
+    "non_message_ingress_policy_coverage": 1,
+    "blocked_event_miss_rate": 0
+  }
+}

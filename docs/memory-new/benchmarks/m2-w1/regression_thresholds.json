@@ -1,0 +1,6 @@
+{
+  "recall_drop_max": 0.02,
+  "precision_drop_max": 0.03,
+  "p95_latency_growth_max": 0.5,
+  "adversarial_match_drop_max": 0.01
+}

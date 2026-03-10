@@ -1,0 +1,1436 @@
+syntax = "proto3";
+
+package ax.hub.v1;
+
+// NOTE: This proto is the canonical schema for the Hub Remote Protocol (Draft v1).
+// HTTP/JSON and WebSocket payloads should map 1:1 to these messages where practical.
+//
+// File: protocol/hub_protocol_v1.proto
+// Doc:  protocol/hub_protocol_v1.md
+
+// -------------------- Common --------------------
+
+message ClientIdentity {
+  // Stable IDs used for policy + audit aggregation.
+  string device_id = 1;
+  string user_id = 2;
+  string app_id = 3;
+  string project_id = 4;
+  string session_id = 5;
+}
+
+message Usage {
+  int64 prompt_tokens = 1;
+  int64 completion_tokens = 2;
+  int64 total_tokens = 3;
+  double cost_usd_estimate = 4; // optional
+}
+
+message Error {
+  string code = 1;       // e.g. "grant_required", "quota_exceeded", "kill_switch_active"
+  string message = 2;
+  bool retryable = 3;
+}
+
+// -------------------- Models --------------------
+
+enum ModelKind {
+  MODEL_KIND_UNSPECIFIED = 0;
+  MODEL_KIND_LOCAL_OFFLINE = 1;
+  MODEL_KIND_PAID_ONLINE = 2;
+}
+
+enum ModelVisibility {
+  MODEL_VISIBILITY_UNSPECIFIED = 0;
+  MODEL_VISIBILITY_AVAILABLE = 1;
+  MODEL_VISIBILITY_REQUESTABLE = 2;
+  MODEL_VISIBILITY_DENIED = 3;
+}
+
+message ModelInfo {
+  string model_id = 1;
+  string name = 2;
+  ModelKind kind = 3;
+  string backend = 4;         // "mlx|openai|anthropic|gemini|openai_compatible|..."
+  int32 context_length = 5;   // tokens
+  ModelVisibility visibility = 6;
+  bool requires_grant = 7;
+  int64 updated_at_ms = 8;
+}
+
+message ListModelsRequest {
+  ClientIdentity client = 1;
+}
+
+message ListModelsResponse {
+  int64 updated_at_ms = 1;
+  repeated ModelInfo models = 2;
+}
+
+// -------------------- Grants / Permissions --------------------
+
+enum Capability {
+  CAPABILITY_UNSPECIFIED = 0;
+  CAPABILITY_AI_GENERATE_LOCAL = 1;
+  CAPABILITY_AI_GENERATE_PAID = 2;
+  CAPABILITY_WEB_FETCH = 3;
+}
+
+enum GrantDecisionType {
+  GRANT_DECISION_UNSPECIFIED = 0;
+  GRANT_DECISION_QUEUED = 1;
+  GRANT_DECISION_APPROVED = 2;
+  GRANT_DECISION_DENIED = 3;
+  GRANT_DECISION_REVOKED = 4;
+}
+
+message GrantRequest {
+  string grant_request_id = 1;
+  string request_id = 2; // client idempotency id
+  ClientIdentity client = 3;
+  Capability capability = 4;
+  string model_id = 5; // required for CAPABILITY_AI_GENERATE_PAID
+  string reason = 6;
+  int32 requested_ttl_sec = 7;
+  int64 requested_token_cap = 8;
+  int64 created_at_ms = 9;
+}
+
+message Grant {
+  string grant_id = 1;
+  ClientIdentity client = 2;
+  Capability capability = 3;
+  string model_id = 4;
+  int64 token_cap = 5;
+  int64 token_used = 6;
+  int64 expires_at_ms = 7;
+  string status = 8; // "active|expired|revoked"
+}
+
+message RequestGrantResponse {
+  string grant_request_id = 1;
+  GrantDecisionType decision = 2;
+  Grant grant = 3; // present when approved immediately
+  string deny_reason = 4; // present when denied
+}
+
+message ApproveGrantRequest {
+  string grant_request_id = 1;
+  int32 ttl_sec = 2;       // admin may downscope
+  int64 token_cap = 3;     // admin may downscope
+  string approver_id = 4;
+  string note = 5;
+}
+
+message ApproveGrantResponse {
+  Grant grant = 1;
+}
+
+message DenyGrantRequest {
+  string grant_request_id = 1;
+  string approver_id = 2;
+  string reason = 3;
+}
+
+message DenyGrantResponse {
+  string grant_request_id = 1;
+}
+
+message RevokeGrantRequest {
+  string grant_id = 1;
+  string approver_id = 2;
+  string reason = 3;
+}
+
+message RevokeGrantResponse {
+  string grant_id = 1;
+}
+
+// -------------------- AI Generate (Streaming) --------------------
+
+message ChatMessage {
+  string role = 1;    // "system|user|assistant|tool"
+  string content = 2;
+}
+
+message GenerateRequest {
+  string request_id = 1;
+  ClientIdentity client = 2;
+  string model_id = 3;
+  repeated ChatMessage messages = 4;
+  int32 max_tokens = 5;
+  double temperature = 6;
+  double top_p = 7;
+  bool stream = 8;
+  int64 created_at_ms = 9;
+  // Optional: when present, Hub MAY persist turns and build a token-efficient prompt using Hub memory.
+  string thread_id = 10;
+  int32 working_set_limit = 11;
+}
+
+message GenerateStart {
+  string request_id = 1;
+  string model_id = 2;
+  int64 started_at_ms = 3;
+}
+
+message GenerateDelta {
+  string request_id = 1;
+  int64 seq = 2;
+  string text = 3;
+}
+
+message GenerateDone {
+  string request_id = 1;
+  bool ok = 2;
+  string reason = 3;
+  Usage usage = 4;
+  int64 finished_at_ms = 5;
+}
+
+message GenerateError {
+  string request_id = 1;
+  Error error = 2;
+}
+
+message GenerateEvent {
+  oneof ev {
+    GenerateStart start = 1;
+    GenerateDelta delta = 2;
+    GenerateDone done = 3;
+    GenerateError error = 4;
+  }
+}
+
+message CancelRequest {
+  string request_id = 1;
+  ClientIdentity client = 2;
+  string reason = 3;
+}
+
+message CancelResponse {
+  string request_id = 1;
+  bool ok = 2;
+}
+
+// -------------------- Web Fetch (Streaming optional) --------------------
+
+message FetchRequest {
+  string request_id = 1;
+  ClientIdentity client = 2;
+  string url = 3;
+  string method = 4; // "GET" (MVP)
+  map<string, string> headers = 5;
+  int32 timeout_sec = 6;
+  int32 max_bytes = 7;
+  int64 created_at_ms = 8;
+  bool stream = 9;
+}
+
+message FetchStart {
+  string request_id = 1;
+  string url = 2;
+  int64 started_at_ms = 3;
+}
+
+message FetchChunk {
+  string request_id = 1;
+  int64 seq = 2;
+  bytes data = 3;
+}
+
+message FetchDone {
+  string request_id = 1;
+  bool ok = 2;
+  int32 status = 3;
+  string final_url = 4;
+  string content_type = 5;
+  bool truncated = 6;
+  int64 bytes = 7;
+  string text = 8; // when non-streaming / small payloads
+  int64 finished_at_ms = 9;
+  Error error = 10; // when ok=false
+}
+
+message FetchEvent {
+  oneof ev {
+    FetchStart start = 1;
+    FetchChunk chunk = 2;
+    FetchDone done = 3;
+  }
+}
+
+// -------------------- Hub Push Events --------------------
+
+message ModelsUpdated {
+  int64 updated_at_ms = 1;
+  repeated ModelInfo models = 2; // optional; server may omit for "refetch"
+}
+
+message GrantDecision {
+  string grant_request_id = 1;
+  GrantDecisionType decision = 2;
+  Grant grant = 3;
+  string deny_reason = 4;
+  ClientIdentity client = 5;
+}
+
+message QuotaUpdated {
+  string scope = 1; // e.g. "device:<id>" or "user:<id>"
+  int64 daily_token_cap = 2;
+  int64 daily_token_used = 3;
+  int64 updated_at_ms = 4;
+}
+
+message KillSwitchUpdated {
+  string scope = 1; // "device:<id>|user:<id>|project:<id>"
+  bool models_disabled = 2;
+  bool network_disabled = 3;
+  string reason = 4;
+  int64 updated_at_ms = 5;
+}
+
+message RequestStatus {
+  string request_id = 1;
+  string status = 2; // "running|done|failed|canceled|terminated"
+  int64 updated_at_ms = 3;
+  Error error = 4;
+  ClientIdentity client = 5;
+}
+
+message HubEvent {
+  string event_id = 1;
+  int64 created_at_ms = 2;
+  oneof ev {
+    ModelsUpdated models_updated = 10;
+    GrantDecision grant_decision = 11;
+    QuotaUpdated quota_updated = 12;
+    KillSwitchUpdated kill_switch_updated = 13;
+    RequestStatus request_status = 14;
+  }
+}
+
+message SubscribeRequest {
+  ClientIdentity client = 1;
+  repeated string scopes = 2; // "models|grants|quota|killswitch|requests"
+  string last_event_id = 3;   // resume cursor
+}
+
+// -------------------- Runtime / Scheduler Observability --------------------
+
+message SchedulerScopeInFlight {
+  string scope_key = 1; // e.g. "project:<project_id>" | "device:<device_id>"
+  int32 in_flight = 2;
+}
+
+message SchedulerScopeQueued {
+  string scope_key = 1; // e.g. "project:<project_id>" | "device:<device_id>"
+  int32 queued = 2;
+}
+
+message SchedulerQueueItem {
+  string request_id = 1;
+  string scope_key = 2;
+  int64 enqueued_at_ms = 3;
+  int64 queued_ms = 4;
+}
+
+message PaidAISchedulerStatus {
+  int64 updated_at_ms = 1;
+  int32 global_concurrency = 2;
+  int32 per_project_concurrency = 3;
+  int32 queue_limit = 4;
+  int64 queue_timeout_ms = 5;
+
+  int32 in_flight_total = 6;
+  int32 queue_depth = 7;
+  int64 oldest_queued_ms = 8;
+
+  repeated SchedulerScopeInFlight in_flight_by_scope = 9;
+  repeated SchedulerScopeQueued queued_by_scope = 10;
+  repeated SchedulerQueueItem queue_items = 11; // optional: server MAY truncate
+}
+
+message GetSchedulerStatusRequest {
+  ClientIdentity client = 1;
+  bool include_queue_items = 2;
+  int32 queue_items_limit = 3; // optional, default server-side cap
+}
+
+message GetSchedulerStatusResponse {
+  PaidAISchedulerStatus paid_ai = 1;
+}
+
+message PendingGrantItem {
+  string grant_request_id = 1;
+  string request_id = 2;
+  ClientIdentity client = 3;
+  Capability capability = 4;
+  string model_id = 5;
+  string reason = 6;
+  int32 requested_ttl_sec = 7;
+  int64 requested_token_cap = 8;
+  string status = 9;   // "pending|approved|denied"
+  string decision = 10; // "queued|approved|denied|..."
+  int64 created_at_ms = 11;
+  int64 decided_at_ms = 12;
+}
+
+message GetPendingGrantRequestsRequest {
+  ClientIdentity client = 1;
+  string project_id = 2; // optional filter
+  int32 limit = 3;       // optional, server-side bounded
+}
+
+message GetPendingGrantRequestsResponse {
+  int64 updated_at_ms = 1;
+  repeated PendingGrantItem items = 2;
+}
+
+message ApprovePendingGrantRequestRequest {
+  ClientIdentity client = 1;
+  string grant_request_id = 2;
+  int32 ttl_sec = 3;    // optional; defaults to original requested_ttl_sec
+  int64 token_cap = 4;  // optional; defaults to original requested_token_cap
+  string note = 5;      // optional operator note
+}
+
+message ApprovePendingGrantRequestResponse {
+  string grant_request_id = 1;
+  Grant grant = 2;
+}
+
+message DenyPendingGrantRequestRequest {
+  ClientIdentity client = 1;
+  string grant_request_id = 2;
+  string reason = 3; // optional
+}
+
+message DenyPendingGrantRequestResponse {
+  string grant_request_id = 1;
+}
+
+// -------------------- Audit --------------------
+
+message AuditEvent {
+  string schema_version = 1; // "audit.v1"
+  string event_id = 2;
+  string event_type = 3;    // e.g. "ai.generate.completed"
+  int64 created_at_ms = 4;
+  ClientIdentity actor = 5;
+  string request_id = 6;
+  Capability capability = 7;
+  string model_id = 8;
+  Usage usage = 9;
+  bool network_allowed = 10;
+  bool ok = 11;
+  Error error = 12;
+}
+
+message ListAuditEventsRequest {
+  ClientIdentity client = 1; // admin identity in practice
+  int64 since_ms = 2;
+  int64 until_ms = 3;
+  string device_id = 4;
+  string user_id = 5;
+  string project_id = 6;
+  string request_id = 7;
+}
+
+message ListAuditEventsResponse {
+  repeated AuditEvent events = 1;
+}
+
+// -------------------- Memory (Hub-side) --------------------
+
+// Thread is the unit of "conversation continuity" on Hub.
+// In family mode this can map to (device_id, app_id, project_id).
+message ThreadInfo {
+  string thread_id = 1;
+  ClientIdentity client = 2;
+  string thread_key = 3; // optional client-provided key (e.g. "default")
+  int64 created_at_ms = 4;
+  int64 updated_at_ms = 5;
+}
+
+message GetOrCreateThreadRequest {
+  ClientIdentity client = 1;
+  string thread_key = 2; // optional; default "default"
+}
+
+message GetOrCreateThreadResponse {
+  ThreadInfo thread = 1;
+}
+
+message AppendTurnsRequest {
+  string request_id = 1;
+  ClientIdentity client = 2;
+  string thread_id = 3;
+  repeated ChatMessage messages = 4;
+  int64 created_at_ms = 5;
+  // If false (recommended), Hub MUST drop/redact any content marked as private (e.g. <private>..</private>).
+  bool allow_private = 6;
+}
+
+message AppendTurnsResponse {
+  string thread_id = 1;
+  int64 appended = 2;
+}
+
+message GetWorkingSetRequest {
+  ClientIdentity client = 1;
+  string thread_id = 2;
+  int32 limit = 3; // number of most recent messages
+}
+
+message GetWorkingSetResponse {
+  string thread_id = 1;
+  repeated ChatMessage messages = 2; // chronological
+}
+
+message CanonicalMemoryItem {
+  string item_id = 1;
+  string scope = 2;   // "device|user|project|thread"
+  string thread_id = 3;
+  string key = 4;
+  string value = 5;
+  bool pinned = 6;
+  int64 updated_at_ms = 7;
+}
+
+message UpsertCanonicalMemoryRequest {
+  ClientIdentity client = 1;
+  string scope = 2;   // "device|user|project|thread"
+  string thread_id = 3;
+  string key = 4;
+  string value = 5;
+  bool pinned = 6;
+}
+
+message UpsertCanonicalMemoryResponse {
+  CanonicalMemoryItem item = 1;
+}
+
+message ListCanonicalMemoryRequest {
+  ClientIdentity client = 1;
+  string scope = 2;   // optional filter
+  string thread_id = 3; // optional filter
+  int32 limit = 4;
+}
+
+message ListCanonicalMemoryResponse {
+  repeated CanonicalMemoryItem items = 1;
+}
+
+message ProjectLineageNode {
+  string root_project_id = 1;
+  string parent_project_id = 2; // empty when this node is the root
+  string project_id = 3;
+  string lineage_path = 4; // canonical path, e.g. "root/child/subchild"
+  string parent_task_id = 5;
+  int32 split_round = 6;
+  string split_reason = 7;
+  int32 child_index = 8;
+  string status = 9; // active|archived
+  int64 created_at_ms = 10;
+  int64 updated_at_ms = 11;
+}
+
+message UpsertProjectLineageRequest {
+  string request_id = 1; // idempotency key
+  ClientIdentity client = 2;
+  ProjectLineageNode lineage = 3;
+  string expected_root_project_id = 4; // optional optimistic guard
+}
+
+message UpsertProjectLineageResponse {
+  bool accepted = 1;
+  bool created = 2;
+  string deny_code = 3; // lineage_cycle_detected|lineage_parent_missing|lineage_root_mismatch|parent_inactive
+  ProjectLineageNode lineage = 4;
+}
+
+message GetProjectLineageTreeRequest {
+  ClientIdentity client = 1;
+  string root_project_id = 2; // required
+  string project_id = 3; // optional subtree root
+  int32 max_depth = 4; // optional depth cap; <=0 means server default
+  bool include_archived = 5;
+}
+
+message GetProjectLineageTreeResponse {
+  string root_project_id = 1;
+  repeated ProjectLineageNode nodes = 2;
+  int64 generated_at_ms = 3;
+}
+
+message ProjectDispatchContext {
+  string root_project_id = 1;
+  string parent_project_id = 2;
+  string project_id = 3;
+  string assigned_agent_profile = 4;
+  string parallel_lane_id = 5;
+  string budget_class = 6;
+  int32 queue_priority = 7;
+  repeated string expected_artifacts = 8;
+  int64 attached_at_ms = 9;
+  string attach_source = 10; // x_terminal|scheduler|manual
+}
+
+message AttachDispatchContextRequest {
+  string request_id = 1; // idempotency key
+  ClientIdentity client = 2;
+  ProjectDispatchContext dispatch = 3;
+}
+
+message AttachDispatchContextResponse {
+  bool attached = 1;
+  string deny_code = 2;
+  ProjectDispatchContext dispatch = 3;
+}
+
+message ProjectHeartbeatState {
+  string root_project_id = 1;
+  string parent_project_id = 2;
+  string project_id = 3;
+  int32 lineage_depth = 4;
+  int32 queue_depth = 5;
+  int64 oldest_wait_ms = 6;
+  repeated string blocked_reason = 7;
+  repeated string next_actions = 8;
+  string risk_tier = 9; // low|medium|high|critical
+  int64 heartbeat_seq = 10;
+  int64 sent_at_ms = 11;
+  int64 received_at_ms = 12;
+  int64 expires_at_ms = 13;
+  bool conservative_only = 14;
+}
+
+message ProjectHeartbeatRequest {
+  string request_id = 1; // idempotency key
+  ClientIdentity client = 2;
+  ProjectHeartbeatState heartbeat = 3;
+}
+
+message ProjectHeartbeatResponse {
+  bool accepted = 1;
+  bool created = 2;
+  string deny_code = 3;
+  ProjectHeartbeatState heartbeat = 4;
+}
+
+message DispatchPlanItem {
+  string root_project_id = 1;
+  string parent_project_id = 2;
+  string project_id = 3;
+  double priority_score = 4;
+  repeated string prewarm_targets = 5;
+  string batch_id = 6;
+  string fairness_bucket = 7;
+  int32 lineage_priority_boost = 8;
+  string split_group_id = 9;
+  string risk_tier = 10;
+  bool conservative_only = 11;
+  int32 queue_depth = 12;
+  int64 oldest_wait_ms = 13;
+}
+
+message GetDispatchPlanRequest {
+  string request_id = 1;
+  ClientIdentity client = 2;
+  string root_project_id = 3;
+  int32 max_projects = 4;
+}
+
+message GetDispatchPlanResponse {
+  bool planned = 1;
+  string deny_code = 2;
+  string batch_id = 3;
+  int64 generated_at_ms = 4;
+  bool conservative_mode = 5;
+  repeated DispatchPlanItem items = 6;
+}
+
+message RiskTuningProfile {
+  string profile_id = 1;
+  string profile_label = 2;
+  double vector_weight = 3;
+  double text_weight = 4;
+  double recency_weight = 5;
+  double risk_weight = 6;
+  double risk_penalty_low = 7;
+  double risk_penalty_medium = 8;
+  double risk_penalty_high = 9;
+  double recall_floor = 10;
+  double latency_ceiling_ratio = 11;
+  double block_precision_floor = 12;
+  double max_recall_drop = 13;
+  double max_latency_ratio_increase = 14;
+  double max_block_precision_drop = 15;
+  double max_online_offline_drift = 16;
+  int64 created_at_ms = 17;
+  int64 updated_at_ms = 18;
+}
+
+message RiskTuningMetrics {
+  double recall = 1;
+  double p95_latency_ratio = 2;
+  double block_precision = 3;
+  double mean_final_score = 4;
+}
+
+message GetRiskTuningProfileRequest {
+  ClientIdentity client = 1;
+  string profile_id = 2; // optional; defaults to active profile
+}
+
+message GetRiskTuningProfileResponse {
+  string active_profile_id = 1;
+  string stable_profile_id = 2;
+  RiskTuningProfile profile = 3;
+  string latest_evaluation_id = 4;
+  string latest_evaluation_decision = 5;
+  string latest_deny_code = 6;
+}
+
+message EvaluateRiskTuningProfileRequest {
+  string request_id = 1; // idempotency key
+  ClientIdentity client = 2;
+  RiskTuningProfile profile = 3;
+  RiskTuningMetrics baseline_metrics = 4;
+  RiskTuningMetrics holdout_metrics = 5;
+  RiskTuningMetrics online_metrics = 6;
+  RiskTuningMetrics offline_metrics = 7;
+  bool auto_rollback_on_violation = 8;
+}
+
+message EvaluateRiskTuningProfileResponse {
+  string evaluation_id = 1;
+  string profile_id = 2;
+  bool accepted = 3;
+  bool holdout_passed = 4;
+  bool rollback_triggered = 5;
+  string rollback_to_profile_id = 6;
+  string deny_code = 7;
+  string decision = 8;
+}
+
+message PromoteRiskTuningProfileRequest {
+  string request_id = 1; // idempotency key
+  ClientIdentity client = 2;
+  string profile_id = 3;
+  bool rollback_on_violation = 4;
+  string expected_active_profile_id = 5; // optional optimistic guard
+}
+
+message PromoteRiskTuningProfileResponse {
+  bool promoted = 1;
+  bool rollback_triggered = 2;
+  string active_profile_id = 3;
+  string previous_active_profile_id = 4;
+  string deny_code = 5;
+}
+
+message VoiceGrantChallenge {
+  string challenge_id = 1;
+  string template_id = 2;
+  string action_digest = 3;
+  string scope_digest = 4;
+  string amount_digest = 5;
+  string challenge_code = 6;
+  string risk_level = 7; // low|medium|high
+  bool requires_mobile_confirm = 8;
+  bool allow_voice_only = 9;
+  string bound_device_id = 10;
+  string mobile_terminal_id = 11;
+  int64 issued_at_ms = 12;
+  int64 expires_at_ms = 13;
+}
+
+message IssueVoiceGrantChallengeRequest {
+  string request_id = 1; // idempotency key
+  ClientIdentity client = 2;
+  string template_id = 3;
+  string action_digest = 4;
+  string scope_digest = 5;
+  string amount_digest = 6;
+  string challenge_code = 7; // optional; server may auto-generate
+  string risk_level = 8; // low|medium|high
+  string bound_device_id = 9;
+  string mobile_terminal_id = 10;
+  bool allow_voice_only = 11;
+  bool requires_mobile_confirm = 12;
+  int64 ttl_ms = 13; // bounded by server policy
+}
+
+message IssueVoiceGrantChallengeResponse {
+  VoiceGrantChallenge challenge = 1;
+}
+
+message VerifyVoiceGrantResponseRequest {
+  string request_id = 1; // idempotency key
+  ClientIdentity client = 2;
+  string challenge_id = 3;
+  string challenge_code = 4;
+  string transcript = 5; // never persisted; server stores transcript_hash only
+  string transcript_hash = 6; // optional when transcript omitted
+  double semantic_match_score = 7;
+  string parsed_action_digest = 8;
+  string parsed_scope_digest = 9;
+  string parsed_amount_digest = 10;
+  string verify_nonce = 11;
+  string bound_device_id = 12;
+  bool mobile_confirmed = 13;
+}
+
+message VerifyVoiceGrantResponseResponse {
+  bool verified = 1;
+  string decision = 2; // allow|deny
+  string deny_code = 3;
+  string challenge_id = 4;
+  string transcript_hash = 5;
+  double semantic_match_score = 6;
+  bool challenge_match = 7;
+  bool device_binding_ok = 8;
+  bool mobile_confirmed = 9;
+}
+
+message AgentCapsule {
+  string capsule_id = 1;
+  string agent_name = 2;
+  string agent_version = 3;
+  string platform = 4;
+  string sha256 = 5;
+  string signature = 6;
+  string sbom_hash = 7;
+  repeated string allowed_egress = 8;
+  string risk_profile = 9;
+  string status = 10; // registered|verified|active|denied
+  string deny_code = 11;
+  string verification_report_ref = 12;
+  int64 active_generation = 13;
+  int64 verified_at_ms = 14;
+  int64 activated_at_ms = 15;
+  int64 created_at_ms = 16;
+  int64 updated_at_ms = 17;
+}
+
+message RegisterAgentCapsuleRequest {
+  string request_id = 1; // idempotency key
+  ClientIdentity client = 2;
+  string capsule_id = 3;
+  string agent_name = 4;
+  string agent_version = 5;
+  string platform = 6;
+  string sha256 = 7;
+  string signature = 8;
+  string sbom_hash = 9;
+  repeated string allowed_egress = 10;
+  string risk_profile = 11;
+  string manifest_payload = 12;
+  string sbom_payload = 13;
+}
+
+message RegisterAgentCapsuleResponse {
+  bool registered = 1;
+  bool created = 2;
+  string deny_code = 3; // invalid_request|permission_denied|capsule_conflict|runtime_error
+  AgentCapsule capsule = 4;
+}
+
+message VerifyAgentCapsuleRequest {
+  string request_id = 1; // idempotency key
+  ClientIdentity client = 2;
+  string capsule_id = 3;
+}
+
+message VerifyAgentCapsuleResponse {
+  bool verified = 1;
+  string deny_code = 2; // invalid_request|capsule_not_found|hash_mismatch|signature_invalid|sbom_invalid|egress_policy_violation|state_corrupt|runtime_error
+  string verification_report_ref = 3;
+  int64 active_generation = 4;
+  AgentCapsule capsule = 5;
+}
+
+message ActivateAgentCapsuleRequest {
+  string request_id = 1; // idempotency key
+  ClientIdentity client = 2;
+  string capsule_id = 3;
+}
+
+message ActivateAgentCapsuleResponse {
+  bool activated = 1;
+  bool idempotent = 2;
+  string deny_code = 3; // invalid_request|capsule_not_found|state_corrupt|runtime_error
+  AgentCapsule capsule = 4;
+  int64 active_generation = 5;
+  int64 previous_active_generation = 6;
+  string previous_active_capsule_id = 7;
+}
+
+message AgentSessionOpenRequest {
+  string request_id = 1; // idempotency key
+  ClientIdentity client = 2;
+  string agent_instance_id = 3;
+  string agent_name = 4;
+  string agent_version = 5;
+  string gateway_provider = 6; // codex|claude|gemini|...
+}
+
+message AgentSessionOpenResponse {
+  bool opened = 1;
+  bool created = 2;
+  string session_id = 3;
+  string deny_code = 4; // invalid_request|runtime_error|...
+  int64 opened_at_ms = 5;
+}
+
+message AgentToolRequestRequest {
+  string request_id = 1; // idempotency key
+  ClientIdentity client = 2;
+  string session_id = 3;
+  string agent_instance_id = 4;
+  string tool_name = 5;
+  string tool_args_hash = 6;
+  string risk_tier = 7; // caller hint: low|medium|high|critical; hub applies risk floor by tool/scope
+  string required_grant_scope = 8;
+  repeated string exec_argv = 9; // exact argv binding (approval identity)
+  string exec_cwd = 10; // absolute cwd path; hub resolves canonical realpath for binding
+}
+
+message AgentToolRequestResponse {
+  bool accepted = 1;
+  string tool_request_id = 2;
+  string risk_tier = 3; // normalized risk tier after hub risk floor (max(caller_hint, hub_inferred))
+  string decision = 4; // pending|approve|deny|downgrade
+  string grant_id = 5;
+  string deny_code = 6; // invalid_request|session_not_found|request_tampered|grant_pending|gateway_fail_closed|policy_denied|downgrade_to_local|approval_binding_invalid|approval_cwd_invalid|runtime_error
+  int64 expires_at_ms = 7;
+}
+
+message AgentToolGrantDecisionRequest {
+  string request_id = 1; // idempotency key
+  ClientIdentity client = 2;
+  string session_id = 3;
+  string tool_request_id = 4;
+  string decision = 5; // approve|deny|downgrade
+  int64 ttl_ms = 6; // optional for approve path
+  string approver_id = 7;
+  string note = 8;
+  string deny_code = 9; // optional override for deny/downgrade
+}
+
+message AgentToolGrantDecisionResponse {
+  bool applied = 1;
+  bool idempotent = 2;
+  string tool_request_id = 3;
+  string decision = 4;
+  string grant_id = 5;
+  string deny_code = 6; // invalid_request|tool_request_not_found|policy_denied|downgrade_to_local|approval_binding_missing|runtime_error
+  int64 expires_at_ms = 7;
+}
+
+message AgentToolExecuteRequest {
+  string request_id = 1; // idempotency key (strict replay: tool_request_id/tool_name/tool_args_hash/exec_argv/exec_cwd/grant_id must stay identical, else request_tampered)
+  ClientIdentity client = 2;
+  string session_id = 3;
+  string tool_request_id = 4;
+  string tool_name = 5;
+  string tool_args_hash = 6;
+  string grant_id = 7;
+  repeated string exec_argv = 8; // exact argv provided by runtime before execute
+  string exec_cwd = 9; // runtime absolute cwd path (canonicalized and re-checked)
+}
+
+message AgentToolExecuteResponse {
+  bool executed = 1;
+  bool idempotent = 2;
+  string execution_id = 3;
+  string deny_code = 4; // invalid_request|tool_request_not_found|grant_missing|grant_expired|request_tampered|policy_denied|downgrade_to_local|approval_binding_invalid|approval_binding_missing|approval_binding_corrupt|approval_argv_mismatch|approval_cwd_invalid|approval_cwd_mismatch|approval_identity_mismatch|runtime_error
+  string result_json = 5;
+  int64 executed_at_ms = 6;
+}
+
+message PaymentIntent {
+  string intent_id = 1;
+  string request_id = 2;
+  ClientIdentity client = 3;
+  string status = 4; // prepared|evidence_verified|pending_user_auth|authorized|committed|aborted|expired
+  int64 amount_minor = 5;
+  string currency = 6;
+  string merchant_id = 7;
+  string source_terminal_id = 8;
+  string allowed_mobile_terminal_id = 9;
+  string challenge_id = 10;
+  int64 created_at_ms = 11;
+  int64 updated_at_ms = 12;
+  int64 expires_at_ms = 13;
+  int64 challenge_expires_at_ms = 14;
+  int64 evidence_verified_at_ms = 15;
+  int64 authorized_at_ms = 16;
+  int64 committed_at_ms = 17;
+  int64 aborted_at_ms = 18;
+  int64 expired_at_ms = 19;
+  string commit_txn_id = 20;
+  string deny_code = 21;
+  string receipt_delivery_state = 22; // prepared|committed|undo_pending|compensated
+  int64 receipt_commit_deadline_at_ms = 23;
+  int64 receipt_compensation_due_at_ms = 24;
+  int64 receipt_compensated_at_ms = 25;
+  string receipt_compensation_reason = 26;
+}
+
+message PaymentEvidence {
+  string photo_hash = 1;
+  int64 price_amount_minor = 2;
+  string currency = 3;
+  string merchant_id = 4;
+  string geo_hash = 5;
+  string qr_payload_hash = 6;
+  string nonce = 7;
+  int64 captured_at_ms = 8;
+  string device_signature = 9;
+}
+
+message CreatePaymentIntentRequest {
+  string request_id = 1; // idempotency key
+  ClientIdentity client = 2;
+  int64 amount_minor = 3;
+  string currency = 4;
+  string merchant_id = 5;
+  string source_terminal_id = 6;
+  string allowed_mobile_terminal_id = 7;
+  string expected_photo_hash = 8;
+  string expected_geo_hash = 9;
+  string expected_qr_payload_hash = 10;
+  int64 ttl_ms = 11;
+  int64 challenge_ttl_ms = 12;
+  int64 created_at_ms = 13;
+}
+
+message CreatePaymentIntentResponse {
+  bool accepted = 1;
+  bool created = 2;
+  string deny_code = 3;
+  PaymentIntent intent = 4;
+}
+
+message AttachPaymentEvidenceRequest {
+  string request_id = 1; // idempotency key
+  ClientIdentity client = 2;
+  string intent_id = 3;
+  PaymentEvidence evidence = 4;
+}
+
+message AttachPaymentEvidenceResponse {
+  bool accepted = 1;
+  string deny_code = 2;
+  PaymentIntent intent = 3;
+}
+
+message IssuePaymentChallengeRequest {
+  string request_id = 1; // idempotency key
+  ClientIdentity client = 2;
+  string intent_id = 3;
+  string mobile_terminal_id = 4;
+  string challenge_nonce = 5;
+  int64 issued_at_ms = 6;
+}
+
+message IssuePaymentChallengeResponse {
+  bool issued = 1;
+  string deny_code = 2;
+  string challenge_id = 3;
+  string challenge_nonce = 4;
+  int64 expires_at_ms = 5;
+  PaymentIntent intent = 6;
+}
+
+message ConfirmPaymentIntentRequest {
+  string request_id = 1; // idempotency key
+  ClientIdentity client = 2;
+  string intent_id = 3;
+  string challenge_id = 4;
+  string mobile_terminal_id = 5;
+  string auth_factor = 6; // voice+tap|tap_only
+  string confirm_nonce = 7;
+  int64 confirmed_at_ms = 8;
+}
+
+message ConfirmPaymentIntentResponse {
+  bool committed = 1;
+  bool idempotent = 2;
+  string deny_code = 3;
+  PaymentIntent intent = 4;
+}
+
+message AbortPaymentIntentRequest {
+  string request_id = 1; // idempotency key
+  ClientIdentity client = 2;
+  string intent_id = 3;
+  string reason = 4;
+  int64 aborted_at_ms = 5;
+}
+
+message AbortPaymentIntentResponse {
+  bool aborted = 1;
+  bool idempotent = 2;
+  string deny_code = 3;
+  PaymentIntent intent = 4;
+  bool compensation_pending = 5; // committed intent enters undo_pending and is compensated asynchronously
+}
+
+message LongtermMarkdownExportRequest {
+  ClientIdentity client = 1;
+  string scope = 2;   // optional filter: "device|user|project|thread"
+  string thread_id = 3; // required when scope=thread
+  int32 limit = 4;    // max projected entries
+  bool remote_mode = 5; // apply remote-export sensitivity routing semantics
+  repeated string allowed_sensitivity = 6; // optional: public|internal|secret
+  bool allow_untrusted = 7; // optional; default false
+  string expected_version = 8; // optional optimistic check
+}
+
+message LongtermMarkdownExportResponse {
+  string doc_id = 1;
+  string version = 2;
+  string markdown = 3;
+  repeated string provenance_refs = 4;
+  int64 exported_at_ms = 5;
+  bool truncated = 6;
+  int32 total_items = 7;
+  int32 included_items = 8;
+  repeated string applied_sensitivity = 9;
+}
+
+message LongtermMarkdownBeginEditRequest {
+  ClientIdentity client = 1;
+  string scope = 2;   // optional filter: "device|user|project|thread"
+  string thread_id = 3; // required when scope=thread
+  int32 limit = 4;    // max projected entries
+  bool remote_mode = 5; // apply remote-export sensitivity routing semantics
+  repeated string allowed_sensitivity = 6; // optional: public|internal|secret
+  bool allow_untrusted = 7; // optional; default false
+  int64 ttl_ms = 8; // optional edit session ttl (bounded by server policy)
+}
+
+message LongtermMarkdownBeginEditResponse {
+  string edit_session_id = 1;
+  string doc_id = 2;
+  string base_version = 3;
+  string working_version = 4;
+  int64 session_revision = 5;
+  string markdown = 6;
+  repeated string provenance_refs = 7;
+  int64 created_at_ms = 8;
+  int64 updated_at_ms = 9;
+  int64 expires_at_ms = 10;
+  int32 max_patch_chars = 11;
+  int32 max_patch_lines = 12;
+  int64 max_edit_ttl_ms = 13;
+}
+
+message LongtermMarkdownApplyPatchRequest {
+  ClientIdentity client = 1;
+  string edit_session_id = 2;
+  string base_version = 3;
+  int64 session_revision = 4;
+  string patch_mode = 5; // v1 supports: replace
+  string patch_markdown = 6; // v1 replace payload
+  string patch_note = 7; // optional
+}
+
+message LongtermMarkdownApplyPatchResponse {
+  string edit_session_id = 1;
+  string doc_id = 2;
+  string base_version = 3;
+  string working_version = 4;
+  int64 session_revision = 5;
+  string pending_change_id = 6;
+  string status = 7; // draft|reviewed|approved|written|rejected|rolled_back
+  string patch_mode = 8;
+  int32 patch_size_chars = 9;
+  int32 patch_line_count = 10;
+  int64 updated_at_ms = 11;
+  int64 expires_at_ms = 12;
+  string markdown = 13;
+}
+
+message LongtermMarkdownReviewRequest {
+  ClientIdentity client = 1;
+  string pending_change_id = 2;
+  string expected_status = 3; // optional optimistic check
+  string review_decision = 4; // review|approve|reject
+  string on_secret = 5; // deny|sanitize
+  string review_note = 6; // optional
+}
+
+message LongtermMarkdownReviewResponse {
+  string pending_change_id = 1;
+  string edit_session_id = 2;
+  string doc_id = 3;
+  string status = 4;
+  string review_decision = 5;
+  string policy_decision = 6;
+  string findings_json = 7;
+  int32 redacted_count = 8;
+  int64 reviewed_at_ms = 9;
+  int64 approved_at_ms = 10;
+  string markdown = 11;
+  bool auto_rejected = 12;
+}
+
+message LongtermMarkdownWritebackRequest {
+  ClientIdentity client = 1;
+  string pending_change_id = 2;
+  string expected_status = 3; // default approved
+  string writeback_note = 4; // optional
+}
+
+message LongtermMarkdownWritebackResponse {
+  string pending_change_id = 1;
+  string status = 2;
+  string candidate_id = 3;
+  string queue_status = 4;
+  int64 written_at_ms = 5;
+  string doc_id = 6;
+  string source_version = 7;
+  string change_log_id = 8;
+  string evidence_ref = 9;
+}
+
+message LongtermMarkdownRollbackRequest {
+  ClientIdentity client = 1;
+  string pending_change_id = 2;
+  string expected_status = 3; // default written
+  string rollback_note = 4; // optional
+}
+
+message LongtermMarkdownRollbackResponse {
+  string pending_change_id = 1;
+  string status = 2;
+  string rolled_back_candidate_id = 3;
+  string restored_candidate_id = 4;
+  int64 rolled_back_at_ms = 5;
+  string doc_id = 6;
+  string restored_source_version = 7;
+  string change_log_id = 8;
+  string evidence_ref = 9;
+}
+
+// -------------------- Skills (v1) --------------------
+
+enum SkillPinScope {
+  SKILL_PIN_SCOPE_UNSPECIFIED = 0;
+  SKILL_PIN_SCOPE_MEMORY_CORE = 1;
+  SKILL_PIN_SCOPE_GLOBAL = 2;
+  SKILL_PIN_SCOPE_PROJECT = 3;
+}
+
+message SkillMeta {
+  string skill_id = 1;
+  string name = 2;
+  string version = 3;
+  string description = 4;
+  string publisher_id = 5;
+  repeated string capabilities_required = 6;
+  string source_id = 7;
+  // When present, this skill/version is already uploaded to the Hub store.
+  string package_sha256 = 8;
+  // Human-friendly hint for how to install/import this skill.
+  string install_hint = 9;
+}
+
+message SkillsSearchRequest {
+  ClientIdentity client = 1;
+  string query = 2;
+  string source_filter = 3; // optional
+  int32 limit = 4;
+}
+
+message SkillsSearchResponse {
+  int64 updated_at_ms = 1;
+  repeated SkillMeta results = 2;
+}
+
+message UploadSkillPackageRequest {
+  ClientIdentity client = 1;
+  string request_id = 2; // idempotency (optional)
+  string source_id = 3;  // optional; defaults to "local"
+  bytes package_bytes = 4; // tgz/zip bytes (Hub treats as opaque; runner validates manifest/files)
+  string manifest_json = 5; // required (skill.json content)
+  int64 created_at_ms = 6;
+}
+
+message UploadSkillPackageResponse {
+  string package_sha256 = 1;
+  bool already_present = 2;
+  SkillMeta skill = 3;
+}
+
+message SetSkillPinRequest {
+  ClientIdentity client = 1;
+  string request_id = 2; // idempotency (optional)
+  SkillPinScope scope = 3; // global|project (memory_core reserved)
+  string skill_id = 4;
+  string package_sha256 = 5;
+  string note = 6;
+  int64 created_at_ms = 7;
+}
+
+message SetSkillPinResponse {
+  SkillPinScope scope = 1;
+  string user_id = 2;
+  string project_id = 3;
+  string skill_id = 4;
+  string package_sha256 = 5;
+  string previous_package_sha256 = 6;
+  int64 updated_at_ms = 7;
+}
+
+message ResolvedSkill {
+  SkillPinScope scope = 1;
+  SkillMeta skill = 2;
+}
+
+message ListResolvedSkillsRequest {
+  ClientIdentity client = 1;
+}
+
+message ListResolvedSkillsResponse {
+  repeated ResolvedSkill skills = 1;
+}
+
+message GetSkillManifestRequest {
+  ClientIdentity client = 1;
+  string package_sha256 = 2;
+}
+
+message GetSkillManifestResponse {
+  string package_sha256 = 1;
+  string manifest_json = 2;
+}
+
+message DownloadSkillPackageRequest {
+  ClientIdentity client = 1;
+  string package_sha256 = 2;
+}
+
+message SkillPackageChunk {
+  string package_sha256 = 1;
+  int64 seq = 2;
+  bytes data = 3;
+  bool eof = 4;
+}
+
+// -------------------- Admin / Policy (MVP) --------------------
+
+message SetKillSwitchRequest {
+  string request_id = 1; // idempotency
+  ClientIdentity admin = 2;
+  string scope = 3; // "device:<id>|user:<id>|project:<id>|global:*"
+  bool models_disabled = 4;
+  bool network_disabled = 5;
+  string reason = 6;
+  int64 created_at_ms = 7;
+}
+
+message SetKillSwitchResponse {
+  KillSwitchUpdated kill_switch = 1;
+}
+
+message GetKillSwitchRequest {
+  ClientIdentity admin = 1;
+  string scope = 2;
+}
+
+message GetKillSwitchResponse {
+  KillSwitchUpdated kill_switch = 1;
+}
+
+// -------------------- Services --------------------
+
+service HubModels {
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
+}
+
+service HubGrants {
+  rpc RequestGrant(GrantRequest) returns (RequestGrantResponse);
+  rpc ApproveGrant(ApproveGrantRequest) returns (ApproveGrantResponse);
+  rpc DenyGrant(DenyGrantRequest) returns (DenyGrantResponse);
+  rpc RevokeGrant(RevokeGrantRequest) returns (RevokeGrantResponse);
+}
+
+service HubAI {
+  rpc Generate(GenerateRequest) returns (stream GenerateEvent);
+  rpc Cancel(CancelRequest) returns (CancelResponse);
+}
+
+service HubWeb {
+  rpc Fetch(FetchRequest) returns (stream FetchEvent);
+}
+
+service HubEvents {
+  rpc Subscribe(SubscribeRequest) returns (stream HubEvent);
+}
+
+service HubRuntime {
+  rpc GetSchedulerStatus(GetSchedulerStatusRequest) returns (GetSchedulerStatusResponse);
+  rpc GetPendingGrantRequests(GetPendingGrantRequestsRequest) returns (GetPendingGrantRequestsResponse);
+  rpc ApprovePendingGrantRequest(ApprovePendingGrantRequestRequest) returns (ApprovePendingGrantRequestResponse);
+  rpc DenyPendingGrantRequest(DenyPendingGrantRequestRequest) returns (DenyPendingGrantRequestResponse);
+}
+
+service HubAudit {
+  rpc ListAuditEvents(ListAuditEventsRequest) returns (ListAuditEventsResponse);
+}
+
+service HubMemory {
+  rpc GetOrCreateThread(GetOrCreateThreadRequest) returns (GetOrCreateThreadResponse);
+  rpc AppendTurns(AppendTurnsRequest) returns (AppendTurnsResponse);
+  rpc GetWorkingSet(GetWorkingSetRequest) returns (GetWorkingSetResponse);
+  rpc UpsertCanonicalMemory(UpsertCanonicalMemoryRequest) returns (UpsertCanonicalMemoryResponse);
+  rpc ListCanonicalMemory(ListCanonicalMemoryRequest) returns (ListCanonicalMemoryResponse);
+  rpc UpsertProjectLineage(UpsertProjectLineageRequest) returns (UpsertProjectLineageResponse);
+  rpc GetProjectLineageTree(GetProjectLineageTreeRequest) returns (GetProjectLineageTreeResponse);
+  rpc AttachDispatchContext(AttachDispatchContextRequest) returns (AttachDispatchContextResponse);
+  rpc ProjectHeartbeat(ProjectHeartbeatRequest) returns (ProjectHeartbeatResponse);
+  rpc GetDispatchPlan(GetDispatchPlanRequest) returns (GetDispatchPlanResponse);
+  rpc GetRiskTuningProfile(GetRiskTuningProfileRequest) returns (GetRiskTuningProfileResponse);
+  rpc EvaluateRiskTuningProfile(EvaluateRiskTuningProfileRequest) returns (EvaluateRiskTuningProfileResponse);
+  rpc PromoteRiskTuningProfile(PromoteRiskTuningProfileRequest) returns (PromoteRiskTuningProfileResponse);
+  rpc IssueVoiceGrantChallenge(IssueVoiceGrantChallengeRequest) returns (IssueVoiceGrantChallengeResponse);
+  rpc VerifyVoiceGrantResponse(VerifyVoiceGrantResponseRequest) returns (VerifyVoiceGrantResponseResponse);
+  rpc RegisterAgentCapsule(RegisterAgentCapsuleRequest) returns (RegisterAgentCapsuleResponse);
+  rpc VerifyAgentCapsule(VerifyAgentCapsuleRequest) returns (VerifyAgentCapsuleResponse);
+  rpc ActivateAgentCapsule(ActivateAgentCapsuleRequest) returns (ActivateAgentCapsuleResponse);
+  rpc AgentSessionOpen(AgentSessionOpenRequest) returns (AgentSessionOpenResponse);
+  rpc AgentToolRequest(AgentToolRequestRequest) returns (AgentToolRequestResponse);
+  rpc AgentToolGrantDecision(AgentToolGrantDecisionRequest) returns (AgentToolGrantDecisionResponse);
+  rpc AgentToolExecute(AgentToolExecuteRequest) returns (AgentToolExecuteResponse);
+  rpc CreatePaymentIntent(CreatePaymentIntentRequest) returns (CreatePaymentIntentResponse);
+  rpc AttachPaymentEvidence(AttachPaymentEvidenceRequest) returns (AttachPaymentEvidenceResponse);
+  rpc IssuePaymentChallenge(IssuePaymentChallengeRequest) returns (IssuePaymentChallengeResponse);
+  rpc ConfirmPaymentIntent(ConfirmPaymentIntentRequest) returns (ConfirmPaymentIntentResponse);
+  rpc AbortPaymentIntent(AbortPaymentIntentRequest) returns (AbortPaymentIntentResponse);
+  rpc LongtermMarkdownExport(LongtermMarkdownExportRequest) returns (LongtermMarkdownExportResponse);
+  rpc LongtermMarkdownBeginEdit(LongtermMarkdownBeginEditRequest) returns (LongtermMarkdownBeginEditResponse);
+  rpc LongtermMarkdownApplyPatch(LongtermMarkdownApplyPatchRequest) returns (LongtermMarkdownApplyPatchResponse);
+  rpc LongtermMarkdownReview(LongtermMarkdownReviewRequest) returns (LongtermMarkdownReviewResponse);
+  rpc LongtermMarkdownWriteback(LongtermMarkdownWritebackRequest) returns (LongtermMarkdownWritebackResponse);
+  rpc LongtermMarkdownRollback(LongtermMarkdownRollbackRequest) returns (LongtermMarkdownRollbackResponse);
+}
+
+service HubSkills {
+  rpc SearchSkills(SkillsSearchRequest) returns (SkillsSearchResponse);
+  rpc UploadSkillPackage(UploadSkillPackageRequest) returns (UploadSkillPackageResponse);
+  rpc SetSkillPin(SetSkillPinRequest) returns (SetSkillPinResponse);
+  rpc ListResolvedSkills(ListResolvedSkillsRequest) returns (ListResolvedSkillsResponse);
+  rpc GetSkillManifest(GetSkillManifestRequest) returns (GetSkillManifestResponse);
+  rpc DownloadSkillPackage(DownloadSkillPackageRequest) returns (stream SkillPackageChunk);
+}
+
+service HubAdmin {
+  rpc SetKillSwitch(SetKillSwitchRequest) returns (SetKillSwitchResponse);
+  rpc GetKillSwitch(GetKillSwitchRequest) returns (GetKillSwitchResponse);
+}

@@ -1,0 +1,634 @@
+{
+  "schema_version": "xterminal.skills_xt_l1_contract_fixture.v1",
+  "generated_at": "2026-03-01T20:40:00Z",
+  "contract": {
+    "schema": "xterminal.skills_xt_l1_contract.v1",
+    "version": "1",
+    "lane_owner": "XT-L1",
+    "work_order_ids": [
+      "SKC-W1-02",
+      "SKC-W2-05",
+      "SKC-W4-11"
+    ],
+    "required_chain": [
+      "ingress",
+      "risk_classify",
+      "policy",
+      "grant",
+      "execute",
+      "audit"
+    ],
+    "kpi_thresholds": {
+      "import_to_first_run_p95_ms": 12000,
+      "skill_first_run_success_rate": 0.95,
+      "preflight_false_positive_rate": 0.03
+    },
+    "feature_flags": [
+      "XT_SKILLS_IMPORT_UI_V1",
+      "XT_SKILLS_PREFLIGHT_V1",
+      "XT_SKILLS_RUNNER_POLICY_V1",
+      "XT_SKILLS_HOT_RELOAD_V1"
+    ],
+    "runner_policy_snapshot": {
+      "path": ".axcoder/runtime/skills_runner_policy.snapshot.json",
+      "rollback_switch": "XT_SKILLS_POLICY_SNAPSHOT_ROLLBACK=1"
+    }
+  },
+  "gate_assertions": [
+    {
+      "gate": "SKC-G1",
+      "status": "pass",
+      "evidence": ".axcoder/reports/skills_xt_l1_contract_report.json"
+    },
+    {
+      "gate": "SKC-G3",
+      "status": "pass",
+      "evidence": ".axcoder/reports/skills_xt_l1_contract_report.json"
+    },
+    {
+      "gate": "SKC-G4",
+      "status": "pass",
+      "evidence": ".axcoder/reports/skills_xt_l1_contract_report.json"
+    }
+  ],
+  "kpi_snapshot": {
+    "import_to_first_run_p95_ms": 10920,
+    "skill_first_run_success_rate": 0.96,
+    "preflight_false_positive_rate": 0.02
+  },
+  "cases": [
+    {
+      "case_id": "search_import_pin_project_success",
+      "work_order_ids": [
+        "SKC-W1-02"
+      ],
+      "risk_tier": "medium",
+      "scenario": {
+        "title": "搜索 -> 导入 -> Project pin -> 首次执行成功",
+        "description": "用户在 Skills 页面搜索 openclaw skill，选择 project scope 导入并完成首次运行。"
+      },
+      "ui_assertions": [
+        {
+          "id": "skills.search.result.visible",
+          "assertion": "搜索结果展示 source_id/version/capabilities_required/install_hint",
+          "severity": "must"
+        },
+        {
+          "id": "skills.import.scope.selector",
+          "assertion": "导入向导必须强制选择 scope=global|project，并默认 project",
+          "severity": "must"
+        },
+        {
+          "id": "skills.pin.layer.explainable",
+          "assertion": "pin 成功后界面展示生效层级与冲突优先级说明（Memory-Core > Global > Project）",
+          "severity": "must"
+        }
+      ],
+      "preflight": {
+        "required": true,
+        "status": "pass",
+        "checks": {
+          "bin": "pass",
+          "env": "pass",
+          "config": "pass",
+          "capabilities": "pass"
+        },
+        "fix_cards": []
+      },
+      "runner_constraints": {
+        "network_policy": "hub_only",
+        "allowed_workdirs": [
+          "<project_root>",
+          "<project_root>/.axcoder/tmp"
+        ],
+        "denied_paths": [
+          "~/.ssh",
+          "/etc",
+          "/var/run/docker.sock"
+        ],
+        "capability_mode": "enforced"
+      },
+      "trace": [
+        {
+          "stage": "ingress",
+          "decision": "allow",
+          "evidence_ref": "audit:skills.search.performed"
+        },
+        {
+          "stage": "risk_classify",
+          "decision": "medium",
+          "evidence_ref": "risk:skill_import"
+        },
+        {
+          "stage": "policy",
+          "decision": "allow",
+          "evidence_ref": "policy:skills_import_v1"
+        },
+        {
+          "stage": "grant",
+          "decision": "not_required",
+          "evidence_ref": "grant:none"
+        },
+        {
+          "stage": "execute",
+          "decision": "ran",
+          "evidence_ref": "runner:project_pin_apply"
+        },
+        {
+          "stage": "audit",
+          "decision": "recorded",
+          "evidence_ref": "audit:skills.package.imported|skills.pin.updated"
+        }
+      ],
+      "expected": {
+        "final_state": "pass",
+        "deny_code": null,
+        "explainable_error": null,
+        "audit_events": [
+          "skills.search.performed",
+          "skills.package.imported",
+          "skills.pin.updated"
+        ],
+        "rollback": {
+          "required": true,
+          "point": "feature_flag:XT_SKILLS_IMPORT_UI_V1",
+          "policy_snapshot": ".axcoder/runtime/skills_runner_policy.snapshot.json"
+        }
+      },
+      "kpi_probe": {
+        "import_to_first_run_ms": 9720,
+        "first_run_success": true,
+        "preflight_false_positive": false
+      }
+    },
+    {
+      "case_id": "preflight_missing_bin_env_config",
+      "work_order_ids": [
+        "SKC-W2-05"
+      ],
+      "risk_tier": "low",
+      "scenario": {
+        "title": "缺 bin/env/config 的执行前阻断",
+        "description": "preflight 在执行前识别缺失项并给出可执行修复卡片。"
+      },
+      "ui_assertions": [
+        {
+          "id": "skills.preflight.block.before_execute",
+          "assertion": "preflight 失败时必须阻断 execute，显示修复卡片而不是抽象报错",
+          "severity": "must"
+        },
+        {
+          "id": "skills.preflight.fix.one_click",
+          "assertion": "每个失败检查项必须给出最小可执行命令与预期结果",
+          "severity": "must"
+        }
+      ],
+      "preflight": {
+        "required": true,
+        "status": "fail",
+        "checks": {
+          "bin": "fail",
+          "env": "fail",
+          "config": "fail",
+          "capabilities": "pass"
+        },
+        "fix_cards": [
+          {
+            "id": "fix-bin-node",
+            "kind": "bin",
+            "title": "安装 Node.js 并验证版本",
+            "shell_command": "bash -lc \"command -v node >/dev/null || brew install node; node --version\"",
+            "expected_exit_codes": [
+              0
+            ],
+            "requires_secret_input": false,
+            "redaction_policy": "mask_secrets"
+          },
+          {
+            "id": "fix-env-hub-url",
+            "kind": "env",
+            "title": "配置 Hub 地址环境变量",
+            "shell_command": "bash -lc \"export XHUB_URL=\\\"http://127.0.0.1:50051\\\"; echo XHUB_URL_set\"",
+            "expected_exit_codes": [
+              0
+            ],
+            "requires_secret_input": false,
+            "redaction_policy": "mask_secrets"
+          },
+          {
+            "id": "fix-config-runner",
+            "kind": "config",
+            "title": "补齐 runner policy 配置模板",
+            "shell_command": "bash -lc \"cp ./templates/skills_runner_policy.default.json ./.axcoder/runtime/skills_runner_policy.snapshot.json\"",
+            "expected_exit_codes": [
+              0
+            ],
+            "requires_secret_input": false,
+            "redaction_policy": "mask_secrets"
+          }
+        ]
+      },
+      "runner_constraints": {
+        "network_policy": "hub_only",
+        "allowed_workdirs": [
+          "<project_root>",
+          "<project_root>/.axcoder/tmp"
+        ],
+        "denied_paths": [
+          "~/.ssh",
+          "/etc"
+        ],
+        "capability_mode": "enforced"
+      },
+      "trace": [
+        {
+          "stage": "ingress",
+          "decision": "allow",
+          "evidence_ref": "audit:skills.preflight.started"
+        },
+        {
+          "stage": "risk_classify",
+          "decision": "low",
+          "evidence_ref": "risk:preflight"
+        },
+        {
+          "stage": "policy",
+          "decision": "allow_with_preflight",
+          "evidence_ref": "policy:skills_preflight_required"
+        },
+        {
+          "stage": "grant",
+          "decision": "not_required",
+          "evidence_ref": "grant:none"
+        },
+        {
+          "stage": "execute",
+          "decision": "blocked",
+          "deny_code": "preflight_failed",
+          "evidence_ref": "runner:preflight_gate"
+        },
+        {
+          "stage": "audit",
+          "decision": "recorded",
+          "evidence_ref": "audit:skills.preflight.failed"
+        }
+      ],
+      "expected": {
+        "final_state": "blocked",
+        "deny_code": "preflight_failed",
+        "explainable_error": {
+          "code": "preflight_failed",
+          "user_message": "执行前检查未通过：缺少依赖与配置，请按修复卡片执行后重试。",
+          "machine_reason": "missing_bin_env_config",
+          "suggested_action": "apply_fix_cards_then_retry"
+        },
+        "audit_events": [
+          "skills.preflight.started",
+          "skills.preflight.failed"
+        ],
+        "rollback": {
+          "required": false,
+          "point": "none",
+          "policy_snapshot": ".axcoder/runtime/skills_runner_policy.snapshot.json"
+        }
+      },
+      "kpi_probe": {
+        "import_to_first_run_ms": 0,
+        "first_run_success": false,
+        "preflight_false_positive": false
+      }
+    },
+    {
+      "case_id": "capability_missing_grant_pending",
+      "work_order_ids": [
+        "SKC-W2-05"
+      ],
+      "risk_tier": "high",
+      "scenario": {
+        "title": "高风险 capability 缺失 -> grant_pending",
+        "description": "skills 需要 web.fetch / paid model 时，缺 grant 必须阻断并引导授权。"
+      },
+      "ui_assertions": [
+        {
+          "id": "skills.preflight.capability.grant_pending",
+          "assertion": "capability 缺失必须显示 grant_pending 卡片，提供一键跳转授权",
+          "severity": "must"
+        },
+        {
+          "id": "skills.runner.high_risk.no_bypass",
+          "assertion": "高风险能力未授权时禁止执行，禁止静默降级直连",
+          "severity": "must"
+        }
+      ],
+      "preflight": {
+        "required": true,
+        "status": "fail",
+        "checks": {
+          "bin": "pass",
+          "env": "pass",
+          "config": "pass",
+          "capabilities": "grant_pending"
+        },
+        "fix_cards": [
+          {
+            "id": "fix-grant-web-fetch",
+            "kind": "capability",
+            "title": "申请 web.fetch 授权",
+            "shell_command": "bash -lc \"axhubctl grants request --capability web.fetch --project <project_id> --reason \\\"skill preflight\\\"\"",
+            "expected_exit_codes": [
+              0
+            ],
+            "requires_secret_input": false,
+            "redaction_policy": "mask_secrets"
+          }
+        ]
+      },
+      "runner_constraints": {
+        "network_policy": "hub_only",
+        "allowed_workdirs": [
+          "<project_root>"
+        ],
+        "denied_paths": [
+          "~/.ssh",
+          "/etc",
+          "/private/var"
+        ],
+        "capability_mode": "enforced"
+      },
+      "trace": [
+        {
+          "stage": "ingress",
+          "decision": "allow",
+          "evidence_ref": "audit:skills.preflight.started"
+        },
+        {
+          "stage": "risk_classify",
+          "decision": "high",
+          "evidence_ref": "risk:capability_web_fetch"
+        },
+        {
+          "stage": "policy",
+          "decision": "allow_if_granted",
+          "evidence_ref": "policy:high_risk_grant_required"
+        },
+        {
+          "stage": "grant",
+          "decision": "grant_pending",
+          "deny_code": "grant_pending",
+          "evidence_ref": "grant:pending"
+        },
+        {
+          "stage": "execute",
+          "decision": "blocked",
+          "deny_code": "grant_pending",
+          "evidence_ref": "runner:capability_gate"
+        },
+        {
+          "stage": "audit",
+          "decision": "recorded",
+          "evidence_ref": "audit:supervisor.incident.grant_pending.handled"
+        }
+      ],
+      "expected": {
+        "final_state": "blocked",
+        "deny_code": "grant_pending",
+        "explainable_error": {
+          "code": "grant_pending",
+          "user_message": "该 Skill 需要高风险能力授权，已进入待授权队列。",
+          "machine_reason": "capability_missing",
+          "suggested_action": "open_grant_pending_board"
+        },
+        "audit_events": [
+          "skills.preflight.failed",
+          "supervisor.incident.grant_pending.handled"
+        ],
+        "rollback": {
+          "required": false,
+          "point": "none",
+          "policy_snapshot": ".axcoder/runtime/skills_runner_policy.snapshot.json"
+        }
+      },
+      "kpi_probe": {
+        "import_to_first_run_ms": 0,
+        "first_run_success": false,
+        "preflight_false_positive": false
+      }
+    },
+    {
+      "case_id": "hot_update_failure_rollback",
+      "work_order_ids": [
+        "SKC-W4-11"
+      ],
+      "risk_tier": "medium",
+      "scenario": {
+        "title": "热更新失败自动回退旧快照",
+        "description": "watcher 发现新包校验失败时，runner 继续使用旧快照，当前回合不污染。"
+      },
+      "ui_assertions": [
+        {
+          "id": "skills.hot_reload.failure.rollback",
+          "assertion": "热更新失败必须提示“已回退旧快照”，并保留当前执行上下文",
+          "severity": "must"
+        },
+        {
+          "id": "skills.hot_reload.audit.visible",
+          "assertion": "失败与回退事件都可在审计面板检索",
+          "severity": "must"
+        }
+      ],
+      "preflight": {
+        "required": true,
+        "status": "pass",
+        "checks": {
+          "bin": "pass",
+          "env": "pass",
+          "config": "pass",
+          "capabilities": "pass"
+        },
+        "fix_cards": []
+      },
+      "runner_constraints": {
+        "network_policy": "hub_only",
+        "allowed_workdirs": [
+          "<project_root>",
+          "<project_root>/.axcoder/tmp"
+        ],
+        "denied_paths": [
+          "~/.ssh",
+          "/etc"
+        ],
+        "capability_mode": "enforced"
+      },
+      "hot_update": {
+        "attempted": true,
+        "result": "rollback_applied",
+        "failure_code": "hash_mismatch",
+        "previous_snapshot_id": "snap-20260301-001",
+        "active_snapshot_id_after": "snap-20260301-001",
+        "debounce_ms": 500
+      },
+      "trace": [
+        {
+          "stage": "ingress",
+          "decision": "allow",
+          "evidence_ref": "audit:skills.hot_reload.detected"
+        },
+        {
+          "stage": "risk_classify",
+          "decision": "medium",
+          "evidence_ref": "risk:hot_reload"
+        },
+        {
+          "stage": "policy",
+          "decision": "allow_if_snapshot_consistent",
+          "evidence_ref": "policy:hot_reload_snapshot_guard"
+        },
+        {
+          "stage": "grant",
+          "decision": "not_required",
+          "evidence_ref": "grant:none"
+        },
+        {
+          "stage": "execute",
+          "decision": "ran",
+          "evidence_ref": "runner:continue_with_previous_snapshot"
+        },
+        {
+          "stage": "audit",
+          "decision": "recorded",
+          "evidence_ref": "audit:skills.snapshot.rollback_applied"
+        }
+      ],
+      "expected": {
+        "final_state": "rollback_applied",
+        "deny_code": null,
+        "explainable_error": {
+          "code": "hot_reload_rollback_applied",
+          "user_message": "热更新校验失败，已自动回退至旧快照并保持本轮执行稳定。",
+          "machine_reason": "snapshot_consistency_guard",
+          "suggested_action": "inspect_hot_reload_failure_and_retry"
+        },
+        "audit_events": [
+          "skills.hot_reload.detected",
+          "skills.snapshot.rollback_applied"
+        ],
+        "rollback": {
+          "required": true,
+          "point": "feature_flag:XT_SKILLS_HOT_RELOAD_V1",
+          "policy_snapshot": ".axcoder/runtime/skills_runner_policy.snapshot.json"
+        },
+        "stale_snapshot_incident": false
+      },
+      "kpi_probe": {
+        "import_to_first_run_ms": 10340,
+        "first_run_success": true,
+        "preflight_false_positive": false
+      }
+    },
+    {
+      "case_id": "runner_network_or_path_violation",
+      "work_order_ids": [
+        "SKC-W2-05"
+      ],
+      "risk_tier": "high",
+      "scenario": {
+        "title": "runner 网络/目录越界阻断",
+        "description": "Skill 尝试直连外网并写入越界目录，runner 必须 fail-closed 并返回可解释错误。"
+      },
+      "ui_assertions": [
+        {
+          "id": "skills.runner.network_forbidden.explainable",
+          "assertion": "命中 direct_network_forbidden 时展示“请改为 HubWeb.Fetch/Hub Connector”",
+          "severity": "must"
+        },
+        {
+          "id": "skills.runner.path_forbidden.explainable",
+          "assertion": "命中 path_not_allowed 时展示允许目录清单",
+          "severity": "must"
+        }
+      ],
+      "preflight": {
+        "required": true,
+        "status": "pass",
+        "checks": {
+          "bin": "pass",
+          "env": "pass",
+          "config": "pass",
+          "capabilities": "pass"
+        },
+        "fix_cards": []
+      },
+      "runner_constraints": {
+        "network_policy": "hub_only",
+        "allowed_workdirs": [
+          "<project_root>",
+          "<project_root>/.axcoder/tmp"
+        ],
+        "denied_paths": [
+          "~/.ssh",
+          "/etc",
+          "/var/run/docker.sock"
+        ],
+        "capability_mode": "enforced"
+      },
+      "trace": [
+        {
+          "stage": "ingress",
+          "decision": "allow",
+          "evidence_ref": "audit:skills.run.requested"
+        },
+        {
+          "stage": "risk_classify",
+          "decision": "high",
+          "evidence_ref": "risk:network_and_path_escape"
+        },
+        {
+          "stage": "policy",
+          "decision": "deny",
+          "deny_code": "runner_policy_violation",
+          "evidence_ref": "policy:runner_constraints"
+        },
+        {
+          "stage": "grant",
+          "decision": "not_required",
+          "evidence_ref": "grant:none"
+        },
+        {
+          "stage": "execute",
+          "decision": "blocked",
+          "deny_code": "direct_network_forbidden",
+          "evidence_ref": "runner:network_policy"
+        },
+        {
+          "stage": "audit",
+          "decision": "recorded",
+          "evidence_ref": "audit:skills.runner.denied"
+        }
+      ],
+      "expected": {
+        "final_state": "blocked",
+        "deny_code": "direct_network_forbidden",
+        "explainable_error": {
+          "code": "direct_network_forbidden",
+          "user_message": "Skill 不允许直连网络，请改用 HubWeb.Fetch 或对应 Connector。",
+          "machine_reason": "runner_network_policy_hub_only",
+          "suggested_action": "reroute_via_hub_capability"
+        },
+        "audit_events": [
+          "skills.run.requested",
+          "skills.runner.denied"
+        ],
+        "rollback": {
+          "required": true,
+          "point": "feature_flag:XT_SKILLS_RUNNER_POLICY_V1",
+          "policy_snapshot": ".axcoder/runtime/skills_runner_policy.snapshot.json"
+        }
+      },
+      "kpi_probe": {
+        "import_to_first_run_ms": 0,
+        "first_run_success": false,
+        "preflight_false_positive": false
+      }
+    }
+  ]
+}

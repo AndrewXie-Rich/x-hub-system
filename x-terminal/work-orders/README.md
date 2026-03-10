@@ -1,0 +1,115 @@
+# X-Terminal Work Orders Index
+
+- updatedAt: 2026-03-07
+- scope: `x-terminal/` module only
+
+## Active
+
+- `xterminal-parallel-work-orders-v1.md`
+  - Purpose: high-quality parallel delivery plan for X-Terminal
+  - Includes: P0/P1, DoR/DoD, XT-Gates, KPI, regression samples, 2-week parallel schedule
+  - Core requirement: complex parent project auto-splits into child projects, per-child AI parallel assignment, and clear parent-child lineage visibility
+- `xt-supervisor-autosplit-multilane-work-orders-v1.md`
+  - Purpose: Supervisor 自动拆分 + 多泳道自动分配 + heartbeat 主动托管专项工单
+  - Includes: hard/soft split（是否建子项目）建议、PromptFactory 质量编译、事件秒级接管、P0/P1 DoD/Gate/KPI/回归样例
+  - Release condition: must satisfy `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
+- `xt-supervisor-multipool-adaptive-work-orders-v1.md`
+  - Purpose: Supervisor 多泳池自适应拆分专项（复杂度驱动 `pool -> lane` 二级子任务）
+  - Includes: `conservative|balanced|aggressive` 档位、`zero_touch|critical_touch|guided_touch` 参与等级（兼容旧值）、创新分档 `L0..L4`、建议治理 `supervisor_only|hybrid|lane_open`、Prompt Pack 自动编译、池内集成到全局交付通知
+  - Release condition: must satisfy both `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md` and `docs/memory-new/xhub-lane-command-board-v2.md`
+- `xt-supervisor-multipool-lane-execution-pack-v1.md`
+  - Purpose: 多泳池专项可执行细化包（泳道 AI 直接按步骤推进）
+  - Includes: `XT-W2-20..XT-W2-28`、`XT-W2-20-B`、`XT-W2-23-A/B/C`、`XT-W2-24-A/B/C/D/E/F`、`XT-W2-25-B`、`XT-W2-27-A/B/C/D/E/F/G/H`、`XT-W2-28-A/B/C/D/E/F`、`XT-W3-18..XT-W3-24` 的 DoR/DoD、子步骤、Gate/KPI、回归样例、证据落盘模板、继续自动推进协议；以及 `XT-W2-25-S1/XT-W3-18-S1/XT-W3-19-S1`（激进档经济性与大规模拼装收敛）
+  - Release condition: must satisfy `xt-supervisor-multipool-adaptive-work-orders-v1.md` and `docs/memory-new/xhub-lane-command-board-v2.md`
+- `xt-w2-23-w2-26-autocontinue-autonomy-implementation-pack-v1.md`
+  - Purpose: 自动推进与介入等级实现子工单（completion 信号接线 + auto-continue + 指导路由）
+  - Includes: `zero_touch|critical_touch|guided_touch` 三档策略、创新分档 `L0..L4`、建议治理 `supervisor_only|hybrid|lane_open`、`XT-W2-23-A/B/C` 与 `XT-W2-26-A/B/C` 实现步骤、`Lane Insight Card` 契约、状态机、回归与证据模板
+  - Release condition: must satisfy `xt-supervisor-multipool-lane-execution-pack-v1.md` and `docs/memory-new/xhub-lane-command-board-v2.md`
+- `xt-w2-24-token-optimal-context-capsule-implementation-pack-v1.md`
+  - Purpose: Token 最优上下文胶囊实现子工单（保质量前提下最小提示词）
+  - Includes: 三段式提示词 `Stable Core + Task Delta + Context Refs`、`XT-W2-24-A/B/C/D/E/F`、预算装箱/ACL/重试压缩/会话滚动/联合证据快照
+  - Release condition: must satisfy `xt-supervisor-multipool-lane-execution-pack-v1.md` and `docs/memory-new/xhub-lane-command-board-v2.md`
+- `xt-w2-27-anti-block-unblock-orchestration-implementation-pack-v1.md`
+  - Purpose: 反阻塞实现子工单（wait-for 依赖图 + 双绿门控 + blocker 转绿后即时续推指导）
+  - Includes: `XT-W2-27/XT-W2-27-A/B/C/D/E/G/H`、dependency escrow、unblock 路由、block SLA 升级、`Dependency Edge Registry`、`Directed @ Inbox`、机读证据模板
+  - Release condition: must satisfy `xt-supervisor-multipool-lane-execution-pack-v1.md` and `docs/memory-new/xhub-lane-command-board-v2.md`
+- `xt-supervisor-rhythm-user-explainability-implementation-pack-v1.md`
+  - Purpose: Supervisor 节奏控制 + 用户可解释输出（不靠全量广播推进，改为定向 baton）
+  - Includes: 三层节奏环（秒级事件/分钟调度/小时治理）、6字段用户解释契约、定向通知去重与 token 预算守门
+  - Release condition: must satisfy `xt-w2-27-anti-block-unblock-orchestration-implementation-pack-v1.md` and `xt-w2-24-token-optimal-context-capsule-implementation-pack-v1.md`
+- `xt-w2-28-jamless-anti-congestion-protocol-implementation-pack-v1.md`
+  - Purpose: Jamless 无拥塞推进协议（避免多泳道互等与 token 爆炸）
+  - Includes: `R1..R10` 规则、Active-3 运行档、定向接力、blocked 去重、SCC 解环、Gate 重试冷却、`XT-W2-28-A/B/C/D/E/F`
+  - Release condition: must satisfy `xt-supervisor-multipool-lane-execution-pack-v1.md` and `docs/memory-new/xhub-lane-command-board-v2.md`
+- `xt-cbl-anti-block-context-governor-implementation-pack-v1.md`
+  - Purpose: CBL 防堵塞拆分与上下文滚动治理（复杂案子防堵 + 防 token 膨胀）
+  - Includes: `XT-W2-20-B/XT-W2-24-F/XT-W2-25-B/XT-W2-28-F`、block-aware split、dynamic active seats、session rollover、block risk replan guard
+  - Release condition: must satisfy `xt-supervisor-multipool-lane-execution-pack-v1.md` and `docs/memory-new/xhub-lane-command-board-v2.md`
+- `xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md`
+  - Purpose: Supervisor 接案与验收包（项目文档输入 -> intake manifest -> pool/lane/bootstrap -> acceptance pack）
+  - Includes: `XT-W3-21/XT-W3-22`、接案冻结门、pool/lane 启动绑定、Acceptance Pack、证据/回滚/摘要完整性校验
+  - Release condition: must satisfy `xt-supervisor-multipool-lane-execution-pack-v1.md`, `docs/memory-new/xhub-lane-command-board-v2.md`, and `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
+- `xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`
+  - Purpose: XT 记忆 UX 适配层与 Supervisor Memory Bus 产品化包（XT 做即插即用 continuity UX，Hub 仍为真相源）
+  - Includes: `XT-W3-23/XT-W3-23-A/B/C/D/E`、session continuity、`user/project` 双通道、memory ops console、least-exposure injection、supervisor memory bus
+  - Release condition: must satisfy `xt-supervisor-multipool-lane-execution-pack-v1.md`, `docs/xhub-memory-system-spec-v2.md`, and `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
+- `xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`
+  - Purpose: 多渠道入口与流式体验产品化包（吸收 bot 外壳优势，但安全/记忆/授权真相源仍在 Hub）
+  - Includes: `XT-W3-24/XT-W3-24-A/B/C/D/E/F`、首版三渠道、streaming UX、operator console、onboard/bootstrap、channel-hub boundary
+  - Release condition: must satisfy `xt-supervisor-multipool-lane-execution-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md`, and `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
+- `xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`
+  - Purpose: 自动化产品面补短板执行包（补齐事件驱动、主动解阻、run timeline、一键启用与竞争性毕业线）
+  - Includes: `XT-W3-25/XT-W3-25-A/B/C/D/E/F`、automation recipe、event runner、directed takeover、operator explainability、starter templates、comparative graduation
+  - Release condition: must satisfy `xt-supervisor-multipool-lane-execution-pack-v1.md`, `xt-w2-27-anti-block-unblock-orchestration-implementation-pack-v1.md`, `xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, and `docs/memory-new/xhub-lane-command-board-v2.md`
+- `xt-w3-26-supervisor-one-shot-intake-adaptive-pool-planner-implementation-pack-v1.md`
+  - Purpose: Supervisor 一次性接案 + 自适应泳池规划产品化包（用户输入一个大任务后自动归一化、规划、启动、续推、收口）
+  - Includes: `XT-W3-26/XT-W3-26-A/B/C/D/E/F/G/H`、one-shot intake、adaptive pool planner、safe auto-launch、directed unblock baton、delivery scope freeze
+  - Release condition: must satisfy `xt-supervisor-multipool-adaptive-work-orders-v1.md`, `xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md`, and `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
+- `xt-w3-27-hub-xt-ui-productization-r1-implementation-pack-v1.md`
+  - Purpose: Hub / X-Terminal UI 产品化 R1 包（把工程控制面板收敛为主路径清晰、排障可达、视觉一致的产品界面）
+  - Includes: `XT-W3-27/XT-W3-27-A/B/C/D/E/F/G/H`、IA freeze、design tokens、Global Home、Supervisor cockpit、Hub setup wizard、Hub/XT settings center
+  - Release condition: must satisfy `xt-w3-26-supervisor-one-shot-intake-adaptive-pool-planner-implementation-pack-v1.md`, `xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, and `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
+- `xt-w3-26-w3-27-4ai-parallel-dispatch-pack-v1.md`
+  - Purpose: XT-W3-26 / XT-W3-27 的四 AI 并行派发包（低冲突写入边界 + directed handoff + 首条提示词）
+  - Includes: AI-1/2/3/4 的 claim、文件写入边界、依赖边、合并顺序、4 条可直接派发的首条消息
+  - Release condition: must satisfy both `xt-w3-26-supervisor-one-shot-intake-adaptive-pool-planner-implementation-pack-v1.md` and `xt-w3-27-hub-xt-ui-productization-r1-implementation-pack-v1.md`
+- `xt-openclaw-skills-compat-reliability-work-orders-v1.md`
+  - Purpose: OpenClaw Skills 兼容专项工单（兼容优先 + 可靠性/效率并重）
+  - Includes: SKC-G0..G5、Hub 5 条 + XT 2 条泳道、P0/P1 工单、require-real 证据与发布回滚闭环
+  - Release condition: must satisfy both `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md` and `docs/memory-new/xhub-internal-pass-lines-v1.md`
+- `xt-openclaw-assistant-runtime-alignment-implementation-pack-v1.md`
+  - Purpose: 吸收 OpenClaw 上层 assistant runtime 能力，但保持模型/配对/grant/device trust 主权继续只归 X-Hub
+  - Includes: OCA-W1-01..05、assistant runtime skeleton、tool surface 扩展、skills handoff、doctor/onboarding、runtime-aware UI
+  - Release condition: must satisfy both `xt-openclaw-skills-compat-reliability-work-orders-v1.md` and `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
+- `xt-w1-02-route-state-machine.md`
+  - Purpose: XT-W1-02 delivery doc for route-state convergence (`auto|grpc|file`)
+  - Includes: state machine matrix, fallback/error mapping, regression samples, manual verification commands
+- `xt-w1-03-pending-grants-source-of-truth.md`
+  - Purpose: XT-W1-03 delivery doc for Supervisor pending grants source-of-truth convergence
+  - Includes: truth-source rules, dedupe/sort strategy, Supervisor approve/deny UX, regression samples
+- `xt-w1-04-high-risk-grant-enforcement.md`
+  - Purpose: XT-W1-04 delivery doc for high-risk grant enforcement and bypass scanning
+  - Includes: grant gate hook, reject-code standardization, bypass scanner and slash observability commands
+- `xt-w3-08-release-gate-skeleton.md`
+  - Purpose: XT-W3-08 strict gate delivery doc for release gates automation
+  - Includes: XT-G0..G5 gate entry script, workflow wiring, report output, rollback verification, OpenClaw extension checks（XT-W2-17/18/19）
+- `xt-w2-09-w2-11-split-proposal-prompt-contract.md`
+  - Purpose: XT-W2-09/XT-W2-11 delivery doc for split proposal confirm/override flow and prompt contract lint gate
+  - Includes: split flow state machine, AI-XT-2 machine-readable interfaces, runtime fixture generation/regression pipeline, gate evidence fields
+- `xt-l1-openclaw-skills-ux-preflight-runner-contract-v1.md`
+  - Purpose: XT-L1 delivery contract for OpenClaw skills UX/preflight/runner constraints (`SKC-W1-02`协同 + `SKC-W2-05` + `SKC-W4-11`)
+  - Includes: 搜索/导入/分层 pin 交互断言、preflight 修复卡片规范、runner 约束 deny_code、热更新回退契约与机读 fixture 检查
+- `docs/memory-new/xhub-internal-pass-lines-v1.md` (cross-module gate reference)
+  - Purpose: internal GO/NO-GO pass lines for Hub + X-Terminal release decisions
+  - Includes: hard thresholds, minimum evidence set, sample sufficiency and decision template
+- `docs/memory-new/xhub-lane-command-board-v2.md` (cross-module collaboration board)
+  - Purpose: one-file multi-lane board with CR inbox, claim TTL, task state machine, and 7-piece handoff contract
+  - Includes: realtime replan policy, lane autonomy boundaries, coordinator daily report format
+- `scripts/m3_check_internal_pass_lines.js` (cross-module gate checker)
+  - Purpose: machine-judge internal pass lines and emit release decision (`GO|NO-GO|INSUFFICIENT_EVIDENCE`)
+  - Includes: evidence existence checks, hard-line metric checks, and orchestrator-ready JSON report
+
+## Rule
+
+- New X-Terminal-specific work orders must be added under `x-terminal/work-orders/`.
+- Global planning docs may reference these files, but detailed execution breakdown should stay here.

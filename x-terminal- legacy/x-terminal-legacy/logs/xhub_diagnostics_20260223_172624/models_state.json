@@ -1,0 +1,47 @@
+{
+  "models" : [
+    {
+      "backend" : "mlx",
+      "contextLength" : 8192,
+      "id" : "qwen3-vl-30b-a3b-instruct-mlx-4bit",
+      "modelPath" : "\/Users\/USER\/Library\/Containers\/com.rel.flowhub\/Data\/RELFlowHub\/models\/qwen3-vl-30b-a3b-instruct-mlx-4bit",
+      "name" : "Qwen3-VL-30B-A3B-Instruct-MLX-4bit",
+      "note" : "managed_copy",
+      "paramsB" : 30,
+      "quant" : "int4",
+      "roles" : [
+        "general"
+      ],
+      "state" : "available"
+    },
+    {
+      "backend" : "mlx",
+      "contextLength" : 8192,
+      "id" : "devstral-small-2-24b-instruct-2512-4bit",
+      "modelPath" : "\/Users\/USER\/Library\/Containers\/com.rel.flowhub\/Data\/RELFlowHub\/models\/devstral-small-2-24b-instruct-2512-4bit",
+      "name" : "Devstral-Small-2-24B-Instruct-2512-4bit",
+      "note" : "managed_copy",
+      "paramsB" : 24,
+      "quant" : "int4",
+      "roles" : [
+        "general"
+      ],
+      "state" : "available"
+    },
+    {
+      "backend" : "mlx",
+      "contextLength" : 40960,
+      "id" : "qwen3-17b-mlx-bf16",
+      "modelPath" : "\/Users\/USER\/Library\/Containers\/com.rel.flowhub\/Data\/RELFlowHub\/models\/qwen3-17b-mlx-bf16",
+      "name" : "Qwen3-1.7B-MLX-bf16",
+      "note" : "managed_copy",
+      "paramsB" : 1.7,
+      "quant" : "bf16",
+      "roles" : [
+        "general"
+      ],
+      "state" : "available"
+    }
+  ],
+  "updatedAt" : 1771838743.3440671
+}

@@ -1,0 +1,125 @@
+{
+  "schema_version": "xterminal.skills_xt_l1_contract_fixture.v0",
+  "generated_at": "2026-03-01T20:40:00Z",
+  "contract": {
+    "schema": "xterminal.skills_xt_l1_contract.v1",
+    "version": "1",
+    "lane_owner": "XT-L1",
+    "work_order_ids": [
+      "SKC-W1-02"
+    ],
+    "required_chain": [
+      "ingress",
+      "risk_classify",
+      "policy",
+      "grant",
+      "execute",
+      "audit"
+    ],
+    "kpi_thresholds": {
+      "import_to_first_run_p95_ms": 12000,
+      "skill_first_run_success_rate": 0.95,
+      "preflight_false_positive_rate": 0.03
+    },
+    "feature_flags": [
+      "XT_SKILLS_IMPORT_UI_V1"
+    ],
+    "runner_policy_snapshot": {
+      "path": ".axcoder/runtime/skills_runner_policy.snapshot.json",
+      "rollback_switch": "XT_SKILLS_POLICY_SNAPSHOT_ROLLBACK=1"
+    }
+  },
+  "gate_assertions": [
+    {
+      "gate": "SKC-G1",
+      "status": "pass",
+      "evidence": ".axcoder/reports/skills_xt_l1_contract_report.json"
+    },
+    {
+      "gate": "SKC-G3",
+      "status": "fail",
+      "evidence": ".axcoder/reports/skills_xt_l1_contract_report.json"
+    }
+  ],
+  "kpi_snapshot": {
+    "import_to_first_run_p95_ms": 13000,
+    "skill_first_run_success_rate": 0.80,
+    "preflight_false_positive_rate": 0.15
+  },
+  "cases": [
+    {
+      "case_id": "capability_missing_grant_pending",
+      "work_order_ids": [
+        "SKC-W2-05"
+      ],
+      "risk_tier": "high",
+      "scenario": {
+        "title": "bad case",
+        "description": "broken"
+      },
+      "ui_assertions": [],
+      "preflight": {
+        "required": true,
+        "status": "pass",
+        "checks": {
+          "bin": "pass",
+          "env": "pass",
+          "config": "pass",
+          "capabilities": "pass"
+        },
+        "fix_cards": [
+          {
+            "id": "fix-secret-leak",
+            "kind": "env",
+            "title": "泄露示例",
+            "shell_command": "echo sk-1234567890abcdef123456",
+            "expected_exit_codes": [
+              0
+            ],
+            "requires_secret_input": false,
+            "redaction_policy": "none"
+          }
+        ]
+      },
+      "runner_constraints": {
+        "network_policy": "unknown",
+        "allowed_workdirs": [],
+        "denied_paths": [],
+        "capability_mode": "off"
+      },
+      "trace": [
+        {
+          "stage": "ingress",
+          "decision": "allow",
+          "evidence_ref": "audit"
+        },
+        {
+          "stage": "policy",
+          "decision": "allow",
+          "evidence_ref": "policy"
+        },
+        {
+          "stage": "execute",
+          "decision": "ran",
+          "evidence_ref": "runner"
+        }
+      ],
+      "expected": {
+        "final_state": "pass",
+        "deny_code": null,
+        "explainable_error": null,
+        "audit_events": [],
+        "rollback": {
+          "required": false,
+          "point": "none",
+          "policy_snapshot": ""
+        }
+      },
+      "kpi_probe": {
+        "import_to_first_run_ms": 99999,
+        "first_run_success": false,
+        "preflight_false_positive": true
+      }
+    }
+  ]
+}

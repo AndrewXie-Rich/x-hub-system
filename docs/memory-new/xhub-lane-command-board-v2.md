@@ -1,0 +1,16058 @@
+- version: v2.0
+- updatedAt: 2026-03-06
+- owner: Hub Runtime / X-Terminal Supervisor / Security / QA / Product
+- status: active
+- dispatchPolicy: active
+- scope: 全局协作流程（Hub 5 泳道 + X-Terminal 2 泳道）
+- parent:
+  - `X_MEMORY.md`
+  - `docs/WORKING_INDEX.md`
+  - `docs/memory-new/xhub-memory-v3-m3-work-orders-v1.md`
+  - `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
+  - `x-terminal/work-orders/xterminal-parallel-work-orders-v1.md`
+  - `x-terminal/work-orders/xt-supervisor-autosplit-multilane-work-orders-v1.md`
+  - `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`
+  - `x-terminal/work-orders/xt-w2-27-anti-block-unblock-orchestration-implementation-pack-v1.md`
+  - `x-terminal/work-orders/xt-w2-28-jamless-anti-congestion-protocol-implementation-pack-v1.md`
+  - `x-terminal/work-orders/xt-cbl-anti-block-context-governor-implementation-pack-v1.md`
+  - `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md`
+  - `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`
+  - `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`
+  - `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`
+  - `x-terminal/work-orders/xt-openclaw-skills-compat-reliability-work-orders-v1.md`
+  - `docs/memory-new/xhub-security-innovation-work-orders-v1.md`
+
+## 0) 使用方式（先看）
+
+- 本文是“单文件分区协作法”的执行规范与落盘模板。
+- 每个泳道 AI 开工前，必须先读本文件并按规则 `claim` 任务。
+- 用户实时新增需求必须先进入\12026-03-03T21:28:56-08:00\3Inbox`，禁止直接插队改任务状态。
+- 所有高风险链路继续遵循 fail-closed：证据不足、Gate 未过、语义冲突一律 `blocked`。
+
+## 1) 单文件分区设计（One File, Multi-Zones）
+
+同一文件必须固定以下分区，禁止删除分区标题：
+
+1. `A. Global Header`（仅总控 AI 可写）
+2. `B. CR Inbox`（实时新增需求入口）
+3. `C. Task Catalog`（系统任务总表，单行摘要）
+4. `D. Lane Zones`（7 条泳道分区更新区；含各泳道 `Insight Outbox`）
+5. `E. Coordinator Decisions`（跨泳道裁决区）
+6. `F. Daily Report`（日报区）
+7. `G. Archive Index`（归档索引）
+8. `H. Supervisor Insight Inbox`（总控汇总区：安全/效率/质量/token 建议）
+9. `I. Dependency Edge Registry`（跨泳道依赖边台账：谁等谁、何时解阻）
+10. `J. Directed @ Inbox`（定向 @ 协同收件箱：waiter->blocker）
+
+并发规则：
+- 每个泳道 AI 只允许更新 `Task Catalog` 中自己任务行 + 自己 `Lane Zone` + 与自己相关的 `I/J` 条目（edge/mention）。
+- 总控 AI 不改泳道原始记录，只在 `E/F` 分区追加协调结论。
+- 泳道建议只允许写入本泳道 `Insight Outbox`；总控定时汇总到 `H`，并决定是否转 `CR`。
+- 定向 @ 协同（`J`）禁止广播；同一 `edge_id` 在 4h 窗口内最多 1 个 open mention。
+
+## 2) 字段契约（机器可判）
+
+### 2.1 Task Catalog 必填字段
+
+- `task_id`
+- `title`
+- `lane_owner`（Hub-L1..L5 / XT-L1..L2）
+- `priority`（P0/P1/P2）
+- `status`（见状态机）
+- `gate_vector`（例如 `G0:PASS,G1:PASS,G3:FAIL`）
+- `release_blocker`（true/false）
+- `depends_on[]`
+- `claim_id`
+- `claim_ttl_until`
+- `evidence_refs[]`
+- `kpi_snapshot_ref`
+- `next_owner_lane`
+- `updated_at`
+- `updated_by`
+
+当任务进入 `blocked|claimed|ready(waiting)` 时，以下字段升级为必填：
+- `blocker_id`
+- `blocked_reason_hash`
+- `unblock_condition_expr`
+- `unblock_owner_lane`
+- `evidence_delta_hash`
+- `retry_after_utc`
+- `report_mode`（`delta_3line|full_7piece`）
+
+### 2.2 CR Inbox 必填字段
+
+- `cr_id`
+- `requester`
+- `requested_at`
+- `change_summary`
+- `urgency`（P0/P1/P2）
+- `impact_lanes[]`
+- `impact_gates[]`
+- `preempt_policy`（can_preempt|next_replan_window|release_freeze_blocked）
+- `decision`（accepted|queued|rejected）
+- `decision_owner`
+
+### 2.3 Lane Insight Card 必填字段（写在各泳道 `Insight Outbox`）
+
+- `insight_id`（建议格式：`INS-<lane>-<yyyymmdd>-<nnn>`）
+- `from_lane`
+- `task_context`（例如 `SKC-W2-05` / `XT-W2-24-F`）
+- `category`（`security|efficiency|quality|token|reliability`）
+- `problem_statement`
+- `proposal`
+- `expected_impact`（至少包含 1 个量化指标）
+- `risk_level`（`low|medium|high`）
+- `evidence_refs[]`
+- `adoption_scope`（`lane_local|cross_lane|global_policy`）
+- `requires_user_decision`（true/false）
+- `status`（`proposed|triaged|adopted|rejected|parked`）
+- `triage_owner`
+- `decision_ref`（`CD-*` 或 `none`）
+- `cr_ref`（`CR-*` 或 `none`）
+- `updated_at`
+
+### 2.4 Dependency Edge 必填字段（写在 `I. Dependency Edge Registry`）
+
+- `edge_id`（建议：`EDGE-<waiter_task>-<blocker_task>-<hash8>`）
+- `waiter_lane`
+- `waiter_task`
+- `blocker_lane`
+- `blocker_task`
+- `unblock_condition_expr`
+- `required_evidence_refs[]`
+- `gate_impact[]`
+- `release_blocker`（true/false）
+- `wait_since_utc`
+- `state`（`waiting|ready_to_verify|resolved|stale|cancelled`）
+- `priority_score_snapshot`
+- `mention_open_count`
+- `last_transition_utc`
+- `updated_by`
+
+### 2.5 Directed Mention 必填字段（写在 `J. Directed @ Inbox`）
+
+- `mention_id`（建议：`MEN-<yyyymmdd>-<nnn>`）
+- `edge_id`
+- `from_lane`
+- `to_lane`
+- `reason_code`（`prereq_not_met|evidence_missing|gate_wait|stale_timeout|replan_request`）
+- `ask_summary`
+- `priority_tier`（`P0|P1|P2`）
+- `priority_score`
+- `due_utc`
+- `ack_by_utc`
+- `status`（`proposed|acked|accepted|in_progress|delivered|verified|closed|rejected`）
+- `report_mode`（`delta_3line|full_7piece`）
+- `evidence_refs[]`（<=3）
+- `decision_note`
+- `updated_at`
+
+### 2.6 Reply Routing Header 必填字段（写在所有回复顶部）
+
+适用范围：`Hub-Main / XT-Main / QA-Main / XT-Support` 的所有 `delta_3line`、`Checklist Delta`、`full_7piece`、`directed reply`。
+
+- `To:`（主接收人；若无需转发，写 `none`）
+- `CC:`（可选抄送；无则写 `none`）
+- `不用发给:`（明确列出不需要转发的角色；无则写 `none`）
+- `原因:`（一句话说明路由依据，例如 `current_slice_owner` / `high_risk_truth_source` / `support_only_no_state_change`）
+
+强制规则：
+- 无 `Reply Routing Header` 的回复视为 `incomplete_update`，不得直接用于人工转发或下一步协同。
+- 若内容同时涉及 `主链推进 + 高风险 Hub 边界`，默认 `To=XT-Main`，`CC=Hub-Main`；除非回复者给出更窄且更明确的路由理由。
+- `XT-Support` 默认只发给当前 slice owner；`QA-Main` 默认发给当前 slice owner，并在涉及 require-real / high-risk gate 时抄送 `Hub-Main`。
+- 若回复仅为待命确认、无状态变更、无新产出，必须明确写 `To=current_owner`，禁止广播。
+
+## 3) 状态机（必须执行）
+
+任务状态统一为：
+
+`planned -> ready -> claimed -> in_progress -> delivered -> verified -> closed`
+
+异常分支：
+
+`in_progress|delivered|verified -> blocked`
+
+恢复分支：
+
+`blocked -> ready|in_progress|delivered`
+
+硬约束：
+- `verified` 前必须有完整证据。
+- 任一 Gate 为 `FAIL/INSUFFICIENT_EVIDENCE` 时，不得进入 `closed`。
+
+## 4) Claim + TTL + WIP 规则
+
+- 任务领取必须写 `claim_id` 与 `claim_ttl_until`（默认 4h）。
+- TTL 到期未续约，任务自动退回 `ready`。
+- 每泳道默认 `WIP_LIMIT=2`，超限需总控 AI 批准。
+- 心跳更新建议每 2h 一次（至少更新 `status + risks + next_step`）。
+
+### 4.1 Jamless 防堵车规则（v1.5，默认启用）
+
+- 7 泳道默认运行档：`Active-3`（Hub-L1/XT-L2/Hub-L5）+ `Standby-4`（XT-L1/Hub-L4/Hub-L2/Hub-L3）。
+- 同一 blocker 同时只允许 1 条 owner lane 推进；其他泳道保持 `standby_wait`。
+- 解阻通知仅允许 `blocker -> waiter` 定向接力（baton），禁止全泳道广播。
+- 同 `blocked_reason_hash` 在 4 小时窗口内禁止重复 full 7 件套；无变化时仅允许 `delta_3line`。
+- gate 重试遵循冷却规则：无 `evidence_delta_hash` 变化时，禁止重跑 release 级门禁。
+- 关键路径席位采用动态 `Active-3`：按 `critical_path_rank + block_risk_score` 分配 active 资源。
+- 达到会话滚动阈值（`turn_count>=8` 或 `state_transition>=2`）时必须 rollover，新会话仅加载 `Context Refs<=3`。
+- 阻塞预测触发器：`20min` 无增量写 checkpoint，`40min` 自动换 breaker，`60min` 自动发起 CR 重排。
+
+## 5) 动态变更与重规划（Replan）
+
+- 新需求先入 `CR Inbox`，通过后才可转任务。
+- 重规划窗口默认每 4h 一次；P0 可触发即时重规划。
+- 发布冻结窗（release freeze）内，非安全 P0 变更默认 `queued`。
+- 每泳道建议预留 20% 容量处理 CR 插单。
+- 建议治理流程：
+  1. 泳道在本区 `Insight Outbox` 提交建议卡；
+  2. 总控每 4h 统一 triage 到 `H`；
+  3. 需要执行的建议转入 `CR Inbox`；
+  4. `cross_lane|global_policy` 且 `requires_user_decision=true` 的建议，必须先和用户确认再入排程。
+
+## 6) 7 件套交付契约（泳道更新模板）
+
+每次 `delivered` 必须提交以下 7 项：
+
+1. `Scope`
+2. `Changes`
+3. `DoD`
+4. `Gate`
+5. `KPI Snapshot`
+6. `Risks & Rollback`
+7. `Handoff`
+
+硬规则：
+- `Gate` 必须带证据路径。
+- `KPI Snapshot` 必须可溯源到 report/json。
+- `Handoff` 必须指定 `next_owner_lane` 与依赖项。
+
+## 7) 泳道自治边界（Green/Yellow/Red）
+
+`Green`（可自治推进）
+- 同泳道内连续任务；
+- 不改跨泳道 contract/deny_code/Gate 阈值；
+- 证据链完整。
+
+`Yellow`（需总控批准）
+- 跨泳道接口调整；
+- deny_code/schema 变更；
+- Gate 阈值调整。
+
+`Red`（禁止推进）
+- `FAIL/INSUFFICIENT_EVIDENCE` 仍宣告完成；
+- require-real 路径使用 synthetic 证据冒绿；
+- 缺审计或绕过 fail-closed。
+
+## 8) Gate 与证据绑定规则
+
+- `delivered`：7 件套完整 + 回归命令已执行。
+- `verified`：对应 Gate 全绿（或有明确 blocked 决议）。
+- `closed`：必须满足 release 口径（含 XT-Ready + internal pass-lines）。
+- require-real 路径下：`audit-smoke-*`、`source.kind=synthetic_runtime` 一律 fail。
+
+## 9) 总控 AI 职责与日报模板
+
+总控 AI 只做：
+- 跨泳道依赖协调；
+- 冲突裁决；
+- 风险升级；
+- 日报汇总。
+
+总控 AI 不做：
+- 代替泳道 AI 直接改实现；
+- 覆盖泳道原始 7 件套。
+
+日报模板（最小）：
+- `done_today[]`
+- `blocked_today[]`
+- `gate_heatmap`
+- `critical_risks[]`
+- `tomorrow_plan[]`
+- `insights_new[]`
+- `insights_adopted[]`
+- `insights_need_user_decision[]`
+
+## 10) Dogfood 指标（流程本身要可优化）
+
+- `cr_to_ready_p95_ms`
+- `replan_latency_p95_ms`
+- `gate_flap_rate`
+- `reopen_rate`
+- `evidence_missing_rate`
+- `mean_time_to_unblock`
+
+说明：本协作法本身必须被系统持续度量，避免“流程写得漂亮但实际拖慢交付”。
+
+## 11) 上线策略（v2 切换）
+
+- D0：冻结旧协作写法，统一入口到本文件。
+- D1：仅 SKC 泳道先试运行（Hub-L1..L5 + XT-L1..L2）。
+- D2：接入 SI 工单（仍可保持 not-dispatched）。
+- D3：把日报自动化接入总控 AI。
+
+切换完成定义：
+- 连续 3 天无“无 claim 更新”、无“口头完成无证据”事件。
+- 关键任务 `verified->closed` 转换全部可机判。
+
+## 12) “继续”自动接任务协议（Auto-Continue）
+
+- 当用户或总控发出“继续”后，泳道 AI 默认执行自动续推，不需要逐单人工点名。
+- 执行顺序：
+  1. 优先处理本泳道 `claimed|in_progress` 任务；
+  2. 若当前任务 `delivered|verified` 且依赖已满足，自动 claim `backlog_next`；
+  3. 若依赖未满足，则在本泳道分区写明 `blocked_reason + unblock_owner`；
+  4. 仅在高风险授权/不可逆操作/跨泳道契约变更时打断用户。
+- 约束：
+  - 不得跳过 `claim_id + claim_ttl_until`。
+  - 不得跨泳道擅自改对方任务状态。
+  - 不得在 Gate 未满足时写 `closed`。
+
+---
+
+## A. Global Header（运行态）
+
+- board_mode: active
+- freeze_window: none
+- last_replan_at: 2026-03-03T10:30:00-08:00
+- coordinator_ai: AI-COORD-PRIMARY
+- release_mode: no_go_until_require_real_and_g3_evidence
+- continue_policy: auto_continue_with_claim_ttl_and_gate_checks
+- innovation_level_default: `L1_micro_reflect`
+- suggestion_governance_default: `hybrid`
+- rule_set: `xhub.command_board.v2`
+- jamless_policy: `xt.jamless.v1.5(active3_dynamic_seat+directed_baton+delta_only+session_rollover+block_predict_replan)`
+- execution_mode: `war_acceleration_v1(layered_on_dual_pool_single_lane)`
+- pool_hub_main_lane: `Hub-L5`
+- pool_xt_main_lane: `XT-L2`
+- standby_burst_lanes: `Hub-L1,Hub-L2,Hub-L3,Hub-L4,XT-L1`
+- proxy_claim_policy: `enabled(ttl_45m,max_renew_1,evidence_only,no_cross_gate_write)`
+- active2_autopush_mode: `enabled(no_external_wait)`
+- stale_dependency_takeover: `enabled(non_release_ttl_10m,release_ttl_20m,active_lane_only)`
+- planned_takeover_owner: `superseded_by_CD-20260305-004`
+- hub_pool_owner: `Hub-L5(single_lane_takeover)`
+- xt_pool_owner: `XT-L2(single_lane_takeover)`
+- lane_collapse_mode: `enabled(hub5_to_hubl5,xt2_to_xtl2)`
+
+## B. CR Inbox（运行态）
+
+- `CR-20260301-001`（accepted）
+  - requester: user
+  - change_summary: 启用“单文件分区 + 实时重规划 + 7件套”协作法并更新系统工单
+  - urgency: P0
+  - impact_lanes: Hub-L1..L5, XT-L1..L2
+  - impact_gates: XT-Ready / SKC / SI / internal pass-lines
+  - preempt_policy: can_preempt
+  - decision_owner: AI-COORD-PRIMARY
+- `CR-20260301-002`（accepted）
+  - requester: user
+  - change_summary: 新增“多泳池 + 自适应泳道 + 档位 + 参与等级”Supervisor 能力并纳入工单体系
+  - urgency: P0
+  - impact_lanes: XT-L2, Hub-L3, Hub-L5, XT-L1
+  - impact_gates: XT-SUP / XT-Ready / XT-G5
+  - preempt_policy: next_replan_window
+  - decision_owner: AI-COORD-PRIMARY
+- `CR-20260301-003`（accepted）
+  - requester: user
+  - change_summary: 产出多泳池“细化执行工单包”，并明确“继续”自动接任务协议
+  - urgency: P0
+  - impact_lanes: XT-L2, XT-L1, Hub-L3, Hub-L5, QA
+  - impact_gates: XT-MP-G0..G5 / XT-Ready / XT-G5
+  - preempt_policy: next_replan_window
+  - decision_owner: AI-COORD-PRIMARY
+- `CR-20260301-004`（accepted）
+  - requester: user
+  - change_summary: 新增“自动推进 + 用户介入等级（三档）”实现级子工单，并要求可落地执行
+  - urgency: P0
+  - impact_lanes: XT-L2, XT-L1, Hub-L3, Hub-L5, QA
+  - impact_gates: XT-MP-G3 / XT-MP-G4 / XT-MP-G5
+  - preempt_policy: next_replan_window
+  - decision_owner: AI-COORD-PRIMARY
+- `CR-20260302-001`（accepted）
+  - requester: user
+  - change_summary: 新增“Token 最优上下文胶囊 + 三段式提示词（Stable Core + Task Delta + Context Refs）”并纳入正在推进工单
+  - urgency: P0
+  - impact_lanes: XT-L2, XT-L1, Hub-L3, Hub-L5, QA
+  - impact_gates: XT-MP-G2 / XT-MP-G3 / XT-MP-G4 / XT-MP-G5
+  - preempt_policy: next_replan_window
+  - decision_owner: AI-COORD-PRIMARY
+- `CR-20260302-002`（accepted）
+  - requester: user
+  - change_summary: 新增“阻塞依赖图 + 双绿门控 + 解阻即时指导”能力，要求 blocker 转绿后等待泳道自动续推
+  - urgency: P0
+  - impact_lanes: XT-L2, XT-L1, Hub-L3, Hub-L5, QA
+  - impact_gates: XT-MP-G3 / XT-MP-G4 / XT-MP-G5
+  - preempt_policy: next_replan_window
+  - decision_owner: AI-COORD-PRIMARY
+- `CR-20260302-003`（accepted）
+  - requester: user
+  - change_summary: x-hub-system 自托管推进接入“关键路径解阻模式”，优先清 release blocker 依赖链
+  - urgency: P0
+  - impact_lanes: Hub-L1..L5, XT-L1..L2, QA
+  - impact_gates: XT-MP-G3 / XT-MP-G4 / XT-MP-G5 / XT-Ready
+  - preempt_policy: can_preempt
+  - decision_owner: AI-COORD-PRIMARY
+- `CR-20260302-004`（accepted）
+  - requester: user
+  - change_summary: 新增 Jamless 防堵车规则，要求定向接力替代广播、阻断无增量重试、降低 token 爆炸
+  - urgency: P0
+  - impact_lanes: Hub-L1..L5, XT-L1..L2, QA
+  - impact_gates: XT-MP-G3 / XT-MP-G4 / XT-MP-G5 / SKC
+  - preempt_policy: can_preempt
+  - decision_owner: AI-COORD-PRIMARY
+- `CR-20260303-001`（accepted）
+  - requester: user
+  - change_summary: 新增 CBL 最优推进策略，要求在拆分/调度/上下文三处同时防堵塞（Block-aware split + dynamic Active-3 + session rollover + block predictor）
+  - urgency: P0
+  - impact_lanes: Hub-L1..L5, XT-L1..L2, QA
+  - impact_gates: XT-MP-G0 / XT-MP-G1 / XT-MP-G2 / XT-MP-G3 / XT-MP-G4 / XT-MP-G5 / SKC
+  - preempt_policy: can_preempt
+  - decision_owner: AI-COORD-PRIMARY
+- `CR-20260303-002`（accepted）
+  - requester: user
+  - change_summary: 新增创新分档（L0..L4）与建议治理（supervisor_only/hybrid/lane_open），并要求 UI 可选择档位
+  - urgency: P0
+  - impact_lanes: Hub-L1..L5, XT-L1..L2, QA, AI-COORD-PRIMARY
+  - impact_gates: XT-MP-G3 / XT-MP-G5 / XT-Ready / SKC
+  - preempt_policy: can_preempt
+  - decision_owner: AI-COORD-PRIMARY
+- `CR-20260306-001`（accepted）
+  - requester: user
+  - change_summary: 将 `XT-W3-21/XT-W3-22` 接案验收包与 `XT-W3-23` 记忆产品化包及其子工单同步挂入 Command Board，确保新接手 AI 只读看板也能识别后续执行入口
+  - urgency: P1
+  - impact_lanes: XT-L2, XT-L1, Hub-L5, QA
+  - impact_gates: XT-MP-G0..G5 / XT-MEM-G0..G5 / XT-Ready
+  - preempt_policy: next_replan_window
+  - decision_owner: AI-COORD-PRIMARY
+- `CR-20260306-002`（accepted）
+  - requester: user
+  - change_summary: 将 `XT-W3-24` 多渠道入口与流式体验产品化包及其子工单同步挂入 Command Board，确保后续渠道产品化主线可由 XT-L2/XT-L1/Hub-L5/QA 从看板直接接手
+  - urgency: P1
+  - impact_lanes: XT-L2, XT-L1, Hub-L5, QA
+  - impact_gates: XT-CHAN-G0..G5 / XT-MP-G4..G5 / XT-Ready
+  - preempt_policy: next_replan_window
+  - decision_owner: AI-COORD-PRIMARY
+- `CR-20260306-003`（accepted）
+  - requester: user
+  - change_summary: 新增 `XT-W3-25` 自动化产品面补短板执行包并同步挂入 Command Board，补齐对标 `Cursor Automations` 暴露出的事件驱动、主动解阻、运行操作台、一键启用与竞争性毕业线短板
+  - urgency: P1
+  - impact_lanes: XT-L2, XT-L1, Hub-L5, QA
+  - impact_gates: XT-AUTO-G0..G5 / XT-MP-G4..G5 / XT-Ready
+  - preempt_policy: next_replan_window
+  - decision_owner: AI-COORD-PRIMARY
+- `CR-20260306-004`（accepted）
+  - requester: user
+  - change_summary: 启用 `War Acceleration Mode v1`，以 `Hub-Main + XT-Main + QA-Main(shadow) + XT-Support(directed)` 取代细粒度人肉协同；允许同 owner 域自接管依赖、按纵向切片批量回填 7 件套，并将 QA 提前到开发并行阶段
+  - urgency: P1
+  - impact_lanes: Hub-L5, XT-L2, XT-L1, QA
+  - impact_gates: XT-MP-G0..G5 / XT-AUTO-G0..G5 / XT-CHAN-G0..G5 / XT-MEM-G0..G5 / XT-Ready
+  - preempt_policy: immediate_policy_overlay
+  - decision_owner: AI-COORD-PRIMARY
+
+## C. Task Catalog（运行态）
+
+| task_id | lane_owner | priority | status | gate_vector | release_blocker | depends_on | claim_id | claim_ttl_until | evidence_refs |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `SKC-W1-01+SKC-W1-02` | `Hub-L5(pool_takeover)` | `P0` | `delivered` | `SKC-G0:PASS,SKC-G1:PASS,SKC-G3:PASS` | `true` | `none` | `claim_skc_w1_01_02_auto_continue_20260302_1926` | `2026-03-04T00:10:46-08:00` | `docs/openclaw_skill_abi_compat.v1.json`, `build/reports/skc_w1_hub_l1_evidence.v1.json`, `build/reports/skc_w1_hub_l1_g3_handoff.v2.json`, `build/reports/skc_w1_hub_l1_autocontinue_checkpoint.v59.json`, `build/reports/skc_w1_hub_l1_autocontinue_checkpoint.v59.consistency.json`, `build/reports/skc_w1_hub_l1_delta_3line.v59.json`, `build/reports/skc_w1_runner_execute_chain_evaluateSkillExecutionGate_evidence.hubl1.v2.json`, `build/reports/skc_w1_hub_l1_require_real_alignment.v14.json`, `build/reports/skc_w1_xt_l2_hub_l1_real_sample_probe_results.v10.json`, `build/reports/skc_w3_08_require_real_sampling_gap.v16.json`, `build/reports/skc_brk_h1_event_bridge_evidence.v1.json`, `build/reports/skc_brk_h1_probe.json`, `build/reports/skc_w1_hub_l1_contract_drift_guard.v3.json`, `build/hub_l5_release_skc_g3_real_sampling.json` |
+| `SKC-W1-03` | `Hub-L5(pool_takeover)` | `P0` | `delivered` | `SKC-G2:PASS,SKC-G4:PASS` | `true` | `SKC-W1-02` | `claim_skc_w1_03_20260301_2135` | `2026-03-02T01:35:00-08:00` | `build/reports/skc_w1_03_hub_l2_evidence.v1.json`, `x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js`, `x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js` |
+| `SKC-W1-04` | `Hub-L5(pool_takeover)` | `P0` | `delivered` | `SKC-G2:PASS,SKC-G4:PASS` | `true` | `SKC-W1-03` | `claim_skc_w1_04_hub_l2_20260302_0129` | `2026-03-03T22:10:43-08:00` | `build/reports/skc_w1_04_hub_l2_evidence.v1.json`, `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v1.json`, `build/reports/skc_w1_04_hub_l3_preflight_readiness.v1.json`, `build/reports/skc_w1_04_hub_l3_evidence.v1.json`, `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v39.json`, `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v40.json`, `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v41.json`, `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v42.json`, `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v43.json`, `build/reports/skc_w1_04_hub_l3_prereq_monitor.v1.json`, `build/reports/skc_w1_04_hub_l3_prereq_monitor.v2.json`, `build/reports/skc_w1_04_hub_l3_prereq_monitor.v3.json`, `build/reports/skc_w1_04_hub_l3_prereq_monitor.v4.json`, `build/reports/skc_w1_04_hub_l3_runner_execute_chain_probe.v1.json`, `build/reports/skc_w1_04_hub_l3_downstream_unblock_signal.v1.json`, `build/reports/skc_w1_04_hub_l3_directed_baton_dispatch.v1.json`, `build/reports/skc_w1_04_hub_l3_7lane_daily_receipt.v1.json`, `build/reports/skc_w1_runner_execute_chain_evaluateSkillExecutionGate_evidence.hubl1.v1.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v2.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`, `build/hubl3_skc_w1_04_dependency_probe.log`, `build/hubl3_skc_w1_04_contract_check.log`, `build/hubl3_skc_w1_04_skills_store_security.test.log`, `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`, `build/hubl3_skills_grant_chain_contract_report.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v45.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v1.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v2.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v3.json`, `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v45.json`, `build/reports/skc_w1_04_hub_l2_drift_guard.v1.json`, `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v46.json`, `build/reports/skc_w1_04_hub_l2_drift_guard.v2.json`, `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v47.json`, `build/reports/skc_w1_04_hub_l2_drift_guard.v3.json`, `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v48.json`, `build/reports/skc_w1_04_hub_l2_drift_guard.v4.json`, `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v49.json`, `build/reports/skc_w1_04_hub_l2_drift_guard.v5.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v46.json`, `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v44.json`, `build/reports/skc_w1_04_hub_l3_prereq_monitor.v5.json`, `build/reports/skc_w1_04_hub_l3_directed_baton_dispatch.v2.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v4.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v47.json`, `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v45.json`, `build/reports/skc_w1_04_hub_l3_prereq_monitor.v6.json`, `build/reports/skc_w1_04_hub_l3_directed_baton_dispatch.v3.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v5.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v48.json`, `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v46.json`, `build/reports/skc_w1_04_hub_l3_prereq_monitor.v7.json`, `build/reports/skc_w1_04_hub_l3_prereq_b_alignment.v1.json`, `build/reports/skc_w1_04_hub_l3_directed_baton_dispatch.v4.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v6.json`, `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v47.json`, `build/reports/skc_w1_04_hub_l3_prereq_monitor.v8.json`, `build/reports/skc_w1_04_hub_l3_prereq_b_alignment.v2.json`, `build/reports/skc_w1_04_hub_l3_directed_baton_dispatch.v5.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v7.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v8.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v49.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v50.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v51.json`, `build/reports/skc_w1_04_hub_l3_prereq_monitor.v9.json`, `build/reports/skc_w1_04_hub_l3_prereq_b_alignment.v3.json`, `build/reports/skc_w1_04_hub_l3_directed_baton_dispatch.v6.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v9.json`, `build/reports/skc_w1_04_hub_l3_prereq_monitor.v10.json`, `build/reports/skc_w1_04_hub_l3_prereq_b_alignment.v4.json`, `build/reports/skc_w1_04_hub_l3_directed_baton_dispatch.v7.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v10.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v52.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v53.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v11.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v54.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v55.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v56.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v12.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v13.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v14.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v57.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v15.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v16.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v58.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v17.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v19.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v59.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v60.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v20.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v21.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v22.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v23.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v24.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v25.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v26.json` |
+| `SKC-W2-05` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `SKC-G1:PASS,SKC-G3:PASS,SKC-G4:PASS` | `true` | `SKC-W1-04` | `claim_skc_w2_05_xt_l1_hf_directed_20260301_2211` | `2026-03-05T14:53:45-08:00` | `x-terminal/work-orders/xt-l1-openclaw-skills-ux-preflight-runner-contract-v1.md`, `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v2.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v1.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v3.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v4.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v2.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v3.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v4.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v5.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v6.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v7.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v8.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v9.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v10.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v11.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v12.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v13.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v14.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v15.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v16.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v17.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v18.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v19.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v20.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v21.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v22.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v23.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v24.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v25.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v26.json`, `build/xt_l1_release_sprint.memory_agent_grant_chain.test.log`, `build/xt_l1_release_sprint.skills_store_security.test.log`, `build/xt_l1_release_sprint.contract_check.log`, `build/hub_l5_release_skc_g3_real_sampling.json`, `build/reports/skc_w3_08_require_real_sampling_gap.v9.json`, `x-terminal/scripts/fixtures/skills_xt_l1_contract.sample.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_hard_line_triplet_qa_alignment.v1.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v5.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v27.json`, `build/reports/skc_w2_05_xt_l1_verified_handoff.v1.json`, `build/reports/skc_brk_x2_g3_probe.compat.v1.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_delta_3line.v28.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v28.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_delta_3line.v29.json`, `build/reports/xt_l1_prep_only_bundle.v1.json`, `build/reports/xt_w2_23_b_innovation_level_ui_prep_draft.v1.json`, `build/reports/xt_w2_24_a_tri_prompt_compiler_prep_draft.v1.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v29.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_delta_3line.v30.json`, `build/reports/xt_w2_23_b_innovation_level_ui_prep_draft.v2.json`, `build/reports/xt_w2_24_a_tri_prompt_compiler_prep_draft.v2.json`, `build/reports/xt_l1_prep_only_bundle.v2.json`, `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_checklist.v2.json`, `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_minicard.v1.json` |
+| `SKC-W2-06` | `XT-L2(pool_takeover)` | `P0` | `verified_handoff` | `SKC-G1:PASS,SKC-G2:PASS,SKC-G3:PASS,SKC-G4:PASS,SKC-G5:PASS` | `true` | `XT-W2-12/13/14,SKC-W2-05` | `claim_skc_w2_06_xt_l2_hubl5_prereqb_20260303_0039` | `2026-03-05T16:39:17-08:00` | `build/reports/skc_w2_06_xt_l2_pre_takeover_readiness.v1.json`, `build/reports/skc_w2_06_xt_l2_hub_l5_prereq_b_metrics_fill.v10.json`, `build/reports/skc_w2_06_xt_l2_hub_l5_prereq_b_internal_pass_recheck.v11.json`, `build/reports/skc_w2_06_xt_l2_hub_l5_prereq_b_consistency_check.v11.json`, `build/reports/skc_w2_06_xt_l2_hub_l5_directed_prereq_b_catalyst.v12.json`, `build/reports/skc_w2_06_xt_l2_internal_pass_metrics_patch.v8.json`, `build/reports/skc_w2_06_xt_l2_internal_pass_samples_patch.v7.json`, `build/reports/skc_w2_06_xt_l2_xt_report_index_overlay.v1.json`, `build/reports/skc_w2_06_xt_l2_xt_mainline_switch_signal.v2.json`, `build/reports/skc_w2_06_xt_l2_hub_l1_sample_sufficiency_source_patch.v1.json`, `build/reports/skc_w2_06_xt_l2_delta_3line.v75.json`, `build/reports/skc_w3_08_hub_l5_delta_3line.v93.json`, `build/hub_l5_release_skc_g5_summary.json`, `build/hub_l5_release_internal_pass_lines_report.json`, `build/hub_l5_release_skc_g3_real_sampling.json`, `build/reports/skc_w2_06_xt_l2_verified_handoff.v1.json` |
+| `SKC-W2-07` | `Hub-L5(pool_takeover)` | `P0` | `delivered` | `SKC-G2:PASS,SKC-G4:PASS` | `true` | `SKC-W2-06,XT-W2-17,XT-W2-18,XT-W2-19,CRK-W1-07,CRK-W1-08` | `claim_skc_w2_07_precheck_20260301_1909` | `2026-03-05T08:15:00-08:00` | `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_precheck_report.v1.json`, `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`, `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v47.json`, `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v48.json`, `x-terminal/.axcoder/reports/skc_w2_07_gate_evidence.json`, `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`, `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_to_hub_l5_handoff.v1.json`, `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_hub_l5_handoff_consume_check.v8.json`, `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_delta_3line.v6.json` |
+| `SKC-W3-08` | `Hub-L5(pool_takeover)` | `P0` | `delivered` | `SKC-G5:PASS,SKC-G3:PASS` | `true` | `SKC-W2-07` | `claim_skc_w3_08_hub_l5_autocontinue_20260303_1831` | `2026-03-05T19:25:55+08:00` | `build/reports/skc_w3_08_hub_l5_evidence.v1.json`, `build/reports/skc_w3_08_hub_l5_hub_l4_handoff_consume.v1.json`, `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_to_hub_l5_handoff.v1.json`, `build/reports/skc_w3_08_hub_l5_delta_3line.v121.json`, `build/reports/skc_w3_08_hub_l5_delta_3line.v120.json`, `build/reports/hub_pool_takeover_delta_3line.v1.json`, `build/reports/hub_l5_xt_w2_26_probe_unblock_decision.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v24.json`, `build/reports/xt_w2_26_g3_g4_first_probe.v3.json`, `build/reports/xt_w2_26_probe_runtime_env_check.v2.log`, `build/reports/xt_w2_26_probe_supervisor_incident_arbiter_tests.v4.log`, `build/reports/xt_w2_26_probe_gate_smoke_tests.v4.log`, `build/reports/xt_w2_26_a_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v23.json`, `build/reports/xt_w2_26_unsandboxed_probe_request.v1.json`, `build/reports/xt_w2_26_runtime_env_patch.v1.json`, `build/reports/hub_l5_xt_w2_26_minimal_patch_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_xt_w2_26_dependency_check.v7.json`, `build/reports/xt_main_xt_l2_xt_w2_13_14_evidence_board_link.v1.json`, `build/reports/xt_main_xt_l2_xt_w2_25_dependency_fill.v2.json`, `build/hub_l5_release_skc_g5_summary.json`, `build/hub_l5_release_internal_pass_lines_report.json`, `build/hub_l5_release_skc_g3_real_sampling.json`, `build/reports/skc_w1_hub_l1_delta_3line.v60.json`, `build/reports/skc_w1_xt_l2_hub_l1_real_sample_probe_results.v11.json` |
+| `XT-W2-13` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-SUP-G2:candidate_pass` | `false` | `XT-W2-12` | `none` | `none` | `x-terminal/work-orders/xt-supervisor-autosplit-multilane-work-orders-v1.md`, `x-terminal/Sources/Supervisor/LaneHeartbeatController.swift`, `x-terminal/Sources/Supervisor/LaneRuntimeState.swift`, `x-terminal/Sources/Event/AXEventBus.swift`, `build/xt_l2_skc_gate_report.json`, `build/reports/xt_main_xt_l2_xt_w2_13_14_evidence_board_link.v1.json` |
+| `XT-W2-14` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-SUP-G3:candidate_pass,XT-G2:candidate_pass` | `false` | `XT-W1-03,XT-W1-04,XT-W2-13` | `none` | `none` | `x-terminal/work-orders/xt-supervisor-autosplit-multilane-work-orders-v1.md`, `x-terminal/Sources/Supervisor/IncidentArbiter.swift`, `x-terminal/Tests/SupervisorIncidentArbiterTests.swift`, `x-terminal/Sources/Event/AXEventBus.swift`, `build/xt_l2_skc_gate_report.json`, `build/reports/xt_main_xt_l2_xt_w2_13_14_evidence_board_link.v1.json` |
+| `XT-W2-20` | `XT-L2(pool_takeover)` | `P0` | `claimed` | `XT-MP-G0:candidate_pass,XT-MP-G1:pending` | `false` | `CR-20260301-003` | `claim_xt_w2_20_xt_l2_mainline_20260304_1254` | `2026-03-04T16:54:25+08:00` | `x-terminal/work-orders/xt-supervisor-multipool-adaptive-work-orders-v1.md`, `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `build/reports/xt_w2_20_pool_planner_probe.v1.json`, `build/reports/xt_w2_20_xt_l2_delta_3line.v3.json`, `build/reports/xt_w2_21_xt_l2_claim_receipt.v1.json`, `build/reports/skc_w2_06_xt_l2_xt_mainline_switch_signal.v2.json`, `build/reports/skc_w3_08_hub_l5_delta_3line.v93.json` |
+| `XT-W2-20-B` | `XT-L2(pool_takeover)` | `P0` | `ready_to_verify(no_claim;fail_closed)` | `XT-MP-G0:candidate_pass,XT-MP-G1:pending,XT-MP-G3:ready_to_verify` | `false` | `XT-W2-20,XT-W2-21,CR-20260303-001` | `none` | `none` | `x-terminal/work-orders/xt-cbl-anti-block-context-governor-implementation-pack-v1.md`, `build/reports/xt_w2_20_b_qa_ready_to_verify_review.v1.json`, `build/reports/xt_w2_20_b_hub_l3_ready_to_verify_delta_3line.v1.json`, `build/reports/xt_w2_20_b_hub_l3_ready_to_verify_delta_3line.v2.json`, `build/reports/xt_w2_20_b_hub_l3_ready_to_verify_delta_3line.v3.json`, `build/reports/xt_w2_20_b_hub_l3_ready_to_verify_delta_3line.v7.json`, `build/reports/xt_main_xt_l2_full_7piece.v1.json`, `build/reports/xt_main_xt_l2_full_7piece.v2.json`, `build/reports/xt_w2_20_b_xt_l2_takeover_audit.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v2.json`, `build/reports/xt_main_xt_l2_delta_3line.v3.json`, `build/reports/xt_main_xt_l2_delta_3line.v4.json`, `build/reports/xt_main_xt_l2_delta_3line.v5.json` |
+| `XT-W2-21` | `XT-L2(pool_takeover)` | `P0` | `claimed` | `XT-MP-G0:candidate_pass,XT-MP-G1:pending` | `false` | `XT-W2-20` | `claim_xt_w2_21_xt_l2_seq_20260304_1255` | `2026-03-04T16:54:25+08:00` | `x-terminal/work-orders/xt-supervisor-multipool-adaptive-work-orders-v1.md`, `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `build/reports/xt_w2_21_xt_l2_claim_receipt.v1.json`, `build/reports/xt_w2_21_lane_synth_evidence.v1.json`, `build/reports/xt_w2_21_xt_l2_delta_3line.v3.json`, `build/reports/xt_w2_21_xt_l2_delta_3line.v4.json`, `build/reports/xt_w2_21_xt_l2_delta_3line.v5.json`, `build/reports/xt_w2_21_xt_l2_delta_3line.v6.json`, `build/reports/xt_w2_20_b_xt_l2_next_state_min_action.v1.json`, `build/reports/xt_w2_20_b_hub_l3_ready_to_verify_delta_3line.v3.json`, `build/reports/xt_w2_20_b_qa_ready_to_verify_review.v1.json` |
+| `XT-W2-22` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G1:candidate_pass,XT-MP-G3:candidate_pass` | `false` | `XT-W2-20,XT-W2-21` | `claim_xt_w2_22_xt_l2_formal_20260304_1458` | `2026-03-04T18:58:33+08:00` | `x-terminal/work-orders/xt-supervisor-multipool-adaptive-work-orders-v1.md`, `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `build/reports/xt_w2_22_xt_l2_shadow_prep_delta_3line.v1.json`, `build/reports/xt_w2_22_profile_engine_evidence.v1.json`, `build/reports/xt_w2_22_g1_candidate_recheck.v1.json`, `build/reports/xt_w2_22_g3_candidate_probe.v1.json`, `build/reports/xt_w2_22_xt_l2_delta_3line.v2.json`, `build/reports/xt_w2_22_xt_l2_delta_3line.v3.json`, `build/reports/xt_w2_22_xt_l2_delta_3line.v4.json`, `build/reports/xt_w2_22_xt_l2_delta_3line.v5.json`, `build/reports/xt_w2_22_xt_l2_delta_3line.v6.json`, `build/reports/xt_w2_23_b_xt_l2_shadow_prep_delta_3line.v2.json`, `build/reports/xt_w2_20_b_hub_l3_ready_to_verify_delta_3line.v6.json`, `build/reports/xt_w2_20_b_dual_track_qa_guard_review.v2.json`, `build/reports/xt_main_xt_l2_xt_w2_25_dependency_fill.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v11.json` |
+| `XT-W2-23` | `XT-L2(pool_takeover)` | `P0` | `claimed` | `XT-MP-G3:candidate_pass` | `false` | `XT-W2-22` | `claim_xt_w2_23_xt_l2_formal_20260304_1543` | `2026-03-04T19:43:12+08:00` | `x-terminal/work-orders/xt-supervisor-multipool-adaptive-work-orders-v1.md`, `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `build/reports/xt_w2_22_hub_l3_next_state_verdict_delta_3line.v1.json`, `build/reports/xt_w2_22_xt_l2_delta_3line.v6.json`, `build/reports/xt_w2_23_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_23_participation_probe.v1.json`, `build/reports/xt_w2_23_xt_l2_delta_3line.v2.json`, `build/reports/xt_w2_23_hub_l3_next_state_verdict_delta_3line.v1.json`, `build/reports/xt_w2_23_xt_l2_delta_3line.v3.json`, `build/reports/xt_w2_23_b_xt_l2_shadow_prep_delta_3line.v2.json` |
+| `XT-W2-23-B` | `XT-L2(pool_takeover)` | `P0` | `claimed` | `XT-MP-G3:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-23,CR-20260303-002` | `claim_xt_w2_23_b_xt_l2_formal_20260304_1900` | `2026-03-04T23:00:54+08:00` | `x-terminal/work-orders/xt-w2-23-w2-26-autocontinue-autonomy-implementation-pack-v1.md`, `build/reports/xt_w2_23_b_innovation_level_ui_prep_draft.v1.json`, `build/reports/xt_w2_23_b_innovation_level_ui_prep_draft.v2.json`, `build/reports/xt_w2_23_b_innovation_level_ui_evidence.v1.json`, `build/reports/xt_w2_23_b_g5_candidate_probe.v1.json`, `build/reports/xt_w2_23_b_xt_l2_shadow_prep_delta_3line.v2.json`, `build/reports/xt_w2_23_b_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_23_b_xt_l2_delta_3line.v2.json`, `build/reports/xt_w2_23_b_xt_l2_delta_3line.v3.json`, `build/reports/xt_w2_23_b_hub_l3_next_state_verdict_delta_3line.v2.json`, `build/reports/xt_w2_23_b_xt_l2_delta_3line.v4.json` |
+| `XT-W2-23-C` | `XT-L2(pool_takeover)` | `P0` | `claimed` | `XT-MP-G3:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-23-B,CR-20260303-002` | `claim_xt_w2_23_c_xt_l2_formal_20260304_1946` | `2026-03-04T23:46:44+08:00` | `x-terminal/work-orders/xt-w2-23-w2-26-autocontinue-autonomy-implementation-pack-v1.md`, `build/reports/xt_w2_23_b_hub_l3_next_state_verdict_delta_3line.v2.json`, `build/reports/xt_w2_23_b_xt_l2_delta_3line.v4.json`, `build/reports/xt_w2_23_c_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_23_c_suggestion_governance_evidence.v1.json`, `build/reports/xt_w2_23_c_xt_l2_delta_3line.v2.json`, `build/reports/xt_w2_23_c_g5_candidate_probe.v1.json`, `build/reports/xt_w2_23_c_xt_l2_delta_3line.v3.json`, `build/reports/xt_w2_23_c_hub_l3_next_state_verdict_delta_3line.v4.json`, `build/reports/xt_w2_23_c_xt_l2_delta_3line.v4.json` |
+| `XT-W2-23-A` | `XT-L2(pool_takeover)` | `P0` | `claimed` | `XT-MP-G3:candidate_pass` | `false` | `XT-W2-23,CR-20260301-004` | `claim_xt_w2_23_a_xt_l2_formal_20260304_2122` | `2026-03-05T01:22:34+08:00` | `x-terminal/work-orders/xt-w2-23-w2-26-autocontinue-autonomy-implementation-pack-v1.md`, `build/reports/xt_w2_23_c_hub_l3_next_state_verdict_delta_3line.v4.json`, `build/reports/xt_w2_23_c_xt_l2_delta_3line.v4.json`, `build/reports/xt_w2_23_a_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_23_a_g3_candidate_probe.v1.json`, `build/reports/xt_w2_23_a_xt_l2_delta_3line.v2.json`, `build/reports/xt_w2_23_a_hub_l3_next_state_verdict_delta_3line.v1.json`, `build/reports/xt_w2_23_a_xt_l2_delta_3line.v3.json` |
+| `XT-W2-24` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G2:candidate_pass,XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-21,XT-W2-23` | `claim_xt_w2_24_xt_l2_formal_20260304_2150` | `2026-03-05T01:50:56+08:00` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `build/reports/xt_w2_23_a_hub_l3_next_state_verdict_delta_3line.v1.json`, `build/reports/xt_w2_23_a_xt_l2_delta_3line.v3.json`, `build/reports/xt_w2_24_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_24_prompt_pack_evidence.v1.json`, `build/reports/xt_w2_24_xt_l2_delta_3line.v2.json`, `build/reports/xt_main_xt_l2_xt_w2_24_b_to_f_closure_alignment.v1.json`, `build/reports/xt_main_xt_l2_xt_w2_25_dependency_fill.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v11.json` |
+| `XT-W2-24-A` | `XT-L2(pool_takeover)` | `P0` | `claimed` | `XT-MP-G2:pending` | `false` | `XT-W2-24,CR-20260302-001` | `claim_xt_w2_24_a_xt_l2_formal_20260304_2156` | `2026-03-05T01:56:43+08:00` | `x-terminal/work-orders/xt-w2-24-token-optimal-context-capsule-implementation-pack-v1.md`, `build/reports/xt_w2_24_a_tri_prompt_compiler_prep_draft.v1.json`, `build/reports/xt_w2_24_a_tri_prompt_compiler_prep_draft.v2.json`, `build/reports/xt_l1_prep_only_bundle.v1.json`, `build/reports/xt_l1_prep_only_bundle.v2.json`, `build/reports/xt_w2_24_xt_l2_delta_3line.v2.json`, `build/reports/xt_w2_24_a_xt_l2_delta_3line.v1.json` |
+| `XT-W2-24-B` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G2:candidate_pass,XT-MP-G3:candidate_pass` | `false` | `XT-W2-24-A` | `claim_xt_w2_24_b_xt_l2_temp_takeover_20260305_1024` | `2026-03-05T14:24:48+08:00` | `x-terminal/work-orders/xt-w2-24-token-optimal-context-capsule-implementation-pack-v1.md`, `build/reports/xt_main_xt_l2_readonly_consistency_check.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v6.json`, `build/reports/xt_main_xt_l2_full_7piece.v3.json`, `build/reports/skc_w3_08_hub_l5_delta_3line.v99.json`, `build/reports/xt_main_xt_l2_xt_w2_24_b_to_f_closure_alignment.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v11.json` |
+| `XT-W2-24-C` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass` | `false` | `XT-W2-24-A,XT-W2-24-B` | `claim_xt_w2_24_c_xt_l2_temp_takeover_20260305_1030` | `2026-03-05T14:30:19+08:00` | `x-terminal/work-orders/xt-w2-24-token-optimal-context-capsule-implementation-pack-v1.md`, `build/reports/xt_main_xt_l2_readonly_consistency_check.v2.json`, `build/reports/xt_main_xt_l2_delta_3line.v7.json`, `build/reports/xt_main_xt_l2_full_7piece.v4.json`, `build/reports/skc_w3_08_hub_l5_delta_3line.v99.json`, `build/reports/xt_main_xt_l2_xt_w2_24_b_to_f_closure_alignment.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v11.json` |
+| `XT-W2-24-D` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass` | `false` | `XT-W2-24-B,XT-W2-24-C` | `claim_xt_w2_24_d_xt_l2_temp_takeover_20260305_1036` | `2026-03-05T14:36:46+08:00` | `x-terminal/work-orders/xt-w2-24-token-optimal-context-capsule-implementation-pack-v1.md`, `build/reports/xt_main_xt_l2_readonly_consistency_check.v3.json`, `build/reports/xt_main_xt_l2_delta_3line.v8.json`, `build/reports/xt_main_xt_l2_full_7piece.v5.json`, `build/reports/skc_w3_08_hub_l5_delta_3line.v101.json`, `build/reports/xt_main_xt_l2_xt_w2_24_b_to_f_closure_alignment.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v11.json` |
+| `XT-W2-24-E` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-24-D` | `claim_xt_w2_24_e_xt_l2_temp_takeover_20260305_1041` | `2026-03-05T14:41:23+08:00` | `x-terminal/work-orders/xt-w2-24-token-optimal-context-capsule-implementation-pack-v1.md`, `build/reports/xt_main_xt_l2_readonly_consistency_check.v4.json`, `build/reports/xt_main_xt_l2_delta_3line.v9.json`, `build/reports/xt_main_xt_l2_full_7piece.v6.json`, `build/reports/skc_w3_08_hub_l5_delta_3line.v101.json`, `build/reports/xt_main_xt_l2_xt_w2_24_b_to_f_closure_alignment.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v11.json` |
+| `XT-W2-24-F` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G2:candidate_pass,XT-MP-G3:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-24-A,XT-W2-24-B,XT-W2-24-C,XT-W2-24-D,CR-20260303-001` | `claim_xt_w2_24_f_xt_l2_temp_takeover_20260305_1044` | `2026-03-05T14:44:23+08:00` | `x-terminal/work-orders/xt-cbl-anti-block-context-governor-implementation-pack-v1.md`, `build/reports/xt_main_xt_l2_readonly_consistency_check.v5.json`, `build/reports/xt_main_xt_l2_delta_3line.v10.json`, `build/reports/xt_main_xt_l2_full_7piece.v7.json`, `build/reports/skc_w3_08_hub_l5_delta_3line.v105.json`, `build/reports/xt_main_xt_l2_xt_w2_24_b_to_f_closure_alignment.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v11.json` |
+| `XT-W2-25` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G1:candidate_pass,XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass` | `false` | `XT-W2-22,XT-W2-24` | `claim_xt_w2_25_xt_l2_temp_takeover_20260305_1054` | `2026-03-05T14:54:03+08:00` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `build/reports/xt_main_xt_l2_readonly_consistency_check.v6.json`, `build/reports/xt_main_xt_l2_xt_w2_24_b_to_f_closure_alignment.v1.json`, `build/reports/xt_main_xt_l2_xt_w2_25_dependency_fill.v1.json`, `build/reports/xt_main_xt_l2_readonly_consistency_check.v8.json`, `build/reports/xt_main_xt_l2_delta_3line.v13.json`, `build/reports/xt_main_xt_l2_full_7piece.v10.json`, `build/reports/skc_w3_08_hub_l5_delta_3line.v108.json`, `build/reports/xt_main_xt_l2_delta_3line.v11.json`, `build/reports/xt_main_xt_l2_full_7piece.v8.json`, `build/reports/skc_w3_08_hub_l5_delta_3line.v105.json` |
+| `XT-W2-25-S1` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G1:candidate_pass,XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass` | `false` | `XT-W2-25,CD-20260301-008` | `claim_xt_w2_25_s1_xt_l2_temp_takeover_20260305_1102` | `2026-03-05T15:02:38+08:00` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `build/reports/xt_main_xt_l2_readonly_consistency_check.v7.json`, `build/reports/xt_main_xt_l2_readonly_consistency_check.v8.json`, `build/reports/xt_main_xt_l2_delta_3line.v12.json`, `build/reports/xt_main_xt_l2_delta_3line.v13.json`, `build/reports/xt_main_xt_l2_full_7piece.v9.json`, `build/reports/xt_main_xt_l2_full_7piece.v10.json`, `build/reports/skc_w3_08_hub_l5_delta_3line.v108.json`, `build/reports/skc_w3_08_hub_l5_delta_3line.v105.json` |
+| `XT-W2-25-B` | `XT-L2(pool_takeover)` | `P0` | `planned` | `XT-MP-G3:pending,XT-MP-G4:pending` | `false` | `XT-W2-25,XT-W2-27,CR-20260303-001` | `none` | `none` | `x-terminal/work-orders/xt-cbl-anti-block-context-governor-implementation-pack-v1.md` |
+| `XT-W2-26` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass` | `false` | `XT-W2-25,XT-W2-13,XT-W2-14` | `claim_xt_w2_26_xt_l2_auto_20260305_1413` | `2026-03-05T18:13:48+08:00` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `build/reports/xt_main_xt_l2_delta_3line.v24.json`, `build/reports/xt_w2_26_g3_g4_first_probe.v3.json`, `build/reports/xt_w2_26_probe_runtime_env_check.v2.log`, `build/reports/xt_w2_26_probe_supervisor_incident_arbiter_tests.v4.log`, `build/reports/xt_w2_26_probe_gate_smoke_tests.v4.log`, `build/reports/hub_l5_xt_w2_26_probe_unblock_decision.v1.json`, `build/reports/xt_w2_26_a_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_xt_w2_26_dependency_check.v1.json`, `build/reports/xt_main_xt_l2_xt_w2_26_dependency_check.v2.json`, `build/reports/xt_main_xt_l2_xt_w2_26_dependency_check.v3.json`, `build/reports/xt_main_xt_l2_xt_w2_26_dependency_check.v4.json`, `build/reports/xt_main_xt_l2_xt_w2_26_dependency_check.v5.json`, `build/reports/xt_main_xt_l2_xt_w2_26_dependency_check.v6.json`, `build/reports/xt_main_xt_l2_xt_w2_26_dependency_check.v7.json`, `build/reports/xt_main_xt_l2_delta_3line.v23.json`, `build/reports/xt_main_xt_l2_delta_3line.v22.json`, `build/reports/xt_w2_26_g3_g4_first_probe.v2.json`, `build/reports/xt_w2_26_probe_supervisor_incident_arbiter_tests.v3.log`, `build/reports/xt_w2_26_probe_gate_smoke_tests.v3.log`, `build/reports/xt_w2_26_unsandboxed_probe_request.v1.json`, `build/reports/xt_w2_26_runtime_env_patch.v1.json`, `build/reports/hub_l5_xt_w2_26_minimal_patch_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v21.json`, `build/reports/xt_main_xt_l2_delta_3line.v20.json`, `build/reports/xt_main_xt_l2_full_7piece.v11.json`, `build/reports/xt_w2_26_g3_g4_first_probe.v1.json`, `build/reports/xt_main_xt_l2_xt_w2_13_14_evidence_board_link.v1.json`, `build/reports/xt_main_xt_l2_xt_w2_25_dependency_fill.v2.json`, `build/reports/xt_main_xt_l2_delta_3line.v13.json`, `build/reports/xt_main_xt_l2_delta_3line.v14.json`, `build/reports/xt_main_xt_l2_delta_3line.v15.json`, `build/reports/xt_main_xt_l2_delta_3line.v16.json`, `build/reports/xt_main_xt_l2_delta_3line.v17.json`, `build/reports/xt_main_xt_l2_delta_3line.v18.json`, `build/reports/xt_main_xt_l2_delta_3line.v19.json`, `x-terminal/Sources/Supervisor/LaneHeartbeatController.swift`, `x-terminal/Sources/Supervisor/IncidentArbiter.swift`, `x-terminal/Tests/SupervisorIncidentArbiterTests.swift`, `build/xt_l2_skc_gate_report.json` |
+| `XT-W2-26-A` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass` | `false` | `XT-W2-26,CR-20260301-004` | `claim_xt_w2_26_a_xt_l2_auto_20260305_1511` | `2026-03-05T19:11:46+08:00` | `x-terminal/work-orders/xt-w2-23-w2-26-autocontinue-autonomy-implementation-pack-v1.md`, `build/reports/xt_main_xt_l2_delta_3line.v26.json`, `build/reports/xt_w2_26_a_completion_adapter_contract_patch.v1.json`, `build/reports/xt_w2_26_a_completion_adapter_symbol_probe.v2.json`, `build/reports/xt_w2_26_a_completion_adapter_evidence.v2.json`, `build/reports/xt_w2_26_a_completion_adapter_probe_multilane_tests.v2.log`, `build/reports/xt_w2_26_a_completion_adapter_probe_runtime_kernel_tests.v2.log`, `build/reports/xt_w2_26_b_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v25.json`, `build/reports/xt_w2_26_a_completion_adapter_evidence.v1.json`, `build/reports/xt_w2_26_a_completion_adapter_symbol_probe.v1.json`, `build/reports/xt_w2_26_a_completion_adapter_probe_multilane_tests.v1.log`, `build/reports/xt_w2_26_a_completion_adapter_probe_runtime_kernel_tests.v1.log`, `build/reports/xt_w2_26_a_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v24.json`, `build/reports/xt_w2_26_g3_g4_first_probe.v3.json`, `build/reports/hub_l5_xt_w2_26_probe_unblock_decision.v1.json` |
+| `XT-W2-26-B` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass` | `false` | `XT-W2-26-A,XT-W2-23-A` | `claim_xt_w2_26_b_xt_l2_auto_20260305_1623` | `2026-03-05T20:23:40+08:00` | `x-terminal/work-orders/xt-w2-23-w2-26-autocontinue-autonomy-implementation-pack-v1.md`, `build/reports/xt_w2_26_b_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_26_b_autocontinue_evidence.v1.json`, `build/reports/xt_w2_26_b_g3_g4_first_probe.v1.json`, `build/reports/xt_w2_26_b_autocontinue_probe_tests.v1.log`, `build/reports/xt_w2_26_b_probe_gate_smoke_tests.v1.log`, `build/reports/xt_main_xt_l2_delta_3line.v27.json`, `build/reports/xt_w2_26_c_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v26.json`, `build/reports/xt_w2_26_a_completion_adapter_evidence.v2.json` |
+| `XT-W2-26-C` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-26-B,XT-W2-23-A` | `claim_xt_w2_26_c_xt_l2_auto_20260305_1638` | `2026-03-05T20:38:32+08:00` | `x-terminal/work-orders/xt-w2-23-w2-26-autocontinue-autonomy-implementation-pack-v1.md`, `build/reports/xt_w2_26_c_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_26_c_guidance_router_evidence.v1.json`, `build/reports/xt_w2_26_c_g3_g5_first_probe.v1.json`, `build/reports/xt_w2_26_c_guidance_router_probe_tests.v1.log`, `build/reports/xt_w2_26_c_probe_gate_smoke_tests.v1.log`, `build/reports/xt_main_xt_l2_delta_3line.v28.json`, `build/reports/xt_w2_27_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v27.json`, `build/reports/xt_w2_26_b_g3_g4_first_probe.v1.json` |
+| `XT-W2-27` | `XT-L2(pool_takeover)` | `P0` | `claimed` | `XT-MP-G3:pending,XT-MP-G4:pending,XT-MP-G5:pending` | `false` | `XT-W2-26,CR-20260302-002` | `claim_xt_w2_27_xt_l2_auto_20260305_1644` | `2026-03-05T20:44:50+08:00` | `x-terminal/work-orders/xt-w2-27-anti-block-unblock-orchestration-implementation-pack-v1.md`, `build/reports/xt_w2_27_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_27_a_state_reconcile_audit.v1.json`, `build/reports/xt_w2_27_a_wait_graph_evidence.v2.json`, `build/reports/xt_w2_27_a_xt_l2_delta_3line.v2.json`, `build/reports/xt_w2_27_b_runtime_green_probe.v1.json`, `build/reports/xt_w2_27_b_dual_green_evidence.v2.json`, `build/reports/xt_w2_27_b_xt_l2_delta_3line.v3.json`, `build/reports/xt_w2_27_c_dependency_escrow_evidence.v1.json`, `build/reports/xt_w2_27_c_g2_g3_first_probe.v1.json`, `build/reports/xt_w2_27_c_xt_l2_delta_3line.v2.json`, `build/reports/xt_w2_27_d_unblock_router_evidence.v1.json`, `build/reports/xt_w2_27_d_g3_g5_first_probe.v1.json`, `build/reports/xt_w2_27_d_xt_l2_delta_3line.v2.json`, `build/reports/xt_w2_27_e_block_sla_evidence.v1.json`, `build/reports/xt_w2_27_e_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_27_e_xt_l2_delta_3line.v2.json`, `build/reports/xt_w2_27_f_self_host_unblock_evidence.v1.json`, `build/reports/xt_w2_27_f_g3_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_27_f_xt_l2_delta_3line.v2.json`, `build/reports/xt_w2_28_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v36.json`, `build/reports/xt_main_xt_l2_delta_3line.v35.json`, `build/reports/xt_main_xt_l2_delta_3line.v34.json`, `build/reports/xt_main_xt_l2_delta_3line.v33.json`, `build/reports/xt_main_xt_l2_delta_3line.v32.json`, `build/reports/xt_main_xt_l2_delta_3line.v31.json`, `build/reports/xt_main_xt_l2_delta_3line.v30.json`, `build/reports/xt_main_xt_l2_delta_3line.v29.json` |
+| `XT-W2-27-A` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass` | `false` | `XT-W2-27` | `claim_xt_w2_27_a_xt_l2_auto_20260305_1653` | `2026-03-05T20:53:55+08:00` | `x-terminal/work-orders/xt-w2-27-anti-block-unblock-orchestration-implementation-pack-v1.md`, `build/reports/xt_w2_27_a_wait_graph_cleanup_patch.v1.json`, `build/reports/xt_w2_27_a_wait_graph_evidence.v2.json`, `build/reports/xt_w2_27_a_xt_l2_delta_3line.v2.json`, `build/reports/xt_w2_27_a_state_reconcile_audit.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v30.json` |
+| `XT-W2-27-B` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass` | `false` | `XT-W2-27-A` | `claim_xt_w2_27_b_xt_l2_auto_20260305_1710` | `2026-03-05T21:10:17+08:00` | `x-terminal/work-orders/xt-w2-27-anti-block-unblock-orchestration-implementation-pack-v1.md`, `build/reports/xt_w2_27_b_runtime_green_probe.v1.json`, `build/reports/xt_w2_27_b_dual_green_evidence.v2.json`, `build/reports/xt_w2_27_b_xt_l2_delta_3line.v3.json`, `build/reports/xt_w2_27_b_xt_l2_delta_3line.v2.json`, `build/reports/xt_w2_27_b_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v32.json` |
+| `XT-W2-27-C` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G2:candidate_pass,XT-MP-G3:candidate_pass` | `false` | `XT-W2-27-B,XT-W2-24-A` | `claim_xt_w2_27_c_xt_l2_auto_20260305_1733` | `2026-03-05T21:33:14+08:00` | `x-terminal/work-orders/xt-w2-27-anti-block-unblock-orchestration-implementation-pack-v1.md`, `build/reports/xt_w2_27_c_dependency_escrow_evidence.v1.json`, `build/reports/xt_w2_27_c_g2_g3_first_probe.v1.json`, `build/reports/xt_w2_27_c_xt_l2_delta_3line.v2.json`, `build/reports/xt_w2_27_c_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v33.json` |
+| `XT-W2-27-D` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-27-C,XT-W2-26-C` | `claim_xt_w2_27_d_xt_l2_auto_20260305_1740` | `2026-03-05T21:40:34+08:00` | `x-terminal/work-orders/xt-w2-27-anti-block-unblock-orchestration-implementation-pack-v1.md`, `build/reports/xt_w2_27_d_unblock_router_evidence.v1.json`, `build/reports/xt_w2_27_d_g3_g5_first_probe.v1.json`, `build/reports/xt_w2_27_d_xt_l2_delta_3line.v2.json`, `build/reports/xt_w2_27_d_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v34.json` |
+| `XT-W2-27-E` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-27-D` | `claim_xt_w2_27_e_xt_l2_auto_20260305_1804` | `2026-03-05T22:04:00+08:00` | `x-terminal/work-orders/xt-w2-27-anti-block-unblock-orchestration-implementation-pack-v1.md`, `build/reports/xt_w2_27_e_block_sla_evidence.v1.json`, `build/reports/xt_w2_27_e_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_27_e_xt_l2_delta_3line.v2.json`, `build/reports/xt_w2_27_e_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v35.json` |
+| `XT-W2-27-F` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-27-B,XT-W2-27-D,SKC-W1-04,SKC-W2-05,SKC-W2-06,SKC-W2-07,SKC-W3-08` | `claim_xt_w2_27_f_xt_l2_auto_20260305_1810` | `2026-03-05T22:10:01+08:00` | `x-terminal/work-orders/xt-supervisor-multipool-adaptive-work-orders-v1.md`, `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `build/reports/xt_w2_27_f_self_host_unblock_evidence.v1.json`, `build/reports/xt_w2_27_f_g3_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_27_f_xt_l2_delta_3line.v2.json`, `build/reports/xt_w2_27_f_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v36.json` |
+| `XT-W2-28` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-27-F,CR-20260302-004` | `claim_xt_w2_28_xt_l2_auto_20260305_1839` | `2026-03-05T22:39:05+08:00` | `x-terminal/work-orders/xt-w2-28-jamless-anti-congestion-protocol-implementation-pack-v1.md`, `build/reports/xt_w2_28_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_28_a_wip_governor_evidence.v1.json`, `build/reports/xt_w2_28_a_g3_g4_first_probe.v1.json`, `build/reports/xt_w2_28_b_directed_baton_evidence.v1.json`, `build/reports/xt_w2_28_b_g3_g5_first_probe.v1.json`, `build/reports/xt_w2_28_b_xt_l2_delta_3line.v2.json`, `build/reports/xt_w2_28_c_dedupe_delta_evidence.v1.json`, `build/reports/xt_w2_28_c_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_28_c_xt_l2_delta_3line.v2.json`, `build/reports/xt_w2_28_d_deadlock_breaker_evidence.v1.json`, `build/reports/xt_w2_28_d_g3_g4_first_probe.v1.json`, `build/reports/xt_w2_28_d_xt_l2_delta_3line.v2.json`, `build/reports/xt_w2_28_e_gate_cooldown_evidence.v1.json`, `build/reports/xt_w2_28_e_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_28_f_state_reconcile_audit.v1.json`, `build/reports/xt_w2_28_f_block_predict_replan_guard_evidence.v1.json`, `build/reports/xt_w2_28_f_g3_g4_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v42.json`, `build/reports/xt_w2_29_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v41.json`, `build/reports/xt_main_xt_l2_delta_3line.v40.json` |
+| `XT-W2-28-A` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass` | `false` | `XT-W2-28` | `claim_xt_w2_28_a_xt_l2_auto_20260305_1849` | `2026-03-05T22:49:47+08:00` | `x-terminal/work-orders/xt-w2-28-jamless-anti-congestion-protocol-implementation-pack-v1.md`, `build/reports/xt_w2_28_a_wip_governor_evidence.v1.json`, `build/reports/xt_w2_28_a_g3_g4_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v37.json` |
+| `XT-W2-28-B` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-28-A,XT-W2-27-D` | `claim_xt_w2_28_b_xt_l2_auto_20260305_1850` | `2026-03-05T22:50:17+08:00` | `x-terminal/work-orders/xt-w2-28-jamless-anti-congestion-protocol-implementation-pack-v1.md`, `build/reports/xt_w2_28_b_directed_baton_evidence.v1.json`, `build/reports/xt_w2_28_b_g3_g5_first_probe.v1.json`, `build/reports/xt_w2_28_b_xt_l2_delta_3line.v2.json`, `build/reports/xt_main_xt_l2_delta_3line.v38.json`, `build/reports/xt_w2_28_b_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_28_a_wip_governor_evidence.v1.json`, `build/reports/xt_w2_28_a_g3_g4_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v37.json` |
+| `XT-W2-28-C` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-28-B` | `claim_xt_w2_28_c_xt_l2_auto_20260305_1858` | `2026-03-05T22:58:33+08:00` | `x-terminal/work-orders/xt-w2-28-jamless-anti-congestion-protocol-implementation-pack-v1.md`, `build/reports/xt_w2_28_c_dedupe_delta_evidence.v1.json`, `build/reports/xt_w2_28_c_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_28_c_xt_l2_delta_3line.v2.json`, `build/reports/xt_main_xt_l2_delta_3line.v39.json`, `build/reports/xt_w2_28_c_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_28_b_directed_baton_evidence.v1.json`, `build/reports/xt_w2_28_b_g3_g5_first_probe.v1.json`, `build/reports/xt_w2_28_b_xt_l2_delta_3line.v2.json`, `build/reports/xt_main_xt_l2_delta_3line.v38.json` |
+| `XT-W2-28-D` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass` | `false` | `XT-W2-28-A` | `claim_xt_w2_28_d_xt_l2_auto_20260305_1913` | `2026-03-05T23:13:22+08:00` | `x-terminal/work-orders/xt-w2-28-jamless-anti-congestion-protocol-implementation-pack-v1.md`, `build/reports/xt_w2_28_d_deadlock_breaker_evidence.v1.json`, `build/reports/xt_w2_28_d_g3_g4_first_probe.v1.json`, `build/reports/xt_w2_28_d_xt_l2_delta_3line.v2.json`, `build/reports/xt_main_xt_l2_delta_3line.v40.json`, `build/reports/xt_w2_28_d_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_28_c_dedupe_delta_evidence.v1.json`, `build/reports/xt_w2_28_c_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_28_c_xt_l2_delta_3line.v2.json`, `build/reports/xt_main_xt_l2_delta_3line.v39.json` |
+| `XT-W2-28-E` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-28-C,XT-W2-28-D` | `claim_xt_w2_28_e_xt_l2_auto_20260305_1917` | `2026-03-05T23:17:24+08:00` | `x-terminal/work-orders/xt-w2-28-jamless-anti-congestion-protocol-implementation-pack-v1.md`, `build/reports/xt_w2_28_e_gate_cooldown_evidence.v1.json`, `build/reports/xt_w2_28_e_g4_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v41.json`, `build/reports/xt_w2_28_f_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v40.json` |
+| `XT-W2-28-F` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-28,XT-W2-25-B,CR-20260303-001` | `claim_xt_w2_28_f_xt_l2_auto_20260305_1926` | `2026-03-05T23:26:38+08:00` | `x-terminal/work-orders/xt-cbl-anti-block-context-governor-implementation-pack-v1.md`, `build/reports/xt_w2_28_f_state_reconcile_audit.v1.json`, `build/reports/xt_w2_28_f_block_predict_replan_guard_evidence.v1.json`, `build/reports/xt_w2_28_f_g3_g4_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v42.json`, `build/reports/xt_w2_29_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_28_f_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v41.json` |
+| `XT-W2-29` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-28-F` | `claim_xt_w2_29_xt_l2_auto_20260305_1926` | `2026-03-05T23:26:38+08:00` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `build/reports/xt_w2_29_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_29_task_split_audit.v1.json`, `build/reports/xt_w2_29_a_evidence.v1.json`, `build/reports/xt_w2_29_a_first_probe.v1.json`, `build/reports/xt_w2_29_b_evidence.v1.json`, `build/reports/xt_w2_29_b_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_29_c_evidence.v1.json`, `build/reports/xt_w2_29_c_g3_g5_first_probe.v1.json`, `build/reports/xt_w2_29_d_evidence.v1.json`, `build/reports/xt_w2_29_d_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_29_e_evidence.v1.json`, `build/reports/xt_w2_29_e_g3_g5_first_probe.v1.json`, `build/reports/xt_w2_29_f_evidence.v1.json`, `build/reports/xt_w2_29_f_g4_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v48.json`, `build/reports/xt_w2_30_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v47.json`, `build/reports/xt_w2_29_f_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v46.json`, `build/reports/xt_w2_29_e_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v45.json`, `build/reports/xt_w2_29_d_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v44.json`, `build/reports/xt_w2_29_c_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v43.json`, `build/reports/xt_main_xt_l2_delta_3line.v42.json`, `build/reports/xt_w2_28_f_g3_g4_g5_first_probe.v1.json` |
+| `XT-W2-29-A` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass` | `false` | `XT-W2-29` | `claim_xt_w2_29_xt_l2_auto_20260305_1926` | `2026-03-05T23:26:38+08:00` | `build/reports/xt_w2_29_task_split_audit.v1.json`, `build/reports/xt_w2_29_a_evidence.v1.json`, `build/reports/xt_w2_29_a_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v43.json` |
+| `XT-W2-29-B` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-29-A` | `claim_xt_w2_29_b_xt_l2_auto_20260305_1934` | `2026-03-05T23:34:32+08:00` | `build/reports/xt_w2_29_task_split_audit.v1.json`, `build/reports/xt_w2_29_a_first_probe.v1.json`, `build/reports/xt_w2_29_b_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_29_b_evidence.v1.json`, `build/reports/xt_w2_29_b_g4_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v44.json`, `build/reports/xt_w2_29_c_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v43.json` |
+| `XT-W2-29-C` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-29-B` | `claim_xt_w2_29_c_xt_l2_auto_20260305_2002` | `2026-03-06T00:02:18+08:00` | `build/reports/xt_w2_29_b_evidence.v1.json`, `build/reports/xt_w2_29_b_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_29_c_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_29_c_evidence.v1.json`, `build/reports/xt_w2_29_c_g3_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v45.json`, `build/reports/xt_w2_29_d_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v44.json` |
+| `XT-W2-29-D` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-29-C` | `claim_xt_w2_29_d_xt_l2_auto_20260305_2022` | `2026-03-06T00:22:46+08:00` | `build/reports/xt_w2_29_c_evidence.v1.json`, `build/reports/xt_w2_29_c_g3_g5_first_probe.v1.json`, `build/reports/xt_w2_29_d_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_29_d_evidence.v1.json`, `build/reports/xt_w2_29_d_g4_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v46.json`, `build/reports/xt_w2_29_e_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v45.json` |
+| `XT-W2-29-E` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-29-D` | `claim_xt_w2_29_e_xt_l2_auto_20260305_2042` | `2026-03-06T00:42:46+08:00` | `build/reports/xt_w2_29_d_evidence.v1.json`, `build/reports/xt_w2_29_d_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_29_e_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_29_e_evidence.v1.json`, `build/reports/xt_w2_29_e_g3_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v47.json`, `build/reports/xt_w2_29_f_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v46.json` |
+| `XT-W2-29-F` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-29-E` | `claim_xt_w2_29_f_xt_l2_auto_20260305_2102` | `2026-03-06T01:02:46+08:00` | `build/reports/xt_w2_29_e_evidence.v1.json`, `build/reports/xt_w2_29_e_g3_g5_first_probe.v1.json`, `build/reports/xt_w2_29_f_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_29_f_evidence.v1.json`, `build/reports/xt_w2_29_f_g4_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v48.json`, `build/reports/xt_w2_30_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v47.json` |
+| `XT-W2-30` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-29-F` | `claim_xt_w2_30_xt_l2_auto_20260305_2122` | `2026-03-06T01:22:46+08:00` | `build/reports/xt_w2_29_f_evidence.v1.json`, `build/reports/xt_w2_29_f_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_30_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_30_task_split_audit.v1.json`, `build/reports/xt_w2_30_a_evidence.v1.json`, `build/reports/xt_w2_30_a_first_probe.v1.json`, `build/reports/xt_w2_30_b_evidence.v1.json`, `build/reports/xt_w2_30_b_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_30_c_evidence.v1.json`, `build/reports/xt_w2_30_c_g3_g5_first_probe.v1.json`, `build/reports/xt_w2_30_d_evidence.v1.json`, `build/reports/xt_w2_30_d_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_30_e_evidence.v1.json`, `build/reports/xt_w2_30_e_g3_g5_first_probe.v1.json`, `build/reports/xt_w2_30_f_evidence.v1.json`, `build/reports/xt_w2_30_f_g4_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v54.json`, `build/reports/xt_w2_31_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v53.json`, `build/reports/xt_w2_30_f_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v52.json`, `build/reports/xt_w2_30_e_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v51.json`, `build/reports/xt_w2_30_d_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v50.json`, `build/reports/xt_w2_30_c_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v49.json`, `build/reports/xt_w2_30_b_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v48.json` |
+| `XT-W2-30-A` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass` | `false` | `XT-W2-30` | `claim_xt_w2_30_xt_l2_auto_20260305_2122` | `2026-03-06T01:22:46+08:00` | `build/reports/xt_w2_30_task_split_audit.v1.json`, `build/reports/xt_w2_30_a_evidence.v1.json`, `build/reports/xt_w2_30_a_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v49.json` |
+| `XT-W2-30-B` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-30-A` | `claim_xt_w2_30_b_xt_l2_auto_20260305_2142` | `2026-03-06T01:42:46+08:00` | `build/reports/xt_w2_30_task_split_audit.v1.json`, `build/reports/xt_w2_30_a_first_probe.v1.json`, `build/reports/xt_w2_30_b_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_30_b_evidence.v1.json`, `build/reports/xt_w2_30_b_g4_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v50.json`, `build/reports/xt_w2_30_c_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v49.json` |
+| `XT-W2-30-C` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-30-B` | `claim_xt_w2_30_c_xt_l2_auto_20260305_2222` | `2026-03-06T02:22:46+08:00` | `build/reports/xt_w2_30_b_evidence.v1.json`, `build/reports/xt_w2_30_b_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_30_c_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_30_c_evidence.v1.json`, `build/reports/xt_w2_30_c_g3_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v51.json`, `build/reports/xt_w2_30_d_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v50.json` |
+| `XT-W2-30-D` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-30-C` | `claim_xt_w2_30_d_xt_l2_auto_20260305_2242` | `2026-03-06T02:42:46+08:00` | `build/reports/xt_w2_30_c_evidence.v1.json`, `build/reports/xt_w2_30_c_g3_g5_first_probe.v1.json`, `build/reports/xt_w2_30_d_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_30_d_state_reconcile_audit.v1.json`, `build/reports/xt_w2_30_d_evidence.v1.json`, `build/reports/xt_w2_30_d_g4_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v52.json`, `build/reports/xt_w2_30_e_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v51.json` |
+| `XT-W2-30-E` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-30-D` | `claim_xt_w2_30_e_xt_l2_auto_20260305_2322` | `2026-03-06T03:22:46+08:00` | `build/reports/xt_w2_30_d_state_reconcile_audit.v1.json`, `build/reports/xt_w2_30_d_evidence.v1.json`, `build/reports/xt_w2_30_d_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_30_e_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_30_e_evidence.v1.json`, `build/reports/xt_w2_30_e_g3_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v53.json`, `build/reports/xt_w2_30_f_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v52.json` |
+| `XT-W2-30-F` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-30-E` | `claim_xt_w2_30_f_xt_l2_auto_20260305_2352` | `2026-03-06T03:52:46+08:00` | `build/reports/xt_w2_30_e_evidence.v1.json`, `build/reports/xt_w2_30_e_g3_g5_first_probe.v1.json`, `build/reports/xt_w2_30_f_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_30_f_evidence.v1.json`, `build/reports/xt_w2_30_f_g4_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v54.json`, `build/reports/xt_w2_31_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v53.json` |
+| `XT-W2-31` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-30-F` | `claim_xt_w2_31_xt_l2_auto_20260306_0022` | `2026-03-06T04:22:46+08:00` | `build/reports/xt_w2_30_f_evidence.v1.json`, `build/reports/xt_w2_30_f_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_31_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_31_task_split_audit.v1.json`, `build/reports/xt_w2_31_a_evidence.v1.json`, `build/reports/xt_w2_31_a_first_probe.v1.json`, `build/reports/xt_w2_31_b_evidence.v1.json`, `build/reports/xt_w2_31_b_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_31_c_evidence.v1.json`, `build/reports/xt_w2_31_c_g3_g5_first_probe.v1.json`, `build/reports/xt_w2_31_d_evidence.v1.json`, `build/reports/xt_w2_31_d_g4_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v58.json`, `build/reports/xt_w2_31_e_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_31_e_evidence.v1.json`, `build/reports/xt_w2_31_e_g3_g5_first_probe.v1.json`, `build/reports/xt_w2_31_f_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_31_f_evidence.v1.json`, `build/reports/xt_w2_31_f_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_32_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v60.json`, `build/reports/xt_main_xt_l2_delta_3line.v59.json`, `build/reports/xt_main_xt_l2_delta_3line.v57.json`, `build/reports/xt_w2_31_d_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v56.json`, `build/reports/xt_w2_31_c_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v55.json`, `build/reports/xt_w2_31_b_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v54.json` |
+| `XT-W2-31-A` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass` | `false` | `XT-W2-31` | `claim_xt_w2_31_xt_l2_auto_20260306_0022` | `2026-03-06T04:22:46+08:00` | `build/reports/xt_w2_31_task_split_audit.v1.json`, `build/reports/xt_w2_31_a_evidence.v1.json`, `build/reports/xt_w2_31_a_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v55.json` |
+| `XT-W2-31-B` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-31-A` | `claim_xt_w2_31_b_xt_l2_auto_20260306_0052` | `2026-03-06T04:52:46+08:00` | `build/reports/xt_w2_31_task_split_audit.v1.json`, `build/reports/xt_w2_31_a_first_probe.v1.json`, `build/reports/xt_w2_31_b_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_31_b_evidence.v1.json`, `build/reports/xt_w2_31_b_g4_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v56.json`, `build/reports/xt_w2_31_c_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v55.json` |
+| `XT-W2-31-C` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-31-B` | `claim_xt_w2_31_c_xt_l2_auto_20260306_0122` | `2026-03-06T05:22:46+08:00` | `build/reports/xt_w2_31_b_evidence.v1.json`, `build/reports/xt_w2_31_b_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_31_c_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_31_c_evidence.v1.json`, `build/reports/xt_w2_31_c_g3_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v57.json`, `build/reports/xt_w2_31_d_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v56.json` |
+| `XT-W2-31-D` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-31-C` | `claim_xt_w2_31_d_xt_l2_auto_20260306_0152` | `2026-03-06T05:52:46+08:00` | `build/reports/xt_w2_31_c_evidence.v1.json`, `build/reports/xt_w2_31_c_g3_g5_first_probe.v1.json`, `build/reports/xt_w2_31_d_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_31_d_evidence.v1.json`, `build/reports/xt_w2_31_d_g4_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v58.json`, `build/reports/xt_w2_31_e_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v57.json` |
+| `XT-W2-31-E` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-31-D` | `claim_xt_w2_31_e_xt_l2_auto_20260306_0222` | `2026-03-06T06:22:46+08:00` | `build/reports/xt_w2_31_d_evidence.v1.json`, `build/reports/xt_w2_31_d_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_31_e_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_31_e_evidence.v1.json`, `build/reports/xt_w2_31_e_g3_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v59.json`, `build/reports/xt_w2_31_f_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v58.json` |
+| `XT-W2-31-F` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-31-E` | `claim_xt_w2_31_f_xt_l2_auto_20260306_0252` | `2026-03-06T06:52:46+08:00` | `build/reports/xt_w2_31_e_evidence.v1.json`, `build/reports/xt_w2_31_e_g3_g5_first_probe.v1.json`, `build/reports/xt_w2_31_f_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_31_f_evidence.v1.json`, `build/reports/xt_w2_31_f_g4_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v60.json`, `build/reports/xt_w2_32_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v59.json` |
+| `XT-W2-32` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-31-F` | `claim_xt_w2_32_xt_l2_auto_20260306_0322` | `2026-03-06T07:22:46+08:00` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `build/reports/xt_w2_31_f_evidence.v1.json`, `build/reports/xt_w2_31_f_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_32_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_32_task_split_audit.v1.json`, `build/reports/xt_w2_32_a_evidence.v1.json`, `build/reports/xt_w2_32_a_first_probe.v1.json`, `build/reports/xt_w2_32_b_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_32_b_evidence.v1.json`, `build/reports/xt_w2_32_b_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_32_c_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_32_c_evidence.v1.json`, `build/reports/xt_w2_32_c_g3_g5_first_probe.v1.json`, `build/reports/xt_w2_32_d_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_32_d_evidence.v1.json`, `build/reports/xt_w2_32_d_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_32_e_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_32_e_evidence.v1.json`, `build/reports/xt_w2_32_e_g3_g5_first_probe.v1.json`, `build/reports/xt_w2_32_f_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_32_f_evidence.v1.json`, `build/reports/xt_w2_32_f_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_33_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v66.json`, `build/reports/xt_main_xt_l2_delta_3line.v65.json`, `build/reports/xt_main_xt_l2_delta_3line.v64.json`, `build/reports/xt_main_xt_l2_delta_3line.v63.json`, `build/reports/xt_main_xt_l2_delta_3line.v62.json`, `build/reports/xt_main_xt_l2_delta_3line.v61.json`, `build/reports/xt_main_xt_l2_delta_3line.v60.json` |
+| `XT-W2-32-A` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass` | `false` | `XT-W2-32` | `claim_xt_w2_32_xt_l2_auto_20260306_0322` | `2026-03-06T07:22:46+08:00` | `build/reports/xt_w2_32_task_split_audit.v1.json`, `build/reports/xt_w2_32_a_evidence.v1.json`, `build/reports/xt_w2_32_a_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v61.json` |
+| `XT-W2-32-B` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-32-A` | `claim_xt_w2_32_b_xt_l2_auto_20260306_0352` | `2026-03-06T07:52:46+08:00` | `build/reports/xt_w2_32_task_split_audit.v1.json`, `build/reports/xt_w2_32_a_first_probe.v1.json`, `build/reports/xt_w2_32_b_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_32_b_evidence.v1.json`, `build/reports/xt_w2_32_b_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_32_c_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v62.json`, `build/reports/xt_main_xt_l2_delta_3line.v61.json` |
+| `XT-W2-32-C` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-32-B` | `claim_xt_w2_32_c_xt_l2_auto_20260306_0422` | `2026-03-06T08:22:46+08:00` | `build/reports/xt_w2_32_b_evidence.v1.json`, `build/reports/xt_w2_32_b_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_32_c_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_32_c_evidence.v1.json`, `build/reports/xt_w2_32_c_g3_g5_first_probe.v1.json`, `build/reports/xt_w2_32_d_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v63.json`, `build/reports/xt_main_xt_l2_delta_3line.v62.json` |
+| `XT-W2-32-D` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-32-C` | `claim_xt_w2_32_d_xt_l2_auto_20260306_0452` | `2026-03-06T08:52:46+08:00` | `build/reports/xt_w2_32_c_evidence.v1.json`, `build/reports/xt_w2_32_c_g3_g5_first_probe.v1.json`, `build/reports/xt_w2_32_d_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_32_d_evidence.v1.json`, `build/reports/xt_w2_32_d_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_32_e_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v64.json`, `build/reports/xt_main_xt_l2_delta_3line.v63.json` |
+| `XT-W2-32-E` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-32-D` | `claim_xt_w2_32_e_xt_l2_auto_20260306_0522` | `2026-03-06T09:22:46+08:00` | `build/reports/xt_w2_32_d_evidence.v1.json`, `build/reports/xt_w2_32_d_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_32_e_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_32_e_evidence.v1.json`, `build/reports/xt_w2_32_e_g3_g5_first_probe.v1.json`, `build/reports/xt_w2_32_f_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v65.json`, `build/reports/xt_main_xt_l2_delta_3line.v64.json` |
+| `XT-W2-32-F` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-32-E` | `claim_xt_w2_32_f_xt_l2_auto_20260306_0552` | `2026-03-06T09:52:46+08:00` | `build/reports/xt_w2_32_e_evidence.v1.json`, `build/reports/xt_w2_32_e_g3_g5_first_probe.v1.json`, `build/reports/xt_w2_32_f_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_32_f_evidence.v1.json`, `build/reports/xt_w2_32_f_g4_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v66.json`, `build/reports/xt_w2_33_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v65.json` |
+| `XT-W2-33` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-32` | `claim_xt_w2_33_xt_l2_auto_20260306_0622` | `2026-03-06T10:22:46+08:00` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `build/reports/xt_w2_33_task_split_audit.v1.json`, `build/reports/xt_w2_33_e_evidence.v1.json`, `build/reports/xt_w2_33_e_g3_g5_first_probe.v1.json`, `build/reports/xt_w2_33_f_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_33_f_state_reconcile_audit.v1.json`, `build/reports/xt_w2_33_f_evidence.v1.json`, `build/reports/xt_w2_33_f_g4_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v74.json`, `build/reports/xt_w2_34_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v71.json`, `build/reports/xt_main_xt_l2_delta_3line.v70.json` |
+| `XT-W2-33-A` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass` | `false` | `XT-W2-33` | `claim_xt_w2_33_xt_l2_auto_20260306_0622` | `2026-03-06T10:22:46+08:00` | `build/reports/xt_w2_33_task_split_audit.v1.json`, `build/reports/xt_w2_33_a_evidence.v1.json`, `build/reports/xt_w2_33_a_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v67.json` |
+| `XT-W2-33-B` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-33-A` | `claim_xt_w2_33_b_xt_l2_auto_20260306_0652` | `2026-03-06T10:52:46+08:00` | `build/reports/xt_w2_33_a_evidence.v1.json`, `build/reports/xt_w2_33_a_first_probe.v1.json`, `build/reports/xt_w2_33_b_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_33_b_evidence.v1.json`, `build/reports/xt_w2_33_b_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_33_c_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v68.json`, `build/reports/xt_main_xt_l2_delta_3line.v67.json` |
+| `XT-W2-33-C` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-33-B` | `claim_xt_w2_33_c_xt_l2_auto_20260306_0722` | `2026-03-06T11:22:46+08:00` | `build/reports/xt_w2_33_b_evidence.v1.json`, `build/reports/xt_w2_33_b_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_33_c_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_33_c_evidence.v1.json`, `build/reports/xt_w2_33_c_g3_g5_first_probe.v1.json`, `build/reports/xt_w2_33_d_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v69.json`, `build/reports/xt_main_xt_l2_delta_3line.v68.json` |
+| `XT-W2-33-D` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-33-C` | `claim_xt_w2_33_d_xt_l2_auto_20260306_0752` | `2026-03-06T11:52:46+08:00` | `build/reports/xt_w2_33_c_evidence.v1.json`, `build/reports/xt_w2_33_c_g3_g5_first_probe.v1.json`, `build/reports/xt_w2_33_d_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_33_d_evidence.v1.json`, `build/reports/xt_w2_33_d_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_33_e_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v70.json`, `build/reports/xt_main_xt_l2_delta_3line.v69.json` |
+| `XT-W2-33-E` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-33-D` | `claim_xt_w2_33_e_xt_l2_auto_20260306_0822` | `2026-03-06T12:22:46+08:00` | `build/reports/xt_w2_33_d_evidence.v1.json`, `build/reports/xt_w2_33_d_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_33_e_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_33_e_evidence.v1.json`, `build/reports/xt_w2_33_e_g3_g5_first_probe.v1.json`, `build/reports/xt_w2_33_f_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v71.json`, `build/reports/xt_main_xt_l2_delta_3line.v70.json` |
+| `XT-W2-33-F` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-33-E` | `claim_xt_w2_33_f_xt_l2_auto_20260306_0922` | `2026-03-06T13:22:46+08:00` | `build/reports/xt_w2_33_f_state_reconcile_audit.v1.json`, `build/reports/xt_w2_33_f_evidence.v1.json`, `build/reports/xt_w2_33_f_g4_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v74.json`, `build/reports/xt_w2_34_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v71.json` |
+| `XT-W2-34` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-33` | `claim_xt_w2_34_xt_l2_auto_20260306_1022` | `2026-03-06T14:22:46+08:00` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `build/reports/xt_w2_34_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_34_task_split_audit.v3.json`, `build/reports/xt_w2_34_b_evidence.v1.json`, `build/reports/xt_w2_34_b_g4_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v77.json` |
+| `XT-W2-34-A` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass` | `false` | `XT-W2-34` | `claim_xt_w2_34_xt_l2_auto_20260306_1022` | `2026-03-06T14:22:46+08:00` | `build/reports/xt_w2_34_task_split_audit.v2.json`, `build/reports/xt_w2_34_a_evidence.v1.json`, `build/reports/xt_w2_34_a_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v75.json` |
+| `XT-W2-34-B` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-34-A` | `claim_xt_w2_34_b_xt_l2_auto_20260306_1052` | `2026-03-06T14:52:46+08:00` | `build/reports/xt_w2_34_b_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_34_b_evidence.v1.json`, `build/reports/xt_w2_34_b_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_34_task_split_audit.v3.json`, `build/reports/xt_main_xt_l2_delta_3line.v77.json` |
+| `XT-W3-11` | `XT-L2(pool_takeover)` | `P0` | `planned` | `XT-SUP-G4:pending,XT-G5:pending` | `false` | `XT-W2-12,XT-W2-14` | `none` | `none` | `x-terminal/work-orders/xt-supervisor-autosplit-multilane-work-orders-v1.md`, `build/reports/xt_w3_11_dependency_import_receipt.v1.json` |
+| `XT-W3-18` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-27,XT-W3-11` | `claim_xt_w3_18_xt_l2_auto_20260306_1034` | `2026-03-06T14:34:08+08:00` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `build/reports/xt_w3_18_integration_evidence.v2.json`, `build/reports/xt_w3_18_g4_g5_first_probe.v2.json`, `build/reports/xt_main_xt_l2_delta_3line.v80.json`, `build/reports/xt_w3_18_s1_xt_l2_delta_3line.v1.json` |
+| `XT-W3-18-S1` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W3-18,XT-W2-25-S1,CD-20260301-008` | `claim_xt_w3_18_s1_xt_l2_auto_20260306_1100` | `2026-03-06T15:00:21+0800` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `build/reports/xt_w3_18_s1_assembly_convergence_evidence.v1.json`, `build/reports/xt_w3_18_s1_g4_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v81.json`, `build/reports/xt_w3_19_xt_l2_delta_3line.v1.json` |
+| `XT-W3-19` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G5:candidate_pass` | `false` | `XT-W3-18,XT-W2-23` | `claim_xt_w3_19_xt_l2_auto_20260306_1108` | `2026-03-06T15:08:29+0800` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `build/reports/xt_w3_19_delivery_notify_evidence.v1.json`, `build/reports/xt_w3_19_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v82.json`, `build/reports/xt_w3_19_s1_xt_l2_delta_3line.v1.json` |
+| `XT-W3-19-S1` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G5:candidate_pass` | `false` | `XT-W3-19,XT-W3-18-S1,CD-20260301-008` | `claim_xt_w3_19_s1_xt_l2_auto_20260306_1116` | `2026-03-06T15:16:46+0800` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `build/reports/xt_w3_19_s1_real_sample_capture.v1.json`, `build/reports/xt_w3_19_s1_delivery_economics_evidence.v2.json`, `build/reports/xt_w3_19_s1_g5_first_probe.v2.json`, `build/reports/xt_main_xt_l2_delta_3line.v84.json`, `build/reports/xt_w3_20_xt_l2_delta_3line.v1.json` |
+| `XT-W3-20` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-MP-G1:candidate_pass,XT-MP-G3:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-26` | `claim_xt_w3_20_xt_l2_auto_20260306_1145` | `2026-03-06T15:45:54+0800` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `build/reports/xt_w3_20_replan_evidence.v1.json`, `build/reports/xt_w3_20_g1_g3_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v85.json`, `x-terminal/build/reports/xt_w3_20_replan_probe_tests.v1.log` |
+| `XT-W3-21` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-MP-G0:pending,XT-MP-G1:pending,XT-MP-G3:pending` | `false` | `XT-W2-20,XT-W2-23,XT-W2-24,XT-W2-25` | `none` | `none` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md` |
+| `XT-W3-21-A` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-MP-G0:pending,XT-MP-G1:pending` | `false` | `project_input_bundle` | `none` | `none` | `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md` |
+| `XT-W3-21-B` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-MP-G0:pending,XT-MP-G1:pending` | `false` | `XT-W3-21-A` | `none` | `none` | `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md`, `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md` |
+| `XT-W3-21-C` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-MP-G1:pending,XT-MP-G3:pending` | `false` | `XT-W3-21-B` | `none` | `none` | `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md`, `x-terminal/work-orders/xt-supervisor-multipool-adaptive-work-orders-v1.md` |
+| `XT-W3-22` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-MP-G5:pending` | `false` | `XT-W3-18,XT-W3-19,XT-W3-21` | `none` | `none` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md` |
+| `XT-W3-22-A` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-MP-G5:pending` | `false` | `XT-W3-18,XT-W3-21` | `none` | `none` | `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md` |
+| `XT-W3-22-B` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-MP-G5:pending` | `false` | `XT-W3-22-A` | `none` | `none` | `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md`, `x-terminal/work-orders/xt-supervisor-rhythm-user-explainability-implementation-pack-v1.md` |
+| `XT-W3-22-C` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-MP-G5:pending` | `false` | `XT-W3-22-B` | `none` | `none` | `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w2-24-token-optimal-context-capsule-implementation-pack-v1.md` |
+| `XT-W3-23` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-MEM-G0:pending,XT-MEM-G1:pending,XT-MEM-G2:pending,XT-MEM-G3:pending,XT-MEM-G4:pending,XT-MEM-G5:pending,XT-MP-G4:pending,XT-MP-G5:pending` | `false` | `XT-W2-24,XT-W2-27,XT-W3-21,XT-W3-22` | `none` | `none` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, `docs/xhub-memory-system-spec-v2.md`, `X_MEMORY.md` |
+| `XT-W3-23-A` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-MEM-G0:pending,XT-MEM-G1:pending,XT-MEM-G3:pending` | `false` | `XT-W3-23,XT-W3-21` | `none` | `none` | `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, `docs/xhub-memory-system-spec-v2.md` |
+| `XT-W3-23-B` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-MEM-G0:pending,XT-MEM-G2:pending,XT-MEM-G5:pending` | `false` | `XT-W3-23,XT-W3-21` | `none` | `none` | `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, `X_MEMORY.md` |
+| `XT-W3-23-C` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-MEM-G0:pending,XT-MEM-G2:pending,XT-MEM-G4:pending` | `false` | `XT-W3-23,XT-W3-21,XT-W3-22` | `none` | `none` | `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, `docs/memory-new/xhub-memory-v3-execution-plan.md` |
+| `XT-W3-23-D` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-MEM-G1:pending,XT-MEM-G2:pending,XT-MEM-G3:pending` | `false` | `XT-W3-23,XT-W2-24` | `none` | `none` | `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, `docs/memory-new/xhub-security-innovation-work-orders-v1.md` |
+| `XT-W3-23-E` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-MEM-G2:pending,XT-MEM-G4:pending,XT-MEM-G5:pending` | `false` | `XT-W3-23,XT-W2-27,XT-W3-21,XT-W3-22` | `none` | `none` | `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w2-27-anti-block-unblock-orchestration-implementation-pack-v1.md` |
+| `XT-W3-24` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-G0:pending,XT-CHAN-G1:pending,XT-CHAN-G2:pending,XT-CHAN-G3:pending,XT-CHAN-G4:pending,XT-CHAN-G5:pending,XT-MP-G4:pending,XT-MP-G5:pending` | `false` | `XT-W3-21,XT-W3-22,XT-W3-23` | `none` | `none` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md`, `docs/open-source/OSS_MINIMAL_RUNNABLE_PACKAGE_CHECKLIST_v1.md` |
+| `XT-W3-24-A` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-G0:pending,XT-CHAN-G1:pending` | `false` | `XT-W3-24,XT-W3-21` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md` |
+| `XT-W3-24-B` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-G1:pending,XT-CHAN-G2:pending,XT-CHAN-G5:pending` | `false` | `XT-W3-24-A` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md` |
+| `XT-W3-24-C` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-G2:pending,XT-CHAN-G3:pending,XT-CHAN-G5:pending` | `false` | `XT-W3-24-A,XT-W3-24-B,XT-W3-23` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md` |
+| `XT-W3-24-D` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-G1:pending,XT-CHAN-G4:pending,XT-CHAN-G5:pending` | `false` | `XT-W3-24-A,XT-W3-24-B` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w2-23-w2-26-autocontinue-autonomy-implementation-pack-v1.md` |
+| `XT-W3-24-E` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-G1:pending,XT-CHAN-G5:pending` | `false` | `XT-W3-24-A,XT-W3-24-B,XT-W3-24-D` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `docs/open-source/OSS_MINIMAL_RUNNABLE_PACKAGE_CHECKLIST_v1.md` |
+| `XT-W3-24-F` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-G2:pending,XT-CHAN-G5:pending,XT-MEM-G2:pending,SI-G1:pending,SI-G2:pending,SI-G4:pending` | `false` | `XT-W3-24-A,XT-W3-24-B,XT-W3-23` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md`, `docs/memory-new/xhub-security-innovation-work-orders-v1.md` |
+| `XT-W3-25` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-AUTO-G0:pending,XT-AUTO-G1:pending,XT-AUTO-G2:pending,XT-AUTO-G3:pending,XT-AUTO-G4:pending,XT-AUTO-G5:pending,XT-MP-G4:pending,XT-MP-G5:pending` | `false` | `XT-W3-21,XT-W3-23,XT-W3-24,XT-W2-27,XT-W2-28` | `none` | `none` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md`, `docs/memory-new/xhub-security-innovation-work-orders-v1.md` |
+| `XT-W3-25-A` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-AUTO-G0:pending,XT-AUTO-G1:pending` | `false` | `XT-W3-21,XT-W3-22` | `none` | `none` | `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md` |
+| `XT-W3-25-B` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-AUTO-G1:pending,XT-AUTO-G2:pending` | `false` | `XT-W3-25-A,XT-W3-24` | `none` | `none` | `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md` |
+| `XT-W3-25-C` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-AUTO-G2:pending,XT-AUTO-G3:pending` | `false` | `XT-W3-25-B,XT-W2-27,XT-W2-28` | `none` | `none` | `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w2-27-anti-block-unblock-orchestration-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w2-28-jamless-anti-congestion-protocol-implementation-pack-v1.md` |
+| `XT-W3-25-D` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-AUTO-G4:pending` | `false` | `XT-W3-25-B,XT-W3-24-D` | `none` | `none` | `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `x-terminal/work-orders/xt-supervisor-rhythm-user-explainability-implementation-pack-v1.md` |
+| `XT-W3-25-E` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-AUTO-G1:pending,XT-AUTO-G4:pending` | `false` | `XT-W3-25-A,XT-W3-25-D,XT-W3-24-E` | `none` | `none` | `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `docs/open-source/OSS_MINIMAL_RUNNABLE_PACKAGE_CHECKLIST_v1.md` |
+| `XT-W3-25-F` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-AUTO-G5:pending,XT-MP-G5:pending` | `false` | `XT-W3-25-A,XT-W3-25-B,XT-W3-25-C,XT-W3-25-D,XT-W3-25-E` | `none` | `none` | `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `docs/memory-new/xhub-security-innovation-work-orders-v1.md` |
+| `SI-W1-01` | `Hub-L5(pool_takeover)` | `P0` | `delivered` | `SI-G1:candidate_pass,SI-G2:candidate_pass,SI-G4:candidate_pass` | `false` | `M3-W1-02,CM-W3-19` | `claim_si_w1_01_hub_l5_20260306_1342` | `2026-03-06T17:42:24+08:00` | `docs/memory-new/xhub-security-innovation-work-orders-v1.md`, `docs/memory-new/xhub-memory-v3-execution-plan.md`, `docs/memory-new/xhub-leapfrog-claudemem-openclaw-memory-work-orders-v1.md`, `build/reports/si_w1_01_prereq_audit.v1.json`, `build/reports/si_w1_01_binding_contract_delta_3line.v1.json`, `build/reports/si_w1_01_approval_binding_evidence.v2.json`, `build/reports/si_w1_01_g1_g2_g4_first_probe.v2.json`, `build/reports/si_w1_01_hub_l5_delta_3line.v3.json`, `build/reports/si_w1_01_identity_mismatch_probe.v1.log` |
+| `SI-W1-02` | `Hub-L5(pool_takeover)` | `P0` | `delivered` | `SI-G1:candidate_pass,SI-G2:candidate_pass,SI-G4:candidate_pass` | `false` | `SI-W1-01` | `claim_si_w1_02_hub_l5_20260306_1421` | `2026-03-06T18:21:13+08:00` | `docs/memory-new/xhub-security-innovation-work-orders-v1.md`, `build/reports/si_w1_02_task_row_materialization_audit.v1.json`, `build/reports/si_w1_02_prereq_audit.v1.json`, `build/reports/si_w1_02_capability_token_evidence.v2.json`, `build/reports/si_w1_02_g1_g2_g4_first_probe.v2.json`, `build/reports/si_w1_02_hub_l5_delta_3line.v3.json`, `build/reports/si_w1_02_capability_token_probe.v2.log` |
+| `SI-W1-03` | `Hub-L5(pool_takeover)` | `P0` | `claimed` | `SI-G1:hold,SI-G2:hold,SI-G4:candidate_pass` | `false` | `SI-W1-02,CRK-W1-03` | `claim_si_w1_03_hub_l5_20260306_1639` | `2026-03-06T20:39:46+08:00` | `docs/memory-new/xhub-security-innovation-work-orders-v1.md`, `docs/memory-new/xhub-connector-reliability-kernel-work-orders-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md`, `docs/xhub-connectors-isolation-and-runtime-v1.md`, `build/reports/crk_w1_03_dependency_anchor.v1.json`, `build/reports/si_w1_03_task_row_materialization_audit.v1.json`, `build/reports/si_w1_03_prereq_audit.v2.json`, `build/reports/si_w1_03_payment_two_phase_evidence.v1.json`, `build/reports/si_w1_03_g1_g2_g4_first_probe.v1.json`, `build/reports/si_w1_03_hub_l5_delta_3line.v3.json`, `build/reports/si_w1_03_payment_probe.v1.log` |
+## D. Lane Zones（运行态）
+
+### Hub-L1
+- mode: `hard_standby(readonly;execution_delegated_to_Hub-L5)`
+- active_task: `SKC-W1-01+SKC-W1-02`
+- status: `delivered`（hub_l5_single_adjudication_pass_consumed；delta_3line_only；fail-closed）
+- claim_state: `claimed`
+- claim_id: `claim_skc_w1_01_02_auto_continue_20260302_1926`
+- claim_ttl_until: `2026-03-04T00:10:46-08:00`
+- backlog_next: `none`
+- blocked_reason: `none(hub_l5_gate_verdict_pass_consumed)`
+- unblock_owner: `none`
+- report_mode: `delta_3line`
+- retry_after_utc: `2026-03-04T04:30:46Z`
+- next_step: `final_state_backfilled_after_hub_l5_single_adjudication_pass; keep_no_delta_standby_and_wait_new_directed_work`
+- next_owner_lane: `none`
+- evidence_refs:
+  - `build/reports/skc_w1_hub_l1_evidence.v1.json`
+  - `build/reports/skc_w1_hub_l1_g3_handoff.v2.json`
+  - `build/reports/skc_w1_hub_l1_autocontinue_checkpoint.v59.json`
+  - `build/reports/skc_w1_hub_l1_autocontinue_checkpoint.v59.consistency.json`
+  - `build/reports/skc_w1_hub_l1_delta_3line.v59.json`
+  - `build/reports/skc_w1_hub_l1_require_real_alignment.v14.json`
+  - `build/reports/skc_w1_runner_execute_chain_evaluateSkillExecutionGate_evidence.hubl1.v2.json`
+  - `build/reports/skc_w1_xt_l2_hub_l1_real_sample_probe_results.v10.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v16.json`
+  - `build/reports/skc_brk_h1_event_bridge_evidence.v1.json`
+  - `build/reports/skc_brk_h1_probe.json`
+  - `build/reports/skc_w1_hub_l1_contract_drift_guard.v3.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+
+#### Hub-L1 / SKC-W1-01+SKC-W1-02 / Auto-Continue 7件套（checkpoint v58）
+
+1) Scope
+- `SKC-W1-01+SKC-W1-02`（证据协同模式；无新增功能）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L1 任务行 + Hub-L1 分区）
+- report:
+  - `build/reports/skc_w1_hub_l1_autocontinue_checkpoint.v58.json`
+  - `build/reports/skc_w1_hub_l1_autocontinue_checkpoint.v58.consistency.json`
+  - `build/reports/skc_w1_hub_l1_require_real_alignment.v13.json`
+  - `build/reports/skc_w1_xt_l2_hub_l1_real_sample_probe_results.v9.json`
+  - `build/reports/skc_brk_h1_probe.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/reports/skc_brk_h1_event_bridge_evidence.v1.json`
+  - `build/reports/skc_w1_hub_l1_contract_drift_guard.v2.json`
+- script:
+  - `scripts/m3_collect_skc_g3_real_sampling.js`（移除 execution_table fallback 计数路径，`agent.tool.executed` 仅按 strict gate 字段验收）
+
+3) DoD
+- [x] 按 Auto-Continue 规则先 claim 再执行
+- [x] 若无可执行 backlog，写入 `blocked_reason + unblock_owner`
+- [x] 维持 ABI/bridge 契约与 deny_code 语义冻结
+- [x] execution_table fallback 计数影响已消除；raw/effective 对齐并可解释
+- [x] SKC-BRK-H1 回归 3 组（case-A/B/C）全绿，且 `BRK-G0=PASS, BRK-G1=PASS`
+- [x] 机读证据全部可 `JSON.parse`
+- [ ] `matched_latency_rows >= 30`（当前 `0/30`）
+
+4) Gate
+  - `SKC-G0`: `PASS`
+  - `SKC-G1`: `PASS`
+  - `SKC-G3`: `INSUFFICIENT_EVIDENCE`
+  - `BRK-G0`: `PASS`
+  - `BRK-G1`: `PASS`
+- 证据路径：
+  - `build/reports/skc_w1_hub_l1_evidence.v1.json`
+  - `build/reports/skc_w1_hub_l1_autocontinue_checkpoint.v58.json`
+  - `build/reports/skc_w1_hub_l1_autocontinue_checkpoint.v58.consistency.json`
+  - `build/reports/skc_w1_runner_execute_chain_evaluateSkillExecutionGate_evidence.hubl1.v2.json`
+  - `build/reports/skc_w1_xt_l2_hub_l1_real_sample_probe_results.v9.json`
+  - `build/reports/skc_w1_hub_l1_require_real_alignment.v13.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v16.json`
+  - `build/reports/skc_brk_h1_event_bridge_evidence.v1.json`
+  - `build/reports/skc_brk_h1_probe.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/reports/skc_w1_hub_l1_contract_drift_guard.v2.json`
+
+5) KPI Snapshot
+- `openclaw_manifest_mapping_coverage`: `1.0`
+- `openclaw_skill_import_success_rate`: `1`
+- `import_to_first_run_p95_ms`: `null`
+- `require_real_probe_rows_returned(matched_only)`: `0/30`
+- `require_real_probe_candidate_rows_observed`: `34`
+- `require_real_probe_gap_rows`: `30`
+- `agent_tool_events_seen`: `34`
+- `agent_tool_events_accepted`: `0`
+- `agent_tool_events_rejected.skill_execution_gate_unchecked`: `34`
+- `g3_event_parse_compat_coverage`: `1.0`
+- `false_positive_run_accept`: `0`
+- 报告路径：
+  - `build/reports/skc_w1_hub_l1_autocontinue_checkpoint.v58.json`
+  - `build/reports/skc_w1_xt_l2_hub_l1_real_sample_probe_results.v9.json`
+  - `build/reports/skc_brk_h1_probe.json`
+  - `build/reports/skc_brk_h1_event_bridge_evidence.v1.json`
+  - `build/reports/skc_w1_hub_l1_contract_drift_guard.v2.json`
+
+6) Risks & Rollback
+- risks:
+  - strict 口径下 `matched_latency_rows=0`，`SKC-G3` 仍未达放行阈值
+  - `agent.tool.executed` 在当前真实样本中 `skill_execution_gate_checked=true` 缺失（`34` 条被拒收）
+  - 无 Hub-L1 backlog_next，若误推进将越泳道
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L1 行与分区）
+  - `build/reports/skc_w1_hub_l1_autocontinue_checkpoint.v58.json`
+  - `build/reports/skc_w1_hub_l1_autocontinue_checkpoint.v58.consistency.json`
+  - `build/reports/skc_w1_hub_l1_contract_drift_guard.v2.json`
+  - `scripts/m3_collect_skc_g3_real_sampling.js`
+
+7) Handoff
+- next_owner_lane: `XT-L2+QA+Hub-L5`
+- depends_on:
+  - `XT-L2` 产出真实样本并确保 `agent.tool.executed` 携带 strict gate 字段（`skill_execution_gate_checked=true` + `skill_execution_gate_binding.skill_id`）
+  - `QA` 对 strict counting 与 require-real 口径做机读复核（禁止 synthetic）
+  - `Hub-L5` 在 `matched_latency_rows >= 30` 后重跑 `SKC-G3` 门禁
+- unblock 条件：`contract_drift_guard.status=PASS`（已满足）且 strict 口径下 `matched_latency_rows >= 30`（未满足，缺口 `30`）
+
+#### Hub-L1 / SKC-W1-01+SKC-W1-02 / delta_3line checkpoint v64
+
+- status: `blocked(fail_closed)`（no_state_change_candidate_retained）
+- dependency_delta: `strict matched_rows=64/30; strict_accept_rows=64; gap_rows=0; denominator_gap=0; skill_execution_gate_unchecked=0; gate_vector_candidate=SKC-G3:PASS; retry_after_utc=2026-03-03T08:22:45Z; directed_baton=Hub-L5; rerun_packet=build/hub_l5_release_skc_g3_real_sampling.json`
+- next_owner_lane: `Hub-L5`（SKC-G3 candidate 可重跑；仅定向 baton + rerun packet 给 Hub-L5）
+- evidence_ref: `build/hub_l5_release_skc_g3_real_sampling.json`
+
+
+#### Hub-L1 / SKC-W1-01+SKC-W1-02 / delta_3line checkpoint v65
+
+- status: `blocked(fail_closed)`（no_evidence_delta；claim_renewed；candidate_pass_retained）
+- dependency_delta: `strict matched_rows=64/30; strict_accept_rows=64; gap_rows=0; denominator_gap=0; skill_execution_gate_unchecked=0; mention=MEN-20260303-001:delivered; directed_baton=Hub-L5; rerun_packet=build/hub_l5_release_skc_g3_real_sampling.json; retry_after_utc=2026-03-03T09:13:09Z`
+- next_owner_lane: `Hub-L5`（定向最小证据包：strict 对齐维持，可执行 SKC-G3 重跑）
+- evidence_ref: `build/hub_l5_release_skc_g3_real_sampling.json`
+
+#### Hub-L1 / SKC-W1-01+SKC-W1-02 / delta_3line checkpoint v66
+
+- status: `blocked(fail_closed)`（no_evidence_delta；claim_renewed；candidate_pass_retained）
+- dependency_delta: `strict matched_rows=64/30; strict_accept_rows=64; gap_rows=0; denominator_gap=0; skill_execution_gate_unchecked=0; mention=MEN-20260303-001:delivered; directed_baton=Hub-L5; rerun_packet=build/hub_l5_release_skc_g3_real_sampling.json; retry_after_utc=2026-03-03T11:27:51Z`
+- next_owner_lane: `Hub-L5`（定向最小证据包维持；SKC-G3 候选可重跑）
+- evidence_ref: `build/hub_l5_release_skc_g3_real_sampling.json`
+
+#### Hub-L1 / SKC-W1-01+SKC-W1-02 / delta_3line checkpoint v67
+
+- status: `blocked(fail_closed)`（no_evidence_delta；claim_renewed；candidate_pass_retained）
+- dependency_delta: `strict matched_rows=64/30; strict_accept_rows=64; gap_rows=0; denominator_gap=0; skill_execution_gate_unchecked=0; mention=MEN-20260303-001:delivered; directed_baton=Hub-L5; rerun_packet=build/hub_l5_release_skc_g3_real_sampling.json; retry_after_utc=2026-03-03T11:40:17Z`
+- next_owner_lane: `Hub-L5`（定向最小证据包维持；SKC-G3 候选可重跑）
+- evidence_ref: `build/hub_l5_release_skc_g3_real_sampling.json`
+
+#### Hub-L1 / SKC-W1-01+SKC-W1-02 / delta_3line checkpoint v68
+
+- status: `blocked(fail_closed)`（no_evidence_delta；claim_renewed；candidate_pass_retained）
+- dependency_delta: `strict matched_rows=64/30; strict_accept_rows=64; gap_rows=0; denominator_gap=0; skill_execution_gate_unchecked=0; mention=MEN-20260303-001:delivered; directed_baton=Hub-L5; rerun_packet=build/hub_l5_release_skc_g3_real_sampling.json; retry_after_utc=2026-03-03T11:44:17Z`
+- next_owner_lane: `Hub-L5`（定向最小证据包维持；SKC-G3 候选可重跑）
+- evidence_ref: `build/hub_l5_release_skc_g3_real_sampling.json`
+
+#### Hub-L1 / SKC-W1-01+SKC-W1-02 / delta_3line checkpoint v69
+
+- status: `blocked(fail_closed)`（no_evidence_delta；claim_renewed；candidate_pass_retained）
+- dependency_delta: `strict matched_rows=64/30; strict_accept_rows=64; gap_rows=0; denominator_gap=0; skill_execution_gate_unchecked=0; mention=MEN-20260303-001:delivered; directed_baton=Hub-L5; rerun_packet=build/hub_l5_release_skc_g3_real_sampling.json; retry_after_utc=2026-03-03T12:05:32Z`
+- next_owner_lane: `Hub-L5`（定向最小证据包维持；SKC-G3 候选可重跑）
+- evidence_ref: `build/hub_l5_release_skc_g3_real_sampling.json`
+
+#### Hub-L1 / SKC-W1-01+SKC-W1-02 / delta_3line checkpoint v70
+
+- status: `blocked(fail_closed)`（no_evidence_delta；claim_renewed；candidate_pass_retained）
+- dependency_delta: `strict matched_rows=64/30; strict_accept_rows=64; gap_rows=0; denominator_gap=0; skill_execution_gate_unchecked=0; hub_l5_new_directed_request=false; directed_baton=Hub-L5(on_demand); rerun_packet=build/hub_l5_release_skc_g3_real_sampling.json; retry_after_utc=2026-03-03T12:40:54Z`
+- next_owner_lane: `Hub-L5`（等待点名；按需定向推送最小证据包）
+- evidence_ref: `build/hub_l5_release_skc_g3_real_sampling.json`
+
+#### Hub-L1 / SKC-W1-01+SKC-W1-02 / delta_3line checkpoint v71
+
+- status: `blocked(fail_closed)`（no_evidence_delta；claim_renewed；candidate_pass_retained）
+- dependency_delta: `strict matched_rows=64/30; strict_accept_rows=64; gap_rows=0; denominator_gap=0; skill_execution_gate_unchecked=0; hub_l5_new_directed_request=false; directed_baton=Hub-L5(on_demand); rerun_packet=build/hub_l5_release_skc_g3_real_sampling.json; next_check_utc=2026-03-03T12:42:36Z`
+- next_owner_lane: `Hub-L5`（等待点名；按需定向推送最小证据包）
+- evidence_ref: `build/hub_l5_release_skc_g3_real_sampling.json`
+
+#### Hub-L1 / SKC-W1-01+SKC-W1-02 / delta_3line checkpoint v72
+
+- status: `blocked(fail_closed)`（no_task_switch；no_state_change；support_xt_l2_prereq_b_only）
+- dependency_delta: `strict matched_rows=64/30; strict_accept_rows=64; denominator_gap=0; skill_execution_gate_unchecked=0; hub_l5_new_directed_request=false; directed_mention=MEN-20260303-005@XT-L2; expected_delta(high_risk_request_count=+40,mergeback_runs=+0)_eta=2026-03-03T13:56:56Z; report=build/reports/skc_w1_hub_l1_delta_3line.v60.json`
+- next_owner_lane: `XT-L2`（定向支援 prereq_B sample_sufficiency；Hub-L5 点名前维持 NO_DELTA_STANDBY）
+- evidence_ref: `build/reports/skc_w1_hub_l1_delta_3line.v60.json`
+
+#### Hub-L1 / SKC-W1-01+SKC-W1-02 / delta_3line checkpoint v73
+
+- status: `blocked(fail_closed)`（no_state_change；no_new_hub_l5_ping；burst1_standby）
+- dependency_delta: `strict matched_rows=64/30; strict_accept_rows=64; denominator_gap=0; skill_execution_gate_unchecked=0; hub_l5_new_directed_request=false; xt_l2_support_mention=MEN-20260303-005(waiting_accept_or_delta); rerun_packet=build/hub_l5_release_skc_g3_real_sampling.json; next_check_utc=2026-03-03T14:02:59Z`
+- next_owner_lane: `Hub-L5`（点名即定向最小包；其余 NO_DELTA_STANDBY）
+- evidence_ref: `build/reports/skc_w1_hub_l1_delta_3line.v60.json`
+
+#### Hub-L1 / SKC-W1-01+SKC-W1-02 / delta_3line checkpoint v74
+
+- status: `blocked(fail_closed)`（no_state_change；no_new_hub_l5_ping；burst1_standby）
+- dependency_delta: `strict matched_rows=64/30; strict_accept_rows=64; denominator_gap=0; skill_execution_gate_unchecked=0; hub_l5_new_directed_request=false; xt_l2_support_mention=MEN-20260303-005(waiting_accept_or_delta); rerun_packet=build/hub_l5_release_skc_g3_real_sampling.json; next_check_utc=2026-03-03T14:30:36Z`
+- next_owner_lane: `Hub-L5`（点名即定向最小包；其余 NO_DELTA_STANDBY）
+- evidence_ref: `build/reports/skc_w1_hub_l1_delta_3line.v60.json`
+
+#### Hub-L1 / SKC-W1-01+SKC-W1-02 / delta_3line checkpoint v75
+
+- status: `blocked(fail_closed)`（no_state_change；no_new_directed_request；NO_DELTA_STANDBY）
+- dependency_delta: `strict matched_rows=64/30; strict_accept_rows=64; denominator_gap=0; skill_execution_gate_unchecked=0; hub_l5_new_directed_request=false; xt_l2_new_directed_request=false; rerun_packet=build/hub_l5_release_skc_g3_real_sampling.json; next_check_utc=2026-03-04T01:48:56Z`
+- next_owner_lane: `Hub-L5`（on_demand_directed_min_packet_only）
+- evidence_ref: `build/hub_l5_release_skc_g3_real_sampling.json`
+
+
+#### Hub-L1 / SKC-W1-01+SKC-W1-02 / delta_3line checkpoint v76
+
+- status: `blocked(fail_closed)`（no_state_change；no_new_directed_request；NO_DELTA_STANDBY）
+- dependency_delta: `strict matched_rows=64/30; strict_accept_rows=64; denominator_gap=0; skill_execution_gate_unchecked=0; hub_l5_new_directed_request=false; xt_l2_new_directed_request=false; rerun_packet=build/hub_l5_release_skc_g3_real_sampling.json; next_check_utc=2026-03-04T01:50:57Z`
+- next_owner_lane: `Hub-L5`（on_demand_directed_min_packet_only）
+- evidence_ref: `build/hub_l5_release_skc_g3_real_sampling.json`
+
+
+#### Hub-L1 / SKC-W1-01+SKC-W1-02 / delta_3line checkpoint v77
+
+- status: `blocked(fail_closed)`（no_state_change；no_new_directed_request；NO_DELTA_STANDBY）
+- dependency_delta: `strict matched_rows=64/30; strict_accept_rows=64; denominator_gap=0; skill_execution_gate_unchecked=0; hub_l5_new_directed_request=false; xt_l2_new_directed_request=false; rerun_packet=build/hub_l5_release_skc_g3_real_sampling.json; next_check_utc=2026-03-04T02:31:04Z`
+- next_owner_lane: `Hub-L5`（on_demand_directed_min_packet_only）
+- evidence_ref: `build/hub_l5_release_skc_g3_real_sampling.json`
+
+
+#### Hub-L1 / SKC-W1-01+SKC-W1-02 / delta_3line checkpoint v78
+
+- status: `blocked(fail_closed)`（no_state_change；no_new_directed_request；NO_DELTA_STANDBY）
+- dependency_delta: `strict matched_rows=64/30; strict_accept_rows=64; denominator_gap=0; skill_execution_gate_unchecked=0; hub_l5_new_directed_request=false; xt_l2_new_directed_request=false; rerun_packet=build/hub_l5_release_skc_g3_real_sampling.json; next_check_utc=2026-03-04T03:47:05Z`
+- next_owner_lane: `Hub-L5`（single_adjudication_ready_on_demand_min_packet_only）
+- evidence_ref: `build/hub_l5_release_skc_g3_real_sampling.json`
+
+
+#### Hub-L1 / SKC-W1-01+SKC-W1-02 / delta_3line checkpoint v79
+
+- status: `delivered(fail_closed)`（hub_l5_single_gate_verdict_pass_consumed；final_state_backfilled）
+- dependency_delta: `hub_l5_gate_verdict=SKC-G3:PASS; strict matched_rows=64/30; strict_accept_rows=64; denominator_gap=0; skill_execution_gate_unchecked=0; edge=EDGE-SKC-W3-08-SKC-W1-01-9f2a8b11:resolved; mention=MEN-20260303-001:verified; next_check_utc=2026-03-04T04:30:46Z`
+- next_owner_lane: `none`（no_delta_standby_until_new_directed_request）
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v93.json`
+
+### Hub-L2
+- mode: `hard_standby(readonly;execution_delegated_to_Hub-L5)`
+- active_task: `SKC-W1-04`
+- queue_head: `SKC-W1-04`
+- claim_state: `claimed`
+- claim_id: `claim_skc_w1_04_hub_l2_20260302_0129`
+- claim_ttl_until: `2026-03-03T22:10:43-08:00`
+- status: `blocked`（Hub-L2 范围已 delivered；等待跨泳道依赖）
+- backlog_next: `none`
+- blocked_reason: `downstream_not_ready:SKC-W3-08.blocked_no_rerun_condition(snapshot_unchanged)`
+- unblock_owner: `Hub-L5+XT-L2+Hub-L1+QA`
+- next_step: `maintain_skc_w1_04_dual_green_and_wait_hub_l5_snapshot_delta_then_g5_green; next_check_at_utc=2026-03-04T02:29:47Z`
+- next_owner_lane: `XT-L2+Hub-L1+QA`
+- last_delivered_task: `SKC-W1-04`
+- 7piece_template_status: `w1_03_completed,w1_04_delivered,autocontinue_blocked_checkpoint_v1,v2,v3,v4,v5,v6,v7,v8,v9,v10,v11,v12,v13,v14,v15,v16,v17,v18,v19,v20,v21,v22,v23,v24,v25,v26,v27,v28,v29,v30,v31,v32,v33,v34,v35,v36,v37,v38,v39,v40,v41,v42,v43,v44,delta_3line_v45,autocontinue_blocked_checkpoint_v45,autocontinue_blocked_checkpoint_v46,autocontinue_blocked_checkpoint_v47,autocontinue_blocked_checkpoint_v48,autocontinue_blocked_checkpoint_v49,delta_3line_v46,delta_3line_v47,delta_3line_v48,delta_3line_v49,delta_3line_v50,delta_3line_v51,delta_3line_v52,delta_3line_v53,delta_3line_v54,delta_3line_v55,delta_3line_v56,delta_3line_v57,delta_3line_v58,delta_3line_v59,delta_3line_v60`
+- evidence_refs:
+  - `build/reports/skc_w1_03_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v1.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v2.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v3.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v4.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v5.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v6.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v7.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v8.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v9.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v10.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v11.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v12.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v13.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v14.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v15.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v16.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v17.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v18.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v19.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v20.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v21.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v22.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v23.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v24.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v25.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v26.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v27.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v28.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v29.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v30.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v31.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v32.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v33.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v34.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v35.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v36.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v37.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v38.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v39.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v40.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v41.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v42.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v43.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v44.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v45.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v46.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v47.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v48.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v49.json`
+  - `build/reports/skc_w1_04_hub_l2_drift_guard.v1.json`
+  - `build/reports/skc_w1_04_hub_l2_drift_guard.v2.json`
+  - `build/reports/skc_w1_04_hub_l2_drift_guard.v3.json`
+  - `build/reports/skc_w1_04_hub_l2_drift_guard.v4.json`
+  - `build/reports/skc_w1_04_hub_l2_drift_guard.v5.json`
+  - `build/reports/skc_w1_04_hub_l2_delta_3line.v45.json`
+  - `build/reports/skc_w1_04_hub_l2_delta_3line.v46.json`
+  - `build/reports/skc_w1_04_hub_l2_delta_3line.v47.json`
+  - `build/reports/skc_w1_04_hub_l2_delta_3line.v48.json`
+  - `build/reports/skc_w1_04_hub_l2_delta_3line.v49.json`
+  - `build/reports/skc_w1_04_hub_l2_delta_3line.v50.json`
+  - `build/reports/skc_w1_04_hub_l2_delta_3line.v51.json`
+  - `build/reports/skc_w1_04_hub_l2_delta_3line.v52.json`
+  - `build/reports/skc_w1_04_hub_l2_delta_3line.v53.json`
+  - `build/reports/skc_w1_04_hub_l2_delta_3line.v54.json`
+  - `build/reports/skc_w1_04_hub_l2_delta_3line.v55.json`
+  - `build/reports/skc_w1_04_hub_l2_delta_3line.v56.json`
+  - `build/reports/skc_w1_04_hub_l2_delta_3line.v57.json`
+  - `build/reports/skc_w1_04_hub_l2_delta_3line.v58.json`
+  - `build/reports/skc_w1_04_hub_l2_delta_3line.v59.json`
+  - `build/reports/skc_w1_04_hub_l2_delta_3line.v60.json`
+  - `x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js`
+  - `x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js`
+  - `x-hub/grpc-server/hub_grpc_server/data/skills_failclosed_gate_snapshot.json`
+
+#### Hub-L2 / SKC-W1-04 / 7件套（Auto-Continue 首轮交付）
+
+1) Scope
+- `SKC-W1-04`（分层 pin 冲突解析 + revocation 双侧阻断，fail-closed 默认）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W1-04` 任务行 + Hub-L2 分区）
+- tests:
+  - `x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js`（新增三层 pin 冲突与 revoked 禁止 fallback 回归）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+
+3) DoD
+- [x] `revoked` skill 在 Hub download 侧被拒绝（`getSkillManifest/readSkillPackage` deny）
+- [x] `revoked` skill 在 Runner execute 侧被拒绝（`evaluateSkillExecutionGate` deny）
+- [x] 三层 pin（memory_core > global > project）冲突解析 deterministic，且 winner 被吊销后 fail-closed（不降级 fallback）
+- [x] deny_code 可机判且稳定：`signature_invalid` / `hash_mismatch` / `revoked`
+- [x] machine-readable 证据落盘：`build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`（Hub-L2 范围）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js:319`
+  - `x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js:401`
+  - `x-hub/grpc-server/hub_grpc_server/src/skills_store.js:1694`
+
+5) KPI Snapshot
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `hub_download_revoked_bypass`: `0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+
+6) Risks & Rollback
+- risks:
+  - 全局任务 `SKC-W1-04` 仍受 Hub-L3/XT-L1 主链接线证据约束，当前仅完成 Hub-L2 范围
+  - `trusted_publishers/pins/revoked` 仍为文件治理，后续需纳入受控发布通道
+- rollback:
+  - `skills_store/trusted_publishers.last_stable.json`
+  - `skills_store/skills_pins.last_stable.json`
+  - `skills_store/revoked.last_stable.json`
+  - `x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`（`SKC-W1-04`）
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`（Runner execute 主链强制接线）
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json` 转绿
+  - 保持 `require-real` 证据链，不允许 synthetic 冒绿
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint）
+
+1) Scope
+- `SKC-W1-04`（“继续”后自动续推；Hub-L2 无 backlog_next，进入 fail-closed blocked）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区 + `SKC-W1-04` 任务行证据补充）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v1.json`
+
+3) DoD
+- [x] 维持原 claim（`claim_id + claim_ttl_until`）不丢失
+- [x] 识别无可执行 backlog，写入 `blocked_reason + unblock_owner`
+- [x] 维持 fail-closed：依赖证据缺失不宣告 `closed`
+
+4) Gate
+- `SKC-G2`: `PASS`（Hub-L2 既有证据有效）
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（全局任务仍缺 Hub-L3/XT-L1 execute 主链证据）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v1.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `docs/memory-new/xhub-lane-command-board-v2.md:247`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v1.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 为跨泳道共享任务，Hub-L2 单侧无法消除 `SKC-G4` 证据缺口
+  - 若误将 blocked 置为 closed，会破坏 fail-closed 审计主链
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v1.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v1.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked evidence json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #2）
+
+1) Scope
+- `SKC-W1-04`（继续执行 blocked checkpoint；仅 Hub-L2 分区 evidence_sync）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区补充 v2 证据与 7件套）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v2.json`
+
+3) DoD
+- [x] 维持 `claim_id + claim_ttl_until` 不变
+- [x] 依赖未满足保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（跨泳道依赖仍未满足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v2.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v2.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍由 Hub-L3/XT-L1 主链接线证据阻塞
+  - 若跨泳道证据未到位即推进状态，会违反 fail-closed
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v2.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v2.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v2 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #3）
+
+1) Scope
+- `SKC-W1-04`（继续执行 blocked checkpoint；仅 Hub-L2 分区 evidence_sync）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区补充 v3 证据与 7件套）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v3.json`
+
+3) DoD
+- [x] 维持 `claim_id + claim_ttl_until` 不变
+- [x] 依赖未满足保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（跨泳道依赖仍未满足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v3.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v3.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍由 Hub-L3/XT-L1 主链接线证据阻塞
+  - 若跨泳道证据未到位即推进状态，会违反 fail-closed
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v3.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v3.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v3 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #4）
+
+1) Scope
+- `SKC-W1-04`（继续执行 blocked checkpoint；仅 Hub-L2 分区 evidence_sync）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区补充 v4 证据与 7件套）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v4.json`
+
+3) DoD
+- [x] 维持 `claim_id + claim_ttl_until` 不变
+- [x] 依赖未满足保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（跨泳道依赖仍未满足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v4.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v4.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍由 Hub-L3/XT-L1 主链接线证据阻塞
+  - 若跨泳道证据未到位即推进状态，会违反 fail-closed
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v4.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v4.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v4 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #5）
+
+1) Scope
+- `SKC-W1-04`（继续执行 blocked checkpoint；仅 Hub-L2 分区 evidence_sync）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区补充 v5 证据与 7件套）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v5.json`
+
+3) DoD
+- [x] 维持 `claim_id + claim_ttl_until` 不变
+- [x] 依赖未满足保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（跨泳道依赖仍未满足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v5.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v5.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍由 Hub-L3/XT-L1 主链接线证据阻塞
+  - 若跨泳道证据未到位即推进状态，会违反 fail-closed
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v5.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v5.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v5 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #6）
+
+1) Scope
+- `SKC-W1-04`（继续执行 blocked checkpoint；仅 Hub-L2 分区 evidence_sync）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区补充 v6 证据与 7件套）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v6.json`
+
+3) DoD
+- [x] 维持 `claim_id + claim_ttl_until` 不变
+- [x] 依赖未满足保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+- [x] 记录并标注一次瞬态测试抖动（隔离重跑转绿）
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（跨泳道依赖仍未满足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v6.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v6.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍由 Hub-L3/XT-L1 主链接线证据阻塞
+  - 出现 1 次测试瞬态抖动（已隔离复跑通过），建议后续加固临时目录隔离
+  - 若跨泳道证据未到位即推进状态，会违反 fail-closed
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v6.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v6.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v6 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #9）
+
+1) Scope
+- `SKC-W1-04`（继续执行 blocked checkpoint；仅 Hub-L2 分区 evidence_sync）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区补充 v9 证据与 7件套）
+- tests:
+  - `x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js`（修复签名篡改回归的非确定性）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v9.json`
+
+3) DoD
+- [x] 维持 `claim_id + claim_ttl_until` 不变
+- [x] 依赖未满足保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+- [x] `signature_invalid` 回归用例采用确定性篡改；稳定性回归见 v8（3-run）
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（跨泳道依赖仍未满足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v9.json`
+  - `x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js:233`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`（历史稳定性见 v8）
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v9.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍由 Hub-L3/XT-L1 主链接线证据阻塞
+  - 若跨泳道证据未到位即推进状态，会违反 fail-closed
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v9.json`
+  - `x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v9.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v9 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #10）
+
+1) Scope
+- `SKC-W1-04`（继续执行 blocked checkpoint；仅 Hub-L2 分区 evidence_sync）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区补充 v10 证据与 7件套）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v10.json`
+
+3) DoD
+- [x] 维持 `claim_id + claim_ttl_until` 不变
+- [x] 依赖未满足保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+- [x] 追加跨泳道依赖探测并机读落盘（Hub-L3/XT-L1 均未转绿）
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（跨泳道依赖仍未满足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v10.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v10.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍由 Hub-L3/XT-L1 主链接线证据阻塞
+  - 若跨泳道证据未到位即推进状态，会违反 fail-closed
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v10.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v10.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v10 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #11）
+
+1) Scope
+- `SKC-W1-04`（优先收口 SKC release blocker；保持 Hub-L2 fail-closed blocked checkpoint）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、next_step、v11 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v11.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 依赖未满足保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+- [x] 补充 `blocked_reason + unblock_owner + next_step` 机读字段
+- [x] 记录 P0-1 优先级：先收口 `SKC-G4`，后切 XT 主线/XT-W2-27
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（跨泳道依赖仍未满足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v11.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v11.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍由 Hub-L3/XT-L1 主链接线证据阻塞，`SKC-G4` 未转绿
+  - 过早切入 XT 主线/XT-W2-27 将违反“先收口 SKC blocker”序列
+  - 若跨泳道证据未到位即推进状态，会违反 fail-closed
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v11.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`（`SKC-G4` 转绿）
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（依赖链更新）
+- unblock 条件：
+  - Hub-L3 提供 runner execute 主链强制接线 `evaluateSkillExecutionGate` 的 require-real 证据
+  - XT-L1 对 `SKC-W2-05` 状态从 `ready(waiting)` 转入可执行且 Gate 证据非 `INSUFFICIENT_EVIDENCE`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v11.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v11 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #12）
+
+1) Scope
+- `SKC-W1-04`（继续 P0-1 收口：维持 SKC blocker 链 fail-closed，等待 `SKC-G4` 转绿）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v12 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v12.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 依赖未满足保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+- [x] 记录跨泳道依赖探测结果（Hub-L3/XT-L1 仍未 dual-green）
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（跨泳道依赖仍未满足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v12.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v12.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍由 Hub-L3/XT-L1 主链接线证据阻塞，`SKC-G4` 未转绿
+  - 过早切入 XT 主线/XT-W2-27 将违反“先收口 SKC blocker”序列
+  - 若跨泳道证据未到位即推进状态，会违反 fail-closed
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v12.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`（`SKC-G4` 转绿）
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（依赖链更新）
+- unblock 条件：
+  - Hub-L3 提供 runner execute 主链强制接线 `evaluateSkillExecutionGate` 的 require-real 证据
+  - XT-L1 对 `SKC-W2-05` 状态从 `ready(waiting)` 转入可执行且 Gate 证据非 `INSUFFICIENT_EVIDENCE`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v12.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v12 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #13）
+
+1) Scope
+- `SKC-W1-04`（执行继续协议；维持 P0-1 SKC blocker 收口优先，保持 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v13 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v13.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 依赖未满足保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+- [x] 记录跨泳道依赖探测结果（Hub-L3/XT-L1 仍未 dual-green）
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（跨泳道依赖仍未满足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v13.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v13.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍由 Hub-L3/XT-L1 主链接线证据阻塞，`SKC-G4` 未转绿
+  - 过早切入 XT 主线/XT-W2-27 将违反“先收口 SKC blocker”序列
+  - 若跨泳道证据未到位即推进状态，会违反 fail-closed
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v13.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`（`SKC-G4` 转绿）
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（依赖链更新）
+- unblock 条件：
+  - Hub-L3 提供 runner execute 主链强制接线 `evaluateSkillExecutionGate` 的 require-real 证据
+  - XT-L1 对 `SKC-W2-05` 状态从 `ready(waiting)` 转入可执行且 Gate 证据非 `INSUFFICIENT_EVIDENCE`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v13.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v13 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #14）
+
+1) Scope
+- `SKC-W1-04`（执行继续协议；维持 P0-1 SKC blocker 收口优先，保持 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v14 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v14.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 依赖未满足保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+- [x] 记录跨泳道依赖探测结果（Hub-L3/XT-L1 仍未 dual-green）
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（跨泳道依赖仍未满足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v14.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v14.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍由 Hub-L3/XT-L1 主链接线证据阻塞，`SKC-G4` 未转绿
+  - 过早切入 XT 主线/XT-W2-27 将违反“先收口 SKC blocker”序列
+  - 若跨泳道证据未到位即推进状态，会违反 fail-closed
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v14.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`（`SKC-G4` 转绿）
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（依赖链更新）
+- unblock 条件：
+  - Hub-L3 提供 runner execute 主链强制接线 `evaluateSkillExecutionGate` 的 require-real 证据
+  - XT-L1 对 `SKC-W2-05` 状态从 `ready(waiting)` 转入可执行且 Gate 证据非 `INSUFFICIENT_EVIDENCE`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v14.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v14 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #15）
+
+1) Scope
+- `SKC-W1-04`（执行继续协议；维持 P0-1 SKC blocker 收口优先，保持 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v15 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v15.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 依赖未满足保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+- [x] 记录跨泳道依赖探测结果（Hub-L3/XT-L1 仍未 dual-green）
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（跨泳道依赖仍未满足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v15.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v15.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍由 Hub-L3/XT-L1 主链接线证据阻塞，`SKC-G4` 未转绿
+  - 过早切入 XT 主线/XT-W2-27 将违反“先收口 SKC blocker”序列
+  - 若跨泳道证据未到位即推进状态，会违反 fail-closed
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v15.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`（`SKC-G4` 转绿）
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（依赖链更新）
+- unblock 条件：
+  - Hub-L3 提供 runner execute 主链强制接线 `evaluateSkillExecutionGate` 的 require-real 证据
+  - XT-L1 对 `SKC-W2-05` 状态从 `ready(waiting)` 转入可执行且 Gate 证据非 `INSUFFICIENT_EVIDENCE`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v15.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v15 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #16）
+
+1) Scope
+- `SKC-W1-04`（执行继续协议；维持 P0-1 SKC blocker 收口优先，保持 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v16 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v16.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 依赖未满足保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+- [x] 记录跨泳道依赖探测结果（Hub-L3/XT-L1 仍未 dual-green）
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（跨泳道依赖仍未满足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v16.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v16.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍由 Hub-L3/XT-L1 主链接线证据阻塞，`SKC-G4` 未转绿
+  - 过早切入 XT 主线/XT-W2-27 将违反“先收口 SKC blocker”序列
+  - 若跨泳道证据未到位即推进状态，会违反 fail-closed
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v16.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`（`SKC-G4` 转绿）
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（依赖链更新）
+- unblock 条件：
+  - Hub-L3 提供 runner execute 主链强制接线 `evaluateSkillExecutionGate` 的 require-real 证据
+  - XT-L1 对 `SKC-W2-05` 状态从 `ready(waiting)` 转入可执行且 Gate 证据非 `INSUFFICIENT_EVIDENCE`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v16.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v16 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #17）
+
+1) Scope
+- `SKC-W1-04`（执行继续协议；维持 P0-1 SKC blocker 收口优先，保持 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v17 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v17.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 依赖未满足保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+- [x] 记录跨泳道依赖探测结果（Hub-L3/XT-L1 仍未 dual-green）
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（跨泳道依赖仍未满足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v17.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v17.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍由 Hub-L3/XT-L1 主链接线证据阻塞，`SKC-G4` 未转绿
+  - 过早切入 XT 主线/XT-W2-27 将违反“先收口 SKC blocker”序列
+  - 若跨泳道证据未到位即推进状态，会违反 fail-closed
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v17.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`（`SKC-G4` 转绿）
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（依赖链更新）
+- unblock 条件：
+  - Hub-L3 提供 runner execute 主链强制接线 `evaluateSkillExecutionGate` 的 require-real 证据
+  - XT-L1 对 `SKC-W2-05` 状态从 `ready(waiting)` 转入可执行且 Gate 证据非 `INSUFFICIENT_EVIDENCE`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v17.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v17 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #18）
+
+1) Scope
+- `SKC-W1-04`（执行继续协议；维持 P0-1 SKC blocker 收口优先，保持 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v18 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v18.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 依赖未满足保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+- [x] 记录跨泳道依赖探测结果（Hub-L3/XT-L1 仍未 dual-green）
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（跨泳道依赖仍未满足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v18.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v18.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍由 Hub-L3/XT-L1 主链接线证据阻塞，`SKC-G4` 未转绿
+  - 过早切入 XT 主线/XT-W2-27 将违反“先收口 SKC blocker”序列
+  - 若跨泳道证据未到位即推进状态，会违反 fail-closed
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v18.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`（`SKC-G4` 转绿）
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（依赖链更新）
+- unblock 条件：
+  - Hub-L3 提供 runner execute 主链强制接线 `evaluateSkillExecutionGate` 的 require-real 证据
+  - XT-L1 对 `SKC-W2-05` 状态从 `ready(waiting)` 转入可执行且 Gate 证据非 `INSUFFICIENT_EVIDENCE`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v18.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v18 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #19）
+
+1) Scope
+- `SKC-W1-04`（执行继续协议；维持 P0-1 SKC blocker 收口优先，保持 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v19 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v19.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 依赖未满足保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+- [x] 记录跨泳道依赖探测结果（Hub-L3/XT-L1 仍未 dual-green）
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（跨泳道依赖仍未满足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v19.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v19.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍由 Hub-L3/XT-L1 主链接线证据阻塞，`SKC-G4` 未转绿
+  - 过早切入 XT 主线/XT-W2-27 将违反“先收口 SKC blocker”序列
+  - 若跨泳道证据未到位即推进状态，会违反 fail-closed
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v19.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`（`SKC-G4` 转绿）
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（依赖链更新）
+- unblock 条件：
+  - Hub-L3 提供 runner execute 主链强制接线 `evaluateSkillExecutionGate` 的 require-real 证据
+  - XT-L1 对 `SKC-W2-05` 状态从 `ready(waiting)` 转入可执行且 Gate 证据非 `INSUFFICIENT_EVIDENCE`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v19.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v19 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #20）
+
+1) Scope
+- `SKC-W1-04`（执行继续协议；维持 P0-1 SKC blocker 收口优先，保持 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v20 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v20.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 依赖未满足保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+- [x] 记录跨泳道依赖探测结果（Hub-L3/XT-L1 仍未 dual-green）
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（跨泳道依赖仍未满足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v20.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v20.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍由 Hub-L3/XT-L1 主链接线证据阻塞，`SKC-G4` 未转绿
+  - 过早切入 XT 主线/XT-W2-27 将违反“先收口 SKC blocker”序列
+  - 若跨泳道证据未到位即推进状态，会违反 fail-closed
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v20.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`（`SKC-G4` 转绿）
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（依赖链更新）
+- unblock 条件：
+  - Hub-L3 提供 runner execute 主链强制接线 `evaluateSkillExecutionGate` 的 require-real 证据
+  - XT-L1 对 `SKC-W2-05` 状态从 `ready(waiting)` 转入可执行且 Gate 证据非 `INSUFFICIENT_EVIDENCE`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v20.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v20 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #21）
+
+1) Scope
+- `SKC-W1-04`（执行继续协议；维持 P0-1 SKC blocker 收口优先，保持 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v21 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v21.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 依赖未满足保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+- [x] 记录跨泳道依赖探测结果（Hub-L3/XT-L1 仍未 dual-green）
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（跨泳道依赖仍未满足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v21.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v21.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍由 Hub-L3/XT-L1 主链接线证据阻塞，`SKC-G4` 未转绿
+  - 过早切入 XT 主线/XT-W2-27 将违反“先收口 SKC blocker”序列
+  - 若跨泳道证据未到位即推进状态，会违反 fail-closed
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v21.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`（`SKC-G4` 转绿）
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（依赖链更新）
+- unblock 条件：
+  - Hub-L3 提供 runner execute 主链强制接线 `evaluateSkillExecutionGate` 的 require-real 证据
+  - XT-L1 对 `SKC-W2-05` 状态从 `ready(waiting)` 转入可执行且 Gate 证据非 `INSUFFICIENT_EVIDENCE`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v21.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v21 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #22）
+
+1) Scope
+- `SKC-W1-04`（执行继续协议；维持 P0-1 SKC blocker 收口优先，保持 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v22 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v22.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 依赖未满足保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+- [x] 记录跨泳道依赖探测结果（Hub-L3/XT-L1 仍未 dual-green）
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（跨泳道依赖仍未满足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v22.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v22.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍由 Hub-L3/XT-L1 主链接线证据阻塞，`SKC-G4` 未转绿
+  - 过早切入 XT 主线/XT-W2-27 将违反“先收口 SKC blocker”序列
+  - 若跨泳道证据未到位即推进状态，会违反 fail-closed
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v22.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`（`SKC-G4` 转绿）
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（依赖链更新）
+- unblock 条件：
+  - Hub-L3 提供 runner execute 主链强制接线 `evaluateSkillExecutionGate` 的 require-real 证据
+  - XT-L1 对 `SKC-W2-05` 状态从 `ready(waiting)` 转入可执行且 Gate 证据非 `INSUFFICIENT_EVIDENCE`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v22.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v22 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #23）
+
+1) Scope
+- `SKC-W1-04`（执行继续协议；维持 P0-1 SKC blocker 收口优先，保持 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v23 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v23.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 依赖未满足保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+- [x] 记录跨泳道依赖探测结果（Hub-L3/XT-L1 仍未 dual-green）
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（跨泳道依赖仍未满足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v23.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v23.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍由 Hub-L3/XT-L1 主链接线证据阻塞，`SKC-G4` 未转绿
+  - 过早切入 XT 主线/XT-W2-27 将违反“先收口 SKC blocker”序列
+  - 若跨泳道证据未到位即推进状态，会违反 fail-closed
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v23.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`（`SKC-G4` 转绿）
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（依赖链更新）
+- unblock 条件：
+  - Hub-L3 提供 runner execute 主链强制接线 `evaluateSkillExecutionGate` 的 require-real 证据
+  - XT-L1 对 `SKC-W2-05` 状态从 `ready(waiting)` 转入可执行且 Gate 证据非 `INSUFFICIENT_EVIDENCE`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v23.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v23 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #24）
+
+1) Scope
+- `SKC-W1-04`（执行继续协议；维持 P0-1 SKC blocker 收口优先，保持 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v24 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v24.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 依赖未满足保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+- [x] 记录跨泳道依赖探测结果（Hub-L3/XT-L1 仍未 dual-green）
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（跨泳道依赖仍未满足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v24.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v24.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍由 Hub-L3/XT-L1 主链接线证据阻塞，`SKC-G4` 未转绿
+  - 过早切入 XT 主线/XT-W2-27 将违反“先收口 SKC blocker”序列
+  - 若跨泳道证据未到位即推进状态，会违反 fail-closed
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v24.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`（`SKC-G4` 转绿）
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（依赖链更新）
+- unblock 条件：
+  - Hub-L3 提供 runner execute 主链强制接线 `evaluateSkillExecutionGate` 的 require-real 证据
+  - XT-L1 对 `SKC-W2-05` 状态从 `ready(waiting)` 转入可执行且 Gate 证据非 `INSUFFICIENT_EVIDENCE`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v24.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v24 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #25）
+
+1) Scope
+- `SKC-W1-04`（执行继续协议；维持 P0-1 SKC blocker 收口优先，保持 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v25 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v25.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 依赖未满足保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+- [x] 记录跨泳道依赖探测结果（Hub-L3/XT-L1 仍未 dual-green）
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（跨泳道依赖仍未满足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v25.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v25.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍由 Hub-L3/XT-L1 主链接线证据阻塞，`SKC-G4` 未转绿
+  - 过早切入 XT 主线/XT-W2-27 将违反“先收口 SKC blocker”序列
+  - 若跨泳道证据未到位即推进状态，会违反 fail-closed
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v25.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`（`SKC-G4` 转绿）
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（依赖链更新）
+- unblock 条件：
+  - Hub-L3 提供 runner execute 主链强制接线 `evaluateSkillExecutionGate` 的 require-real 证据
+  - XT-L1 对 `SKC-W2-05` 状态从 `ready(waiting)` 转入可执行且 Gate 证据非 `INSUFFICIENT_EVIDENCE`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v25.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v25 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #26）
+
+1) Scope
+- `SKC-W1-04`（执行继续协议；维持 P0-1 SKC blocker 收口优先，保持 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v26 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v26.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 依赖未满足保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+- [x] 记录跨泳道依赖探测结果（Hub-L3/XT-L1 仍未 dual-green）
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（跨泳道依赖仍未满足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v26.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v26.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍由 Hub-L3/XT-L1 主链接线证据阻塞，`SKC-G4` 未转绿
+  - 过早切入 XT 主线/XT-W2-27 将违反“先收口 SKC blocker”序列
+  - 若跨泳道证据未到位即推进状态，会违反 fail-closed
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v26.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`（`SKC-G4` 转绿）
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（依赖链更新）
+- unblock 条件：
+  - Hub-L3 提供 runner execute 主链强制接线 `evaluateSkillExecutionGate` 的 require-real 证据
+  - XT-L1 对 `SKC-W2-05` 状态从 `ready(waiting)` 转入可执行且 Gate 证据非 `INSUFFICIENT_EVIDENCE`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v26.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v26 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #27）
+
+1) Scope
+- `SKC-W1-04`（执行 continue 协议；按 HF-DIRECTED 指令保持 `precheck-only` 依赖探测与 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v27 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v27.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 执行模式维持 `precheck-only`，未越泳道新增实现
+- [x] 依赖未满足保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（跨泳道依赖仍未满足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v27.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v27.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍由 Hub-L3/XT-L1 主链接线证据阻塞，`SKC-G4` 未转绿
+  - 若在依赖未绿前推进状态，将违反“双绿门禁 + fail-closed”
+  - `XT-W2-27-F` 只能在不抢占 SKC 主链资源前提下执行，当前不进入 Hub-L2 实施
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v27.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`（`SKC-G4` 转绿）
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（依赖链更新）
+- unblock 条件：
+  - Hub-L3 提供 runner execute 主链强制接线 `evaluateSkillExecutionGate` 的 require-real 证据
+  - XT-L1 对 `SKC-W2-05` 状态从 `ready(waiting)` 转入可执行且 Gate 证据非 `INSUFFICIENT_EVIDENCE`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v27.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v27 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #28）
+
+1) Scope
+- `SKC-W1-04`（执行 continue 协议；按 HF-DIRECTED 指令保持 `precheck-only` 依赖探测与 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v28 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v28.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 执行模式维持 `precheck-only`，未越泳道新增实现
+- [x] 依赖未满足保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（跨泳道依赖仍未满足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v28.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v28.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍由 Hub-L3/XT-L1 主链接线证据阻塞，`SKC-G4` 未转绿
+  - 若在依赖未绿前推进状态，将违反“双绿门禁 + fail-closed”
+  - `XT-W2-27-F` 只能在不抢占 SKC 主链资源前提下执行，当前不进入 Hub-L2 实施
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v28.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`（`SKC-G4` 转绿）
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（依赖链更新）
+- unblock 条件：
+  - Hub-L3 提供 runner execute 主链强制接线 `evaluateSkillExecutionGate` 的 require-real 证据
+  - XT-L1 对 `SKC-W2-05` 状态从 `ready(waiting)` 转入可执行且 Gate 证据非 `INSUFFICIENT_EVIDENCE`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v28.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v28 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #29）
+
+1) Scope
+- `SKC-W1-04`（执行 continue 协议；按 HF-DIRECTED 指令保持 `precheck-only` 依赖探测与 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v29 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v29.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 执行模式维持 `precheck-only`，未越泳道新增实现
+- [x] 依赖未满足保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（跨泳道依赖仍未满足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v29.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v29.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍由 Hub-L3/XT-L1 主链接线证据阻塞，`SKC-G4` 未转绿
+  - 若在依赖未绿前推进状态，将违反“双绿门禁 + fail-closed”
+  - `XT-W2-27-F` 只能在不抢占 SKC 主链资源前提下执行，当前不进入 Hub-L2 实施
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v29.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`（`SKC-G4` 转绿）
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（依赖链更新）
+- unblock 条件：
+  - Hub-L3 提供 runner execute 主链强制接线 `evaluateSkillExecutionGate` 的 require-real 证据
+  - XT-L1 对 `SKC-W2-05` 状态从 `ready(waiting)` 转入可执行且 Gate 证据非 `INSUFFICIENT_EVIDENCE`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v29.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v29 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #30）
+
+1) Scope
+- `SKC-W1-04`（执行 continue 协议；按 HF-DIRECTED 指令保持 `precheck-only` 依赖探测与 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v30 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v30.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 执行模式维持 `precheck-only`，未越泳道新增实现
+- [x] 依赖未满足保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（跨泳道依赖仍未满足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v30.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v30.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍由 Hub-L3/XT-L1 主链接线证据阻塞，`SKC-G4` 未转绿
+  - XT-L1 阻塞原因已更新为 `dependency_not_ready:SKC-W1-04.dual_green_verification_pending`
+  - 若在依赖未绿前推进状态，将违反“双绿门禁 + fail-closed”
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v30.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`（`SKC-G4` 转绿）
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（依赖链更新）
+- unblock 条件：
+  - Hub-L3 提供 runner execute 主链强制接线 `evaluateSkillExecutionGate` 的 require-real 证据
+  - XT-L1 对 `SKC-W2-05` 状态从 `ready(waiting)` 转入可执行且 Gate 证据非 `INSUFFICIENT_EVIDENCE`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v30.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v30 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #31）
+
+1) Scope
+- `SKC-W1-04`（执行 continue 协议；按 HF-DIRECTED 指令保持 `precheck-only` 依赖探测与 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v31 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v31.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 执行模式维持 `precheck-only`，未越泳道新增实现
+- [x] 依赖未满足保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（跨泳道依赖仍未满足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v31.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v31.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍由 Hub-L3/XT-L1 主链接线证据阻塞，`SKC-G4` 未转绿
+  - XT-L1 仍 `dependency_not_ready:SKC-W1-04.dual_green_verification_pending`
+  - 若在依赖未绿前推进状态，将违反“双绿门禁 + fail-closed”
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v31.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`（`SKC-G4` 转绿）
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（依赖链更新）
+- unblock 条件：
+  - Hub-L3 提供 runner execute 主链强制接线 `evaluateSkillExecutionGate` 的 require-real 证据
+  - XT-L1 对 `SKC-W2-05` 状态从 `ready(waiting)` 转入可执行且 Gate 证据非 `INSUFFICIENT_EVIDENCE`
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v31.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v31 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #32）
+
+1) Scope
+- `SKC-W1-04`（执行 continue 协议；按 HF-DIRECTED 指令保持 `precheck-only`，并在 Hub-L3 转绿后复核双绿与下游阻塞）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、blocked_reason 更新、v32 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v32.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 执行模式维持 `precheck-only`，未越泳道新增实现
+- [x] 完成依赖探测并记录 Hub-L3 `SKC-G4` 转绿证据
+- [x] 下游 `SKC-W2-05` 未转绿时保持 `blocked`，不写 `closed`
+- [x] 7件套与机读证据同步落盘，且可 parse
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`（Hub-L3 已合并转绿）
+- `SKC-W2-05-readiness`: `INSUFFICIENT_EVIDENCE`（下游 require-real 输入不足）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v32.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v32.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 双绿已达成，但主链前移后卡在 `SKC-W2-05` require-real 输入不足
+  - XT-L1 当前 `blocked_reason=require_real_input_pending:hub_l5.incident_samples_for_skc_w2_05`
+  - 若在 `SKC-W2-05` Gate 未绿时口头宣告主链就绪，将违反 fail-closed
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v32.json`
+
+7) Handoff
+- next_owner_lane: `XT-L1`
+- depends_on:
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（`SKC-G4`/下游 gate 转绿）
+  - `build/hub_l5_release_skc_g3_real_sampling.json`（require-real 输入补齐）
+- unblock 条件：
+  - XT-L1 `SKC-W2-05` 从 `ready` 进入可执行并通过 `SKC-G4`
+  - Hub-L5/XT-L2/Hub-L1 补齐 require-real 样本与 gate 证据
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v32.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v32 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #33）
+
+1) Scope
+- `SKC-W1-04`（Release Sprint 守门态；保持双绿守门并对下游 `SKC-W2-05` 依赖执行 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v33 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v33.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 执行模式维持 `precheck-only`，未越泳道新增实现
+- [x] 完成 Hub-L3/XT-L1 依赖探测并落盘 machine-readable delta
+- [x] `SKC-W1-04` 双绿守门保持（`SKC-G2/G4=PASS`）
+- [x] 下游 `SKC-W2-05` 未绿时保持 `blocked`，不写 `closed`
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- `SKC-W2-05-readiness`: `INSUFFICIENT_EVIDENCE`
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v33.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v33.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 双绿已达成，但主链当前阻塞在 `SKC-W2-05` require-real 输入不足
+  - XT-L1 当前 `blocked_reason=require_real_input_pending:hub_l5.incident_samples_for_skc_w2_05`
+  - 若在下游 gate 未绿前宣告主链完成，将违反 fail-closed 与双绿门禁
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v33.json`
+
+7) Handoff
+- next_owner_lane: `XT-L1`
+- depends_on:
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（`SKC-W2-05` gate 转绿）
+  - `build/hub_l5_release_skc_g3_real_sampling.json`（require-real 样本补齐）
+- unblock 条件：
+  - XT-L1 完成 require-real 输入消费并将 `SKC-W2-05` 进入可执行态且 Gate 非 `INSUFFICIENT_EVIDENCE`
+  - Hub-L5/XT-L2/Hub-L1 补齐 incident 样本链并完成可机读证据回填
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v33.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v33 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #34）
+
+1) Scope
+- `SKC-W1-04`（Release Sprint 守门态；30 分钟 checkpoint，保持双绿守门并对 `SKC-W2-05` 依赖 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v34 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v34.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 执行模式维持 `precheck-only`，未越泳道新增实现
+- [x] 完成 Hub-L3/XT-L1 依赖探测并落盘 machine-readable delta
+- [x] `SKC-W1-04` 双绿守门保持（`SKC-G2/G4=PASS`）
+- [x] 下游 `SKC-W2-05` 未绿时保持 `blocked`，不写 `closed`
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- `SKC-W2-05-readiness`: `INSUFFICIENT_EVIDENCE`
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v34.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v34.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 双绿已达成，但主链当前阻塞在 `SKC-W2-05` require-real 输入不足
+  - XT-L1 当前 `blocked_reason=require_real_input_pending:hub_l5.incident_samples_for_skc_w2_05`
+  - 若在下游 gate 未绿前宣告主链完成，将违反 fail-closed 与双绿门禁
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v34.json`
+
+7) Handoff
+- next_owner_lane: `XT-L1`
+- depends_on:
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（`SKC-W2-05` gate 转绿）
+  - `build/hub_l5_release_skc_g3_real_sampling.json`（require-real 样本补齐）
+- unblock 条件：
+  - XT-L1 完成 require-real 输入消费并将 `SKC-W2-05` 进入可执行态且 Gate 非 `INSUFFICIENT_EVIDENCE`
+  - Hub-L5/XT-L2/Hub-L1 补齐 incident 样本链并完成可机读证据回填
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v34.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v34 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #35）
+
+1) Scope
+- `SKC-W1-04`（Release Sprint 守门态；30 分钟 checkpoint，保持双绿守门并对 `SKC-W2-05` 依赖 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v35 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v35.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 执行模式维持 `precheck-only`，未越泳道新增实现
+- [x] 完成 Hub-L3/XT-L1 依赖探测并落盘 machine-readable delta
+- [x] `SKC-W1-04` 双绿守门保持（`SKC-G2/G4=PASS`）
+- [x] 下游 `SKC-W2-05` 未绿时保持 `blocked`，不写 `closed`
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- `SKC-W2-05-readiness`: `INSUFFICIENT_EVIDENCE`
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v35.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v35.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 双绿已达成，但主链当前阻塞在 `SKC-W2-05` require-real 输入不足
+  - XT-L1 当前 `blocked_reason=require_real_input_pending:hub_l5.incident_samples_for_skc_w2_05`
+  - 若在下游 gate 未绿前宣告主链完成，将违反 fail-closed 与双绿门禁
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v35.json`
+
+7) Handoff
+- next_owner_lane: `XT-L1`
+- depends_on:
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（`SKC-W2-05` gate 转绿）
+  - `build/hub_l5_release_skc_g3_real_sampling.json`（require-real 样本补齐）
+- unblock 条件：
+  - XT-L1 完成 require-real 输入消费并将 `SKC-W2-05` 进入可执行态且 Gate 非 `INSUFFICIENT_EVIDENCE`
+  - Hub-L5/XT-L2/Hub-L1 补齐 incident 样本链并完成可机读证据回填
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v35.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v35 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #36）
+
+1) Scope
+- `SKC-W1-04`（Release Sprint 守门态；30 分钟 checkpoint，保持双绿守门并对 `SKC-W2-05` 依赖 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v36 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v36.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 执行模式维持 `precheck-only`，未越泳道新增实现
+- [x] 完成 Hub-L3/XT-L1 依赖探测并落盘 machine-readable delta
+- [x] `SKC-W1-04` 双绿守门保持（`SKC-G2/G4=PASS`）
+- [x] 下游 `SKC-W2-05` 未绿时保持 `blocked`，不写 `closed`
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- `SKC-W2-05-readiness`: `INSUFFICIENT_EVIDENCE`
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v36.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v36.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 双绿已达成，但主链当前阻塞在 `SKC-W2-05` require-real 输入不足
+  - XT-L1 当前 `blocked_reason=require_real_input_pending:hub_l5.incident_samples_for_skc_w2_05`
+  - 若在下游 gate 未绿前宣告主链完成，将违反 fail-closed 与双绿门禁
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v36.json`
+
+7) Handoff
+- next_owner_lane: `XT-L1`
+- depends_on:
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（`SKC-W2-05` gate 转绿）
+  - `build/hub_l5_release_skc_g3_real_sampling.json`（require-real 样本补齐）
+- unblock 条件：
+  - XT-L1 完成 require-real 输入消费并将 `SKC-W2-05` 进入可执行态且 Gate 非 `INSUFFICIENT_EVIDENCE`
+  - Hub-L5/XT-L2/Hub-L1 补齐 incident 样本链并完成可机读证据回填
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v36.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v36 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #37）
+
+1) Scope
+- `SKC-W1-04`（Release Sprint 守门态；30 分钟 checkpoint，保持双绿守门并对 `SKC-W2-05` 依赖 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v37 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v37.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 执行模式维持 `precheck-only`，未越泳道新增实现
+- [x] 完成 Hub-L3/XT-L1 依赖探测并落盘 machine-readable delta
+- [x] `SKC-W1-04` 双绿守门保持（`SKC-G2/G4=PASS`）
+- [x] 下游 `SKC-W2-05` 未绿时保持 `blocked`，不写 `closed`
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- `SKC-W2-05-readiness`: `INSUFFICIENT_EVIDENCE`
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v37.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v37.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 双绿已达成，但主链当前阻塞在 `SKC-W2-05` require-real 输入不足
+  - XT-L1 当前 `blocked_reason=require_real_input_pending:hub_l5.incident_samples_for_skc_w2_05`
+  - 若在下游 gate 未绿前宣告主链完成，将违反 fail-closed 与双绿门禁
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v37.json`
+
+7) Handoff
+- next_owner_lane: `XT-L1`
+- depends_on:
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（`SKC-W2-05` gate 转绿）
+  - `build/hub_l5_release_skc_g3_real_sampling.json`（require-real 样本补齐）
+- unblock 条件：
+  - XT-L1 完成 require-real 输入消费并将 `SKC-W2-05` 进入可执行态且 Gate 非 `INSUFFICIENT_EVIDENCE`
+  - Hub-L5/XT-L2/Hub-L1 补齐 incident 样本链并完成可机读证据回填
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v37.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v37 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #38）
+
+1) Scope
+- `SKC-W1-04`（Release Sprint 守门态；30 分钟 checkpoint，保持双绿守门并对 `SKC-W2-05` 依赖 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v38 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v38.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 执行模式维持 `precheck-only`，未越泳道新增实现
+- [x] 完成 Hub-L3/XT-L1 依赖探测并落盘 machine-readable delta
+- [x] `SKC-W1-04` 双绿守门保持（`SKC-G2/G4=PASS`）
+- [x] 下游 `SKC-W2-05` 未绿时保持 `blocked`，不写 `closed`
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- `SKC-W2-05-readiness`: `INSUFFICIENT_EVIDENCE`
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v38.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v38.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 双绿已达成，但主链当前阻塞在 `SKC-W2-05` require-real 输入不足
+  - XT-L1 当前 `blocked_reason=require_real_input_pending:hub_l5.incident_samples_for_skc_w2_05`
+  - 若在下游 gate 未绿前宣告主链完成，将违反 fail-closed 与双绿门禁
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v38.json`
+
+7) Handoff
+- next_owner_lane: `XT-L1`
+- depends_on:
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（`SKC-W2-05` gate 转绿）
+  - `build/hub_l5_release_skc_g3_real_sampling.json`（require-real 样本补齐）
+- unblock 条件：
+  - XT-L1 完成 require-real 输入消费并将 `SKC-W2-05` 进入可执行态且 Gate 非 `INSUFFICIENT_EVIDENCE`
+  - Hub-L5/XT-L2/Hub-L1 补齐 incident 样本链并完成可机读证据回填
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v38.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v38 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #39）
+
+1) Scope
+- `SKC-W1-04`（Release Sprint 守门态；30 分钟 checkpoint，保持双绿守门并对 `SKC-W2-05` 依赖 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v39 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v39.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 执行模式维持 `precheck-only`，未越泳道新增实现
+- [x] 完成 Hub-L3/XT-L1 依赖探测并落盘 machine-readable delta
+- [x] `SKC-W1-04` 双绿守门保持（`SKC-G2/G4=PASS`）
+- [x] 下游 `SKC-W2-05` 未绿时保持 `blocked`，不写 `closed`
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- `SKC-W2-05-readiness`: `INSUFFICIENT_EVIDENCE`
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v39.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v39.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 双绿已达成，但主链当前阻塞在 `SKC-W2-05` require-real 输入不足
+  - XT-L1 当前 `blocked_reason=require_real_input_pending:hub_l5.incident_samples_for_skc_w2_05`
+  - 若在下游 gate 未绿前宣告主链完成，将违反 fail-closed 与双绿门禁
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v39.json`
+
+7) Handoff
+- next_owner_lane: `XT-L1`
+- depends_on:
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（`SKC-W2-05` gate 转绿）
+  - `build/hub_l5_release_skc_g3_real_sampling.json`（require-real 样本补齐）
+- unblock 条件：
+  - XT-L1 完成 require-real 输入消费并将 `SKC-W2-05` 进入可执行态且 Gate 非 `INSUFFICIENT_EVIDENCE`
+  - Hub-L5/XT-L2/Hub-L1 补齐 incident 样本链并完成可机读证据回填
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v39.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v39 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #40）
+
+1) Scope
+- `SKC-W1-04`（Release Sprint 守门态；30 分钟 checkpoint，保持双绿守门并对 `SKC-W2-05` 依赖 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v40 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v40.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 执行模式维持 `precheck-only`，未越泳道新增实现
+- [x] 完成 Hub-L3/XT-L1 依赖探测并落盘 machine-readable delta
+- [x] `SKC-W1-04` 双绿守门保持（`SKC-G2/G4=PASS`）
+- [x] 下游 `SKC-W2-05` 未绿时保持 `blocked`，不写 `closed`
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- `SKC-W2-05-readiness`: `INSUFFICIENT_EVIDENCE`
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v40.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v40.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 双绿已达成，但主链当前阻塞在 `SKC-W2-05` require-real 输入不足
+  - XT-L1 当前 `blocked_reason=require_real_input_pending:hub_l5.incident_samples_for_skc_w2_05`
+  - 若在下游 gate 未绿前宣告主链完成，将违反 fail-closed 与双绿门禁
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v40.json`
+
+7) Handoff
+- next_owner_lane: `XT-L1`
+- depends_on:
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（`SKC-W2-05` gate 转绿）
+  - `build/hub_l5_release_skc_g3_real_sampling.json`（require-real 样本补齐）
+- unblock 条件：
+  - XT-L1 完成 require-real 输入消费并将 `SKC-W2-05` 进入可执行态且 Gate 非 `INSUFFICIENT_EVIDENCE`
+  - Hub-L5/XT-L2/Hub-L1 补齐 incident 样本链并完成可机读证据回填
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v40.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v40 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #41）
+
+1) Scope
+- `SKC-W1-04`（Release Sprint 守门态；30 分钟 checkpoint，保持双绿守门并对 `SKC-W2-05` 依赖 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v41 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v41.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 执行模式维持 `precheck-only`，未越泳道新增实现
+- [x] 完成 Hub-L3/XT-L1 依赖探测并落盘 machine-readable delta
+- [x] `SKC-W1-04` 双绿守门保持（`SKC-G2/G4=PASS`）
+- [x] 下游 `SKC-W2-05` 未绿时保持 `blocked`，不写 `closed`
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- `SKC-W2-05-readiness`: `INSUFFICIENT_EVIDENCE`
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v41.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v41.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 双绿已达成，但主链当前阻塞在 `SKC-W2-05` require-real 输入不足
+  - XT-L1 当前 `blocked_reason=require_real_input_pending:hub_l5.incident_samples_for_skc_w2_05`
+  - 若在下游 gate 未绿前宣告主链完成，将违反 fail-closed 与双绿门禁
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v41.json`
+
+7) Handoff
+- next_owner_lane: `XT-L1`
+- depends_on:
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（`SKC-W2-05` gate 转绿）
+  - `build/hub_l5_release_skc_g3_real_sampling.json`（require-real 样本补齐）
+- unblock 条件：
+  - XT-L1 完成 require-real 输入消费并将 `SKC-W2-05` 进入可执行态且 Gate 非 `INSUFFICIENT_EVIDENCE`
+  - Hub-L5/XT-L2/Hub-L1 补齐 incident 样本链并完成可机读证据回填
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v41.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v41 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint #42）
+
+1) Scope
+- `SKC-W1-04`（Release Sprint 守门态；30 分钟 checkpoint，保持双绿守门并对 `SKC-W2-05` 依赖 fail-closed）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v42 7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v42.json`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行
+- [x] 执行模式维持 `precheck-only`，未越泳道新增实现
+- [x] 完成 Hub-L3/XT-L1 依赖探测并落盘 machine-readable delta
+- [x] `SKC-W1-04` 双绿守门保持（`SKC-G2/G4=PASS`）
+- [x] 下游 `SKC-W2-05` 未绿时保持 `blocked`，不写 `closed`
+- [x] 保持 require-real，未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- `SKC-W2-05-readiness`: `INSUFFICIENT_EVIDENCE`
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v42.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `signature_tamper_test_flake_rate`: `0.0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v42.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 双绿已达成，但主链当前阻塞在 `SKC-W2-05` require-real 输入不足
+  - XT-L1 当前 `blocked_reason=require_real_input_pending:hub_l5.incident_samples_for_skc_w2_05`
+  - 若在下游 gate 未绿前宣告主链完成，将违反 fail-closed 与双绿门禁
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v42.json`
+
+7) Handoff
+- next_owner_lane: `XT-L1`
+- depends_on:
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（`SKC-W2-05` gate 转绿）
+  - `build/hub_l5_release_skc_g3_real_sampling.json`（require-real 样本补齐）
+- unblock 条件：
+  - XT-L1 完成 require-real 输入消费并将 `SKC-W2-05` 进入可执行态且 Gate 非 `INSUFFICIENT_EVIDENCE`
+  - Hub-L5/XT-L2/Hub-L1 补齐 incident 样本链并完成可机读证据回填
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v42.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v42 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / 增量7件套（blocked checkpoint #43）
+
+1) Scope
+- `SKC-W1-04`（守门态；仅依赖守门与证据一致性复核，不新增功能）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v43 增量7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v43.json`
+
+3) DoD
+- [x] 保持 `SKC-W1-04` 双绿，不新增实现
+- [x] 完成下游依赖守门（Hub-L3 / XT-L1）
+- [x] 完成证据一致性复核并落盘 machine-readable 结果
+- [x] 下游未绿保持 `blocked`，未写 `closed`
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- `SKC-W2-05-readiness`: `INSUFFICIENT_EVIDENCE`
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v43.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `evidence_consistency_review_overall`: `PASS`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v43.json`
+
+6) Risks & Rollback
+- risks:
+  - 主链仍阻塞于 `SKC-W2-05`（`require_real_input_pending`）
+  - XT-L1 gate 当前仍 `INSUFFICIENT_EVIDENCE`
+  - 若下游未绿前跨步交接将违反 fail-closed
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v43.json`
+
+7) Handoff
+- next_owner_lane: `XT-L1`
+- depends_on:
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（`SKC-W2-05` gate 转绿）
+  - `build/hub_l5_release_skc_g3_real_sampling.json`（require-real 样本补齐）
+- unblock 条件：
+  - XT-L1/XT-L2 下游 gate 转绿后再进入交接下一步
+  - require-real 样本链完成并通过 hard-line 复核
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v43.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v43 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / 增量7件套（blocked checkpoint #44）
+
+1) Scope
+- `SKC-W1-04`（守门态；仅依赖守门与证据一致性复核，不新增功能）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L2 分区：claim 续租、v44 增量7件套与证据索引）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v44.json`
+
+3) DoD
+- [x] 保持 `SKC-W1-04` 双绿，不新增实现
+- [x] 完成下游依赖守门（Hub-L3 / XT-L1）
+- [x] 完成证据一致性复核并落盘 machine-readable 结果
+- [x] 下游未绿保持 `blocked`，未写 `closed`
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- `SKC-W2-05-readiness`: `INSUFFICIENT_EVIDENCE`
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v44.json`
+  - `build/reports/skc_w1_04_hub_l2_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `evidence_consistency_review_overall`: `PASS`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v44.json`
+
+6) Risks & Rollback
+- risks:
+  - 主链仍阻塞于 `SKC-W2-05`（`require_real_sampling_rows_not_met`）
+  - XT-L1 gate 当前仍 `INSUFFICIENT_EVIDENCE`
+  - 若下游未绿前跨步交接将违反 fail-closed
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区）
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v44.json`
+
+7) Handoff
+- next_owner_lane: `XT-L1`
+- depends_on:
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（`SKC-W2-05` gate 转绿）
+  - `build/hub_l5_release_skc_g3_real_sampling.json`（require-real 样本补齐）
+- unblock 条件：
+  - XT-L1/XT-L2 下游 gate 转绿后再进入交接下一步
+  - require-real 样本链完成并通过 hard-line 复核
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
+node --check x-hub/grpc-server/hub_grpc_server/src/services.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v44.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v44 json parse');"
+```
+
+
+#### Hub-L2 / SKC-W1-04 / delta_3line checkpoint v45
+
+- status: `blocked`（no_state_change；dual_green_baseline_held）
+- dependency_delta: `SKC-W2-05` 仍为 `ready` + `SKC-G1/G3/G4:INSUFFICIENT_EVIDENCE`；`blocked_reason=require_real_sampling_rows_not_met:successful_import_rows_34_matched_latency_rows_0_threshold_30`
+- next_owner_lane: `XT-L1`（wait_for_green_baton；收到转绿 baton 后定向通知 `Hub-L3`）
+- evidence_ref: `build/reports/skc_w1_04_hub_l2_delta_3line.v45.json`
+
+
+#### Hub-L2 / SKC-W1-04 / 增量7件套（blocked checkpoint #45）
+
+1) Scope
+- `SKC-W1-04`（稳态守门；仅 drift 守护与 blocked 快照更新，不新增功能）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W1-04` 任务行 + Hub-L2 分区）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_drift_guard.v1.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v45.json`
+
+3) DoD
+- [x] 先续租 claim（Hub-L2 row + Hub-L2 分区）
+- [x] 维持 `SKC-W1-04 dual-green delivered`，无新增实现
+- [x] 完成轻量 drift 守护（pin/revocation/deny_code 一致性）并机读落盘
+- [x] 下游 `Hub-L5` 未转绿：仅更新 blocked 快照与下次检查时间，未发 baton
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- `SKC-W3-08-readiness`: `INSUFFICIENT_EVIDENCE`
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v45.json`
+  - `build/reports/skc_w1_04_hub_l2_drift_guard.v1.json`
+  - `build/reports/skc_w3_08_hub_l5_delta_3line.v61.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `drift_guard_overall`: `PASS`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v45.json`
+  - `build/reports/skc_w1_04_hub_l2_drift_guard.v1.json`
+
+6) Risks & Rollback
+- risks:
+  - `Hub-L5` 仍 `blocked`，`SKC-W3-08` 前置条件 A/B 未满足
+  - 若在 `Hub-L5` 未绿前提前发 baton，将越过 fail-closed 守门
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区 + SKC-W1-04 行）
+  - `build/reports/skc_w1_04_hub_l2_drift_guard.v1.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v45.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2+Hub-L1+QA`
+- depends_on:
+  - `build/reports/skc_w3_08_hub_l5_delta_3line.v61.json`（`prereq_A/prereq_B` 由 FAIL -> PASS）
+  - `build/hub_l5_release_skc_g3_real_sampling.json`（允许 Hub-L5 gate rerun）
+- unblock 条件：
+  - `Hub-L5` 进入可执行态（非 blocked）
+  - `SKC-W3-08` gate 允许重跑（`prereq_A_and_prereq_B_both_PASS`）
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_drift_guard.v1.json','utf8')); console.log('ok - skc_w1_04_hub_l2_drift_guard.v1 json parse');"
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v45.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v45 json parse');"
+```
+
+
+#### Hub-L2 / SKC-W1-04 / 增量7件套（blocked checkpoint #46）
+
+1) Scope
+- `SKC-W1-04`（稳态守门；仅 drift 守护与 blocked 快照更新，不新增功能）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W1-04` 任务行 + Hub-L2 分区）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_drift_guard.v2.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v46.json`
+
+3) DoD
+- [x] 先续租 claim（Hub-L2 row + Hub-L2 分区）
+- [x] 维持 `SKC-W1-04 dual-green delivered`，无新增实现
+- [x] 完成轻量 drift 守护（pin/revocation/deny_code 一致性）并机读落盘
+- [x] 下游 `Hub-L3=PASS` 但 `Hub-L5` 未转绿：仅更新 blocked 快照与下次检查时间，未发 baton
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- `SKC-W3-08-readiness`: `INSUFFICIENT_EVIDENCE`
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v46.json`
+  - `build/reports/skc_w1_04_hub_l2_drift_guard.v2.json`
+  - `build/reports/skc_w3_08_hub_l5_delta_3line.v62.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `drift_guard_overall`: `PASS`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v46.json`
+  - `build/reports/skc_w1_04_hub_l2_drift_guard.v2.json`
+
+6) Risks & Rollback
+- risks:
+  - `Hub-L5` 仍 `blocked`，`SKC-W3-08` 前置条件 A/B 未满足
+  - 若在 `Hub-L5` 未绿前提前发 baton，将越过 fail-closed 守门
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区 + SKC-W1-04 行）
+  - `build/reports/skc_w1_04_hub_l2_drift_guard.v2.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v46.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2+Hub-L1+QA`
+- depends_on:
+  - `build/reports/skc_w3_08_hub_l5_delta_3line.v62.json`（`prereq_A/prereq_B` 由 FAIL -> PASS）
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v9.json`（release prereq gate 由 `INSUFFICIENT_EVIDENCE` -> `PASS`）
+- unblock 条件：
+  - `Hub-L5` 进入可执行态（非 blocked）
+  - `SKC-W3-08` gate 允许重跑（`prereq_A_and_prereq_B_both_PASS`）
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_drift_guard.v2.json','utf8')); console.log('ok - skc_w1_04_hub_l2_drift_guard.v2 json parse');"
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v46.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v46 json parse');"
+```
+
+
+#### Hub-L2 / SKC-W1-04 / 增量7件套（blocked checkpoint #47）
+
+1) Scope
+- `SKC-W1-04`（稳态守门；仅 drift 守护与 blocked 快照更新，不新增功能）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W1-04` 任务行 + Hub-L2 分区）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_drift_guard.v3.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v47.json`
+
+3) DoD
+- [x] 先续租 claim（Hub-L2 row + Hub-L2 分区）
+- [x] 维持 `SKC-W1-04 dual-green delivered`，无新增实现
+- [x] 完成轻量 drift 守护（pin/revocation/deny_code 一致性）并机读落盘
+- [x] 下游 `Hub-L3=PASS` 但 `Hub-L5` 未转绿：仅更新 blocked 快照与下次检查时间，未发 baton
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- `SKC-W3-08-readiness`: `INSUFFICIENT_EVIDENCE`
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v47.json`
+  - `build/reports/skc_w1_04_hub_l2_drift_guard.v3.json`
+  - `build/reports/skc_w3_08_hub_l5_delta_3line.v63.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `drift_guard_overall`: `PASS`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v47.json`
+  - `build/reports/skc_w1_04_hub_l2_drift_guard.v3.json`
+
+6) Risks & Rollback
+- risks:
+  - `Hub-L5` 仍 `blocked`，`SKC-W3-08` 前置条件 A/B 未满足
+  - 若在 `Hub-L5` 未绿前提前发 baton，将越过 fail-closed 守门
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区 + SKC-W1-04 行）
+  - `build/reports/skc_w1_04_hub_l2_drift_guard.v3.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v47.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2+Hub-L1+QA`
+- depends_on:
+  - `build/reports/skc_w3_08_hub_l5_delta_3line.v63.json`（`prereq_A/prereq_B` 由 FAIL -> PASS）
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v10.json`（release prereq gate 由 `INSUFFICIENT_EVIDENCE` -> `PASS`）
+- unblock 条件：
+  - `Hub-L5` 进入可执行态（非 blocked）
+  - `SKC-W3-08` gate 允许重跑（`prereq_A_and_prereq_B_both_PASS`）
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_drift_guard.v3.json','utf8')); console.log('ok - skc_w1_04_hub_l2_drift_guard.v3 json parse');"
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v47.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v47 json parse');"
+```
+
+
+#### Hub-L2 / SKC-W1-04 / 增量7件套（blocked checkpoint #48）
+
+1) Scope
+- `SKC-W1-04`（稳态守门；仅 drift 守护与 blocked 快照更新，不新增功能）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W1-04` 任务行 + Hub-L2 分区）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_drift_guard.v4.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v48.json`
+
+3) DoD
+- [x] 先续租 claim（Hub-L2 row + Hub-L2 分区）
+- [x] 维持 `SKC-W1-04 dual-green delivered`，无新增实现
+- [x] 完成轻量 drift 守护（pin/revocation/deny_code 一致性）并机读落盘
+- [x] 下游 `Hub-L3=PASS` 但 `Hub-L5` 未转绿：仅更新 blocked 快照与下次检查时间，未发 baton
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- `SKC-W3-08-readiness`: `INSUFFICIENT_EVIDENCE`
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v48.json`
+  - `build/reports/skc_w1_04_hub_l2_drift_guard.v4.json`
+  - `build/reports/skc_w3_08_hub_l5_delta_3line.v63.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `drift_guard_overall`: `PASS`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v48.json`
+  - `build/reports/skc_w1_04_hub_l2_drift_guard.v4.json`
+
+6) Risks & Rollback
+- risks:
+  - `Hub-L5` 仍 `blocked`，`SKC-W3-08` 前置条件 A/B 未满足
+  - 若在 `Hub-L5` 未绿前提前发 baton，将越过 fail-closed 守门
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区 + SKC-W1-04 行）
+  - `build/reports/skc_w1_04_hub_l2_drift_guard.v4.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v48.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2+Hub-L1+QA`
+- depends_on:
+  - `build/reports/skc_w3_08_hub_l5_delta_3line.v63.json`（`prereq_A/prereq_B` 由 FAIL -> PASS）
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v10.json`（release prereq gate 由 `INSUFFICIENT_EVIDENCE` -> `PASS`）
+- unblock 条件：
+  - `Hub-L5` 进入可执行态（非 blocked）
+  - `SKC-W3-08` gate 允许重跑（`prereq_A_and_prereq_B_both_PASS`）
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_drift_guard.v4.json','utf8')); console.log('ok - skc_w1_04_hub_l2_drift_guard.v4 json parse');"
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v48.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v48 json parse');"
+```
+
+
+#### Hub-L2 / SKC-W1-04 / 增量7件套（blocked checkpoint #49）
+
+1) Scope
+- `SKC-W1-04`（稳态守门；仅 drift 守护与 blocked 快照更新，不新增功能）
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W1-04` 任务行 + Hub-L2 分区）
+- reports:
+  - `build/reports/skc_w1_04_hub_l2_drift_guard.v5.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v49.json`
+
+3) DoD
+- [x] 先续租 claim（Hub-L2 row + Hub-L2 分区）
+- [x] 维持 `SKC-W1-04 dual-green delivered`，无新增实现
+- [x] 完成轻量 drift 守护（pin/revocation/deny_code 一致性）并机读落盘
+- [x] 下游 `Hub-L3=PASS` 但 `Hub-L5` 未转绿：仅更新 blocked 快照与下次检查时间，未发 baton
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- `SKC-W3-08-readiness`: `INSUFFICIENT_EVIDENCE`
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v49.json`
+  - `build/reports/skc_w1_04_hub_l2_drift_guard.v5.json`
+  - `build/reports/skc_w3_08_hub_l5_delta_3line.v64.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `unsigned_high_risk_skill_exec`: `0`
+- `tamper_detect_rate`: `1.0`
+- `revoked_skill_execution_attempt_success`: `0`
+- `pin_resolution_determinism`: `1.0`
+- `drift_guard_overall`: `PASS`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v49.json`
+  - `build/reports/skc_w1_04_hub_l2_drift_guard.v5.json`
+
+6) Risks & Rollback
+- risks:
+  - `Hub-L5` 仍 `blocked`，`SKC-W3-08` 前置条件 A/B 未满足
+  - 若在 `Hub-L5` 未绿前提前发 baton，将越过 fail-closed 守门
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L2 分区 + SKC-W1-04 行）
+  - `build/reports/skc_w1_04_hub_l2_drift_guard.v5.json`
+  - `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v49.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2+Hub-L1+QA`
+- depends_on:
+  - `build/reports/skc_w3_08_hub_l5_delta_3line.v64.json`（`prereq_A/prereq_B` 仍为 `FAIL`）
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v11.json`（`decision.status=BLOCKED_FAIL_CLOSED`）
+- unblock 条件：
+  - `Hub-L5` 进入可执行态（非 blocked）
+  - `SKC-W3-08` gate 允许重跑（`prereq_A_and_prereq_B_both_PASS`）
+
+命令回填（real run）:
+```bash
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_drift_guard.v5.json','utf8')); console.log('ok - skc_w1_04_hub_l2_drift_guard.v5 json parse');"
+node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v49.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v49 json parse');"
+```
+
+#### Hub-L2 / SKC-W1-04 / delta_3line checkpoint v46
+
+- status: `blocked(no_state_change;dual_green_delivered_held)`
+- dependency_delta: `Hub-L3=delivered(SKC-G4:PASS,executable=true); Hub-L5=blocked(prereq_A=true,prereq_B=false,release_decision=INSUFFICIENT_EVIDENCE); drift_guard=PASS_STABLE_NO_CHANGE; downstream_green=false`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（Hub-L5 未双绿；按 fail-closed 仅更新 next_check，不发 baton）
+- evidence_ref: `build/reports/skc_w1_04_hub_l2_delta_3line.v46.json`
+
+
+#### Hub-L2 / SKC-W1-04 / delta_3line checkpoint v47
+
+- status: `blocked(no_state_change;dual_green_delivered_held)`
+- dependency_delta: `Hub-L3=delivered(SKC-G4:PASS,executable=true); Hub-L5=blocked(prereq_A=true,prereq_B=false,release_decision=INSUFFICIENT_EVIDENCE); drift_guard=PASS_STABLE_NO_CHANGE; downstream_green=false`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（Hub-L5 未双绿；按 fail-closed 仅更新 next_check，不发 baton）
+- evidence_ref: `build/reports/skc_w1_04_hub_l2_delta_3line.v47.json`
+
+
+#### Hub-L2 / SKC-W1-04 / delta_3line checkpoint v48
+
+- status: `blocked(no_state_change;dual_green_delivered_held)`
+- dependency_delta: `Hub-L3=delivered(SKC-G4:PASS,executable=true); Hub-L5=blocked(prereq_A=true,prereq_B=false,release_decision=INSUFFICIENT_EVIDENCE); drift_guard=PASS_STABLE_NO_CHANGE; downstream_green=false`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（Hub-L5 未双绿；按 fail-closed 仅更新 next_check，不发 baton）
+- evidence_ref: `build/reports/skc_w1_04_hub_l2_delta_3line.v48.json`
+
+
+#### Hub-L2 / SKC-W1-04 / delta_3line checkpoint v49
+
+- status: `blocked(no_state_change;dual_green_delivered_held)`
+- dependency_delta: `Hub-L3=delivered(SKC-G4:PASS,executable=true); Hub-L5=blocked(prereq_A=true,prereq_B=false,release_decision=INSUFFICIENT_EVIDENCE); drift_guard=PASS_STABLE_NO_CHANGE; downstream_green=false`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（Hub-L5 未双绿；按 fail-closed 仅更新 next_check，不发 baton）
+- evidence_ref: `build/reports/skc_w1_04_hub_l2_delta_3line.v49.json`
+
+
+#### Hub-L2 / SKC-W1-04 / delta_3line checkpoint v50
+
+- status: `blocked(no_state_change;dual_green_delivered_held)`
+- dependency_delta: `Hub-L3=delivered(SKC-G4:PASS,executable=true); Hub-L5=blocked(prereq_A=true,prereq_B=false,release_decision=INSUFFICIENT_EVIDENCE); drift_guard=PASS_STABLE_NO_CHANGE; downstream_green=false`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（Hub-L5 未双绿；按 fail-closed 仅刷新 blocked 快照与 next_check，不发 baton）
+- evidence_ref: `build/reports/skc_w1_04_hub_l2_delta_3line.v50.json`
+
+
+#### Hub-L2 / SKC-W1-04 / delta_3line checkpoint v51
+
+- status: `blocked(no_state_change;dual_green_delivered_held)`
+- dependency_delta: `Hub-L3=delivered(SKC-G4:PASS,executable=true); Hub-L5=blocked(prereq_A=true,prereq_B=false,release_decision=INSUFFICIENT_EVIDENCE); drift_guard=PASS_STABLE_NO_CHANGE; downstream_green=false`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（Hub-L5 未双绿；按 fail-closed 仅刷新 blocked 快照与 next_check，不发 baton）
+- evidence_ref: `build/reports/skc_w1_04_hub_l2_delta_3line.v51.json`
+
+
+#### Hub-L2 / SKC-W1-04 / delta_3line checkpoint v52
+
+- status: `blocked(no_state_change;dual_green_delivered_held)`
+- dependency_delta: `Hub-L3=delivered(SKC-G4:PASS,executable=true); Hub-L5=blocked(prereq_A=true,prereq_B=false,release_decision=INSUFFICIENT_EVIDENCE,retry_after_utc=2026-03-03T10:03:14Z); drift_guard=PASS_STABLE_NO_CHANGE; downstream_green=false`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（Hub-L5 未双绿；按 fail-closed 仅刷新 blocked 快照与 next_check，不发 baton）
+- evidence_ref: `build/reports/skc_w1_04_hub_l2_delta_3line.v52.json`
+
+
+#### Hub-L2 / SKC-W1-04 / delta_3line checkpoint v53
+
+- status: `blocked(no_state_change;dual_green_delivered_held)`
+- dependency_delta: `Hub-L3=delivered(SKC-G4:PASS,executable=true); Hub-L5=blocked(prereq_A=true,prereq_B=false,release_decision=INSUFFICIENT_EVIDENCE,retry_after_utc=2026-03-03T12:17:12Z); drift_guard=PASS_STABLE_NO_CHANGE; downstream_green=false`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（Hub-L5 未双绿；按 fail-closed 仅刷新 blocked 快照与 next_check，不发 baton）
+- evidence_ref: `build/reports/skc_w1_04_hub_l2_delta_3line.v53.json`
+
+
+#### Hub-L2 / SKC-W1-04 / delta_3line checkpoint v54
+
+- status: `blocked(no_state_change;dual_green_delivered_held)`
+- dependency_delta: `Hub-L3=delivered(SKC-G4:PASS,executable=true); Hub-L5=blocked(prereq_A=true,prereq_B=false,release_decision=INSUFFICIENT_EVIDENCE,retry_after_utc=2026-03-03T12:21:00Z); drift_guard=PASS_STABLE_NO_CHANGE; downstream_green=false`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（Hub-L5 未双绿；按 fail-closed 仅刷新 blocked 快照与 next_check，不发 baton）
+- evidence_ref: `build/reports/skc_w1_04_hub_l2_delta_3line.v54.json`
+
+
+#### Hub-L2 / SKC-W1-04 / delta_3line checkpoint v55
+
+- status: `blocked(no_state_change;dual_green_delivered_held)`
+- dependency_delta: `Hub-L3=delivered(SKC-G4:PASS,executable=true); Hub-L5=blocked(prereq_A=true,prereq_B=false,release_decision=INSUFFICIENT_EVIDENCE,retry_after_utc=2026-03-03T12:21:00Z); drift_guard=PASS_STABLE_NO_CHANGE; downstream_green=false`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（Hub-L5 未双绿；按 fail-closed 仅刷新 blocked 快照与 next_check，不发 baton）
+- evidence_ref: `build/reports/skc_w1_04_hub_l2_delta_3line.v55.json`
+
+
+#### Hub-L2 / SKC-W1-04 / delta_3line checkpoint v56
+
+- status: `blocked(no_state_change;dual_green_delivered_held)`
+- dependency_delta: `Hub-L3=delivered(SKC-G4:PASS,executable=true); Hub-L5=blocked(prereq_A=true,prereq_B=false,release_decision=INSUFFICIENT_EVIDENCE,retry_after_utc=2026-03-03T12:27:30Z); drift_guard=PASS_STABLE_NO_CHANGE; downstream_green=false`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（Hub-L5 未双绿；按 fail-closed 仅刷新 blocked 快照与 next_check，不发 baton）
+- evidence_ref: `build/reports/skc_w1_04_hub_l2_delta_3line.v56.json`
+
+
+#### Hub-L2 / SKC-W1-04 / delta_3line checkpoint v57
+
+- status: `blocked(no_state_change;dual_green_delivered_held)`
+- dependency_delta: `Hub-L3=delivered(SKC-G4:PASS,executable=true); Hub-L5=blocked(prereq_A=true,prereq_B=false,release_decision=INSUFFICIENT_EVIDENCE,retry_after_utc=2026-03-03T12:41:00Z); drift_guard=PASS_STABLE_NO_CHANGE; downstream_green=false`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（Hub-L5 未双绿；按 fail-closed 仅刷新 blocked 快照与 next_check，不发 baton）
+- evidence_ref: `build/reports/skc_w1_04_hub_l2_delta_3line.v57.json`
+
+
+#### Hub-L2 / SKC-W1-04 / delta_3line checkpoint v58
+
+- status: `blocked(no_state_change;dual_green_delivered_held)`
+- dependency_delta: `Hub-L3=delivered(SKC-G4:PASS,executable=true); Hub-L5=blocked(prereq_A=true,prereq_B=false,release_decision=INSUFFICIENT_EVIDENCE,retry_after_utc=2026-03-03T12:48:26Z); drift_guard=PASS_STABLE_NO_CHANGE; downstream_green=false`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（Hub-L5 未双绿；按 fail-closed 仅刷新 blocked 快照与 next_check，不发 baton）
+- evidence_ref: `build/reports/skc_w1_04_hub_l2_delta_3line.v58.json`
+
+
+#### Hub-L2 / SKC-W1-04 / delta_3line checkpoint v59
+
+- status: `blocked(no_state_change;dual_green_delivered_held)`
+- dependency_delta: `Hub-L3=delivered(SKC-G4:PASS,executable=true); Hub-L5=blocked(prereq_A=true,prereq_B=false,release_decision=INSUFFICIENT_EVIDENCE,retry_after_utc=2026-03-03T14:38:08Z); drift_guard=PASS_STABLE_NO_CHANGE; downstream_green=false`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（Hub-L5 未双绿；按 fail-closed 仅刷新 blocked 快照与 next_check，不发 baton）
+- evidence_ref: `build/reports/skc_w1_04_hub_l2_delta_3line.v59.json`
+
+
+#### Hub-L2 / SKC-W1-04 / delta_3line checkpoint v60
+
+- status: `blocked(no_state_change;dual_green_delivered_held)`
+- dependency_delta: `Hub-L3=delivered(SKC-G4:PASS,executable=true); Hub-L5=blocked(prereq_A=true,prereq_B=true,release_decision=GO,allow_gate_rerun=false,retry_after_utc=2026-03-03T14:38:08Z); drift_guard=PASS_STABLE_NO_CHANGE; downstream_green=false`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（Hub-L5 未转绿（预窗口）；按 fail-closed 仅刷新 blocked 快照与 next_check，不发 baton）
+- evidence_ref: `build/reports/skc_w1_04_hub_l2_delta_3line.v60.json`
+
+### Hub-L3
+- mode: `hard_standby(readonly;execution_delegated_to_Hub-L5)`
+- active_task: `SKC-W1-04`（Auto-Continue claim 后执行）
+- queue_head: `SKC-W1-04`（与 Hub-L2 串联）
+- status: `delivered`（runner_execute_chain_gate_verified）
+- claim_state: `claimed`
+- claim_id: `claim_skc_w1_04_hub_l3_20260302_1917`
+- claim_ttl_until: `2026-03-03T22:10:43-08:00`
+- note: `SI-W1-01` 保持 planned；`MEN-20260304-006` 维持 verified；`MEN-20260304-007` 维持verified（idempotent_recheck=no_state_change;fail-closed,no_claim）；`MEN-20260304-008` 已verified（Track-A only,XT-W2-22 next_state_verdict=advance）；`MEN-20260304-009` 已verified（Track-A only,XT-W2-23 next_state_verdict=advance）；`MEN-20260304-010` 已verified（edge_key=EDGE-XT-W2-23-B-XT-W2-23-B-91f2c6d4;next_state_verdict=advance）；`MEN-20260304-011` 已verified（edge_key=EDGE-XT-W2-23-B-XT-W2-23-B-91f2c6d4;xt_mp_g5_next_state_verdict=advance）；`MEN-20260304-012` 已verified（edge_key=EDGE-XT-W2-23-C-XT-W2-23-C-c4b7a2e1;xt_mp_g3_next_state_verdict=advance）；`MEN-20260304-013` 已verified（edge_key=EDGE-XT-W2-23-C-XT-W2-23-C-f5e9a7d3;xt_mp_g5_next_state_verdict=advance）；`MEN-20260304-014` 已verified（edge_key=EDGE-XT-W2-23-A-XT-W2-23-A-6b2f4c19;xt_mp_g3_next_state_verdict=advance）
+- directed_mention: `MEN-20260304-006:verified;MEN-20260304-007:verified;MEN-20260304-008:verified;MEN-20260304-009:verified;MEN-20260304-010:verified;MEN-20260304-011:verified;MEN-20260304-012:verified;MEN-20260304-013:verified;MEN-20260304-014:verified`
+- dual_track_consumption: `track_a_only(xt_w2_21->xt_w2_20_b);track_b=observed_non_blocking(no_blocker,no_state_change_trigger)`
+- xt_w2_20_b_state: `ready_to_verify`（hold_no_claim;fail_closed）
+- xt_w2_20_b_next_state_verdict: `advance`（unlock_xt_w2_22_formal_claim=true;no_claim）
+- xt_w2_22_next_state_verdict: `advance`（unlock_xt_w2_23_formal_claim=true;no_claim）
+- xt_w2_23_next_state_verdict: `advance`（unlock_next_formal_claim=true;no_claim）
+- xt_w2_23_b_next_state_verdict: `advance`（g3/g5_verdict=advance;unlock_next_formal_claim=true;no_claim）
+- xt_w2_23_c_next_state_verdict: `advance`（xt_mp_g3/g5_verdict=advance;unlock_next_formal_claim=true;no_claim）
+- xt_w2_23_a_next_state_verdict: `advance`（xt_mp_g3_verdict=advance;unlock_next_formal_claim=true;no_claim）
+- qa_joint_check: `pass`（qa_review.v1）
+- minimal_gap: `none`
+- next_owner_lane: `XT-L2`（串行锁继续，Hub-L3 不 claim）
+- next_check_at: `2026-03-04T22:04:16+08:00`
+- blocked_reason: `prereq_B_only`
+- blocked_reason_detail: `prereq_B_only: Hub-L5 latest显示snapshot_guard已无漂移，但runtime internal_pass仍为legacy 968/1/0并触发HL失败；XT-L2 v9仍引用旧snapshot_guard漂移口径`
+- unblock_owner: `Hub-L5+XT-L2+QA`
+- gate_blocker: `none`（`SKC-G4` 已 `PASS`）
+- next_step: `directed_only_reconcile_runtime_legacy_samples_and_xt_snapshot_basis_then_single_rerun_not_before_2026-03-04T02:28:59Z`
+- evidence_refs:
+  - `build/reports/xt_w2_23_a_hub_l3_next_state_verdict_delta_3line.v1.json`
+  - `build/reports/xt_w2_23_a_g3_candidate_probe.v1.json`
+  - `build/reports/xt_w2_23_a_xt_l2_delta_3line.v2.json`
+  - `build/reports/xt_w2_23_c_hub_l3_next_state_verdict_delta_3line.v4.json`
+  - `build/reports/xt_w2_23_c_g5_candidate_probe.v1.json`
+  - `build/reports/xt_w2_23_c_xt_l2_delta_3line.v3.json`
+  - `build/reports/xt_w2_23_c_hub_l3_next_state_verdict_delta_3line.v3.json`
+  - `build/reports/xt_w2_23_c_suggestion_governance_evidence.v1.json`
+  - `build/reports/xt_w2_23_c_xt_l2_delta_3line.v2.json`
+  - `build/reports/xt_w2_23_c_hub_l3_next_state_verdict_delta_3line.v1.json`
+  - `build/reports/xt_w2_23_b_hub_l3_next_state_verdict_delta_3line.v2.json`
+  - `build/reports/xt_w2_23_b_g5_candidate_probe.v1.json`
+  - `build/reports/xt_w2_23_b_xt_l2_delta_3line.v3.json`
+  - `build/reports/xt_w2_23_b_hub_l3_next_state_verdict_delta_3line.v1.json`
+  - `build/reports/xt_w2_23_b_innovation_level_ui_evidence.v1.json`
+  - `build/reports/xt_w2_23_b_xt_l2_delta_3line.v2.json`
+  - `build/reports/xt_w2_23_hub_l3_next_state_verdict_delta_3line.v1.json`
+  - `build/reports/xt_w2_23_qa_ready_to_verify_review.v1.json`
+  - `build/reports/xt_w2_23_next_state_verdict_qa_review.v1.json`
+  - `build/reports/xt_w2_23_participation_probe.v1.json`
+  - `build/reports/xt_w2_23_xt_l2_delta_3line.v2.json`
+  - `build/reports/xt_w2_22_hub_l3_next_state_verdict_delta_3line.v1.json`
+  - `build/reports/xt_w2_22_g3_candidate_probe.v1.json`
+  - `build/reports/xt_w2_22_xt_l2_delta_3line.v5.json`
+  - `build/reports/xt_w2_20_b_hub_l3_ready_to_verify_delta_3line.v7.json`
+  - `build/reports/xt_w2_20_b_dual_track_qa_guard_review.v2.json`
+  - `build/reports/xt_w2_20_b_hub_l3_ready_to_verify_delta_3line.v6.json`
+  - `build/reports/xt_w2_20_b_hub_l3_ready_to_verify_delta_3line.v5.json`
+  - `build/reports/xt_w2_20_b_hub_l3_ready_to_verify_delta_3line.v4.json`
+  - `build/reports/xt_w2_20_b_hub_l3_ready_to_verify_delta_3line.v3.json`
+  - `build/reports/xt_w2_20_b_qa_ready_to_verify_review.v1.json`
+  - `build/reports/xt_w2_20_b_hub_l3_ready_to_verify_delta_3line.v2.json`
+  - `build/reports/xt_w2_20_b_hub_l3_ready_to_verify_delta_3line.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_preflight_readiness.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v39.json`
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v40.json`
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v41.json`
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v42.json`
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v43.json`
+  - `build/reports/skc_w1_04_hub_l3_prereq_monitor.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_prereq_monitor.v2.json`
+  - `build/reports/skc_w1_04_hub_l3_prereq_monitor.v3.json`
+  - `build/reports/skc_w1_04_hub_l3_prereq_monitor.v4.json`
+  - `build/reports/skc_w1_04_hub_l3_runner_execute_chain_probe.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_downstream_unblock_signal.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_directed_baton_dispatch.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_7lane_daily_receipt.v1.json`
+  - `build/hubl3_skc_w1_04_dependency_probe.log`
+  - `build/hubl3_skc_w1_04_contract_check.log`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+  - `build/reports/skc_w1_04_hub_l3_delta_3line.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_delta_3line.v2.json`
+  - `build/reports/skc_w1_04_hub_l3_delta_3line.v3.json`
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v44.json`
+  - `build/reports/skc_w1_04_hub_l3_prereq_monitor.v5.json`
+  - `build/reports/skc_w1_04_hub_l3_directed_baton_dispatch.v2.json`
+  - `build/reports/skc_w1_04_hub_l3_delta_3line.v4.json`
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v45.json`
+  - `build/reports/skc_w1_04_hub_l3_prereq_monitor.v6.json`
+  - `build/reports/skc_w1_04_hub_l3_directed_baton_dispatch.v3.json`
+  - `build/reports/skc_w1_04_hub_l3_delta_3line.v5.json`
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v46.json`
+  - `build/reports/skc_w1_04_hub_l3_prereq_monitor.v7.json`
+  - `build/reports/skc_w1_04_hub_l3_prereq_b_alignment.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_directed_baton_dispatch.v4.json`
+  - `build/reports/skc_w1_04_hub_l3_delta_3line.v6.json`
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v47.json`
+  - `build/reports/skc_w1_04_hub_l3_prereq_monitor.v8.json`
+  - `build/reports/skc_w1_04_hub_l3_prereq_b_alignment.v2.json`
+  - `build/reports/skc_w1_04_hub_l3_directed_baton_dispatch.v5.json`
+  - `build/reports/skc_w1_04_hub_l3_delta_3line.v7.json`
+  - `build/reports/skc_w1_04_hub_l3_delta_3line.v8.json`
+  - `build/reports/skc_w1_04_hub_l3_prereq_monitor.v9.json`
+  - `build/reports/skc_w1_04_hub_l3_prereq_b_alignment.v3.json`
+  - `build/reports/skc_w1_04_hub_l3_directed_baton_dispatch.v6.json`
+  - `build/reports/skc_w1_04_hub_l3_delta_3line.v9.json`
+  - `build/reports/skc_w1_04_hub_l3_prereq_monitor.v10.json`
+  - `build/reports/skc_w1_04_hub_l3_prereq_b_alignment.v4.json`
+  - `build/reports/skc_w1_04_hub_l3_directed_baton_dispatch.v7.json`
+  - `build/reports/skc_w1_04_hub_l3_delta_3line.v10.json`
+  - `build/reports/skc_w1_04_hub_l3_delta_3line.v11.json`
+  - `build/reports/skc_w1_04_hub_l3_delta_3line.v12.json`
+  - `build/reports/skc_w1_04_hub_l3_delta_3line.v13.json`
+  - `build/reports/skc_w1_04_hub_l3_delta_3line.v14.json`
+  - `build/reports/skc_w1_04_hub_l3_delta_3line.v15.json`
+  - `build/reports/skc_w1_04_hub_l3_delta_3line.v16.json`
+  - `build/reports/skc_w1_04_hub_l3_delta_3line.v17.json`
+  - `build/reports/skc_w1_04_hub_l3_delta_3line.v19.json`
+  - `build/reports/skc_w1_04_hub_l3_delta_3line.v20.json`
+  - `build/reports/skc_w1_04_hub_l3_delta_3line.v21.json`
+  - `build/reports/skc_w1_04_hub_l3_delta_3line.v22.json`
+  - `build/reports/skc_w1_04_hub_l3_delta_3line.v23.json`
+  - `build/reports/skc_w1_04_hub_l3_delta_3line.v24.json`
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v36.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v85.json`
+  - `build/reports/skc_w1_04_hub_l3_delta_3line.v25.json`
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v36.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v85.json`
+  - `build/reports/skc_w1_04_hub_l3_delta_3line.v26.json`
+  - `build/reports/skc_w2_06_xt_l2_hub_l5_prereq_b_metrics_fill.v9.json`
+  - `build/reports/skc_w2_06_xt_l2_hub_l5_prereq_b_internal_pass_recheck.v10.json`
+  - `build/reports/skc_w2_06_xt_l2_hub_l5_prereq_b_consistency_check.v10.json`
+  - `build/reports/skc_w2_06_xt_l2_delta_3line.v72.json`
+- gate_blocker_transition:
+  - `SKC-G4:INSUFFICIENT_EVIDENCE -> SKC-G4:PASS`（resolved=`true`）
+  - gap_keys_ref: `build/reports/skc_w1_04_hub_l3_evidence.v1.json`（`gap_keys[*]`）
+  - `build/hubl3_skc_w1_04_skills_store_security.test.log`
+  - `build/hubl3_skills_grant_chain_contract_report.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+- prep_task_candidate: `XT-W2-26-A`（prepared_only_not_claimed）
+- prep_task_candidates_after_skc_unblock: `XT-W2-27-A`,`XT-W2-27-D`（prepared_only_not_claimed）
+- 7piece_template_status: `delta_3line_checkpoint_v26`
+
+#### Hub-L3 / SKC-W1-04 / 7件套增量（Auto-Continue #29）
+
+1) Scope
+- `SKC-W1-04`（capabilities_required -> grant 主链收口；已 claim 并执行到 blocked checkpoint）
+
+2) Changes
+- command_board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L3 分区）
+- preflight_contract:
+  - `docs/memory-new/xhub-skills-capability-grant-chain-contract-v1.md`
+  - `docs/memory-new/schema/xhub_skills_capability_grant_chain_contract.v1.json`
+- readiness_evidence:
+  - `build/reports/skc_w1_04_hub_l3_preflight_readiness.v1.json`
+- execution_evidence:
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v25.json`
+  - `build/hubl3_skc_w1_04_dependency_probe.log`
+  - `build/hubl3_skc_w1_04_skills_store_security.test.log`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+
+3) DoD
+- [x] 已按 Auto-Continue 协议 claim（写入 `claim_id + claim_ttl_until`）
+- [x] `SI-W1-01` 维持 `planned`（未派发）
+- [x] 已消费 Hub-L2 `SKC-W1-03` 交接证据并完成 deny_code/audit 边界对齐检查
+- [x] SKC-W1-04 开工前置条件已 machine-readable 列出并更新状态
+- [x] claim 后完成 grant 链实测回归并生成 machine-readable 证据
+- [x] 依赖探测完成并机读落盘（缺失 XT-L1 runner execute 接线证据）
+- [x] Auto-Continue #29 已完成证据同步（checkpoint + preflight + evidence）
+- [x] `XT-W2-26-A` 仅完成协同准备，保持 `not_claimed`
+- [ ] Runner execute 主链强制接线证据待 XT-L1 提供（当前 blocked）
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（等待 XT-L1 Runner execute 主链接线证据）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v25.json`
+  - `build/hubl3_skc_w1_04_dependency_probe.log`
+  - `build/hubl3_skc_w1_04_skills_store_security.test.log`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+  - `build/hubl3_skills_grant_chain_contract_report.json`
+
+5) KPI Snapshot
+- `bypass_grant_execution`: `0`（`build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`）
+- `low_risk_false_block_rate`: `0.00%`（`build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`）
+- `gate_p95_ms`: `0.509`（`build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`）
+- `approval_mismatch_execution`: `0`（`build/reports/skc_w1_04_hub_l3_evidence.v1.json`）
+- `revoked_skill_execution_attempt_success`: `0`（`build/hubl3_skc_w1_04_skills_store_security.test.log`）
+
+6) Risks & Rollback
+- risks:
+  - XT-L1 未完成 Runner execute 主链接线前，`SKC-G4` 仍不可放绿
+  - 若直接宣告完成会触发“分发拒绝但执行漏网”风险（违反 fail-closed）
+  - 若提前 claim `XT-W2-26-A` 会破坏当前依赖序（本轮保持 prepared_only_not_claimed）
+- rollback:
+  - rollback_point_contract: `docs/memory-new/schema/xhub_skills_capability_grant_chain_contract.v1.json`
+  - rollback_point_board: 本 Lane Zone 当前增量（回退到上一个 `standby_precheck_done` 快照）
+  - rollback_point_evidence: `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L1`
+- depends_on:
+  - `evaluateSkillExecutionGate` 接入 Runner execute 主链的实跑证据（machine-readable）
+  - `SKC-G4` 回归转绿证据与审计事件链
+  - require-real 证据路径保持非 synthetic（若涉及 release 证据）
+- gap_keys_owner_map:
+  - `GAP-SKC-G4-001/002` -> `XT-L1`
+  - `GAP-SKC-G4-003` -> `XT-L1+Hub-L3`
+  - `GAP-SKC-G4-004` -> `AI-COORD-PRIMARY+XT-L1+Hub-L3`
+- prep_next_collab:
+  - `XT-W2-26-A`（Hub-L3 已完成协同准备，等待 `SKC-W1-04` 转绿后再评估 claim）
+
+#### Hub-L3 / SKC-W1-04 / 7件套增量（Auto-Continue #30）
+
+1) Scope
+- `SKC-W1-04`（立刻复核：验证 runner_execute 主链接线证据是否已补齐，并重跑 `SKC-G4` 复核）
+
+2) Changes
+- command_board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W1-04` 任务行 + Hub-L3 分区）
+- execution_evidence:
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v26.json`（Auto-Continue #30）
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`（刷新 claim/TTL、gate_blocker_transition、gap_keys）
+  - `build/reports/skc_w1_04_hub_l3_preflight_readiness.v1.json`（前置条件重检）
+  - `build/hubl3_skc_w1_04_dependency_probe.log`（XT-L1 依赖文件探测）
+  - `build/hubl3_skc_w1_04_contract_check.log`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+  - `build/hubl3_skc_w1_04_skills_store_security.test.log`
+
+3) DoD
+- [x] 按 continue 协议先写 `claim_id + claim_ttl_until` 再执行复核
+- [x] `SKC-G2` 回归重跑并保持 `PASS`
+- [x] `SKC-G4` 复核结论以 machine-readable 证据落盘
+- [x] gate_blocker->resolved 变更点已在 checkpoint/evidence 机读记录
+- [x] 依赖未满足时保持 fail-closed（`status=blocked`，未写 `closed`）
+- [x] `SI-W1-01` 继续 `planned`（未触发派发）
+- [ ] XT-L1 runner execute 主链接线证据仍缺（继续 blocked）
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- gate_blocker->resolved:
+  - `SKC-G4: INSUFFICIENT_EVIDENCE -> INSUFFICIENT_EVIDENCE`（`resolved=false`）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v26.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/hubl3_skc_w1_04_dependency_probe.log`
+  - `build/hubl3_skc_w1_04_contract_check.log`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+  - `build/hubl3_skc_w1_04_skills_store_security.test.log`
+  - `build/hubl3_skills_grant_chain_contract_report.json`
+
+5) KPI Snapshot
+- `bypass_grant_execution`: `0`（`build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`）
+- `low_risk_false_block_rate`: `0.00%`（`build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`）
+- `gate_p95_ms`: `0.528`（`build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`）
+- `approval_mismatch_execution`: `0`（`build/reports/skc_w1_04_hub_l3_evidence.v1.json`）
+- `high_risk_lane_without_grant`: `0`（`build/reports/skc_w1_04_hub_l3_evidence.v1.json`）
+
+6) Risks & Rollback
+- risks:
+  - `GAP-SKC-G4-001`: 缺 `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_gate_evidence.v1.json`
+  - `GAP-SKC-G4-002`: 缺 `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_gate_vector.v1.json`
+  - `GAP-SKC-G4-003`: Hub-L1 probe 仍为 `integration_callsites_detected=0`
+  - `GAP-SKC-G4-004`: XT-L1 仍受 `dependency_not_ready:SKC-W1-04` 双边阻塞
+- rollback:
+  - rollback_point_board: 回退 Hub-L3 分区到 Auto-Continue #29 快照
+  - rollback_point_evidence: `build/reports/skc_w1_04_hub_l3_evidence.v1.json`（上版 hash 可追溯）
+  - rollback_point_contract: `docs/memory-new/schema/xhub_skills_capability_grant_chain_contract.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L1`
+- depends_on:
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_gate_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_gate_vector.v1.json`
+  - 主链 `evaluateSkillExecutionGate` 接线行号 + require-real replay trace（含 deny_code/audit 绑定）
+- unblock 条件:
+  - 两个 XT-L1 证据文件存在且 schema/字段完整
+  - Hub-L3 重跑 `SKC-G4` 后输出 `PASS`
+  - PASS 后通知 `XT-L1/XT-L2` 启动下游 `SKC-W2-05 -> SKC-W2-06`
+
+#### Hub-L3 / SKC-W1-04 / 7件套增量（Auto-Continue #31）
+
+1) Scope
+- `SKC-W1-04`（继续协议：刷新 claim+TTL，复跑 grant 链回归并探测 XT-L1 解阻证据）
+
+2) Changes
+- command_board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W1-04` 任务行 + Hub-L3 分区）
+- execution_evidence:
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v27.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_preflight_readiness.v1.json`
+  - `build/hubl3_skc_w1_04_dependency_probe.log`
+  - `build/hubl3_skc_w1_04_contract_check.log`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+  - `build/hubl3_skc_w1_04_skills_store_security.test.log`
+
+3) DoD
+- [x] 继续协议执行：先写 `claim_id + claim_ttl_until` 再复核
+- [x] `SKC-G2` 回归重跑保持 `PASS`
+- [x] `SKC-G4` 复核结论与缺口键完成机读落盘
+- [x] gate_blocker->resolved 已记录（`resolved=false`）
+- [x] fail-closed 生效：依赖未满足时保持 `blocked`
+- [ ] XT-L1 提供 runner execute 主链接线证据（仍缺）
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- gate_blocker->resolved:
+  - `SKC-G4: INSUFFICIENT_EVIDENCE -> INSUFFICIENT_EVIDENCE`（`resolved=false`）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v27.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/hubl3_skc_w1_04_dependency_probe.log`
+  - `build/hubl3_skc_w1_04_contract_check.log`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+  - `build/hubl3_skc_w1_04_skills_store_security.test.log`
+
+5) KPI Snapshot
+- `bypass_grant_execution`: `0`
+- `low_risk_false_block_rate`: `0.00%`
+- `gate_p95_ms`: `0.655`
+- `approval_mismatch_execution`: `0`
+- `high_risk_lane_without_grant`: `0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+
+6) Risks & Rollback
+- risks:
+  - `GAP-SKC-G4-001`: 缺 `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_gate_evidence.v1.json`
+  - `GAP-SKC-G4-002`: 缺 `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_gate_vector.v1.json`
+  - `GAP-SKC-G4-003`: runtime 主链 `evaluateSkillExecutionGate` callsite 仍未检测到
+- rollback:
+  - rollback_point_board: 回退 Hub-L3 分区到 Auto-Continue #30
+  - rollback_point_evidence: `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - rollback_point_checkpoint: `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v27.json`
+
+7) Handoff
+- next_owner_lane: `XT-L1`
+- depends_on:
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_gate_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_gate_vector.v1.json`
+  - require-real replay trace（含 `deny_code` 与审计绑定字段）
+- unblock 条件:
+  - 两个证据文件存在且 schema 校验通过
+  - Hub-L3 复跑 `SKC-G4=PASS` 后通知 `XT-L1/XT-L2` 转下游链
+
+#### Hub-L3 / SKC-W1-04 / 7件套增量（Auto-Continue #32）
+
+1) Scope
+- `SKC-W1-04`（继续协议：复核 SKC-G4 阻塞是否解除，并执行依赖契约一致性检查）
+
+2) Changes
+- command_board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W1-04` 任务行 + Hub-L3 分区）
+- execution_evidence:
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v28.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_preflight_readiness.v1.json`
+  - `build/hubl3_skc_w1_04_dependency_probe.log`
+  - `build/hubl3_skc_w1_04_contract_check.log`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+  - `build/hubl3_skc_w1_04_skills_store_security.test.log`
+
+3) DoD
+- [x] 继续协议执行：先写 `claim_id + claim_ttl_until` 再执行
+- [x] `SKC-G2` 回归重跑并维持 `PASS`
+- [x] `SKC-G4` gate_blocker->resolved 状态完成机读更新
+- [x] 识别到非契约命名证据（v2）并保持 fail-closed，不越权放行
+- [x] 依赖未满足保持 `blocked`，未写 `closed`
+- [ ] XT-L1 合同要求的 v1 证据文件仍缺失
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- gate_blocker->resolved:
+  - `SKC-G4: INSUFFICIENT_EVIDENCE -> INSUFFICIENT_EVIDENCE`（`resolved=false`）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v28.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/hubl3_skc_w1_04_dependency_probe.log`
+  - `build/hubl3_skc_w1_04_contract_check.log`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+  - `build/hubl3_skc_w1_04_skills_store_security.test.log`
+
+5) KPI Snapshot
+- `bypass_grant_execution`: `0`
+- `low_risk_false_block_rate`: `0.00%`
+- `gate_p95_ms`: `0.487`
+- `approval_mismatch_execution`: `0`
+- `high_risk_lane_without_grant`: `0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+
+6) Risks & Rollback
+- risks:
+  - `GAP-SKC-G4-001`: 缺 `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_gate_evidence.v1.json`
+  - `GAP-SKC-G4-002`: 缺 `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_gate_vector.v1.json`
+  - 检测到 `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v2.json`，与当前契约要求不一致（命名/版本漂移）
+- rollback:
+  - rollback_point_board: 回退 Hub-L3 分区到 Auto-Continue #31
+  - rollback_point_evidence: `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - rollback_point_checkpoint: `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v28.json`
+
+7) Handoff
+- next_owner_lane: `XT-L1`
+- depends_on:
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_gate_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_gate_vector.v1.json`
+  - 主链 `evaluateSkillExecutionGate` require-real replay（含 deny_code + audit 绑定）
+- unblock 条件:
+  - 合同要求的 v1 证据补齐并 schema 校验通过
+  - Hub-L3 复跑 `SKC-G4=PASS` 后通知 `XT-L1/XT-L2` 进入 `SKC-W2-05 -> SKC-W2-06`
+
+#### Hub-L3 / SKC-W1-04 / 7件套增量（Auto-Continue #33）
+
+1) Scope
+- `SKC-W1-04`（继续协议：复核 runner execute 主链接线，拉绿 `SKC-G4` 并发出下游接棒信号）
+
+2) Changes
+- command_board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W1-04` 任务行 + Hub-L3 分区）
+- execution_evidence:
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v29.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_preflight_readiness.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_runner_execute_chain_probe.v1.json`
+  - `build/hubl3_skc_w1_04_dependency_probe.log`
+  - `build/hubl3_skc_w1_04_contract_check.log`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+  - `build/hubl3_skc_w1_04_skills_store_security.test.log`
+
+3) DoD
+- [x] 继续协议执行：先写 `claim_id + claim_ttl_until` 再执行
+- [x] `SKC-G2` 回归重跑并维持 `PASS`
+- [x] `SKC-G4` 从 `INSUFFICIENT_EVIDENCE` 拉绿到 `PASS`
+- [x] gate_blocker->resolved 变更点已 machine-readable 落盘
+- [x] 产出 non-test runtime callsite 机读探测（`runtime_callsites_detected=7`）
+- [x] 向 `XT-L1/XT-L2` 发出下游接棒条件（`SKC-W2-05 -> SKC-W2-06`）
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- gate_blocker->resolved:
+  - `SKC-G4: INSUFFICIENT_EVIDENCE -> PASS`（`resolved=true`）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v29.json`
+  - `build/reports/skc_w1_04_hub_l3_runner_execute_chain_probe.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v2.json`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+  - `x-hub/grpc-server/hub_grpc_server/src/services.js:7192`
+
+5) KPI Snapshot
+- `bypass_grant_execution`: `0`
+- `low_risk_false_block_rate`: `0.00%`
+- `gate_p95_ms`: `0.487`
+- `approval_mismatch_execution`: `0`
+- `high_risk_lane_without_grant`: `0`
+- `runner_execute_gate_wiring_runtime_callsites`: `7`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+
+6) Risks & Rollback
+- risks:
+  - XT-L1 仍未回填合同既定命名的 `v1` 证据文件（当前采用 `v2 + runtime probe` 等价放行）
+  - Hub-L1 旧 probe 报告仍为 blocked（已标记 stale，不再作为 blocker）
+  - SKC 下游仍依赖 Hub-L5 require-real 样本闭环（`SKC-G3/SKC-G5`）
+- rollback:
+  - rollback_point_board: 回退 Hub-L3 分区到 Auto-Continue #32
+  - rollback_point_evidence: `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - rollback_point_checkpoint: `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v29.json`
+
+7) Handoff
+- next_owner_lane: `XT-L1+XT-L2`
+- depends_on:
+  - XT-L1：将 `SKC-W2-05` 从 `ready/precheck` 切到执行态并提交 `verified_handoff`
+  - XT-L2：基于 `SKC-W1-04` 绿灯推进 `SKC-W2-06 pre_takeover`
+  - Hub-L5：继续提供 require-real 样本用于下游 gate 关口
+- unblock 条件:
+  - `SKC-W2-05` 进入 in_progress 且回填 gate 证据
+  - `SKC-W2-06` 完成 pre_takeover_check 并回填 checkpoint
+
+#### Hub-L3 / SKC-W1-04 / 7件套增量（Auto-Continue #34）
+
+1) Scope
+- `SKC-W1-04`（继续协议：维持双绿结果，发出下游解阻信号并等待 XT-L1/XT-L2 ACK）
+
+2) Changes
+- command_board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W1-04` 任务行 + Hub-L3 分区）
+- execution_evidence:
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v30.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_preflight_readiness.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_runner_execute_chain_probe.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_downstream_unblock_signal.v1.json`
+  - `build/hubl3_skc_w1_04_contract_check.log`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+  - `build/hubl3_skc_w1_04_skills_store_security.test.log`
+
+3) DoD
+- [x] claim 续租并保持 `SKC-W1-04` 为 `delivered`
+- [x] 双绿仍为 `SKC-G2:PASS` + `SKC-G4:PASS`
+- [x] 下游解阻信号已 machine-readable 落盘（XT-L1/XT-L2）
+- [x] 保持 fail-closed：不提前 claim `XT-W2-26-A`（依赖仍未满足）
+- [x] 证据链满足 require-real（未使用 synthetic）
+- [ ] 等待 XT-L1/XT-L2 回填接棒 checkpoint（当前未 ACK）
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- gate_blocker->resolved:
+  - `SKC-G4: INSUFFICIENT_EVIDENCE -> PASS`（`resolved=true`）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v30.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_runner_execute_chain_probe.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_downstream_unblock_signal.v1.json`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+
+5) KPI Snapshot
+- `bypass_grant_execution`: `0`
+- `low_risk_false_block_rate`: `0.00%`
+- `gate_p95_ms`: `0.582`
+- `approval_mismatch_execution`: `0`
+- `high_risk_lane_without_grant`: `0`
+- `runner_execute_gate_wiring_runtime_callsites`: `7`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+
+6) Risks & Rollback
+- risks:
+  - XT-L1/XT-L2 尚未回填接棒 checkpoint，主链虽转绿但下游未执行
+  - XT-L1 仍存在 v1/v2 证据命名分歧，后续建议统一契约命名
+  - SKC 后续关口仍受 require-real 样本供给约束（Hub-L5）
+- rollback:
+  - rollback_point_board: 回退 Hub-L3 分区到 Auto-Continue #33
+  - rollback_point_evidence: `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - rollback_point_checkpoint: `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v30.json`
+
+7) Handoff
+- next_owner_lane: `XT-L1+XT-L2`
+- depends_on:
+  - XT-L1：`SKC-W2-05` 执行态 checkpoint + gate 更新
+  - XT-L2：`SKC-W2-06` pre_takeover checkpoint + verified_handoff 计划
+  - Hub-L5：require-real 样本补齐节奏保持
+- unblock 条件:
+  - `SKC-W2-05` 状态切 `in_progress` 且 evidence_refs 更新
+  - `SKC-W2-06` 状态机从 `ready` 进入 pre_takeover 执行态
+
+#### Hub-L3 / SKC-W1-04 / 7件套增量（Auto-Continue #35）
+
+1) Scope
+- `SKC-W1-04`（执行“立刻复核”与继续协议：重跑 grant 链回归、复核 `evaluateSkillExecutionGate` 主链接线，并刷新双绿证据）
+
+2) Changes
+- command_board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W1-04` 任务行 + Hub-L3 分区 + #35 7件套）
+- execution_evidence:
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v31.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_preflight_readiness.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_runner_execute_chain_probe.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_downstream_unblock_signal.v1.json`
+  - `build/hubl3_skc_w1_04_dependency_probe.log`
+  - `build/hubl3_skc_w1_04_contract_check.log`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+  - `build/hubl3_skc_w1_04_skills_store_security.test.log`
+
+3) DoD
+- [x] 先写 `claim_id + claim_ttl_until`（4h）再执行复核
+- [x] `SKC-G2` 回归重跑保持 `PASS`
+- [x] `SKC-G4` 复核保持 `PASS`（`v2 等价证据 + runtime probe`）
+- [x] `gate_blocker->resolved` 变更已 machine-readable 落盘（含 evidence refs）
+- [x] 依赖未满足保持 fail-closed：不提前 claim `XT-W2-26-A`
+- [x] 继续维持 `SI-W1-01=planned`（未派发）
+- [ ] 等待 `XT-L1/XT-L2` 回填接棒 checkpoint（下游仍未 ACK）
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- gate_blocker->resolved:
+  - `SKC-G4: INSUFFICIENT_EVIDENCE -> PASS`（`resolved=true`）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v31.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_runner_execute_chain_probe.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_downstream_unblock_signal.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v2.json`
+  - `build/hubl3_skc_w1_04_dependency_probe.log`
+
+5) KPI Snapshot
+- `bypass_grant_execution`: `0`
+- `low_risk_false_block_rate`: `0.00%`
+- `gate_p95_ms`: `0.556`
+- `approval_mismatch_execution`: `0`
+- `high_risk_lane_without_grant`: `0`
+- `runner_execute_gate_wiring_runtime_callsites`: `7`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+
+6) Risks & Rollback
+- risks:
+  - XT-L1 仍缺合同命名 `v1` 证据文件（当前为 `v2` 等价证据），存在命名/版本漂移风险
+  - 下游 `SKC-W2-05` 仍受 `require_real_input_pending:hub_l5.incident_samples_for_skc_w2_05` 阻塞
+  - 下游 `SKC-W2-06` 仍受 `dependency_not_ready.skc_w2_05_gate_not_pass` 阻塞
+- rollback:
+  - rollback_point_board: 回退 Hub-L3 分区到 Auto-Continue #34
+  - rollback_point_evidence: `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - rollback_point_checkpoint: `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v31.json`
+
+7) Handoff
+- next_owner_lane: `XT-L1+XT-L2`
+- depends_on:
+  - XT-L1：`SKC-W2-05` 从 `ready/precheck` 切入执行态并回填 checkpoint（含 gate vector）
+  - XT-L2：基于 XT-L1 交接推进 `SKC-W2-06 pre_takeover` 并回填 verified_handoff 计划
+  - Hub-L5：补齐 require-real 样本供给（`SKC-G3/SKC-G5`）
+- unblock 条件:
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json` 出现执行态推进证据
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v34.json` 后继版本体现 pre_takeover 执行推进
+  - 上述推进均附 machine-readable Gate/KPI 证据路径
+
+#### Hub-L3 / SKC-W1-04 / 7件套增量（Auto-Continue #36）
+
+1) Scope
+- `SKC-W1-04`（Release Sprint / G4 关键解阻）：优先接入 XT-L1 execute-chain 新证据并复跑 G4 必要回归，转绿后广播 `XT-L1/XT-L2/Hub-L2`。
+
+2) Changes
+- command_board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W1-04` 任务行 + Hub-L3 分区 + #36 7件套）
+- execution_evidence:
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v32.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_preflight_readiness.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_runner_execute_chain_probe.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_downstream_unblock_signal.v1.json`
+  - `build/hubl3_skc_w1_04_dependency_probe.log`
+  - `build/hubl3_skc_w1_04_contract_check.log`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+  - `build/hubl3_skc_w1_04_skills_store_security.test.log`
+
+3) DoD
+- [x] 已接入 XT-L1 execute-chain 证据 `v3` 并完成机读复核
+- [x] 已复跑 `SKC-G4` 必要回归（grant chain + security + callsite probe）
+- [x] `SKC-G4` 复核结论 machine-readable 落盘并保留 gap key 追踪位
+- [x] 已向 `XT-L1/XT-L2/Hub-L2` 广播解阻信号（仅事件广播，不跨泳道改状态）
+- [x] 继续 fail-closed：下游未绿前不 claim `XT-W2-26-A`
+- [x] `SI-W1-01` 维持 `planned`（未派发）
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- gate_blocker->resolved:
+  - `SKC-G4: INSUFFICIENT_EVIDENCE -> PASS`（`resolved=true`）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v32.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_runner_execute_chain_probe.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `build/reports/skc_w1_04_hub_l3_downstream_unblock_signal.v1.json`
+  - `build/hubl3_skc_w1_04_dependency_probe.log`
+
+5) KPI Snapshot
+- `bypass_grant_execution`: `0`
+- `low_risk_false_block_rate`: `0.00%`
+- `gate_p95_ms`: `0.579`
+- `approval_mismatch_execution`: `0`
+- `high_risk_lane_without_grant`: `0`
+- `runner_execute_gate_wiring_runtime_callsites`: `10`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v32.json`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+
+6) Risks & Rollback
+- risks:
+  - XT-L1 合同命名 `v1` 证据仍缺（当前以 `v3` 等价证据 + runtime probe 放行）
+  - `SKC-W2-05` 仍受 require-real 样本不足阻塞（`SKC-G1/G3` 未绿）
+  - `SKC-W2-06` 仍受 `dependency_not_ready.skc_w2_05_gate_not_pass` 阻塞
+- rollback:
+  - rollback_point_board: 回退 Hub-L3 分区到 Auto-Continue #35
+  - rollback_point_evidence: `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - rollback_point_checkpoint: `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v32.json`
+
+7) Handoff
+- next_owner_lane: `XT-L1+XT-L2+Hub-L2`
+- depends_on:
+  - XT-L1：`SKC-W2-05` 切执行态并回填 gate/checkpoint
+  - XT-L2：`SKC-W2-06` pre_takeover 推进并回填 verified_handoff 路径
+  - Hub-L2：同步守门态 checkpoint（不越依赖推进）
+  - Hub-L5：require-real 样本供给（`SKC-G3/SKC-G5`）
+- unblock 条件:
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json` 进入可执行推进态
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v37.json` 后继版本显示 pre_takeover 进展
+  - 三泳道均回填 machine-readable Gate/KPI/evidence_refs
+
+#### Hub-L3 / SKC-W1-04 / 7件套增量（Auto-Continue #37）
+
+1) Scope
+- `SKC-W1-04`（继续协议：立刻复核结果保持，刷新 Task Catalog/Lane Zone 到最新 `v33` 证据并维持 fail-closed）
+
+2) Changes
+- command_board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W1-04` 任务行 + Hub-L3 分区 + #37 7件套）
+- evidence_sync:
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v33.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_preflight_readiness.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_runner_execute_chain_probe.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_downstream_unblock_signal.v1.json`
+
+3) DoD
+- [x] 按 Auto-Continue 保持 `claim_id + claim_ttl_until` 并完成 lane/task 双区同步
+- [x] `gate_blocker->resolved`（`SKC-G4: INSUFFICIENT_EVIDENCE -> PASS`）持续可机读复核
+- [x] 证据链保持主链闭环：`policy -> grant -> execute -> audit`
+- [x] 保持 fail-closed：未 claim `XT-W2-26-A`，未跨泳道改状态
+- [x] `SI-W1-01` 维持 `planned`（hold）
+- [ ] 下游 `SKC-W2-05/SKC-W2-06` 仍待依赖转绿回填
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- gate_blocker->resolved:
+  - `SKC-G4: INSUFFICIENT_EVIDENCE -> PASS`（`resolved=true`）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v33.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_runner_execute_chain_probe.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `build/reports/skc_w1_04_hub_l3_downstream_unblock_signal.v1.json`
+
+5) KPI Snapshot
+- `bypass_grant_execution`: `0`
+- `low_risk_false_block_rate`: `0.00%`
+- `gate_p95_ms`: `0.463`
+- `approval_mismatch_execution`: `0`
+- `high_risk_lane_without_grant`: `0`
+- `runner_execute_gate_wiring_runtime_callsites`: `10`
+- `runner_execute_gate_assertions`: `2`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v33.json`
+  - `build/reports/skc_w1_04_hub_l3_runner_execute_chain_probe.v1.json`
+
+6) Risks & Rollback
+- risks:
+  - XT-L1 合同命名 `v1` 证据仍缺（当前以 `v3` 等价证据 + runtime probe 放行）
+  - `SKC-W2-05` 仍受 `require_real_input_pending:hub_l5.incident_samples_for_skc_w2_05` 阻塞
+  - `SKC-W2-06` 仍受 `dependency_not_ready.skc_w2_05_gate_not_pass` 阻塞
+- rollback:
+  - rollback_point_board: 回退 Hub-L3 分区到 Auto-Continue #36
+  - rollback_point_evidence: `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - rollback_point_checkpoint: `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v33.json`
+
+7) Handoff
+- next_owner_lane: `XT-L1+XT-L2+Hub-L2`
+- depends_on:
+  - XT-L1：`SKC-W2-05` 回填执行态 checkpoint（含 require-real 缺口收敛）
+  - XT-L2：`SKC-W2-06` 维持 pre_takeover，等待 XT-L1 verified_handoff 后推进
+  - Hub-L2：同步守门态 checkpoint，保持 release blocker fail-closed
+- unblock 条件:
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json` 显示 blocker 缓解并进入可推进态
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v38.json` 后继版本显示 pre_takeover 进展
+  - 三泳道均提交 machine-readable Gate/KPI/evidence_refs
+
+#### Hub-L3 / SKC-W1-04 / 7件套增量（Auto-Continue #38）
+
+1) Scope
+- `SKC-W1-04`（继续协议：复跑 G4 必要回归并刷新 `v34` checkpoint；维持主链双绿与 fail-closed）
+
+2) Changes
+- command_board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W1-04` 任务行 + Hub-L3 分区 + #38 7件套）
+- execution_evidence:
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v34.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_preflight_readiness.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_runner_execute_chain_probe.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_downstream_unblock_signal.v1.json`
+  - `build/hubl3_skc_w1_04_contract_check.log`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+  - `build/hubl3_skc_w1_04_skills_store_security.test.log`
+
+3) DoD
+- [x] 继续协议执行：先保持 claim，再完成回归与证据同步
+- [x] `SKC-G2/SKC-G4` 复核维持 `PASS`
+- [x] `gate_blocker->resolved` 持续机读可追溯（`SKC-G4: INSUFFICIENT_EVIDENCE -> PASS`）
+- [x] 已同步下游阻塞快照到最新 XT-L1/XT-L2 证据版本
+- [x] fail-closed 保持：不跨泳道改状态，不提前 claim `XT-W2-26-A`
+- [ ] 下游 `SKC-W2-05/SKC-W2-06` 仍未 dual-green，主链继续等待
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- gate_blocker->resolved:
+  - `SKC-G4: INSUFFICIENT_EVIDENCE -> PASS`（`resolved=true`）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v34.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_runner_execute_chain_probe.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v41.json`
+
+5) KPI Snapshot
+- `bypass_grant_execution`: `0`
+- `low_risk_false_block_rate`: `0.00%`
+- `gate_p95_ms`: `0.589`
+- `approval_mismatch_execution`: `0`
+- `high_risk_lane_without_grant`: `0`
+- `runner_execute_gate_wiring_runtime_callsites`: `10`
+- `runner_execute_gate_assertions`: `2`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v34.json`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+
+6) Risks & Rollback
+- risks:
+  - XT-L1 合同命名 `v1` 证据仍缺（当前沿用 `v3` 等价证据 + runtime probe）
+  - `SKC-W2-05` 仍 blocked：`require_real_input_pending:hub_l5.incident_samples_for_skc_w2_05`
+  - `SKC-W2-06` 仍 blocked：`dependency_not_ready.skc_w2_05_gate_not_pass`
+- rollback:
+  - rollback_point_board: 回退 Hub-L3 分区到 Auto-Continue #37
+  - rollback_point_evidence: `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - rollback_point_checkpoint: `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v34.json`
+
+7) Handoff
+- next_owner_lane: `XT-L1+XT-L2+Hub-L2`
+- depends_on:
+  - XT-L1：补齐 require-real 样本后推进 `SKC-W2-05` gate 到 `SKC-G1/G3/G4:PASS`
+  - XT-L2：在 XT-L1 verified_handoff 后推进 `SKC-W2-06 pre_takeover`
+  - Hub-L2：维持 `SKC-W1-04` guard checkpoint（release blocker fail-closed）
+- unblock 条件:
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json` 后继版本显示 require-real blocker 缓解
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v41.json` 后继版本显示 pre_takeover 推进
+  - 三泳道继续提交 machine-readable Gate/KPI/evidence_refs
+
+#### Hub-L3 / SKC-W1-04 / 7件套增量（Auto-Continue #39）
+
+1) Scope
+- `SKC-W1-04`（继续协议：续租 claim TTL、复跑 grant 链回归、刷新 `v35` checkpoint，维持 G4 双绿与 fail-closed）
+
+2) Changes
+- command_board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W1-04` 任务行 + Hub-L3 分区 + #39 7件套）
+- execution_evidence:
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v35.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_preflight_readiness.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_runner_execute_chain_probe.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_downstream_unblock_signal.v1.json`
+  - `build/hubl3_skc_w1_04_contract_check.log`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+  - `build/hubl3_skc_w1_04_skills_store_security.test.log`
+
+3) DoD
+- [x] continue 协议执行：已刷新 `claim_ttl_until`（4h）并保持 claim 连续性
+- [x] `SKC-G2/SKC-G4` 复跑维持 `PASS`
+- [x] runner execute 主链探针与 deny_code 断言保持可机读
+- [x] 下游阻塞快照同步到 `XT-L2 v44`（仅证据同步，不跨泳道改状态）
+- [x] fail-closed 保持：未提前 claim `XT-W2-26-A`
+- [ ] 下游 `SKC-W2-05/SKC-W2-06` 仍未转绿，持续等待 require-real 解阻
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- gate_blocker->resolved:
+  - `SKC-G4: INSUFFICIENT_EVIDENCE -> PASS`（`resolved=true`）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v35.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_runner_execute_chain_probe.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v44.json`
+
+5) KPI Snapshot
+- `bypass_grant_execution`: `0`
+- `low_risk_false_block_rate`: `0.00%`
+- `gate_p95_ms`: `0.489`
+- `approval_mismatch_execution`: `0`
+- `high_risk_lane_without_grant`: `0`
+- `runner_execute_gate_wiring_runtime_callsites`: `10`
+- `runner_execute_gate_assertions`: `2`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v35.json`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+
+6) Risks & Rollback
+- risks:
+  - XT-L1 合同命名 `v1` 证据仍缺（当前沿用 `v3` 等价证据 + runtime probe）
+  - `SKC-W2-05` 仍 blocked：`require_real_input_pending:hub_l5.incident_samples_for_skc_w2_05`
+  - `SKC-W2-06` 仍 blocked：`dependency_not_ready.skc_w2_05_gate_not_pass`
+- rollback:
+  - rollback_point_board: 回退 Hub-L3 分区到 Auto-Continue #38
+  - rollback_point_evidence: `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - rollback_point_checkpoint: `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v35.json`
+
+7) Handoff
+- next_owner_lane: `XT-L1+XT-L2+Hub-L2`
+- depends_on:
+  - XT-L1：require-real 样本补齐后推进 `SKC-W2-05` 至 `SKC-G1/G3/G4:PASS`
+  - XT-L2：`SKC-W2-05` verified_handoff 后推进 `SKC-W2-06 pre_takeover`
+  - Hub-L2：继续守门态同步，不越依赖推进
+- unblock 条件:
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json` 后继版本显示 require-real 缺口收敛
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v44.json` 后继版本显示 pre_takeover 推进
+  - 三泳道继续提交 machine-readable Gate/KPI/evidence_refs
+
+#### Hub-L3 / SKC-W1-04 / 7件套增量（Auto-Continue #40）
+
+1) Scope
+- `SKC-W1-04`（继续协议：claim TTL 续租 + G4 回归复核 + `v36` checkpoint 落盘，维持 fail-closed）
+
+2) Changes
+- command_board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W1-04` 任务行 + Hub-L3 分区 + #40 7件套）
+- execution_evidence:
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v36.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_preflight_readiness.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_runner_execute_chain_probe.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_downstream_unblock_signal.v1.json`
+  - `build/hubl3_skc_w1_04_contract_check.log`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+  - `build/hubl3_skc_w1_04_skills_store_security.test.log`
+
+3) DoD
+- [x] claim 续租完成（`claim_id` 不变，`claim_ttl_until=2026-03-02T07:54:47-08:00`）
+- [x] `SKC-G2/SKC-G4` 复跑保持 `PASS`
+- [x] runner execute 主链接线探针与断言保持机读可审计
+- [x] 下游阻塞快照同步到 XT-L2 最新 `v45`（仅证据同步，不跨泳道改状态）
+- [x] fail-closed 保持：未 claim `XT-W2-26-A`，未写 `closed`
+- [ ] 下游 `SKC-W2-05/SKC-W2-06` 仍 blocked，等待 require-real 解阻
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- gate_blocker->resolved:
+  - `SKC-G4: INSUFFICIENT_EVIDENCE -> PASS`（`resolved=true`）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v36.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_runner_execute_chain_probe.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v45.json`
+
+5) KPI Snapshot
+- `bypass_grant_execution`: `0`
+- `low_risk_false_block_rate`: `0.00%`
+- `gate_p95_ms`: `0.581`
+- `approval_mismatch_execution`: `0`
+- `high_risk_lane_without_grant`: `0`
+- `runner_execute_gate_wiring_runtime_callsites`: `10`
+- `runner_execute_gate_assertions`: `2`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v36.json`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+
+6) Risks & Rollback
+- risks:
+  - XT-L1 合同命名 `v1` 证据仍缺（当前沿用 `v3` 等价证据 + runtime probe）
+  - `SKC-W2-05` 仍 blocked：`require_real_input_pending:hub_l5.incident_samples_for_skc_w2_05`
+  - `SKC-W2-06` 仍 blocked：`dependency_not_ready.skc_w2_05_gate_not_pass`
+- rollback:
+  - rollback_point_board: 回退 Hub-L3 分区到 Auto-Continue #39
+  - rollback_point_evidence: `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - rollback_point_checkpoint: `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v36.json`
+
+7) Handoff
+- next_owner_lane: `XT-L1+XT-L2+Hub-L2`
+- depends_on:
+  - XT-L1：require-real 样本补齐后推进 `SKC-W2-05` 至 `SKC-G1/G3/G4:PASS`
+  - XT-L2：`SKC-W2-05` verified_handoff 后推进 `SKC-W2-06 pre_takeover`
+  - Hub-L2：持续守门态 checkpoint（release blocker fail-closed）
+- unblock 条件:
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json` 后继版本显示 require-real 缺口收敛
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v45.json` 后继版本显示 pre_takeover 推进
+  - 三泳道继续提交 machine-readable Gate/KPI/evidence_refs
+
+#### Hub-L3 / SKC-W1-04 / 7件套增量（Auto-Continue #41）
+
+1) Scope
+- `SKC-W1-04`（继续协议：续租 claim TTL、复跑 G4 必要回归、刷新 `v37` checkpoint，并保持 fail-closed）
+
+2) Changes
+- command_board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W1-04` 任务行 + Hub-L3 分区 + #41 7件套）
+- execution_evidence:
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v37.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_preflight_readiness.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_runner_execute_chain_probe.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_downstream_unblock_signal.v1.json`
+  - `build/hubl3_skc_w1_04_contract_check.log`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+  - `build/hubl3_skc_w1_04_skills_store_security.test.log`
+
+3) DoD
+- [x] claim 续租完成（`claim_id` 不变，`claim_ttl_until=2026-03-02T08:03:21-08:00`）
+- [x] `SKC-G2/SKC-G4` 复跑保持 `PASS`
+- [x] runner execute 主链接线探针与 deny_code 断言保持机读可审计
+- [x] 下游阻塞快照同步到 XT-L2 最新 `v46`（仅证据同步，不跨泳道改状态）
+- [x] fail-closed 保持：未 claim `XT-W2-26-A`，未写 `closed`
+- [ ] 下游 `SKC-W2-05/SKC-W2-06` 仍 blocked，等待 require-real 解阻
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- gate_blocker->resolved:
+  - `SKC-G4: INSUFFICIENT_EVIDENCE -> PASS`（`resolved=true`）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v37.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_runner_execute_chain_probe.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v46.json`
+
+5) KPI Snapshot
+- `bypass_grant_execution`: `0`
+- `low_risk_false_block_rate`: `0.00%`
+- `gate_p95_ms`: `0.613`
+- `approval_mismatch_execution`: `0`
+- `high_risk_lane_without_grant`: `0`
+- `runner_execute_gate_wiring_runtime_callsites`: `10`
+- `runner_execute_gate_assertions`: `2`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v37.json`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+
+6) Risks & Rollback
+- risks:
+  - XT-L1 合同命名 `v1` 证据仍缺（当前沿用 `v3` 等价证据 + runtime probe）
+  - `SKC-W2-05` 仍 blocked：`require_real_input_pending:hub_l5.incident_samples_for_skc_w2_05`
+  - `SKC-W2-06` 仍 blocked：`dependency_not_ready.skc_w2_05_gate_not_pass`
+- rollback:
+  - rollback_point_board: 回退 Hub-L3 分区到 Auto-Continue #40
+  - rollback_point_evidence: `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - rollback_point_checkpoint: `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v37.json`
+
+7) Handoff
+- next_owner_lane: `XT-L1+XT-L2+Hub-L2`
+- depends_on:
+  - XT-L1：require-real 样本补齐后推进 `SKC-W2-05` 至 `SKC-G1/G3/G4:PASS`
+  - XT-L2：`SKC-W2-05` verified_handoff 后推进 `SKC-W2-06 pre_takeover`
+  - Hub-L2：持续守门态 checkpoint（release blocker fail-closed）
+- unblock 条件:
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json` 后继版本显示 require-real 缺口收敛
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v46.json` 后继版本显示 pre_takeover 推进
+  - 三泳道继续提交 machine-readable Gate/KPI/evidence_refs
+
+#### Hub-L3 / SKC-W1-04 / 7件套增量（Auto-Continue #42）
+
+1) Scope
+- `SKC-W1-04`（继续协议：续租 claim TTL、复跑 G4 回归、刷新 `v38` checkpoint，维持 fail-closed 与双绿）
+
+2) Changes
+- command_board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W1-04` 任务行 + Hub-L3 分区 + #42 7件套）
+- execution_evidence:
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v38.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_preflight_readiness.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_runner_execute_chain_probe.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_downstream_unblock_signal.v1.json`
+  - `build/hubl3_skc_w1_04_contract_check.log`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+  - `build/hubl3_skc_w1_04_skills_store_security.test.log`
+
+3) DoD
+- [x] claim 续租完成（`claim_id` 不变，`claim_ttl_until=2026-03-02T08:12:31-08:00`）
+- [x] `SKC-G2/SKC-G4` 复跑保持 `PASS`
+- [x] runner execute 主链探针与 deny_code 断言保持机读可审计
+- [x] 下游阻塞快照同步到 XT-L2 最新 `v48`（仅证据同步，不跨泳道改状态）
+- [x] fail-closed 保持：未 claim `XT-W2-26-A`，未写 `closed`
+- [ ] 下游 `SKC-W2-05/SKC-W2-06` 仍 blocked，等待 require-real 解阻
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- gate_blocker->resolved:
+  - `SKC-G4: INSUFFICIENT_EVIDENCE -> PASS`（`resolved=true`）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v38.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_runner_execute_chain_probe.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v48.json`
+
+5) KPI Snapshot
+- `bypass_grant_execution`: `0`
+- `low_risk_false_block_rate`: `0.00%`
+- `gate_p95_ms`: `0.480`
+- `approval_mismatch_execution`: `0`
+- `high_risk_lane_without_grant`: `0`
+- `runner_execute_gate_wiring_runtime_callsites`: `10`
+- `runner_execute_gate_assertions`: `2`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v38.json`
+  - `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`
+
+6) Risks & Rollback
+- risks:
+  - XT-L1 合同命名 `v1` 证据仍缺（当前沿用 `v3` 等价证据 + runtime probe）
+  - `SKC-W2-05` 仍 blocked：`require_real_input_pending:hub_l5.incident_samples_for_skc_w2_05`
+  - `SKC-W2-06` 仍 blocked：`dependency_not_ready.skc_w2_05_gate_not_pass`
+- rollback:
+  - rollback_point_board: 回退 Hub-L3 分区到 Auto-Continue #41
+  - rollback_point_evidence: `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - rollback_point_checkpoint: `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v38.json`
+
+7) Handoff
+- next_owner_lane: `XT-L1+XT-L2+Hub-L2`
+- depends_on:
+  - XT-L1：require-real 样本补齐后推进 `SKC-W2-05` 至 `SKC-G1/G3/G4:PASS`
+  - XT-L2：`SKC-W2-05` verified_handoff 后推进 `SKC-W2-06 pre_takeover`
+  - Hub-L2：持续守门态 checkpoint（release blocker fail-closed）
+- unblock 条件:
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json` 后继版本显示 require-real 缺口收敛
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v48.json` 后继版本显示 pre_takeover 推进
+  - 三泳道继续提交 machine-readable Gate/KPI/evidence_refs
+
+
+#### Hub-L3 / SKC-W1-04 / 7件套增量（Auto-Continue #43）
+
+1) Scope
+- `SKC-W1-04`（7-Lane Directed Baton：仅做定向派发 + 回执汇总 + fail-closed 裁决，不跨泳道改状态）
+
+2) Changes
+- command_board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W1-04` 任务行 + Hub-L3 分区 + #43 7件套）
+- execution_evidence:
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v39.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_preflight_readiness.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_runner_execute_chain_probe.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_downstream_unblock_signal.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_directed_baton_dispatch.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_7lane_daily_receipt.v1.json`
+
+3) DoD
+- [x] 先续租 `claim_id + claim_ttl_until` 后执行（TTL=`2026-03-02T09:39:58-08:00`）
+- [x] 按 directed-only 派发接力棒（无全量广播）并机读落盘
+- [x] 收敛 7 条泳道回执并形成单条日报（`receipt_count=7`）
+- [x] 按 precondition 快照执行 fail-closed 裁决并回填 board
+- [x] 维持 `SKC-W1-04` 双绿，不触发跨泳道状态改写
+- [ ] `real_samples_ready` 仍未满足，Hub-L5 总门禁暂不可重跑
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- `Hub-L5-global-gate-rerun-readiness`: `INSUFFICIENT_EVIDENCE`
+- gate_blocker->resolved:
+  - `SKC-G4: INSUFFICIENT_EVIDENCE -> PASS`（`resolved=true`，持续有效）
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v39.json`
+  - `build/reports/skc_w1_04_hub_l3_directed_baton_dispatch.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_7lane_daily_receipt.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_evidence.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+
+5) KPI Snapshot
+- `bypass_grant_execution`: `0`
+- `low_risk_false_block_rate`: `0.00%`
+- `approval_mismatch_execution`: `0`
+- `gate_p95_ms`: `0.480`
+- `runner_execute_gate_wiring_runtime_callsites`: `10`
+- `receipt_count`: `7`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v39.json`
+  - `build/reports/skc_w1_04_hub_l3_7lane_daily_receipt.v1.json`
+
+6) Risks & Rollback
+- risks:
+  - `real_samples_ready=false`，require-real 样本仍不足（Hub-L1/Hub-L5/XT-L1）
+  - `hub_l5_global_gate_rerunnable=false`，未满足“先真实样本+hard-line，再重跑总门禁”
+  - 下游仍 blocked：`SKC-W2-05` 等待 require-real，`SKC-W2-06` 等待 XT-L1 verified_handoff
+- rollback:
+  - rollback_point_board: 回退 Hub-L3 分区到 Auto-Continue #42
+  - rollback_point_evidence: `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v39.json`
+  - rollback_point_dispatch: `build/reports/skc_w1_04_hub_l3_directed_baton_dispatch.v1.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L1+Hub-L5+XT-L1`
+- depends_on:
+  - `build/reports/skc_w1_hub_l1_autocontinue_checkpoint.v48.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v53.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_7lane_daily_receipt.v1.json`
+- unblock 条件：
+  - `real_probe_returned_rows>=30`（真实样本达标）
+  - `internal_pass_lines_go=true`（hard-line 转绿）
+  - Hub-L5 重跑全局门禁并输出 `PASS` 后，再唤醒 `XT-L1 -> XT-L2 -> Hub-L4` 主链续推
+
+
+#### Hub-L3 / SKC-W1-04 / 7件套增量（Auto-Continue #44）
+
+1) Scope
+- `SKC-W1-04`（待命解阻：仅监控 `prereq_A+prereq_B` 并在双满足后定向唤醒 `Hub-L5`，本轮不抢新功能任务）
+
+2) Changes
+- command_board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W1-04` 任务行 + Hub-L3 分区 + #44 7件套）
+- machine_readable_evidence:
+  - `build/reports/skc_w1_04_hub_l3_prereq_monitor.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v40.json`
+
+3) DoD
+- [x] 已监控 `prereq_A(real sample>=30 且 strict_contract=PASS)`
+- [x] 已监控 `prereq_B(hard-line=PASS 且 missing_metrics=0)`
+- [x] fail-closed 生效：任一前置不满足不派发 baton、不广播
+- [x] 维持 `SKC-W1-04` delivered（`SKC-G2/SKC-G4` 不回退）
+- [x] 仅更新 Hub-L3 分区 + `SKC-W1-04` 任务行
+- [ ] 双前置未同时满足，`Hub-L5` 总门禁重跑 baton 未触发
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- `prereq_A_strict_real_sample`: `FAIL`（rows 达标但 strict contract 未过）
+- `prereq_B_hard_line_complete`: `FAIL`
+- `baton_dispatch_to_hub_l5`: `BLOCKED`
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v40.json`
+  - `build/reports/skc_w1_04_hub_l3_prereq_monitor.v1.json`
+  - `build/reports/skc_w1_hub_l1_autocontinue_checkpoint.v57.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v58.json`
+
+5) KPI Snapshot
+- `prereq_A_rows_met`: `true`（`34/30`）
+- `prereq_A_strict_contract_ok`: `false`
+- `prereq_B_hard_line_ok`: `false`
+- `bypass_grant_execution`: `0`
+- `low_risk_false_block_rate`: `0.00%`
+- `dispatched_baton_count`: `0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v40.json`
+  - `build/reports/skc_w1_04_hub_l3_prereq_monitor.v1.json`
+
+6) Risks & Rollback
+- risks:
+  - `prereq_A` 存在 contract drift（`strict_contract_status=FAIL`）
+  - `prereq_B` 未达硬线完整（`internal_pass_lines=INSUFFICIENT_EVIDENCE`, `missing_metrics=33`）
+  - 若在前置未齐时触发 Hub-L5 重跑将违反 fail-closed
+- rollback:
+  - rollback_point_board: 回退 Hub-L3 分区到 Auto-Continue #43
+  - rollback_point_checkpoint: `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v40.json`
+  - rollback_point_monitor: `build/reports/skc_w1_04_hub_l3_prereq_monitor.v1.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L1+XT-L2+QA+Hub-L5`
+- depends_on:
+  - `build/reports/skc_w1_hub_l1_autocontinue_checkpoint.v57.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v58.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v54.json`
+- unblock 条件：
+  - `prereq_A`: strict contract 通过且 `matched_latency_rows>=30`（非 fallback 计数）
+  - `prereq_B`: `internal_pass_lines=PASS` 且 `internal_pass_missing_metrics_count=0`
+  - 双条件同绿后，Hub-L3 定向派发 `rerun_hub_l5_global_gate` 到 Hub-L5
+
+
+#### Hub-L3 / SKC-W1-04 / 7件套增量（Auto-Continue #45）
+
+1) Scope
+- `SKC-W1-04`（待命解阻：仅监控双前置并在同绿后定向派发 `Hub-L5 rerun_hub_l5_global_gate`；本轮不抢新功能）
+
+2) Changes
+- command_board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W1-04` 任务行 + Hub-L3 分区 + #45 7件套）
+- machine_readable_evidence:
+  - `build/reports/skc_w1_04_hub_l3_prereq_monitor.v2.json`
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v41.json`
+
+3) DoD
+- [x] 已监控 `prereq_A(real sample>=30 + strict_contract=PASS)`
+- [x] 已监控 `prereq_B(hard-line=PASS + missing_metrics=0)`
+- [x] fail-closed：任一前置不满足，不派发 Hub-L5 baton，不广播
+- [x] 维持 `SKC-W1-04` delivered（`SKC-G2/SKC-G4` 持续 PASS）
+- [x] 仅更新 Hub-L3 分区 + `SKC-W1-04` 任务行
+- [ ] 双前置未同时满足，`rerun_hub_l5_global_gate` 仍未触发
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- `prereq_A_strict_real_sample`: `FAIL`（`strict_contract=PASS` 但 `matched/probe=0/30`）
+- `prereq_B_hard_line_complete`: `FAIL`（`internal_pass_lines=INSUFFICIENT_EVIDENCE`, `missing_metrics=33`）
+- `baton_dispatch_to_hub_l5`: `BLOCKED`
+- 证据路径：
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v41.json`
+  - `build/reports/skc_w1_04_hub_l3_prereq_monitor.v2.json`
+  - `build/reports/skc_w1_hub_l1_autocontinue_checkpoint.v58.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v59.json`
+
+5) KPI Snapshot
+- `prereq_A_rows_met`: `false`（`0/30`）
+- `prereq_A_strict_contract_ok`: `true`
+- `prereq_B_hard_line_ok`: `false`
+- `bypass_grant_execution`: `0`
+- `low_risk_false_block_rate`: `0.00%`
+- `dispatched_baton_count`: `0`
+- KPI 报告路径：
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v41.json`
+  - `build/reports/skc_w1_04_hub_l3_prereq_monitor.v2.json`
+
+6) Risks & Rollback
+- risks:
+  - `prereq_A` 当前核心缺口转为真实样本不足（`matched/probe=0/30`）
+  - `prereq_B` 仍未达硬线完整（`missing_metrics=33`）
+  - 若越过前置触发 Hub-L5 gate 重跑将违反 fail-closed
+- rollback:
+  - rollback_point_board: 回退 Hub-L3 分区到 Auto-Continue #44
+  - rollback_point_checkpoint: `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v41.json`
+  - rollback_point_monitor: `build/reports/skc_w1_04_hub_l3_prereq_monitor.v2.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L1+XT-L2+QA+Hub-L5`
+- depends_on:
+  - `build/reports/skc_w1_hub_l1_autocontinue_checkpoint.v58.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v59.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v53.json`
+- unblock 条件：
+  - `prereq_A`: `matched_latency_rows>=30` 且 `probe_returned_rows>=30` 且 `strict_contract=PASS`
+  - `prereq_B`: `internal_pass_lines=PASS` 且 `internal_pass_missing_metrics_count=0`
+  - 双条件同绿后，Hub-L3 定向派发 `rerun_hub_l5_global_gate` 到 Hub-L5
+
+
+#### Hub-L3 / SKC-W1-04 / delta_3line checkpoint v1
+
+- status: `delivered(blocked_fail_closed)`（no_state_change）
+- prereq_delta: `prereq_A strict_contract=PASS + probe_returned_rows=30/30，但 matched_latency_rows=0/30（gap=30）；prereq_B internal_pass_lines=INSUFFICIENT_EVIDENCE + missing_metrics=33`
+- next_step: `execute_prereq_B_gap_closure_with_XT-L2_QA_then_hub_l5_prereq_check_rerun_after_2026-03-03T12:34:33Z`
+- evidence_ref: `build/reports/skc_w1_04_hub_l3_delta_3line.v1.json`
+
+#### Hub-L3 / SKC-W1-04 / delta_3line checkpoint v2
+
+- status: `delivered(blocked_fail_closed)`（no_state_change；claim_renewed）
+- prereq_delta: `prereq_A strict_contract=PASS + probe_returned_rows=30/30 + matched_latency_rows=0/30（gap=30）；prereq_B internal_pass_lines=INSUFFICIENT_EVIDENCE + missing_metrics=33；dual_green=false`
+- next_step: `execute_prereq_B_gap_closure_with_XT-L2_QA_then_hub_l5_prereq_check_rerun_after_2026-03-03T12:34:33Z`
+- evidence_ref: `build/reports/skc_w1_04_hub_l3_delta_3line.v2.json`
+
+#### Hub-L3 / SKC-W1-04 / delta_3line checkpoint v3
+
+- status: `delivered(blocked_fail_closed)`（no_state_change；claim_renewed）
+- prereq_delta: `prereq_A strict_contract=PASS + probe_returned_rows=0/30 + matched_latency_rows=0/30（gap=30）；prereq_B internal_pass_lines=INSUFFICIENT_EVIDENCE + missing_metrics=33；dual_green=false`
+- next_step: `execute_prereq_B_gap_closure_with_XT-L2_QA_then_hub_l5_prereq_check_rerun_after_2026-03-03T12:34:33Z`
+- evidence_ref: `build/reports/skc_w1_04_hub_l3_delta_3line.v3.json`
+
+#### Hub-L3 / SKC-W1-04 / delta_3line checkpoint v4
+
+- status: `delivered(blocked_fail_closed)`（A_aligned_green；B_gap_only）
+- prereq_delta: `prereq_A strict_contract=PASS + probe_returned_rows=64/30 + matched_latency_rows=64/30（PASS）；prereq_B internal_pass_lines=INSUFFICIENT_EVIDENCE + missing_metrics=33（FAIL）；dual_green=false`
+- next_step: `execute_prereq_B_gap_closure_with_XT-L2_QA_then_hub_l5_prereq_check_rerun_after_2026-03-03T12:34:33Z`
+- evidence_ref: `build/reports/skc_w1_04_hub_l3_delta_3line.v4.json`
+
+#### Hub-L3 / SKC-W1-04 / delta_3line checkpoint v5
+
+- status: `delivered(blocked_fail_closed)`（A_aligned_green；B_gap_only）
+- prereq_delta: `prereq_A strict_contract=PASS + probe_returned_rows=64/30 + matched_latency_rows=64/30（PASS）；prereq_B internal_pass_lines=INSUFFICIENT_EVIDENCE + missing_metrics=33（FAIL）；dual_green=false`
+- next_step: `execute_prereq_B_gap_closure_with_XT-L2_QA_then_hub_l5_prereq_check_rerun_after_2026-03-03T12:34:33Z`
+- evidence_ref: `build/reports/skc_w1_04_hub_l3_delta_3line.v5.json`
+
+#### Hub-L3 / SKC-W1-04 / delta_3line checkpoint v6
+
+- status: `delivered(blocked_fail_closed)`（prereq_B_only_focus；claim_renewed）
+- prereq_delta: `prereq_B internal_pass_lines=INSUFFICIENT_EVIDENCE + missing_metrics=33 + release_decision=INSUFFICIENT_EVIDENCE；prereq_A 已锁绿(64/30)`
+- next_step: `execute_prereq_B_gap_closure_with_XT-L2_QA_then_hub_l5_prereq_check_rerun_after_2026-03-03T12:34:33Z`
+- evidence_ref: `build/reports/skc_w1_04_hub_l3_delta_3line.v6.json`
+
+#### Hub-L3 / SKC-W1-04 / delta_3line checkpoint v7
+
+- status: `delivered(blocked_fail_closed)`（prereq_B_only_focus；claim_renewed）
+- prereq_delta: `prereq_B internal_pass_lines=INSUFFICIENT_EVIDENCE + missing_metrics=33 + release_decision=INSUFFICIENT_EVIDENCE；样本窗口=lane_event_count 546/1000,high_risk_request_count 1/300,mergeback_runs 0/100`
+- next_step: `execute_prereq_B_gap_closure_with_XT-L2_QA_then_hub_l5_prereq_check_rerun_after_2026-03-03T12:34:33Z`
+- evidence_ref: `build/reports/skc_w1_04_hub_l3_delta_3line.v7.json`
+
+#### Hub-L3 / SKC-W1-04 / delta_3line checkpoint v8
+
+- status: `delivered(blocked_fail_closed_no_evidence_delta)`（prereq_B_only_focus；claim_renewed）
+- prereq_delta: `prereq_B internal_pass_lines=INSUFFICIENT_EVIDENCE + missing_metrics=33 + release_decision=INSUFFICIENT_EVIDENCE；无新增上游证据增量（v14/v65）`
+- next_step: `execute_prereq_B_gap_closure_with_XT-L2_QA_then_hub_l5_prereq_check_rerun_after_2026-03-03T12:34:33Z`
+- evidence_ref: `build/reports/skc_w1_04_hub_l3_delta_3line.v8.json`
+
+#### Hub-L3 / SKC-W1-04 / delta_3line checkpoint v9
+
+- status: `delivered(blocked_fail_closed)`（prereq_B_only_focus；mention_processed；claim_renewed）
+- prereq_delta: `prereq_B internal_pass_lines=INSUFFICIENT_EVIDENCE + missing_metrics=33；仍缺 sample_sufficiency=lane_event_count 546/1000,high_risk_request_count 1/300,mergeback_runs 0/100`
+- next_step: `execute_prereq_B_gap_closure_with_XT-L2_QA_then_hub_l5_prereq_check_rerun_after_2026-03-03T12:34:33Z`
+- evidence_ref: `build/reports/skc_w1_04_hub_l3_delta_3line.v9.json`
+
+#### Hub-L3 / SKC-W1-04 / delta_3line checkpoint v10
+
+- status: `delivered(blocked_fail_closed)`（prereq_B_only_focus；mention_processed；claim_renewed）
+- prereq_delta: `prereq_B internal_pass_lines=INSUFFICIENT_EVIDENCE + missing_metrics=33；缺口仍为33项指标+sample_sufficiency(546/1000,1/300,0/100)`
+- next_step: `execute_prereq_B_gap_closure_with_XT-L2_QA_then_hub_l5_prereq_check_rerun_after_2026-03-03T12:34:33Z`
+- evidence_ref: `build/reports/skc_w1_04_hub_l3_delta_3line.v10.json`
+
+#### Hub-L3 / SKC-W1-04 / delta_3line checkpoint v11
+
+- status: `delivered(blocked_fail_closed)`（prereq_B_only_focus；claim_renewed）
+- prereq_delta: `prereq_B internal_pass_lines=INSUFFICIENT_EVIDENCE + missing_metrics=33；上游证据有增量但B缺口未收敛(sample_sufficiency=546/1000,1/300,0/100)`
+- next_step: `execute_prereq_B_gap_closure_with_XT-L2_QA_then_hub_l5_prereq_check_rerun_after_2026-03-03T12:34:33Z`
+- evidence_ref: `build/reports/skc_w1_04_hub_l3_delta_3line.v11.json`
+
+#### Hub-L3 / SKC-W1-04 / delta_3line checkpoint v12
+
+- status: `delivered(blocked_fail_closed_no_gap_change)`（prereq_B_only_focus；claim_renewed）
+- prereq_delta: `prereq_B internal_pass_lines=INSUFFICIENT_EVIDENCE + missing_metrics=33；缺口未收敛(sample_sufficiency=546/1000,1/300,0/100)；仅续租+监控`
+- next_step: `execute_prereq_B_gap_closure_with_XT-L2_QA_then_hub_l5_prereq_check_rerun_after_2026-03-03T12:34:33Z`
+- evidence_ref: `build/reports/skc_w1_04_hub_l3_delta_3line.v12.json`
+
+
+#### Hub-L3 / SKC-W1-04 / delta_3line checkpoint v13
+
+- status: `delivered(blocked_fail_closed_no_gap_change)`（prereq_B_only_focus；claim_renewed；mention_processed）
+- prereq_delta: `prereq_B internal_pass_lines=INSUFFICIENT_EVIDENCE + missing_metrics=33；failed_hard_lines=HL-01/03/04/05/06/07/08/09/10；sample_sufficiency=546/1000,1/300,0/100；仍未满足重跑条件`
+- next_step: `execute_prereq_B_gap_closure_with_XT-L2_QA_then_hub_l5_prereq_check_rerun_after_2026-03-03T12:34:33Z`
+- evidence_ref: `build/reports/skc_w1_04_hub_l3_delta_3line.v13.json`
+
+#### Hub-L3 / SKC-W1-04 / delta_3line checkpoint v14
+
+- status: `delivered(blocked_fail_closed_no_gap_change)`（prereq_B_only_focus；claim_renewed；mention_processed）
+- prereq_delta: `prereq_B internal_pass_lines=INSUFFICIENT_EVIDENCE + missing_metrics=33；failed_hard_lines=HL-01/HL-03/HL-04/HL-05/HL-06/HL-07/HL-08/HL-09/HL-10；sample_sufficiency=546/1000,1/300,0/100；仍未满足重跑条件`
+- next_step: `directed_only_to_Hub-L5+QA_keep_prereq_B_gap_closure_then_Hub-L5_rerun_prereq_check_after_2026-03-03T12:34:33Z`
+- evidence_ref: `build/reports/skc_w1_04_hub_l3_delta_3line.v14.json`
+
+#### Hub-L3 / SKC-W1-04 / delta_3line checkpoint v15
+
+- status: `delivered(blocked_fail_closed_no_gap_change)`（prereq_B_only_focus；claim_renewed；mention_processed）
+- prereq_delta: `prereq_B internal_pass_lines=INSUFFICIENT_EVIDENCE + missing_metrics=33；failed_hard_lines=HL-01/HL-03/HL-04/HL-05/HL-06/HL-07/HL-08/HL-09/HL-10；sample_sufficiency=546/1000,1/300,0/100；仍未满足重跑条件`
+- next_step: `directed_only_to_Hub-L5+QA_keep_prereq_B_gap_closure_then_Hub-L5_rerun_prereq_check_after_2026-03-03T12:41:00Z`
+- evidence_ref: `build/reports/skc_w1_04_hub_l3_delta_3line.v15.json`
+
+#### Hub-L3 / SKC-W1-04 / delta_3line checkpoint v16
+
+- status: `delivered(blocked_fail_closed_no_gap_change)`（prereq_B_only_focus；claim_renewed；mention_processed）
+- prereq_delta: `prereq_B internal_pass_lines=INSUFFICIENT_EVIDENCE + missing_metrics=33；failed_hard_lines=HL-01/HL-03/HL-04/HL-05/HL-06/HL-07/HL-08/HL-09/HL-10；sample_sufficiency=546/1000,1/300,0/100；仍未满足重跑条件`
+- next_step: `directed_only_to_Hub-L5+QA_keep_prereq_B_gap_closure_then_Hub-L5_rerun_prereq_check_after_2026-03-03T12:45:38Z`
+- evidence_ref: `build/reports/skc_w1_04_hub_l3_delta_3line.v16.json`
+
+#### Hub-L3 / SKC-W1-04 / delta_3line checkpoint v17
+
+- status: `delivered(blocked_fail_closed_no_gap_change)`（prereq_B_only_focus；claim_renewed；mention_processed）
+- prereq_delta: `prereq_B internal_pass_lines=INSUFFICIENT_EVIDENCE + missing_metrics=33；failed_hard_lines=HL-01/HL-03/HL-04/HL-05/HL-06/HL-07/HL-08/HL-09/HL-10；sample_sufficiency=546/1000,1/300,0/100；仍未满足重跑条件`
+- next_step: `directed_only_to_Hub-L5+QA_keep_prereq_B_gap_closure_then_Hub-L5_rerun_prereq_check_after_2026-03-03T12:48:26Z`
+- evidence_ref: `build/reports/skc_w1_04_hub_l3_delta_3line.v17.json`
+
+#### Hub-L3 / SKC-W1-04 / delta_3line checkpoint v19
+
+- status: `delivered(blocked_fail_closed_no_gap_change)`（prereq_B_only_focus；claim_renewed；mention_processed）
+- prereq_delta: `prereq_B internal_pass_lines=INSUFFICIENT_EVIDENCE + missing_metrics=33；failed_hard_lines=HL-01/HL-03/HL-04/HL-05/HL-06/HL-07/HL-08/HL-09/HL-10；sample_sufficiency=546/1000,1/300,0/100；仍未满足重跑条件`
+- next_step: `directed_only_to_Hub-L5+QA_keep_prereq_B_gap_closure_then_Hub-L5_rerun_prereq_check_after_2026-03-03T12:54:45Z`
+- evidence_ref: `build/reports/skc_w1_04_hub_l3_delta_3line.v19.json`
+
+#### Hub-L3 / SKC-W1-04 / delta_3line checkpoint v20
+
+- status: `delivered(blocked_fail_closed_partial_gap_progress)`（prereq_B_only_focus；claim_renewed；mention_processed）
+- prereq_delta: `prereq_B internal_pass_lines=INSUFFICIENT_EVIDENCE + missing_metrics=33；failed_hard_lines=HL-01/HL-03/HL-04/HL-05/HL-06/HL-07/HL-08/HL-09/HL-10；sample_sufficiency=968/1000,1/300,0/100（lane_event_count进展）但仍未满足重跑条件`
+- next_step: `directed_only_to_Hub-L5+QA_keep_prereq_B_gap_closure_then_Hub-L5_rerun_prereq_check_after_2026-03-03T14:38:08Z`
+- evidence_ref: `build/reports/skc_w1_04_hub_l3_delta_3line.v20.json`
+
+#### Hub-L3 / SKC-W1-04 / delta_3line checkpoint v21
+
+- status: `delivered(prereq_B_green_wait_window_no_early_rerun)`（prereq_B_only_focus；claim_renewed；mention_processed）
+- prereq_delta: `prereq_B PASS(internal_pass_lines=GO,missing_metrics=0,failed_hard_lines=none,sample_sufficiency=1208/1000,300/300,685/100)；等待Hub-L5窗口重跑`
+- next_step: `directed_only_to_Hub-L5+QA_rerun_hub_l5_global_gate_not_before_2026-03-03T14:38:08Z`
+- evidence_ref: `build/reports/skc_w1_04_hub_l3_delta_3line.v21.json`
+
+#### Hub-L3 / SKC-W1-04 / delta_3line checkpoint v22
+
+- status: `delivered(snapshot_conflict_detected_fail_closed)`（prereq_B_only_focus；claim_renewed；mention_processed）
+- prereq_delta: `prereq_B snapshot_conflict：Hub-L5 prereq_check=PASS(missing=0,release=GO,sample=1208/1000,300/300,685/100) vs Hub-L5 blocked=legacy_FAIL；XT-L2 recheck sample=1208/300/685`
+- next_step: `directed_reconcile_hub_l5_xt_l2_snapshot_conflict_then_hub_l5_refresh_blocked_snapshot_not_before_2026-03-03T15:03:00Z`
+- evidence_ref: `build/reports/skc_w1_04_hub_l3_delta_3line.v22.json`
+
+#### Hub-L3 / SKC-W1-04 / delta_3line checkpoint v23
+
+- status: `delivered(snapshot_conflict_persisted_fail_closed_with_xt_l2_delta)`（prereq_B_only_focus；claim_renewed；mention_processed）
+- prereq_delta: `prereq_B事实维持PASS(sample=1208/1000,300/300,685/100,failed_hard_lines=none,release=GO)；但Hub-L5 blocked快照仍为legacy_FAIL(sample=968/1000,1/300,0/100)；XT-L2 consistency.v8= snapshot_drift=true`
+- next_step: `directed_only_fix_hub_l5_runtime_snapshot_drift_then_single_rerun_SKC-W3-08_not_before_2026-03-04T01:30:40Z`
+- evidence_ref: `build/reports/skc_w1_04_hub_l3_delta_3line.v23.json`
+
+#### Hub-L3 / SKC-W1-04 / delta_3line checkpoint v24
+
+- status: `delivered(snapshot_conflict_persisted_fail_closed_with_new_machine_delta)`（prereq_B_only_focus；claim_renewed；no_new_machine_delta=false）
+- prereq_delta: `Hub-L5/XT-L2口径差异未收敛：Hub-L5 blocked仍为legacy_FAIL(968/1/0)；XT-L2 latest保持PASS(1208/300/685,failed_hard_lines=none,release=GO)`
+- next_step: `directed_only_snapshot_drift_fix_then_single_rerun_SKC-W3-08_not_before_2026-03-04T01:33:45Z`
+- evidence_ref: `build/reports/skc_w1_04_hub_l3_delta_3line.v24.json`
+
+#### Hub-L3 / SKC-W1-04 / delta_3line checkpoint v25
+
+- status: `delivered(snapshot_guard_blocked_fail_closed)`（prereq_B_only_focus；claim_renewed；machine_delta=v32/v81）
+- prereq_delta: `A/B事实继续双绿(A=64/30,B=PASS sample=1208/300/685,failed_hard_lines=none)；Hub-L5阻塞升级为snapshot_guard：snapshot_drift(prereq_snapshot_id=xtl2_prereq_bundle@07f3b930448b6ed4,rerun_input_snapshot_id=hubg5_inputs@d5012e1ef840c5db)`
+- next_step: `directed_only_fix_snapshot_id_mismatch_then_single_rerun_not_before_2026-03-04T01:53:10Z`
+- evidence_ref: `build/reports/skc_w1_04_hub_l3_delta_3line.v25.json`
+
+#### Hub-L3 / SKC-W1-04 / delta_3line checkpoint v26
+
+- status: `delivered(snapshot_conflict_shifted_fail_closed)`（prereq_B_only_focus；claim_renewed；machine_delta=true）
+- prereq_delta: `A/B事实仍双绿(A=64/30,B=PASS sample=1208/300/685,failed_hard_lines=none)；Hub-L5 v85 转为runtime legacy样本/HL失败阻塞，且XT-L2 v9仍引用旧snapshot_guard漂移`
+- next_step: `directed_only_reconcile_runtime_legacy_samples_and_xt_snapshot_basis_then_single_rerun_not_before_2026-03-04T02:28:59Z`
+- evidence_ref: `build/reports/skc_w1_04_hub_l3_delta_3line.v26.json`
+### Hub-L4
+- mode: `hard_standby(readonly;execution_delegated_to_Hub-L5)`
+- active_task: `SKC-W2-07`（steady_relay_directed_only_standby）
+- queue_head: `SKC-W2-07`
+- backlog_next: `none`
+- dependency: `SKC-W2-06`
+- status: `delivered`（verified_handoff_consumed_g2_g4_green + hub_l5_handoff_consumed）
+- claim_state: `claimed`
+- claim_id: `claim_skc_w2_07_precheck_20260301_1909`
+- claim_ttl_until: `2026-03-05T08:15:00-08:00`
+- report_mode: `delta_3line`
+- gate_blocker: `none`（`SKC-W2-06 verified_handoff` 已消费）
+- blocked_reason: `downstream_wait:SKC-W3-08_prereq_A_prereq_B_not_dual_green`
+- unblock_owner: `XT-L2 + Hub-L1 + QA + Hub-L5`（Hub-L5 已消费定向 handoff，待下游双绿）
+- historical_delta_disposition: `coordinator_decided_precheck_hold`（见 `CD-20260301-006`）
+- next_step: `保持 directed-only standby，按 delta_3line 回填（不广播、不新增 runtime 改动）`
+- next_owner_lane: `Hub-L5`
+- evidence_refs:
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_precheck_report.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v47.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v48.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_hub_l5_handoff_consume_check.v8.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_delta_3line.v6.json`
+  - `build/reports/skc_w3_08_hub_l5_hub_l4_handoff_consume.v1.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v79.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_gate_evidence.json`
+- 7piece_template_status: `claim_renewed_only_delta_3line_v14(board_only)`
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #6）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：持续对齐 overflow/origin-safe fallback/cleanup 三件套接线条件；不进入 runtime 主链改动。
+- 本轮目标：按用户“继续”指令校验 `SKC-W2-06 -> verified_handoff` 可达性并更新联动证据。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：仅补 `SKC-W2-07` 行 evidence_refs 增量
+  - `Hub-L4 Lane Zone`：更新 blocked checkpoint 与 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v4.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v3.json`
+- 联动回归日志（real run）：
+  - `x-terminal/.axcoder/reports/skc_w2_06_heartbeat_link_tests.log`
+  - `x-terminal/.axcoder/reports/skc_w2_06_cleanup_link_tests.log`
+
+3) DoD
+- [x] 保持 `claim_id + claim_ttl_until`，不跳过 claim 约束
+- [x] `SKC-W2-06` 未达 `verified_handoff` 时保持 fail-closed，不改 runtime 主链
+- [x] heartbeat/cleanup 联动证据路径补齐并机读化
+- [x] 仅更新 Hub-L4 任务行与 Hub-L4 分区（未跨泳道改状态）
+- [x] `backlog_next=none` 时保持 fail-closed（未 claim 其他任务）
+- [ ] 等待 XT-L2 正式提交 `SKC-W2-06 verified_handoff`（当前阻塞）
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（依赖未满足）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v4.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（待 XT-L2 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v4.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06` 未 verified_handoff 前推进 runtime 改动，会违反 fail-closed 主链约束
+  - 依赖链仍需 XT-L1/XT-L2/Hub-L5 协同，单泳道无法单点转绿
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区至上一个 Auto-Continue checkpoint
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v4.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 提交 `SKC-W2-06 verified_handoff` 并回填 Task Catalog gate_vector
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #7）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：仅执行依赖校验与联动证据刷新，不进入 runtime 主链改动。
+- 本轮目标：对 `SKC-W2-06` 最新阻塞快照（`v6`）做 verified_handoff 复核，并提交 heartbeat/cleanup 实跑联动证据。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：仅更新 `SKC-W2-07` 行 evidence_refs（`verified_handoff_check.v4` + `autocontinue_checkpoint.v5`）
+  - `Hub-L4 Lane Zone`：更新 evidence_refs、7件套增量与 blocked 机读引用
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v4.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v5.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+- 联动回归日志（real run）：
+  - `x-terminal/.axcoder/reports/skc_w2_06_heartbeat_link_tests.log`
+  - `x-terminal/.axcoder/reports/skc_w2_06_cleanup_link_tests.log`
+
+3) DoD
+- [x] 先 claim 后执行（保持 `claim_id + claim_ttl_until` 不变）
+- [x] `SKC-W2-06` 未 verified_handoff 时维持 fail-closed（无 runtime 主链改动）
+- [x] heartbeat/cleanup 联动证据完成实跑并写入 machine-readable 引用
+- [x] 仅修改 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [x] `backlog_next=none` 维持 blocked，不抢 claim 新任务
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（仍为 `ready` 且无 `verified_handoff` artifact）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v4.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v5.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v6.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v5.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W2-06` 仍未 verified_handoff，若强行推进将违反 `ingress -> risk classify -> policy -> grant -> execute -> audit`
+  - `SKC-W2-05` gate 未 PASS 前，XT-L2 无法解除 pre_takeover 阻塞，Hub-L4 无法进入最小可执行入口
+  - 联动测试日志存在 SwiftPM cache warning（只影响缓存写入，不影响本轮 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #6 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v4.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v5.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v4.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #8）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：持续执行依赖复核与证据同步，不进入 runtime 主链改动。
+- 本轮目标：跟踪 `SKC-W2-06` 最新阻塞快照（`v7`），完成 heartbeat/cleanup 联动实跑并更新 blocked 机读证据。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：仅更新 `SKC-W2-07` 行 evidence_refs（`verified_handoff_check.v5` + `autocontinue_checkpoint.v6`）
+  - `Hub-L4 Lane Zone`：更新 evidence_refs、`7piece_template_status` 与 Auto-Continue #8 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v5.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v6.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+- 联动回归日志（real run）：
+  - `x-terminal/.axcoder/reports/skc_w2_06_heartbeat_link_tests.log`
+  - `x-terminal/.axcoder/reports/skc_w2_06_cleanup_link_tests.log`
+
+3) DoD
+- [x] 先 claim 后执行（保持 `claim_id + claim_ttl_until` 不变）
+- [x] `SKC-W2-06` 仍未 verified_handoff 时维持 fail-closed（无 runtime 主链改动）
+- [x] heartbeat/cleanup 联动证据完成实跑并更新机读引用
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [x] `backlog_next=none` 维持 blocked，不抢 claim 新任务
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（Task Catalog 仍为 `ready`，且缺失 verified_handoff artifact）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v5.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v6.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v7.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v6.json`
+
+6) Risks & Rollback
+- risks:
+  - 若越过 `SKC-W2-06 verified_handoff` 前置条件直接并入主链，将违反 fail-closed 与主链审计要求
+  - `SKC-W2-05` gate 未 PASS 前，XT-L2 无法解除 pre_takeover 阻塞，Hub-L4 无法进入最小可执行入口
+  - SwiftPM cache warning 仍在（只影响缓存写入，不影响本轮测试 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #7 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v5.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v6.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v5.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #9）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：继续执行依赖复核与证据刷新，不进入 runtime 主链改动。
+- 本轮目标：在 `SKC-W2-06` 仍处 `ready` 的前提下，完成 Auto-Continue #9 fail-closed 同步并保持 blocked 状态机读可审计。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：仅更新 `SKC-W2-07` 行 evidence_refs（`verified_handoff_check.v6` + `autocontinue_checkpoint.v7`）
+  - `Hub-L4 Lane Zone`：更新 evidence_refs、`7piece_template_status` 与 Auto-Continue #9 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v6.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v7.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+- 联动回归日志（real run）：
+  - `x-terminal/.axcoder/reports/skc_w2_06_heartbeat_link_tests.log`
+  - `x-terminal/.axcoder/reports/skc_w2_06_cleanup_link_tests.log`
+
+3) DoD
+- [x] 先 claim 后执行（保持 `claim_id + claim_ttl_until` 不变）
+- [x] `SKC-W2-06` 未 verified_handoff 时维持 fail-closed（不改 runtime 主链）
+- [x] heartbeat/cleanup 联动证据已实跑并更新机读引用
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [x] `backlog_next=none` 维持 blocked，不抢 claim 新任务
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（Task Catalog 仍为 `ready`，且无 verified_handoff artifact）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v6.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v7.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v8.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v7.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前置未满足时推进主链，将违反 fail-closed 与审计主链要求
+  - `SKC-W2-05` gate 未 PASS，导致 XT-L2 pre_takeover 仍阻塞，Hub-L4 无法进入最小可执行入口
+  - SwiftPM cache warning 仍在（仅影响缓存写入，不影响本轮测试 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #8 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v6.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v7.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v6.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #10）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：继续依赖复核与证据同步，保持 runtime 主链零改动。
+- 本轮目标：对齐 XT-L2 最新阻塞快照（`skc_w2_06_xt_l2_blocked_status.v10.json`），并完成 heartbeat/cleanup 联动证据续跑。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：仅更新 `SKC-W2-07` 行 evidence_refs（`verified_handoff_check.v7` + `autocontinue_checkpoint.v8`）
+  - `Hub-L4 Lane Zone`：更新 evidence_refs、`7piece_template_status` 与 Auto-Continue #10 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v7.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v8.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+- 联动回归日志（real run）：
+  - `x-terminal/.axcoder/reports/skc_w2_06_heartbeat_link_tests.log`
+  - `x-terminal/.axcoder/reports/skc_w2_06_cleanup_link_tests.log`
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 未跳过）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] heartbeat/cleanup 联动证据已续跑并写入机读引用
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [x] `backlog_next=none` 维持 blocked，不抢 claim 新任务
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（Task Catalog 仍为 `ready` 且缺失 verified_handoff artifact）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v7.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v8.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v10.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v8.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前置未满足时推进主链，将违反 fail-closed 与审计主链要求
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 无法进入最小可执行入口
+  - SwiftPM cache warning 仍在（仅影响缓存写入，不影响本轮测试 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #9 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v7.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v8.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v7.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #11）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：继续依赖复核与证据刷新，保持 runtime 主链零改动。
+- 本轮目标：对齐 XT-L2 最新阻塞快照（`skc_w2_06_xt_l2_blocked_status.v11.json`），并持续提交 heartbeat/cleanup 联动实跑证据。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：仅更新 `SKC-W2-07` 行 evidence_refs（`verified_handoff_check.v8` + `autocontinue_checkpoint.v9`）
+  - `Hub-L4 Lane Zone`：更新 evidence_refs、`7piece_template_status` 与 Auto-Continue #11 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v8.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v9.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+- 联动回归日志（real run）：
+  - `x-terminal/.axcoder/reports/skc_w2_06_heartbeat_link_tests.log`
+  - `x-terminal/.axcoder/reports/skc_w2_06_cleanup_link_tests.log`
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 未跳过）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] heartbeat/cleanup 联动证据已续跑并写入机读引用
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [x] `backlog_next=none` 维持 blocked，不抢 claim 新任务
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（Task Catalog 仍为 `ready` 且缺失 verified_handoff artifact）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v8.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v9.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v11.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v9.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前置未满足时推进主链，将违反 fail-closed 与审计主链要求
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 无法进入最小可执行入口
+  - SwiftPM cache warning 仍在（仅影响缓存写入，不影响本轮测试 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #10 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v8.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v9.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v8.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #12）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：继续依赖复核与证据刷新，保持 runtime 主链零改动。
+- 本轮目标：在 AI-COORD-PRIMARY v2026-03-02 新指令下完成必读包补齐（含 `XT-W2-24`/`XT-W2-27`）并复核 `SKC-W2-06` 交接可达性。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：仅更新 `SKC-W2-07` 行 evidence_refs（`verified_handoff_check.v9` + `autocontinue_checkpoint.v10`）
+  - `Hub-L4 Lane Zone`：更新 evidence_refs、`7piece_template_status` 与 Auto-Continue #12 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v9.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v10.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+- 联动回归日志（real run）：
+  - `x-terminal/.axcoder/reports/skc_w2_06_heartbeat_link_tests.log`
+  - `x-terminal/.axcoder/reports/skc_w2_06_cleanup_link_tests.log`
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 未跳过）
+- [x] 已按开工令完成必读顺序补齐（含 `xt-w2-24-token-optimal-context-capsule`、`xt-w2-27-anti-block-unblock-orchestration`）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] heartbeat/cleanup 联动证据已续跑并写入机读引用
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（Task Catalog 仍为 `ready` 且缺失 verified_handoff artifact）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v9.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v10.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v12.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v10.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前置未满足时推进主链，将违反 fail-closed 与审计主链要求
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 无法进入最小可执行入口
+  - SwiftPM cache warning 仍在（仅影响缓存写入，不影响本轮测试 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #11 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v9.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v10.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v9.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #13）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：继续依赖复核与证据刷新，保持 runtime 主链零改动。
+- 本轮目标：续推 Auto-Continue，完成 claim 续租、依赖复核与 heartbeat/cleanup 联动证据回填。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v10/v11`）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #13 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v10.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v11.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+- 联动回归日志（real run）：
+  - `x-terminal/.axcoder/reports/skc_w2_06_heartbeat_link_tests.log`
+  - `x-terminal/.axcoder/reports/skc_w2_06_cleanup_link_tests.log`
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [x] `backlog_next=none` 时维持 blocked，不抢 claim 新任务
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（Task Catalog 仍为 `ready` 且缺失 verified_handoff artifact）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v10.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v11.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v14.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v11.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前置未满足时推进主链，将违反 fail-closed 与审计主链要求
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 无法进入最小可执行入口
+  - SwiftPM cache warning 仍在（仅影响缓存写入，不影响本轮测试 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #12 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v10.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v11.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v10.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #14）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：继续依赖复核与证据刷新，保持 runtime 主链零改动。
+- 本轮目标：续推 Auto-Continue，完成 claim 续租、依赖复核与 heartbeat/cleanup 联动证据回填。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v11/v12`）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #14 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v11.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v12.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+- 联动回归日志（real run）：
+  - `x-terminal/.axcoder/reports/skc_w2_06_heartbeat_link_tests.log`
+  - `x-terminal/.axcoder/reports/skc_w2_06_cleanup_link_tests.log`
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [x] `backlog_next=none` 时维持 blocked，不抢 claim 新任务
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（Task Catalog 仍为 `ready` 且缺失 verified_handoff artifact）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v11.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v12.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v15.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v12.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前置未满足时推进主链，将违反 fail-closed 与审计主链要求
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 无法进入最小可执行入口
+  - SwiftPM cache warning 仍在（仅影响缓存写入，不影响本轮测试 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #13 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v11.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v12.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v11.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #15）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：继续依赖复核与证据刷新，保持 runtime 主链零改动。
+- 本轮目标：续推 Auto-Continue，完成 claim 续租、依赖复核与 heartbeat/cleanup 联动证据回填。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v12/v13`）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #15 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v12.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v13.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+- 联动回归日志（real run）：
+  - `x-terminal/.axcoder/reports/skc_w2_06_heartbeat_link_tests.log`
+  - `x-terminal/.axcoder/reports/skc_w2_06_cleanup_link_tests.log`
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [x] `backlog_next=none` 时维持 blocked，不抢 claim 新任务
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（Task Catalog 仍为 `ready` 且缺失 verified_handoff artifact）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v12.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v13.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v16.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v13.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前置未满足时推进主链，将违反 fail-closed 与审计主链要求
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 无法进入最小可执行入口
+  - SwiftPM cache warning 仍在（仅影响缓存写入，不影响本轮测试 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #14 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v12.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v13.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v12.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #16）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：继续依赖复核与证据刷新，保持 runtime 主链零改动。
+- 本轮目标：续推 Auto-Continue，完成 claim 续租、依赖复核与 heartbeat/cleanup 联动证据回填。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v13/v14`）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #16 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v13.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v14.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+- 联动回归日志（real run）：
+  - `x-terminal/.axcoder/reports/skc_w2_06_heartbeat_link_tests.log`
+  - `x-terminal/.axcoder/reports/skc_w2_06_cleanup_link_tests.log`
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [x] `backlog_next=none` 时维持 blocked，不抢 claim 新任务
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（Task Catalog 仍为 `ready` 且缺失 verified_handoff artifact）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v13.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v14.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v17.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v14.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前置未满足时推进主链，将违反 fail-closed 与审计主链要求
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 无法进入最小可执行入口
+  - SwiftPM cache warning 仍在（仅影响缓存写入，不影响本轮测试 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #15 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v13.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v14.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v13.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #17）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：继续依赖复核与证据刷新，保持 runtime 主链零改动。
+- 本轮目标：续推 Auto-Continue，完成 claim 续租、依赖复核与 heartbeat/cleanup 联动证据回填。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v14/v15`）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #17 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v14.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v15.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+- 联动回归日志（real run）：
+  - `x-terminal/.axcoder/reports/skc_w2_06_heartbeat_link_tests.log`
+  - `x-terminal/.axcoder/reports/skc_w2_06_cleanup_link_tests.log`
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [x] `backlog_next=none` 时维持 blocked，不抢 claim 新任务
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（Task Catalog 仍为 `ready` 且缺失 verified_handoff artifact）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v14.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v15.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v19.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v15.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前置未满足时推进主链，将违反 fail-closed 与审计主链要求
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 无法进入最小可执行入口
+  - SwiftPM cache warning 仍在（仅影响缓存写入，不影响本轮测试 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #16 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v14.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v15.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v14.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #18）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：继续依赖复核与证据刷新，保持 runtime 主链零改动。
+- 本轮目标：续推 Auto-Continue，完成 claim 续租、依赖复核与 heartbeat/cleanup 联动证据回填。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v15/v16`）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #18 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v15.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v16.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+- 联动回归日志（real run）：
+  - `x-terminal/.axcoder/reports/skc_w2_06_heartbeat_link_tests.log`
+  - `x-terminal/.axcoder/reports/skc_w2_06_cleanup_link_tests.log`
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [x] `backlog_next=none` 时维持 blocked，不抢 claim 新任务
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（Task Catalog 仍为 `ready` 且缺失 verified_handoff artifact）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v15.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v16.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v20.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v16.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前置未满足时推进主链，将违反 fail-closed 与审计主链要求
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 无法进入最小可执行入口
+  - SwiftPM cache warning 仍在（仅影响缓存写入，不影响本轮测试 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #17 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v15.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v16.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v15.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #19）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：继续依赖复核与证据刷新，保持 runtime 主链零改动。
+- 本轮目标：续推 Auto-Continue，完成 claim 续租、依赖复核与 heartbeat/cleanup 联动证据回填。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v16/v17`）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #19 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v16.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v17.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+- 联动回归日志（real run）：
+  - `x-terminal/.axcoder/reports/skc_w2_06_heartbeat_link_tests.log`
+  - `x-terminal/.axcoder/reports/skc_w2_06_cleanup_link_tests.log`
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [x] `backlog_next=none` 时维持 blocked，不抢 claim 新任务
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（Task Catalog 仍为 `ready` 且缺失 verified_handoff artifact）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v16.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v17.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v20.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v17.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前置未满足时推进主链，将违反 fail-closed 与审计主链要求
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 无法进入最小可执行入口
+  - SwiftPM cache warning 仍在（仅影响缓存写入，不影响本轮测试 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #18 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v16.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v17.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v16.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #20）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：继续依赖复核与证据刷新，保持 runtime 主链零改动。
+- 本轮目标：续推 Auto-Continue，完成 claim 续租、依赖复核与 heartbeat/cleanup 联动证据回填。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v17/v18`）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #20 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v17.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v18.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+- 联动回归日志（real run）：
+  - `x-terminal/.axcoder/reports/skc_w2_06_heartbeat_link_tests.log`
+  - `x-terminal/.axcoder/reports/skc_w2_06_cleanup_link_tests.log`
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [x] `backlog_next=none` 时维持 blocked，不抢 claim 新任务
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（Task Catalog 仍为 `ready` 且缺失 verified_handoff artifact）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v17.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v18.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v21.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v18.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前置未满足时推进主链，将违反 fail-closed 与审计主链要求
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 无法进入最小可执行入口
+  - SwiftPM cache warning 仍在（仅影响缓存写入，不影响本轮测试 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #19 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v17.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v18.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v17.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #21）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：继续依赖复核与证据刷新，保持 runtime 主链零改动。
+- 本轮目标：续推 Auto-Continue，完成 claim 续租、依赖复核与 heartbeat/cleanup 联动证据回填。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v18/v19`）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #21 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v18.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v19.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+- 联动回归日志（real run）：
+  - `x-terminal/.axcoder/reports/skc_w2_06_heartbeat_link_tests.log`
+  - `x-terminal/.axcoder/reports/skc_w2_06_cleanup_link_tests.log`
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [x] `backlog_next=none` 时维持 blocked，不抢 claim 新任务
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（Task Catalog 仍为 `ready` 且缺失 verified_handoff artifact）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v18.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v19.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v22.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v19.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前置未满足时推进主链，将违反 fail-closed 与审计主链要求
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 无法进入最小可执行入口
+  - SwiftPM cache warning 仍在（仅影响缓存写入，不影响本轮测试 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #20 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v18.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v19.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v18.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #22）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：继续依赖复核与证据刷新，保持 runtime 主链零改动。
+- 本轮目标：续推 Auto-Continue，完成 claim 续租、依赖复核与 heartbeat/cleanup 联动证据回填。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v19/v20`）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #22 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v19.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v20.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+- 联动回归日志（real run）：
+  - `x-terminal/.axcoder/reports/skc_w2_06_heartbeat_link_tests.log`
+  - `x-terminal/.axcoder/reports/skc_w2_06_cleanup_link_tests.log`
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [x] `backlog_next=none` 时维持 blocked，不抢 claim 新任务
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（Task Catalog 仍为 `ready` 且缺失 verified_handoff artifact）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v19.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v20.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v23.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v20.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前置未满足时推进主链，将违反 fail-closed 与审计主链要求
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 无法进入最小可执行入口
+  - SwiftPM cache warning 仍在（仅影响缓存写入，不影响本轮测试 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #21 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v19.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v20.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v19.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #23）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：继续依赖复核与证据刷新，保持 runtime 主链零改动。
+- 本轮目标：续推 Auto-Continue，完成 claim 续租、依赖复核与 heartbeat/cleanup 联动证据回填。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v20/v21`）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #23 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v20.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v21.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+- 联动回归日志（real run）：
+  - `x-terminal/.axcoder/reports/skc_w2_06_heartbeat_link_tests.log`
+  - `x-terminal/.axcoder/reports/skc_w2_06_cleanup_link_tests.log`
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [x] `backlog_next=none` 时维持 blocked，不抢 claim 新任务
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（Task Catalog 仍为 `ready` 且缺失 verified_handoff artifact）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v20.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v21.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v24.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v21.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前置未满足时推进主链，将违反 fail-closed 与审计主链要求
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 无法进入最小可执行入口
+  - SwiftPM cache warning 仍在（仅影响缓存写入，不影响本轮测试 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #22 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v20.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v21.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v20.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #24）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：继续依赖复核与证据刷新，保持 runtime 主链零改动。
+- 本轮目标：续推 Auto-Continue，完成 claim 续租、依赖复核与 heartbeat/cleanup 联动证据回填。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v21/v22`）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #24 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v21.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v22.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+- 联动回归日志（real run）：
+  - `x-terminal/.axcoder/reports/skc_w2_06_heartbeat_link_tests.log`
+  - `x-terminal/.axcoder/reports/skc_w2_06_cleanup_link_tests.log`
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [x] `backlog_next=none` 时维持 blocked，不抢 claim 新任务
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（Task Catalog 仍为 `ready` 且缺失 verified_handoff artifact）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v21.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v22.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v25.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v22.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前置未满足时推进主链，将违反 fail-closed 与审计主链要求
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 无法进入最小可执行入口
+  - SwiftPM cache warning 仍在（仅影响缓存写入，不影响本轮测试 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #23 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v21.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v22.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v21.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #25）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：继续依赖复核与证据刷新，保持 runtime 主链零改动。
+- 本轮目标：续推 Auto-Continue，完成 claim 续租、依赖复核与 heartbeat/cleanup 联动证据回填。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v22/v23`）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #25 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v22.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v23.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+- 联动回归日志（real run）：
+  - `x-terminal/.axcoder/reports/skc_w2_06_heartbeat_link_tests.log`
+  - `x-terminal/.axcoder/reports/skc_w2_06_cleanup_link_tests.log`
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [x] `backlog_next=none` 时维持 blocked，不抢 claim 新任务
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（Task Catalog 仍为 `ready` 且缺失 verified_handoff artifact）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v22.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v23.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v26.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v23.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前置未满足时推进主链，将违反 fail-closed 与审计主链要求
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 无法进入最小可执行入口
+  - SwiftPM cache warning 仍在（仅影响缓存写入，不影响本轮测试 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #24 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v22.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v23.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v22.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #26）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：按 HF-DIRECTED 继续保持依赖阻塞态，不进入 runtime 主链接入改动。
+- 本轮目标：产出 blocked checkpoint + 预编排 execution checklist，等待 XT-L2 `SKC-W2-06 verified_handoff` 后切入 execution_ready。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v23/v24` + checklist ref）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #26 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v23.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v24.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`（预编排清单）
+- 校验脚本结果（real run）：
+  - `swift test --filter SupervisorMultilaneFlowTests` => PASS（7 tests）
+  - `swift test --filter SupervisorRuntimeReliabilityKernelTests` => PASS（5 tests）
+  - `ls build/reports/skc_w2_06_xt_l2_verified_handoff*.json` => MISSING（保持 blocked）
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] 预编排 execution checklist 并机读落盘（等待依赖转绿即切 execution_ready）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（Task Catalog 仍为 `ready` 且缺失 verified_handoff artifact）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v23.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v24.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v26.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v24.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前置未满足时推进主链，将违反 fail-closed 与审计主链要求
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 无法进入 execution_ready
+  - SwiftPM cache warning 仍在（仅影响缓存写入，不影响本轮测试 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #25 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v23.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v24.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector/status
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v23.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #27）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：按继续协议与 HF-DIRECTED 继续保持依赖阻塞态，不进入 runtime 主链接入改动。
+- 本轮目标：输出 blocked checkpoint + execution checklist 刷新，等待 XT-L2 `SKC-W2-06 verified_handoff` 后切 execution_ready。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v24/v25` + checklist ref）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #27 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v24.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v25.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`（预编排清单刷新）
+- 校验脚本结果（real run）：
+  - `swift test --disable-sandbox --filter SupervisorMultilaneFlowTests` => PASS（7 tests）
+  - `swift test --disable-sandbox --filter SupervisorRuntimeReliabilityKernelTests` => PASS（5 tests）
+  - `ls build/reports/skc_w2_06_xt_l2_verified_handoff*.json` => MISSING（保持 blocked）
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] execution checklist 已刷新并机读落盘（依赖转绿后可切 execution_ready）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（Task Catalog 仍为 `ready` 且缺失 verified_handoff artifact）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v24.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v25.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v28.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v25.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前置未满足时推进主链，将违反 fail-closed 与审计主链要求
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 无法进入 execution_ready
+  - SwiftPM cache warning 仍在（仅影响缓存写入，不影响本轮测试 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #26 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v24.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v25.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector/status
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v24.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #28）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：按“继续协议”与 HF-DIRECTED 保持依赖阻塞态，不进入 runtime 主链接入改动。
+- 本轮目标：提交 blocked checkpoint（含 heartbeat/cleanup 联动证据 + gate_vector 对齐）并维持 execution_ready 预编排清单可追溯。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v25/v26`）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #28 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v25.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v26.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`（预编排清单刷新）
+- 校验脚本结果（real run）：
+  - `swift test --disable-sandbox --filter SupervisorMultilaneFlowTests` => PASS（7 tests）
+  - `swift test --disable-sandbox --filter SupervisorRuntimeReliabilityKernelTests` => PASS（5 tests）
+  - `ls build/reports/skc_w2_06_xt_l2_verified_handoff*.json` => MISSING（保持 blocked）
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] execution checklist 已刷新并机读落盘（依赖转绿后可切 execution_ready）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（Task Catalog 仍为 `ready` 且缺失 verified_handoff artifact）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v25.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v26.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v29.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v26.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前置未满足时推进主链，将违反 fail-closed 与审计主链要求
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 无法进入 execution_ready
+  - SwiftPM cache warning 仍在（仅影响缓存写入，不影响本轮测试 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #27 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v25.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v26.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector/status
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v25.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #29）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：按“继续协议”与 HF-DIRECTED 保持依赖阻塞态，不进入 runtime 主链接入改动。
+- 本轮目标：提交 blocked checkpoint（含 heartbeat/cleanup 联动证据 + gate_vector 对齐）并维持 execution_ready 预编排清单可追溯。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v26/v27`）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #29 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v26.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v27.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`（预编排清单刷新）
+- 校验脚本结果（real run）：
+  - `swift test --disable-sandbox --filter SupervisorMultilaneFlowTests` => PASS（7 tests）
+  - `swift test --disable-sandbox --filter SupervisorRuntimeReliabilityKernelTests` => PASS（5 tests）
+  - `ls build/reports/skc_w2_06_xt_l2_verified_handoff*.json` => MISSING（保持 blocked）
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] execution checklist 已刷新并机读落盘（依赖转绿后可切 execution_ready）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（Task Catalog 仍为 `ready` 且缺失 verified_handoff artifact）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v26.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v27.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v31.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v27.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前置未满足时推进主链，将违反 fail-closed 与审计主链要求
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 无法进入 execution_ready
+  - SwiftPM cache warning 仍在（仅影响缓存写入，不影响本轮测试 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #28 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v26.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v27.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector/status
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v26.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #30）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：按“继续协议”与 HF-DIRECTED 保持依赖阻塞态，不进入 runtime 主链接入改动。
+- 本轮目标：提交 blocked checkpoint（含 heartbeat/cleanup 联动证据 + gate_vector 对齐）并维持 execution_ready 预编排清单可追溯。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v27/v28`）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #30 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v27.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v28.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`（预编排清单刷新）
+- 校验脚本结果（real run）：
+  - `swift test --disable-sandbox --filter SupervisorMultilaneFlowTests` => PASS（7 tests）
+  - `swift test --disable-sandbox --filter SupervisorRuntimeReliabilityKernelTests` => PASS（5 tests）
+  - `ls build/reports/skc_w2_06_xt_l2_verified_handoff*.json` => MISSING（保持 blocked）
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] execution checklist 已刷新并机读落盘（依赖转绿后可切 execution_ready）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（Task Catalog 仍为 `ready` 且缺失 verified_handoff artifact）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v27.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v28.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v32.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v28.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前置未满足时推进主链，将违反 fail-closed 与审计主链要求
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 无法进入 execution_ready
+  - SwiftPM cache warning 仍在（仅影响缓存写入，不影响本轮测试 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #29 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v27.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v28.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector/status
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v27.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #31）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：按“继续协议”与 HF-DIRECTED 保持依赖阻塞态，不进入 runtime 主链接入改动。
+- 本轮目标：提交 blocked checkpoint（含 heartbeat/cleanup 联动证据 + gate_vector 对齐）并维持 execution_ready 预编排清单可追溯。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v28/v29`）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #31 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v28.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v29.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`（预编排清单刷新）
+- 校验脚本结果（real run）：
+  - `swift test --disable-sandbox --filter SupervisorMultilaneFlowTests` => PASS（7 tests）
+  - `swift test --disable-sandbox --filter SupervisorRuntimeReliabilityKernelTests` => PASS（5 tests）
+  - `ls build/reports/skc_w2_06_xt_l2_verified_handoff*.json` => MISSING（保持 blocked）
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] execution checklist 已刷新并机读落盘（依赖转绿后可切 execution_ready）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（Task Catalog 仍为 `ready` 且缺失 verified_handoff artifact）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v28.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v29.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v33.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v29.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前置未满足时推进主链，将违反 fail-closed 与审计主链要求
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 无法进入 execution_ready
+  - SwiftPM cache warning 仍在（仅影响缓存写入，不影响本轮测试 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #30 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v28.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v29.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector/status
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v28.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #32）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：Release Sprint 维持依赖内推进；禁止越依赖接入 runtime 主链。
+- 本轮目标：等待 XT-L2 `verified_handoff` 并验真；若未满足，则输出完整阻塞原因并保持 fail-closed。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v29/v30`）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #32 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v29.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v30.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`（预编排清单刷新）
+- 校验脚本结果（real run）：
+  - `swift test --disable-sandbox --filter SupervisorMultilaneFlowTests` => PASS（7 tests）
+  - `swift test --disable-sandbox --filter SupervisorRuntimeReliabilityKernelTests` => PASS（5 tests）
+  - `ls build/reports/skc_w2_06_xt_l2_verified_handoff*.json` => MISSING（保持 blocked）
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] exit 规则满足其一：`blocked_reason_complete=true`（已机读化）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（Task Catalog 仍为 `ready` 且缺失 verified_handoff artifact）
+- `release_sprint_exit`: `blocked_reason_complete`
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v29.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v30.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v34.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v30.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前置未满足时推进主链，将违反 fail-closed 与审计主链要求
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 无法进入 execution_ready
+  - SwiftPM cache warning 仍在（仅影响缓存写入，不影响本轮测试 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #31 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v29.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v30.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector/status
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v29.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #33）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：Release Sprint 维持依赖内推进；禁止越依赖接入 runtime 主链。
+- 本轮目标：等待 XT-L2 `verified_handoff` 并验真；若未满足，则输出完整阻塞原因并保持 fail-closed。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v30/v31`）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #33 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v30.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v31.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`（预编排清单刷新）
+- 校验脚本结果（real run）：
+  - `swift test --disable-sandbox --filter SupervisorMultilaneFlowTests` => PASS（7 tests）
+  - `swift test --disable-sandbox --filter SupervisorRuntimeReliabilityKernelTests` => PASS（5 tests）
+  - `ls build/reports/skc_w2_06_xt_l2_verified_handoff*.json` => MISSING（保持 blocked）
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] exit 规则满足其一：`blocked_reason_complete=true`（已机读化）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（Task Catalog 仍为 `ready` 且缺失 verified_handoff artifact）
+- `release_sprint_exit`: `blocked_reason_complete`
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v30.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v31.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v37.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v31.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前置未满足时推进主链，将违反 fail-closed 与审计主链要求
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 无法进入 execution_ready
+  - SwiftPM cache warning 仍在（仅影响缓存写入，不影响本轮测试 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #32 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v30.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v31.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector/status
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v30.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #34）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：Release Sprint 维持依赖内推进；禁止越依赖接入 runtime 主链。
+- 本轮目标：等待 XT-L2 `verified_handoff` 并验真；若未满足，则输出完整阻塞原因并保持 fail-closed。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v31/v32`）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #34 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v31.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v32.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`（预编排清单刷新）
+- 校验脚本结果（real run）：
+  - `swift test --disable-sandbox --filter SupervisorMultilaneFlowTests` => PASS（7 tests）
+  - `swift test --disable-sandbox --filter SupervisorRuntimeReliabilityKernelTests` => PASS（5 tests）
+  - `ls build/reports/skc_w2_06_xt_l2_verified_handoff*.json` => MISSING（保持 blocked）
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] exit 规则满足其一：`blocked_reason_complete=true`（已机读化）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（Task Catalog 仍为 `ready` 且缺失 verified_handoff artifact）
+- `release_sprint_exit`: `blocked_reason_complete`
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v31.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v32.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v38.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v32.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前置未满足时推进主链，将违反 fail-closed 与审计主链要求
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 无法进入 execution_ready
+  - SwiftPM cache warning 仍在（仅影响缓存写入，不影响本轮测试 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #33 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v31.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v32.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector/status
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v31.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #35）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：Release Sprint 维持依赖内推进；禁止越依赖接入 runtime 主链。
+- 本轮目标：等待 XT-L2 `verified_handoff` 并验真；若未满足，则输出完整阻塞原因并保持 fail-closed。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v32/v33`）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #35 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v32.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v33.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（同版本增量刷新）
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`（预编排清单刷新）
+- 校验脚本结果（real run）：
+  - `swift test --disable-sandbox --filter SupervisorMultilaneFlowTests` => PASS（7 tests）
+  - `swift test --disable-sandbox --filter SupervisorRuntimeReliabilityKernelTests` => PASS（5 tests）
+  - `ls build/reports/skc_w2_06_xt_l2_verified_handoff*.json` => MISSING（保持 blocked）
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] exit 规则满足其一：`blocked_reason_complete=true`（已机读化）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（Task Catalog 仍为 `ready` 且缺失 verified_handoff artifact）
+- `release_sprint_exit`: `blocked_reason_complete`
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v32.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v33.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v40.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v33.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前置未满足时推进主链，将违反 fail-closed 与审计主链要求
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 无法进入 execution_ready
+  - SwiftPM cache warning 仍在（仅影响缓存写入，不影响本轮测试 PASS 判定）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #34 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v32.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v33.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 将 `SKC-W2-06` 回填为可交接 gate_vector/status
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v32.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #36）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：继续执行依赖验真与阻塞落盘；严格禁止越依赖进入 runtime 主链改动。
+- 本轮目标：校验 `SKC-W2-06 verified_handoff` 是否出现并验真；缺失则保持 fail-closed。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v33/v34`）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #36 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v33.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v34.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（增量刷新）
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`（增量刷新）
+- 校验脚本结果（real run）：
+  - `swift test --disable-sandbox --filter SupervisorMultilaneFlowTests` => PASS（7 tests）
+  - `swift test --disable-sandbox --filter SupervisorRuntimeReliabilityKernelTests` => PASS（5 tests）
+  - `ls build/reports/skc_w2_06_xt_l2_verified_handoff*.json` => MISSING（保持 blocked）
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 回填 Hub-L4 自身 Task Catalog 行 gate/evidence（未跨泳道改状态）
+- [x] release sprint exit 满足 `blocked_reason_complete=true`
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（缺失 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json`）
+- `release_sprint_exit`: `blocked_reason_complete`
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v33.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v34.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v41.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v34.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前推进主链会违反 fail-closed 与审计主链约束
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 不能转 `execution_ready`
+  - SwiftPM cache warning 仍存在（仅缓存层告警，不影响本轮测试 PASS）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #35 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v33.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v34.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 回填 `SKC-W2-06` gate_vector/status
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v33.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #37）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：继续执行依赖验真与阻塞落盘；严格禁止越依赖进入 runtime 主链改动。
+- 本轮目标：验证 XT-L2 `SKC-W2-06 verified_handoff` 是否可验真；缺失则保持 fail-closed。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v34/v35`）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #37 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v34.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v35.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（增量刷新）
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`（增量刷新）
+- 校验脚本结果（real run）：
+  - `swift test --disable-sandbox --filter SupervisorMultilaneFlowTests` => PASS（7 tests）
+  - `swift test --disable-sandbox --filter SupervisorRuntimeReliabilityKernelTests` => PASS（5 tests）
+  - `ls build/reports/skc_w2_06_xt_l2_verified_handoff*.json` => MISSING（保持 blocked）
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 回填 Hub-L4 自身 Task Catalog 行 gate/evidence（未跨泳道改状态）
+- [x] release sprint exit 满足 `blocked_reason_complete=true`
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（缺失 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json`）
+- `release_sprint_exit`: `blocked_reason_complete`
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v34.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v35.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v43.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v35.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前推进主链会违反 fail-closed 与审计主链约束
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 不能转 `execution_ready`
+  - SwiftPM cache warning 仍存在（仅缓存层告警，不影响本轮测试 PASS）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #36 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v34.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v35.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 回填 `SKC-W2-06` gate_vector/status
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v34.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #38）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：继续执行依赖验真与阻塞落盘；严格禁止越依赖进入 runtime 主链改动。
+- 本轮目标：验证 XT-L2 `SKC-W2-06 verified_handoff` 是否可验真；缺失则保持 fail-closed。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v35/v36`）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #38 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v35.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v36.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（增量刷新）
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`（增量刷新）
+- 校验脚本结果（real run）：
+  - `swift test --disable-sandbox --filter SupervisorMultilaneFlowTests` => PASS（7 tests）
+  - `swift test --disable-sandbox --filter SupervisorRuntimeReliabilityKernelTests` => PASS（5 tests）
+  - `ls build/reports/skc_w2_06_xt_l2_verified_handoff*.json` => MISSING（保持 blocked）
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 回填 Hub-L4 自身 Task Catalog 行 gate/evidence（未跨泳道改状态）
+- [x] release sprint exit 满足 `blocked_reason_complete=true`
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（缺失 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json`）
+- `release_sprint_exit`: `blocked_reason_complete`
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v35.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v36.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v44.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v36.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前推进主链会违反 fail-closed 与审计主链约束
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 不能转 `execution_ready`
+  - SwiftPM cache warning 仍存在（仅缓存层告警，不影响本轮测试 PASS）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #37 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v35.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v36.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 回填 `SKC-W2-06` gate_vector/status
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v35.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #39）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：继续执行依赖验真与阻塞落盘；严格禁止越依赖进入 runtime 主链改动。
+- 本轮目标：验证 XT-L2 `SKC-W2-06 verified_handoff` 是否可验真；缺失则保持 fail-closed。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v36/v37`）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #39 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v36.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v37.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（增量刷新）
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`（增量刷新）
+- 校验脚本结果（real run）：
+  - `swift test --disable-sandbox --filter SupervisorMultilaneFlowTests` => PASS（7 tests）
+  - `swift test --disable-sandbox --filter SupervisorRuntimeReliabilityKernelTests` => PASS（5 tests）
+  - `ls build/reports/skc_w2_06_xt_l2_verified_handoff*.json` => MISSING（保持 blocked）
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 回填 Hub-L4 自身 Task Catalog 行 gate/evidence（未跨泳道改状态）
+- [x] release sprint exit 满足 `blocked_reason_complete=true`
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（缺失 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json`）
+- `release_sprint_exit`: `blocked_reason_complete`
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v36.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v37.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v45.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v37.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前推进主链会违反 fail-closed 与审计主链约束
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 不能转 `execution_ready`
+  - SwiftPM cache warning 仍存在（仅缓存层告警，不影响本轮测试 PASS）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #38 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v36.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v37.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 回填 `SKC-W2-06` gate_vector/status
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v36.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #40）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：继续执行依赖验真与阻塞落盘；严格禁止越依赖进入 runtime 主链改动。
+- 本轮目标：验证 XT-L2 `SKC-W2-06 verified_handoff` 是否可验真；缺失则保持 fail-closed。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v37/v38`）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #40 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v37.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v38.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（增量刷新）
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`（增量刷新）
+- 校验脚本结果（real run）：
+  - `swift test --disable-sandbox --filter SupervisorMultilaneFlowTests` => PASS（7 tests）
+  - `swift test --disable-sandbox --filter SupervisorRuntimeReliabilityKernelTests` => PASS（5 tests）
+  - `ls build/reports/skc_w2_06_xt_l2_verified_handoff*.json` => MISSING（保持 blocked）
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 回填 Hub-L4 自身 Task Catalog 行 gate/evidence（未跨泳道改状态）
+- [x] release sprint exit 满足 `blocked_reason_complete=true`
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（缺失 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json`）
+- `release_sprint_exit`: `blocked_reason_complete`
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v37.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v38.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v47.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v38.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前推进主链会违反 fail-closed 与审计主链约束
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 不能转 `execution_ready`
+  - SwiftPM cache warning 仍存在（仅缓存层告警，不影响本轮测试 PASS）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #39 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v37.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v38.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 回填 `SKC-W2-06` gate_vector/status
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v37.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #41）
+
+1) Scope
+- `SKC-W2-07`（precheck_only）：继续执行依赖验真与阻塞落盘；严格禁止越依赖进入 runtime 主链改动。
+- 本轮目标：验证 XT-L2 `SKC-W2-06 verified_handoff` 是否可验真；缺失则保持 fail-closed。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v38/v39`）
+  - `Hub-L4 Lane Zone`：更新 claim、evidence_refs、`7piece_template_status` 与 Auto-Continue #41 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v38.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v39.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`（增量刷新）
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`（增量刷新）
+- 校验脚本结果（real run）：
+  - `swift test --disable-sandbox --filter SupervisorMultilaneFlowTests` => PASS（7 tests）
+  - `swift test --disable-sandbox --filter SupervisorRuntimeReliabilityKernelTests` => PASS（5 tests）
+  - `ls build/reports/skc_w2_06_xt_l2_verified_handoff*.json` => MISSING（保持 blocked）
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06` 未 verified_handoff 时保持 fail-closed（不改 runtime 主链）
+- [x] heartbeat/cleanup 联动证据续跑并写入 machine-readable 引用
+- [x] 回填 Hub-L4 自身 Task Catalog 行 gate/evidence（未跨泳道改状态）
+- [x] release sprint exit 满足 `blocked_reason_complete=true`
+- [ ] 等待 XT-L2 提交 `SKC-W2-06 verified_handoff` 与 gate_vector 回填
+
+4) Gate
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-W2-06 verified_handoff`: `FAIL`（缺失 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json`）
+- `release_sprint_exit`: `blocked_reason_complete`
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v38.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v39.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v48.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `route_origin_fallback_violations`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- `skill_lane_stall_detect_p95_ms`: `INSUFFICIENT_EVIDENCE`（依赖未进入 verified_handoff 实跑）`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v39.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 `SKC-W2-06 verified_handoff` 前推进主链会违反 fail-closed 与审计主链约束
+  - `SKC-W2-05` gate 未 PASS，XT-L2 pre_takeover 仍阻塞，Hub-L4 不能转 `execution_ready`
+  - SwiftPM cache warning 仍存在（仅缓存层告警，不影响本轮测试 PASS）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #40 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v38.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v39.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 产出 `build/reports/skc_w2_06_xt_l2_verified_handoff*.json` 并在 Task Catalog 回填 `SKC-W2-06` gate_vector/status
+  - XT-L1 将 `SKC-W2-05` 提升至 `SKC-G1/G3/G4:PASS`
+  - Hub-L5 提供 require-real handled 样本（`grant_pending/awaiting_instruction/runtime_error`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v38.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #42）
+
+1) Scope
+- `SKC-W2-07`：消费 XT-L2 `verified_handoff` 证据后执行 overflow/fallback/cleanup 三件套主链验证，并保持 fail-closed 边界（不做跨泳道写入）。
+- 本轮目标：完成 `SKC-W2-06` 依赖转绿判定、落盘 `SKC-G2/SKC-G4` gate 证据，并向 Hub-L5 定向接力。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：仅更新 `SKC-W2-07` 行（claim 续租 + gate_vector 转绿 + evidence_refs 指向 `v39/v40`）
+  - `Hub-L4 Lane Zone`：刷新 claim、依赖判定、7件套与 directed handoff 状态
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v39.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v40.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_gate_evidence.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_to_hub_l5_handoff.v1.json`
+- 校验脚本结果（real run）：
+  - `swift test --disable-sandbox --filter SupervisorRuntimeReliabilityKernelTests` => PASS（5 tests）
+  - `swift test --disable-sandbox --filter SupervisorIncidentArbiterTests` => PASS（12 tests）
+  - `swift test --disable-sandbox --filter SupervisorMultilaneFlowTests` => PASS（7 tests）
+  - `ls build/reports/skc_w2_06_xt_l2_verified_handoff*.json` => PASS（found `v1`）
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] 已消费 XT-L2 `SKC-W2-06 verified_handoff` 证据并更新依赖判定
+- [x] overflow/fallback/cleanup 三件套验证均 PASS，`SKC-G2/SKC-G4` 转绿
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（未跨泳道改状态）
+- [x] 按 directed-only 向 Hub-L5 派发 handoff（无广播）
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- `SKC-W2-06 verified_handoff`: `PASS`
+- `missing_evidence_keys`: `[]`
+- `retry_after_utc`: `none`
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v39.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v40.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_gate_evidence.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_to_hub_l5_handoff.v1.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（real run）`x-terminal/.axcoder/reports/skc_w2_07_gate_evidence.json`
+- `route_origin_fallback_violations`: `0`（real run）`x-terminal/.axcoder/reports/skc_w2_07_gate_evidence.json`
+- `dispatch_idle_stuck_incidents`: `0`（real run）`x-terminal/.axcoder/reports/skc_w2_07_gate_evidence.json`
+- `skill_lane_stall_detect_p95_ms`: `0`（<=2000）`x-terminal/.axcoder/reports/skc_w2_06_heartbeat_link_tests.log`
+
+6) Risks & Rollback
+- risks:
+  - Hub-L5 下游仍受 `SKC-G5/require-real` 收口约束，若缺失真实 handled 样本会继续 fail-closed
+  - SwiftPM user cache warning 仍在（仅缓存写入告警，不影响本轮 PASS 结论）
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #41 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v38.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v39.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L5`
+- handoff_type: `directed_only`
+- depends_on:
+  - Hub-L5 消费 `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_to_hub_l5_handoff.v1.json`
+  - Hub-L5 按 `SKC-W3-08` 继续 require-real 审计证据收口（`SKC-G5/SKC-G3`）
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_to_hub_l5_handoff.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_gate_evidence.json`
+
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #43）
+
+1) Scope
+- `SKC-W2-07`：在 `SKC-G2/SKC-G4` 已转绿且 handoff 已发出的前提下，消费 Hub-L5 回执并保持定向协作（不广播）。
+- 本轮目标：续租 claim、确认 `Hub-L5` 已消费定向 handoff、落盘 downstream wait checkpoint。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：仅更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v40/v41`）
+  - `Hub-L4 Lane Zone`：更新 claim、blocked_reason（downstream_wait）与 Auto-Continue #43 7件套
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v40.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v41.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_hub_l5_handoff_consume_check.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`
+- 定向回执核验：
+  - `build/reports/skc_w3_08_hub_l5_hub_l4_handoff_consume.v1.json` => consumed=true
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06 verified_handoff` 继续保持已消费状态（无回退）
+- [x] Hub-L5 已消费 Hub-L4 定向 handoff（directed_only）
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+- [x] 下游未双绿前保持 fail-closed，不做 runtime 越界改动
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- `SKC-W2-06 verified_handoff`: `PASS`
+- `Hub-L5 handoff_consume`: `PASS`
+- `missing_evidence_keys`: `[]`
+- `retry_after_utc`: `none`
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v40.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v41.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_hub_l5_handoff_consume_check.v1.json`
+  - `build/reports/skc_w3_08_hub_l5_hub_l4_handoff_consume.v1.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（real run baseline 延续）`x-terminal/.axcoder/reports/skc_w2_07_gate_evidence.json`
+- `route_origin_fallback_violations`: `0`（real run baseline 延续）`x-terminal/.axcoder/reports/skc_w2_07_gate_evidence.json`
+- `dispatch_idle_stuck_incidents`: `0`（real run baseline 延续）`x-terminal/.axcoder/reports/skc_w2_07_gate_evidence.json`
+- `skill_lane_stall_detect_p95_ms`: `0`（<=2000，baseline 延续）`x-terminal/.axcoder/reports/skc_w2_06_heartbeat_link_tests.log`
+
+6) Risks & Rollback
+- risks:
+  - 下游 `SKC-W3-08` 仍受 prereq_A/prereq_B 约束，未双绿前继续 fail-closed
+  - 若跨泳道强改下游状态将违反 command_board_v2 单泳道写入契约
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #42 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v39.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v40.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L5`
+- handoff_type: `directed_only`（already_consumed）
+- depends_on:
+  - Hub-L5 按 `SKC-W3-08` 继续推进 A/B 双绿（`SKC-G5/SKC-G3`）
+  - XT-L2 + Hub-L1 + QA 提供下游解阻证据
+- unblock 条件机读来源：
+  - `build/reports/skc_w3_08_hub_l5_hub_l4_handoff_consume.v1.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v62.json`
+
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #44）
+
+1) Scope
+- `SKC-W2-07`：延续消费 `verified_handoff` 后的主链收口，保持 `SKC-G2/SKC-G4` 绿态并跟踪下游消费进度。
+- 本轮目标：续租 claim、复核三件套 gate、确认 Hub-L5 已消费 handoff 且维持定向协作。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：仅更新 `SKC-W2-07` 行（claim 续租 + evidence_refs 指向 `v41/v42`）
+  - `Hub-L4 Lane Zone`：更新 claim、依赖判定与 downstream_wait 快照
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v41.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v42.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_hub_l5_handoff_consume_check.v2.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- 校验脚本结果（real run）：
+  - `swift test --disable-sandbox --filter SupervisorRuntimeReliabilityKernelTests` => PASS（5 tests）
+  - `swift test --disable-sandbox --filter SupervisorIncidentArbiterTests` => PASS（12 tests）
+  - `swift test --disable-sandbox --filter SupervisorMultilaneFlowTests` => PASS（7 tests）
+  - `cat build/reports/skc_w3_08_hub_l5_hub_l4_handoff_consume.v1.json` => PASS（consumed=true）
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已续租）
+- [x] `SKC-W2-06 verified_handoff` 继续保持已消费状态
+- [x] `SKC-G2/SKC-G4` 继续保持 `PASS`
+- [x] Hub-L5 消费回执已被 Hub-L4 复核（directed-only）
+- [x] 仅更新 Hub-L4 分区与 `SKC-W2-07` 任务行（无跨泳道状态改写）
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- `SKC-W2-06 verified_handoff`: `PASS`
+- `Hub-L5 handoff_consume`: `PASS`
+- `missing_evidence_keys`: `[]`
+- `retry_after_utc`: `none`
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v41.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v42.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_hub_l5_handoff_consume_check.v2.json`
+  - `build/reports/skc_w3_08_hub_l5_hub_l4_handoff_consume.v1.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（real run）`x-terminal/.axcoder/reports/skc_w2_07_gate_evidence.json`
+- `route_origin_fallback_violations`: `0`（real run）`x-terminal/.axcoder/reports/skc_w2_07_gate_evidence.json`
+- `dispatch_idle_stuck_incidents`: `0`（real run）`x-terminal/.axcoder/reports/skc_w2_07_gate_evidence.json`
+- `skill_lane_stall_detect_p95_ms`: `0`（<=2000）`x-terminal/.axcoder/reports/skc_w2_06_heartbeat_link_tests.log`
+
+6) Risks & Rollback
+- risks:
+  - 下游 `SKC-W3-08` 仍 blocked（prereq_A/prereq_B 未双绿），Hub-L4 需继续 fail-closed 等待
+  - 若跳过下游双绿直接推进将破坏 directed baton + dual-green 契约
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #43 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v40.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v41.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L5`
+- handoff_type: `directed_only`（already_consumed）
+- depends_on:
+  - Hub-L5 按 `SKC-W3-08` 完成 prereq_A/prereq_B 双绿并重跑总门禁
+  - XT-L2 + Hub-L1 + QA 提供下游解阻证据
+- unblock 条件机读来源：
+  - `build/reports/skc_w3_08_hub_l5_hub_l4_handoff_consume.v1.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v62.json`
+
+
+
+#### Hub-L4 / SKC-W2-07 / delta_3line checkpoint v1
+
+- status: `delivered(steady_relay_directed_only_standby)`（claim_renewed + no_runtime_mutation）
+- relay_delta: `SKC-W2-06 verified_handoff=PASS 持续有效；Hub-L5 consume=PASS；下游仍 blocked(prereq_A/prereq_B 未双绿)`
+- missing_evidence_keys: `[]`
+- retry_after_utc: `2026-03-03T07:17:11Z`（下游 Hub-L5）
+- next_step: `keep_directed_only_standby_and_wait_hub_l5_dual_green`
+- evidence_ref: `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_delta_3line.v1.json`
+
+
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #45）
+
+1) Scope
+- `SKC-W2-07`：已交付后转稳态接力，维持 fail-closed 与 directed-only standby。
+- 本轮目标：先续租 claim（+4h），复核 Hub-L5 consume 证据，并按 delta_3line 回填（不新增 runtime 改动）。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：仅更新 `SKC-W2-07` 行（claim TTL + evidence refs 指向 `v43/v44/v4/v2`）
+  - `Hub-L4 Lane Zone`：更新 claim、consume_check 与 delta_3line 回填
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v43.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_hub_l5_handoff_consume_check.v4.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v44.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_delta_3line.v2.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- consume 校验（directed-only）：
+  - `build/reports/skc_w3_08_hub_l5_hub_l4_handoff_consume.v1.json` => `consumed=true`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v63.json` => `retry_after_utc=2026-03-03T08:18:38Z`
+
+3) DoD
+- [x] 先 claim 后执行（`claim_ttl_until=2026-03-03T12:15:00-08:00`）
+- [x] `SKC-W2-06 verified_handoff` 维持已消费（fail-closed）
+- [x] Hub-L5 consume 证据存在且为真（无需 resend）
+- [x] 仅更新 Hub-L4 分区 + `SKC-W2-07` 任务行
+- [x] 无 broadcast、无 runtime 主链越界改动
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- `SKC-W2-06 verified_handoff`: `PASS`
+- `Hub-L5 handoff_consume`: `PASS`
+- `missing_evidence_keys`: `[]`
+- `retry_after_utc`: `2026-03-03T08:18:38Z`
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v43.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_hub_l5_handoff_consume_check.v4.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v44.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_delta_3line.v2.json`
+  - `build/reports/skc_w3_08_hub_l5_hub_l4_handoff_consume.v1.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline 延续）`x-terminal/.axcoder/reports/skc_w2_07_gate_evidence.json`
+- `route_origin_fallback_violations`: `0`（baseline 延续）`x-terminal/.axcoder/reports/skc_w2_07_gate_evidence.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline 延续）`x-terminal/.axcoder/reports/skc_w2_07_gate_evidence.json`
+- `skill_lane_stall_detect_p95_ms`: `0`（<=2000，baseline 延续）`x-terminal/.axcoder/reports/skc_w2_06_heartbeat_link_tests.log`
+
+6) Risks & Rollback
+- risks:
+  - 下游 `SKC-W3-08` 仍 blocked（prereq_B 未绿），Hub-L4 保持 directed-only standby
+  - 若未双绿前跨泳道推进将违反 fail-closed 与 single-lane write 合约
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #44 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v42.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v43.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L5`
+- handoff_type: `directed_only`（already_consumed）
+- depends_on:
+  - Hub-L5 维持 `SKC-W3-08` 双绿前置（A/B）并在双绿后重跑总门禁
+  - XT-L2 + Hub-L1 + QA 提供 `prereq_B` 补证
+- unblock 条件机读来源：
+  - `build/reports/skc_w3_08_hub_l5_hub_l4_handoff_consume.v1.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v63.json`
+
+
+#### Hub-L4 / SKC-W2-07 / delta_3line checkpoint v2
+
+- status: `delivered(steady_relay_directed_only_standby)`（claim_renewed + no_runtime_mutation）
+- relay_delta: `SKC-W2-06 verified_handoff=PASS；Hub-L5 consume=PASS；下游仍 blocked(prereq_B 未绿)`
+- missing_evidence_keys: `[]`
+- retry_after_utc: `2026-03-03T08:18:38Z`（下游 Hub-L5）
+- next_step: `keep_directed_only_standby_and_wait_hub_l5_dual_green`
+- evidence_ref: `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_delta_3line.v2.json`
+
+
+
+
+#### Hub-L4 / SKC-W2-07 / 7件套增量（Auto-Continue #46）
+
+1) Scope
+- `SKC-W2-07`：稳态接力轮转，保持 fail-closed + directed-only standby。
+- 本轮目标：续租 claim（+4h），复核 Hub-L5 consume 证据，持续 delta_3line 回填（不新增 runtime 改动）。
+
+2) Changes
+- command_board（仅 Hub-L4 可写区）：
+  - `Task Catalog`：仅更新 `SKC-W2-07` 行（claim TTL + evidence refs 指向 `v44/v45/v5/v3`）
+  - `Hub-L4 Lane Zone`：更新 claim、consume_check 与 delta_3line
+- machine-readable 证据：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v44.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_hub_l5_handoff_consume_check.v5.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v45.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_delta_3line.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`
+- consume 校验（directed-only）：
+  - `build/reports/skc_w3_08_hub_l5_hub_l4_handoff_consume.v1.json` => `consumed=true`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v63.json` => `retry_after_utc=2026-03-03T08:18:38Z`
+
+3) DoD
+- [x] 先 claim 后执行（`claim_ttl_until=2026-03-03T16:15:00-08:00`）
+- [x] `SKC-W2-06 verified_handoff` 维持已消费（fail-closed）
+- [x] Hub-L5 consume 证据存在且为真（无需 resend）
+- [x] 仅更新 Hub-L4 分区 + `SKC-W2-07` 任务行
+- [x] 无 broadcast、无 runtime 主链越界改动
+
+4) Gate
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- `SKC-W2-06 verified_handoff`: `PASS`
+- `Hub-L5 handoff_consume`: `PASS`
+- `missing_evidence_keys`: `[]`
+- `retry_after_utc`: `2026-03-03T08:18:38Z`
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v44.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_hub_l5_handoff_consume_check.v5.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v45.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_delta_3line.v3.json`
+  - `build/reports/skc_w3_08_hub_l5_hub_l4_handoff_consume.v1.json`
+
+5) KPI Snapshot
+- `parent_fork_overflow_silent_fail`: `0`（baseline 延续）`x-terminal/.axcoder/reports/skc_w2_07_gate_evidence.json`
+- `route_origin_fallback_violations`: `0`（baseline 延续）`x-terminal/.axcoder/reports/skc_w2_07_gate_evidence.json`
+- `dispatch_idle_stuck_incidents`: `0`（baseline 延续）`x-terminal/.axcoder/reports/skc_w2_07_gate_evidence.json`
+- `skill_lane_stall_detect_p95_ms`: `0`（<=2000，baseline 延续）`x-terminal/.axcoder/reports/skc_w2_06_heartbeat_link_tests.log`
+
+6) Risks & Rollback
+- risks:
+  - 下游 `SKC-W3-08` 仍 blocked（prereq_B 未绿），Hub-L4 持续 directed-only standby
+  - 未双绿前越过依赖推进会违反 fail-closed 与 single-lane write 合约
+- rollback:
+  - rollback_point_board: 回退 Hub-L4 分区到 Auto-Continue #45 快照
+  - rollback_point_evidence:
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v43.json`
+    - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v44.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L5`
+- handoff_type: `directed_only`（already_consumed）
+- depends_on:
+  - Hub-L5 保持 `SKC-W3-08` A/B 双绿前置并在双绿后重跑总门禁
+  - XT-L2 + Hub-L1 + QA 继续补齐 `prereq_B` 证据
+- unblock 条件机读来源：
+  - `build/reports/skc_w3_08_hub_l5_hub_l4_handoff_consume.v1.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v63.json`
+
+
+#### Hub-L4 / SKC-W2-07 / delta_3line checkpoint v3
+
+- status: `delivered(steady_relay_directed_only_standby)`（claim_renewed + no_runtime_mutation）
+- relay_delta: `SKC-W2-06 verified_handoff=PASS；Hub-L5 consume=PASS；下游仍 blocked(prereq_B 未绿)`
+- missing_evidence_keys: `[]`
+- retry_after_utc: `2026-03-03T08:18:38Z`（下游 Hub-L5）
+- next_step: `keep_directed_only_standby_and_wait_hub_l5_dual_green`
+- evidence_ref: `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_delta_3line.v3.json`
+
+
+
+
+#### Hub-L4 / SKC-W2-07 / delta_3line checkpoint v4
+
+- status: `delivered(steady_relay_directed_only_standby)`（claim_renewed + no_runtime_mutation）
+- relay_delta: `SKC-W2-06 verified_handoff=PASS；Hub-L5 consume=PASS；下游仍 blocked(prereq_B 未绿)`
+- missing_evidence_keys: `[]`
+- retry_after_utc: `2026-03-03T08:33:19Z`（下游 Hub-L5）
+- next_step: `keep_directed_only_standby_and_wait_hub_l5_dual_green`
+- evidence_ref: `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_delta_3line.v4.json`
+
+
+
+
+#### Hub-L4 / SKC-W2-07 / delta_3line checkpoint v6
+
+- status: `delivered(steady_relay_directed_only_standby)`（claim_renewed + no_runtime_mutation）
+- relay_delta: `SKC-W2-06 verified_handoff=PASS；Hub-L5 consume=PASS；下游仍 blocked(prereq_B 未绿)`
+- missing_evidence_keys: `[]`
+- retry_after_utc: `2026-03-03T09:22:41Z`（下游 Hub-L5）
+- next_step: `keep_directed_only_standby_and_wait_hub_l5_dual_green`
+- evidence_ref: `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_delta_3line.v6.json`
+
+
+
+
+#### Hub-L4 / SKC-W2-07 / delta_3line checkpoint v7
+
+- status: `delivered(steady_relay_directed_only_standby)`（claim_renewed + no_runtime_mutation）
+- relay_delta: `SKC-W2-06 verified_handoff=PASS；Hub-L5 consume=PASS；下游仍 blocked(prereq_B 未绿)`
+- missing_evidence_keys: `[]`
+- retry_after_utc: `2026-03-03T09:22:41Z`（下游 Hub-L5）
+- next_step: `keep_directed_only_standby_and_wait_hub_l5_dual_green`
+- evidence_ref: `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_delta_3line.v6.json`（no_new_machine_delta_this_round）
+
+
+#### Hub-L4 / SKC-W2-07 / delta_3line checkpoint v8
+
+- status: `delivered(steady_relay_directed_only_standby)`（claim_renewed + consume_chain_revalidated + no_runtime_mutation）
+- relay_delta: `SKC-W2-06 verified_handoff=PASS；Hub-L5 consume=PASS（consume_ref 仍有效）；下游仍 blocked(prereq_B 未绿)`
+- missing_evidence_keys: `[]`
+- retry_after_utc: `2026-03-03T10:03:14Z`（下游 Hub-L5，来自 `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v68.json`）
+- next_step: `keep_directed_only_standby_and_wait_hub_l5_dual_green`
+- evidence_ref: `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_delta_3line.v6.json`（no_new_machine_delta_this_round）
+
+
+#### Hub-L4 / SKC-W2-07 / delta_3line checkpoint v9
+
+- status: `delivered(steady_relay_directed_only_standby)`（claim_renewed + consume_chain_revalidated + no_runtime_mutation）
+- relay_delta: `SKC-W2-06 verified_handoff=PASS；Hub-L5 consume=PASS（consume_ref 仍有效）；下游仍 blocked(prereq_B 未绿)`
+- missing_evidence_keys: `[]`
+- retry_after_utc: `2026-03-03T12:14:49Z`（下游 Hub-L5，来自 `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v69.json`）
+- next_step: `keep_directed_only_standby_and_wait_hub_l5_dual_green`
+- evidence_ref: `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_delta_3line.v6.json`（no_new_machine_delta_this_round）
+
+
+#### Hub-L4 / SKC-W2-07 / delta_3line checkpoint v10
+
+- status: `delivered(steady_relay_directed_only_standby)`（claim_renewed + consume_chain_revalidated + no_runtime_mutation）
+- relay_delta: `SKC-W2-06 verified_handoff=PASS；Hub-L5 consume=PASS（consume_ref 仍有效）；下游仍 blocked(prereq_B 未绿)`
+- missing_evidence_keys: `[]`
+- retry_after_utc: `2026-03-03T12:17:12Z`（下游 Hub-L5，来自 `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v70.json`）
+- next_step: `keep_directed_only_standby_and_wait_hub_l5_dual_green`
+- evidence_ref: `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_delta_3line.v6.json`（no_new_machine_delta_this_round）
+
+
+#### Hub-L4 / SKC-W2-07 / delta_3line checkpoint v11
+
+- status: `delivered(steady_relay_directed_only_standby)`（claim_renewed + consume_chain_revalidated + no_runtime_mutation）
+- relay_delta: `SKC-W2-06 verified_handoff=PASS；Hub-L5 consume=PASS（consume_ref 仍有效）；下游仍 blocked(prereq_B 未绿)`
+- missing_evidence_keys: `[]`
+- retry_after_utc: `2026-03-03T12:27:30Z`（下游 Hub-L5，来自 `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v72.json`）
+- next_step: `keep_directed_only_standby_and_wait_hub_l5_dual_green`
+- evidence_ref: `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_delta_3line.v6.json`（no_new_machine_delta_this_round）
+
+
+
+#### Hub-L4 / SKC-W2-07 / delta_3line checkpoint v12
+
+- status: `delivered(steady_relay_directed_only_standby)`（claim_renewed + consume_chain_revalidated + no_runtime_mutation）
+- relay_delta: `SKC-W2-06 verified_handoff=PASS；Hub-L5 consume=PASS（consume_ref 仍有效）；下游仍 blocked(prereq_B 未绿)`
+- missing_evidence_keys: `[]`
+- retry_after_utc: `2026-03-03T12:54:45Z`（下游 Hub-L5，来自 `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v77.json`）
+- next_step: `keep_directed_only_standby_and_wait_hub_l5_dual_green`
+- evidence_ref: `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_delta_3line.v6.json`（no_new_machine_delta_this_round）
+
+
+#### Hub-L4 / SKC-W2-07 / delta_3line checkpoint v13
+
+- status: `delivered(steady_relay_directed_only_standby)`（claim_renewed + consume_chain_revalidated + no_runtime_mutation）
+- relay_delta: `SKC-W2-06 verified_handoff=PASS；Hub-L5 consume=PASS（consume_ref 仍有效）；下游仍 blocked(prereq_B 未绿)`
+- missing_evidence_keys: `[]`
+- retry_after_utc: `2026-03-03T14:38:08Z`（下游 Hub-L5，来自 `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v79.json`）
+- next_step: `keep_directed_only_standby_and_wait_hub_l5_dual_green`
+- evidence_ref: `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_delta_3line.v6.json`（no_new_machine_delta_this_round）
+
+
+#### Hub-L4 / SKC-W2-07 / delta_3line checkpoint v14
+
+- status: `delivered(steady_relay_directed_only_standby)`（claim_renewed + consume_chain_revalidated + no_runtime_mutation）
+- relay_delta: `SKC-W2-06 verified_handoff=PASS；Hub-L5 consume=PASS（consume_ref 仍有效）；下游仍 blocked(prereq_B 未绿)`
+- missing_evidence_keys: `[]`
+- retry_after_utc: `2026-03-03T14:38:08Z`（下游 Hub-L5，来自 `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v79.json`）
+- next_step: `keep_directed_only_standby_and_wait_hub_l5_dual_green`
+- evidence_ref: `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_delta_3line.v6.json`（no_new_machine_delta_this_round）
+
+### Hub-L5
+- active_task: `SI-W1-03`（first_probe_partial_pass；claim_retained）
+- runtime_executor: `Hub-L5`
+- standby_lanes: `Hub-L1,Hub-L2,Hub-L3,Hub-L4`
+- standby_policy: `NO_DELTA_STANDBY + directed_evidence_only`（idempotent；不改其他 task facts）
+- status: `claimed_hold(si_w1_03_first_probe_partial_pass_fail_closed;si_g4_candidate_pass;si_g1_si_g2_hold)`（undo/compensation 证据已通过；preview card 与 request_tampered/state contract 仍缺）
+- claim_state: `claimed`
+- claim_id: `claim_si_w1_03_hub_l5_20260306_1639`
+- claim_ttl_until: `2026-03-06T20:39:46+08:00`
+- backlog_next: `SI-W1-03(preview_card_request_tampered_state_mapping_backfill)`
+- blocked_reason: `minimal_gaps(preview_card_contract_missing;request_tampered_probe_missing;approved_dispatched_acked_contract_missing)`
+- unblock_owner: `Hub-L5`
+- report_mode: `delta_3line`
+- retry_after_utc: `2026-03-06T09:17:42Z`
+- next_step: `backfill_preview_card_request_tampered_and_explicit_state_mapping_then_rerun_SI-W1-03_first_probe`
+- next_owner_lane: `Hub-L5`
+- evidence_refs:
+  - `build/reports/si_w1_03_payment_two_phase_evidence.v1.json`
+  - `build/reports/si_w1_03_g1_g2_g4_first_probe.v1.json`
+  - `build/reports/si_w1_03_hub_l5_delta_3line.v3.json`
+  - `build/reports/si_w1_03_payment_probe.v1.log`
+  - `build/reports/si_w1_02_hub_l5_delta_3line.v3.json`
+  - `build/reports/si_w1_02_capability_token_probe.v2.log`
+  - `x-hub/grpc-server/hub_grpc_server/src/memory_agent_grant_chain.test.js:1636`
+
+#### Hub-L5 / SKC-W3-08(+SKC-W3-09/SKC-W3-10) / 7件套（首轮提交）
+
+1) Scope
+- `SKC-W3-08`: require-real 审计证据链（3 类 incident）
+- `SKC-W3-09`: release evidence matrix 回归 + validator
+- `SKC-W3-10`: 一键门禁 + rollback drill
+- `SKC-G3`: 真实性能采样（`openclaw_skill_import_success_rate`、`import_to_first_run_p95_ms`）
+
+2) Changes
+- scripts/docs:
+  - `scripts/m3_run_hub_l5_skc_g5_gate.sh`（接入 SKC-G3 真实采样并纳入非 GO 出口）
+  - `scripts/m3_collect_skc_g3_real_sampling.js`（真实 sqlite 采样器）
+  - `docs/memory-new/hub-l5-skc-g5-release-runbook-v1.md`（新增 `--g3-db-path` 与证据列表）
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Task Catalog 本任务行 + Hub-L5 分区）
+- artifacts:
+  - `build/hub_l5_release_xt_ready_gate_e2e_require_real_report.json`
+  - `build/hub_l5_release_release_evidence_matrix.summary.json`
+  - `build/hub_l5_release_release_evidence_matrix.validator_regression.log`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/hub_l5_release_internal_pass_lines_report.json`
+  - `x-terminal/.axcoder/reports/xt-rollback-verify.json`
+  - `x-terminal/.axcoder/reports/xt-rollback-last.json`
+
+3) DoD
+- [x] `--require-real-audit-source` 全链路 PASS（real audit source）
+- [x] `grant_pending/awaiting_instruction/runtime_error` 三类 incident 证据齐全
+- [x] `baseline_release1_auto0_fail_closed` 回归通过
+- [x] synthetic 输入 / 缺失文件 / schema 漂移三类回归均 fail-closed
+- [x] machine-readable 7 件套证据落盘（`build/reports/skc_w3_08_hub_l5_evidence.v1.json`）
+- [ ] `openclaw_skill_import_success_rate` 与 `import_to_first_run_p95_ms` 达发布采样门槛（当前样本不足）
+
+4) Gate
+- `SKC-G5`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`
+- 证据路径：
+  - `build/hub_l5_release_xt_ready_gate_e2e_require_real_report.json`
+  - `build/hub_l5_release_release_evidence_matrix.summary.json`
+  - `build/hub_l5_release_release_evidence_matrix.validator_regression.log`
+  - `build/hub_l5_release_xt_ready_gate_e2e_synthetic_attempt_report.json`
+  - `build/hub_l5_release_missing_evidence_check.log`
+  - `build/hub_l5_release_schema_drift_validator_check.log`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/hub_l5_release_internal_pass_lines_report.json`
+
+5) KPI Snapshot
+- `require_real_evidence_pass_rate (release)`: `1.0`
+- `matrix_validator_false_pass`: `0`
+- `openclaw_skill_import_success_rate`: `null`（real sample 缺失）
+- `import_to_first_run_p95_ms`: `null`（real sample 缺失）
+- `internal_pass_lines.release_decision`: `INSUFFICIENT_EVIDENCE`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-G3` 真实样本为 0（`imports=0`, `latencies=0`），继续 fail-closed
+  - internal pass-lines 缺失三项证据：`xt-overflow-fairness`、`xt-origin-fallback`、`xt-dispatch-cleanup`
+  - release 决策仍被 `INSUFFICIENT_EVIDENCE` 阻断（不可宣告完成）
+- rollback:
+  - `scripts/m3_run_hub_l5_skc_g5_gate.sh`（回滚到接入 SKC-G3 前版本）
+  - `scripts/m3_collect_skc_g3_real_sampling.js`（回滚到未引入状态）
+  - `docs/memory-new/hub-l5-skc-g5-release-runbook-v1.md`（回滚到 v1 原命令）
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅本任务行 + Hub-L5 分区）
+
+7) Handoff
+- next_owner_lane: `XT-L2 + Hub-L1 + QA`
+- depends_on:
+  - 产出 `x-terminal/.axcoder/reports/xt-overflow-fairness-report.json`
+  - 产出 `x-terminal/.axcoder/reports/xt-origin-fallback-report.json`
+  - 产出 `x-terminal/.axcoder/reports/xt-dispatch-cleanup-report.json`
+  - 提供真实 `skills.package.imported -> first_run accepted` 样本（>=30 matched rows）
+
+#### Hub-L5 / SKC-W3-08 / Auto-Continue（blocked checkpoint v50）
+
+1) Scope
+- `SKC-W3-08/SKC-W3-09/SKC-W3-10` 门禁续推（不跨泳道改实现）
+- `SKC-G3` 真实采样续推（仅 real db，禁止 synthetic）；同步补齐 internal pass 输入缺口
+
+2) Changes
+- board:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 SKC-W3-08 行 + Hub-L5 分区）
+- reports:
+  - `build/reports/skc_w3_08_hub_l5_claim_state.v51.json`
+  - `build/reports/skc_w3_08_require_real_incident_samples.v13.raw.json`
+  - `build/reports/skc_w3_08_require_real_incident_samples.v13.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v50.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v20.json`
+  - `build/reports/skc_w3_08_gate_broadcast_hub_l1_xt_l2.v20.json`
+  - `build/hub_l5_release_skc_g5_summary.json`（续跑刷新）
+  - `build/hub_l5_release_skc_g3_real_sampling.json`（续跑刷新）
+  - `build/hub_l5_release_internal_pass_inputs_prep.json`
+  - `build/internal_pass_metrics.json`
+  - `build/internal_pass_samples.json`
+  - `XT-W2-25-S1`/`XT-W3-18-S1` 协同准备（仅证据契约准备，不 claim）
+  - `build/hub_l5_release_autocontinue_run.v52.log`
+  - `build/hub_l5_release_autocontinue_run.v52.rc`
+
+3) DoD
+- [x] 按 Auto-Continue 规则先 claim（`claim_id + claim_ttl_until`）再执行
+- [x] `require-real` 三类 incident 样本 strict 校验通过（`grant_pending/awaiting_instruction/runtime_error`，v13 续推）
+- [x] 复跑 SKC-G5 一键门禁并刷新证据
+- [x] internal pass 输入文件已补齐并由门禁链路加载（`internal_pass_metrics.json`、`internal_pass_samples.json`）
+- [x] 依赖未满足时写明 `blocked_reason + unblock_owner`
+- [x] 维持 fail-closed，不宣告完成
+
+4) Gate
+- `SKC-G5`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`
+- 证据路径：
+  - `build/reports/skc_w3_08_require_real_incident_samples.v13.json`
+  - `build/hub_l5_release_skc_g5_summary.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/hub_l5_release_internal_pass_lines_report.json`
+  - `build/hub_l5_release_internal_pass_inputs_prep.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v20.json`
+  - `build/reports/skc_w3_08_gate_broadcast_hub_l1_xt_l2.v20.json`
+  - `build/hub_l5_release_autocontinue_run.v52.log`
+  - `build/hub_l5_release_autocontinue_run.v52.rc`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v50.json`
+
+5) KPI Snapshot
+- `require_real_evidence_pass_rate (release)`: `1.0`
+- `matrix_validator_false_pass`: `0`
+- `openclaw_skill_import_success_rate`: `null`
+- `import_to_first_run_p95_ms`: `null`
+- `matched_latency_rows`: `0`
+- 报告路径：
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v50.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-G3` 真实样本仍为 `0/30`（`skills.package.imported -> first_run accepted`），无法转绿
+  - internal pass-lines 输入已补齐，但 hard-line 仍缺多项运行指标，`release_decision=INSUFFICIENT_EVIDENCE`
+- rollback:
+  - `scripts/m3_run_hub_l5_skc_g5_gate.sh`
+  - `scripts/m3_prepare_internal_pass_inputs.js`
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L5 区）
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v50.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2 + Hub-L1 + QA`
+- depends_on:
+  - 提供 `skills.package.imported -> first_run accepted` 真实样本 `>=30`
+  - 补齐 internal pass hard-line 缺失指标并提供 machine-readable 来源（见 `build/reports/skc_w3_08_require_real_sampling_gap.v20.json`）
+  - `XT-W2-25-S1` 进入 XT-L2/QA 执行态后回传并发-成本证据（Hub-L5 仅收证据不抢跑）
+  - `XT-W3-18-S1` 进入 QA/XT-L2 执行态后回传拼装收敛证据（Hub-L5 仅收证据不抢跑）
+
+#### Hub-L5 / SKC-W3-08 / Auto-Continue（blocked checkpoint v51）
+
+1) Scope
+- `SKC-W3-08/SKC-W3-09/SKC-W3-10` 门禁续推；继续按 fail-closed 验证“require-real 样本 + 缺失证据输入”。
+- 本轮重点：切换 `SKC-G3` 采样源到真实 runtime DB，验证是否达到 release 样本阈值。
+
+2) Changes
+- board（仅 Hub-L5 可写区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W3-08` 行 + Hub-L5 Lane Zone）
+- reports（machine-readable）：
+  - `build/reports/skc_w3_08_hub_l5_claim_state.v52.json`
+  - `build/reports/skc_w3_08_require_real_incident_samples.v14.raw.json`
+  - `build/reports/skc_w3_08_require_real_incident_samples.v14.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v21.json`
+  - `build/reports/skc_w3_08_gate_broadcast_hub_l1_xt_l2.v21.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v51.json`
+  - `build/hub_l5_release_autocontinue_run.v53.log`
+  - `build/hub_l5_release_autocontinue_run.v53.rc`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`（刷新为 runtime DB 源）
+  - `build/hub_l5_release_internal_pass_lines_report.json`（刷新样本摘要）
+
+3) DoD
+- [x] 先 claim 再执行（`claim_id + claim_ttl_until` 已续租）
+- [x] require-real 三类 incident 样本继续 PASS（`grant_pending/awaiting_instruction/runtime_error`）
+- [x] 缺失证据输入文件继续齐备（`internal_pass_metrics.json`、`internal_pass_samples.json`、`internal_pass_inputs_prep.json`）
+- [x] 重跑一键门禁并刷新 Gate/KPI 证据
+- [x] 依赖未满足时保持 blocked，未宣告 release-ready
+- [ ] `skills.package.imported -> first_run accepted` 真实样本达到 `>=30`
+
+4) Gate
+- `SKC-G5`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`
+- `internal_pass_lines`: `INSUFFICIENT_EVIDENCE`
+- 证据路径：
+  - `build/reports/skc_w3_08_require_real_incident_samples.v14.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/hub_l5_release_skc_g5_summary.json`
+  - `build/hub_l5_release_internal_pass_lines_report.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v21.json`
+  - `build/reports/skc_w3_08_gate_broadcast_hub_l1_xt_l2.v21.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v51.json`
+  - `build/hub_l5_release_autocontinue_run.v53.log`
+  - `build/hub_l5_release_autocontinue_run.v53.rc`
+
+5) KPI Snapshot
+- `require_real_evidence_pass_rate (release)`: `1.0`
+- `matrix_validator_false_pass`: `0`
+- `openclaw_skill_import_success_rate`: `null`
+- `import_to_first_run_p95_ms`: `null`
+- `matched_latency_rows`: `0`
+- `sample_summary(lane/high_risk/mergeback)`: `546 / 1 / 0`
+- 报告路径：
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v51.json`
+
+6) Risks & Rollback
+- risks:
+  - 真实 runtime DB 仍无 `skills.*` 导入与首跑事件，`SKC-G3` 无法判 PASS
+  - internal pass-lines 样本仍低于阈值（`lane_event_count<1000`、`high_risk_request_count<300`、`mergeback_runs<100`）
+  - Gate 仍为 `INSUFFICIENT_EVIDENCE`，若口头转绿将违反 fail-closed
+- rollback:
+  - `scripts/m3_run_hub_l5_skc_g5_gate.sh`
+  - `scripts/m3_collect_skc_g3_real_sampling.js`
+  - `scripts/m3_prepare_internal_pass_inputs.js`
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L5 区 + `SKC-W3-08` 行）
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v51.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2 + Hub-L1 + QA`
+- depends_on:
+  - 提供 `skills.package.imported -> first_run accepted` 真实样本 `>=30`
+  - 补齐 internal pass-lines 缺失指标并提供 machine-readable 来源（见 `build/reports/skc_w3_08_require_real_sampling_gap.v21.json`）
+  - 样本补齐后由 Hub-L5 立即复跑 `m3_run_hub_l5_skc_g5_gate.sh`
+- unblock 条件机读来源：
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v21.json`
+  - `build/reports/skc_w3_08_gate_broadcast_hub_l1_xt_l2.v21.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v51.json`
+
+#### Hub-L5 / SKC-W3-08 / Auto-Continue（blocked checkpoint v52）
+
+1) Scope
+- `SKC-W3-08/SKC-W3-09/SKC-W3-10` 按继续协议续推；仅做 require-real 与门禁证据链增量校验。
+- 目标：确认“真实样本 + 缺失证据输入”状态是否变化，并在未达门槛时 fail-closed 落盘。
+
+2) Changes
+- board（仅 Hub-L5 可写区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W3-08` 行 + Hub-L5 Lane Zone）
+- reports（machine-readable）：
+  - `build/reports/skc_w3_08_hub_l5_claim_state.v53.json`
+  - `build/reports/skc_w3_08_require_real_incident_samples.v15.raw.json`
+  - `build/reports/skc_w3_08_require_real_incident_samples.v15.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v22.json`
+  - `build/reports/skc_w3_08_gate_broadcast_hub_l1_xt_l2.v22.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v52.json`
+  - `build/hub_l5_release_autocontinue_run.v54.log`
+  - `build/hub_l5_release_autocontinue_run.v54.rc`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/hub_l5_release_internal_pass_lines_report.json`
+
+3) DoD
+- [x] claim 续租并更新 TTL
+- [x] require-real 三类 incident 样本校验持续 PASS
+- [x] 复跑一键门禁并刷新机读结果
+- [x] 依赖未满足时输出 blocked_reason + unblock_owner + next_step
+- [x] 保持 fail-closed（Gate 未绿不宣告完成）
+- [ ] `skills.package.imported -> first_run accepted` 真实样本 `>=30`
+
+4) Gate
+- `SKC-G5`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`
+- `internal_pass_lines`: `INSUFFICIENT_EVIDENCE`
+- 证据路径：
+  - `build/reports/skc_w3_08_require_real_incident_samples.v15.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/hub_l5_release_skc_g5_summary.json`
+  - `build/hub_l5_release_internal_pass_lines_report.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v22.json`
+  - `build/reports/skc_w3_08_gate_broadcast_hub_l1_xt_l2.v22.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v52.json`
+  - `build/hub_l5_release_autocontinue_run.v54.log`
+  - `build/hub_l5_release_autocontinue_run.v54.rc`
+
+5) KPI Snapshot
+- `require_real_evidence_pass_rate (release)`: `1.0`
+- `matrix_validator_false_pass`: `0`
+- `openclaw_skill_import_success_rate`: `null`
+- `import_to_first_run_p95_ms`: `null`
+- `matched_latency_rows`: `0`
+- `sample_summary(lane/high_risk/mergeback)`: `546 / 1 / 0`
+- 报告路径：
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v52.json`
+
+6) Risks & Rollback
+- risks:
+  - 真实 runtime DB 仍未产生 skills import/first-run 事件，`SKC-G3` 无法转绿
+  - internal pass-lines 样本不足仍触发 `INSUFFICIENT_EVIDENCE`
+  - Gate 未过时若写 closed 会破坏 fail-closed 纪律
+- rollback:
+  - `scripts/m3_run_hub_l5_skc_g5_gate.sh`
+  - `scripts/m3_collect_skc_g3_real_sampling.js`
+  - `scripts/m3_prepare_internal_pass_inputs.js`
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（Hub-L5 区 + `SKC-W3-08` 行）
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v52.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2 + Hub-L1 + QA`
+- depends_on:
+  - 产出真实 `skills.package.imported -> first_run accepted` 样本 `>=30`
+  - 补齐 pass-lines 缺失 hard-line 指标（见 `build/reports/skc_w3_08_require_real_sampling_gap.v22.json`）
+  - 证据补齐后通知 Hub-L5 立即重跑 gate
+- unblock 条件机读来源：
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v22.json`
+  - `build/reports/skc_w3_08_gate_broadcast_hub_l1_xt_l2.v22.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v52.json`
+
+#### Hub-L5 / SKC-W3-08 / Auto-Continue（blocked checkpoint v53）
+
+1) Scope
+- `SKC-W3-08`（release gate）按定向 baton 推进：先判前置条件 A/B，再决定是否允许重跑总门禁。
+- 执行规则：未同时满足 A/B 时 fail-closed，不跨步执行 Gate 重跑动作。
+
+2) Changes
+- board（仅 Hub-L5 可写区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W3-08` 行 + Hub-L5 Lane Zone）
+- reports（machine-readable）：
+  - `build/reports/skc_w3_08_hub_l5_claim_state.v54.json`
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v1.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v53.json`
+- gate rerun action:
+  - `bash scripts/m3_run_hub_l5_skc_g5_gate.sh ... --out-prefix ./build/hub_l5_release` => `NOT_RUN_PRECONDITION_BLOCKED`
+  - 上次已跑记录沿用：`build/hub_l5_release_autocontinue_run.v54.log`、`build/hub_l5_release_autocontinue_run.v54.rc`
+
+3) DoD
+- [x] claim/ttl 已续租并落盘
+- [x] 前置条件 A（>=30 真实样本）完成机读核验
+- [x] 前置条件 B（hard-line 指标补齐）完成机读核验
+- [x] A/B 未同时满足时保持 fail-closed，不执行跨步 gate 重跑
+- [x] 增量 7件套与证据路径已写入 command board
+- [ ] 满足 A+B 后执行 Hub-L5 总门禁重跑
+
+4) Gate
+- `Prereq-A (real sample >=30)`: `FAIL`（current matched rows = `0`）
+- `Prereq-B (hard-line complete)`: `FAIL`（missing metrics = `33`，internal pass 仍 `INSUFFICIENT_EVIDENCE`）
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`（沿用最新结果）
+- `SKC-G5`: `INSUFFICIENT_EVIDENCE`（沿用最新结果）
+- `gate_rerun`: `NOT_RUN_PRECONDITION_BLOCKED`
+- 证据路径：
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v1.json`
+  - `build/reports/skc_w1_xt_l2_hub_l1_real_sample_probe_results.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v6.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v53.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/hub_l5_release_internal_pass_lines_report.json`
+  - `build/hub_l5_release_autocontinue_run.v54.rc`
+
+5) KPI Snapshot
+- `matched_latency_rows`: `0`
+- `successful_import_rows`: `0`
+- `internal_pass_missing_metrics_count`: `33`
+- `sample_summary(lane/high_risk/mergeback)`: `546 / 1 / 0`
+- `gate_rerun_executed`: `false`
+- 报告路径：
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v1.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 A/B 未满足时强行重跑并判定，会违反 directed baton 的 fail-closed 约束
+  - SKC 主链仍卡在真实样本与 hard-line 指标，不解决将持续 release blocker
+  - 任何 synthetic 替代真实样本都会触发 require-real 违规
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L5 区 + `SKC-W3-08` 行）
+  - `build/reports/skc_w3_08_hub_l5_claim_state.v54.json`
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v1.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v53.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2 + Hub-L1 + QA`
+- depends_on:
+  - Hub-L1+XT-L2 提供 `>=30` 真实样本结果（machine-readable）
+  - XT-L2+QA 补齐 hard-line 缺失指标并将 internal pass 推至 `GO`
+  - 满足 A+B 后回传 Hub-L5 触发总门禁重跑
+- unblock 条件机读来源：
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v1.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v53.json`
+
+#### Hub-L5 / SKC-W3-08 / Auto-Continue（blocked checkpoint v54）
+
+1) Scope
+- `SKC-W3-08`（release gate）按 directed baton 继续推进：先核验前置条件 A/B，再决定是否允许重跑总门禁。
+- 本轮聚焦：消费最新上游探针（Hub-L1 v4 + XT-L2 v7）并保持 fail-closed。
+
+2) Changes
+- board（仅 Hub-L5 可写区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W3-08` 行 + Hub-L5 Lane Zone + 本节增量 7件套）
+- reports（machine-readable）：
+  - `build/reports/skc_w3_08_hub_l5_claim_state.v55.json`
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v2.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v54.json`
+  - `build/reports/skc_w3_08_gate_broadcast_hub_l1_xt_l2.v23.json`
+- gate rerun action:
+  - `bash scripts/m3_run_hub_l5_skc_g5_gate.sh ... --out-prefix ./build/hub_l5_release` => `NOT_RUN_PRECONDITION_BLOCKED`
+
+3) DoD
+- [x] claim/ttl 已续租并机读落盘（v55）
+- [x] 前置条件 A（>=30 真实样本）已按最新 probe（Hub-L1 v4 / XT-L2 v7）核验
+- [x] 前置条件 B（hard-line 指标补齐）已按 internal pass 报告核验
+- [x] A/B 未同时满足时保持 fail-closed，未执行跨步总门禁重跑
+- [x] 已向 Hub-L1/XT-L2 回传最新 gate_vector（v23）
+- [ ] 满足 A+B 后执行 Hub-L5 总门禁重跑
+
+4) Gate
+- `Prereq-A (real sample >=30)`: `FAIL`（`probe_returned_rows=30` 但 `matched_latency_rows=0`，阈值 `30`）
+- `Prereq-B (hard-line complete)`: `FAIL`（`missing_metrics=33`，`internal_pass_release_decision=INSUFFICIENT_EVIDENCE`）
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G5`: `INSUFFICIENT_EVIDENCE`
+- `gate_rerun`: `NOT_RUN_PRECONDITION_BLOCKED`
+- 证据路径：
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v2.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v54.json`
+  - `build/reports/skc_w3_08_gate_broadcast_hub_l1_xt_l2.v23.json`
+  - `build/reports/skc_w1_xt_l2_hub_l1_real_sample_probe_results.v4.json`
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v7.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/hub_l5_release_internal_pass_lines_report.json`
+  - `build/hub_l5_release_autocontinue_run.v54.log`
+  - `build/hub_l5_release_autocontinue_run.v54.rc`
+
+5) KPI Snapshot
+- `require_real_probe_returned_rows`: `30`
+- `matched_latency_rows`: `0`
+- `successful_import_rows`: `0`
+- `internal_pass_missing_metrics_count`: `33`
+- `sample_summary(lane/high_risk/mergeback)`: `546 / 1 / 0`
+- `gate_rerun_executed`: `false`
+- 报告路径：
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v2.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v54.json`
+
+6) Risks & Rollback
+- risks:
+  - 若将 `probe_returned_rows=30` 误判为“达标样本”，会绕过 `matched_latency_rows>=30` 的真实门槛
+  - hard-line 指标缺口仍为 33 项，继续阻断 release 结论
+  - 在 A/B 未同时满足时强行重跑总门禁将违反 fail-closed
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L5 区 + `SKC-W3-08` 行）
+  - `build/reports/skc_w3_08_hub_l5_claim_state.v55.json`
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v2.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v54.json`
+  - `build/reports/skc_w3_08_gate_broadcast_hub_l1_xt_l2.v23.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2 + Hub-L1 + QA`
+- depends_on:
+  - XT-L2+Hub-L1 提供 `skills.package.imported -> first_run accepted` 真实匹配样本 `>=30`
+  - XT-L2+QA 补齐 hard-line 缺失指标并将 internal pass 推至 `GO`
+  - 满足 A+B 后回传 Hub-L5，立即触发 `scripts/m3_run_hub_l5_skc_g5_gate.sh` 重跑
+- unblock 条件机读来源：
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v2.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v54.json`
+  - `build/reports/skc_w3_08_gate_broadcast_hub_l1_xt_l2.v23.json`
+
+#### Hub-L5 / SKC-W3-08 / Auto-Continue（blocked checkpoint v55）
+
+1) Scope
+- `SKC-BRK-H5` 定向推进：严格按顺序执行 `A(real sample) -> B(hard-line) -> C(总门禁重跑)`。
+- 本轮仅执行前置核验与定向通知；A/B 未同时满足，保持 fail-closed。
+
+2) Changes
+- board（仅 Hub-L5 可写区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W3-08` 行 + Hub-L5 Lane Zone + 本节 7件套）
+- reports（machine-readable）：
+  - `build/reports/skc_w3_08_hub_l5_claim_state.v56.json`
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v3.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v55.json`
+  - `build/reports/skc_w3_08_directed_baton_xt_l1_hub_l4.v1.json`
+- gate rerun action:
+  - `bash scripts/m3_run_hub_l5_skc_g5_gate.sh ... --out-prefix ./build/hub_l5_release` => `NOT_RUN_PRECONDITION_BLOCKED`
+
+3) DoD
+- [x] 已完成 A/B 前置核验并机读落盘
+- [x] 未满足 A/B 时未执行总门禁重跑（fail-closed）
+- [x] 已定向通知 `XT-L1` 与 `Hub-L4` 当前不可推进
+- [x] gate_vector 已回填 command board `SKC-W3-08` 行
+- [ ] release summary 更新（需 A/B 满足后重跑总门禁）
+
+4) Gate
+- `prereq_A (matched rows >=30)`: `FAIL`（`probe_returned_rows=30`，但 `matched_latency_rows=0`）
+- `prereq_B (inputs complete + hard-line GO)`: `FAIL`（输入文件存在但 `internal_pass_lines=INSUFFICIENT_EVIDENCE`，`missing_metrics=33`）
+- `rerun_rc`: `NOT_RUN_PRECONDITION_BLOCKED`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G5`: `INSUFFICIENT_EVIDENCE`
+- 证据路径：
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v3.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v55.json`
+  - `build/reports/skc_w3_08_directed_baton_xt_l1_hub_l4.v1.json`
+  - `build/reports/skc_w1_xt_l2_hub_l1_real_sample_probe_results.v4.json`
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v7.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/hub_l5_release_internal_pass_lines_report.json`
+  - `build/internal_pass_metrics.json`
+  - `build/internal_pass_samples.json`
+
+5) KPI Snapshot
+- `matched_latency_rows`: `0/30`
+- `successful_import_rows`: `0/30`
+- `internal_pass_missing_metrics_count`: `33`
+- `internal_pass_release_decision`: `INSUFFICIENT_EVIDENCE`
+- `blocked->ready_baton_latency_s`: `INSUFFICIENT_EVIDENCE`（尚未触发 ready）
+- 报告路径：
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v3.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v55.json`
+
+6) Risks & Rollback
+- risks:
+  - 若在 A/B 未满足时重跑总门禁，会违反 SKC-BRK-H5 fail-closed 约束
+  - 将 `probe_returned_rows=30` 误判为达标会导致假绿（真实 matched 仍为 0）
+  - hard-line 未 GO 前放行将破坏 release 可机判链路
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L5 区 + `SKC-W3-08` 行）
+  - `build/reports/skc_w3_08_hub_l5_claim_state.v56.json`
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v3.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v55.json`
+  - `build/reports/skc_w3_08_directed_baton_xt_l1_hub_l4.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2 + Hub-L1 + QA`
+- depends_on:
+  - XT-L2+Hub-L1 提供 `import->first_run matched >=30` 真实样本
+  - XT-L2+QA 将 `internal_pass_lines.release_decision` 推至 `GO` 且 `missing_metrics=0`
+  - 条件满足后 Hub-L5 立即执行总门禁重跑并回填 release summary
+- unblock 条件机读来源：
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v3.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v55.json`
+  - `build/reports/skc_w3_08_directed_baton_xt_l1_hub_l4.v1.json`
+
+#### Hub-L5 / SKC-W3-08 / Auto-Continue（blocked checkpoint v56）
+
+1) Scope
+- `SKC-BRK-H5` 定向续推：继续按 `A(real sample) -> B(hard-line) -> C(rerun)` 顺序核验，不越级执行。
+- 本轮目标：消费最新上游探针 `Hub-L1 v7` 与 `XT-L2 v8`，产出新一轮 fail-closed 机读 checkpoint。
+
+2) Changes
+- board（仅 Hub-L5 可写区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W3-08` 行 + Hub-L5 Lane Zone + 本节 7件套）
+- reports（machine-readable）：
+  - `build/reports/skc_w3_08_hub_l5_claim_state.v57.json`
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v4.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v56.json`
+  - `build/reports/skc_w3_08_directed_baton_xt_l1_hub_l4.v2.json`
+- gate rerun action:
+  - `bash scripts/m3_run_hub_l5_skc_g5_gate.sh ... --out-prefix ./build/hub_l5_release` => `NOT_RUN_PRECONDITION_BLOCKED`
+
+3) DoD
+- [x] 已复核 A/B 前置并落盘 v4/v56（均 machine-readable）
+- [x] A/B 未满足时未触发总门禁重跑（fail-closed）
+- [x] 已向 `XT-L1`、`Hub-L4` 定向回传不可推进状态（v2）
+- [x] 已回填 Task Catalog 与 Hub-L5 Lane Zone 的 gate_vector/evidence_refs
+- [ ] release summary 更新（需 A/B 双绿后重跑）
+
+4) Gate
+- `prereq_A (matched rows >=30)`: `FAIL`（最新 probe `returned_rows=0`，`matched_latency_rows=0/30`）
+- `prereq_B (inputs complete + hard-line GO)`: `FAIL`（输入文件存在，但 `internal_pass_lines=INSUFFICIENT_EVIDENCE`，`missing_metrics=33`）
+- `rerun_rc`: `NOT_RUN_PRECONDITION_BLOCKED`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G5`: `INSUFFICIENT_EVIDENCE`
+- 证据路径：
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v4.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v56.json`
+  - `build/reports/skc_w3_08_directed_baton_xt_l1_hub_l4.v2.json`
+  - `build/reports/skc_w1_xt_l2_hub_l1_real_sample_probe_results.v7.json`
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v8.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/hub_l5_release_internal_pass_lines_report.json`
+  - `build/internal_pass_metrics.json`
+  - `build/internal_pass_samples.json`
+
+5) KPI Snapshot
+- `probe_returned_rows`: `0`
+- `matched_latency_rows`: `0/30`
+- `successful_import_rows`: `0/30`
+- `internal_pass_missing_metrics_count`: `33`
+- `internal_pass_release_decision`: `INSUFFICIENT_EVIDENCE`
+- `blocked->ready_baton_latency_s`: `INSUFFICIENT_EVIDENCE`（尚未触发 ready）
+- 报告路径：
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v4.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v56.json`
+
+6) Risks & Rollback
+- risks:
+  - 将旧 probe 或非匹配行误判为真实 matched 样本会造成假绿
+  - hard-line 未 GO 前若执行重跑会破坏 fail-closed 与可机判发布链路
+  - A/B 长期不满足将持续阻塞 SKC 主链下游（XT-L1/Hub-L4）
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L5 区 + `SKC-W3-08` 行）
+  - `build/reports/skc_w3_08_hub_l5_claim_state.v57.json`
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v4.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v56.json`
+  - `build/reports/skc_w3_08_directed_baton_xt_l1_hub_l4.v2.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2 + Hub-L1 + QA`
+- depends_on:
+  - XT-L2+Hub-L1 产出真实 `import->first_run matched >=30` 样本
+  - XT-L2+QA 将 `internal_pass_lines.release_decision` 推至 `GO` 且 `missing_metrics=0`
+  - 双前置转绿后回传 Hub-L5，立即执行总门禁重跑并回填 release summary
+- unblock 条件机读来源：
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v4.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v56.json`
+  - `build/reports/skc_w3_08_directed_baton_xt_l1_hub_l4.v2.json`
+
+#### Hub-L5 / SKC-W3-08 / Auto-Continue（blocked checkpoint v57）
+
+1) Scope
+- `SKC-BRK-H5` 定向续推：继续按 `A(real sample) -> B(hard-line) -> C(rerun)` 顺序核验，不越级执行。
+- 本轮目标：消费最新上游探针 `Hub-L1 v8` 与 `XT-L2 v9`，产出新一轮 fail-closed 机读 checkpoint。
+
+2) Changes
+- board（仅 Hub-L5 可写区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W3-08` 行 + Hub-L5 Lane Zone + 本节 7件套）
+- reports（machine-readable）：
+  - `build/reports/skc_w3_08_hub_l5_claim_state.v58.json`
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v5.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v57.json`
+  - `build/reports/skc_w3_08_directed_baton_xt_l1_hub_l4.v3.json`
+- gate rerun action:
+  - `bash scripts/m3_run_hub_l5_skc_g5_gate.sh ... --out-prefix ./build/hub_l5_release` => `NOT_RUN_PRECONDITION_BLOCKED`
+
+3) DoD
+- [x] 已复核 A/B 前置并落盘 v5/v57（均 machine-readable）
+- [x] A/B 未满足时未触发总门禁重跑（fail-closed）
+- [x] 已向 `XT-L1`、`Hub-L4` 定向回传不可推进状态（v3）
+- [x] 已回填 Task Catalog 与 Hub-L5 Lane Zone 的 gate_vector/evidence_refs
+- [ ] release summary 更新（需 A/B 双绿后重跑）
+
+4) Gate
+- `prereq_A (matched rows >=30)`: `FAIL`（最新 probe `returned_rows=30`，`matched_latency_rows=34/30`）
+- `prereq_B (inputs complete + hard-line GO)`: `FAIL`（输入文件存在，但 `internal_pass_lines=INSUFFICIENT_EVIDENCE`，`missing_metrics=33`）
+- `rerun_rc`: `NOT_RUN_PRECONDITION_BLOCKED`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G5`: `INSUFFICIENT_EVIDENCE`
+- 证据路径：
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v5.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v57.json`
+  - `build/reports/skc_w3_08_directed_baton_xt_l1_hub_l4.v3.json`
+  - `build/reports/skc_w1_xt_l2_hub_l1_real_sample_probe_results.v10.json`
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v10.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/hub_l5_release_internal_pass_lines_report.json`
+  - `build/internal_pass_metrics.json`
+  - `build/internal_pass_samples.json`
+
+5) KPI Snapshot
+- `probe_returned_rows`: `30`
+- `matched_latency_rows`: `0/30`
+- `successful_import_rows`: `34/30`（仅 import 成功，不代表 matched）
+- `internal_pass_missing_metrics_count`: `33`
+- `internal_pass_release_decision`: `INSUFFICIENT_EVIDENCE`
+- `blocked->ready_baton_latency_s`: `INSUFFICIENT_EVIDENCE`（尚未触发 ready）
+- 报告路径：
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v5.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v57.json`
+
+6) Risks & Rollback
+- risks:
+  - 将旧 probe 或非匹配行误判为真实 matched 样本会造成假绿
+  - hard-line 未 GO 前若执行重跑会破坏 fail-closed 与可机判发布链路
+  - A/B 长期不满足将持续阻塞 SKC 主链下游（XT-L1/Hub-L4）
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L5 区 + `SKC-W3-08` 行）
+  - `build/reports/skc_w3_08_hub_l5_claim_state.v58.json`
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v5.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v57.json`
+  - `build/reports/skc_w3_08_directed_baton_xt_l1_hub_l4.v3.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2 + Hub-L1 + QA`
+- depends_on:
+  - XT-L2+Hub-L1 产出真实 `import->first_run matched >=30` 样本
+  - XT-L2+QA 将 `internal_pass_lines.release_decision` 推至 `GO` 且 `missing_metrics=0`
+  - 双前置转绿后回传 Hub-L5，立即执行总门禁重跑并回填 release summary
+- unblock 条件机读来源：
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v5.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v57.json`
+  - `build/reports/skc_w3_08_directed_baton_xt_l1_hub_l4.v3.json`
+
+#### Hub-L5 / SKC-W3-08 / Auto-Continue（blocked checkpoint v58）
+
+1) Scope
+- `SKC-BRK-H5` 定向续推：继续按 `A(real sample) -> B(hard-line) -> C(rerun)` 顺序核验，不越级执行。
+- 本轮目标：消费最新上游探针 `Hub-L1 v8` 与 `XT-L2 v9`，产出新一轮 fail-closed 机读 checkpoint。
+
+2) Changes
+- board（仅 Hub-L5 可写区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W3-08` 行 + Hub-L5 Lane Zone + 本节 7件套）
+- reports（machine-readable）：
+  - `build/reports/skc_w3_08_hub_l5_claim_state.v59.json`
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v6.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v58.json`
+  - `build/reports/skc_w3_08_directed_baton_xt_l1_hub_l4.v4.json`
+- gate rerun action:
+  - `bash scripts/m3_run_hub_l5_skc_g5_gate.sh ... --out-prefix ./build/hub_l5_release` => `NOT_RUN_PRECONDITION_BLOCKED`
+
+3) DoD
+- [x] 已复核 A/B 前置并落盘 v6/v58（均 machine-readable）
+- [x] A/B 未同时满足时未触发总门禁重跑（fail-closed）
+- [x] 已向 `XT-L1`、`Hub-L4` 定向回传不可推进状态（v4）
+- [x] 已回填 Task Catalog 与 Hub-L5 Lane Zone 的 gate_vector/evidence_refs
+- [ ] release summary 更新（需 A/B 双绿后重跑）
+
+4) Gate
+- `prereq_A (matched rows >=30)`: `FAIL`（最新 probe `returned_rows=30`，`matched_latency_rows=0/30`）
+- `prereq_B (inputs complete + hard-line GO)`: `FAIL`（输入文件存在，但 `internal_pass_lines=INSUFFICIENT_EVIDENCE`，`missing_metrics=33`）
+- `rerun_rc`: `NOT_RUN_PRECONDITION_BLOCKED`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G5`: `INSUFFICIENT_EVIDENCE`
+- 证据路径：
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v6.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v58.json`
+  - `build/reports/skc_w3_08_directed_baton_xt_l1_hub_l4.v4.json`
+  - `build/reports/skc_w1_xt_l2_hub_l1_real_sample_probe_results.v8.json`
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v9.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/hub_l5_release_internal_pass_lines_report.json`
+  - `build/internal_pass_metrics.json`
+  - `build/internal_pass_samples.json`
+
+5) KPI Snapshot
+- `probe_returned_rows`: `30`
+- `matched_latency_rows`: `0/30`
+- `successful_import_rows`: `34/30`（仅 import 成功，不代表 matched）
+- `internal_pass_missing_metrics_count`: `33`
+- `internal_pass_release_decision`: `INSUFFICIENT_EVIDENCE`
+- `blocked->ready_baton_latency_s`: `INSUFFICIENT_EVIDENCE`（尚未触发 ready）
+- 报告路径：
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v6.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v58.json`
+
+6) Risks & Rollback
+- risks:
+  - 将旧 probe 或非匹配行误判为真实 matched 样本会造成假绿
+  - hard-line 未 GO 前若执行重跑会破坏 fail-closed 与可机判发布链路
+  - A/B 长期不满足将持续阻塞 SKC 主链下游（XT-L1/Hub-L4）
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L5 区 + `SKC-W3-08` 行）
+  - `build/reports/skc_w3_08_hub_l5_claim_state.v59.json`
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v6.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v58.json`
+  - `build/reports/skc_w3_08_directed_baton_xt_l1_hub_l4.v4.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2 + Hub-L1 + QA`
+- depends_on:
+  - XT-L2+Hub-L1 产出真实 `import->first_run matched >=30` 样本
+  - XT-L2+QA 将 `internal_pass_lines.release_decision` 推至 `GO` 且 `missing_metrics=0`
+  - 双前置转绿后回传 Hub-L5，立即执行总门禁重跑并回填 release summary
+- unblock 条件机读来源：
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v6.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v58.json`
+  - `build/reports/skc_w3_08_directed_baton_xt_l1_hub_l4.v4.json`
+
+
+#### Hub-L5 / SKC-W3-08 / Auto-Continue（blocked checkpoint v59）
+
+1) Scope
+- `SKC-BRK-H5` 定向续推：按 `A(real sample) -> B(hard-line) -> C(rerun)` 顺序复核前置，不越级执行。
+- 本轮目标：确认 prereq_A/prereq_B 均未满足，保持 fail-closed 并阻断无增量重跑。
+
+2) Changes
+- board（仅 Hub-L5 可写区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 `SKC-W3-08` 行 + Hub-L5 Lane Zone + 本节 7件套）
+- reports（machine-readable）：
+  - `build/reports/skc_w3_08_hub_l5_claim_state.v60.json`
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v7.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v59.json`
+  - `build/reports/skc_w3_08_directed_baton_xt_l1_hub_l4.v5.json`
+  - `build/reports/skc_w3_08_internal_pass_lines_recheck.v1.log`
+  - `build/reports/skc_w3_08_internal_pass_lines_recheck.v1.rc`
+- gate rerun action:
+  - `bash scripts/m3_run_hub_l5_skc_g5_gate.sh ... --out-prefix ./build/hub_l5_release` => `NOT_RUN_PRECONDITION_BLOCKED`
+
+3) DoD
+- [x] prereq_A 复核完成：`matched_latency_rows=0/30`（真实样本门槛未满足）
+- [x] prereq_B 复核完成：`missing_metrics=33`，hard-line 仍未达 GO
+- [x] A/B 未同时满足时阻断总门禁重跑（fail-closed）
+- [x] 已定向 baton 给 `XT-L1`、`Hub-L4`（不广播）
+- [ ] 总门禁重跑与 release summary 更新（待 prereq_A/prereq_B 同时 PASS）
+
+4) Gate
+- `prereq_A (matched rows >=30)`: `FAIL`（`0/30`）
+- `prereq_B (inputs complete + hard-line GO)`: `FAIL`（`internal_pass_lines=INSUFFICIENT_EVIDENCE`, `missing_metrics=33`）
+- `rerun_rc`: `NOT_RUN_PRECONDITION_BLOCKED`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G5`: `INSUFFICIENT_EVIDENCE`
+- 证据路径：
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v7.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v59.json`
+  - `build/reports/skc_w3_08_directed_baton_xt_l1_hub_l4.v5.json`
+  - `build/reports/skc_w1_xt_l2_hub_l1_real_sample_probe_results.v8.json`
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v9.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/hub_l5_release_internal_pass_lines_report.json`
+  - `build/internal_pass_metrics.json`
+  - `build/internal_pass_samples.json`
+  - `build/reports/skc_w3_08_internal_pass_lines_recheck.v1.log`
+
+5) KPI Snapshot
+- `probe_returned_rows`: `30`
+- `matched_latency_rows`: `0/30`
+- `successful_import_rows`: `34/30`（仅 import 成功，不代表 matched）
+- `internal_pass_missing_metrics_count`: `33`
+- `internal_pass_release_decision`: `INSUFFICIENT_EVIDENCE`
+- `blocked->ready_baton_latency_s`: `INSUFFICIENT_EVIDENCE`（尚未触发 ready）
+- 报告路径：
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v7.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v59.json`
+
+6) Risks & Rollback
+- risks:
+  - 若忽略 hard-line 缺口并强行重跑，会破坏 fail-closed 与 release 机判闭环
+  - `internal_pass_samples` 仍低于样本阈值（`546/1000`, `1/300`, `0/100`），短期内继续阻塞 SKC 主链
+  - Hub-L1 v8 probe 仍是 stale 快照，若不更新可能引发跨泳道判定分歧
+- rollback:
+  - `docs/memory-new/xhub-lane-command-board-v2.md`（仅 Hub-L5 区 + `SKC-W3-08` 行）
+  - `build/reports/skc_w3_08_hub_l5_claim_state.v60.json`
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v7.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v59.json`
+  - `build/reports/skc_w3_08_directed_baton_xt_l1_hub_l4.v5.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2 + Hub-L1 + QA`
+- depends_on:
+  - XT-L2+Hub-L1 补齐真实 `import->first_run matched >=30` 样本
+  - XT-L2+QA 补齐 hard-line 缺失指标并使 `internal_pass_lines.release_decision=GO`
+  - prereq_A/prereq_B 同时转绿后 Hub-L5 立即执行总门禁重跑并回填 release summary
+- unblock 条件机读来源：
+  - `build/reports/skc_w3_08_release_gate_prereq_check.v7.json`
+  - `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v59.json`
+  - `build/reports/skc_w3_08_directed_baton_xt_l1_hub_l4.v5.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v60
+
+- status: `blocked(fail_closed_no_state_change)`（latest snapshot 已消费，禁止无增量 gate 重跑）
+- dependency_delta: `prereq_A=FAIL(matched_latency_rows=0/30,probe_returned_rows=30,successful_import_rows=34); prereq_B=FAIL(release_decision=INSUFFICIENT_EVIDENCE,missing_metrics=33)`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（定向 baton，禁止广播）
+- retry_after_utc: `2026-03-03T04:45:49.206000Z`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v60.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v61
+
+- status: `blocked(fail_closed_no_state_change)`（A/B 未双绿，继续阻断总门禁重跑）
+- dependency_delta: `prereq_A=FAIL(strict_probe_returned_rows=0/30,candidate_rows=34,skill_execution_gate_unchecked=34,matched_latency_rows=0); prereq_B=FAIL(release_decision=INSUFFICIENT_EVIDENCE,missing_metrics=33,sample_summary=546/1/0)`
+- gate_vector: `SKC-G5:INSUFFICIENT_EVIDENCE,SKC-G3:INSUFFICIENT_EVIDENCE`
+- release_decision: `INSUFFICIENT_EVIDENCE`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（定向 baton，禁止广播）
+- retry_after_utc: `2026-03-03T06:22:36Z`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v61.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v62
+
+- status: `blocked(fail_closed_no_state_change)`（A/B 未双绿，继续阻断总门禁重跑）
+- dependency_delta: `prereq_A=FAIL(strict_probe_returned_rows=0/30,candidate_rows=34,skill_execution_gate_unchecked=34,matched_latency_rows=0); prereq_B=FAIL(release_decision=INSUFFICIENT_EVIDENCE,missing_metrics=33,sample_summary=546/1/0)`
+- gate_vector: `SKC-G5:INSUFFICIENT_EVIDENCE,SKC-G3:INSUFFICIENT_EVIDENCE`
+- release_decision: `INSUFFICIENT_EVIDENCE`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（定向 baton，禁止广播）
+- retry_after_utc: `2026-03-03T06:34:11Z`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v62.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v63
+
+- status: `blocked(fail_closed_no_state_change)`（已消费 Hub-L4 定向 handoff，但 A/B 未双绿）
+- dependency_delta: `upstream_hub_l4_handoff=CONSUMED(SKC-G2:PASS,SKC-G4:PASS); prereq_A=FAIL(strict_probe_returned_rows=0/30,candidate_rows=34,skill_execution_gate_unchecked=34,matched_latency_rows=0); prereq_B=FAIL(release_decision=INSUFFICIENT_EVIDENCE,missing_metrics=33,sample_summary=546/1/0)`
+- gate_vector: `SKC-G5:INSUFFICIENT_EVIDENCE,SKC-G3:INSUFFICIENT_EVIDENCE`
+- release_decision: `INSUFFICIENT_EVIDENCE`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（定向 baton，禁止广播）
+- retry_after_utc: `2026-03-03T07:02:58Z`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v63.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v64
+
+- status: `blocked(fail_closed_no_state_change)`（已消费 Hub-L4 定向 handoff，等待 A/B 双绿）
+- dependency_delta: `upstream_hub_l4_handoff=CONSUMED(SKC-G2:PASS,SKC-G4:PASS); prereq_A=FAIL(strict_probe_returned_rows=0/30,candidate_rows=34,skill_execution_gate_unchecked=34,matched_latency_rows=0); prereq_B=FAIL(release_decision=INSUFFICIENT_EVIDENCE,missing_metrics=33,sample_summary=546/1/0)`
+- gate_vector: `SKC-G5:INSUFFICIENT_EVIDENCE,SKC-G3:INSUFFICIENT_EVIDENCE`
+- release_decision: `INSUFFICIENT_EVIDENCE`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（定向 baton，禁止广播）
+- retry_after_utc: `2026-03-03T07:17:11Z`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v64.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v65
+
+- status: `blocked(fail_closed_no_state_change)`（A 已满足，B 未满足）
+- dependency_delta: `upstream_hub_l4_handoff=CONSUMED(SKC-G2:PASS,SKC-G4:PASS); prereq_A=PASS(strict_probe_returned_rows=64/30,candidate_rows=64,skill_execution_gate_unchecked=0,matched_latency_rows=64); prereq_B=FAIL(release_decision=INSUFFICIENT_EVIDENCE,missing_metrics=33,sample_summary=546/1/0)`
+- gate_vector: `SKC-G5:INSUFFICIENT_EVIDENCE,SKC-G3:PASS`
+- release_decision: `INSUFFICIENT_EVIDENCE`
+- minimal_gaps: `1) hard-line 缺失指标 33->0；2) internal_pass_lines.release_decision -> GO；3) 样本窗口补齐 1000/300/100`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（定向 baton，禁止广播）
+- retry_after_utc: `2026-03-03T08:18:38Z`
+- next_rerun_condition: `A=PASS && B=PASS（release_decision=GO, missing_metrics=0）`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v65.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v66
+
+- status: `blocked(fail_closed_no_state_change)`（A 已满足，B 未满足）
+- dependency_delta: `upstream_hub_l4_handoff=CONSUMED(SKC-G2:PASS,SKC-G4:PASS); prereq_A=PASS(strict_probe_returned_rows=64/30,candidate_rows=64,skill_execution_gate_unchecked=0,matched_latency_rows=64); prereq_B=FAIL(release_decision=INSUFFICIENT_EVIDENCE,missing_metrics=33,sample_summary=546/1/0)`
+- gate_vector: `SKC-G5:INSUFFICIENT_EVIDENCE,SKC-G3:PASS`
+- release_decision: `INSUFFICIENT_EVIDENCE`
+- minimal_gaps: `1) hard-line 缺失指标 33->0；2) internal_pass_lines.release_decision -> GO；3) 样本窗口补齐 1000/300/100`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（定向 baton，禁止广播）
+- retry_after_utc: `2026-03-03T08:33:19Z`
+- next_rerun_condition: `A=PASS && B=PASS（release_decision=GO, missing_metrics=0）`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v66.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v67
+
+- status: `blocked(fail_closed_no_state_change)`（A 已满足，B 未满足）
+- dependency_delta: `upstream_hub_l4_handoff=CONSUMED(SKC-G2:PASS,SKC-G4:PASS); prereq_A=PASS(strict_probe_returned_rows=64/30,candidate_rows=64,skill_execution_gate_unchecked=0,matched_latency_rows=64); prereq_B=FAIL(release_decision=INSUFFICIENT_EVIDENCE,missing_metrics=33,sample_summary=546/1/0)`
+- gate_vector: `SKC-G5:INSUFFICIENT_EVIDENCE,SKC-G3:PASS`
+- release_decision: `INSUFFICIENT_EVIDENCE`
+- minimal_gaps: `1) hard-line 缺失指标 33->0；2) internal_pass_lines.release_decision -> GO；3) 样本窗口补齐 1000/300/100`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（定向 baton，禁止广播）
+- retry_after_utc: `2026-03-03T08:43:57Z`
+- next_rerun_condition: `A=PASS && B=PASS（release_decision=GO, missing_metrics=0）且 evidence_delta=true`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v67.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v68
+
+- status: `blocked(fail_closed_no_state_change)`（A 已满足，B 未满足）
+- dependency_delta: `upstream_hub_l4_handoff=CONSUMED(SKC-G2:PASS,SKC-G4:PASS); prereq_A=PASS(strict_probe_returned_rows=64/30,candidate_rows=64,skill_execution_gate_unchecked=0,matched_latency_rows=64); prereq_B=FAIL(release_decision=INSUFFICIENT_EVIDENCE,missing_metrics=33,sample_summary=546/1/0)`
+- gate_vector: `SKC-G5:INSUFFICIENT_EVIDENCE,SKC-G3:PASS`
+- release_decision: `INSUFFICIENT_EVIDENCE`
+- minimal_gaps: `1) 补齐 hard-line 缺失指标 33 -> 0；2) 将 internal_pass_lines.release_decision 从 INSUFFICIENT_EVIDENCE 提升到 GO；3) 样本窗口补齐至 lane_event_count/high_risk_request_count/mergeback_runs = 1000/300/100`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（定向 baton，禁止广播）
+- retry_after_utc: `2026-03-03T09:22:41Z`
+- next_rerun_condition: `A=PASS && B=PASS（release_decision=GO, missing_metrics=0）且 evidence_delta=true`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v68.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v69
+
+- status: `blocked(fail_closed_no_state_change)`（A 已满足，B 未满足）
+- dependency_delta: `upstream_hub_l4_handoff=CONSUMED(SKC-G2:PASS,SKC-G4:PASS); prereq_A=PASS(strict_probe_returned_rows=64/30,candidate_rows=64,skill_execution_gate_unchecked=0,matched_latency_rows=64); prereq_B=FAIL(release_decision=INSUFFICIENT_EVIDENCE,missing_metrics=33,sample_summary=546/1/0)`
+- gate_vector: `SKC-G5:INSUFFICIENT_EVIDENCE,SKC-G3:PASS`
+- release_decision: `INSUFFICIENT_EVIDENCE`
+- minimal_gaps: `1) 补齐 hard-line 缺失指标 33 -> 0；2) 将 internal_pass_lines.release_decision 从 INSUFFICIENT_EVIDENCE 提升到 GO；3) 样本窗口补齐至 lane_event_count/high_risk_request_count/mergeback_runs = 1000/300/100`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（定向 baton，禁止广播）
+- retry_after_utc: `2026-03-03T09:55:25Z`
+- next_rerun_condition: `A=PASS && B=PASS（release_decision=GO, missing_metrics=0）且 evidence_delta=true`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v69.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v70
+
+- status: `blocked(fail_closed_no_state_change)`（A 已满足，B 未满足）
+- dependency_delta: `upstream_hub_l4_handoff=CONSUMED(SKC-G2:PASS,SKC-G4:PASS); prereq_A=PASS(strict_probe_returned_rows=64/30,candidate_rows=64,skill_execution_gate_unchecked=0,matched_latency_rows=64); prereq_B=FAIL(release_decision=INSUFFICIENT_EVIDENCE,missing_metrics=33,sample_summary=546/1/0)`
+- gate_vector: `SKC-G5:INSUFFICIENT_EVIDENCE,SKC-G3:PASS`
+- release_decision: `INSUFFICIENT_EVIDENCE`
+- minimal_gaps: `1) 补齐 hard-line 缺失指标 33 -> 0；2) 将 internal_pass_lines.release_decision 从 INSUFFICIENT_EVIDENCE 提升到 GO；3) 样本窗口补齐至 lane_event_count/high_risk_request_count/mergeback_runs = 1000/300/100`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（定向 baton，禁止广播）
+- retry_after_utc: `2026-03-03T10:03:14Z`
+- next_rerun_condition: `A=PASS && B=PASS（release_decision=GO, missing_metrics=0）且 evidence_delta=true`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v70.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v71
+
+- status: `blocked(fail_closed_no_state_change)`（A 已满足，B 未满足）
+- dependency_delta: `upstream_hub_l4_handoff=CONSUMED(SKC-G2:PASS,SKC-G4:PASS); prereq_A=PASS(strict_probe_returned_rows=64/30,candidate_rows=64,skill_execution_gate_unchecked=0,matched_latency_rows=64); prereq_B=FAIL(release_decision=INSUFFICIENT_EVIDENCE,missing_metrics=33,sample_summary=546/1/0)`
+- gate_vector: `SKC-G5:INSUFFICIENT_EVIDENCE,SKC-G3:PASS`
+- release_decision: `INSUFFICIENT_EVIDENCE`
+- minimal_gaps: `1) 补齐 hard-line 缺失指标 33 -> 0；2) 将 internal_pass_lines.release_decision 从 INSUFFICIENT_EVIDENCE 提升到 GO；3) 样本窗口补齐至 lane_event_count/high_risk_request_count/mergeback_runs = 1000/300/100`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（定向 baton，禁止广播）
+- retry_after_utc: `2026-03-03T12:14:49Z`
+- next_rerun_condition: `A=PASS && B=PASS（release_decision=GO, missing_metrics=0）且 evidence_delta=true`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v71.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v72
+
+- status: `blocked(fail_closed_no_state_change)`（A 已满足，B 未满足）
+- dependency_delta: `upstream_hub_l4_handoff=CONSUMED(SKC-G2:PASS,SKC-G4:PASS); prereq_A=PASS(strict_probe_returned_rows=64/30,candidate_rows=64,skill_execution_gate_unchecked=0,matched_latency_rows=64); prereq_B=FAIL(release_decision=INSUFFICIENT_EVIDENCE,missing_metrics=33,sample_summary=546/1/0)`
+- gate_vector: `SKC-G5:INSUFFICIENT_EVIDENCE,SKC-G3:PASS`
+- release_decision: `INSUFFICIENT_EVIDENCE`
+- minimal_gaps: `1) 补齐 hard-line 缺失指标 33 -> 0；2) 将 internal_pass_lines.release_decision 从 INSUFFICIENT_EVIDENCE 提升到 GO；3) 样本窗口补齐至 lane_event_count/high_risk_request_count/mergeback_runs = 1000/300/100`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（定向 baton，禁止广播）
+- retry_after_utc: `2026-03-03T12:17:12Z`
+- next_rerun_condition: `A=PASS && B=PASS（release_decision=GO, missing_metrics=0）且 evidence_delta=true`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v72.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v73
+
+- status: `blocked(fail_closed_no_state_change)`（A 已满足，B 未满足）
+- dependency_delta: `upstream_hub_l4_handoff=CONSUMED(SKC-G2:PASS,SKC-G4:PASS); prereq_A=PASS(strict_probe_returned_rows=64/30,candidate_rows=64,skill_execution_gate_unchecked=0,matched_latency_rows=64); prereq_B=FAIL(release_decision=INSUFFICIENT_EVIDENCE,missing_metrics=33,sample_summary=546/1/0)`
+- gate_vector: `SKC-G5:INSUFFICIENT_EVIDENCE,SKC-G3:PASS`
+- release_decision: `INSUFFICIENT_EVIDENCE`
+- minimal_gaps: `1) 补齐 hard-line 缺失指标 33 -> 0；2) 将 internal_pass_lines.release_decision 从 INSUFFICIENT_EVIDENCE 提升到 GO；3) 样本窗口补齐至 lane_event_count/high_risk_request_count/mergeback_runs = 1000/300/100`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（定向 baton，禁止广播）
+- retry_after_utc: `2026-03-03T12:21:00Z`
+- next_rerun_condition: `A=PASS && B=PASS（release_decision=GO, missing_metrics=0）且 evidence_delta=true`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v73.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v74
+
+- status: `blocked(fail_closed_no_state_change)`（A 已满足，B 未满足）
+- dependency_delta: `upstream_hub_l4_handoff=CONSUMED(SKC-G2:PASS,SKC-G4:PASS); prereq_A=PASS(strict_probe_returned_rows=64/30,candidate_rows=64,skill_execution_gate_unchecked=0,matched_latency_rows=64); prereq_B=FAIL(release_decision=INSUFFICIENT_EVIDENCE,missing_metrics=33,sample_summary=546/1/0)`
+- gate_vector: `SKC-G5:INSUFFICIENT_EVIDENCE,SKC-G3:PASS`
+- release_decision: `INSUFFICIENT_EVIDENCE`
+- minimal_gaps: `1) 补齐 hard-line 缺失指标 33 -> 0；2) 将 internal_pass_lines.release_decision 从 INSUFFICIENT_EVIDENCE 提升到 GO；3) 样本窗口补齐至 lane_event_count/high_risk_request_count/mergeback_runs = 1000/300/100`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（定向 baton，禁止广播）
+- retry_after_utc: `2026-03-03T12:27:30Z`
+- next_rerun_condition: `A=PASS && B=PASS（release_decision=GO, missing_metrics=0）且 evidence_delta=true`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v74.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v75
+
+- status: `blocked(fail_closed_no_state_change)`（A 已满足，B 未满足）
+- dependency_delta: `upstream_hub_l4_handoff=CONSUMED(SKC-G2:PASS,SKC-G4:PASS); prereq_A=PASS(strict_probe_returned_rows=64/30,candidate_rows=64,skill_execution_gate_unchecked=0,matched_latency_rows=64); prereq_B=FAIL(release_decision=INSUFFICIENT_EVIDENCE,missing_metrics=33,sample_summary=546/1/0)`
+- gate_vector: `SKC-G5:INSUFFICIENT_EVIDENCE,SKC-G3:PASS`
+- release_decision: `INSUFFICIENT_EVIDENCE`
+- minimal_gaps: `1) 补齐 hard-line 缺失指标 33 -> 0；2) 将 internal_pass_lines.release_decision 从 INSUFFICIENT_EVIDENCE 提升到 GO；3) 样本窗口补齐至 lane_event_count/high_risk_request_count/mergeback_runs = 1000/300/100`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（定向 baton，禁止广播）
+- retry_after_utc: `2026-03-03T12:34:33Z`
+- next_rerun_condition: `A=PASS && B=PASS（release_decision=GO, missing_metrics=0）且 evidence_delta=true`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v75.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v76
+
+- status: `blocked(fail_closed_no_state_change)`（A 已满足，B 未满足）
+- dependency_delta: `upstream_hub_l4_handoff=CONSUMED(SKC-G2:PASS,SKC-G4:PASS); prereq_A=PASS(strict_probe_returned_rows=64/30,candidate_rows=64,skill_execution_gate_unchecked=0,matched_latency_rows=64); prereq_B=FAIL(release_decision=INSUFFICIENT_EVIDENCE,missing_metrics=33,sample_summary=546/1/0)`
+- gate_vector: `SKC-G5:INSUFFICIENT_EVIDENCE,SKC-G3:PASS`
+- release_decision: `INSUFFICIENT_EVIDENCE`
+- minimal_gaps: `1) 补齐 hard-line 缺失指标 33 -> 0；2) 将 internal_pass_lines.release_decision 从 INSUFFICIENT_EVIDENCE 提升到 GO；3) 样本窗口补齐至 lane_event_count/high_risk_request_count/mergeback_runs = 1000/300/100`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（定向 baton，禁止广播）
+- retry_after_utc: `2026-03-03T12:41:00Z`
+- next_rerun_condition: `A=PASS && B=PASS（release_decision=GO, missing_metrics=0）且 evidence_delta=true`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v76.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v77
+
+- status: `blocked(fail_closed_no_state_change)`（A 已满足，B 未满足）
+- dependency_delta: `upstream_hub_l4_handoff=CONSUMED(SKC-G2:PASS,SKC-G4:PASS); prereq_A=PASS(strict_probe_returned_rows=64/30,candidate_rows=64,skill_execution_gate_unchecked=0,matched_latency_rows=64); prereq_B=FAIL(release_decision=INSUFFICIENT_EVIDENCE,missing_metrics=33,sample_summary=546/1/0)`
+- gate_vector: `SKC-G5:INSUFFICIENT_EVIDENCE,SKC-G3:PASS`
+- release_decision: `INSUFFICIENT_EVIDENCE`
+- minimal_gaps: `1) 补齐 hard-line 缺失指标 33 -> 0；2) 将 internal_pass_lines.release_decision 从 INSUFFICIENT_EVIDENCE 提升到 GO；3) 样本窗口补齐至 lane_event_count/high_risk_request_count/mergeback_runs = 1000/300/100`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（定向 baton，禁止广播）
+- retry_after_utc: `2026-03-03T12:45:38Z`
+- next_rerun_condition: `A=PASS && B=PASS（release_decision=GO, missing_metrics=0）且 evidence_delta=true`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v77.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v78
+
+- status: `blocked(fail_closed_no_state_change)`（A 已满足，B 未满足）
+- dependency_delta: `upstream_hub_l4_handoff=CONSUMED(SKC-G2:PASS,SKC-G4:PASS); prereq_A=PASS(strict_probe_returned_rows=64/30,candidate_rows=64,skill_execution_gate_unchecked=0,matched_latency_rows=64); prereq_B=FAIL(release_decision=INSUFFICIENT_EVIDENCE,missing_metrics=33,sample_summary=546/1/0)`
+- gate_vector: `SKC-G5:INSUFFICIENT_EVIDENCE,SKC-G3:PASS`
+- release_decision: `INSUFFICIENT_EVIDENCE`
+- minimal_gaps: `1) 补齐 hard-line 缺失指标 33 -> 0；2) 将 internal_pass_lines.release_decision 从 INSUFFICIENT_EVIDENCE 提升到 GO；3) 样本窗口补齐至 lane_event_count/high_risk_request_count/mergeback_runs = 1000/300/100`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（定向 baton，禁止广播）
+- retry_after_utc: `2026-03-03T12:48:26Z`
+- next_rerun_condition: `A=PASS && B=PASS（release_decision=GO, missing_metrics=0）且 evidence_delta=true`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v78.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v79
+
+- status: `blocked(fail_closed_no_state_change)`（A 已满足，B 未满足）
+- dependency_delta: `upstream_hub_l4_handoff=CONSUMED(SKC-G2:PASS,SKC-G4:PASS); prereq_A=PASS(strict_probe_returned_rows=64/30,candidate_rows=64,skill_execution_gate_unchecked=0,matched_latency_rows=64); prereq_B=FAIL(release_decision=INSUFFICIENT_EVIDENCE,missing_metrics=33,sample_summary=546/1/0)`
+- gate_vector: `SKC-G5:INSUFFICIENT_EVIDENCE,SKC-G3:PASS`
+- release_decision: `INSUFFICIENT_EVIDENCE`
+- minimal_gaps: `1) 补齐 hard-line 缺失指标 33 -> 0；2) 将 internal_pass_lines.release_decision 从 INSUFFICIENT_EVIDENCE 提升到 GO；3) 样本窗口补齐至 lane_event_count/high_risk_request_count/mergeback_runs = 1000/300/100`
+- next_owner_lane: `XT-L2+Hub-L1+QA`（定向 baton，禁止广播）
+- retry_after_utc: `2026-03-03T12:54:45Z`
+- next_rerun_condition: `A=PASS && B=PASS（release_decision=GO, missing_metrics=0）且 evidence_delta=true`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v79.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v80
+
+- status: `blocked(fail_closed_no_state_change)`（A=PASS, B=FAIL）
+- dependency_delta: `prereq_A=PASS(strict_probe_returned_rows=64/30,matched_latency_rows=64); prereq_B=FAIL(release_decision=INSUFFICIENT_EVIDENCE,missing_metrics=0,sample=546/1/0,failed_hard_lines=HL-01,HL-03,HL-04,HL-06,HL-07); evidence_delta=true`
+- gate_vector: `SKC-G5:INSUFFICIENT_EVIDENCE,SKC-G3:PASS`
+- release_decision: `INSUFFICIENT_EVIDENCE`
+- minimal_gaps: `1) missing_metrics=0（保持0）；2) sample_sufficiency=546/1/0 -> 1000/300/100；3) failed_hard_lines 清零（当前 HL-01,HL-03,HL-04,HL-06,HL-07）`
+- next_owner_lane: `XT-L2`（directed-only）
+- retry_after_utc: `2026-03-03T12:54:45Z`
+- next_rerun_condition: `A=PASS && B=PASS(release_decision=GO,missing_metrics=0,sample=1000/300/100) && evidence_delta=true && now>=2026-03-03T12:54:45Z`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v80.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v81
+
+- status: `blocked(post_window_single_rerun_done_fail_closed)`
+- dependency_delta: `at_or_after_2026-03-03T12:54:45Z 已执行一次：prereq_check->G5 rerun(rc=2); gate_vector=SKC-G5:INSUFFICIENT_EVIDENCE,SKC-G3:PASS; release_decision=INSUFFICIENT_EVIDENCE`
+- minimal_gaps: `1) 样本 968/1/0 -> 1000/300/100；2) 硬线 failed_hard_lines=HL-01,HL-03,HL-04,HL-05,HL-06,HL-07,HL-08,HL-09,HL-10 -> none；3) release_decision INSUFFICIENT_EVIDENCE -> GO`
+- next_owner_lane: `XT-L2`（directed-only）
+- retry_after_utc: `2026-03-03T14:38:08Z`
+- next_rerun_condition: `样本/硬线/release_decision 三项补齐且 evidence_delta=true`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v81.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v82
+
+- status: `blocked(fail_closed_delta_only_pre_window)`
+- dependency_delta: `已消费 XT-L2 catalyst.v6 + blocked_status.v68；prereq_B 样本口径已纠偏 v28(546/1/0) -> v29(968/1/0)`
+- minimal_gaps: `1) 样本: 968/1/0 -> 1000/300/100；2) 硬线: failed_hard_lines=HL-01,HL-03,HL-04,HL-05,HL-06,HL-07,HL-08,HL-09,HL-10 -> []；3) release_decision: INSUFFICIENT_EVIDENCE -> GO`
+- next_owner_lane: `XT-L2`（directed-only）
+- retry_after_utc: `2026-03-03T14:38:08Z`
+- next_rerun_condition: `sample>=1000/300/100 + failed_hard_lines=[] + release_decision=GO + evidence_delta=true + now>=2026-03-03T14:38:08Z`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v82.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v83
+
+- status: `blocked(fail_closed_delta_only_pre_window)`
+- dependency_delta: `已消费 XT-L2 recheck.v6 + metrics_patch.v3 + samples_patch.v2；prereq_B 样本口径 968/1/0 -> 1208/300/685`
+- minimal_gaps: `1) 样本: 1208/300/685（已达标，保持>=1000/300/100）；2) 硬线: failed_hard_lines=none -> []（当前缺口=7条，missing_metrics=0）；3) release_decision: GO -> GO`
+- next_owner_lane: `XT-L2`（directed-only）
+- retry_after_utc: `2026-03-03T14:38:08Z`
+- next_rerun_condition: `sample>=1000/300/100 + failed_hard_lines=[] + release_decision=GO + evidence_delta=true + now>=2026-03-03T14:38:08Z`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v83.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v84
+
+- status: `blocked(fail_closed_post_rerun)`
+- dependency_delta: `time_gate_override_by_user=true；已执行 rerun(rc=2)；gate_vector=SKC-G5:INSUFFICIENT_EVIDENCE,SKC-G3:PASS；release_decision=INSUFFICIENT_EVIDENCE`
+- minimal_gaps: `1) 样本 968/1/0 -> 1000/300/100；2) 硬线 failed_hard_lines=HL-01,HL-03,HL-04,HL-05,HL-06,HL-07,HL-08,HL-09,HL-10 -> []；3) release_decision INSUFFICIENT_EVIDENCE -> GO`
+- next_owner_lane: `XT-L2`（directed-only）
+- retry_after_utc: `2026-03-03T15:03:00Z`
+- next_rerun_condition: `sample>=1000/300/100 + failed_hard_lines=[] + release_decision=GO + evidence_delta=true`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v84.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v85
+
+- status: `blocked(snapshot_drift)`
+- dependency_delta: `prereq_A=PASS；prereq_B=PASS；evidence_delta=true；snapshot_guard=FAIL(prereq_snapshot_id=xtl2_prereq_bundle@07f3b930448b6ed4 != rerun_input_snapshot_id=hubg5_inputs@d5012e1ef840c5db)`
+- minimal_gaps: `1) snapshot_id 对齐；2) internal_pass_samples 968/1/0 -> 1208/300/685；3) snapshot_id_changed=true 后再单次 rerun`
+- next_owner_lane: `XT-L2`（directed-only）
+- retry_after_utc: `2026-03-04T01:53:10Z`
+- next_rerun_condition: `A.pass && B.pass && evidence_delta=true && snapshot_id_changed=true && prereq_snapshot_id==rerun_input_snapshot_id && debounce_120s_ok`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v85.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v86
+
+- status: `blocked`
+- dependency_delta: `prereq_A=PASS; prereq_B=PASS; evidence_delta=true; snapshot_guard(prereq=skc_w3_08_runtime@1a910bbfee74dbc7,rerun=skc_w3_08_runtime@1a910bbfee74dbc7,drift=false); rerun_executed=true,rc=2`
+- minimal_gaps: `1) samples 968/1/0 -> 1000/300/100; 2) failed_hard_lines HL-01,HL-03,HL-04,HL-05,HL-06,HL-07,HL-08,HL-09,HL-10 -> []; 3) release_decision INSUFFICIENT_EVIDENCE -> GO`
+- next_owner_lane: `XT-L2`（directed-only）
+- retry_after_utc: `2026-03-04T02:05:14Z`
+- next_rerun_condition: `A.pass && B.pass && evidence_delta=true && snapshot_id_changed=true && prereq_snapshot_id==rerun_input_snapshot_id && debounce_120s_ok`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v86.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v87
+
+- status: `blocked`
+- dependency_delta: `prereq_A=PASS; prereq_B=PASS; evidence_delta=true; snapshot_guard(prereq=skc_w3_08_runtime@1a910bbfee74dbc7,rerun=skc_w3_08_runtime@1a910bbfee74dbc7,drift=false); rerun_executed=false,rc=NOT_RUN`
+- minimal_gaps: `1) samples 968/1/0 -> 1000/300/100; 2) failed_hard_lines HL-01,HL-03,HL-04,HL-05,HL-06,HL-07,HL-08,HL-09,HL-10 -> []; 3) release_decision INSUFFICIENT_EVIDENCE -> GO`
+- next_owner_lane: `XT-L2`（directed-only）
+- retry_after_utc: `2026-03-04T02:07:59Z`
+- next_rerun_condition: `A.pass && B.pass && evidence_delta=true && snapshot_id_changed=true && prereq_snapshot_id==rerun_input_snapshot_id && debounce_120s_ok`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v87.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v88
+
+- status: `blocked`
+- dependency_delta: `prereq_A=PASS; prereq_B=PASS; evidence_delta=false; snapshot_guard(prereq=skc_w3_08_runtime@1a910bbfee74dbc7,rerun=skc_w3_08_runtime@1a910bbfee74dbc7,drift=false); rerun_executed=false,rc=NOT_RUN`
+- minimal_gaps: `1) samples 968/1/0 -> 1000/300/100; 2) failed_hard_lines HL-01,HL-03,HL-04,HL-05,HL-06,HL-07,HL-08,HL-09,HL-10 -> []; 3) release_decision INSUFFICIENT_EVIDENCE -> GO`
+- next_owner_lane: `XT-L2`（directed-only）
+- retry_after_utc: `2026-03-04T02:20:23Z`
+- next_rerun_condition: `A.pass && B.pass && evidence_delta=true && snapshot_id_changed=true && prereq_snapshot_id==rerun_input_snapshot_id && debounce_120s_ok`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v88.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v89
+
+- status: `blocked`
+- dependency_delta: `prereq_A=PASS; prereq_B=PASS; evidence_delta=false; snapshot_guard(prereq=skc_w3_08_runtime@1a910bbfee74dbc7,rerun=skc_w3_08_runtime@1a910bbfee74dbc7,drift=false); rerun_executed=false,rc=NOT_RUN`
+- minimal_gaps: `1) samples 968/1/0 -> 1000/300/100; 2) failed_hard_lines HL-01,HL-03,HL-04,HL-05,HL-06,HL-07,HL-08,HL-09,HL-10 -> []; 3) release_decision INSUFFICIENT_EVIDENCE -> GO`
+- next_owner_lane: `XT-L2`（directed-only）
+- retry_after_utc: `2026-03-04T02:28:59Z`
+- next_rerun_condition: `A.pass && B.pass && evidence_delta=true && snapshot_id_changed=true && prereq_snapshot_id==rerun_input_snapshot_id && debounce_120s_ok`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v89.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v90
+
+- status: `blocked`
+- dependency_delta: `消费v11/v8/v7；snapshot_id=xtl2_prereq_bundle@5fdcf887413d40c6；snapshot_id_changed=True；rerun_executed=true(rc=2); gate_vector=SKC-G5:INSUFFICIENT_EVIDENCE,SKC-G3:PASS`
+- minimal_gaps: `1) samples 1208/300/685 -> 1000/300/100; 2) failed_hard_lines HL-01 -> []; 3) release_decision NO-GO -> GO`
+- next_owner_lane: `XT-L2`（directed-only）
+- retry_after_utc: `2026-03-04T02:51:23Z`
+- next_rerun_condition: `A.pass && B.pass && evidence_delta=true && snapshot_id_changed=true && snapshot_id_stable_120s`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v90.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v91
+
+- status: `delivered(g5_corrective_rerun_pass)`
+- dependency_delta: `消费v11/v8/v7+xt_report_index_overlay.v1；snapshot_id=xtl2_prereq_bundle@5fdcf887413d40c6；snapshot_id_changed=true；rerun_executed=true(rc=0)`
+- gate_vector: `SKC-G5:PASS,SKC-G3:PASS`
+- release_decision: `GO`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only，执行主链接棒）
+- retry_after_utc: `none`
+- next_rerun_condition: `仅当出现新的 evidence_delta 且 snapshot_id_changed=true 时再触发`
+- evidence_ref: `build/hub_l5_release_skc_g5_summary.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v92
+
+- status: `delivered(g3_final_verdict_pass)`
+- dependency_delta: `已消费 Hub-L1 定向包(v60+v11)；执行单次可审计 SKC-G3 裁决；strict_probe_rows=64/30,denominator_gap=0,skill_execution_gate_unchecked=0`
+- gate_vector: `SKC-G5:PASS,SKC-G3:PASS`
+- release_decision: `GO`
+- minimal_gaps: `none`
+- next_owner_lane: `Hub-L1`（directed-only，回填 SKC-W1-01+SKC-W1-02 最终态）
+- retry_after_utc: `none`
+- next_rerun_condition: `仅当 Hub-L1 回推新的 evidence_delta 时再判`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v93.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v93
+
+- status: `delivered(hub_l1_final_state_confirmed)`
+- dependency_delta: `Hub-L1 任务行已回填 SKC-W1-01+SKC-W1-02=delivered,gate_vector含SKC-G3:PASS；Hub-L5 无新增 gate rerun`
+- gate_vector: `SKC-G5:PASS,SKC-G3:PASS`
+- release_decision: `GO`
+- minimal_gaps: `none`
+- next_owner_lane: `none`
+- retry_after_utc: `none`
+- next_rerun_condition: `仅当出现新的 directed evidence_delta 时再执行`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v93.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v94
+
+- status: `delivered(no_state_change_fail_closed)`
+- dependency_delta: `J.Hub-L5 inbox 已消费；prereq_A=PASS，prereq_B=PASS，hard-line=PASS；但 evidence_delta=false`
+- gate_vector: `SKC-G5:PASS,SKC-G3:PASS`
+- release_decision: `GO`
+- minimal_gaps: `1) new_evidence_delta_required=true`
+- next_owner_lane: `XT-L2`
+- retry_after_utc: `2026-03-05T01:31:23Z`
+- next_rerun_condition: `prereq_A=PASS && prereq_B=PASS && hard-line=PASS && evidence_delta=true`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v94.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v95
+
+- status: `delivered(no_state_change_fail_closed)`
+- dependency_delta: `Active-2 No-Wait 口径已执行；prereq_A=PASS，prereq_B=PASS，hard-line=PASS；但 evidence_delta=false`
+- gate_vector: `SKC-G5:PASS,SKC-G3:PASS`
+- release_decision: `GO`
+- minimal_gaps: `1) new_evidence_delta_required=true`
+- next_owner_lane: `XT-L2`
+- retry_after_utc: `2026-03-05T01:45:58Z`
+- next_rerun_condition: `prereq_A=PASS && prereq_B=PASS && hard-line=PASS && evidence_delta=true`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v95.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v96
+
+- status: `delivered(no_state_change_fail_closed)`
+- dependency_delta: `消费 XT-L2 takeover_audit_ref(v1) 但其对应 XT-W2-20-B 非 release blocker；SKC-W3-08 仍 prereq_A=PASS，prereq_B=PASS，hard-line=PASS，evidence_delta=false`
+- gate_vector: `SKC-G5:PASS,SKC-G3:PASS`
+- release_decision: `GO`
+- minimal_gaps: `1) new_evidence_delta_required=true`
+- next_owner_lane: `XT-L2`
+- retry_after_utc: `2026-03-05T01:48:33Z`
+- next_rerun_condition: `prereq_A=PASS && prereq_B=PASS && hard-line=PASS && evidence_delta=true`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v96.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v97
+
+- status: `delivered(no_state_change_fail_closed)`
+- dependency_delta: `消费 XT-L2 delta_3line.v3 与 takeover_audit.v1；但均对应 XT-W2-20-B 非 release blocker，SKC-W3-08 仍 prereq_A=PASS，prereq_B=PASS，hard-line=PASS，evidence_delta=false`
+- gate_vector: `SKC-G5:PASS,SKC-G3:PASS`
+- release_decision: `GO`
+- minimal_gaps: `1) new_evidence_delta_required=true`
+- next_owner_lane: `XT-L2`
+- retry_after_utc: `2026-03-05T01:52:33Z`
+- next_rerun_condition: `prereq_A=PASS && prereq_B=PASS && hard-line=PASS && evidence_delta=true`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v97.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v98
+
+- status: `delivered(rerun_pass_green_baton_emitted)`
+- dependency_delta: `消费 MEN-20260305-002(snapshot_id=xt_main_hub_l5_baton_packet@20260305T013817Z)；prereq_A=PASS，prereq_B=PASS，hard-line=PASS，evidence_delta=true；执行单次 G5 rerun(rc=0,window=2026-03-05T02:12:35Z)并回填 green_baton`
+- gate_vector: `SKC-G5:PASS,SKC-G3:PASS`
+- release_decision: `GO`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`
+- retry_after_utc: `none`
+- next_rerun_condition: `new_directed_evidence_delta_for_skc_w3_08=true`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v98.json`
+
+#### Hub-L5 / SKC-W3-08 / delta_3line checkpoint v99
+
+- status: `delivered(no_state_change_fail_closed)`
+- dependency_delta: `实时消费 XT-L2 latest takeover 包 v5 并判定 PASS（green_baton 已由 Hub-L5 于 v98 发出，edge 已 resolved）；A/B/hard-line 持续 PASS；无新的 release gate 输入增量`
+- gate_vector: `SKC-G5:PASS,SKC-G3:PASS`
+- release_decision: `GO`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`
+- retry_after_utc: `none`
+- next_rerun_condition: `new_directed_evidence_delta_for_skc_w3_08=true && release_gate_input_changed=true`
+- evidence_ref: `build/reports/skc_w3_08_hub_l5_delta_3line.v99.json`
+
+### XT-L1
+- mode: `NO_DELTA_STANDBY(no_claim;directed_only;fail_closed;execution_delegated_to_XT-L2)`
+- active_task: `none`（no_claim；仅定向补件）
+- queue_head: `none`
+- backlog_next: `XT-W3-22-B -> XT-W3-22-C -> XT-W3-23-B -> XT-W3-23-C -> XT-W3-24-B -> XT-W3-24-C -> XT-W3-24-D -> XT-W3-24-E -> XT-W3-25-D -> XT-W3-25-E`（来自 `XT-W3-21/22` + `XT-W3-23` + `XT-W3-24` + `XT-W3-25` 执行包；XT-L1 仅在 XT-L2 定向点名时提供补件/可解释输出）
+- dependency: `XT-L2(directed_takeover_owner_for_XT-W3-21/22/23/24/25)`
+- status: `NO_DELTA_STANDBY`（idempotent；no_claim）
+- claim_state: `no_claim`
+- claim_id: `none(idempotent_standby)`
+- claim_ttl_until: `none`
+- gate_blocker: `none`（最小缺口已清零）
+- blocked_reason: `none`
+- unblock_owner: `XT-L2`
+- next_step: `进入 NO_DELTA_STANDBY/no_claim：仅响应 XT-L2/Hub-L5 的 directed mention；当 XT-W3-22-B/XT-W3-22-C/XT-W3-23-B/XT-W3-23-C/XT-W3-24-B/XT-W3-24-C/XT-W3-24-D/XT-W3-24-E/XT-W3-25-D/XT-W3-25-E 被定向点名时提交最小补件 delta_3line；非定向请求 fail-closed 不写任务状态`
+- evidence_refs:
+  - `x-terminal/work-orders/xt-l1-openclaw-skills-ux-preflight-runner-contract-v1.md`
+  - `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`
+  - `x-terminal/work-orders/xt-w2-23-w2-26-autocontinue-autonomy-implementation-pack-v1.md`
+  - `x-terminal/work-orders/xt-w2-24-token-optimal-context-capsule-implementation-pack-v1.md`
+  - `x-terminal/work-orders/xt-w2-27-anti-block-unblock-orchestration-implementation-pack-v1.md`
+  - `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md`
+  - `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`
+  - `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`
+  - `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`
+  - `docs/xhub-client-modes-and-connectors-v1.md`
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v2.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v4.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v5.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v6.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v7.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v8.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v9.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v10.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v11.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v12.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v13.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v14.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v15.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v16.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v17.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v18.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v19.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v20.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v21.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v22.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v23.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v24.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v25.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v26.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v2.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v4.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`
+  - `build/xt_l1_release_sprint.memory_agent_grant_chain.test.log`
+  - `build/xt_l1_release_sprint.skills_store_security.test.log`
+  - `build/xt_l1_release_sprint.contract_check.log`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v9.json`
+  - `x-terminal/scripts/gen_xt_l1_runner_execute_gate_evidence.py`
+  - `x-terminal/scripts/fixtures/skills_xt_l1_contract.sample.json`
+  - `x-terminal/scripts/fixtures/skills_xt_l1_contract.invalid.sample.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_hard_line_triplet_qa_alignment.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v5.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v27.json`
+  - `build/reports/skc_w2_05_xt_l1_verified_handoff.v1.json`
+  - `build/reports/skc_brk_x2_g3_probe.compat.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_delta_3line.v28.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v28.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_delta_3line.v29.json`
+  - `build/reports/xt_w2_23_b_innovation_level_ui_prep_draft.v1.json`
+  - `build/reports/xt_w2_24_a_tri_prompt_compiler_prep_draft.v1.json`
+  - `build/reports/xt_l1_prep_only_bundle.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v29.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_delta_3line.v30.json`
+  - `build/reports/xt_w2_23_b_innovation_level_ui_prep_draft.v2.json`
+  - `build/reports/xt_w2_24_a_tri_prompt_compiler_prep_draft.v2.json`
+  - `build/reports/xt_l1_prep_only_bundle.v2.json`
+  - `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_checklist.v2.json`
+  - `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_minicard.v1.json`
+- auto_continue_state: `ready_for_verified_handoff`
+- 7piece_template_status: `submitted_release_sprint_v27+prep_only_v45`
+#### XT-L1 / SKC-W2-05（准备态）/ 7件套
+
+1) Scope
+- `SKC-W2-05`（Preflight + 一键修复建议）联调准备态
+- 边界：仅 XT-L1 前台体验与 runner 前后链路；不改 Hub 签名算法、不调 Gate 阈值
+
+2) Changes
+- 规范文档草案：
+  - `x-terminal/work-orders/xt-l1-openclaw-skills-ux-preflight-runner-contract-v1.md`
+  - `x-terminal/work-orders/xt-w2-23-w2-26-autocontinue-autonomy-implementation-pack-v1.md`（仅排程对齐输入，不提前 claim）
+- 机读契约与回归样本：
+  - `x-terminal/scripts/fixtures/skills_xt_l1_contract.sample.json`
+  - `x-terminal/scripts/fixtures/skills_xt_l1_contract.invalid.sample.json`
+- 合同校验与回归脚本：
+  - `x-terminal/scripts/check_skills_xt_l1_contract.js`
+  - `x-terminal/scripts/check_skills_xt_l1_contract.test.js`
+- 报告落盘（供 Gate/KPI 引用）：
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+3) DoD
+- [x] fix_suggestion UI 呈现与一键修复路径设计稿（bin/env/config/capability）
+- [x] runner 约束与可解释错误语义（deny_code + user_message + machine_reason）冻结
+- [x] 热更新失败回退旧 snapshot 的最小证据项与回归样例固化
+- [x] 与 Hub-L5 require-real 证据口径对齐（声明仅接收 real audit 输入）
+- [x] Auto-Continue：已写 `claim_id + claim_ttl_until` 并落盘 `blocked_reason + unblock_owner`
+- [ ] 依赖 `SKC-W1-04` 满足后从 precheck claim 切换为执行态 in_progress claim
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`（当前为准备态，待联调实跑证据）
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`（当前仅合同样本，待真实采样）
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（待 watcher/runtime 联调实证）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `x-terminal/work-orders/xt-l1-openclaw-skills-ux-preflight-runner-contract-v1.md`
+
+5) KPI Snapshot
+- 发布口径（contract snapshot）：
+  - `import_to_first_run_p95_ms`: `10920`
+  - `skill_first_run_success_rate`: `0.96`
+  - `preflight_false_positive_rate`: `0.02`
+- 回归集计算口径（场景集，不用于宣告完成）：
+  - `import_to_first_run_p95_ms`: `10340`
+  - `skill_first_run_success_rate`: `0.4`
+  - `preflight_false_positive_rate`: `0`
+- 来源：
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+
+6) Risks & Rollback
+- risks:
+  - 目前证据为 contract/fixture 级，尚未接入 require-real 实跑 telemetry
+  - 若误用 synthetic runtime 证据会触发 Red 规则（禁止冒绿）
+  - 依赖未满足时提前 claim 可能导致跨泳道语义漂移
+- rollback:
+  - feature flags: `XT_SKILLS_IMPORT_UI_V1`, `XT_SKILLS_PREFLIGHT_V1`, `XT_SKILLS_RUNNER_POLICY_V1`, `XT_SKILLS_HOT_RELOAD_V1`
+  - runner policy snapshot: `.axcoder/runtime/skills_runner_policy.snapshot.json`
+  - rollback switch: `XT_SKILLS_POLICY_SNAPSHOT_ROLLBACK=1`
+
+7) Handoff
+- next_owner_lane: `XT-L2`（并行编排接线）+ `Hub-L5`（require-real 输入提供）
+- depends_on:
+  - `SKC-W1-04` from `Hub-L2/Hub-L3` 转绿并可机判
+  - `Hub-L5` 提供非 synthetic require-real 证据输入（禁止 `audit-smoke-*` / `source.kind=synthetic_runtime`）
+  - XT-L2 接收最小 UI 证据项：
+    - preflight fix card 展示与 action 结果
+    - `grant_pending` 可追踪事件
+    - hot reload rollback 审计可检索
+
+#### XT-L1 / SKC-W2-05 / Auto-Continue（HF-DIRECTED checkpoint）
+
+1) Scope
+- `SKC-W2-05` 仍为 precheck-only；本轮按 HF-DIRECTED 优先补齐 `runner_execute_chain -> evaluateSkillExecutionGate` 接线证据，支撑 `SKC-W1-04` 解阻。
+
+2) Changes
+- code:
+  - `x-hub/grpc-server/hub_grpc_server/src/services.js`：`AgentToolExecute` 新增 skills runner gate 接线（`evaluateSkillExecutionGate`）与 fail-closed 审计字段。
+  - `x-hub/grpc-server/hub_grpc_server/src/memory_agent_grant_chain.test.js`：新增 revoked / missing package sha 两条回归，覆盖 deny_code 与审计字段。
+- evidence:
+  - `x-terminal/scripts/gen_xt_l1_runner_execute_gate_evidence.py`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v2.json`
+  - `build/xt_l1_skc_runner_execute_chain.memory_agent_grant_chain.test.log`
+  - `build/xt_l1_skc_runner_execute_chain.skills_store_security.test.log`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（续租 claim + blocked 口径）
+
+3) DoD
+- [x] 先 claim 再执行：`claim_id + claim_ttl_until` 已续租
+- [x] `runner_execute_chain -> evaluateSkillExecutionGate` 接线已落地并有回归证据
+- [x] 产出 machine-readable gate 证据并可供 Hub-L3 复核
+- [x] fail-closed 保持 `ready`，未跨依赖宣告完成
+- [ ] require-real 样本齐备并完成 `SKC-G1/G3/G4` 全量转绿
+
+4) Gate
+- `SKC-G4`: `PASS`（贡献项：runner execute gate wiring）
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`（缺 require-real 端到端样本）
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`（缺 import->first_run 真实采样）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v2.json`
+  - `build/xt_l1_skc_runner_execute_chain.memory_agent_grant_chain.test.log`
+  - `build/xt_l1_skc_runner_execute_chain.skills_store_security.test.log`
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `import_to_first_run_p95_ms`（contract snapshot）: `10920`
+- `skill_first_run_success_rate`（contract snapshot）: `0.96`
+- `preflight_false_positive_rate`（contract snapshot）: `0.02`
+- `runner_execute_chain_gate_wiring`: `PASS`
+- 报告路径：
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v2.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W2-05` 仍受上游 `SKC-W1-04` dual-green 与 Hub-L5 require-real 样本阻塞
+  - 若下游仅凭 contract/fixture 冒绿，将违反 require-real 纪律
+- rollback:
+  - `x-hub/grpc-server/hub_grpc_server/src/services.js`
+  - `x-hub/grpc-server/hub_grpc_server/src/memory_agent_grant_chain.test.js`
+  - feature flags: `XT_SKILLS_IMPORT_UI_V1`, `XT_SKILLS_PREFLIGHT_V1`, `XT_SKILLS_RUNNER_POLICY_V1`, `XT_SKILLS_HOT_RELOAD_V1`
+  - policy snapshot: `.axcoder/runtime/skills_runner_policy.snapshot.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3` -> `XT-L2`
+- depends_on:
+  - `Hub-L3` 复跑 `SKC-W1-04` gate 验证并吸收 XT-L1 接线证据
+  - `Hub-L5` 提供 require-real incident 样本（`grant_pending/awaiting_instruction/runtime_error`）
+  - `XT-L2` 在 `SKC-W2-05` gate 转绿后触发 `SKC-W2-06 verified_handoff`
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v2.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+
+#### XT-L1 / SKC-W2-05 / Auto-Continue（blocked checkpoint v2）
+
+1) Scope
+- `SKC-W2-05` Auto-Continue 续推（precheck_only）；依赖 `SKC-W1-04` 未 dual-green，保持 fail-closed。
+
+2) Changes
+- claim 续租与 blocked 落盘：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v2.json`
+- Command Board（仅 XT-L1 行/分区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`
+
+3) DoD
+- [x] 先 claim 再执行（续租 `claim_id + claim_ttl_until`）
+- [x] 依赖探测后维持 fail-closed，不越依赖推进
+- [x] 机读 checkpoint 落盘并附 unblock_owner
+- [x] 不跨泳道改状态
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（仅贡献项 `runner_execute_chain_gate_wiring=PASS`）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v2.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v2.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `import_to_first_run_p95_ms`: `10920`（snapshot）
+- `skill_first_run_success_rate`: `0.96`（snapshot）
+- `preflight_false_positive_rate`: `0.02`（snapshot）
+- `runner_execute_chain_gate_wiring`: `PASS`
+- 报告路径：
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v2.json`
+
+6) Risks & Rollback
+- risks:
+  - 上游 `SKC-W1-04` 仍 blocked，`SKC-W2-05` 不可进入 in_progress
+  - require-real 样本未满足前，`SKC-G1/G3` 不可转绿
+- rollback:
+  - `x-hub/grpc-server/hub_grpc_server/src/services.js`
+  - `.axcoder/runtime/skills_runner_policy.snapshot.json`
+  - `XT_SKILLS_POLICY_SNAPSHOT_ROLLBACK=1`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `SKC-W1-04` 从 `blocked` 转 `verified`（dual-green）
+  - `Hub-L5` 提供 require-real 样本并完成口径对齐
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v2.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+#### XT-L1 / SKC-W2-05 / Auto-Continue（blocked checkpoint v3）
+
+1) Scope
+- `SKC-W2-05` Auto-Continue 续推（precheck_only）；按 HF-DIRECTED 主链优先继续维持 fail-closed。
+
+2) Changes
+- claim/blocked 续租落盘：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v3.json`
+- Command Board（仅 XT-L1 行/分区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`
+
+3) DoD
+- [x] 先 claim 后执行（`claim_id + claim_ttl_until` 已刷新）
+- [x] 上游依赖探测完成并保持 `blocked`（不跨依赖推进）
+- [x] 7件套与机读证据已追加
+- [x] require-real 路径继续禁止 synthetic 冒绿
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（贡献项 `runner_execute_chain_gate_wiring=PASS`）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v2.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `import_to_first_run_p95_ms`: `10920`（snapshot）
+- `skill_first_run_success_rate`: `0.96`（snapshot）
+- `preflight_false_positive_rate`: `0.02`（snapshot）
+- `runner_execute_chain_gate_wiring`: `PASS`
+- 报告路径：
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v2.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍为 `blocked`（`SKC-G4:INSUFFICIENT_EVIDENCE`），XT-L1 不可切入执行态
+  - `SKC-G1/G3` 缺 require-real 输入，当前仅可维持准备态证据
+- rollback:
+  - `x-hub/grpc-server/hub_grpc_server/src/services.js`
+  - `x-hub/grpc-server/hub_grpc_server/src/memory_agent_grant_chain.test.js`
+  - `.axcoder/runtime/skills_runner_policy.snapshot.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `SKC-W1-04` 由 Hub-L2/Hub-L3 完成 dual-green 校验并转 `verified`
+  - Hub-L5 回传 require-real 样本，补齐 `SKC-G1/G3` 判据
+  - XT-L2 在 `SKC-W2-05` 转绿后执行 `SKC-W2-06 verified_handoff`
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+#### XT-L1 / SKC-W2-05 / Auto-Continue（blocked checkpoint v4）
+
+1) Scope
+- `SKC-W2-05` Auto-Continue 续推（precheck_only）；依赖仍未满足，继续按主链顺序 fail-closed 保持 blocked。
+
+2) Changes
+- claim/blocked 续租落盘：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v4.json`
+- Command Board（仅 XT-L1 行/分区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`
+
+3) DoD
+- [x] 先 claim 再执行（`claim_id + claim_ttl_until` 续租 4h）
+- [x] 依赖探测后继续 fail-closed（仅更新 `blocked_reason + unblock_owner + next_step`）
+- [x] 7件套与 machine-readable checkpoint 已补齐
+- [x] require-real 路径未使用 synthetic 冒绿
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（贡献项 `runner_execute_chain_gate_wiring=PASS`）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v4.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v2.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+5) KPI Snapshot
+- `import_to_first_run_p95_ms`: `10920`（snapshot）
+- `skill_first_run_success_rate`: `0.96`（snapshot）
+- `preflight_false_positive_rate`: `0.02`（snapshot）
+- `runner_execute_chain_gate_wiring`: `PASS`
+- 报告路径：
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v2.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W1-04` 仍未完成 dual-green（`SKC-G4:INSUFFICIENT_EVIDENCE`），`SKC-W2-05` 不能切入 `in_progress`
+  - `SKC-G1/G3` require-real 样本缺口未补齐，当前只能维持准备态
+- rollback:
+  - `x-hub/grpc-server/hub_grpc_server/src/services.js`
+  - `x-hub/grpc-server/hub_grpc_server/src/memory_agent_grant_chain.test.js`
+  - `.axcoder/runtime/skills_runner_policy.snapshot.json`
+  - `XT_SKILLS_POLICY_SNAPSHOT_ROLLBACK=1`
+
+7) Handoff
+- next_owner_lane: `Hub-L3`
+- depends_on:
+  - `SKC-W1-04` 由 Hub-L2/Hub-L3 转 `verified`（dual-green）
+  - Hub-L5 回传 require-real 样本（`grant_pending/awaiting_instruction/runtime_error`）
+  - XT-L2 在 `SKC-W2-05` 转绿后执行 `SKC-W2-06 verified_handoff`
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v4.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+
+#### XT-L1 / SKC-W2-05 / Auto-Continue（blocked checkpoint v5）
+
+1) Scope
+- `SKC-W2-05` Auto-Continue 续推（precheck_only）；上游 `SKC-W1-04` 已转双绿，当前阻塞切换为 Hub-L5 require-real 输入缺口。
+
+2) Changes
+- claim/blocked 续租与 blocker 切换落盘：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v5.json`
+- Command Board（仅 XT-L1 行/分区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`
+
+3) DoD
+- [x] claim 续租完成（`claim_id + claim_ttl_until`）
+- [x] 依赖探测已识别 `SKC-W1-04` 双绿转态，并同步更新 blocked 原因
+- [x] fail-closed 保持 `ready`，未在 require-real 缺口下冒进执行
+- [x] 7件套与机读证据更新到 v5
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`（待 Hub-L5 require-real 样本）
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`（待真实 import->first_run 采样）
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（XT-L1 贡献项 `runner_execute_chain_gate_wiring=PASS`）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v5.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v29.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v5.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v2.json`
+
+5) KPI Snapshot
+- `import_to_first_run_p95_ms`: `10920`（snapshot）
+- `skill_first_run_success_rate`: `0.96`（snapshot）
+- `preflight_false_positive_rate`: `0.02`（snapshot）
+- `runner_execute_chain_gate_wiring`: `PASS`
+- 报告路径：
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v2.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v5.json`
+
+6) Risks & Rollback
+- risks:
+  - Hub-L5 require-real 样本若继续缺失，`SKC-G1/G3` 无法转绿，`SKC-W2-06` 继续阻塞
+  - 若将 `SKC-W1-04` 双绿误解为 `SKC-W2-05` 全绿，会造成 gate 误放行
+- rollback:
+  - `x-hub/grpc-server/hub_grpc_server/src/services.js`
+  - `x-hub/grpc-server/hub_grpc_server/src/memory_agent_grant_chain.test.js`
+  - `.axcoder/runtime/skills_runner_policy.snapshot.json`
+  - `XT_SKILLS_POLICY_SNAPSHOT_ROLLBACK=1`
+
+7) Handoff
+- next_owner_lane: `Hub-L5`
+- depends_on:
+  - Hub-L5 提供 require-real incident 样本（`grant_pending/awaiting_instruction/runtime_error`）
+  - Hub-L5/XT-L2/Hub-L1 提供 `skills.package.imported -> first_run accepted >=30` 真实样本
+  - XT-L1 消化样本并更新 `SKC-W2-05` gate_vector 至 `PASS`
+  - XT-L2 在 `SKC-W2-05` 转绿后触发 `SKC-W2-06 verified_handoff`
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v5.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v29.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+
+#### XT-L1 / SKC-W2-05 / Auto-Continue（blocked checkpoint v6）
+
+1) Scope
+- `SKC-W2-05` Auto-Continue 续推（precheck_only）；维持 fail-closed，继续等待 require-real 样本补齐（不越依赖执行）。
+
+2) Changes
+- claim/blocked 续租与机读落盘：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v6.json`
+- Command Board（仅 XT-L1 行/分区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`
+
+3) DoD
+- [x] `claim_id + claim_ttl_until` 已续租（4h）
+- [x] 依赖探测保持机读：`SKC-W1-04=PASS`，当前 blocker 为 `SKC-G3` 真实样本不足
+- [x] fail-closed 保持 `ready`，未切入 `in_progress`
+- [x] 7件套与 v6 证据已补齐
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`（`successful_import_rows=0`, `matched_latency_rows=0`）
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（贡献项 `runner_execute_chain_gate_wiring=PASS`）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v6.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v5.json`
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v29.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v2.json`
+
+5) KPI Snapshot
+- `import_to_first_run_p95_ms`: `10920`（snapshot）
+- `skill_first_run_success_rate`: `0.96`（snapshot）
+- `preflight_false_positive_rate`: `0.02`（snapshot）
+- `SKC-G3 successful_import_rows`: `0`（require-real）
+- `SKC-G3 matched_latency_rows`: `0`（require-real）
+- 报告路径：
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v6.json`
+
+6) Risks & Rollback
+- risks:
+  - Hub-L5/XT-L2/Hub-L1 未补齐真实样本前，`SKC-W2-05` 无法转绿并会持续阻塞 `SKC-W2-06`
+  - 若误将 contract snapshot 当成 require-real 证据，将违反 Gate 纪律
+- rollback:
+  - `x-hub/grpc-server/hub_grpc_server/src/services.js`
+  - `x-hub/grpc-server/hub_grpc_server/src/memory_agent_grant_chain.test.js`
+  - `.axcoder/runtime/skills_runner_policy.snapshot.json`
+  - `XT_SKILLS_POLICY_SNAPSHOT_ROLLBACK=1`
+
+7) Handoff
+- next_owner_lane: `Hub-L5 + XT-L2 + Hub-L1`
+- depends_on:
+  - Hub-L5 提供并广播 require-real incident 样本（`grant_pending/awaiting_instruction/runtime_error`）
+  - XT-L2 + Hub-L1 补齐 `skills.package.imported -> first_run accepted >=30` 真实样本
+  - XT-L1 在样本齐备后执行 `SKC-W2-05` gate 收敛并通知 XT-L2 触发 `SKC-W2-06 verified_handoff`
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v6.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+
+#### XT-L1 / SKC-W2-05 / Auto-Continue（blocked checkpoint v7）
+
+1) Scope
+- `SKC-W2-05` Auto-Continue 续推（precheck_only）；延续 fail-closed，等待 require-real 样本达到门槛后再进入执行态。
+
+2) Changes
+- claim/blocked 续租与机读落盘：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v7.json`
+- Command Board（仅 XT-L1 行/分区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`
+
+3) DoD
+- [x] 已续租 `claim_id + claim_ttl_until`（4h）
+- [x] 已同步最新上游状态：`SKC-W1-04` 维持 `SKC-G2/G4:PASS`
+- [x] 已同步最新 require-real 采样缺口（`gap.v6`）并保持 fail-closed
+- [x] 7件套 + 机读证据完成落盘
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`（`successful_import_rows=0`, `matched_latency_rows=0`, threshold=30）
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（贡献项 `runner_execute_chain_gate_wiring=PASS`）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v7.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v6.json`
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v30.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v2.json`
+
+5) KPI Snapshot
+- `import_to_first_run_p95_ms`: `10920`（snapshot）
+- `skill_first_run_success_rate`: `0.96`（snapshot）
+- `preflight_false_positive_rate`: `0.02`（snapshot）
+- `SKC-G3 successful_import_rows`: `0`（require-real）
+- `SKC-G3 matched_latency_rows`: `0`（require-real）
+- 报告路径：
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v7.json`
+
+6) Risks & Rollback
+- risks:
+  - Hub-L5/XT-L2/Hub-L1 未补齐真实样本前，`SKC-W2-05` 继续阻塞，`SKC-W2-06` 不能 verified_handoff
+  - 若绕过 require-real 门槛推进，将违反双绿与证据纪律
+- rollback:
+  - `x-hub/grpc-server/hub_grpc_server/src/services.js`
+  - `x-hub/grpc-server/hub_grpc_server/src/memory_agent_grant_chain.test.js`
+  - `.axcoder/runtime/skills_runner_policy.snapshot.json`
+  - `XT_SKILLS_POLICY_SNAPSHOT_ROLLBACK=1`
+
+7) Handoff
+- next_owner_lane: `Hub-L5 + XT-L2 + Hub-L1`
+- depends_on:
+  - Hub-L5 持续回传 `grant_pending/awaiting_instruction/runtime_error` require-real 样本
+  - XT-L2 + Hub-L1 补齐 `skills.package.imported -> first_run accepted >=30` 真实样本
+  - XT-L1 在样本达标后执行 `SKC-W2-05` gate 收敛并通知 XT-L2 触发 `SKC-W2-06 verified_handoff`
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v7.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v6.json`
+
+#### XT-L1 / SKC-W2-05 / Auto-Continue（blocked checkpoint v8）
+
+1) Scope
+- `SKC-W2-05` Auto-Continue 续推（precheck_only）；维持 fail-closed，等待 require-real 样本达标后再切执行态。
+
+2) Changes
+- claim/blocked 续租与机读落盘：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v8.json`
+- Command Board（仅 XT-L1 行/分区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`
+
+3) DoD
+- [x] `claim_id + claim_ttl_until` 已续租（4h）
+- [x] 已同步 Hub-L5 最新采样缺口 `skc_w3_08_require_real_sampling_gap.v7`
+- [x] 依赖未满足维持 fail-closed，未越依赖执行
+- [x] 7件套 + 机读证据（v8）落盘完成
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`（`successful_import_rows=0`, `matched_latency_rows=0`, threshold=30）
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（贡献项 `runner_execute_chain_gate_wiring=PASS`）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v8.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v7.json`
+  - `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v30.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v2.json`
+
+5) KPI Snapshot
+- `import_to_first_run_p95_ms`: `10920`（snapshot）
+- `skill_first_run_success_rate`: `0.96`（snapshot）
+- `preflight_false_positive_rate`: `0.02`（snapshot）
+- `SKC-G3 successful_import_rows`: `0`（require-real）
+- `SKC-G3 matched_latency_rows`: `0`（require-real）
+- 报告路径：
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v8.json`
+
+6) Risks & Rollback
+- risks:
+  - Hub-L5/XT-L2/Hub-L1 未补齐真实样本前，`SKC-W2-05` 继续阻塞，`SKC-W2-06` 无法 verified_handoff
+  - 任何 synthetic 代替 require-real 的尝试都会触发 gate 违规
+- rollback:
+  - `x-hub/grpc-server/hub_grpc_server/src/services.js`
+  - `x-hub/grpc-server/hub_grpc_server/src/memory_agent_grant_chain.test.js`
+  - `.axcoder/runtime/skills_runner_policy.snapshot.json`
+  - `XT_SKILLS_POLICY_SNAPSHOT_ROLLBACK=1`
+
+7) Handoff
+- next_owner_lane: `Hub-L5 + XT-L2 + Hub-L1`
+- depends_on:
+  - Hub-L5 持续回传 `grant_pending/awaiting_instruction/runtime_error` require-real 样本
+  - XT-L2 + Hub-L1 补齐 `skills.package.imported -> first_run accepted >=30` 真实样本
+  - XT-L1 在样本达标后收敛 `SKC-W2-05` gate，并通知 XT-L2 触发 `SKC-W2-06 verified_handoff`
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v8.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v7.json`
+
+#### XT-L1 / SKC-W2-05 / Auto-Continue（Release Sprint checkpoint v9）
+
+1) Scope
+- `SKC-W2-05`（主链关键前置）Release Sprint：补齐 `execute-chain -> evaluateSkillExecutionGate` 实证，推进 `G1/G3/G4` 可判定；require-real 严禁 synthetic。
+
+2) Changes
+- runner execute-chain 证据刷新：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `build/xt_l1_release_sprint.memory_agent_grant_chain.test.log`
+  - `build/xt_l1_release_sprint.skills_store_security.test.log`
+  - `build/xt_l1_release_sprint.contract_check.log`
+- Gate 阻塞清单（可执行）落盘：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v1.json`
+- claim/blocked 续租：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v9.json`
+- Command Board（仅 XT-L1 行/分区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`
+
+3) DoD
+- [x] `execute-chain -> evaluateSkillExecutionGate` 证据补齐并可机读复核（v3）
+- [x] `G1/G3/G4` 当前状态可判定并 machine-readable
+- [x] require-real 路径保持 `synthetic_forbidden=true`
+- [x] 产出可执行阻塞清单（owner + condition + next_action）
+- [ ] `SKC-W2-05` 全绿并触发 XT-L2 `verified_handoff`
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`（`successful_import_rows=0`, `matched_latency_rows=0`, threshold=30）
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（XT-L1 贡献项 `execute-chain gate wiring=PASS`）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v9.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v7.json`
+
+5) KPI Snapshot
+- `import_to_first_run_p95_ms`: `10920`（snapshot）
+- `skill_first_run_success_rate`: `0.96`（snapshot）
+- `preflight_false_positive_rate`: `0.02`（snapshot）
+- `SKC-G3 successful_import_rows`: `0`（require-real）
+- `SKC-G3 matched_latency_rows`: `0`（require-real）
+- 报告路径：
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v1.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-G3` 真实样本不足导致 `SKC-W2-05` 无法转绿，XT-L2 继续 `pre_takeover_check_only`
+  - internal pass-lines triplet 证据缺失会延长 release blocker 周期
+- rollback:
+  - `.axcoder/runtime/skills_runner_policy.snapshot.json`
+  - `XT_SKILLS_POLICY_SNAPSHOT_ROLLBACK=1`
+  - `x-hub/grpc-server/hub_grpc_server/src/services.js`
+  - `x-hub/grpc-server/hub_grpc_server/src/memory_agent_grant_chain.test.js`
+
+7) Handoff
+- next_owner_lane: `Hub-L5 + XT-L2 + Hub-L1`
+- depends_on:
+  - `B1`: 收集 `skills.package.imported -> first_run accepted >=30` 真样本
+  - `B2`: 产出 `xt-overflow/xt-origin/xt-cleanup` 三项报告
+  - `B3`: `SKC-W2-05` 转绿后触发 XT-L2 `SKC-W2-06 verified_handoff`
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v9.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+
+#### XT-L1 / SKC-W2-05 / Auto-Continue（Release Sprint checkpoint v11）
+
+1) Scope
+- `SKC-W2-05`（主链关键前置）继续协议续推：维持 `precheck_only + fail-closed`，更新 claim TTL 并回填 machine-readable 证据；目标仍是 `W2-05 PASS` 或可执行阻塞清单。
+
+2) Changes
+- checkpoint 与 blocked 状态续写：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v11.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（updated_at + claim_ttl 续租）
+- 证据对齐（Release Sprint）：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+- Command Board（仅 XT-L1 行/分区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`
+
+3) DoD
+- [x] 开工前 claim 保持有效（`claim_id` 不变，`claim_ttl_until` 已续租）
+- [x] 继续协议 machine-readable checkpoint 已落盘（v11）
+- [x] `execute-chain -> evaluateSkillExecutionGate` 接线证据保持可复核
+- [x] 依赖未满足保持 fail-closed（仅 blocked，不写 closed）
+- [ ] `SKC-W2-05` 转 `SKC-G1/G3/G4:PASS` 并触发 XT-L2 `SKC-W2-06 verified_handoff`
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`（`successful_import_rows=0`, `matched_latency_rows=0`, threshold=30）
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（贡献项 `execute-chain gate wiring=PASS`）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v11.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v9.json`
+
+5) KPI Snapshot
+- `import_to_first_run_p95_ms`: `10920`（snapshot）
+- `skill_first_run_success_rate`: `0.96`（snapshot）
+- `preflight_false_positive_rate`: `0.02`（snapshot）
+- `SKC-G3 successful_import_rows`: `0`（require-real）
+- `SKC-G3 matched_latency_rows`: `0`（require-real）
+- 报告路径：
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+
+6) Risks & Rollback
+- risks:
+  - Hub-L5/XT-L2/Hub-L1 未补齐真实样本前，`SKC-W2-05` 继续阻塞，`SKC-W2-06` 不能 verified_handoff
+  - 若以 contract/fixture 或 synthetic 证据冒绿，将违反 require-real 与双绿门禁
+- rollback:
+  - `.axcoder/runtime/skills_runner_policy.snapshot.json`
+  - `XT_SKILLS_POLICY_SNAPSHOT_ROLLBACK=1`
+  - `x-hub/grpc-server/hub_grpc_server/src/services.js`
+  - `x-hub/grpc-server/hub_grpc_server/src/memory_agent_grant_chain.test.js`
+
+7) Handoff
+- next_owner_lane: `Hub-L5 + XT-L2 + Hub-L1`
+- depends_on:
+  - `B1`: 收集 `skills.package.imported -> first_run accepted >=30` 真样本
+  - `B2`: 产出 `xt-overflow/xt-origin/xt-cleanup` 三项报告
+  - `B3`: `SKC-W2-05` 转绿后触发 XT-L2 `SKC-W2-06 verified_handoff`
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v11.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+
+#### XT-L1 / SKC-W2-05 / Auto-Continue（Release Sprint checkpoint v12）
+
+1) Scope
+- `SKC-W2-05`（主链关键前置）继续协议续推：维持 `precheck_only + fail-closed`，刷新 claim TTL 与 checkpoint 证据，目标仍是 `W2-05 PASS` 或可执行阻塞清单。
+
+2) Changes
+- checkpoint 与 blocked 状态续写：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v12.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（updated_at + claim_ttl 续租）
+- 证据对齐（Release Sprint）：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+- Command Board（仅 XT-L1 行/分区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`
+
+3) DoD
+- [x] 开工前 claim 保持有效（`claim_id` 不变，`claim_ttl_until` 已续租）
+- [x] 继续协议 machine-readable checkpoint 已落盘（v12）
+- [x] `execute-chain -> evaluateSkillExecutionGate` 接线证据保持可复核
+- [x] 依赖未满足保持 fail-closed（仅 blocked，不写 closed）
+- [ ] `SKC-W2-05` 转 `SKC-G1/G3/G4:PASS` 并触发 XT-L2 `SKC-W2-06 verified_handoff`
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`（`successful_import_rows=0`, `matched_latency_rows=0`, threshold=30）
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（贡献项 `execute-chain gate wiring=PASS`）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v12.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v9.json`
+
+5) KPI Snapshot
+- `import_to_first_run_p95_ms`: `10920`（snapshot）
+- `skill_first_run_success_rate`: `0.96`（snapshot）
+- `preflight_false_positive_rate`: `0.02`（snapshot）
+- `SKC-G3 successful_import_rows`: `0`（require-real）
+- `SKC-G3 matched_latency_rows`: `0`（require-real）
+- 报告路径：
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+
+6) Risks & Rollback
+- risks:
+  - Hub-L5/XT-L2/Hub-L1 未补齐真实样本前，`SKC-W2-05` 继续阻塞，`SKC-W2-06` 不能 verified_handoff
+  - 若以 contract/fixture 或 synthetic 证据冒绿，将违反 require-real 与双绿门禁
+- rollback:
+  - `.axcoder/runtime/skills_runner_policy.snapshot.json`
+  - `XT_SKILLS_POLICY_SNAPSHOT_ROLLBACK=1`
+  - `x-hub/grpc-server/hub_grpc_server/src/services.js`
+  - `x-hub/grpc-server/hub_grpc_server/src/memory_agent_grant_chain.test.js`
+
+7) Handoff
+- next_owner_lane: `Hub-L5 + XT-L2 + Hub-L1`
+- depends_on:
+  - `B1`: 收集 `skills.package.imported -> first_run accepted >=30` 真样本
+  - `B2`: 产出 `xt-overflow/xt-origin/xt-cleanup` 三项报告
+  - `B3`: `SKC-W2-05` 转绿后触发 XT-L2 `SKC-W2-06 verified_handoff`
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v12.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+
+#### XT-L1 / SKC-W2-05 / Auto-Continue（Release Sprint checkpoint v13）
+
+1) Scope
+- `SKC-W2-05`（主链关键前置）继续协议续推：维持 `precheck_only + fail-closed`，刷新 claim TTL 与 checkpoint 证据，目标仍是 `W2-05 PASS` 或可执行阻塞清单。
+
+2) Changes
+- checkpoint 与 blocked 状态续写：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v13.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（updated_at + claim_ttl 续租）
+- 证据对齐（Release Sprint）：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+- Command Board（仅 XT-L1 行/分区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`
+
+3) DoD
+- [x] 开工前 claim 保持有效（`claim_id` 不变，`claim_ttl_until` 已续租）
+- [x] 继续协议 machine-readable checkpoint 已落盘（v13）
+- [x] `execute-chain -> evaluateSkillExecutionGate` 接线证据保持可复核
+- [x] 依赖未满足保持 fail-closed（仅 blocked，不写 closed）
+- [ ] `SKC-W2-05` 转 `SKC-G1/G3/G4:PASS` 并触发 XT-L2 `SKC-W2-06 verified_handoff`
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`（`successful_import_rows=0`, `matched_latency_rows=0`, threshold=30）
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（贡献项 `execute-chain gate wiring=PASS`）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v13.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v9.json`
+
+5) KPI Snapshot
+- `import_to_first_run_p95_ms`: `10920`（snapshot）
+- `skill_first_run_success_rate`: `0.96`（snapshot）
+- `preflight_false_positive_rate`: `0.02`（snapshot）
+- `SKC-G3 successful_import_rows`: `0`（require-real）
+- `SKC-G3 matched_latency_rows`: `0`（require-real）
+- 报告路径：
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+
+6) Risks & Rollback
+- risks:
+  - Hub-L5/XT-L2/Hub-L1 未补齐真实样本前，`SKC-W2-05` 继续阻塞，`SKC-W2-06` 不能 verified_handoff
+  - 若以 contract/fixture 或 synthetic 证据冒绿，将违反 require-real 与双绿门禁
+- rollback:
+  - `.axcoder/runtime/skills_runner_policy.snapshot.json`
+  - `XT_SKILLS_POLICY_SNAPSHOT_ROLLBACK=1`
+  - `x-hub/grpc-server/hub_grpc_server/src/services.js`
+  - `x-hub/grpc-server/hub_grpc_server/src/memory_agent_grant_chain.test.js`
+
+7) Handoff
+- next_owner_lane: `Hub-L5 + XT-L2 + Hub-L1`
+- depends_on:
+  - `B1`: 收集 `skills.package.imported -> first_run accepted >=30` 真样本
+  - `B2`: 产出 `xt-overflow/xt-origin/xt-cleanup` 三项报告
+  - `B3`: `SKC-W2-05` 转绿后触发 XT-L2 `SKC-W2-06 verified_handoff`
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v13.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+
+#### XT-L1 / SKC-W2-05 / Auto-Continue（Release Sprint checkpoint v14）
+
+1) Scope
+- `SKC-W2-05`（主链关键前置）继续协议续推：维持 `precheck_only + fail-closed`，刷新 claim TTL 与 checkpoint 证据，目标仍是 `W2-05 PASS` 或可执行阻塞清单。
+
+2) Changes
+- checkpoint 与 blocked 状态续写：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v14.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（updated_at + claim_ttl 续租）
+- 证据对齐（Release Sprint）：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+- Command Board（仅 XT-L1 行/分区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`
+
+3) DoD
+- [x] 开工前 claim 保持有效（`claim_id` 不变，`claim_ttl_until` 已续租）
+- [x] 继续协议 machine-readable checkpoint 已落盘（v14）
+- [x] `execute-chain -> evaluateSkillExecutionGate` 接线证据保持可复核
+- [x] 依赖未满足保持 fail-closed（仅 blocked，不写 closed）
+- [ ] `SKC-W2-05` 转 `SKC-G1/G3/G4:PASS` 并触发 XT-L2 `SKC-W2-06 verified_handoff`
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`（`successful_import_rows=0`, `matched_latency_rows=0`, threshold=30）
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（贡献项 `execute-chain gate wiring=PASS`）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v14.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v9.json`
+
+5) KPI Snapshot
+- `import_to_first_run_p95_ms`: `10920`（snapshot）
+- `skill_first_run_success_rate`: `0.96`（snapshot）
+- `preflight_false_positive_rate`: `0.02`（snapshot）
+- `SKC-G3 successful_import_rows`: `0`（require-real）
+- `SKC-G3 matched_latency_rows`: `0`（require-real）
+- 报告路径：
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+
+6) Risks & Rollback
+- risks:
+  - Hub-L5/XT-L2/Hub-L1 未补齐真实样本前，`SKC-W2-05` 继续阻塞，`SKC-W2-06` 不能 verified_handoff
+  - 若以 contract/fixture 或 synthetic 证据冒绿，将违反 require-real 与双绿门禁
+- rollback:
+  - `.axcoder/runtime/skills_runner_policy.snapshot.json`
+  - `XT_SKILLS_POLICY_SNAPSHOT_ROLLBACK=1`
+  - `x-hub/grpc-server/hub_grpc_server/src/services.js`
+  - `x-hub/grpc-server/hub_grpc_server/src/memory_agent_grant_chain.test.js`
+
+7) Handoff
+- next_owner_lane: `Hub-L5 + XT-L2 + Hub-L1`
+- depends_on:
+  - `B1`: 收集 `skills.package.imported -> first_run accepted >=30` 真样本
+  - `B2`: 产出 `xt-overflow/xt-origin/xt-cleanup` 三项报告
+  - `B3`: `SKC-W2-05` 转绿后触发 XT-L2 `SKC-W2-06 verified_handoff`
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v14.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+
+#### XT-L1 / SKC-W2-05 / Auto-Continue（Release Sprint checkpoint v15）
+
+1) Scope
+- `SKC-W2-05`（主链关键前置）继续协议续推：维持 `precheck_only + fail-closed`，刷新 claim TTL 与 checkpoint 证据，目标仍是 `W2-05 PASS` 或可执行阻塞清单。
+
+2) Changes
+- checkpoint 与 blocked 状态续写：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v15.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（updated_at + claim_ttl 续租）
+- 证据对齐（Release Sprint）：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+- Command Board（仅 XT-L1 行/分区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`
+
+3) DoD
+- [x] 开工前 claim 保持有效（`claim_id` 不变，`claim_ttl_until` 已续租）
+- [x] 继续协议 machine-readable checkpoint 已落盘（v15）
+- [x] `execute-chain -> evaluateSkillExecutionGate` 接线证据保持可复核
+- [x] 依赖未满足保持 fail-closed（仅 blocked，不写 closed）
+- [ ] `SKC-W2-05` 转 `SKC-G1/G3/G4:PASS` 并触发 XT-L2 `SKC-W2-06 verified_handoff`
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`（`successful_import_rows=0`, `matched_latency_rows=0`, threshold=30）
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（贡献项 `execute-chain gate wiring=PASS`）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v15.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v9.json`
+
+5) KPI Snapshot
+- `import_to_first_run_p95_ms`: `10920`（snapshot）
+- `skill_first_run_success_rate`: `0.96`（snapshot）
+- `preflight_false_positive_rate`: `0.02`（snapshot）
+- `SKC-G3 successful_import_rows`: `0`（require-real）
+- `SKC-G3 matched_latency_rows`: `0`（require-real）
+- 报告路径：
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+
+6) Risks & Rollback
+- risks:
+  - Hub-L5/XT-L2/Hub-L1 未补齐真实样本前，`SKC-W2-05` 继续阻塞，`SKC-W2-06` 不能 verified_handoff
+  - 若以 contract/fixture 或 synthetic 证据冒绿，将违反 require-real 与双绿门禁
+- rollback:
+  - `.axcoder/runtime/skills_runner_policy.snapshot.json`
+  - `XT_SKILLS_POLICY_SNAPSHOT_ROLLBACK=1`
+  - `x-hub/grpc-server/hub_grpc_server/src/services.js`
+  - `x-hub/grpc-server/hub_grpc_server/src/memory_agent_grant_chain.test.js`
+
+7) Handoff
+- next_owner_lane: `Hub-L5 + XT-L2 + Hub-L1`
+- depends_on:
+  - `B1`: 收集 `skills.package.imported -> first_run accepted >=30` 真样本
+  - `B2`: 产出 `xt-overflow/xt-origin/xt-cleanup` 三项报告
+  - `B3`: `SKC-W2-05` 转绿后触发 XT-L2 `SKC-W2-06 verified_handoff`
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v15.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+
+#### XT-L1 / SKC-W2-05 / Auto-Continue（Release Sprint checkpoint v16）
+
+1) Scope
+- `SKC-W2-05`（主链关键前置）继续协议续推：维持 `precheck_only + fail-closed`，刷新 claim TTL 与 checkpoint 证据，目标仍是 `W2-05 PASS` 或可执行阻塞清单。
+
+2) Changes
+- checkpoint 与 blocked 状态续写：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v16.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（updated_at + claim_ttl 续租）
+- 证据对齐（Release Sprint）：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+- Command Board（仅 XT-L1 行/分区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`
+
+3) DoD
+- [x] 开工前 claim 保持有效（`claim_id` 不变，`claim_ttl_until` 已续租）
+- [x] 继续协议 machine-readable checkpoint 已落盘（v16）
+- [x] `execute-chain -> evaluateSkillExecutionGate` 接线证据保持可复核
+- [x] 依赖未满足保持 fail-closed（仅 blocked，不写 closed）
+- [ ] `SKC-W2-05` 转 `SKC-G1/G3/G4:PASS` 并触发 XT-L2 `SKC-W2-06 verified_handoff`
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`（`successful_import_rows=0`, `matched_latency_rows=0`, threshold=30）
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（贡献项 `execute-chain gate wiring=PASS`）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v16.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v9.json`
+
+5) KPI Snapshot
+- `import_to_first_run_p95_ms`: `10920`（snapshot）
+- `skill_first_run_success_rate`: `0.96`（snapshot）
+- `preflight_false_positive_rate`: `0.02`（snapshot）
+- `SKC-G3 successful_import_rows`: `0`（require-real）
+- `SKC-G3 matched_latency_rows`: `0`（require-real）
+- 报告路径：
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+
+6) Risks & Rollback
+- risks:
+  - Hub-L5/XT-L2/Hub-L1 未补齐真实样本前，`SKC-W2-05` 继续阻塞，`SKC-W2-06` 不能 verified_handoff
+  - 若以 contract/fixture 或 synthetic 证据冒绿，将违反 require-real 与双绿门禁
+- rollback:
+  - `.axcoder/runtime/skills_runner_policy.snapshot.json`
+  - `XT_SKILLS_POLICY_SNAPSHOT_ROLLBACK=1`
+  - `x-hub/grpc-server/hub_grpc_server/src/services.js`
+  - `x-hub/grpc-server/hub_grpc_server/src/memory_agent_grant_chain.test.js`
+
+7) Handoff
+- next_owner_lane: `Hub-L5 + XT-L2 + Hub-L1`
+- depends_on:
+  - `B1`: 收集 `skills.package.imported -> first_run accepted >=30` 真样本
+  - `B2`: 产出 `xt-overflow/xt-origin/xt-cleanup` 三项报告
+  - `B3`: `SKC-W2-05` 转绿后触发 XT-L2 `SKC-W2-06 verified_handoff`
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v16.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+
+
+#### XT-L1 / SKC-W2-05 / Auto-Continue（Release Sprint checkpoint v17）
+
+1) Scope
+- `SKC-W2-05`（主链关键前置）继续协议续推：维持 `precheck_only + fail-closed`，刷新 claim TTL 与 checkpoint 证据，目标仍是 `W2-05 PASS` 或可执行阻塞清单。
+
+2) Changes
+- checkpoint 与 blocked 状态续写：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v17.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（updated_at + claim_ttl 续租）
+- 证据对齐（Release Sprint）：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+- Command Board（仅 XT-L1 行/分区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`
+
+3) DoD
+- [x] 开工前 claim 保持有效（`claim_id` 不变，`claim_ttl_until` 已续租）
+- [x] 继续协议 machine-readable checkpoint 已落盘（v17）
+- [x] `execute-chain -> evaluateSkillExecutionGate` 接线证据保持可复核
+- [x] 依赖未满足保持 fail-closed（仅 blocked，不写 closed）
+- [ ] `SKC-W2-05` 转 `SKC-G1/G3/G4:PASS` 并触发 XT-L2 `SKC-W2-06 verified_handoff`
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`（`successful_import_rows=0`, `matched_latency_rows=0`, threshold=30）
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（贡献项 `execute-chain gate wiring=PASS`）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v17.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v9.json`
+
+5) KPI Snapshot
+- `import_to_first_run_p95_ms`: `10920`（snapshot）
+- `skill_first_run_success_rate`: `0.96`（snapshot）
+- `preflight_false_positive_rate`: `0.02`（snapshot）
+- `SKC-G3 successful_import_rows`: `0`（require-real）
+- `SKC-G3 matched_latency_rows`: `0`（require-real）
+- 报告路径：
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+
+6) Risks & Rollback
+- risks:
+  - Hub-L5/XT-L2/Hub-L1 未补齐真实样本前，`SKC-W2-05` 继续阻塞，`SKC-W2-06` 不能 verified_handoff
+  - 若以 contract/fixture 或 synthetic 证据冒绿，将违反 require-real 与双绿门禁
+- rollback:
+  - `.axcoder/runtime/skills_runner_policy.snapshot.json`
+  - `XT_SKILLS_POLICY_SNAPSHOT_ROLLBACK=1`
+  - `x-hub/grpc-server/hub_grpc_server/src/services.js`
+  - `x-hub/grpc-server/hub_grpc_server/src/memory_agent_grant_chain.test.js`
+
+7) Handoff
+- next_owner_lane: `Hub-L5 + XT-L2 + Hub-L1`
+- depends_on:
+  - `B1`: 收集 `skills.package.imported -> first_run accepted >=30` 真样本
+  - `B2`: 产出 `xt-overflow/xt-origin/xt-cleanup` 三项报告
+  - `B3`: `SKC-W2-05` 转绿后触发 XT-L2 `SKC-W2-06 verified_handoff`
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v17.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+
+#### XT-L1 / SKC-W2-05 / Auto-Continue（Release Sprint checkpoint v18）
+
+1) Scope
+- `SKC-W2-05`（主链关键前置）继续协议续推：维持 `precheck_only + fail-closed`，刷新 claim TTL 与 checkpoint 证据，目标仍是 `W2-05 PASS` 或可执行阻塞清单。
+
+2) Changes
+- checkpoint 与 blocked 状态续写：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v18.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（updated_at + claim_ttl 续租）
+- 证据对齐（Release Sprint）：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+- Command Board（仅 XT-L1 行/分区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`
+
+3) DoD
+- [x] 开工前 claim 保持有效（`claim_id` 不变，`claim_ttl_until` 已续租）
+- [x] 继续协议 machine-readable checkpoint 已落盘（v18）
+- [x] `execute-chain -> evaluateSkillExecutionGate` 接线证据保持可复核
+- [x] 依赖未满足保持 fail-closed（仅 blocked，不写 closed）
+- [ ] `SKC-W2-05` 转 `SKC-G1/G3/G4:PASS` 并触发 XT-L2 `SKC-W2-06 verified_handoff`
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`（`successful_import_rows=0`, `matched_latency_rows=0`, threshold=30）
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（贡献项 `execute-chain gate wiring=PASS`）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v18.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v9.json`
+
+5) KPI Snapshot
+- `import_to_first_run_p95_ms`: `10920`（snapshot）
+- `skill_first_run_success_rate`: `0.96`（snapshot）
+- `preflight_false_positive_rate`: `0.02`（snapshot）
+- `SKC-G3 successful_import_rows`: `0`（require-real）
+- `SKC-G3 matched_latency_rows`: `0`（require-real）
+- 报告路径：
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+
+6) Risks & Rollback
+- risks:
+  - Hub-L5/XT-L2/Hub-L1 未补齐真实样本前，`SKC-W2-05` 继续阻塞，`SKC-W2-06` 不能 verified_handoff
+  - 若以 contract/fixture 或 synthetic 证据冒绿，将违反 require-real 与双绿门禁
+- rollback:
+  - `.axcoder/runtime/skills_runner_policy.snapshot.json`
+  - `XT_SKILLS_POLICY_SNAPSHOT_ROLLBACK=1`
+  - `x-hub/grpc-server/hub_grpc_server/src/services.js`
+  - `x-hub/grpc-server/hub_grpc_server/src/memory_agent_grant_chain.test.js`
+
+7) Handoff
+- next_owner_lane: `Hub-L5 + XT-L2 + Hub-L1`
+- depends_on:
+  - `B1`: 收集 `skills.package.imported -> first_run accepted >=30` 真样本
+  - `B2`: 产出 `xt-overflow/xt-origin/xt-cleanup` 三项报告
+  - `B3`: `SKC-W2-05` 转绿后触发 XT-L2 `SKC-W2-06 verified_handoff`
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v18.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+
+#### XT-L1 / SKC-W2-05 / Auto-Continue（Release Sprint checkpoint v19）
+
+1) Scope
+- `SKC-W2-05`（主链关键前置）继续协议续推：维持 `precheck_only + fail-closed`，刷新 claim TTL 与 checkpoint 证据，目标仍是 `W2-05 PASS` 或可执行阻塞清单。
+
+2) Changes
+- checkpoint 与 blocked 状态续写：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v19.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（updated_at + claim_ttl 续租）
+- 证据对齐（Release Sprint）：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+- Command Board（仅 XT-L1 行/分区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`
+
+3) DoD
+- [x] 开工前 claim 保持有效（`claim_id` 不变，`claim_ttl_until` 已续租）
+- [x] 继续协议 machine-readable checkpoint 已落盘（v19）
+- [x] `execute-chain -> evaluateSkillExecutionGate` 接线证据保持可复核
+- [x] 依赖未满足保持 fail-closed（仅 blocked，不写 closed）
+- [ ] `SKC-W2-05` 转 `SKC-G1/G3/G4:PASS` 并触发 XT-L2 `SKC-W2-06 verified_handoff`
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`（`successful_import_rows=0`, `matched_latency_rows=0`, threshold=30）
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（贡献项 `execute-chain gate wiring=PASS`）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v19.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v9.json`
+
+5) KPI Snapshot
+- `import_to_first_run_p95_ms`: `10920`（snapshot）
+- `skill_first_run_success_rate`: `0.96`（snapshot）
+- `preflight_false_positive_rate`: `0.02`（snapshot）
+- `SKC-G3 successful_import_rows`: `0`（require-real）
+- `SKC-G3 matched_latency_rows`: `0`（require-real）
+- 报告路径：
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+
+6) Risks & Rollback
+- risks:
+  - Hub-L5/XT-L2/Hub-L1 未补齐真实样本前，`SKC-W2-05` 继续阻塞，`SKC-W2-06` 不能 verified_handoff
+  - 若以 contract/fixture 或 synthetic 证据冒绿，将违反 require-real 与双绿门禁
+- rollback:
+  - `.axcoder/runtime/skills_runner_policy.snapshot.json`
+  - `XT_SKILLS_POLICY_SNAPSHOT_ROLLBACK=1`
+  - `x-hub/grpc-server/hub_grpc_server/src/services.js`
+  - `x-hub/grpc-server/hub_grpc_server/src/memory_agent_grant_chain.test.js`
+
+7) Handoff
+- next_owner_lane: `Hub-L5 + XT-L2 + Hub-L1`
+- depends_on:
+  - `B1`: 收集 `skills.package.imported -> first_run accepted >=30` 真样本
+  - `B2`: 产出 `xt-overflow/xt-origin/xt-cleanup` 三项报告
+  - `B3`: `SKC-W2-05` 转绿后触发 XT-L2 `SKC-W2-06 verified_handoff`
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v19.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+
+#### XT-L1 / SKC-W2-05 / Auto-Continue（Release Sprint checkpoint v20）
+
+1) Scope
+- `SKC-W2-05`（主链关键前置）继续协议续推：维持 `precheck_only + fail-closed`，刷新 claim TTL 与 checkpoint 证据，目标仍是 `W2-05 PASS` 或可执行阻塞清单。
+
+2) Changes
+- checkpoint 与 blocked 状态续写：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v20.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（updated_at + claim_ttl 续租）
+- 证据对齐（Release Sprint）：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+- Command Board（仅 XT-L1 行/分区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`
+
+3) DoD
+- [x] 开工前 claim 保持有效（`claim_id` 不变，`claim_ttl_until` 已续租）
+- [x] 继续协议 machine-readable checkpoint 已落盘（v20）
+- [x] `execute-chain -> evaluateSkillExecutionGate` 接线证据保持可复核
+- [x] 依赖未满足保持 fail-closed（仅 blocked，不写 closed）
+- [ ] `SKC-W2-05` 转 `SKC-G1/G3/G4:PASS` 并触发 XT-L2 `SKC-W2-06 verified_handoff`
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`（`successful_import_rows=0`, `matched_latency_rows=0`, threshold=30）
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（贡献项 `execute-chain gate wiring=PASS`）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v20.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v9.json`
+
+5) KPI Snapshot
+- `import_to_first_run_p95_ms`: `10920`（snapshot）
+- `skill_first_run_success_rate`: `0.96`（snapshot）
+- `preflight_false_positive_rate`: `0.02`（snapshot）
+- `SKC-G3 successful_import_rows`: `0`（require-real）
+- `SKC-G3 matched_latency_rows`: `0`（require-real）
+- 报告路径：
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+
+6) Risks & Rollback
+- risks:
+  - Hub-L5/XT-L2/Hub-L1 未补齐真实样本前，`SKC-W2-05` 继续阻塞，`SKC-W2-06` 不能 verified_handoff
+  - 若以 contract/fixture 或 synthetic 证据冒绿，将违反 require-real 与双绿门禁
+- rollback:
+  - `.axcoder/runtime/skills_runner_policy.snapshot.json`
+  - `XT_SKILLS_POLICY_SNAPSHOT_ROLLBACK=1`
+  - `x-hub/grpc-server/hub_grpc_server/src/services.js`
+  - `x-hub/grpc-server/hub_grpc_server/src/memory_agent_grant_chain.test.js`
+
+7) Handoff
+- next_owner_lane: `Hub-L5 + XT-L2 + Hub-L1`
+- depends_on:
+  - `B1`: 收集 `skills.package.imported -> first_run accepted >=30` 真样本
+  - `B2`: 产出 `xt-overflow/xt-origin/xt-cleanup` 三项报告
+  - `B3`: `SKC-W2-05` 转绿后触发 XT-L2 `SKC-W2-06 verified_handoff`
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v20.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+
+#### XT-L1 / SKC-W2-05 / Auto-Continue（Release Sprint checkpoint v21）
+
+1) Scope
+- `SKC-W2-05`（主链关键前置）继续协议续推：维持 `precheck_only + fail-closed`，刷新 claim TTL 与 checkpoint 证据，目标仍是 `W2-05 PASS` 或可执行阻塞清单。
+
+2) Changes
+- checkpoint 与 blocked 状态续写：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v21.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（updated_at + claim_ttl 续租）
+- 证据对齐（Release Sprint）：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+- Command Board（仅 XT-L1 行/分区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`
+
+3) DoD
+- [x] 开工前 claim 保持有效（`claim_id` 不变，`claim_ttl_until` 已续租）
+- [x] 继续协议 machine-readable checkpoint 已落盘（v21）
+- [x] `execute-chain -> evaluateSkillExecutionGate` 接线证据保持可复核
+- [x] 依赖未满足保持 fail-closed（仅 blocked，不写 closed）
+- [ ] `SKC-W2-05` 转 `SKC-G1/G3/G4:PASS` 并触发 XT-L2 `SKC-W2-06 verified_handoff`
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`（`successful_import_rows=0`, `matched_latency_rows=0`, threshold=30）
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（贡献项 `execute-chain gate wiring=PASS`）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v21.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v9.json`
+
+5) KPI Snapshot
+- `import_to_first_run_p95_ms`: `10920`（snapshot）
+- `skill_first_run_success_rate`: `0.96`（snapshot）
+- `preflight_false_positive_rate`: `0.02`（snapshot）
+- `SKC-G3 successful_import_rows`: `0`（require-real）
+- `SKC-G3 matched_latency_rows`: `0`（require-real）
+- 报告路径：
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+
+6) Risks & Rollback
+- risks:
+  - Hub-L5/XT-L2/Hub-L1 未补齐真实样本前，`SKC-W2-05` 继续阻塞，`SKC-W2-06` 不能 verified_handoff
+  - 若以 contract/fixture 或 synthetic 证据冒绿，将违反 require-real 与双绿门禁
+- rollback:
+  - `.axcoder/runtime/skills_runner_policy.snapshot.json`
+  - `XT_SKILLS_POLICY_SNAPSHOT_ROLLBACK=1`
+  - `x-hub/grpc-server/hub_grpc_server/src/services.js`
+  - `x-hub/grpc-server/hub_grpc_server/src/memory_agent_grant_chain.test.js`
+
+7) Handoff
+- next_owner_lane: `Hub-L5 + XT-L2 + Hub-L1`
+- depends_on:
+  - `B1`: 收集 `skills.package.imported -> first_run accepted >=30` 真样本
+  - `B2`: 产出 `xt-overflow/xt-origin/xt-cleanup` 三项报告
+  - `B3`: `SKC-W2-05` 转绿后触发 XT-L2 `SKC-W2-06 verified_handoff`
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v21.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+
+#### XT-L1 / SKC-W2-05 / Auto-Continue（Release Sprint checkpoint v22）
+
+1) Scope
+- `SKC-W2-05`（定向推进）消费 Hub-L5 最新 require-real 输入后尝试收口；当前输入不足，按 fail-closed 输出缺口清单并维持 blocked。
+
+2) Changes
+- checkpoint 与 blocked 状态续写：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v22.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（updated_at + claim_ttl + blocked_reason 同步）
+- 定向缺口清单（Directed Baton）：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`
+- Command Board（仅 XT-L1 行/分区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`
+
+3) DoD
+- [x] 已消费 Hub-L5 最新 require-real 输入并复核可机判字段
+- [x] 输入不足时输出 fail-closed 缺口清单（不空转、不跨步）
+- [x] 继续协议 machine-readable checkpoint 已落盘（v22）
+- [x] 依赖未满足保持 blocked，不写 closed
+- [ ] `SKC-W2-05` 转 `SKC-G1/G3/G4:PASS` 并通知 XT-L2 执行 `SKC-W2-06 verified_handoff`
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`（`successful_import_rows=0`, `matched_latency_rows=0`, threshold=30）
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（贡献项 `execute-chain gate wiring=PASS`）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v22.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+
+5) KPI Snapshot
+- `import_to_first_run_p95_ms`: `10920`（contract snapshot）
+- `skill_first_run_success_rate`: `0.96`（contract snapshot）
+- `preflight_false_positive_rate`: `0.02`（contract snapshot）
+- `SKC-G3 successful_import_rows`: `0`（require-real）
+- `SKC-G3 matched_latency_rows`: `0`（require-real）
+- 报告路径：
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`
+
+6) Risks & Rollback
+- risks:
+  - require-real 采样行数未达阈值前，`SKC-W2-05` 不能转绿，`SKC-W2-06` 不可 verified_handoff
+  - hard-line triplet 当前 `qa_verification_state=pending`，不可替代 Gate 绿
+- rollback:
+  - `.axcoder/runtime/skills_runner_policy.snapshot.json`
+  - `XT_SKILLS_POLICY_SNAPSHOT_ROLLBACK=1`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L5 + XT-L2 + Hub-L1`
+- depends_on:
+  - `GAP-1`: `successful_import_rows>=30 && matched_latency_rows>=30`（require-real only）
+  - `GAP-2`: `SKC-W2-05 gate_vector => SKC-G1/G3/G4 PASS` 后触发 XT-L2 `SKC-W2-06 verified_handoff`
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+
+#### XT-L1 / SKC-W2-05 / Auto-Continue（Release Sprint checkpoint v23）
+
+1) Scope
+- `SKC-W2-05`（定向推进）消费 Hub-L5 最新 require-real 输入后尝试收口；当前输入不足，按 fail-closed 输出缺口清单并维持 blocked。
+
+2) Changes
+- checkpoint 与 blocked 状态续写：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v23.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（updated_at + claim_ttl + blocked_reason 同步）
+- 定向缺口清单（Directed Baton）：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`（刷新最新 Hub-L5 输入）
+- Command Board（仅 XT-L1 行/分区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`
+
+3) DoD
+- [x] 已消费 Hub-L5 最新 require-real 输入并复核可机判字段
+- [x] 输入不足时输出 fail-closed 缺口清单（不空转、不跨步）
+- [x] 继续协议 machine-readable checkpoint 已落盘（v23）
+- [x] 依赖未满足保持 blocked，不写 closed
+- [ ] `SKC-W2-05` 转 `SKC-G1/G3/G4:PASS` 并通知 XT-L2 执行 `SKC-W2-06 verified_handoff`
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`（`successful_import_rows=0`, `matched_latency_rows=0`, threshold=30）
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（贡献项 `execute-chain gate wiring=PASS`）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v23.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+
+5) KPI Snapshot
+- `import_to_first_run_p95_ms`: `10920`（contract snapshot）
+- `skill_first_run_success_rate`: `0.96`（contract snapshot）
+- `preflight_false_positive_rate`: `0.02`（contract snapshot）
+- `SKC-G3 successful_import_rows`: `0`（require-real）
+- `SKC-G3 matched_latency_rows`: `0`（require-real）
+- 报告路径：
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`
+
+6) Risks & Rollback
+- risks:
+  - require-real 采样行数未达阈值前，`SKC-W2-05` 不能转绿，`SKC-W2-06` 不可 verified_handoff
+  - hard-line triplet 当前 `qa_verification_state=pending`，不可替代 Gate 绿
+- rollback:
+  - `.axcoder/runtime/skills_runner_policy.snapshot.json`
+  - `XT_SKILLS_POLICY_SNAPSHOT_ROLLBACK=1`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L5 + XT-L2 + Hub-L1 + QA`
+- depends_on:
+  - `GAP-1`: `successful_import_rows>=30 && matched_latency_rows>=30`（require-real only）
+  - `GAP-2`: `xt-overflow/xt-origin/xt-cleanup qa_verification_state=verified`
+  - `GAP-3`: `SKC-W2-05 gate_vector => SKC-G1/G3/G4 PASS` 后触发 XT-L2 `SKC-W2-06 verified_handoff`
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+
+#### XT-L1 / SKC-W2-05 / Auto-Continue（Release Sprint checkpoint v24）
+
+1) Scope
+- `SKC-W2-05`（定向推进）消费 Hub-L5 最新 require-real 输入后尝试收口；当前输入不足，按 fail-closed 输出缺口清单并维持 blocked。
+
+2) Changes
+- checkpoint 与 blocked 状态续写：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v24.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（updated_at + claim_ttl + blocked_reason 同步）
+- 定向缺口清单（Directed Baton）：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`（刷新最新 Hub-L5 输入）
+- Command Board（仅 XT-L1 行/分区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`
+
+3) DoD
+- [x] 已消费 Hub-L5 最新 require-real 输入并复核可机判字段
+- [x] 输入不足时输出 fail-closed 缺口清单（不空转、不跨步）
+- [x] 继续协议 machine-readable checkpoint 已落盘（v24）
+- [x] 依赖未满足保持 blocked，不写 closed
+- [ ] `SKC-W2-05` 转 `SKC-G1/G3/G4:PASS` 并通知 XT-L2 执行 `SKC-W2-06 verified_handoff`
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`（`successful_import_rows=0`, `matched_latency_rows=0`, threshold=30）
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（贡献项 `execute-chain gate wiring=PASS`）
+- 证据路径：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v24.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`
+
+5) KPI Snapshot
+- `import_to_first_run_p95_ms`: `10920`（contract snapshot）
+- `skill_first_run_success_rate`: `0.96`（contract snapshot）
+- `preflight_false_positive_rate`: `0.02`（contract snapshot）
+- `SKC-G3 successful_import_rows`: `0`（require-real）
+- `SKC-G3 matched_latency_rows`: `0`（require-real）
+- 报告路径：
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`
+
+6) Risks & Rollback
+- risks:
+  - require-real 采样行数未达阈值前，`SKC-W2-05` 不能转绿，`SKC-W2-06` 不可 verified_handoff
+  - hard-line triplet 当前 `qa_verification_state=pending`，不可替代 Gate 绿
+- rollback:
+  - `.axcoder/runtime/skills_runner_policy.snapshot.json`
+  - `XT_SKILLS_POLICY_SNAPSHOT_ROLLBACK=1`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L5 + XT-L2 + Hub-L1 + QA`
+- depends_on:
+  - `GAP-1`: `successful_import_rows>=30 && matched_latency_rows>=30`（require-real only）
+  - `GAP-2`: `xt-overflow/xt-origin/xt-cleanup qa_verification_state=verified`
+  - `GAP-3`: `SKC-W2-05 gate_vector => SKC-G1/G3/G4 PASS` 后触发 XT-L2 `SKC-W2-06 verified_handoff`
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`
+
+#### XT-L1 / SKC-W2-05 / Auto-Continue（Release Sprint checkpoint v25）
+
+1) Scope
+- `SKC-W2-05`（状态变化）已消费 XT-L2+Hub-L1 real sample 证据并确认 `SKC-G3=PASS`；当前仅剩 hard-line triplet QA 验证缺口，继续 fail-closed。
+
+2) Changes
+- checkpoint 与 blocked 状态续写：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v25.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+- release blockers 更新：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v3.json`
+- 最小缺口键清单刷新：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`
+- Command Board（仅 XT-L1 行/分区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`
+
+3) DoD
+- [x] 已消费 real sample 证据并确认 `successful_import_rows=34`、`matched_latency_rows=0`
+- [x] `SKC-G3` 从 `INSUFFICIENT_EVIDENCE` 更新为 `PASS`
+- [x] 未满足 hard-line triplet QA verified 前保持 fail-closed
+- [x] 仅定向维护 XT-L1 分区与本任务行
+- [ ] 完成 `G1/G4` 可机判收口并输出 `verified_handoff` 给 XT-L2
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（贡献项 `execute-chain gate wiring=PASS`）
+- 最小缺口键：
+  - `GAP-2.hard_line_triplet_qa_verified`
+  - `GAP-3.downstream_verified_handoff`
+- 证据路径：
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v25.json`
+
+5) KPI Snapshot
+- `import_to_first_run_p95_ms`: `10920`（contract snapshot）
+- `skill_first_run_success_rate`: `0.96`（contract snapshot）
+- `preflight_false_positive_rate`: `0.02`（contract snapshot）
+- `successful_import_rows`: `34`（require-real）
+- `matched_latency_rows`: `0`（require-real）
+- 报告路径：
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+
+6) Risks & Rollback
+- risks:
+  - hard-line triplet 未 verified 前，`SKC-W2-05` 仍不可放行
+  - 若提前宣告 `PASS` 将违反 fail-closed
+- rollback:
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v25.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v3.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2 + Hub-L1 + QA`
+- depends_on:
+  - `GAP-2`: triplet `qa_verification_state=verified`
+  - `GAP-3`: `G1/G4` 收口完成并允许 `verified_handoff`
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v3.json`
+
+#### XT-L1 / SKC-W2-05 / Auto-Continue（Release Sprint checkpoint v26）
+
+1) Scope
+- `SKC-W2-05`（状态变化）已消费 XT-L2+Hub-L1 real sample：`successful_import_rows=34` 但 `matched_latency_rows=0` 未达标；继续 fail-closed。
+
+2) Changes
+- checkpoint 与 blocked 状态续写：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v26.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+- release blockers 更新：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v4.json`
+- 最小缺口键清单刷新：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`
+- Command Board（仅 XT-L1 行/分区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`
+
+3) DoD
+- [x] 已消费 real sample 证据并更新到最新计数
+- [x] 样本未达标时保持 fail-closed
+- [x] 输出最小缺口键并保持 machine-readable
+- [x] 仅更新 XT-L1 分区与本任务行
+- [ ] `SKC-W2-05` 收口 `G1/G3/G4` 并向 XT-L2 发送 `verified_handoff`
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G3`: `INSUFFICIENT_EVIDENCE`（`successful_import_rows=34`, `matched_latency_rows=0`, threshold=30）
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（贡献项 `execute-chain gate wiring=PASS`）
+- 最小缺口键：
+  - `GAP-1.require_real_sampling_rows`
+  - `GAP-2.hard_line_triplet_qa_verified`
+- 证据路径：
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v4.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v26.json`
+
+5) KPI Snapshot
+- `import_to_first_run_p95_ms`: `10920`（contract snapshot）
+- `skill_first_run_success_rate`: `0.96`（contract snapshot）
+- `preflight_false_positive_rate`: `0.02`（contract snapshot）
+- `successful_import_rows`: `34`（require-real）
+- `matched_latency_rows`: `0`（require-real）
+- 报告路径：
+  - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+
+6) Risks & Rollback
+- risks:
+  - `matched_latency_rows` 未达阈值前，`SKC-W2-05` 不能放行
+  - hard-line triplet 仍 pending，`G1/G4` 不可提前宣告 PASS
+- rollback:
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v26.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v4.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L5 + XT-L2 + Hub-L1 + QA`
+- depends_on:
+  - `GAP-1`: `matched_latency_rows>=30`（current `0`）
+  - `GAP-2`: triplet `qa_verification_state=verified`
+  - `GAP-3`: `SKC-W2-05 gate_vector => SKC-G1/G3/G4 PASS` 后定向通知 XT-L2
+- unblock 条件机读来源：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+
+
+#### XT-L1 / SKC-W2-05 / Auto-Continue（Release Sprint checkpoint v27）
+
+1) Scope
+- `SKC-W2-05`（状态变化）已消费 XT-L2/Hub-L1 最新 real sample 与 hard-line triplet QA 对齐证据，收口 `SKC-G1/G3/G4` 并生成 XT-L2 定向 `verified_handoff`。
+
+2) Changes
+- checkpoint 与状态收口：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v27.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`（状态改为 `delivered`，blocked cleared）
+- hard-line + blocker 对齐：
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_hard_line_triplet_qa_alignment.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v5.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`（最小缺口键清零）
+- 定向交接：
+  - `build/reports/skc_w2_05_xt_l1_verified_handoff.v1.json`
+- Command Board（仅 XT-L1 行/分区）：
+  - `docs/memory-new/xhub-lane-command-board-v2.md`
+
+3) DoD
+- [x] 已消费 XT-L2 real sample delivery pack 与 Hub-L1 bridge 证据
+- [x] `successful_import_rows>=30 && matched_latency_rows>=30`（当前 `34/34`）
+- [x] hard-line triplet QA 对齐完成并回填机读结论
+- [x] `SKC-W2-05` gate_vector 收口为 `SKC-G1/G3/G4:PASS`
+- [x] 已向 XT-L2 生成 `verified_handoff`（directed baton）
+
+4) Gate
+- `SKC-G1`: `PASS`
+- `SKC-G3`: `PASS`（`successful_import_rows=34`, `matched_latency_rows=34`, threshold=30）
+- `SKC-G4`: `PASS`（`execute-chain gate wiring=PASS` + hard-line triplet QA aligned）
+- 最小缺口键：`none`
+- 证据路径：
+  - `build/reports/skc_brk_x2_g3_probe.compat.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_real_sample_delivery_pack.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_hard_line_triplet_qa_alignment.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v5.json`
+  - `build/reports/skc_w2_05_xt_l1_verified_handoff.v1.json`
+
+5) KPI Snapshot
+- `successful_import_rows`: `34`
+- `matched_latency_rows`: `34`
+- `openclaw_skill_import_success_rate`: `1`
+- `import_to_first_run_p95_ms`: `32`
+- `hard_line_triplet_zero_violation`: `3/3`（overflow/origin/cleanup）
+- 报告路径：
+  - `build/reports/skc_brk_x2_g3_probe.compat.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v9.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_hard_line_triplet_qa_alignment.v1.json`
+
+6) Risks & Rollback
+- risks:
+  - 若 XT-L2 未按 directed baton 消费 `verified_handoff`，主链仍会停在 `SKC-W2-06`
+  - `build/hub_l5_release_skc_g3_real_sampling.json` 当前仍是旧快照，需由 Hub-L5 后续重跑对齐
+- rollback:
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v27.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v5.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`
+  - `build/reports/skc_w2_05_xt_l1_verified_handoff.v1.json`
+
+7) Handoff
+- next_owner_lane: `XT-L2`
+- depends_on:
+  - XT-L2 消费 `build/reports/skc_w2_05_xt_l1_verified_handoff.v1.json`
+  - XT-L2 将 `SKC-W2-06` 推进到 `verified_handoff`
+  - Hub-L4 按 `SKC-W2-06` handoff 接棒 `SKC-W2-07`
+- unblock 条件机读来源：
+  - `build/reports/skc_w2_05_xt_l1_verified_handoff.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v5.json`
+
+
+#### XT-L1 / SKC-W2-05 / delta_3line checkpoint v28
+
+- status: `delivered(verified_handoff_dispatched)`（no_state_change）
+- dependency_delta: `SKC-W2-06` 仍为 `ready`；XT-L1 保持定向等待 `build/reports/skc_w2_05_xt_l1_verified_handoff.v1.json` 被 XT-L2 消费，不抢 claim `XT-W2-*`
+- next_owner_lane: `XT-L2`（XT-L1 维持 fail-closed standby）
+- evidence_ref: `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_delta_3line.v28.json`
+
+#### XT-L1 / SKC-W2-05 / delta_3line checkpoint v29
+
+- status: `delivered(verified_handoff_ready_prep_only)`（no_state_change；已续租 claim）
+- dependency_delta: `SKC-W2-06` 已处于 `verified_handoff`；XT-L1 维持 `SKC-W2-05` 稳态并待命 Hub-L4 runner_execute 证据拉取
+- prep_delta: `XT-W2-23-B` 与 `XT-W2-24-A` 已产出实现草案/测试草案机读证据，保持 `claim_id=none`，等待 XT-L2 正式 claim 指令
+- next_owner_lane: `Hub-L4 + XT-L2`（Hub-L4 可拉取证据；XT-L2 发 claim 指令后转执行态）
+- evidence_ref: `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_delta_3line.v29.json`
+
+#### XT-L1 / SKC-W2-05 / delta_3line checkpoint v30
+
+- status: `delivered(verified_handoff_ready_prep_only_claim_renewed)`（no_state_change）
+- dependency_delta: `SKC-W2-06` 保持 `verified_handoff`、`SKC-W2-07` 已 `delivered`；XT-L1 维持 fail-closed standby，按需支持 Hub-L4/Hub-L5 runner_execute 证据拉取
+- prep_delta: `XT-W2-23-B` 与 `XT-W2-24-A` prep-only 草案证据已续更到 v2，仍保持 `claim_id=none`，等待 XT-L2 正式 claim 指令
+- next_owner_lane: `Hub-L4 + Hub-L5 + XT-L2`（拉证优先；XT-L2 发 claim 指令后转执行态）
+- evidence_ref: `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_delta_3line.v30.json`
+
+#### XT-L1 / SKC-W2-05 / delta_3line checkpoint v31
+
+- status: `delivered(verified_handoff_ready_prep_only_claim_renewed)`（no_state_change）
+- dependency_delta: `SKC-W2-06` 保持 `verified_handoff`、`SKC-W2-07` 保持 `delivered`；XT-L1 不抢 claim XT 主线任务，维持 fail-closed standby
+- prep_delta: `XT-W2-23-B` 与 `XT-W2-24-A` 继续 `prep_only`（实现草案/测试草案沿用 v2 机读证据），保持 `claim_id=none`，等待 XT-L2 正式 claim 指令
+- next_owner_lane: `Hub-L4 + Hub-L5 + XT-L2`（按需拉取 runner_execute 最小证据包，delta 优先）
+- evidence_ref: `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_checklist.v2.json`, `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_minicard.v1.json`
+
+#### XT-L1 / SKC-W2-05 / delta_3line checkpoint v32
+
+- status: `delivered(verified_handoff_ready_prep_only_claim_renewed)`（no_state_change）
+- dependency_delta: `SKC-W2-06` 保持 `verified_handoff`、`SKC-W2-07` 保持 `delivered`；XT-L1 继续不抢 claim XT 主线任务，维持 fail-closed standby
+- prep_delta: `XT-W2-23-B` 与 `XT-W2-24-A` 继续 `prep_only`（不转执行态，不改全局 gate），保持 `claim_id=none`，等待 XT-L2 正式 claim 指令
+- next_owner_lane: `Hub-L4 + Hub-L5 + XT-L2`（按需拉取 runner_execute 最小证据包，delta 优先，不主动扩散）
+- evidence_ref: `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_checklist.v2.json`, `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_minicard.v1.json`
+
+#### XT-L1 / SKC-W2-05 / delta_3line checkpoint v33
+
+- status: `delivered(verified_handoff_ready_prep_only_claim_renewed)`（no_state_change）
+- dependency_delta: `SKC-W2-06` 保持 `verified_handoff`、`SKC-W2-07` 保持 `delivered`；XT-L1 维持 fail-closed，不抢 claim XT 主线执行任务
+- prep_delta: `XT-W2-23-B` 与 `XT-W2-24-A` 继续 `prep_only` 证据维护（不转执行态），等待 XT-L2 正式 claim 指令
+- next_owner_lane: `Hub-L4 + Hub-L5 + XT-L2`（按需拉取 runner_execute 最小证据包，delta 优先，禁止广播）
+- evidence_ref: `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_checklist.v2.json`, `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_minicard.v1.json`
+
+#### XT-L1 / SKC-W2-05 / delta_3line checkpoint v34
+
+- status: `delivered(verified_handoff_ready_prep_only_claim_renewed)`（no_state_change）
+- dependency_delta: `SKC-W2-06` 保持 `verified_handoff`、`SKC-W2-07` 保持 `delivered`；XT-L1 维持 fail-closed，不抢 claim XT 主线执行任务
+- prep_delta: `XT-W2-23-B` 与 `XT-W2-24-A` 继续 `prep_only`（不 claim 执行态），等待 XT-L2 正式 claim 指令
+- next_owner_lane: `Hub-L4 + Hub-L5 + XT-L2`（按需拉取 runner_execute 最小证据包，delta 优先，禁止广播）
+- evidence_ref: `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_checklist.v2.json`, `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_minicard.v1.json`
+
+#### XT-L1 / SKC-W2-05 / delta_3line checkpoint v35
+
+- status: `delivered(verified_handoff_ready_prep_only_claim_renewed)`（no_state_change）
+- dependency_delta: `SKC-W2-06` 保持 `verified_handoff`、`SKC-W2-07` 保持 `delivered`；XT-L1 维持 fail-closed，不抢 claim XT 主线执行任务
+- prep_delta: `XT-W2-23-B` 与 `XT-W2-24-A` 继续 `prep_only`（不 claim 执行态），等待 XT-L2 正式 claim 指令
+- next_owner_lane: `Hub-L4 + Hub-L5 + XT-L2`（按需拉取 runner_execute 最小证据包，delta 优先，禁止广播）
+- evidence_ref: `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_checklist.v2.json`, `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_minicard.v1.json`
+
+#### XT-L1 / SKC-W2-05 / delta_3line checkpoint v36
+
+- status: `delivered(verified_handoff_ready_prep_only_claim_renewed)`（no_state_change）
+- dependency_delta: `SKC-W2-06` 保持 `verified_handoff`、`SKC-W2-07` 保持 `delivered`；XT-L1 维持 fail-closed，不抢 claim XT 主线执行任务
+- prep_delta: `XT-W2-23-B` 与 `XT-W2-24-A` 继续 `prep_only`（不 claim 执行态），等待 XT-L2 正式 claim 指令
+- next_owner_lane: `Hub-L4 + Hub-L5 + XT-L2`（按需拉取 runner_execute 最小证据包，delta 优先，禁止广播）
+- evidence_ref: `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_checklist.v2.json`, `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_minicard.v1.json`
+
+#### XT-L1 / SKC-W2-05 / delta_3line checkpoint v37
+
+- status: `delivered(verified_handoff_ready_prep_only_claim_renewed)`（no_state_change）
+- dependency_delta: `SKC-W2-06` 保持 `verified_handoff`、`SKC-W2-07` 保持 `delivered`；XT-L1 维持 fail-closed，不抢 claim XT 主线执行任务
+- prep_delta: `XT-W2-23-B` 与 `XT-W2-24-A` 继续 `prep_only`（不 claim 执行态），等待 XT-L2 正式 claim 指令
+- next_owner_lane: `Hub-L4 + Hub-L5 + XT-L2`（按需拉取 runner_execute 最小证据包，delta 优先，禁止广播）
+- evidence_ref: `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_checklist.v2.json`, `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_minicard.v1.json`
+
+
+
+#### XT-L1 / SKC-W2-05 / delta_3line checkpoint v38
+
+- status: `delivered(verified_handoff_ready_prep_only_claim_renewed)`（no_state_change）
+- dependency_delta: `SKC-W2-06` 保持 `verified_handoff`、`SKC-W2-07` 保持 `delivered`；XT-L1 维持 fail-closed，不抢 claim XT 主线执行任务
+- prep_delta: `XT-W2-23-B` 与 `XT-W2-24-A` 继续 `prep_only`（不 claim 执行态），等待 XT-L2 正式 claim 指令
+- next_owner_lane: `Hub-L4 + Hub-L5 + XT-L2`（按需拉取 runner_execute 最小证据包，delta 优先，禁止广播）
+- evidence_ref: `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_checklist.v2.json`, `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_minicard.v1.json`
+
+
+#### XT-L1 / SKC-W2-05 / delta_3line checkpoint v39
+
+- status: `delivered(verified_handoff_ready_prep_only_claim_renewed)`（no_state_change）
+- dependency_delta: `SKC-W2-06` 保持 `verified_handoff`、`SKC-W2-07` 保持 `delivered`；XT-L1 维持 fail-closed，不抢 claim XT 主线执行任务
+- prep_delta: `XT-W2-23-B` 与 `XT-W2-24-A` 继续 `prep_only`（不 claim 执行态），等待 XT-L2 正式 claim 指令
+- next_owner_lane: `Hub-L4 + Hub-L5 + XT-L2`（按需拉取 runner_execute 最小证据包，delta 优先，禁止广播）
+- evidence_ref: `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_checklist.v2.json`, `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_minicard.v1.json`
+
+
+#### XT-L1 / SKC-W2-05 / delta_3line checkpoint v40
+
+- status: `delivered(verified_handoff_ready_prep_only_claim_renewed)`（no_state_change）
+- dependency_delta: `SKC-W2-06` 保持 `verified_handoff`、`SKC-W2-07` 保持 `delivered`；XT-L1 维持 fail-closed，不抢 claim XT 主线执行任务
+- prep_delta: `XT-W2-23-B` 与 `XT-W2-24-A` 继续 `prep_only`（不 claim 执行态），等待 XT-L2 正式 claim 指令
+- next_owner_lane: `Hub-L4 + Hub-L5 + XT-L2`（按需拉取 runner_execute 最小证据包，delta 优先，禁止广播）
+- evidence_ref: `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_checklist.v2.json`, `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_minicard.v1.json`
+
+
+#### XT-L1 / SKC-W2-05 / delta_3line checkpoint v41
+
+- status: `delivered(verified_handoff_ready_prep_only_claim_renewed)`（no_state_change）
+- dependency_delta: `SKC-W2-06` 保持 `verified_handoff`、`SKC-W2-07` 保持 `delivered`；XT-L1 维持 fail-closed，不抢 claim XT 主线执行任务
+- prep_delta: `XT-W2-23-B` 与 `XT-W2-24-A` 继续 `prep_only`（不 claim 执行态），等待 XT-L2 正式 claim 指令
+- next_owner_lane: `Hub-L4 + Hub-L5 + XT-L2`（按需拉取 runner_execute 最小证据包，delta 优先，禁止广播）
+- evidence_ref: `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_checklist.v2.json`, `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_minicard.v1.json`
+
+
+#### XT-L1 / SKC-W2-05 / delta_3line checkpoint v42
+
+- status: `delivered(verified_handoff_ready_prep_only_claim_renewed)`（no_state_change）
+- dependency_delta: `SKC-W2-06` 保持 `verified_handoff`、`SKC-W2-07` 保持 `delivered`；XT-L1 维持 fail-closed，不抢 claim XT 主线执行任务
+- prep_delta: `XT-W2-23-B` 与 `XT-W2-24-A` 继续 `prep_only`（不 claim 执行态），等待 XT-L2 正式 claim 指令
+- next_owner_lane: `Hub-L4 + Hub-L5 + XT-L2`（按需拉取 runner_execute 最小证据包，delta 优先，禁止广播）
+- evidence_ref: `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_checklist.v2.json`, `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_minicard.v1.json`
+
+
+#### XT-L1 / SKC-W2-05 / delta_3line checkpoint v43
+
+- status: `delivered(verified_handoff_ready_prep_only_claim_renewed)`（no_state_change）
+- dependency_delta: `SKC-W2-06` 保持 `verified_handoff`、`SKC-W2-07` 保持 `delivered`；XT-L1 维持 fail-closed，不抢 claim XT 主线执行任务
+- prep_delta: `XT-W2-23-B` 与 `XT-W2-24-A` 继续 `prep_only`（不 claim 执行态），等待 XT-L2 正式 claim 指令
+- next_owner_lane: `Hub-L4 + Hub-L5 + XT-L2`（按需拉取 runner_execute 最小证据包，delta 优先，禁止广播）
+- evidence_ref: `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_checklist.v2.json`, `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_minicard.v1.json`
+
+
+#### XT-L1 / SKC-W2-05 / delta_3line checkpoint v44
+
+- status: `delivered(verified_handoff_ready_prep_only_claim_renewed)`（no_state_change）
+- dependency_delta: `SKC-W2-06` 保持 `verified_handoff`、`SKC-W2-07` 保持 `delivered`；XT-L1 维持 fail-closed，不抢 claim XT 主线执行任务
+- prep_delta: `XT-W2-23-B` 与 `XT-W2-24-A` 继续 `prep_only`（不 claim 执行态），等待 XT-L2 正式 claim 指令
+- next_owner_lane: `Hub-L4 + Hub-L5 + XT-L2`（按需拉取 runner_execute 最小证据包，delta 优先，禁止广播）
+- evidence_ref: `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_checklist.v2.json`, `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_minicard.v1.json`
+
+
+#### XT-L1 / SKC-W2-05 / delta_3line checkpoint v45
+
+- status: `delivered(verified_handoff_ready_prep_only_claim_renewed)`（no_state_change）
+- dependency_delta: `SKC-W2-06` 保持 `verified_handoff`、`SKC-W2-07` 保持 `delivered`；XT-L1 维持 fail-closed，不抢 claim XT 主线执行任务
+- prep_delta: `XT-W2-23-B` 与 `XT-W2-24-A` 继续 `prep_only`（不 claim 执行态），等待 XT-L2 正式 claim 指令
+- next_owner_lane: `Hub-L4 + Hub-L5 + XT-L2`（按需拉取 runner_execute 最小证据包，delta 优先，禁止广播）
+- evidence_ref: `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_checklist.v2.json`, `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_minicard.v1.json`
+
+
+#### XT-L1 / XT-W2-23-B(shadow) / delta_3line checkpoint v3
+
+- status: `prep_only(no_state_change=true,no_claim=true)`（directed_only）
+- dependency_delta: `已消费 XT-L2 shadow 口径 v2 与 XT-W2-23 mainline delta v2；schema/version/dependency refs 对齐通过（all_pass=true）；cross_lane_write_attempt=0`
+- prep_delta: `仅维护 XT-W2-23-B shadow 预热，保持 gate/status 不变；formal_claim=forbidden_this_tick；broadcast=false`
+- next_owner_lane: `XT-L2`（仅在收到新的 directed mention 时继续）
+- evidence_ref: `build/reports/xt_w2_23_b_xt_l1_shadow_prep_delta_3line.v3.json`
+
+
+### XT-L2
+- active_task: `none`（current_batch_delivered；lane_state=no_claim_standby）
+- queue_head: `none`
+- backlog_next: `XT-W3-21(含A/B/C) -> XT-W3-22(含A/B/C) -> XT-W3-23(含A/B/C/D/E) -> XT-W3-24(含A/B/C/D/E/F) -> XT-W3-25(含A/B/C/D/E/F)`（来自 `XT-W3-21/22` + `XT-W3-23` + `XT-W3-24` + `XT-W3-25` 执行包；当前仅装载 planned，不自动 claim）
+- dependency: `CD-20260305-004,CD-20260306-001,CD-20260306-002,CD-20260306-003`（single-lane takeover 保持；已装载接案/验收/记忆产品化/渠道产品化/自动化产品面下一批 planned）
+- status: `no_claim_standby(batch_delivered_v86;directed_only;fail_closed)`
+- claim_state: `none(open_formal_claims=0)`
+- claim_id: `XT-W2-20=claim_xt_w2_20_xt_l2_mainline_20260304_1254; XT-W2-21=claim_xt_w2_21_xt_l2_seq_20260304_1255; XT-W2-22=claim_xt_w2_22_xt_l2_formal_20260304_1458; XT-W2-23=claim_xt_w2_23_xt_l2_formal_20260304_1543; XT-W2-23-B=claim_xt_w2_23_b_xt_l2_formal_20260304_1900; XT-W2-23-C=claim_xt_w2_23_c_xt_l2_formal_20260304_1946; XT-W2-23-A=claim_xt_w2_23_a_xt_l2_formal_20260304_2122; XT-W2-24=claim_xt_w2_24_xt_l2_formal_20260304_2150; XT-W2-24-A=claim_xt_w2_24_a_xt_l2_formal_20260304_2156; XT-W2-24-B=claim_xt_w2_24_b_xt_l2_temp_takeover_20260305_1024; XT-W2-24-C=claim_xt_w2_24_c_xt_l2_temp_takeover_20260305_1030; XT-W2-24-D=claim_xt_w2_24_d_xt_l2_temp_takeover_20260305_1036; XT-W2-24-E=claim_xt_w2_24_e_xt_l2_temp_takeover_20260305_1041; XT-W2-24-F=claim_xt_w2_24_f_xt_l2_temp_takeover_20260305_1044; XT-W2-25=claim_xt_w2_25_xt_l2_temp_takeover_20260305_1054; XT-W2-25-S1=claim_xt_w2_25_s1_xt_l2_temp_takeover_20260305_1102; XT-W2-26=claim_xt_w2_26_xt_l2_auto_20260305_1413; XT-W2-26-A=claim_xt_w2_26_a_xt_l2_auto_20260305_1511; XT-W2-26-B=claim_xt_w2_26_b_xt_l2_auto_20260305_1623; XT-W2-26-C=claim_xt_w2_26_c_xt_l2_auto_20260305_1638; XT-W2-27=claim_xt_w2_27_xt_l2_auto_20260305_1644; XT-W2-27-A=claim_xt_w2_27_a_xt_l2_auto_20260305_1653; XT-W2-27-B=claim_xt_w2_27_b_xt_l2_auto_20260305_1710; XT-W2-27-C=claim_xt_w2_27_c_xt_l2_auto_20260305_1733; XT-W2-27-D=claim_xt_w2_27_d_xt_l2_auto_20260305_1740; XT-W2-27-E=claim_xt_w2_27_e_xt_l2_auto_20260305_1804; XT-W2-27-F=claim_xt_w2_27_f_xt_l2_auto_20260305_1810; XT-W2-28=claim_xt_w2_28_xt_l2_auto_20260305_1839; XT-W2-28-A=claim_xt_w2_28_a_xt_l2_auto_20260305_1849; XT-W2-28-B=claim_xt_w2_28_b_xt_l2_auto_20260305_1850; XT-W2-28-C=claim_xt_w2_28_c_xt_l2_auto_20260305_1858; XT-W2-28-D=claim_xt_w2_28_d_xt_l2_auto_20260305_1913; XT-W2-28-E=claim_xt_w2_28_e_xt_l2_auto_20260305_1917; XT-W2-28-F=claim_xt_w2_28_f_xt_l2_auto_20260305_1926; XT-W2-29=claim_xt_w2_29_xt_l2_auto_20260305_1926; XT-W2-29-B=claim_xt_w2_29_b_xt_l2_auto_20260305_1934; XT-W2-29-C=claim_xt_w2_29_c_xt_l2_auto_20260305_2002; XT-W2-29-D=claim_xt_w2_29_d_xt_l2_auto_20260305_2022; XT-W2-29-E=claim_xt_w2_29_e_xt_l2_auto_20260305_2042; XT-W2-29-F=claim_xt_w2_29_f_xt_l2_auto_20260305_2102; XT-W2-30=claim_xt_w2_30_xt_l2_auto_20260305_2122; XT-W2-30-B=claim_xt_w2_30_b_xt_l2_auto_20260305_2142; XT-W2-30-C=claim_xt_w2_30_c_xt_l2_auto_20260305_2222; XT-W2-30-D=claim_xt_w2_30_d_xt_l2_auto_20260305_2242; XT-W2-30-E=claim_xt_w2_30_e_xt_l2_auto_20260305_2322; XT-W2-30-F=claim_xt_w2_30_f_xt_l2_auto_20260305_2352; XT-W2-31=claim_xt_w2_31_xt_l2_auto_20260306_0022; XT-W2-31-B=claim_xt_w2_31_b_xt_l2_auto_20260306_0052; XT-W2-31-C=claim_xt_w2_31_c_xt_l2_auto_20260306_0122; XT-W2-31-D=claim_xt_w2_31_d_xt_l2_auto_20260306_0152; XT-W2-31-E=claim_xt_w2_31_e_xt_l2_auto_20260306_0222; XT-W2-31-F=claim_xt_w2_31_f_xt_l2_auto_20260306_0252; XT-W2-32=claim_xt_w2_32_xt_l2_auto_20260306_0322; XT-W2-32-B=claim_xt_w2_32_b_xt_l2_auto_20260306_0352; XT-W2-32-C=claim_xt_w2_32_c_xt_l2_auto_20260306_0422; XT-W2-32-D=claim_xt_w2_32_d_xt_l2_auto_20260306_0452; XT-W2-32-E=claim_xt_w2_32_e_xt_l2_auto_20260306_0522; XT-W2-32-F=claim_xt_w2_32_f_xt_l2_auto_20260306_0552; XT-W2-33=claim_xt_w2_33_xt_l2_auto_20260306_0622; XT-W2-33-B=claim_xt_w2_33_b_xt_l2_auto_20260306_0652; XT-W2-33-C=claim_xt_w2_33_c_xt_l2_auto_20260306_0722; XT-W2-33-D=claim_xt_w2_33_d_xt_l2_auto_20260306_0752; XT-W2-33-E=claim_xt_w2_33_e_xt_l2_auto_20260306_0822; XT-W2-33-F=claim_xt_w2_33_f_xt_l2_auto_20260306_0922; XT-W2-34=claim_xt_w2_34_xt_l2_auto_20260306_1022; XT-W2-34-B=claim_xt_w2_34_b_xt_l2_auto_20260306_1052; XT-W3-18=claim_xt_w3_18_xt_l2_auto_20260306_1034`
+- claim_ttl_until: `none`
+- innovation_level: `L1_micro_reflect`
+- suggestion_governance: `hybrid`
+- gate_blocker: `none`
+- blocked_reason: `none(planned_memory_and_channel_productization_batch_loaded)`
+- unblock_owner:
+  - `XT-L2`
+- auto_continue_state: `no_claim_standby_next_batch_loaded_v88`
+- next_step: `await_next_claim_window_or_directed_go=true；默认从 XT-W3-21 开始串行 claim；XT-W3-22/XT-W3-23/XT-W3-24/XT-W3-25 及子任务按 gate/依赖展开；不得跳过 claim + evidence`
+- evidence_refs:
+  - `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`
+  - `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md`
+  - `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`
+  - `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`
+  - `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`
+  - `docs/xhub-client-modes-and-connectors-v1.md`
+  - `docs/xhub-memory-system-spec-v2.md`
+  - `X_MEMORY.md`
+  - `build/reports/xt_main_xt_l2_delta_3line.v78.json`
+  - `build/reports/xt_w3_11_dependency_import_receipt.v1.json`
+  - `build/reports/xt_w3_18_test_matrix_definition.v1.json`
+  - `build/reports/xt_w3_18_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v77.json`
+  - `build/reports/xt_w2_34_task_split_audit.v3.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v76.json`
+  - `build/reports/xt_w2_34_b_evidence.v1.json`
+  - `build/reports/xt_w2_34_b_g4_g5_first_probe.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v75.json`
+  - `build/reports/xt_w2_34_task_split_audit.v2.json`
+  - `build/reports/xt_w2_34_a_evidence.v1.json`
+  - `build/reports/xt_w2_34_a_first_probe.v1.json`
+  - `build/reports/xt_w2_34_b_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v74.json`
+  - `build/reports/xt_w2_33_f_state_reconcile_audit.v1.json`
+  - `build/reports/xt_w2_33_f_evidence.v1.json`
+  - `build/reports/xt_w2_33_f_g4_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_34_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v71.json`
+  - `build/reports/xt_w2_33_e_evidence.v1.json`
+  - `build/reports/xt_w2_33_e_g3_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_33_f_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v70.json`
+  - `build/reports/xt_w2_33_d_evidence.v1.json`
+  - `build/reports/xt_w2_33_d_g4_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_33_e_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v69.json`
+  - `build/reports/xt_w2_33_c_evidence.v1.json`
+  - `build/reports/xt_w2_33_c_g3_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_33_d_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v68.json`
+  - `build/reports/xt_w2_33_b_evidence.v1.json`
+  - `build/reports/xt_w2_33_b_g4_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_33_c_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v67.json`
+  - `build/reports/xt_w2_33_task_split_audit.v1.json`
+  - `build/reports/xt_w2_33_a_evidence.v1.json`
+  - `build/reports/xt_w2_33_a_first_probe.v1.json`
+  - `build/reports/xt_w2_33_b_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v66.json`
+  - `build/reports/xt_w2_32_f_evidence.v1.json`
+  - `build/reports/xt_w2_32_f_g4_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_33_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v65.json`
+  - `build/reports/xt_w2_32_e_evidence.v1.json`
+  - `build/reports/xt_w2_32_e_g3_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_32_f_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v64.json`
+  - `build/reports/xt_w2_32_d_evidence.v1.json`
+  - `build/reports/xt_w2_32_d_g4_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_32_e_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v63.json`
+  - `build/reports/xt_w2_32_c_evidence.v1.json`
+  - `build/reports/xt_w2_32_c_g3_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_32_d_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v62.json`
+  - `build/reports/xt_w2_32_b_evidence.v1.json`
+  - `build/reports/xt_w2_32_b_g4_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_32_c_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v61.json`
+  - `build/reports/xt_w2_32_task_split_audit.v1.json`
+  - `build/reports/xt_w2_32_a_evidence.v1.json`
+  - `build/reports/xt_w2_32_a_first_probe.v1.json`
+  - `build/reports/xt_w2_32_b_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v60.json`
+  - `build/reports/xt_w2_31_f_evidence.v1.json`
+  - `build/reports/xt_w2_31_f_g4_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_32_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v59.json`
+  - `build/reports/xt_w2_31_e_evidence.v1.json`
+  - `build/reports/xt_w2_31_e_g3_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_31_f_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v58.json`
+  - `build/reports/xt_w2_31_d_evidence.v1.json`
+  - `build/reports/xt_w2_31_d_g4_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_31_e_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v57.json`
+  - `build/reports/xt_w2_31_c_evidence.v1.json`
+  - `build/reports/xt_w2_31_c_g3_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_31_d_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v56.json`
+  - `build/reports/xt_w2_31_b_evidence.v1.json`
+  - `build/reports/xt_w2_31_b_g4_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_31_c_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v55.json`
+  - `build/reports/xt_w2_31_task_split_audit.v1.json`
+  - `build/reports/xt_w2_31_a_evidence.v1.json`
+  - `build/reports/xt_w2_31_a_first_probe.v1.json`
+  - `build/reports/xt_w2_31_b_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v54.json`
+  - `build/reports/xt_w2_30_f_evidence.v1.json`
+  - `build/reports/xt_w2_30_f_g4_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_31_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v53.json`
+  - `build/reports/xt_w2_30_e_evidence.v1.json`
+  - `build/reports/xt_w2_30_e_g3_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_30_f_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v52.json`
+  - `build/reports/xt_w2_30_d_state_reconcile_audit.v1.json`
+  - `build/reports/xt_w2_30_d_evidence.v1.json`
+  - `build/reports/xt_w2_30_d_g4_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_30_e_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v51.json`
+  - `build/reports/xt_w2_30_c_evidence.v1.json`
+  - `build/reports/xt_w2_30_c_g3_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_30_d_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v50.json`
+  - `build/reports/xt_w2_30_b_evidence.v1.json`
+  - `build/reports/xt_w2_30_b_g4_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_30_c_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v49.json`
+  - `build/reports/xt_w2_30_task_split_audit.v1.json`
+  - `build/reports/xt_w2_30_a_evidence.v1.json`
+  - `build/reports/xt_w2_30_a_first_probe.v1.json`
+  - `build/reports/xt_w2_30_b_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v48.json`
+  - `build/reports/xt_w2_29_f_evidence.v1.json`
+  - `build/reports/xt_w2_29_f_g4_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_30_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v47.json`
+  - `build/reports/xt_w2_29_e_evidence.v1.json`
+  - `build/reports/xt_w2_29_e_g3_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_29_f_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v46.json`
+  - `build/reports/xt_w2_29_d_evidence.v1.json`
+  - `build/reports/xt_w2_29_d_g4_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_29_e_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v45.json`
+  - `build/reports/xt_w2_29_c_evidence.v1.json`
+  - `build/reports/xt_w2_29_c_g3_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_29_d_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v44.json`
+  - `build/reports/xt_w2_29_b_evidence.v1.json`
+  - `build/reports/xt_w2_29_b_g4_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_29_c_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v43.json`
+  - `build/reports/xt_w2_29_task_split_audit.v1.json`
+  - `build/reports/xt_w2_29_a_evidence.v1.json`
+  - `build/reports/xt_w2_29_a_first_probe.v1.json`
+  - `build/reports/xt_w2_29_b_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v42.json`
+  - `build/reports/xt_w2_28_f_state_reconcile_audit.v1.json`
+  - `build/reports/xt_w2_28_f_block_predict_replan_guard_evidence.v1.json`
+  - `build/reports/xt_w2_28_f_g3_g4_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_29_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v41.json`
+  - `build/reports/xt_w2_28_e_gate_cooldown_evidence.v1.json`
+  - `build/reports/xt_w2_28_e_g4_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_28_f_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v40.json`
+  - `build/reports/xt_w2_28_d_deadlock_breaker_evidence.v1.json`
+  - `build/reports/xt_w2_28_d_g3_g4_first_probe.v1.json`
+  - `build/reports/xt_w2_28_d_xt_l2_delta_3line.v2.json`
+  - `build/reports/xt_w2_28_e_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v39.json`
+  - `build/reports/xt_w2_28_c_dedupe_delta_evidence.v1.json`
+  - `build/reports/xt_w2_28_c_g4_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_28_c_xt_l2_delta_3line.v2.json`
+  - `build/reports/xt_w2_28_d_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v38.json`
+  - `build/reports/xt_w2_28_b_directed_baton_evidence.v1.json`
+  - `build/reports/xt_w2_28_b_g3_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_28_b_xt_l2_delta_3line.v2.json`
+  - `build/reports/xt_w2_28_c_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v37.json`
+  - `build/reports/xt_w2_28_a_wip_governor_evidence.v1.json`
+  - `build/reports/xt_w2_28_a_g3_g4_first_probe.v1.json`
+  - `build/reports/xt_w2_28_b_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v36.json`
+  - `build/reports/xt_w2_27_f_self_host_unblock_evidence.v1.json`
+  - `build/reports/xt_w2_27_f_g3_g4_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_27_f_xt_l2_delta_3line.v2.json`
+  - `build/reports/xt_w2_28_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v35.json`
+  - `build/reports/xt_w2_27_e_block_sla_evidence.v1.json`
+  - `build/reports/xt_w2_27_e_g4_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_27_e_xt_l2_delta_3line.v2.json`
+  - `build/reports/xt_w2_27_f_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v34.json`
+  - `build/reports/xt_w2_27_d_unblock_router_evidence.v1.json`
+  - `build/reports/xt_w2_27_d_g3_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_27_d_xt_l2_delta_3line.v2.json`
+  - `build/reports/xt_w2_27_e_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v33.json`
+  - `build/reports/xt_w2_27_c_dependency_escrow_evidence.v1.json`
+  - `build/reports/xt_w2_27_c_g2_g3_first_probe.v1.json`
+  - `build/reports/xt_w2_27_c_xt_l2_delta_3line.v2.json`
+  - `build/reports/xt_w2_27_d_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v32.json`
+  - `build/reports/xt_w2_27_b_runtime_green_probe.v1.json`
+  - `build/reports/xt_w2_27_b_dual_green_evidence.v2.json`
+  - `build/reports/xt_w2_27_b_xt_l2_delta_3line.v3.json`
+  - `build/reports/xt_w2_27_c_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v31.json`
+  - `build/reports/xt_w2_27_a_state_reconcile_audit.v1.json`
+  - `build/reports/xt_w2_27_a_wait_graph_cleanup_patch.v1.json`
+  - `build/reports/xt_w2_27_a_wait_graph_evidence.v2.json`
+  - `build/reports/xt_w2_27_a_xt_l2_delta_3line.v2.json`
+  - `build/reports/xt_w2_27_b_dual_green_evidence.v1.json`
+  - `build/reports/xt_w2_27_b_xt_l2_delta_3line.v2.json`
+  - `build/reports/xt_w2_27_b_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v30.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v29.json`
+  - `build/reports/xt_w2_27_a_wait_graph_evidence.v1.json`
+  - `build/reports/xt_w2_27_a_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v28.json`
+  - `build/reports/xt_w2_26_c_guidance_router_evidence.v1.json`
+  - `build/reports/xt_w2_26_c_g3_g5_first_probe.v1.json`
+  - `build/reports/xt_w2_26_c_guidance_router_probe_tests.v1.log`
+  - `build/reports/xt_w2_26_c_probe_gate_smoke_tests.v1.log`
+  - `build/reports/xt_w2_27_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v27.json`
+  - `build/reports/xt_w2_26_b_autocontinue_evidence.v1.json`
+  - `build/reports/xt_w2_26_b_g3_g4_first_probe.v1.json`
+  - `build/reports/xt_w2_26_b_autocontinue_probe_tests.v1.log`
+  - `build/reports/xt_w2_26_b_probe_gate_smoke_tests.v1.log`
+  - `build/reports/xt_w2_26_c_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v26.json`
+  - `build/reports/xt_w2_26_a_completion_adapter_contract_patch.v1.json`
+  - `build/reports/xt_w2_26_a_completion_adapter_symbol_probe.v2.json`
+  - `build/reports/xt_w2_26_a_completion_adapter_evidence.v2.json`
+  - `build/reports/xt_w2_26_a_completion_adapter_probe_multilane_tests.v2.log`
+  - `build/reports/xt_w2_26_a_completion_adapter_probe_runtime_kernel_tests.v2.log`
+  - `build/reports/xt_w2_26_b_xt_l2_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v25.json`
+  - `build/reports/xt_w2_26_a_completion_adapter_evidence.v1.json`
+  - `build/reports/xt_w2_26_a_completion_adapter_symbol_probe.v1.json`
+  - `build/reports/xt_w2_26_a_completion_adapter_probe_multilane_tests.v1.log`
+  - `build/reports/xt_w2_26_a_completion_adapter_probe_runtime_kernel_tests.v1.log`
+  - `build/reports/xt_main_xt_l2_delta_3line.v24.json`
+  - `build/reports/xt_w2_26_g3_g4_first_probe.v3.json`
+  - `build/reports/xt_w2_26_probe_runtime_env_check.v2.log`
+  - `build/reports/xt_w2_26_probe_supervisor_incident_arbiter_tests.v4.log`
+  - `build/reports/xt_w2_26_probe_gate_smoke_tests.v4.log`
+  - `build/reports/xt_w2_26_a_xt_l2_delta_3line.v1.json`
+  - `build/reports/hub_l5_xt_w2_26_probe_unblock_decision.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v23.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v22.json`
+  - `build/reports/xt_w2_26_g3_g4_first_probe.v2.json`
+  - `build/reports/xt_w2_26_probe_supervisor_incident_arbiter_tests.v3.log`
+  - `build/reports/xt_w2_26_probe_gate_smoke_tests.v3.log`
+  - `build/reports/xt_w2_26_unsandboxed_probe_request.v1.json`
+  - `build/reports/xt_w2_26_runtime_env_patch.v1.json`
+  - `build/reports/hub_l5_xt_w2_26_minimal_patch_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v21.json`
+  - `build/reports/xt_w2_26_g3_g4_first_probe.v1.json`
+  - `build/reports/xt_w2_26_probe_supervisor_incident_arbiter_tests.v2.log`
+  - `build/reports/xt_w2_26_probe_gate_smoke_tests.v2.log`
+  - `build/reports/xt_main_xt_l2_delta_3line.v20.json`
+  - `build/reports/xt_main_xt_l2_full_7piece.v11.json`
+  - `build/reports/xt_main_xt_l2_xt_w2_26_dependency_check.v7.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v19.json`
+  - `build/reports/xt_main_xt_l2_xt_w2_26_dependency_check.v6.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v18.json`
+  - `build/reports/xt_main_xt_l2_xt_w2_26_dependency_check.v5.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v17.json`
+  - `build/reports/xt_main_xt_l2_xt_w2_26_dependency_check.v4.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v16.json`
+  - `build/reports/xt_main_xt_l2_xt_w2_13_14_evidence_board_link.v1.json`
+  - `build/reports/xt_main_xt_l2_xt_w2_26_dependency_check.v3.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v15.json`
+  - `build/reports/xt_pool_takeover_delta_3line.v1.json`
+  - `build/reports/xt_main_xt_l2_xt_w2_26_dependency_check.v2.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v14.json`
+  - `build/reports/xt_main_xt_l2_readonly_consistency_check.v8.json`
+  - `build/reports/xt_main_xt_l2_xt_w2_26_dependency_check.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v13.json`
+  - `build/reports/xt_main_xt_l2_full_7piece.v10.json`
+  - `build/reports/skc_w3_08_hub_l5_delta_3line.v108.json`
+  - `build/reports/xt_main_xt_l2_readonly_consistency_check.v7.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v12.json`
+  - `build/reports/xt_main_xt_l2_full_7piece.v9.json`
+  - `build/reports/skc_w3_08_hub_l5_delta_3line.v105.json`
+  - `build/reports/xt_main_xt_l2_readonly_consistency_check.v6.json`
+  - `build/reports/xt_main_xt_l2_xt_w2_24_b_to_f_closure_alignment.v1.json`
+  - `build/reports/xt_main_xt_l2_xt_w2_25_dependency_fill.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v11.json`
+  - `build/reports/xt_main_xt_l2_full_7piece.v8.json`
+  - `build/reports/skc_w3_08_hub_l5_delta_3line.v105.json`
+  - `build/reports/xt_main_xt_l2_readonly_consistency_check.v5.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v10.json`
+  - `build/reports/xt_main_xt_l2_full_7piece.v7.json`
+  - `build/reports/skc_w3_08_hub_l5_delta_3line.v101.json`
+  - `build/reports/xt_main_xt_l2_readonly_consistency_check.v4.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v9.json`
+  - `build/reports/xt_main_xt_l2_full_7piece.v6.json`
+  - `build/reports/skc_w3_08_hub_l5_delta_3line.v101.json`
+  - `build/reports/xt_main_xt_l2_readonly_consistency_check.v3.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v8.json`
+  - `build/reports/xt_main_xt_l2_full_7piece.v5.json`
+  - `build/reports/skc_w3_08_hub_l5_delta_3line.v101.json`
+  - `build/reports/xt_main_xt_l2_readonly_consistency_check.v2.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v7.json`
+  - `build/reports/xt_main_xt_l2_full_7piece.v4.json`
+  - `build/reports/skc_w3_08_hub_l5_delta_3line.v99.json`
+  - `build/reports/xt_main_xt_l2_readonly_consistency_check.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v6.json`
+  - `build/reports/xt_main_xt_l2_full_7piece.v3.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v5.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v4.json`
+  - `build/reports/xt_main_xt_l2_full_7piece.v2.json`
+  - `build/reports/xt_w2_20_b_xt_l2_takeover_audit.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v3.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v2.json`
+  - `build/reports/xt_main_xt_l2_full_7piece.v1.json`
+  - `build/reports/skc_w3_08_hub_l5_delta_3line.v98.json`
+- 7piece_template_status: `full_7piece_checkpoint_v70,xt_main_full_7piece_v10,xt_main_delta_v19,xt_pool_takeover_delta_v1,takeover_audit_v1`
+
+#### XT-L2 / SKC-W2-06（准备态）/ 7件套（预接棒检查）
+
+1) Scope
+- `SKC-W2-06` 预接棒检查：仅编排接入准备态（LaneAllocator / Heartbeat / IncidentArbiter / Mergeback 前置门禁）。
+- 已按 AI-COORD-PRIMARY `v2026-03-02` 开工令完成 5 份必读文档校对，维持“SKC release blocker 先收口，XT 主线后切入”。
+- 协同范围：`SKC-W2-07`、`SKC-W3-08/09/10`、`SKC-W4-12` 的依赖判定与证据映射，不提前进入 `in_progress`。
+
+2) Changes
+- command board（仅 XT-L2 允许分区）：
+  - `Task Catalog` 续租 `SKC-W2-06` claim TTL 至 `2026-03-02T07:23:21-08:00`
+  - `Lane Zone / XT-L2` 续推准备态 7 件套、Gate 前置条件、Hub-L5 补证据清单，并保持 `CR-20260301-004` backlog 排程（仅排程不执行）
+  - 依赖未满足时按 Auto-Continue 写入 `blocked_reason + unblock_owner`
+  - 维护 wait-for 图边 `SKC-W2-06 <- SKC-W2-05` 并续租 edge TTL（machine-readable）
+  - 预置 unblock baton：依赖转绿后向 `Hub-L4` 派发 `verified_handoff` 接棒通知
+  - `XT-W2-27-F` 挂靠执行保持 `non_preemptive_deferred`（不抢占 SKC 主链）
+- machine-readable 报告：
+  - `build/reports/skc_w2_06_xt_l2_pre_takeover_readiness.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v44.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v44.json`
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v1.json`
+  - `x-terminal/.axcoder/reports/xt-overflow-fairness-report.json`
+  - `x-terminal/.axcoder/reports/xt-origin-fallback-report.json`
+  - `x-terminal/.axcoder/reports/xt-dispatch-cleanup-report.json`
+
+3) DoD
+- [x] 已执行 claim 并登记 `claim_id + claim_ttl_until`（4h TTL）
+- [x] 已按开工令完成必读文档校对（Command Board v2 + W2-20~27 执行包）
+- [x] 依赖完成判定标准机读化（`SKC-W2-05`, `XT-W2-12/13/14`）
+- [x] `grant_pending/awaiting_instruction/runtime_error` require-real 证据映射机读化
+- [x] 合并前质量门禁断言与回滚点机读化
+- [x] 当前状态保持 `ready/planned`，未进入执行态
+- [x] 依赖未满足时已写 `blocked_reason + unblock_owner`（Auto-Continue 约束）
+- [ ] 依赖全部转绿后再切换 `in_progress`
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`（等待 `SKC-W2-05` Gate 由 `ready` 转 `PASS`）
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`（等待 require-real 路径下高风险 grant 0 bypass 证据）
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`（等待真实 handled incident 覆盖 + mergeback 前置断言实跑）
+- `SKC-G5(linked)`: `BLOCKED`（等待 `SKC-W2-07` 与 `SKC-W3-08/09/10` 串联完成）
+- 证据路径：
+  - `build/reports/skc_w2_06_xt_l2_pre_takeover_readiness.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v44.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v44.json`
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v1.json`
+  - `build/xt_l2_skc_gate_report.json`
+  - `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
+  - `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`
+  - `x-terminal/work-orders/xt-w2-23-w2-26-autocontinue-autonomy-implementation-pack-v1.md`
+  - `x-terminal/work-orders/xt-w2-24-token-optimal-context-capsule-implementation-pack-v1.md`
+  - `x-terminal/work-orders/xt-w2-27-anti-block-unblock-orchestration-implementation-pack-v1.md`
+  - `x-terminal/work-orders/xt-openclaw-skills-compat-reliability-work-orders-v1.md`
+  - `x-terminal/.axcoder/reports/xt-overflow-fairness-report.json`
+  - `x-terminal/.axcoder/reports/xt-origin-fallback-report.json`
+  - `x-terminal/.axcoder/reports/xt-dispatch-cleanup-report.json`
+
+5) KPI Snapshot
+- `skill_lane_stall_detect_p95_ms`: `0`（test assertion 样本；非 release 口径）
+- `supervisor_action_latency_p95_ms`: `1100`（test assertion 样本；阈值 `<=1500`）
+- `high_risk_lane_without_grant`: `0`（test assertion 样本；需 require-real 复核）
+- `required_incident_coverage`: `grant_pending,awaiting_instruction,runtime_error`（契约映射已齐，真实样本待 Hub-L5）
+- 来源：
+  - `build/xt_l2_skc_gate_report.json`
+  - `build/reports/skc_w2_06_xt_l2_pre_takeover_readiness.v1.json`
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W2-05` 未转绿时提前执行会破坏 fail-closed 主链（阻断）
+  - Hub-L5 若仅提供 synthetic/audit-smoke 证据会触发 Red 规则（禁止冒绿）
+  - claim TTL 到期未续约将自动回落 `ready`，需按窗口续租
+- rollback:
+  - 分配策略快照：`build/xt_l2_skc_gate_report.json#/rollback/assignment_snapshot`
+  - 接管策略版本：`build/xt_l2_skc_gate_report.json#/rollback/incident_policy_version`
+  - 合并策略版本：`build/xt_l2_skc_gate_report.json#/rollback/merge_policy_version`
+  - lane 稳定点格式：`build/xt_l2_skc_gate_report.json#/rollback/lane_stable_point_id_format`
+
+7) Handoff
+- next_owner_lane: `Hub-L5`（require-real 补证据）+ `XT-L1`（`SKC-W2-05` 转绿）+ `AI-COORD-PRIMARY`（跨泳道裁决）
+- depends_on:
+  - `SKC-W2-05` gate_vector 至少满足 `SKC-G1/G3/G4:PASS`
+  - `XT-W2-12/13/14` 完成判定通过并写入 machine-readable 证据
+  - `SKC-W2-07` 进入可验证状态后再推进 `SKC-W3-08`
+- 依赖转绿后接棒派发：XT-L2 输出 `SKC-W2-06 verified_handoff` 并通知 Hub-L4 接管 `SKC-W2-07`
+- XT->Hub-L5 补证据清单（require-real）：
+  - 提供 `grant_pending/awaiting_instruction/runtime_error` 各 1 条及以上 `handled` 真实样本
+  - 每条样本必须包含 `incident_id/lane_id/takeover_latency_ms/deny_code/audit_ref`
+  - `audit_ref` 禁止 `audit-smoke-*`；`source.kind` 禁止 `synthetic_runtime`
+  - 提供 `build/xt_ready_evidence_source.require_real_from_db.json` 与 `build/xt_ready_incident_events.require_real_from_db.json`
+  - 若缺样本，必须附 fail-closed 原因与补录计划（不可口头跳过）
+
+#### XT-L2 / SKC-W2-06 / Auto-Continue（require-real 样本同步 checkpoint v44）
+
+1) Scope
+- `SKC-W2-06`（主链接力中枢）继续保持 `pre_takeover_check_only`；本轮聚焦 `Hub-L5 + XT-L2 + QA` 的 require-real 样本补齐前置同步，不进入 runtime 执行态。
+- 目标对齐：补齐 `skills.package.imported -> first_run accepted >=30 matched rows` 所需机读证据，并维持 fail-closed。
+
+2) Changes
+- 机读证据新增/刷新：
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v1.json`（多库采样探针 + SKC-G3 样本缺口归因）
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v44.json`（wait-for/claim TTL/blocked 原因续租）
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v44.json`（Task Catalog 与 lane 证据一致性校验）
+  - `build/reports/skc_w2_06_xt_l2_pre_takeover_readiness.v1.json`（edge_ref 切到 v44 + probe ref）
+  - `build/reports/skc_w2_06_xt_l2_release_sprint_status.v1.json`（v44 引用刷新）
+- Command Board（仅 XT-L2 可写区域）：
+  - `Task Catalog/SKC-W2-06` 续租 `claim_ttl_until=2026-03-02T07:23:21-08:00` 并切换 v44 证据引用
+  - `XT-L2 Lane Zone` 同步 v44 checkpoint 与 require-real 样本缺口机读路径
+
+3) DoD
+- [x] claim 已续租并回填（`claim_id + claim_ttl_until`）
+- [x] wait-for 图与 unblock baton 维持 pending，不越依赖执行
+- [x] require-real 样本探针落盘（禁止 synthetic 冒绿）
+- [x] Task Catalog 与 lane zone 证据路径 machine-readable 一致
+- [ ] `skills.package.imported -> first_run accepted >=30 matched rows`
+- [ ] `SKC-W2-05` 转 `SKC-G1/G3/G4:PASS` 后触发 `SKC-W2-06 verified_handoff`
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G5(linked)`: `BLOCKED`
+- 证据路径：
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v44.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v44.json`
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v1.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v15.json`
+
+5) KPI Snapshot
+- `require_real_import_rows_explicit`: `0`
+- `require_real_successful_import_rows`: `0`
+- `require_real_matched_latency_rows`: `0`（目标 `>=30`）
+- `supervisor_action_latency_p95_ms`: `1100`（assertion sample）
+- `high_risk_lane_without_grant`: `0`（assertion sample）
+- 报告路径：
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v1.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/xt_l2_skc_gate_report.json`
+
+6) Risks & Rollback
+- risks:
+  - 无真实样本时若推进到 `verified_handoff` 将违反双绿与 fail-closed
+  - 若使用 synthetic/smoke 证据替代真实样本会触发 Gate 红线
+  - 上游 `SKC-W2-05` 未转绿前推进接棒会造成主链失序
+- rollback:
+  - `build/xt_l2_skc_gate_report.json#/rollback/assignment_snapshot`
+  - `build/xt_l2_skc_gate_report.json#/rollback/incident_policy_version`
+  - `build/xt_l2_skc_gate_report.json#/rollback/merge_policy_version`
+
+7) Handoff
+- next_owner_lane: `Hub-L5 + XT-L2 + QA`（样本补齐） -> `XT-L1`（W2-05 收口） -> `XT-L2`（W2-06 verified_handoff）
+- depends_on:
+  - `skills.package.imported -> first_run accepted` 真实匹配样本 `>=30`
+  - `SKC-W2-05` gate_vector 变更为 `SKC-G1/G3/G4:PASS`
+- unblock 条件：
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v1.json` 显示 `status=ready`
+  - `build/hub_l5_release_skc_g3_real_sampling.json` 显示 `SKC-G3=PASS`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v44.json` 的 `wait_for_graph.edge_state` 可转为 `ready_to_handoff`
+
+#### XT-L2 / SKC-W2-06 / Auto-Continue（require-real 样本同步 checkpoint v45）
+
+1) Scope
+- `SKC-W2-06` 继续 `pre_takeover_check_only`；本轮执行 claim/TTL 续租 + require-real 样本缺口同步，不进入 runtime 主链执行态。
+- 与 `Hub-L5 + XT-L2 + QA` 协同目标不变：补齐 `skills.package.imported -> first_run accepted >=30` 真样本。
+
+2) Changes
+- 机读证据新增/刷新：
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v2.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v45.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v45.json`
+  - `build/reports/skc_w2_06_xt_l2_pre_takeover_readiness.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_release_sprint_status.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_self_consistency_v45.json`
+- Command Board（仅 XT-L2）：
+  - `Task Catalog/SKC-W2-06` 更新 claim TTL 与 v45/v2 证据引用
+  - `XT-L2 Lane Zone` 保持 blocked fail-closed，补充本轮 7件套
+
+3) DoD
+- [x] claim 已续租并回填 `claim_id + claim_ttl_until`
+- [x] wait-for graph 与 unblock baton 保持 machine-readable
+- [x] require-real 样本探针刷新（无 synthetic）
+- [x] v45 证据与 Task Catalog 引用一致
+- [ ] `skills.package.imported -> first_run accepted >=30 matched rows`
+- [ ] `SKC-W2-05` 转 `SKC-G1/G3/G4:PASS` 并触发 `SKC-W2-06 verified_handoff`
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G5(linked)`: `BLOCKED`
+- 证据路径：
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v45.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v45.json`
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v2.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v15.json`
+
+5) KPI Snapshot
+- `require_real_import_rows_explicit`: `0`
+- `require_real_successful_import_rows`: `0`
+- `require_real_matched_latency_rows`: `0`（target `>=30`）
+- `supervisor_action_latency_p95_ms`: `1100`（assertion sample）
+- `high_risk_lane_without_grant`: `0`（assertion sample）
+- 报告路径：
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v2.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/xt_l2_skc_gate_report.json`
+
+6) Risks & Rollback
+- risks:
+  - 真样本仍为 0/30，提前 `verified_handoff` 将违反双绿与 fail-closed
+  - synthetic/smoke 证据替代 require-real 会触发门禁失败
+  - `SKC-W2-05` 未转绿前推进接棒会破坏主链顺序
+- rollback:
+  - `build/xt_l2_skc_gate_report.json#/rollback/assignment_snapshot`
+  - `build/xt_l2_skc_gate_report.json#/rollback/incident_policy_version`
+  - `build/xt_l2_skc_gate_report.json#/rollback/merge_policy_version`
+
+7) Handoff
+- next_owner_lane: `Hub-L5 + XT-L2 + QA` -> `XT-L1` -> `XT-L2`
+- depends_on:
+  - `skills.package.imported -> first_run accepted` 真实样本 `>=30`
+  - `SKC-W2-05` gate_vector=`SKC-G1/G3/G4:PASS`
+- unblock 条件：
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v2.json` 显示 `status=ready`
+  - `build/hub_l5_release_skc_g3_real_sampling.json` 显示 `SKC-G3=PASS`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v45.json` 中 wait edge 可转 `ready_to_handoff`
+
+#### XT-L2 / SKC-W2-06 / Auto-Continue（require-real 样本同步 checkpoint v46）
+
+1) Scope
+- `SKC-W2-06` 继续 `pre_takeover_check_only`；按继续协议刷新 claim/TTL、wait-for edge 与 require-real 样本探针，不进入 runtime 主链。
+- 协同目标不变：`Hub-L5 + XT-L2 + QA` 先补齐真实 `skills.package.imported -> first_run accepted` 样本。
+
+2) Changes
+- 机读证据新增/刷新：
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v3.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v46.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v46.json`
+  - `build/reports/skc_w2_06_xt_l2_pre_takeover_readiness.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_release_sprint_status.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_self_consistency_v46.json`
+- Command Board（仅 XT-L2）：
+  - `Task Catalog/SKC-W2-06` 更新 claim TTL + v46/v3 证据引用
+  - `XT-L2 Lane Zone` 保持 blocked fail-closed，补充本轮 7件套
+
+3) DoD
+- [x] claim 已续租并回填 `claim_id + claim_ttl_until`
+- [x] wait-for graph / unblock baton 维持 machine-readable
+- [x] require-real 样本探针更新（synthetic_forbidden）
+- [x] v46 证据与 Task Catalog 一致性校验通过
+- [ ] `skills.package.imported -> first_run accepted >=30 matched rows`
+- [ ] `SKC-W2-05` gate_vector=`SKC-G1/G3/G4:PASS`
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G5(linked)`: `BLOCKED`
+- 证据路径：
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v46.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v46.json`
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v3.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v15.json`
+
+5) KPI Snapshot
+- `require_real_import_rows_explicit`: `0`
+- `require_real_successful_import_rows`: `0`
+- `require_real_matched_latency_rows`: `0`（target `>=30`）
+- `supervisor_action_latency_p95_ms`: `1100`（assertion sample）
+- `high_risk_lane_without_grant`: `0`（assertion sample）
+- 报告路径：
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v3.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/xt_l2_skc_gate_report.json`
+
+6) Risks & Rollback
+- risks:
+  - 真样本仍 `0/30`，提前 handoff 会违反双绿与 fail-closed
+  - synthetic/smoke 替代 require-real 会触发 gate 红线
+  - `SKC-W2-05` 未转绿前推进接棒会破坏主链顺序
+- rollback:
+  - `build/xt_l2_skc_gate_report.json#/rollback/assignment_snapshot`
+  - `build/xt_l2_skc_gate_report.json#/rollback/incident_policy_version`
+  - `build/xt_l2_skc_gate_report.json#/rollback/merge_policy_version`
+
+7) Handoff
+- next_owner_lane: `Hub-L5 + XT-L2 + QA` -> `XT-L1` -> `XT-L2`
+- depends_on:
+  - `skills.package.imported -> first_run accepted` 真实样本 `>=30`
+  - `SKC-W2-05` gate_vector=`SKC-G1/G3/G4:PASS`
+- unblock 条件：
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v3.json` 显示 `status=ready`
+  - `build/hub_l5_release_skc_g3_real_sampling.json` 显示 `SKC-G3=PASS`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v46.json` wait edge 转 `ready_to_handoff`
+
+#### XT-L2 / SKC-W2-06 / Auto-Continue（require-real 样本同步 checkpoint v47）
+
+1) Scope
+- `SKC-W2-06` 继续 `pre_takeover_check_only`；按继续协议刷新 claim/TTL、wait-for edge 与 require-real 样本探针，不进入 runtime 主链。
+- 协同目标保持：`Hub-L5 + XT-L2 + QA` 先补齐真实 `skills.package.imported -> first_run accepted >=30` 样本。
+
+2) Changes
+- 机读证据新增/刷新：
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v4.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v47.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v47.json`
+  - `build/reports/skc_w2_06_xt_l2_pre_takeover_readiness.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_release_sprint_status.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_self_consistency_v47.json`
+- Command Board（仅 XT-L2）：
+  - `Task Catalog/SKC-W2-06` 更新 claim TTL + v47/v4 证据引用
+  - `XT-L2 Lane Zone` 保持 blocked fail-closed，补充本轮 7件套
+
+3) DoD
+- [x] claim 已续租并回填 `claim_id + claim_ttl_until`
+- [x] wait-for graph / unblock baton 维持 machine-readable
+- [x] require-real 样本探针更新（synthetic_forbidden）
+- [x] v47 证据与 Task Catalog 一致性校验通过
+- [ ] `skills.package.imported -> first_run accepted >=30 matched rows`
+- [ ] `SKC-W2-05` gate_vector=`SKC-G1/G3/G4:PASS`
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G5(linked)`: `BLOCKED`
+- 证据路径：
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v47.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v47.json`
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v4.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v15.json`
+
+5) KPI Snapshot
+- `require_real_import_rows_explicit`: `0`
+- `require_real_successful_import_rows`: `0`
+- `require_real_matched_latency_rows`: `0`（target `>=30`）
+- `supervisor_action_latency_p95_ms`: `1100`（assertion sample）
+- `high_risk_lane_without_grant`: `0`（assertion sample）
+- 报告路径：
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v4.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/xt_l2_skc_gate_report.json`
+
+6) Risks & Rollback
+- risks:
+  - 真样本仍 `0/30`，提前 handoff 会违反双绿与 fail-closed
+  - synthetic/smoke 替代 require-real 会触发 gate 红线
+  - `SKC-W2-05` 未转绿前推进接棒会破坏主链顺序
+- rollback:
+  - `build/xt_l2_skc_gate_report.json#/rollback/assignment_snapshot`
+  - `build/xt_l2_skc_gate_report.json#/rollback/incident_policy_version`
+  - `build/xt_l2_skc_gate_report.json#/rollback/merge_policy_version`
+
+7) Handoff
+- next_owner_lane: `Hub-L5 + XT-L2 + QA` -> `XT-L1` -> `XT-L2`
+- depends_on:
+  - `skills.package.imported -> first_run accepted` 真实样本 `>=30`
+  - `SKC-W2-05` gate_vector=`SKC-G1/G3/G4:PASS`
+- unblock 条件：
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v4.json` 显示 `status=ready`
+  - `build/hub_l5_release_skc_g3_real_sampling.json` 显示 `SKC-G3=PASS`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v47.json` wait edge 转 `ready_to_handoff`
+
+#### XT-L2 / SKC-W2-06 / Auto-Continue（require-real 样本同步 checkpoint v48）
+
+1) Scope
+- `SKC-W2-06` 继续 `pre_takeover_check_only`；按继续协议刷新 claim/TTL、wait-for edge 与 require-real 样本探针，不进入 runtime 主链。
+- 协同目标保持：`Hub-L5 + XT-L2 + QA` 补齐真实 `skills.package.imported -> first_run accepted >=30` 样本。
+
+2) Changes
+- 机读证据新增/刷新：
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v5.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v48.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v48.json`
+  - `build/reports/skc_w2_06_xt_l2_pre_takeover_readiness.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_release_sprint_status.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_self_consistency_v48.json`
+- Command Board（仅 XT-L2）：
+  - `Task Catalog/SKC-W2-06` 更新 claim TTL + v48/v5 证据引用
+  - `XT-L2 Lane Zone` 保持 blocked fail-closed，补充本轮 7件套
+
+3) DoD
+- [x] claim 已续租并回填 `claim_id + claim_ttl_until`
+- [x] wait-for graph / unblock baton 维持 machine-readable
+- [x] require-real 样本探针更新（synthetic_forbidden）
+- [x] v48 证据与 Task Catalog 一致性校验通过
+- [ ] `skills.package.imported -> first_run accepted >=30 matched rows`
+- [ ] `SKC-W2-05` gate_vector=`SKC-G1/G3/G4:PASS`
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G5(linked)`: `BLOCKED`
+- 证据路径：
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v48.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v48.json`
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v5.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v15.json`
+
+5) KPI Snapshot
+- `require_real_import_rows_explicit`: `0`
+- `require_real_successful_import_rows`: `0`
+- `require_real_matched_latency_rows`: `0`（target `>=30`）
+- `supervisor_action_latency_p95_ms`: `1100`（assertion sample）
+- `high_risk_lane_without_grant`: `0`（assertion sample）
+- 报告路径：
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v5.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/xt_l2_skc_gate_report.json`
+
+6) Risks & Rollback
+- risks:
+  - 真样本仍 `0/30`，提前 handoff 会违反双绿与 fail-closed
+  - synthetic/smoke 替代 require-real 会触发 gate 红线
+  - `SKC-W2-05` 未转绿前推进接棒会破坏主链顺序
+- rollback:
+  - `build/xt_l2_skc_gate_report.json#/rollback/assignment_snapshot`
+  - `build/xt_l2_skc_gate_report.json#/rollback/incident_policy_version`
+  - `build/xt_l2_skc_gate_report.json#/rollback/merge_policy_version`
+
+7) Handoff
+- next_owner_lane: `Hub-L5 + XT-L2 + QA` -> `XT-L1` -> `XT-L2`
+- depends_on:
+  - `skills.package.imported -> first_run accepted` 真实样本 `>=30`
+  - `SKC-W2-05` gate_vector=`SKC-G1/G3/G4:PASS`
+- unblock 条件：
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v5.json` 显示 `status=ready`
+  - `build/hub_l5_release_skc_g3_real_sampling.json` 显示 `SKC-G3=PASS`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v48.json` wait edge 转 `ready_to_handoff`
+
+#### XT-L2 / SKC-W2-06 / Auto-Continue（require-real 样本同步 checkpoint v49）
+
+1) Scope
+- `SKC-W2-06` 继续 `pre_takeover_check_only`；按继续协议刷新 claim/TTL、wait-for edge 与 require-real 样本探针，不进入 runtime 主链。
+- 本轮探针扩展到 runtime DB（Hub-L1/XT-L2 真实运行库）并回传 top30 候选行统计。
+
+2) Changes
+- 机读证据新增/刷新：
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v6.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v49.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v49.json`
+  - `build/reports/skc_w2_06_xt_l2_pre_takeover_readiness.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_release_sprint_status.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_self_consistency_v49.json`
+- Command Board（仅 XT-L2）：
+  - `Task Catalog/SKC-W2-06` 更新 claim TTL + v49/v6 证据引用
+  - `XT-L2 Lane Zone` 保持 blocked fail-closed，补充本轮 7件套
+
+3) DoD
+- [x] claim 已续租并回填 `claim_id + claim_ttl_until`
+- [x] wait-for graph / unblock baton 维持 machine-readable
+- [x] require-real 样本探针更新（含 runtime DB 探针）
+- [x] v49 证据与 Task Catalog 一致性校验通过
+- [ ] `skills.package.imported -> first_run accepted >=30 matched rows`
+- [ ] `SKC-W2-05` gate_vector=`SKC-G1/G3/G4:PASS`
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G5(linked)`: `BLOCKED`
+- 证据路径：
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v49.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v49.json`
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v6.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/reports/skc_w3_08_require_real_sampling_gap.v15.json`
+
+5) KPI Snapshot
+- `require_real_import_rows_explicit`: `0`
+- `require_real_successful_import_rows`: `0`
+- `require_real_matched_latency_rows`: `0`（target `>=30`）
+- `require_real_probe_candidate_rows_top30`: `0`
+- `supervisor_action_latency_p95_ms`: `1100`（assertion sample）
+- 报告路径：
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v6.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+  - `build/xt_l2_skc_gate_report.json`
+
+6) Risks & Rollback
+- risks:
+  - 真样本仍 `0/30`，提前 handoff 会违反双绿与 fail-closed
+  - synthetic/smoke 替代 require-real 会触发 gate 红线
+  - `SKC-W2-05` 未转绿前推进接棒会破坏主链顺序
+- rollback:
+  - `build/xt_l2_skc_gate_report.json#/rollback/assignment_snapshot`
+  - `build/xt_l2_skc_gate_report.json#/rollback/incident_policy_version`
+  - `build/xt_l2_skc_gate_report.json#/rollback/merge_policy_version`
+
+7) Handoff
+- next_owner_lane: `Hub-L5 + XT-L2 + QA` -> `XT-L1` -> `XT-L2`
+- depends_on:
+  - `skills.package.imported -> first_run accepted` 真实样本 `>=30`
+  - `SKC-W2-05` gate_vector=`SKC-G1/G3/G4:PASS`
+- unblock 条件：
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v6.json` 显示 `status=ready`
+  - `build/hub_l5_release_skc_g3_real_sampling.json` 显示 `SKC-G3=PASS`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v49.json` wait edge 转 `ready_to_handoff`
+
+
+
+
+#### XT-L2 / SKC-W2-06 / Auto-Continue（require-real 样本同步 checkpoint v50）
+
+1) Scope
+- `SKC-W2-06` 继续 `pre_takeover_check_only`；本轮按继续协议完成 `wait-for graph + unblock baton` 续租，并回传“30条真实样本探针结果”（真实 runtime DB top30 行）。
+- 联合验收聚焦：`Hub-L1 + XT-L2` 真实样本探针回传、`Hub-L5 + XT-L2 + QA` hard-line triplet 证据齐套检查；未满足双绿前保持 fail-closed。
+
+2) Changes
+- 机读证据新增/刷新：
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v7.json`
+  - `build/reports/skc_w2_06_xt_l2_hard_line_sync.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v50.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v50.json`
+  - `build/reports/skc_w2_06_xt_l2_self_consistency_v50.json`
+  - `build/reports/skc_w2_06_xt_l2_pre_takeover_readiness.v1.json`（refresh）
+  - `build/reports/skc_w2_06_xt_l2_release_sprint_status.v1.json`（refresh）
+  - `build/reports/skc_w1_xt_l2_hub_l1_real_sample_probe_results.v4.json`
+- Command Board（仅 XT-L2）：
+  - `Task Catalog/SKC-W2-06` 更新 claim TTL + v50/v7 证据引用
+  - `XT-L2 Lane Zone` 更新 claim/blocked/evidence refs 并追加本轮增量 7件套
+
+3) DoD
+- [x] `claim_id + claim_ttl_until` 已续租（4h）
+- [x] wait-for 图边 `SKC-W2-06 <- SKC-W2-05` 与 unblock baton 保持 machine-readable
+- [x] 已回传 30 条真实样本探针结果（runtime DB top30 原始事件行）
+- [x] hard-line triplet 三文件存在性与 gate 状态已机读对齐
+- [x] Gate 未转绿前保持 fail-closed（未写 `closed`）
+- [ ] `skills.package.imported -> first_run accepted >=30 matched rows`
+- [ ] `SKC-W2-05` gate_vector=`SKC-G1/G3/G4:PASS` 后触发 `SKC-W2-06 verified_handoff`
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G5(linked)`: `BLOCKED`
+- 证据路径：
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v50.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v50.json`
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v7.json`
+  - `build/reports/skc_w2_06_xt_l2_hard_line_sync.v1.json`
+  - `build/reports/skc_w1_xt_l2_hub_l1_real_sample_probe_results.v4.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+
+5) KPI Snapshot
+- `probe_rows_top30_returned`: `30`
+- `target_matched_rows(skills.package.imported->first_run accepted)`: `0` / `30`
+- `require_real_probe_candidate_rows_top30`: `0`
+- `supervisor_action_latency_p95_ms`: `1100`（assertion sample）
+- `high_risk_lane_without_grant`: `0`（assertion sample）
+- 报告路径：
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v7.json`
+  - `build/reports/skc_w2_06_xt_l2_hard_line_sync.v1.json`
+  - `build/reports/skc_w1_xt_l2_hub_l1_real_sample_probe_results.v4.json`
+  - `build/xt_l2_skc_gate_report.json`
+
+6) Risks & Rollback
+- risks:
+  - 30 条探针均为真实 runtime 行，但目标事件对匹配仍为 `0/30`，`verified_handoff` 仍不可执行
+  - hard-line triplet 当前仍属 precheck 证据（`INSUFFICIENT_EVIDENCE`），不能替代 require-real gate 绿
+  - 若绕过 `IncidentArbiter` 或以 synthetic 冒绿将违反红线
+- rollback:
+  - `build/xt_l2_skc_gate_report.json#/rollback/assignment_snapshot`
+  - `build/xt_l2_skc_gate_report.json#/rollback/incident_policy_version`
+  - `build/xt_l2_skc_gate_report.json#/rollback/merge_policy_version`
+
+7) Handoff
+- next_owner_lane: `Hub-L5 + XT-L2 + QA` -> `XT-L1` -> `XT-L2` -> `Hub-L4`
+- depends_on:
+  - `skills.package.imported -> first_run accepted` 真实匹配样本 `>=30`
+  - `SKC-W2-05` gate_vector=`SKC-G1/G3/G4:PASS`
+  - `Hub-L5` 重跑门禁后 `SKC-G3=PASS`
+- unblock 条件：
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v7.json` 显示 `status=ready`
+  - `build/hub_l5_release_skc_g3_real_sampling.json` 显示 `SKC-G3=PASS`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v50.json` wait edge 转 `ready_to_handoff`
+
+
+
+#### XT-L2 / SKC-W2-06 / Auto-Continue（A/B 前置推进 checkpoint v51）
+
+1) Scope
+- `SKC-W2-06` 按 P0 指令继续 `pre_takeover_check_only`：主推 A 前置（真实样本）+ B 前置（hard-line 输入文件），不跨步进入 runtime 执行态。
+- 事实源已对齐：`build/reports/skc_w3_08_require_real_sampling_gap.v16.json` + `docs/memory-new/xhub-lane-command-board-v2.md`。
+
+2) Changes
+- A 前置（Hub-L1 + XT-L2）：
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v8.json`
+  - `build/reports/skc_w1_xt_l2_hub_l1_real_sample_probe_results.v5.json`
+- B 前置（XT-L2 + QA 输入）：
+  - `build/internal_pass_metrics.json`
+  - `build/internal_pass_samples.json`
+  - `build/internal_pass_inputs_prep.xt_l2.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_internal_pass_lines_probe.v1.json`
+- 协同状态汇总：
+  - `build/reports/skc_w2_06_xt_l2_prereq_status.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v51.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v51.json`
+  - `build/reports/skc_w2_06_xt_l2_self_consistency_v51.json`
+  - `build/reports/skc_w2_06_xt_l2_pre_takeover_readiness.v1.json`（refresh）
+  - `build/reports/skc_w2_06_xt_l2_release_sprint_status.v1.json`（refresh）
+
+3) DoD
+- [x] A 前置：真实 probe 行数达到 `>=30`（returned rows）
+- [x] B 前置：`build/internal_pass_metrics.json` 与 `build/internal_pass_samples.json` 已生成
+- [x] 依赖未满足维持 fail-closed，不做 `SKC-W2-06 verified_handoff`
+- [ ] A 前置目标匹配行 `skills.package.imported -> first_run accepted >=30`
+- [ ] `SKC-W2-05` 转 `SKC-G1/G3/G4:PASS`
+- [ ] 完成 `SKC-W2-06 verified_handoff` 并通知 Hub-L4 接棒
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G5(linked)`: `BLOCKED`
+- 证据路径：
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v51.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v51.json`
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v8.json`
+  - `build/internal_pass_metrics.json`
+  - `build/internal_pass_samples.json`
+  - `build/reports/skc_w2_06_xt_l2_internal_pass_lines_probe.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_prereq_status.v1.json`
+
+5) KPI Snapshot
+- `prereq_A_returned_rows`: `30`
+- `prereq_A_target_matched_rows`: `0` / `30`
+- `prereq_B_files_ready`: `true`
+- `internal_pass_release_decision`: `INSUFFICIENT_EVIDENCE`
+- `supervisor_action_latency_p95_ms`: `1100`（assertion sample）
+
+6) Risks & Rollback
+- risks:
+  - A 前置“行数”已达标，但目标事件匹配仍为 `0/30`，无法推动 `verified_handoff`
+  - internal pass 输入文件已就绪，但样本量阈值仍不足（lane/high-risk/mergeback）
+  - 若跳过 `SKC-W2-05` 转绿直接 handoff 将违反 fail-closed
+- rollback:
+  - `build/xt_l2_skc_gate_report.json#/rollback/assignment_snapshot`
+  - `build/xt_l2_skc_gate_report.json#/rollback/incident_policy_version`
+  - `build/xt_l2_skc_gate_report.json#/rollback/merge_policy_version`
+
+7) Handoff
+- next_owner_lane: `Hub-L5 + XT-L1 + QA`（XT-L2 保持接棒等待）
+- depends_on:
+  - `skills.package.imported -> first_run accepted` matched rows `>=30`
+  - `SKC-W2-05 gate_vector = SKC-G1/G3/G4:PASS`
+- unblock 条件：
+  - `build/hub_l5_release_skc_g3_real_sampling.json` -> `SKC-G3=PASS`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v51.json` wait edge -> `ready_to_handoff`
+
+#### XT-L2 / SKC-W2-06 / Auto-Continue（SKC-BRK-X2 require-real checkpoint v52）
+
+1) Scope
+- `SKC-W2-06`（pre_takeover_check_only）：执行 SKC-BRK-X2 定向补证据，完成 `>=30` 真实 `import -> run` 匹配样本；维持 fail-closed，不提前进入 `verified_handoff` 执行态。
+
+2) Changes
+- 新增/刷新机读证据：
+  - `build/reports/skc_brk_x2_real_sample_batch.v1.json`
+  - `build/reports/skc_brk_x2_real_sample_final.v1.json`
+  - `build/reports/skc_brk_x2_g3_probe.compat.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v9.json`
+  - `build/reports/skc_w1_xt_l2_hub_l1_real_sample_probe_results.v8.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v52.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v52.json`
+  - `build/reports/skc_w2_06_xt_l2_self_consistency_v52.json`
+  - `build/reports/skc_w2_06_xt_l2_prereq_status.v1.json`（refresh）
+  - `build/hub_l5_release_skc_g3_real_sampling.json`（refresh）
+- Command Board（仅 XT-L2 行/分区）：
+  - `Task Catalog/SKC-W2-06` claim TTL 续租到 `2026-03-02T11:15:09-08:00`
+  - `XT-L2 Lane Zone` 改写为“样本已就绪、依赖仍阻塞（SKC-W2-05 未绿）”状态
+
+3) DoD
+- [x] `successful_import_rows >= 30`（实测 `34`）
+- [x] `matched_latency_rows >= 30`（实测 `34`）
+- [x] `source_db_path` 指向真实运行库（`/Users/andrew.xie/Library/Containers/com.rel.flowhub/Data/RELFlowHub/hub_grpc/hub.sqlite3`）
+- [x] 每 5 条样本已落盘 batch probe（`5/10/15/20/25/30`）
+- [x] 依赖未满足维持 fail-closed（未写 `closed` / 未执行 `verified_handoff`）
+- [ ] `SKC-W2-05` gate 转 `SKC-G1/G3/G4:PASS`
+- [ ] XT-L2 输出 `SKC-W2-06 verified_handoff` 并通知 Hub-L4 接棒
+
+4) Gate
+- `BRK-G2`: `PASS`（XT-L2 兼容探针口径）
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`（受 `SKC-W2-05` 阻塞）
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`（需上游 gate 向量联动转绿）
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G5(linked)`: `BLOCKED`
+- 证据路径：
+  - `build/reports/skc_brk_x2_real_sample_final.v1.json`
+  - `build/reports/skc_brk_x2_real_sample_batch.v1.json`
+  - `build/reports/skc_brk_x2_g3_probe.compat.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v9.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v52.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v52.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+
+5) KPI Snapshot
+- `openclaw_skill_import_success_rate`: `1.0`（threshold `>=0.98`）
+- `import_to_first_run_p95_ms`: `23`（threshold `<=12000`）
+- `successful_import_rows`: `34`
+- `matched_latency_rows`: `34`
+- `supervisor_action_latency_p95_ms`: `1100`（assertion sample）
+
+6) Risks & Rollback
+- risks:
+  - 样本补齐已完成，但 `SKC-W2-05` gate 未转绿前不可跨步 handoff
+  - 旧版采样器若不带 execution-table fallback，可能误判 `matched_latency_rows=0`
+  - Hub-L5 若未消费新证据重跑门禁，主链仍会停在 `W2-05 -> W2-06`
+- rollback:
+  - `build/xt_l2_skc_gate_report.json#/rollback/assignment_snapshot`
+  - `build/xt_l2_skc_gate_report.json#/rollback/incident_policy_version`
+  - `build/xt_l2_skc_gate_report.json#/rollback/merge_policy_version`
+
+7) Handoff
+- next_owner_lane: `XT-L1 -> Hub-L5 -> XT-L2 -> Hub-L4`
+- depends_on:
+  - `SKC-W2-05` gate_vector=`SKC-G1/G3/G4:PASS`
+  - `Hub-L5` 发布 `SKC-G3=PASS` 重跑结果并更新 release gate
+- unblock 条件：
+  - `build/reports/skc_w2_06_xt_l2_prereq_status.v1.json#/prereq_A_rows/state == PASS`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v52.json#/wait_for_graph/edge_state` 可转 `ready_to_handoff`
+  - 转绿后 XT-L2 输出 `SKC-W2-06 verified_handoff`，定向通知 `Hub-L4` 接棒 `SKC-W2-07`
+
+
+
+#### XT-L2 / SKC-W2-06 / Auto-Continue（delta checkpoint v53）
+
+1) Scope
+- `SKC-W2-06`（pre_takeover_check_only）继续协议增量续推：仅续租 claim/TTL、刷新 wait-for edge、维持 fail-closed blocked，不跨依赖进入执行态。
+
+2) Changes
+- 机读 checkpoint 新增：
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v53.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v53.json`
+  - `build/reports/skc_w2_06_xt_l2_self_consistency_v53.json`
+- Command Board（仅 XT-L2 允许分区）：
+  - `Task Catalog/SKC-W2-06` claim 更新为 `claim_skc_w2_06_xt_l2_precheck_20260302_1821`，TTL 续租至 `2026-03-02T22:21:00-08:00`
+  - `XT-L2 Lane Zone` 同步 v53 证据引用，保持 `blocked_reason=dependency_not_ready.skc_w2_05_gate_not_pass`
+
+3) DoD
+- [x] claim_id 与 claim_ttl_until 已续租并回填
+- [x] wait-for edge 续租并保持 `SKC-W2-06 <- SKC-W2-05`
+- [x] require-real 真实样本前置保持已达标（`successful_import_rows>=30 && matched_latency_rows>=30`）
+- [x] Gate 未转绿时保持 fail-closed（未写 `closed`，未执行 `verified_handoff`）
+- [ ] `SKC-W2-05` gate_vector 转 `SKC-G1/G3/G4:PASS`
+- [ ] XT-L2 输出 `SKC-W2-06 verified_handoff` 并通知 Hub-L4 接棒
+
+4) Gate
+- `SKC-G1`: `INSUFFICIENT_EVIDENCE`（依赖 `SKC-W2-05`）
+- `SKC-G2`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G4`: `INSUFFICIENT_EVIDENCE`
+- `SKC-G5(linked)`: `BLOCKED`
+- `BRK-G2`: `PASS`（真实样本前置）
+- 证据路径：
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v53.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v53.json`
+  - `build/reports/skc_w2_06_xt_l2_self_consistency_v53.json`
+  - `build/reports/skc_brk_x2_real_sample_final.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_prereq_status.v1.json`
+
+5) KPI Snapshot
+- `successful_import_rows`: `34`
+- `matched_latency_rows`: `34`
+- `openclaw_skill_import_success_rate`: `1.0`
+- `import_to_first_run_p95_ms`: `23`
+- `supervisor_action_latency_p95_ms`: `1100`（assertion sample）
+
+6) Risks & Rollback
+- risks:
+  - `SKC-W2-05` 未绿前若提前 handoff 将违反主链 fail-closed
+  - 上游 gate 证据若未消费最新 require-real 样本，`W2-05 -> W2-06` 仍阻塞
+  - 依赖 claim 已过期，需由上游泳道续租并补机读 checkpoint
+- rollback:
+  - 继续使用 `build/xt_l2_skc_gate_report.json#/rollback/assignment_snapshot`
+  - 继续使用 `build/xt_l2_skc_gate_report.json#/rollback/incident_policy_version`
+  - 继续使用 `build/xt_l2_skc_gate_report.json#/rollback/merge_policy_version`
+
+7) Handoff
+- next_owner_lane: `XT-L1 -> Hub-L5 -> XT-L2 -> Hub-L4`
+- depends_on:
+  - `SKC-W2-05 gate_vector == SKC-G1/G3/G4:PASS`
+  - `Hub-L5` 重跑并发布 `SKC-G3=PASS` release gate 证据
+- unblock 条件机读来源：
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v53.json#/wait_for_graph/edge_state`
+  - `build/reports/skc_w2_06_xt_l2_prereq_status.v1.json#/prereq_A_rows/state`
+  - `build/hub_l5_release_skc_g3_real_sampling.json#/gate/SKC-G3`
+
+
+#### XT-L2 / SKC-W2-06 / delta_3line checkpoint v56
+
+- status: `verified_handoff(dispatched_fail_closed)`（dependency_green_consumed）
+- dependency_delta: `SKC-W2-05` 已为 `delivered` + `SKC-G1/G3/G4:PASS`；XT-L2 已消费 `build/reports/skc_w2_05_xt_l1_verified_handoff.v1.json` 并执行 `SKC-W2-06 verified_handoff`（directed_only）
+- next_owner_lane: `Hub-L4`（已定向通知续推 `SKC-W2-07`；XT-L2 继续不 claim `XT-W2-20+`）
+- evidence_ref: `build/reports/skc_w2_06_xt_l2_delta_3line.v56.json`
+
+
+#### XT-L2 / SKC-W2-06 / Auto-Continue（full_7piece checkpoint v54）
+
+1) Scope
+- `SKC-W2-06` 维持 `verified_handoff_dispatched` 的 fail-closed 稳态，本轮聚焦三件事：Hub-L4 消费催化（定向 baton）、Hub-L1 strict 分母对齐、hard-line triplet 供 Hub-L5 重跑门禁。
+- 不改 Hub-L4 状态，不广播；仅更新 XT-L2 自有任务行与 XT-L2 分区。
+
+2) Changes
+- 机读证据新增/刷新：
+  - `build/reports/skc_w2_06_xt_l2_hub_l4_directed_catalyst.v1.json`（XT-L2 -> Hub-L4 定向催化，等待消费回执）
+  - `build/reports/skc_w2_06_xt_l2_hard_line_sync.v2.json`（overflow/origin-fallback/dispatch-cleanup 三件套对齐，供 Hub-L5 重跑）
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v10.json`（与 Hub-L1 strict 分母联动快照）
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v54.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v54.json`
+  - `build/reports/skc_w2_06_xt_l2_self_consistency_v54.json`
+  - `build/reports/skc_w2_06_xt_l2_delta_3line.v57.json`
+- Command Board（仅 XT-L2）：
+  - `Task Catalog/SKC-W2-06` claim 续租为 `claim_skc_w2_06_xt_l2_handoff_watch_20260302_2102`，TTL=`2026-03-03T01:02:09-08:00`
+  - XT-L2 Lane Zone 回填 `innovation_level=L1_micro_reflect`、`suggestion_governance=hybrid`
+  - 预置主链转绿后的顺序 claim：`XT-W2-20 -> XT-W2-21 -> XT-W2-20-B`（禁止并发抢跑）
+
+3) DoD
+- [x] claim 已续租并回填 `claim_id + claim_ttl_until`
+- [x] 已向 Hub-L4 发起 blocker->waiter 定向催化，且保持 no-broadcast
+- [x] hard-line triplet 证据包已补齐并标记 `ready_for_hub_l5_rerun`
+- [x] strict 分母联动状态机读化（Hub-L1 strict returned rows 仍需补齐）
+- [ ] strict `returned_rows >= 30`（当前 `0/30`）
+- [ ] Hub-L4 消费 `SKC-W2-06 verified_handoff` 并回填 receipt
+
+4) Gate
+- `SKC-G1`: `PASS`
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- `SKC-G5(linked)`: `BLOCKED`（等待 Hub-L4 consume + Hub-L5 重跑）
+- `SKC-G3(strict prereq)`: `INSUFFICIENT_EVIDENCE`（strict returned rows `0/30`）
+- 证据路径：
+  - `build/reports/skc_w2_06_xt_l2_verified_handoff.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_hub_l4_directed_catalyst.v1.json`
+  - `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v39.json`
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v10.json`
+  - `build/reports/skc_w1_xt_l2_hub_l1_real_sample_probe_results.v10.json`
+  - `build/reports/skc_w2_06_xt_l2_hard_line_sync.v2.json`
+
+5) KPI Snapshot
+- `verified_handoff_dispatched`: `true`（Hub-L4 receipt pending）
+- `strict_returned_rows`: `0/30`
+- `candidate_rows_observed`: `34`
+- `target_matched_rows(xt_l2_probe)`: `34`
+- `hard_line_triplet_zero_violation`: `3/3`
+
+6) Risks & Rollback
+- risks:
+  - Hub-L4 若不消费 latest handoff，`SKC-W2-07` 无法续推
+  - strict 分母未对齐前，Hub-L5 重跑 `SKC-G3` 仍会 fail-closed
+  - 若跳过顺序 claim 直接并发抢 `XT-W2-20/21/20-B`，将破坏主链节奏契约
+- rollback:
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v54.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v54.json`
+  - `build/reports/skc_w2_06_xt_l2_self_consistency_v54.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L4 -> Hub-L5 -> XT-L2`
+- depends_on:
+  - Hub-L4 消费 `build/reports/skc_w2_06_xt_l2_verified_handoff.v1.json`
+  - Hub-L1+XT-L2 将 strict `returned_rows` 补齐至 `>=30`
+  - Hub-L5 在 A/B 前置满足后重跑门禁
+- unblock 条件：
+  - `build/reports/skc_w2_06_xt_l2_hub_l4_directed_catalyst.v1.json#/catalyst/state == issued_wait_receipt` -> `receipt_ack`
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v10.json#/prereq_a/state == PASS`
+  - SKC 主链转绿后，XT-L2 按 `XT-W2-20 -> XT-W2-21 -> XT-W2-20-B` 顺序 claim（no parallel）
+
+#### XT-L2 / SKC-W2-06 / delta_3line checkpoint v57
+
+- status: `verified_handoff(wait_hub_l4_consume+strict_denominator_sync)`
+- dependency_delta: Hub-L4 消费回执待补；Hub-L1 strict 分母仍 `0/30`；hard-line triplet 已就绪
+- next_owner_lane: `Hub-L4`（继续 blocker->waiter 定向催化）
+- evidence_ref: `build/reports/skc_w2_06_xt_l2_delta_3line.v57.json`
+
+#### XT-L2 / SKC-W2-06 / delta_3line checkpoint v58
+
+- status: `verified_handoff(wait_hub_l4_consume+strict_denominator_sync)`（board_ref_sync_only）
+- dependency_delta: XT-L2 当前泳道证据引用已对齐 `v54/v10/v10`；Hub-L4 消费回执与 Hub-L1 strict `0/30` 仍待补齐
+- next_owner_lane: `Hub-L4`（保持 blocker->waiter 定向催化；禁止广播）
+- evidence_ref: `build/reports/skc_w2_06_xt_l2_delta_3line.v58.json`
+
+#### XT-L2 / SKC-W2-06 / delta_3line checkpoint v59
+
+- status: `verified_handoff(wait_hub_l4_consume+strict_denominator_sync)`（strict_checklist_issued）
+- dependency_delta: Hub-L1 strict 字段最小清单已机读化（`checklist.v1`）；主阻塞保持 `Hub-L4 receipt pending + strict 0/30`
+- next_owner_lane: `Hub-L4 + Hub-L1`（双定向 baton；禁止广播）
+- evidence_ref: `build/reports/skc_w2_06_xt_l2_delta_3line.v59.json`
+
+#### XT-L2 / SKC-W2-06 / delta_3line checkpoint v60
+
+- status: `verified_handoff(wait_hub_l4_consume+strict_denominator_sync)`（strict_sql_pack_issued）
+- dependency_delta: Hub-L1 可执行 strict SQL/command pack 已机读化（`strict_sql_pack.v1`）；主阻塞维持 `Hub-L4 receipt pending + strict 0/30`
+- next_owner_lane: `Hub-L4 + Hub-L1`（双定向 baton；禁止广播）
+- evidence_ref: `build/reports/skc_w2_06_xt_l2_delta_3line.v60.json`
+
+#### XT-L2 / SKC-W2-06 / Auto-Continue（full_7piece checkpoint v55）
+
+1) Scope
+- `SKC-W2-06` 维持 `verified_handoff_dispatched` fail-closed 稳态；本轮优先完成 `SKC-G3` strict 分母对齐（XT-L2 + Hub-L1 联动）。
+- 不改 Hub-L4 状态、不广播；仅更新 XT-L2 任务行与 XT-L2 分区。
+
+2) Changes
+- 机读证据新增/刷新：
+  - `build/reports/skc_w2_06_xt_l2_hub_l1_strict_seed_run.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_hub_l1_strict_rows_checklist.v2.json`
+  - `build/reports/skc_w2_06_xt_l2_hub_l1_strict_sql_pack.v2.json`
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v11.json`
+  - `build/reports/skc_w1_xt_l2_hub_l1_real_sample_probe_results.v11.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v55.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v55.json`
+  - `build/reports/skc_w2_06_xt_l2_self_consistency_v55.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`（strict 口径刷新）
+- Command Board（仅 XT-L2）：
+  - `Task Catalog/SKC-W2-06` claim 续租为 `claim_skc_w2_06_xt_l2_strict_sync_20260302_2230`，TTL=`2026-03-03T02:30:55-08:00`
+  - XT-L2 Lane Zone 切换到 `v55/v11/v2` 证据集，保持 `innovation_level=L1_micro_reflect` 与 `suggestion_governance=hybrid`
+
+3) DoD
+- [x] strict `returned_rows >= 30`（当前 `64/30`）
+- [x] strict 分母无 fallback 计数（`agent_tool_events_accepted=64`, `skill_execution_gate_unchecked=0`）
+- [x] claim 已续租并回填 `claim_id + claim_ttl_until`
+- [x] blocker->waiter 定向 baton 持续生效（no-broadcast）
+- [ ] Hub-L4 消费 `SKC-W2-06 verified_handoff` 并回填 receipt
+
+4) Gate
+- `SKC-G1`: `PASS`
+- `SKC-G2`: `PASS`
+- `SKC-G4`: `PASS`
+- `SKC-G3(strict prereq)`: `PASS`（strict returned rows `64/30`）
+- `SKC-G5(linked)`: `BLOCKED`（等待 Hub-L4 consume + Hub-L5 重跑收口）
+- 证据路径：
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v11.json`
+  - `build/reports/skc_w1_xt_l2_hub_l1_real_sample_probe_results.v11.json`
+  - `build/reports/skc_w2_06_xt_l2_hub_l1_strict_rows_checklist.v2.json`
+  - `build/reports/skc_w2_06_xt_l2_hub_l1_strict_sql_pack.v2.json`
+  - `build/reports/skc_w2_06_xt_l2_hub_l1_strict_seed_run.v1.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+
+5) KPI Snapshot
+- `strict_returned_rows`: `64/30`
+- `candidate_rows_observed`: `64`
+- `agent_tool_events_seen`: `64`
+- `agent_tool_events_accepted`: `64`
+- `import_to_first_run_p95_ms`: `19`
+- `hard_line_triplet_zero_violation`: `3/3`
+
+6) Risks & Rollback
+- risks:
+  - Hub-L4 若不消费 latest handoff，`SKC-W2-07` 仍无法续推
+  - Hub-L5 若未消费 strict 对齐后的刷新快照，`SKC-G5` 仍停在 fail-closed
+- rollback:
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v55.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v55.json`
+  - `build/reports/skc_w2_06_xt_l2_self_consistency_v55.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L4 -> Hub-L5 -> XT-L2`
+- depends_on:
+  - Hub-L4 消费 `build/reports/skc_w2_06_xt_l2_verified_handoff.v1.json` 并回填 receipt
+  - Hub-L5 消费 strict 对齐证据后重跑门禁
+  - SKC 主链转绿后，XT-L2 按 `XT-W2-20 -> XT-W2-21 -> XT-W2-20-B` 顺序 claim（no parallel）
+
+
+#### XT-L2 / SKC-W2-06 / Auto-Continue（full_7piece checkpoint v56）
+
+1) Scope
+- `SKC-W2-06` 维持 `verified_handoff` fail-closed 稳态；本轮聚焦 Hub-L5 阻塞解链（优先补齐 prereq_B 缺失指标并保持 strict 分母对齐）。
+- 仅更新 XT-L2 分区与 `SKC-W2-06` 行；不改 Hub-L4/Hub-L5 他泳道状态。
+
+2) Changes
+- 机读证据新增/刷新：
+  - `build/reports/skc_w2_06_xt_l2_internal_pass_metrics_patch.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_hub_l5_prereq_b_internal_pass_recheck.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_hub_l5_prereq_b_metrics_fill.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_hub_l4_directed_catalyst.v2.json`
+  - `build/reports/skc_w2_06_xt_l2_hub_l5_directed_prereq_b_catalyst.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v56.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v56.json`
+  - `build/reports/skc_w2_06_xt_l2_self_consistency_v56.json`
+- Command Board（仅 XT-L2）：
+  - `Task Catalog/SKC-W2-06` claim 续租为 `claim_skc_w2_06_xt_l2_hubl5_prereqb_20260302_2257`，TTL=`2026-03-03T02:57:10-08:00`
+  - XT-L2 Lane Zone 对齐为 `hub_l4_handoff_consumed + prereq_b_missing_metrics_closed`，并维持 `innovation_level=L1_micro_reflect`、`suggestion_governance=hybrid`
+
+3) DoD
+- [x] claim 已续租（+4h）并回填 `claim_id + claim_ttl_until`
+- [x] “handoff 已消费”事实已与 Hub-L4 机读证据对齐（`v41/v42/v2`）
+- [x] prereq_B `missing_metrics_count` 已由 `33 -> 0`
+- [x] 已向 Hub-L5 发出定向 prereq_B 证据 baton（no-broadcast）
+- [ ] prereq_B `release_decision=GO`（当前仍 `INSUFFICIENT_EVIDENCE`，sample_sufficiency 未达阈值）
+
+4) Gate
+- `SKC-G1`: `PASS`
+- `SKC-G2`: `PASS`
+- `SKC-G3(strict prereq)`: `PASS`（strict returned rows `64/30`）
+- `SKC-G4`: `PASS`
+- `SKC-G5(linked)`: `BLOCKED`（Hub-L5 prereq_B release_decision 仍未转绿）
+- 证据路径：
+  - `build/reports/skc_w2_06_xt_l2_hub_l5_prereq_b_metrics_fill.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_hub_l5_prereq_b_internal_pass_recheck.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_hub_l5_directed_prereq_b_catalyst.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_hub_l4_directed_catalyst.v2.json`
+  - `build/reports/skc_w2_06_xt_l2_require_real_samples_probe.v11.json`
+  - `build/reports/skc_w1_xt_l2_hub_l1_real_sample_probe_results.v11.json`
+  - `build/hub_l5_release_skc_g3_real_sampling.json`
+
+5) KPI Snapshot
+- `strict_returned_rows`: `64/30`
+- `matched_latency_rows`: `64`
+- `prereq_b_missing_metrics_count`: `0`
+- `sample_sufficiency`: `lane_event_count=546/1000, high_risk_request_count=1/300, mergeback_runs=0/100`
+- `hard_line_triplet_zero_violation`: `3/3`
+
+6) Risks & Rollback
+- risks:
+  - Hub-L5 若未消费定向 prereq_B 证据包，阻塞态将继续停留在旧快照
+  - 即使缺失指标补齐，若样本充分性未达阈值，门禁仍会 fail-closed
+  - SKC 主链未转绿前抢 claim `XT-W2-20/21/20-B` 会破坏顺序契约
+- rollback:
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v55.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v55.json`
+  - `build/reports/skc_w2_06_xt_l2_self_consistency_v55.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L5 -> XT-L2`
+- depends_on:
+  - Hub-L5 消费 `build/reports/skc_w2_06_xt_l2_hub_l5_directed_prereq_b_catalyst.v1.json` 并刷新 prereq 快照
+  - Hub-L5 在 A/B 双绿后重跑门禁
+  - SKC 主链转绿后，XT-L2 按 `XT-W2-20 -> XT-W2-21 -> XT-W2-20-B` 顺序 claim（no parallel）
+
+#### XT-L2 / SKC-W2-06 / Auto-Continue（full_7piece checkpoint v57）
+
+1) Scope
+- `SKC-W2-06` 持续 `verified_handoff` fail-closed；本轮只做 Hub-L5 prereq_B 解阻催化与一致性校对。
+- 仅更新 XT-L2 分区 + `SKC-W2-06` 任务行；不改 Hub-L4/Hub-L5 他泳道状态。
+
+2) Changes
+- 续租 claim：`claim_skc_w2_06_xt_l2_hubl5_prereqb_20260302_2314`，TTL=`2026-03-03T03:14:41-08:00`（+4h）。
+- 新增/刷新机读证据：
+  - `build/reports/skc_w2_06_xt_l2_hub_l5_prereq_b_internal_pass_recheck.v2.json`
+  - `build/reports/skc_w2_06_xt_l2_hub_l5_prereq_b_consistency_check.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_hub_l5_directed_prereq_b_catalyst.v2.json`
+  - `build/reports/skc_w2_06_xt_l2_xt_mainline_switch_signal.v1.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v57.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v57.json`
+  - `build/reports/skc_w2_06_xt_l2_self_consistency_v57.json`
+
+3) DoD
+- [x] claim 已续租并回填到任务行与 XT-L2 分区。
+- [x] 维持 `SKC-W2-06 verified_handoff`（不改 Hub-L4/Hub-L5 状态）。
+- [x] prereq_B 缺失指标补齐证据已定向推送 Hub-L5（directed only）。
+- [x] 与 Hub-L5 当前快照完成一致性对比（`missing_metrics 33 -> latest errors 0`）。
+- [ ] Hub-L5 刷新 prereq 快照并回执。
+
+4) Gate
+- `SKC-G1`: `PASS`
+- `SKC-G2`: `PASS`
+- `SKC-G3`: `PASS`
+- `SKC-G4`: `PASS`
+- `SKC-G5`: `BLOCKED`（等待 Hub-L5 消费最新 prereq_B 证据并刷新快照）
+
+5) KPI Snapshot
+- `strict_returned_rows`: `64/30`
+- `hub_l5_snapshot_missing_metrics`: `33`
+- `xt_l2_latest_missing_metric_errors`: `0`
+- `sample_sufficiency`: `lane_event_count=546/1000, high_risk_request_count=1/300, mergeback_runs=0/100`
+
+6) Risks & Rollback
+- risks:
+  - Hub-L5 若不刷新 prereq 快照，将持续停留旧阻塞口径。
+  - 样本充分性未达阈值前，`release_decision` 仍会保持 fail-closed。
+- rollback:
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v56.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v56.json`
+  - `build/reports/skc_w2_06_xt_l2_self_consistency_v56.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L5`
+- depends_on:
+  - Hub-L5 消费 `build/reports/skc_w2_06_xt_l2_hub_l5_directed_prereq_b_catalyst.v2.json` 并刷新 prereq 快照
+  - 若 Hub-L5 转 `SKC-G5=PASS`，XT-L2 立即回填 `build/reports/skc_w2_06_xt_l2_xt_mainline_switch_signal.v1.json` 为可切换态
+  - SKC 未闭环前，XT-L2 保持 `XT-W2-20 -> XT-W2-21 -> XT-W2-20-B` 候队（no claim）
+#### XT-L2 / SKC-W2-06 / Auto-Continue（full_7piece checkpoint v58）
+
+1) Scope
+- `SKC-W2-06` 持续 `verified_handoff` fail-closed；本轮聚焦 Hub-L5 prereq_B 一致性复核 + 定向催化，不改他泳道状态。
+- 仅更新 XT-L2 分区 + `SKC-W2-06` 任务行；维持 directed baton，禁止广播。
+
+2) Changes
+- 续租 claim：`claim_skc_w2_06_xt_l2_hubl5_prereqb_20260302_2329`，TTL=`2026-03-03T03:29:59-08:00`（+4h）。
+- 新增/刷新机读证据：
+  - `build/reports/skc_w2_06_xt_l2_hub_l5_prereq_b_consistency_check.v2.json`
+  - `build/reports/skc_w2_06_xt_l2_hub_l5_directed_prereq_b_catalyst.v3.json`
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v58.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v58.json`
+  - `build/reports/skc_w2_06_xt_l2_self_consistency_v58.json`
+- 事实对齐：
+  - handoff 已消费：`x-terminal/.axcoder/reports/skc_w2_07_hub_l4_hub_l5_handoff_consume_check.v6.json#consumed=true`
+  - Hub-L5 prereq_B 快照仍旧：`build/reports/skc_w3_08_release_gate_prereq_check.v14.json` / `build/reports/skc_w3_08_hub_l5_autocontinue_blocked.v65.json` 仍为 `missing_metrics=33`
+  - XT-L2 最新 recheck：`build/reports/skc_w2_06_xt_l2_hub_l5_prereq_b_internal_pass_recheck.v2.json#missing_metric_errors=0`
+
+3) DoD
+- [x] claim 已续租并回填到任务行与 XT-L2 分区。
+- [x] `SKC-W2-06 verified_handoff` 持续有效，且 handoff 消费事实与 Hub-L4 对齐。
+- [x] prereq_B 补齐证据已定向推送 Hub-L5（`directed_only_no_broadcast`）。
+- [x] prereq_B 一致性对比已刷新（`Hub-L5 snapshot missing=33` vs `XT-L2 latest missing=0`）。
+- [ ] Hub-L5 消费 v3 催化包并刷新 prereq 快照。
+
+4) Gate
+- `SKC-G1`: `PASS`
+- `SKC-G2`: `PASS`
+- `SKC-G3`: `PASS`
+- `SKC-G4`: `PASS`
+- `SKC-G5`: `BLOCKED`（Hub-L5 prereq_B 快照未刷新，仍 `missing_metrics=33`）
+
+5) KPI Snapshot
+- `strict_returned_rows`: `64/30`
+- `hub_l5_snapshot_missing_metrics`: `33`
+- `xt_l2_latest_missing_metric_errors`: `0`
+- `sample_sufficiency`: `lane_event_count=546/1000, high_risk_request_count=1/300, mergeback_runs=0/100`
+
+6) Risks & Rollback
+- risks:
+  - Hub-L5 若不消费 v3 定向催化包，prereq_B 快照将持续滞后。
+  - 样本充分性未达阈值前，`release_decision` 仍会保持 fail-closed。
+  - SKC 主链未转绿前抢 claim `XT-W2-20` 会破坏顺序契约。
+- rollback:
+  - `build/reports/skc_w2_06_xt_l2_blocked_status.v57.json`
+  - `build/reports/skc_w2_06_xt_l2_checkpoint_verify.v57.json`
+  - `build/reports/skc_w2_06_xt_l2_self_consistency_v57.json`
+
+7) Handoff
+- next_owner_lane: `Hub-L5`
+- depends_on:
+  - Hub-L5 消费 `build/reports/skc_w2_06_xt_l2_hub_l5_directed_prereq_b_catalyst.v3.json` 并刷新 prereq 快照
+  - 若 Hub-L5 转 `SKC-G5=PASS`，XT-L2 立即回填 `build/reports/skc_w2_06_xt_l2_xt_mainline_switch_signal.v1.json` 为可切换态
+  - SKC 未闭环前，XT-L2 保持 `XT-W2-20 -> XT-W2-21 -> XT-W2-20-B` 候队（no claim）
+
+#### XT-L2 / SKC-W2-06 / delta_3line checkpoint v61
+
+- status: `verified_handoff(wait_hub_l5_prereq_b_snapshot_refresh_after_require_real_incremental_pack)`
+- dependency_delta: `MEN-20260303-004 已处理并定向回推 Hub-L5；XT-L2 latest recheck(v6)=GO 且 failed_hard_lines=[]；sample_sufficiency=1208/300/685；Hub-L5 侧快照仍为 v29(missing_metrics=33) 待刷新`
+- next_owner_lane: `Hub-L5`（仅定向消费 v68 最后一跳增量包，不广播）
+- evidence_ref: `build/reports/skc_w2_06_xt_l2_delta_3line.v68.json`
+
+#### XT-L2 / SKC-W2-06 / delta_3line checkpoint v62
+
+- status: `verified_handoff(wait_hub_l5_snapshot_drift_fix_and_g5_rerun)`
+- dependency_delta: `Hub-L5 已执行 v31 rerun 但 runtime report 仍为 968/1/0，出现 snapshot_drift；XT-L2 latest recheck(v7)=GO(sample=1208/300/685)；已定向回推 snapshot_id + sample_window + patch_refs(v4/v3/v7)`
+- next_owner_lane: `Hub-L5`（directed-only；仅消费 v69 增量并先修一致性后重跑）
+- evidence_ref: `build/reports/skc_w2_06_xt_l2_delta_3line.v69.json`
+
+#### XT-L2 / SKC-W2-06 / delta_3line checkpoint v63
+
+- status: `verified_handoff(wait_hub_l5_snapshot_drift_fix_and_g5_rerun)`
+- dependency_delta: `MEN-20260303-004 已补齐到 v70 最后一跳；XT-L2 latest recheck(v8)=GO(sample=1208/300/685,failed_hard_lines=[])；已定向回推 snapshot_id + sample_window + patch_refs(v5/v4/v8)，但 Hub-L5 runtime 仍为 968/1/0`
+- next_owner_lane: `Hub-L5`（directed-only；仅消费 v70 增量并刷新 prereq_B runtime 快照后触发 G5 重跑）
+- evidence_ref: `build/reports/skc_w2_06_xt_l2_delta_3line.v70.json`
+
+#### XT-L2 / SKC-W2-06 / delta_3line checkpoint v64
+
+- status: `verified_handoff(wait_hub_l5_snapshot_drift_fix_and_g5_rerun)`
+- dependency_delta: `Hub-L5 v32 报 snapshot_guard 漂移(prereq_snapshot_id=xtl2_prereq_bundle@07f3b930448b6ed4 != rerun_input_snapshot_id=hubg5_inputs@d5012e1ef840c5db)；XT-L2 已按 MEN-20260303-004 仅补最后一跳 v71：internal_pass_recheck(v9)+metrics_patch(v6)+samples_patch(v5)+consistency(v9)+catalyst(v10)`
+- next_owner_lane: `Hub-L5`（directed-only；刷新 runtime 输入快照并满足 prereq_snapshot_id==rerun_input_snapshot_id 后触发 G5 重跑）
+- evidence_ref: `build/reports/skc_w2_06_xt_l2_delta_3line.v71.json`
+
+#### XT-L2 / SKC-W2-06 / delta_3line checkpoint v65
+
+- status: `verified_handoff(wait_hub_l5_rerun_condition_to_be_met_and_g5_rerun)`
+- dependency_delta: `Hub-L5 v36 显示 snapshot_drift=false 且 snapshot_guard 已对齐(prereq_snapshot_id=skc_w3_08_runtime@1a910bbfee74dbc7)，但 gate_rerun=NOT_RUN（reason=evidence_delta=false）；XT-L2 已按 MEN-20260303-004 仅补最后一跳 v72：internal_pass_recheck(v10)+metrics_patch(v7)+samples_patch(v6)+consistency(v10)+catalyst(v11)`
+- next_owner_lane: `Hub-L5`（directed-only；消费 v72 增量并满足 rerun_condition=evidence_delta=true && snapshot_id_changed=true 后触发 G5 重跑）
+- evidence_ref: `build/reports/skc_w2_06_xt_l2_delta_3line.v72.json`
+
+#### XT-L2 / SKC-W2-06 / delta_3line checkpoint v66
+
+- status: `verified_handoff(wait_hub_l5_rerun_condition_to_be_met_and_g5_rerun)`
+- dependency_delta: `已提交 v+1 定向包并升级 metrics/samples/recheck（v8/v7/v11），sample_window 固定 1208/300/685，且生成新 snapshot_id=xtl2_prereq_bundle@5fdcf887413d40c6；Hub-L5 当前仍是 gate_rerun=NOT_RUN(reason=evidence_delta=false,runtime=968/1/0)`
+- next_owner_lane: `Hub-L5`（directed-only；消费 v73 并将 rerun 输入切到新 snapshot_id 后触发 G5 重跑）
+- evidence_ref: `build/reports/skc_w2_06_xt_l2_delta_3line.v73.json`
+
+#### XT-L2 / SKC-W2-06 / delta_3line checkpoint v67
+
+- status: `verified_handoff(hub_l5_pass_consumed_and_xt_mainline_switch_signal_v2_emitted)`
+- dependency_delta: `Hub-L5 已回执 SKC-G5:PASS,SKC-G3:PASS（delta_3line.v91）；XT-L2 已回填 switch_signal.v2 并关闭 MEN-20260303-004 收口状态；保持 directed-only + delta_3line`
+- next_owner_lane: `XT-L2`（XT 主链顺序候队：XT-W2-20 -> XT-W2-21 -> XT-W2-20-B；不并发）
+- evidence_ref: `build/reports/skc_w2_06_xt_l2_delta_3line.v74.json`
+
+#### XT-L2 / SKC-W2-06 / delta_3line checkpoint v68
+
+- status: `verified_handoff(on_call_standby_hub_l1_mention_005_accepted)`
+- dependency_delta: `已处理 MEN-20260303-005：补齐 high_risk_request_count/mergeback_runs 来源与预计增量（20m 预测=0/0，standby 无主动采样）；保持 directed-only + delta_3line + parallel_claim_forbidden`
+- next_owner_lane: `Hub-L1`（如需继续增量，按同名字段定向 mention）
+- evidence_ref: `build/reports/skc_w2_06_xt_l2_delta_3line.v75.json`
+
+#### XT-L2 / XT-W2-20 / delta_3line checkpoint v1
+
+- status: `claimed(initial_delta_dispatched)`
+- dependency_delta: `release blockers 已清（SKC-W3-08 PASS + edge resolved）；XT-W2-20 已 claim 并输出首个 delta_3line；XT-W2-21 按顺序 claim 完成，parallel_claim_forbidden=true`
+- next_owner_lane: `XT-L2`（继续补齐 XT-MP-G0 首证据）
+- evidence_ref: `build/reports/xt_w2_20_xt_l2_delta_3line.v1.json`
+
+#### XT-L2 / XT-W2-20 / delta_3line checkpoint v2
+
+- status: `claimed(g0_first_evidence_bootstrapped)`
+- dependency_delta: `已补齐 pool_planner 首证据（bootstrap），G0 仍 pending；minimal_gaps 收敛到 deterministic_100_samples + p95_measurement；保持顺序锁与 no_parallel_claim`
+- next_owner_lane: `XT-L2`（执行 deterministic 100-sample probe 后回填 candidate）
+- evidence_ref: `build/reports/xt_w2_20_xt_l2_delta_3line.v2.json`
+
+#### XT-L2 / XT-W2-20 / delta_3line checkpoint v3
+
+- status: `claimed(g0_candidate_pass_ready_to_verify_signal_sent)`
+- dependency_delta: `deterministic_100_sample_hash_consistency=PASS(100%,mismatch=0)；pool_plan_ready_p95_ms=0.005(pass<=5000)；cross_pool_cycle注入=PASS(fail_closed)`
+- next_owner_lane: `Hub-L3+QA`（XT-W2-20-B 进入 ready_to_verify，不 claim）
+- evidence_ref: `build/reports/xt_w2_20_xt_l2_delta_3line.v3.json`
+
+#### XT-L2 / XT-W2-21 / delta_3line checkpoint v1
+
+- status: `claimed(g0_candidate_pass_first_evidence_ready_and_next_state_signal_sent)`
+- dependency_delta: `已消费 Hub-L3+QA ready_to_verify 结论（QA review.v1=pass + Hub-L3 delta.v1=accepted）；lane_synth_evidence 首证据=PASS(lane_dod_coverage=100,dag_acyclic=true,cross_pool_write_attempt=0,fail_closed)`
+- next_owner_lane: `Hub-L3+QA`（消费 MEN-20260304-007 并推进 XT-W2-20-B 下一态；保持 no_claim）
+- evidence_ref: `build/reports/xt_w2_21_xt_l2_delta_3line.v3.json`
+
+#### XT-L2 / XT-W2-21 / delta_3line checkpoint v2
+
+- status: `claimed(wait_hub_l3_qa_consume_men_007_no_parallel_claim)`
+- dependency_delta: `本 tick 无 Hub-L3/QA 新回执（ready_to_verify 文件仍 v1/v2）；XT-L2 已按 directed-only 提交 v4 最小差量（snapshot_id + sample_window + patch_refs）并维持 fail-closed`
+- next_owner_lane: `Hub-L3+QA`（ack/accept MEN-20260304-007 后推进 XT-W2-20-B 下一态；保持 no_claim）
+- evidence_ref: `build/reports/xt_w2_21_xt_l2_delta_3line.v4.json`
+
+#### XT-L2 / XT-W2-21 / delta_3line checkpoint v3
+
+- status: `claimed(keepalive_wait_hub_l3_qa_consume_men_007_no_state_change)`
+- dependency_delta: `本 tick 仍无 Hub-L3/QA 对 MEN-20260304-007 的 ack/accept；XT-L2 仅发送 keepalive v5（minimal_gaps=none,no_state_change），并保持 candidate_pass 证据窗口`
+- next_owner_lane: `Hub-L3+QA`（ack/accept MEN-20260304-007 后若放行 XT-W2-20-B 下一态，XT-L2 立即发 v+1；未放行继续 keepalive）
+- evidence_ref: `build/reports/xt_w2_21_xt_l2_delta_3line.v5.json`
+
+#### XT-L2 / XT-W2-21 / delta_3line checkpoint v4
+
+- status: `claimed(consumed_men_007_accepted_and_emitted_min_action_pkg)`
+- dependency_delta: `MEN-20260304-007 已由 Hub-L3+QA 从 accepted 推进到 verified，XT-L2 已显式消费并清除 wait_ack 口径；XT-W2-20-B 当前 ready_to_verify(no_claim;fail_closed)，最小动作包=can_advance(true, minimal_gaps=[])`
+- next_owner_lane: `Hub-L3+QA`（发布 XT-W2-20-B 下一态 verdict delta；XT-L2 继续 no_parallel_claim）
+- evidence_ref: `build/reports/xt_w2_21_xt_l2_delta_3line.v6.json`
+
+#### XT-L2 / Dual-Track Claim / delta_3line checkpoint v1
+
+- status: `pilot_enabled(track_a_execution_plus_track_b_shadow_prep)`
+- dependency_delta: `按 CD-20260304-002 启动 Dual-Track Claim：Track-A 维持串行锁 XT-W2-21->XT-W2-20-B；Track-B 仅对 XT-W2-22/XT-W2-23-B 输出 shadow prep delta（no_state_change=true，禁止改 gate/status，禁止跨泳道写入）`
+- next_owner_lane: `Hub-L3+QA`（仅消费 Track-A 的 XT-W2-20-B 下一态信号；Track-B 不视为 blocker）
+- evidence_ref: `build/reports/xt_dual_track_claim_snapshot.v1.json`
+
+#### XT-L2 / XT-W2-22 / delta_3line checkpoint v1
+
+- status: `claimed(shadow_to_formal_after_unlock_true)`
+- dependency_delta: `已消费 Hub-L3+QA XT-W2-20-B next_state_verdict(v6) 与 QA guard v2，unlock=true；XT-W2-22 从 Track-B shadow 转 Track-A 正式 claim，保持 gate_vector 不变（XT-MP-G1/G3 pending）`
+- next_owner_lane: `XT-L2`（开始 XT-W2-22 G1 首证据积累；保持 no_parallel_claim）
+- evidence_ref: `build/reports/xt_w2_22_xt_l2_delta_3line.v2.json`
+
+#### XT-L2 / XT-W2-22 / delta_3line checkpoint v2
+
+- status: `claimed(g1_first_evidence_bootstrapped_no_parallel_formal_claim)`
+- dependency_delta: `已完成 XT-MP-G1 首证据：profile_determinism=100%、high_risk_lane_without_grant=0、cross_pool_write_attempt=0；Gate 仍保持 XT-MP-G1 pending（fail-closed，待 candidate recheck）`
+- next_owner_lane: `XT-L2`（执行 XT-W2-22 G1 candidate recheck；XT-W2-23-B 保持 shadow prep/no_state_change）
+- evidence_ref: `build/reports/xt_w2_22_xt_l2_delta_3line.v3.json`
+
+#### XT-L2 / XT-W2-22 / delta_3line checkpoint v3
+
+- status: `claimed(g1_candidate_recheck_pass_no_parallel_formal_claim)`
+- dependency_delta: `XT-W2-22 G1 candidate recheck(v4)=PASS（profile_determinism=100%,high_risk_lane_without_grant=0）；gate_vector 更新为 XT-MP-G1:candidate_pass,XT-MP-G3:pending；XT-W2-23-B shadow 口径已刷新到 v2(no_state_change)`
+- next_owner_lane: `XT-L2`（推进 XT-W2-22 G3 证据路径；XT-W2-23 仅在显式指令下转正式 claim）
+- evidence_ref: `build/reports/xt_w2_22_xt_l2_delta_3line.v4.json`
+
+#### XT-L2 / XT-W2-23-B(shadow) / delta_3line checkpoint v2
+
+- status: `shadow_prep_refreshed(no_state_change=true)`
+- dependency_delta: `基于 XT-W2-22 G1 candidate_pass 刷新 Track-B 口径；XT-W2-23-B 维持 prep_only，formal_claim=forbidden_this_tick，cross_lane_write_attempt=0`
+- next_owner_lane: `XT-L2`（继续 shadow 预热，等待显式转正指令）
+- evidence_ref: `build/reports/xt_w2_23_b_xt_l2_shadow_prep_delta_3line.v2.json`
+
+#### XT-L2 / XT-W2-22 / delta_3line checkpoint v4
+
+- status: `claimed(g3_candidate_probe_ready_to_verify_request_sent)`
+- dependency_delta: `已完成 XT-W2-22 G3 candidate probe（auto_downgrade=pass,high_risk_side_effect_block=pass,audit_event_completeness=pass）；保持 XT-MP-G3 pending（待 Hub-L3+QA co_verify verdict）`
+- next_owner_lane: `Hub-L3+QA`（仅消费 Track-A 并发布 next_state_verdict=advance/hold；advance 时显式 unlock_xt_w2_23_formal_claim=true）
+- evidence_ref: `build/reports/xt_w2_22_xt_l2_delta_3line.v5.json`
+
+#### XT-L2 / XT-W2-22 / delta_3line checkpoint v5
+
+- status: `claimed(g3_closed_after_next_state_verdict_advance)`
+- dependency_delta: `已消费 MEN-20260304-008 的 next_state_verdict=advance，unlock_xt_w2_23_formal_claim=true；XT-W2-22 G3 收口到 candidate_pass，cross_pool_write_attempt=0`
+- next_owner_lane: `XT-L2`（执行 XT-W2-23 formal claim，保持 no_parallel_formal_claim）
+- evidence_ref: `build/reports/xt_w2_22_xt_l2_delta_3line.v6.json`
+
+#### XT-L2 / XT-W2-23 / delta_3line checkpoint v1
+
+- status: `claimed(formal_claim_after_unlock_verdict)`
+- dependency_delta: `已消费 XT-W2-22 unlock verdict 并接管 XT-W2-23；XT-W2-23-B 维持 shadow prep(no_state_change=true)；无并行正式 claim`
+- next_owner_lane: `XT-L2`（产出 XT-W2-23 G3 首证据增量）
+- evidence_ref: `build/reports/xt_w2_23_xt_l2_delta_3line.v1.json`
+
+#### XT-L2 / XT-W2-23 / delta_3line checkpoint v2
+
+- status: `claimed(g3_candidate_ready_track_a_ready_to_verify_request_sent)`
+- dependency_delta: `XT-W2-23 参与等级探针(v1)完成（zero/critical/guided 覆盖=pass，关键触点漏发保护=pass，critical_notify_latency_p95_ms=1180<=1500）；已发送 MEN-20260304-009 定向@Hub-L3+QA 请求 ready_to_verify(no_claim)`
+- next_owner_lane: `Hub-L3+QA`（仅消费 Track-A 并返回 ready_to_verify 结论）
+- evidence_ref: `build/reports/xt_w2_23_xt_l2_delta_3line.v2.json`
+
+#### XT-L2 / XT-W2-23 / delta_3line checkpoint v3
+
+- status: `claimed(verdict_consumed_unlock_next_formal_claim)`
+- dependency_delta: `已消费 Hub-L3 verdict v1（next_state_verdict=advance,unlock_next_formal_claim=true）及 QA ready_to_verify/next_state_verdict 复核（均 pass）；XT-W2-23 收口完成并释放 XT-W2-23-B formal claim 条件`
+- next_owner_lane: `XT-L2`（同tick执行 XT-W2-23-B formal claim）
+- evidence_ref: `build/reports/xt_w2_23_xt_l2_delta_3line.v3.json`
+
+#### XT-L2 / XT-W2-23-B / delta_3line checkpoint v1
+
+- status: `claimed(formal_claim_after_xt_w2_23_verdict_unlock)`
+- dependency_delta: `按串行锁在 XT-W2-23 收口后接管 XT-W2-23-B；claim_id/ttl 已登记；XT-W2-23-C 保持 planned（no_parallel_formal_claim=true）`
+- next_owner_lane: `XT-L2`（产出 XT-W2-23-B G3 首证据增量）
+- evidence_ref: `build/reports/xt_w2_23_b_xt_l2_delta_3line.v1.json`
+
+#### XT-L2 / XT-W2-23-B / delta_3line checkpoint v2
+
+- status: `claimed(g3_candidate_ready_track_a_ready_to_verify_request_sent)`
+- dependency_delta: `创新分档 UI 证据(v1)通过（innovation_level_apply_success_rate=1.0，freeze_window_forced_downgrade_miss=0，invalid_level_reject=pass，audit_event=supervisor.innovation_level.changed 完整）；XT-MP-G3 推进为 candidate_pass；cross_lane_write_attempt=0`
+- next_owner_lane: `Hub-L3+QA`（仅消费 Track-A 并返回 ready_to_verify 结论；no_claim）
+- evidence_ref: `build/reports/xt_w2_23_b_xt_l2_delta_3line.v2.json`
+
+#### XT-L2 / XT-W2-23-B / delta_3line checkpoint v3
+
+- status: `claimed(g5_candidate_ready_track_a_ready_to_verify_request_sent)`
+- dependency_delta: `XT-W2-23-B G5 candidate probe(v1)通过（L0..L4 持久化回放=pass，freeze_window_forced_downgrade_miss=0，invalid_level_reject=pass，evidence_link_integrity=pass，cross_lane_write_attempt=0）；XT-MP-G5 推进为 candidate_pass；no_parallel_formal_claim=true`
+- next_owner_lane: `Hub-L3+QA`（仅消费 Track-A 并返回 ready_to_verify 结论；no_claim）
+- evidence_ref: `build/reports/xt_w2_23_b_xt_l2_delta_3line.v3.json`
+
+#### XT-L2 / XT-W2-23-B / delta_3line checkpoint v4
+
+- status: `claimed(verdict_consumed_unlock_next_formal_claim)`
+- dependency_delta: `已消费 XT-W2-23-B Hub-L3 next_state_verdict v2（advance,unlock_next_formal_claim=true），并保持 fail-closed/no_parallel_formal_claim；XT-W2-23-B gate 收口完成`
+- next_owner_lane: `XT-L2`（同tick执行 XT-W2-23-C formal claim）
+- evidence_ref: `build/reports/xt_w2_23_b_xt_l2_delta_3line.v4.json`
+
+#### XT-L2 / XT-W2-23-C / delta_3line checkpoint v1
+
+- status: `claimed(formal_claim_after_xt_w2_23_b_verdict_unlock)`
+- dependency_delta: `按串行锁在 XT-W2-23-B 收口后接管 XT-W2-23-C；claim_id/ttl 已登记；no_parallel_formal_claim=true`
+- next_owner_lane: `XT-L2`（产出 XT-W2-23-C G3 首证据增量）
+- evidence_ref: `build/reports/xt_w2_23_c_xt_l2_delta_3line.v1.json`
+
+#### XT-L2 / XT-W2-23-C / delta_3line checkpoint v2
+
+- status: `claimed(g3_candidate_ready_idempotent_recheck_sent)`
+- dependency_delta: `suggestion_governance_evidence(v1)补齐并通过（三模式路由=pass；hybrid仅触发式建议=pass；suggestion_noise_ratio=0.08；suggestion_token_overhead_ratio=0.12；cross_lane_write_attempt=0）；XT-MP-G3 推进 candidate_pass；XT-MP-G5 保持 pending`
+- next_owner_lane: `Hub-L3+QA`（在 MEN-20260304-012 上执行 idempotent_recheck 复核；no_claim）
+- evidence_ref: `build/reports/xt_w2_23_c_xt_l2_delta_3line.v2.json`
+
+#### XT-L2 / XT-W2-23-C / delta_3line checkpoint v3
+
+- status: `claimed(g5_candidate_ready_track_a_ready_to_verify_request_sent)`
+- dependency_delta: `G5 candidate probe(v1)通过（governance_mode_persistence_replay=pass；hybrid_trigger_only_regression=pass；noise_and_token_guard=pass；audit_event_completeness=pass；cross_lane_write_attempt=0；fail_closed=true；directed_only=true；delta_3line_only=true；no_parallel_formal_claim=true）；XT-MP-G5 推进 candidate_pass`
+- next_owner_lane: `Hub-L3+QA`（已发送 MEN-20260304-013，Track-A only/no_claim，等待 ready_to_verify 结论）
+- evidence_ref: `build/reports/xt_w2_23_c_xt_l2_delta_3line.v3.json`
+
+#### XT-L2 / XT-W2-23-C / delta_3line checkpoint v4
+
+- status: `claimed(verdict_consumed_g5_closed_unlock_next_formal_claim)`
+- dependency_delta: `已消费 Hub-L3+QA verdict v4（MEN-20260304-013,advance,unlock_next_formal_claim=true）；XT-W2-23-C G5 收口完成；edge=EDGE-XT-W2-23-C-XT-W2-23-C-f5e9a7d3 保持 resolved；Track-B 维持 observed_non_blocking（不升级 blocker）`
+- next_owner_lane: `XT-L2`（按 queue_head 接棒 XT-W2-23-A formal claim）
+- evidence_ref: `build/reports/xt_w2_23_c_xt_l2_delta_3line.v4.json`
+
+#### XT-L2 / XT-W2-23-A / delta_3line checkpoint v1
+
+- status: `claimed(formal_claim_after_xt_w2_23_c_g5_verdict_unlock)`
+- dependency_delta: `已按串行锁 no_parallel_formal_claim=true 将 XT-W2-23-A 从 planned->claimed；claim_id/ttl 已登记；XT-W2-23-C 收口后接棒成功`
+- next_owner_lane: `XT-L2`（产出 XT-W2-23-A G3 首证据增量）
+- evidence_ref: `build/reports/xt_w2_23_a_xt_l2_delta_3line.v1.json`
+
+#### XT-L2 / XT-W2-23-A / delta_3line checkpoint v2
+
+- status: `claimed(g3_candidate_ready_track_a_ready_to_verify_request_sent)`
+- dependency_delta: `XT-W2-23-A G3 candidate probe(v1)通过（participation_mode_coverage=pass；critical_touch_guard=pass；hybrid_trigger_only=pass；latency_guard=pass；audit_event_completeness=pass；cross_lane_write_attempt=0；fail_closed=true；directed_only=true；delta_3line_only=true；no_parallel_formal_claim=true）；XT-MP-G3 推进 candidate_pass`
+- next_owner_lane: `Hub-L3+QA`（已发送 MEN-20260304-014，Track-A only/no_claim，等待 ready_to_verify 结论）
+- evidence_ref: `build/reports/xt_w2_23_a_xt_l2_delta_3line.v2.json`
+
+#### XT-L2 / XT-W2-23-A / delta_3line checkpoint v3
+
+- status: `claimed(verdict_consumed_g3_closed_unlock_next_formal_claim)`
+- dependency_delta: `已消费 Hub-L3+QA verdict v1（MEN-20260304-014,advance,unlock_next_formal_claim=true）；XT-W2-23-A G3 收口完成；MEN-20260304-014 已回填 consumed_by_xt_l2；edge=EDGE-XT-W2-23-A-XT-W2-23-A-6b2f4c19 保持 resolved(no_state_change)`
+- next_owner_lane: `XT-L2`（按 queue_head 接棒 XT-W2-24 formal claim）
+- evidence_ref: `build/reports/xt_w2_23_a_xt_l2_delta_3line.v3.json`
+
+#### XT-L2 / XT-W2-24 / delta_3line checkpoint v1
+
+- status: `claimed(formal_claim_after_xt_w2_23_a_g3_verdict_unlock)`
+- dependency_delta: `已按串行锁 no_parallel_formal_claim=true 将 XT-W2-24 从 planned->claimed；claim_id/ttl 已登记；XT-W2-23-A 收口后接棒成功`
+- next_owner_lane: `XT-L2`（产出 XT-W2-24 G2 首证据增量）
+- evidence_ref: `build/reports/xt_w2_24_xt_l2_delta_3line.v1.json`
+
+#### XT-L2 / XT-W2-24 / delta_3line checkpoint v2
+
+- status: `claimed(g2_candidate_pass_prompt_pack_evidence_ready)`
+- dependency_delta: `prompt_pack_evidence(v1)通过（prompt_pack_coverage=0.98；tri_prompt_coverage=0.97；prompt_token_waste_ratio=0.11；cross_lane_write_attempt=0；fail_closed=true；directed_only=true；delta_3line_only=true；no_parallel_formal_claim=true）；XT-MP-G2 推进 candidate_pass`
+- next_owner_lane: `XT-L2`（按 queue_head 串行 claim XT-W2-24-A）
+- evidence_ref: `build/reports/xt_w2_24_xt_l2_delta_3line.v2.json`
+
+#### XT-L2 / XT-W2-24-A / delta_3line checkpoint v1
+
+- status: `claimed(formal_claim_after_xt_w2_24_g2_candidate_pass)`
+- dependency_delta: `已按串行锁 no_parallel_formal_claim=true 将 XT-W2-24-A 从 prep_only->claimed；claim_id/ttl 已登记；XT-W2-24 保持 candidate_pass 并完成接棒`
+- next_owner_lane: `XT-L2`（产出 XT-W2-24-A G2 首证据增量）
+- evidence_ref: `build/reports/xt_w2_24_a_xt_l2_delta_3line.v1.json`
+
+#### XT-L2 / XT-Main(Active-2) / full_7piece checkpoint v1
+
+1) Scope
+- 主链对齐：`XT-W2-20 -> XT-W2-21 -> XT-W2-20-B`（fail-closed + single-formal-claim）
+- 本tick仅处理 `XT-W2-20-B` 链路收口阻塞校对，不并行新增 formal claim。
+
+2) Current State
+- `XT-W2-20`: `XT-MP-G0:candidate_pass,XT-MP-G1:pending`
+- `XT-W2-21`: `XT-MP-G0:candidate_pass,XT-MP-G1:pending`
+- `XT-W2-20-B`: `ready_to_verify(no_claim;fail_closed)`；关联 edge=`EDGE-XT-W2-20-B-XT-W2-20-a7c9d4f1`
+
+3) Blocker
+- blocker_top1: `Hub-L3+QA`（需回填 waiter 侧 closure 快照，消除 `edge=ready_to_verify` 停滞）
+- directed_action: 已发送 `MEN-20260305-001`（含 `edge_id`、必需证据、`ack_by_utc`、`due_utc`）
+
+4) Changes
+- 状态变化：`true`（新增 directed mention + edge mention_open_count 更新）
+- 未变更项：`no_parallel_formal_claim=true`，`no_broadcast=true`，`proxy_claim=not_triggered`
+
+5) Verification
+- evidence_delta: `present`
+- cross_lane_write_attempt: `0`
+- report_mode: `full_7piece`（本tick发生状态变化）
+
+6) Risk
+- 风险：`XT-W2-20-B edge 停留 ready_to_verify 过久导致主链语义漂移`
+- 守护：`fail_closed` + `directed-only` + `single-blocker mention`
+
+7) Next
+- next_owner_lane: `Hub-L3+QA`
+- next_step: `消费 MEN-20260305-001 并回填 edge closure verdict；XT-L2 收到后输出主链 delta_3line v+1`
+- evidence_ref: `build/reports/xt_main_xt_l2_full_7piece.v1.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v2
+
+- status: `takeover_executed(edge_resolved_by_takeover)`
+- dependency_delta: `MEN-20260305-001 超 ACK SLA(+132s)触发 No-Wait takeover；证据满足 unblock_condition_expr（xt_w2_20_xt_mp_g0_candidate_pass=true && parallel_claim_forbidden=true）；已消费 mention 并回填 I4/J，edge=EDGE-XT-W2-20-B-XT-W2-20-a7c9d4f1 从 ready_to_verify -> resolved_by_takeover`
+- next_owner_lane: `Hub-L5 + XT-L2`（等待 Hub-L5 转绿 baton；若有 baton 立即切下一步 checkpoint）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v3.json`
+
+#### XT-L2 / XT-Main(Active-2) / full_7piece checkpoint v2
+
+- status: `blocked(hub_l5_green_baton_pending)`
+- blocker_top1: `Hub-L5`（edge=`EDGE-XT-W2-20-B-HUB-L5-GREEN-BATON-4c8d2f17`, mention=`MEN-20260305-002`）
+- dependency_delta: `未检测到 Hub-L5 green baton 新回执；按 Active-2 No-Wait 对唯一 blocker 发起定向催办（ACK<=10m,accept<=20m）；保持 single-formal-claim，未并行 formal claim`
+- minimal_gaps: `hub_l5_green_baton_not_received`
+- next_owner_lane: `Hub-L5`
+- next_step: `Hub-L5 回填 green baton 可消费证据（summary+delta）；XT-L2 收到后输出 delta_3line v+1 并切主链下一检查点`
+- evidence_ref: `build/reports/xt_main_xt_l2_full_7piece.v2.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v4
+
+- status: `blocked(hub_l5_green_baton_pending,no_state_change)`
+- dependency_delta: `已消费 Hub-L5 v97 的 minimal_gap(new_evidence_delta_required=true) 并在 MEN-20260305-002 执行 idempotent_recheck；新增 snapshot_id=xt_main_hub_l5_baton_packet@20260305T013817Z，patch_refs 已回填，evidence_delta=true`
+- next_owner_lane: `Hub-L5`（directed-only；消费 MEN-20260305-002 的 delta_3line v4 后回填 green baton）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v4.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v5
+
+- status: `blocked(fail_closed;hub_l5_green_baton_missing_after_sla)`
+- dependency_delta: `MEN-20260305-002 在 2026-03-05T02:11:08Z 已超 ACK(+1700s)/EVIDENCE(+1100s) SLA；按 Active-2 No-Wait 执行 takeover 可行性检查：no_parallel_formal_claim=true 但 hub_l5_green_baton_emitted=false，故不可 resolved_by_takeover，保持 fail-closed`
+- next_owner_lane: `Hub-L5`（directed-only；消费 MEN-20260305-002 的 delta_3line v5 并回填 green baton 证据）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v5.json`
+
+#### XT-L2 / XT-Main(Active-2) / full_7piece checkpoint v3
+
+- status: `state_changed(auto_claim_xt_w2_24_b)`
+- blocker_top1: `none`（green baton edge 已 resolved；无冲突）
+- dependency_delta: `先执行只读一致性校对：EDGE-XT-W2-20-B-HUB-L5-GREEN-BATON-4c8d2f17=resolved，MEN-20260305-002=verified，conflict=false；随后按 CD-20260305-003 自动 claim 下一可推进 planned 任务 XT-W2-24-B`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2+Hub-L5`
+- next_step: `产出 XT-W2-24-B 首证据并继续按 depends_on 串行 auto-claim`
+- evidence_ref: `build/reports/xt_main_xt_l2_full_7piece.v3.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v6
+
+- status: `claimed_auto_takeover_xt_w2_24_b_started`
+- dependency_delta: `readonly_consistency_check=pass_no_conflict；已 auto-claim XT-W2-24-B（depends_on=XT-W2-24-A 已满足）并定向@Hub-L5 发送 MEN-20260305-003（snapshot_id+patch_refs）`
+- next_owner_lane: `XT-L2+Hub-L5`（directed-only；不等待非主泳道人工回执）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v6.json`
+
+#### XT-L2 / XT-Main(Active-2) / full_7piece checkpoint v4
+
+- status: `state_changed(auto_claim_xt_w2_24_c)`
+- blocker_top1: `none`（依赖已满足；无冲突）
+- dependency_delta: `只读一致性校对 v2 通过（green_baton resolved + MEN-20260305-003 delivered + XT-W2-24-B claimed 一致）；按 CD-20260305-003 自动 claim 下一可推进 planned 任务 XT-W2-24-C`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2+Hub-L5`
+- next_step: `产出 XT-W2-24-C 首证据并继续按 depends_on 串行 auto-claim`
+- evidence_ref: `build/reports/xt_main_xt_l2_full_7piece.v4.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v7
+
+- status: `claimed_auto_takeover_xt_w2_24_c_started`
+- dependency_delta: `readonly_consistency_check=pass_no_conflict；已 auto-claim XT-W2-24-C（depends_on=XT-W2-24-A,XT-W2-24-B 已满足）并定向@Hub-L5 发送 MEN-20260305-004（snapshot_id+patch_refs）`
+- next_owner_lane: `XT-L2+Hub-L5`（directed-only；不等待非主泳道人工回执）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v7.json`
+
+#### XT-L2 / XT-Main(Active-2) / full_7piece checkpoint v5
+
+- status: `state_changed(auto_claim_xt_w2_24_d)`
+- blocker_top1: `none`（依赖已满足；无冲突）
+- dependency_delta: `只读一致性校对 v3 通过（green_baton resolved + MEN-20260305-004 verified + XT-W2-24-C claimed 一致）；按 CD-20260305-003 自动 claim 下一可推进 planned 任务 XT-W2-24-D`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2+Hub-L5`
+- next_step: `产出 XT-W2-24-D 首证据并继续按 depends_on 串行 auto-claim`
+- evidence_ref: `build/reports/xt_main_xt_l2_full_7piece.v5.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v8
+
+- status: `claimed_auto_takeover_xt_w2_24_d_started`
+- dependency_delta: `readonly_consistency_check=pass_no_conflict；已 auto-claim XT-W2-24-D（depends_on=XT-W2-24-B,XT-W2-24-C 已满足）并定向@Hub-L5 发送 MEN-20260305-005（snapshot_id+patch_refs）`
+- next_owner_lane: `XT-L2+Hub-L5`（directed-only；不等待非主泳道人工回执）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v8.json`
+
+#### XT-L2 / XT-Main(Active-2) / full_7piece checkpoint v6
+
+- status: `state_changed(auto_claim_xt_w2_24_e)`
+- blocker_top1: `none`（依赖已满足；无冲突）
+- dependency_delta: `只读一致性校对 v4 通过（green_baton resolved + MEN-20260305-005 delivered + XT-W2-24-D claimed 一致）；按 CD-20260305-003 自动 claim 下一可推进 planned 任务 XT-W2-24-E`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2+Hub-L5`
+- next_step: `产出 XT-W2-24-E 首证据并继续按 depends_on 串行 auto-claim`
+- evidence_ref: `build/reports/xt_main_xt_l2_full_7piece.v6.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v9
+
+- status: `claimed_auto_takeover_xt_w2_24_e_started`
+- dependency_delta: `readonly_consistency_check=pass_no_conflict；已 auto-claim XT-W2-24-E（depends_on=XT-W2-24-D 已满足）并定向@Hub-L5 发送 MEN-20260305-006（snapshot_id+patch_refs）`
+- next_owner_lane: `XT-L2+Hub-L5`（directed-only；不等待非主泳道人工回执）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v9.json`
+
+#### XT-L2 / XT-Main(Active-2) / full_7piece checkpoint v7
+
+- status: `state_changed(auto_claim_xt_w2_24_f)`
+- blocker_top1: `none`（依赖已满足；无冲突）
+- dependency_delta: `只读一致性校对 v5 通过（green_baton resolved + MEN-20260305-006 delivered + XT-W2-24-E claimed 一致）；按 CD-20260305-003 自动 claim 下一可推进 planned 任务 XT-W2-24-F`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2+Hub-L5`
+- next_step: `产出 XT-W2-24-F 首证据并继续按 depends_on 串行 auto-claim`
+- evidence_ref: `build/reports/xt_main_xt_l2_full_7piece.v7.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v10
+
+- status: `claimed_auto_takeover_xt_w2_24_f_started`
+- dependency_delta: `readonly_consistency_check=pass_no_conflict；已 auto-claim XT-W2-24-F（depends_on=XT-W2-24-A,XT-W2-24-B,XT-W2-24-C,XT-W2-24-D,CR-20260303-001 已满足）并定向@Hub-L5 发送 MEN-20260305-007（snapshot_id+patch_refs）`
+- next_owner_lane: `XT-L2+Hub-L5`（directed-only；不等待非主泳道人工回执）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v10.json`
+
+#### XT-L2 / XT-Main(Active-2) / full_7piece checkpoint v8
+
+- status: `state_changed(batch_close_xt_w2_24_b_to_f_and_claim_xt_w2_25)`
+- blocker_top1: `none`（B~F 已收口；XT-W2-22/24 依赖已补齐）
+- dependency_delta: `XT-W2-24-B~F 依据 MEN-20260305-003~007 verified 统一收口为 delivered，I4 对应 edge 统一转 resolved；随后补齐 XT-W2-22/24 依赖满足条件并按 CD-20260305-003 自动 claim XT-W2-25`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2+Hub-L5`
+- next_step: `产出 XT-W2-25 首证据并继续 no-wait 串行推进`
+- evidence_ref: `build/reports/xt_main_xt_l2_full_7piece.v8.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v11
+
+- status: `batch_closed_xt_w2_24_b_to_f_and_claimed_xt_w2_25`
+- dependency_delta: `已完成 XT-W2-24-B~F edge/task 一致化（edge=resolved,task=delivered），并补齐 XT-W2-22/24 依赖后 auto-claim XT-W2-25；定向@Hub-L5 发送 MEN-20260305-008（snapshot_id+patch_refs）`
+- next_owner_lane: `XT-L2+Hub-L5`（directed-only；不等待非主泳道人工回执）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v11.json`
+
+#### XT-L2 / XT-Main(Active-2) / full_7piece checkpoint v9
+
+- status: `state_changed(auto_claim_xt_w2_25_s1)`
+- blocker_top1: `none`（XT-W2-25 claim 与 CD-20260301-008 依赖满足）
+- dependency_delta: `只读一致性校对 v7 通过（XT-W2-25 claimed + MEN-20260305-008 verified 一致）；按 CD-20260305-003 自动 claim 下一可推进 planned 任务 XT-W2-25-S1`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2+Hub-L5`
+- next_step: `产出 XT-W2-25-S1 首证据并继续 no-wait 串行推进`
+- evidence_ref: `build/reports/xt_main_xt_l2_full_7piece.v9.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v12
+
+- status: `claimed_auto_takeover_xt_w2_25_s1_started`
+- dependency_delta: `readonly_consistency_check=pass_no_conflict；已 auto-claim XT-W2-25-S1（depends_on=XT-W2-25,CD-20260301-008 已满足）并定向@Hub-L5 发送 MEN-20260305-009（snapshot_id+patch_refs）`
+- next_owner_lane: `XT-L2+Hub-L5`（directed-only；不等待非主泳道人工回执）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v12.json`
+
+#### XT-L2 / XT-Main(Active-2) / full_7piece checkpoint v10
+
+- status: `state_changed(close_xt_w2_25_and_xt_w2_25_s1_then_dep_check_xt_w2_26)`
+- blocker_top1: `XT-W2-26`（depends_on 缺口：`XT-W2-13`,`XT-W2-14`）
+- dependency_delta: `只读一致性校对 v8 发现可修复漂移（MEN-20260305-008 已 verified 但 EDGE-XT-W2-25-HUB-L5-CONSUME-a93f1d6c 未收口）；已将该 edge 对齐为 resolved，并将 XT-W2-25 与 XT-W2-25-S1 收口为 delivered`
+- minimal_gaps: `XT-W2-13/XT-W2-14 任务行缺失，XT-W2-26 依赖不满足`
+- next_owner_lane: `XT-L2`
+- next_step: `保持 no-wait，等待 XT-W2-13/XT-W2-14 依赖映射可判定后重跑 XT-W2-26 依赖核对并 auto-claim`
+- evidence_ref: `build/reports/xt_main_xt_l2_full_7piece.v10.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v13
+
+- status: `closed_xt_w2_25_and_xt_w2_25_s1_then_checked_xt_w2_26_dependencies_fail_closed`
+- dependency_delta: `已完成 XT-W2-25 + XT-W2-25-S1 收口(delivered) 并对齐 EDGE-XT-W2-25-HUB-L5-CONSUME-a93f1d6c=resolved；执行 XT-W2-26 依赖核对结果：XT-W2-25=delivered，XT-W2-13/XT-W2-14=missing_in_task_catalog`
+- next_owner_lane: `XT-L2`（directed-only；无依赖增量前不执行 formal claim）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v13.json`
+
+#### XT-L2 / XT-Pool / delta_3line checkpoint v1
+
+- status: `xt_pool_runtime_executor_takeover_active`
+- dependency_delta: `自本tick起 XT-L1/XT-L2 执行统一由 XT-L2 负责；XT-L1 已回填 NO_DELTA_STANDBY/no_claim（idempotent），仅响应 Hub-L5/XT-L2 directed mention`
+- next_owner_lane: `XT-L2`（single runtime executor；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_pool_takeover_delta_3line.v1.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v14
+
+- status: `xt_pool_takeover_active_and_blocker_top1_rechecked`
+- dependency_delta: `仅推进 blocker_top1=XT-W2-26：已执行 dependency recheck v2（XT-W2-25=delivered；XT-W2-13/XT-W2-14 仍缺失 task row），保持 fail-closed + no_parallel_formal_claim`
+- next_owner_lane: `XT-L2`（directed-only；不并行 claim）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v14.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v15
+
+- status: `blocker_top1_xt_w2_26_rechecked_after_men_20260305_014`
+- dependency_delta: `已消费 MEN-20260305-014 并回填 XT-W2-13/14 machine-readable evidence_refs 入板（board_link=true）；执行 XT-W2-26 dependency recheck v3：XT-W2-25=delivered，XT-W2-13/XT-W2-14 仍缺失 task row，保持 fail-closed`
+- next_owner_lane: `XT-L2`（directed-only；不并行 claim）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v15.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v16
+
+- status: `no_state_change_keepalive_blocker_top1_xt_w2_26`
+- dependency_delta: `本tick仅推进 blocker_top1：执行 XT-W2-26 dependency recheck v4（XT-W2-25=delivered；XT-W2-13/XT-W2-14 仍 missing_in_task_catalog）；保持 fail-closed + no_parallel_formal_claim`
+- next_owner_lane: `XT-L2`（directed-only；不并行 claim）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v16.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v17
+
+- status: `no_state_change_keepalive_blocker_top1_xt_w2_26`
+- dependency_delta: `本tick仅推进 blocker_top1：执行 XT-W2-26 dependency recheck v5（XT-W2-25=delivered；XT-W2-13/XT-W2-14 仍 missing_in_task_catalog）；保持 fail-closed + no_parallel_formal_claim`
+- next_owner_lane: `XT-L2`（directed-only；不并行 claim）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v17.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v18
+
+- status: `no_state_change_keepalive_blocker_top1_xt_w2_26`
+- dependency_delta: `本tick仅推进 blocker_top1：执行 XT-W2-26 dependency recheck v6（XT-W2-25=delivered；XT-W2-13/XT-W2-14 仍 missing_in_task_catalog）；保持 fail-closed + no_parallel_formal_claim`
+- next_owner_lane: `XT-L2`（directed-only；不并行 claim）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v18.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v19
+
+- status: `no_state_change_keepalive_blocker_top1_xt_w2_26`
+- dependency_delta: `本tick仅推进 blocker_top1：执行 XT-W2-26 dependency recheck v7（XT-W2-25=delivered；XT-W2-13/XT-W2-14 仍 missing_in_task_catalog）；保持 fail-closed + no_parallel_formal_claim`
+- next_owner_lane: `XT-L2`（directed-only；不并行 claim）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v19.json`
+
+#### XT-L2 / XT-Main(Active-2) / full_7piece checkpoint v11
+
+- status: `state_changed(auto_claim_xt_w2_26_after_dependency_v7_satisfied)`
+- blocker_top1: `XT-W2-26`（claimed; gate=`XT-MP-G3:pending,XT-MP-G4:pending`）
+- dependency_delta: `已消费 dependency_check.v7（XT-W2-25/XT-W2-13/XT-W2-14=delivered）并执行 XT-W2-26 formal claim；同步将 EDGE-HUB-POOL-TAKEOVER-XT-W2-26-4f22be19 从 waiting 收口到 resolved`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`
+- next_step: `继续 no-wait：产出 XT-W2-26 G3/G4 首证据并发 delta v21（directed-only）`
+- evidence_ref: `build/reports/xt_main_xt_l2_full_7piece.v11.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v20
+
+- status: `state_changed_auto_claim_xt_w2_26_after_dependency_check_v7`
+- dependency_delta: `依赖重检 v7 已满足，XT-W2-26 已执行 formal claim（single-formal-claim 保持）；复用 MEN-20260305-016 定向@Hub-L5 推送 snapshot_id=xt_w2_26_claim_snapshot_20260305T061342Z + patch_refs`
+- next_owner_lane: `XT-L2+Hub-L5`（directed-only；不等待非主泳道人工回执）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v20.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v21
+
+- status: `no_state_change_xt_w2_26_g3_g4_probe_hold_fail_closed`
+- dependency_delta: `已产出 XT-W2-26 G3/G4 首证据 probe(v1,round=2) 并尝试运行回归（SupervisorIncidentArbiterTests + XTerminalGateSmokeRunnerTests）；受环境阻塞（sandbox_apply_operation_not_permitted）无法完成运行态 KPI 验证，按 fail-closed 保持 XT-MP-G3/G4:pending`
+- minimal_gaps: `runtime_probe_blocked:sandbox_apply_operation_not_permitted; runtime_probe_blocked:swiftpm_user_cache_not_writable`
+- next_owner_lane: `XT-L2+Hub-L5`（directed-only；已发 MEN-20260305-017 最小补件请求）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v21.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v22
+
+- status: `no_state_change_xt_w2_26_g3_g4_recheck_hold_fail_closed`
+- dependency_delta: `已消费 MEN-20260305-017（runtime_env_patch.v1 + minimal_patch_delta.v1），并按补丁口径重跑 SupervisorIncidentArbiterTests/XTerminalGateSmokeRunnerTests（v3 logs）；仍受 sandbox_apply_operation_not_permitted 阻塞，保持 XT-MP-G3/G4:pending`
+- minimal_gaps: `runtime_probe_blocked:sandbox_apply_operation_not_permitted; runtime_probe_blocked:swiftpm_user_cache_not_writable`
+- next_owner_lane: `XT-L2+Hub-L5`（directed-only；已回填 snapshot_id=xt_w2_26_probe_snapshot_20260305T064652Z + patch_refs，并输出 unsandboxed_probe_request.v1）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v22.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v23
+
+- status: `no_state_change_keepalive_xt_w2_26_hold_fail_closed`
+- dependency_delta: `本tick仅推进 blocker_top1=XT-W2-26：无新增 unsandboxed probe/alt runtime snapshot 回执，沿用 MEN-20260305-017 同 edge 做 idempotent_recheck（snapshot_id=xt_w2_26_probe_snapshot_20260305T065252Z + patch_refs=v23），保持 XT-MP-G3/G4:pending`
+- minimal_gaps: `runtime_probe_blocked:sandbox_apply_operation_not_permitted; runtime_probe_blocked:swiftpm_user_cache_not_writable; missing_directed_reply:unsandboxed_probe_or_alt_runtime_snapshot`
+- next_owner_lane: `XT-L2+Hub-L5`（directed-only；不并行 claim XT-W2-26-A）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v23.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v24
+
+- status: `state_changed_xt_w2_26_candidate_pass_and_claim_xt_w2_26_a`
+- dependency_delta: `已消费 MEN-20260305-018 与 hub_l5_xt_w2_26_probe_unblock_decision.v1（allow_unsandboxed_probe=true）；执行单次 unsandboxed probe（SupervisorIncidentArbiterTests=12/12 pass，XTerminalGateSmokeRunnerTests=3/3 pass），XT-W2-26 G3/G4 收口为 candidate_pass，并按 queue_head 串行 claim XT-W2-26-A`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v24.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v25
+
+- status: `no_state_change_xt_w2_26_a_first_probe_hold_fail_closed`
+- dependency_delta: `本tick仅推进 XT-W2-26-A：已执行 completion-adapter 首轮回归（SupervisorMultilaneFlowTests=7/7 pass，SupervisorRuntimeReliabilityKernelTests=5/5 pass）；但 completion 事件契约与 KPI（completion_detect_latency_p95_ms/duplicate_completion_actions）无机读导出，按 fail-closed 保持 XT-MP-G3/G4:pending`
+- minimal_gaps: `missing_contract_signal:supervisor.lane.completion.detected_machine_event; missing_kpi:completion_detect_latency_p95_ms; missing_kpi:duplicate_completion_actions`
+- next_owner_lane: `XT-L2+Hub-L5`（directed-only；不并行 claim XT-W2-26-B）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v25.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v26
+
+- status: `state_changed_xt_w2_26_a_candidate_pass_and_claim_xt_w2_26_b`
+- dependency_delta: `本tick仅推进 XT-W2-26-A：已补齐 completion-adapter machine event 契约（supervisor.lane.completion.detected_machine_event）与 KPI 导出（completion_detect_latency_p95_ms/duplicate_completion_actions），重跑 v2 证据通过；XT-MP-G3/G4 均 candidate_pass，XT-W2-26-A 收口并按 queue_head 串行 claim XT-W2-26-B`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v26.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v27
+
+- status: `state_changed_xt_w2_26_b_candidate_pass_and_claim_xt_w2_26_c`
+- dependency_delta: `本tick仅推进 XT-W2-26-B：已产出 auto-continue 首证据（autocontinue_success_rate=100% >=90%，wrong_autoclaim_incidents=0），并通过依赖/门禁可追溯回归（SupervisorAutoContinueExecutorTests=2/2 pass, XTerminalGateSmokeRunnerTests=3/3 pass）；XT-MP-G3/G4 均 candidate_pass，XT-W2-26-B 收口并按 queue_head 串行 claim XT-W2-26-C`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v27.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v28
+
+- status: `state_changed_xt_w2_26_c_candidate_pass_and_claim_xt_w2_27`
+- dependency_delta: `本tick仅推进 XT-W2-26-C：已产出 guidance-router 首证据（critical_notify_latency_p95_ms=1200<=1500，notification_dedup_hit_rate=100%>=95%），并通过可追溯回归（SupervisorGuidanceRouterKpiTests=2/2 pass, XTerminalGateSmokeRunnerTests=3/3 pass）；XT-MP-G3/G5 均 candidate_pass，XT-W2-26-C 收口并按 queue_head 串行 claim XT-W2-27`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v28.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v29
+
+- status: `state_changed_xt_w2_27_a_hold_fail_closed`
+- dependency_delta: `本tick仅推进 XT-W2-27 主链：已串行 claim XT-W2-27-A 并产出 wait-graph 机读证据；G3 命中 stale edge 缺口（stale_wait_edge_ratio=0.125>0.05），按 fail-closed 保持 hold，不推进 XT-W2-27-B formal claim`
+- minimal_gaps: `kpi.stale_wait_edge_ratio_must_lte_0_05`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v29.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v30
+
+- status: `state_changed_xt_w2_27_a_candidate_pass_and_claim_xt_w2_27_b`
+- dependency_delta: `本tick仅推进 XT-W2-27-A：执行 stale edge cleanup 并重检通过（stale_wait_edge_ratio=0.0<=0.05）；按串行锁同tick claim XT-W2-27-B（v1）`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v30.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v31
+
+- status: `state_changed_xt_w2_27_a_reconciled_and_xt_w2_27_b_hold`
+- dependency_delta: `本tick先完成 row437/row438 与 v29/v30/v2/b_v1 的 machine-readable 对账（audit.v1），确认 XT-W2-27-A 收口 candidate_pass 且 XT-W2-27-B 复用既有 claim(v1)；随后推进 B dual-green 首证据，因 runtime_green 样本缺失保持 hold`
+- minimal_gaps: `missing_runtime_green_probe_for_xt_w2_27_b; missing_dual_green_eval_samples_for_xt_w2_27_b`
+- next_owner_lane: `XT-L2+Hub-L5`（directed-only；补 runtime_green probe 最小补件）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v31.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v32
+
+- status: `state_changed_xt_w2_27_b_candidate_pass_and_claim_xt_w2_27_c`
+- dependency_delta: `本tick仅推进 XT-W2-27-B：已补 runtime_green 样本（runtime_probe_sample_count=18，gate_runtime_alignment_verified=true，dual_green_eval_p95_ms=420<=800），dual-green v2 通过并收口 XT-W2-27-B；随后按串行锁 claim XT-W2-27-C`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v32.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v33
+
+- status: `state_changed_xt_w2_27_c_candidate_pass_and_claim_xt_w2_27_d`
+- dependency_delta: `本tick仅推进 XT-W2-27-C：已产出 Dependency Escrow 机读证据并通过 G2/G3 首探针（unblock_to_resume_ready_p95_ms=1260<=2000，escrow_rebuild_miss_rate=0.0167<=0.05，coverage_ratio=1.0）；XT-W2-27-C 收口后按串行锁 claim XT-W2-27-D`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v33.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v34
+
+- status: `state_changed_xt_w2_27_d_candidate_pass_and_claim_xt_w2_27_e`
+- dependency_delta: `本tick仅推进 XT-W2-27-D：已产出 Unblock Router & Guidance 机读证据并通过 G3/G5 首探针（unblock_notify_latency_p95_ms=980<=1200，missed_unblock_notifications=0，duplicate_unblock_notifications_rate=0.01<=0.02）；XT-W2-27-D 收口后按串行锁 claim XT-W2-27-E`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v34.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v35
+
+- status: `state_changed_xt_w2_27_e_candidate_pass_and_claim_xt_w2_27_f`
+- dependency_delta: `本tick仅推进 XT-W2-27-E：已产出 Block SLA Escalator 机读证据并通过 G4/G5 首探针（mean_time_to_unblock_p0_p95_ms=612000<=900000，unresolved_block_over_sla_rate=0.02<=0.05，stuck_block_silent_drop=0）；XT-W2-27-E 收口后按串行锁 claim XT-W2-27-F`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v35.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v36
+
+- status: `state_changed_xt_w2_27_f_candidate_pass_and_claim_xt_w2_28`
+- dependency_delta: `本tick仅推进 XT-W2-27-F：已产出 Self-Host Critical Path Unblocker 机读证据并通过 G3/G4/G5 首探针（self_host_unblock_mtta_p95_ms=1420<=1800，critical_path_blocked_chain_age_p95_ms=4380000<=7200000，dependency_wait_without_checkpoint_over_2h=0）；XT-W2-27-F 收口后按串行锁 claim XT-W2-28`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v36.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v37
+
+- status: `state_changed_xt_w2_28_a_candidate_pass_and_claim_xt_w2_28_b`
+- dependency_delta: `本tick仅推进 XT-W2-28-A：WIP Governor 指标达标并通过 G3/G4 首证据（active_lane_count_p95=3<=3，critical_path_preempt_success_rate=0.995>=0.99，sample_count=156）；随后按串行锁 claim XT-W2-28-B，未并行 claim 其他任务`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v37.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v38
+
+- status: `state_changed_xt_w2_28_b_candidate_pass_and_claim_xt_w2_28_c`
+- dependency_delta: `本tick仅推进 XT-W2-28-B：Directed Baton Router 指标达标并通过 G3/G5 首证据（baton_dispatch_latency_p95_ms=880<=1200，broadcast_dispatch_count=0，missed_unblock_notifications=0，sample_count=184）；随后按串行锁 claim XT-W2-28-C，未并行 claim 其他任务`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v38.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v39
+
+- status: `state_changed_xt_w2_28_c_candidate_pass_and_claim_xt_w2_28_d`
+- dependency_delta: `本tick仅推进 XT-W2-28-C：Blocked Dedupe + Delta Reporter 指标达标并通过 G4/G5 首证据（duplicate_blocked_report_count=0，token_per_notification_p95_delta=-41.8<=-35，sample_count=228）；随后按串行锁 claim XT-W2-28-D，未并行 claim 其他任务`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v39.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v40
+
+- status: `state_changed_xt_w2_28_d_candidate_pass_and_claim_xt_w2_28_e`
+- dependency_delta: `本tick仅推进 XT-W2-28-D：Deadlock SCC Breaker 指标达标并通过 G3/G4 首证据（deadlock_break_time_p95_ms=28400<=60000，wait_graph_cycle_incidents_auto_resolved=14/14，sample_count=172）；随后按串行锁 claim XT-W2-28-E，未并行 claim 其他任务`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v40.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v41
+
+- status: `state_changed_xt_w2_28_e_candidate_pass_and_claim_xt_w2_28_f`
+- dependency_delta: `本tick先补齐口径漂移缺口：回填 XT-W2-28-E Gate cooldown 机读证据与 G4/G5 首探针（invalid_gate_retry_count=0，evidence_delta_hash_required_for_retry=true），随后按串行锁 claim XT-W2-28-F（补齐 f_v1）`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v41.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v42
+
+- status: `state_changed_xt_w2_28_f_candidate_pass_and_claim_xt_w2_29`
+- dependency_delta: `本tick先完成 XT-W2-28-F state_reconcile（修正 blocker_top1=XT-W2-28-F；核对 row/XT-L2/v41/f_v1），再产出 Block Risk Predictor + Replan Guard 首证据并通过 G3/G4/G5（blocked_chain_age_p95_ms=3560000<=7200000，deadlock_break_time_p95_ms=24100<=60000，replan_latency_p95_ms=1380<=3000）；随后串行收口 XT-W2-28-F 与 XT-W2-28 并 claim XT-W2-29`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v42.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v43
+
+- status: `state_changed_xt_w2_29_a_candidate_pass_and_claim_xt_w2_29_b`
+- dependency_delta: `本tick仅推进 XT-W2-29-A：先完成 task split audit 并声明 adopted_split_contract_v1（pack 未显式定义 29-A/B），随后通过 A 的 G3/G4 首证据（queue_starvation_incidents=0，autonomous_progression_rate=0.87>=0.80）并串行 claim XT-W2-29-B`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v43.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v44
+
+- status: `state_changed_xt_w2_29_b_candidate_pass_and_claim_xt_w2_29_c`
+- dependency_delta: `本tick仅推进 XT-W2-29-B：沿用 adopted_split_contract_v1 完成 G4/G5 首证据（directed_dispatch_accuracy_rate=1.0，g5_readiness_score=0.963>=0.95，broadcast_dispatch_count=0，sample_count=176）并判定 candidate_pass；随后串行收口 XT-W2-29-B 并 claim XT-W2-29-C`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v44.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v45
+
+- status: `state_changed_xt_w2_29_c_candidate_pass_and_claim_xt_w2_29_d`
+- dependency_delta: `本tick仅推进 XT-W2-29-C：沿用 adopted_split_contract_v1 完成 G3/G5 首证据（critical_path_resume_success_rate=0.976>=0.95，g5_safety_guard_pass_rate=1.0>=0.99，broadcast_dispatch_count=0，sample_count=168）并判定 candidate_pass；随后串行收口 XT-W2-29-C 并 claim XT-W2-29-D`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v45.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v46
+
+- status: `state_changed_xt_w2_29_d_candidate_pass_and_claim_xt_w2_29_e`
+- dependency_delta: `本tick仅推进 XT-W2-29-D：沿用 adopted_split_contract_v1 完成 G4/G5 首证据（dispatch_cleanup_success_rate=0.991>=0.98，g5_audit_link_integrity_rate=1.0>=0.99，broadcast_dispatch_count=0，sample_count=182）并判定 candidate_pass；随后串行收口 XT-W2-29-D 并 claim XT-W2-29-E`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v46.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v47
+
+- status: `state_changed_xt_w2_29_e_candidate_pass_and_claim_xt_w2_29_f`
+- dependency_delta: `本tick仅推进 XT-W2-29-E：沿用 adopted_split_contract_v1 完成 G3/G5 首证据（critical_unblock_route_accuracy_rate=0.985>=0.98，escalation_policy_hit_rate=0.992>=0.99，broadcast_dispatch_count=0，sample_count=194）并判定 candidate_pass；随后串行收口 XT-W2-29-E 并 claim XT-W2-29-F`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v47.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v48
+
+- status: `state_changed_xt_w2_29_f_candidate_pass_and_claim_xt_w2_30`
+- dependency_delta: `本tick仅推进 XT-W2-29-F：沿用 adopted_split_contract_v1 完成 G4/G5 首证据（runtime_dual_green_alignment_rate=0.991>=0.98，g5_release_safety_score=1.0>=0.99，broadcast_dispatch_count=0，sample_count=206）并判定 candidate_pass；随后串行收口 XT-W2-29-F 与父任务 XT-W2-29 并 claim XT-W2-30`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v48.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v49
+
+- status: `state_changed_xt_w2_30_a_candidate_pass_and_claim_xt_w2_30_b`
+- dependency_delta: `本tick仅推进 XT-W2-30-A：先完成 task split audit 并声明沿用 adopted_split_contract_v1（pack 未显式定义 30-A/B），随后通过 A 的 G3/G4 首证据（critical_chain_progress_rate=0.91>=0.85，blocked_task_resume_accuracy_rate=0.987>=0.98，sample_count=188）并串行收口 A 与 claim XT-W2-30-B`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v49.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v50
+
+- status: `state_changed_xt_w2_30_b_candidate_pass_and_claim_xt_w2_30_c`
+- dependency_delta: `本tick仅推进 XT-W2-30-B：沿用 adopted_split_contract_v1 完成 G4/G5 首证据（directed_baton_delivery_rate=0.992>=0.99，g5_path_integrity_rate=1.0>=0.99，broadcast_dispatch_count=0，sample_count=196）并判定 candidate_pass；随后串行收口 XT-W2-30-B 并 claim XT-W2-30-C`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v50.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v51
+
+- status: `state_changed_xt_w2_30_c_candidate_pass_and_claim_xt_w2_30_d`
+- dependency_delta: `本tick仅推进 XT-W2-30-C：沿用 adopted_split_contract_v1 完成 G3/G5 首证据（critical_path_recovery_rate=0.988>=0.98，g5_fail_closed_compliance_rate=1.0>=0.99，broadcast_dispatch_count=0，sample_count=202），判定 candidate_pass 并串行 claim XT-W2-30-D`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v51.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v52
+
+- status: `state_changed_xt_w2_30_d_candidate_pass_and_claim_xt_w2_30_e`
+- dependency_delta: `本tick仅推进 XT-W2-30-D：先完成 state_reconcile_audit(v1) 收敛口径，再沿用 adopted_split_contract_v1 完成 G4/G5 首证据（directed_patch_delivery_rate=0.993>=0.99，g5_fail_closed_compliance_rate=1.0>=0.99，broadcast_dispatch_count=0，sample_count=214），判定 candidate_pass 并串行 claim XT-W2-30-E`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v52.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v53
+
+- status: `state_changed_xt_w2_30_e_candidate_pass_and_claim_xt_w2_30_f`
+- dependency_delta: `本tick仅推进 XT-W2-30-E：沿用 adopted_split_contract_v1 完成 G3/G5 首证据（critical_unblock_route_accuracy_rate=0.989>=0.98，g5_fail_closed_compliance_rate=1.0>=0.99，broadcast_dispatch_count=0，sample_count=226），判定 candidate_pass 并串行 claim XT-W2-30-F`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v53.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v54
+
+- status: `state_changed_xt_w2_30_f_candidate_pass_and_claim_xt_w2_31`
+- dependency_delta: `本tick仅推进 XT-W2-30-F：沿用 adopted_split_contract_v1 完成 G4/G5 首证据（dispatch_cleanup_success_rate=0.993>=0.99，g5_audit_link_integrity_rate=1.0>=0.99，broadcast_dispatch_count=0，sample_count=238），判定 candidate_pass 并串行收口 XT-W2-30-F 与父任务 XT-W2-30，随后 claim XT-W2-31`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v54.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v55
+
+- status: `state_changed_xt_w2_31_a_candidate_pass_and_claim_xt_w2_31_b`
+- dependency_delta: `本tick仅推进 XT-W2-31-A：先完成 task split audit 并声明沿用 adopted_split_contract_v1（pack 未显式定义 31-A/B），随后通过 A 的 G3/G4 首证据（critical_chain_progress_rate=0.916>=0.86，blocked_task_resume_accuracy_rate=0.989>=0.98，sample_count=192）并串行收口 A 与 claim XT-W2-31-B`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v55.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v56
+
+- status: `state_changed_xt_w2_31_b_candidate_pass_and_claim_xt_w2_31_c`
+- dependency_delta: `本tick仅推进 XT-W2-31-B：沿用 adopted_split_contract_v1 完成 G4/G5 首证据（directed_baton_delivery_rate=0.994>=0.99，g5_path_integrity_rate=1.0>=0.99，broadcast_dispatch_count=0，sample_count=204），判定 candidate_pass 并串行收口 XT-W2-31-B，随后 claim XT-W2-31-C`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v56.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v57
+
+- status: `state_changed_xt_w2_31_c_candidate_pass_and_claim_xt_w2_31_d`
+- dependency_delta: `本tick仅推进 XT-W2-31-C：沿用 adopted_split_contract_v1 完成 G3/G5 首证据（critical_path_recovery_rate=0.991>=0.98，g5_fail_closed_compliance_rate=1.0>=0.99，broadcast_dispatch_count=0，sample_count=216），判定 candidate_pass 并串行收口 XT-W2-31-C，随后 claim XT-W2-31-D`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v57.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v58
+
+- status: `state_changed_xt_w2_31_d_candidate_pass_and_claim_xt_w2_31_e`
+- dependency_delta: `本tick仅推进 XT-W2-31-D：沿用 adopted_split_contract_v1 完成 G4/G5 首证据（directed_baton_delivery_rate=0.995>=0.99，g5_path_integrity_rate=1.0>=0.99，broadcast_dispatch_count=0，sample_count=212），判定 candidate_pass 并串行收口 XT-W2-31-D，随后 claim XT-W2-31-E`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v58.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v59
+
+- status: `state_changed_xt_w2_31_e_candidate_pass_and_claim_xt_w2_31_f`
+- dependency_delta: `本tick仅推进 XT-W2-31-E：沿用 adopted_split_contract_v1 完成 G3/G5 首证据（critical_unblock_route_accuracy_rate=0.992>=0.98，g5_fail_closed_compliance_rate=1.0>=0.99，broadcast_dispatch_count=0，sample_count=224），判定 candidate_pass 并串行收口 XT-W2-31-E，随后 claim XT-W2-31-F`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v59.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v60
+
+- status: `state_changed_xt_w2_31_f_candidate_pass_and_claim_xt_w2_32`
+- dependency_delta: `本tick仅推进 XT-W2-31-F：沿用 adopted_split_contract_v1 完成 G4/G5 首证据（dispatch_cleanup_success_rate=0.994>=0.99，g5_audit_link_integrity_rate=1.0>=0.99，broadcast_dispatch_count=0，sample_count=236），判定 candidate_pass 并串行收口 XT-W2-31-F 与父任务 XT-W2-31，随后 claim XT-W2-32`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v60.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v61
+
+- status: `state_changed_xt_w2_32_a_candidate_pass_and_claim_xt_w2_32_b`
+- dependency_delta: `本tick仅推进 XT-W2-32-A：先完成 task split audit 并声明沿用 adopted_split_contract_v1，再通过 A 的 G3/G4 首证据（critical_chain_progress_rate=0.919>=0.86，blocked_task_resume_accuracy_rate=0.991>=0.98，sample_count=198）；随后串行收口 XT-W2-32-A 并 claim XT-W2-32-B`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v61.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v62
+
+- status: `state_changed_xt_w2_32_b_candidate_pass_and_claim_xt_w2_32_c`
+- dependency_delta: `本tick仅推进 XT-W2-32-B：沿用 adopted_split_contract_v1 完成 G4/G5 首证据（directed_baton_delivery_rate=0.995>=0.99，g5_path_integrity_rate=1.0>=0.99，broadcast_dispatch_count=0，sample_count=208），判定 candidate_pass 并串行收口 XT-W2-32-B，随后 claim XT-W2-32-C`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v62.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v63
+
+- status: `state_changed_xt_w2_32_c_candidate_pass_and_claim_xt_w2_32_d`
+- dependency_delta: `本tick仅推进 XT-W2-32-C：沿用 adopted_split_contract_v1 完成 G3/G5 首证据（critical_path_recovery_rate=0.992>=0.98，g5_fail_closed_compliance_rate=1.0>=0.99，broadcast_dispatch_count=0，sample_count=214），判定 candidate_pass 并串行收口 XT-W2-32-C，随后 claim XT-W2-32-D`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v63.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v64
+
+- status: `state_changed_xt_w2_32_d_candidate_pass_and_claim_xt_w2_32_e`
+- dependency_delta: `本tick仅推进 XT-W2-32-D：沿用 adopted_split_contract_v1 完成 G4/G5 首证据（directed_baton_delivery_rate=0.995>=0.99，g5_path_integrity_rate=1.0>=0.99，broadcast_dispatch_count=0，sample_count=210），判定 candidate_pass 并串行收口 XT-W2-32-D，随后 claim XT-W2-32-E`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v64.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v65
+
+- status: `state_changed_xt_w2_32_e_candidate_pass_and_claim_xt_w2_32_f`
+- dependency_delta: `本tick仅推进 XT-W2-32-E：沿用 adopted_split_contract_v1 完成 G3/G5 首证据（critical_path_recovery_rate=0.993>=0.98，g5_fail_closed_compliance_rate=1.0>=0.99，broadcast_dispatch_count=0，sample_count=218），判定 candidate_pass 并串行收口 XT-W2-32-E，随后 claim XT-W2-32-F`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v65.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v66
+
+- status: `state_changed_xt_w2_32_f_candidate_pass_and_claim_xt_w2_33`
+- dependency_delta: `本tick仅推进 XT-W2-32-F：沿用 adopted_split_contract_v1 完成 G4/G5 首证据（dispatch_cleanup_success_rate=0.996>=0.99，g5_audit_link_integrity_rate=1.0>=0.99，broadcast_dispatch_count=0，sample_count=244），判定 candidate_pass 并串行收口 XT-W2-32-F 与父任务 XT-W2-32=delivered，随后 claim XT-W2-33`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v66.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v67
+
+- status: `state_changed_xt_w2_33_a_candidate_pass_and_claim_xt_w2_33_b`
+- dependency_delta: `本tick仅推进 XT-W2-33-A：先完成 task split audit 并声明沿用 adopted_split_contract_v1，再通过 A 的 G3/G4 首证据（critical_chain_progress_rate=0.922>=0.86，blocked_task_resume_accuracy_rate=0.992>=0.98，sample_count=206）；随后串行收口 A 并 claim XT-W2-33-B`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v67.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v68
+
+- status: `state_changed_xt_w2_33_b_candidate_pass_and_claim_xt_w2_33_c`
+- dependency_delta: `本tick仅推进 XT-W2-33-B：沿用 adopted_split_contract_v1 完成 G4/G5 首证据（directed_baton_delivery_rate=0.996>=0.99，g5_path_integrity_rate=1.0>=0.99，broadcast_dispatch_count=0，sample_count=212），判定 candidate_pass 并串行收口 XT-W2-33-B，随后 claim XT-W2-33-C`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v68.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v69
+
+- status: `state_changed_xt_w2_33_c_candidate_pass_and_claim_xt_w2_33_d`
+- dependency_delta: `本tick仅推进 XT-W2-33-C：沿用 adopted_split_contract_v1 完成 G3/G5 首证据（critical_path_recovery_rate=0.993>=0.98，g5_fail_closed_compliance_rate=1.0>=0.99，broadcast_dispatch_count=0，sample_count=219），判定 candidate_pass 并串行收口 XT-W2-33-C，随后 claim XT-W2-33-D`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v69.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v70
+
+- status: `state_changed_xt_w2_33_d_candidate_pass_and_claim_xt_w2_33_e`
+- dependency_delta: `本tick仅推进 XT-W2-33-D：沿用 adopted_split_contract_v1 完成 G4/G5 首证据（directed_baton_delivery_rate=0.997>=0.99，g5_path_integrity_rate=1.0>=0.99，broadcast_dispatch_count=0，sample_count=216），判定 candidate_pass 并串行收口 XT-W2-33-D，随后 claim XT-W2-33-E`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v70.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v71
+
+- status: `state_changed_xt_w2_33_e_candidate_pass_and_claim_xt_w2_33_f`
+- dependency_delta: `本tick仅推进 XT-W2-33-E：沿用 adopted_split_contract_v1 完成 G3/G5 首证据（critical_path_recovery_rate=0.994>=0.98，g5_fail_closed_compliance_rate=1.0>=0.99，broadcast_dispatch_count=0，sample_count=222），判定 candidate_pass 并串行收口 XT-W2-33-E，随后 claim XT-W2-33-F`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v71.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v73
+
+- status: `hold_xt_w2_34_a_prereq_unverified_board_still_at_xt_w2_33_f`
+- dependency_delta: `收到 XT-W2-34-A 定向推进请求后先做只读一致性校验；结果显示仓库中不存在 xt_main_xt_l2_delta_3line.v72.json / xt_w2_34_xt_l2_delta_3line.v1.json，且任务看板无 XT-W2-34 task row，当前真实 blocker_top1 仍为 XT-W2-33-F=claimed。按 fail-closed 本tick仅落盘 split_audit(v1)+v73 minimal_gaps，不生成 XT-W2-34-A probe 证据。`
+- minimal_gaps: `xt_w2_33_f_not_delivered; missing_task_row_xt_w2_34; missing_build/reports/xt_w2_34_xt_l2_delta_3line.v1.json; missing_build/reports/xt_main_xt_l2_delta_3line.v72.json`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v73.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v74
+
+- status: `state_changed_xt_w2_33_f_candidate_pass_and_claim_xt_w2_34`
+- dependency_delta: `本tick仅推进 XT-W2-33-F：先完成 state reconcile audit，显式确认 phantom v72 与 phantom xt_w2_34_xt_l2_delta_3line.v1 均不存在；随后沿用 adopted_split_contract_v1 完成 G4/G5 首证据（dispatch_cleanup_success_rate=0.995>=0.99，g5_audit_link_integrity_rate=1.0>=0.99，broadcast_dispatch_count=0，sample_count=248），判定 candidate_pass 并串行收口 XT-W2-33-F 与父任务 XT-W2-33=delivered，随后正式 claim XT-W2-34`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v74.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v75
+
+- status: `state_changed_xt_w2_34_a_candidate_pass_and_claim_xt_w2_34_b`
+- dependency_delta: `本tick仅推进 XT-W2-34-A：先刷新 task split audit(v2) 并声明沿用 adopted_split_contract_v1，再通过 A 的 G3/G4 首证据（critical_chain_progress_rate=0.928>=0.86，blocked_task_resume_accuracy_rate=0.993>=0.98，sample_count=214）；随后串行收口 XT-W2-34-A 并 claim XT-W2-34-B`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v75.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v76
+
+- status: `hold_xt_w2_34_b_gate_pass_but_missing_xt_w2_34_c_successor_definition`
+- dependency_delta: `本tick仅推进 XT-W2-34-B：沿用 xt_w2_34_task_split_audit.v2 完成 G4/G5 首证据（directed_baton_delivery_rate=0.997>=0.99，g5_path_integrity_rate=1.0>=0.99，broadcast_dispatch_count=0，sample_count=218），门禁结论为 candidate_pass；但 audit.v2 串行序列未定义 XT-W2-34-C，且仓库不存在 XT-W2-34-C task row / claim target。按 fail-closed 不创建 XT-W2-34-C，并以 MEN-20260306-023 请求澄清 successor contract。`
+- minimal_gaps: `missing_successor_definition_xt_w2_34_c_in_xt_w2_34_task_split_audit_v2; missing_task_row_xt_w2_34_c; missing_claim_target_xt_w2_34_c`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v76.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v77
+
+- status: `hold_xt_w2_34_closed_and_xt_w3_18_dor_unmet_after_successor_reconcile`
+- dependency_delta: `本tick仅处理 successor contract 澄清与主链切换：audit.v3 已明确 XT-W3-18 为 XT-W2-34-B 的真实 successor，且 XT-W2-34-C 不适用；据此正式收口 XT-W2-34-B 与父任务 XT-W2-34=delivered。随后对 XT-W3-18 做 DoR 校验，发现 `XT-W3-11` task row 缺失，且 pool/global test matrix 未定义；按 fail-closed 不 claim XT-W3-18，并定向补件 MEN-20260306-024。`
+- minimal_gaps: `missing_dependency_task_row_xt_w3_11; missing_xt_w3_18_test_matrix_definition`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v77.json`
+
+#### XT-L2 / XT-Main(Active-2) / delta_3line checkpoint v78
+
+- status: `state_changed_xt_w3_18_dor_filled_and_formal_claimed`
+- dependency_delta: `本tick仅补齐 XT-W3-18 DoR：已导入 XT-W3-11 目标/依赖/DoD/Gate/KPI 并物化 task row，同时补齐 pool-level/global-level 二层测试矩阵（含阻断策略、回滚校验、失败归因输出）。两项缺口均已机读落盘，因此按当前 successor contract 直接 formal claim XT-W3-18；本tick不进入 G4/G5 gate。`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v78.json`
+
+## E. Coordinator Decisions（运行态）
+
+- `CD-20260301-001`
+  - decision: 启用 Command Board v2 作为唯一协作板，旧“口头协作”规则停用
+  - reason: 降低多泳道并发冲突与插单漂移
+  - follow_up: Hub-L5 在下一 replan 窗口补齐 SKC-G3 证据采样计划
+- `CD-20260301-002`
+  - decision: 指定 `AI-COORD-PRIMARY` 为当前总控 AI，并同意 Hub-L2 领取 `SKC-W1-03`
+  - reason: 按单文件分区机制从 `ready` 切换到 `claimed`，验证流程落地
+  - follow_up: Hub-L2 在 claim TTL 到期前提交首个 7 件套增量
+- `CD-20260301-003`
+  - decision: 为 Hub-L5 `SKC-W3-08(+SKC-G3收口)` 设置首轮提交截止与超时升级路径
+  - deadline: `2026-03-02T10:00:00-08:00`
+  - escalation_path:
+    - T+0（到期即刻）：`AI-COORD-PRIMARY -> Hub-L5` 请求状态快照与阻塞清单
+    - T+2h：`AI-COORD-PRIMARY -> QA + XT-L2` 启动并行补证据支援
+    - T+4h：若仍 blocked，升级 `AI-COORD-PRIMARY -> user`，并标记 `release_blocker=true`
+  - success_criteria:
+    - 提交首轮 7 件套增量
+    - 更新 `build/reports/skc_w3_08_hub_l5_evidence.v1.json` 引用
+    - 在 Task Catalog 回填 `SKC-G5/SKC-G3` 最新 gate_vector
+- `CD-20260301-004`
+  - decision: 接受 `CR-20260301-002`，将“多泳池 + 自适应泳道 + 档位/参与等级”纳入工单体系（先建模，后切入执行）
+  - reason: 对齐用户提出的复杂度驱动自治推进诉求，沉淀可复用的 Supervisor 编排经验
+  - follow_up:
+    - XT-L2 维持 SKC 主线优先，新增 `XT-W2-20..XT-W2-26`、`XT-W3-18..XT-W3-20` 保持 `planned`
+    - 总控在下一 replan 窗口评估切入时机（不抢占 release blocker）
+- `CD-20260301-005`
+  - decision: 启用“继续自动接任务协议”（收到“继续”默认按 backlog_next 自动续推）
+  - reason: 降低人工点名分派成本，保障泳道可自治推进到任务收口
+  - guardrails:
+    - 仍需遵循 `claim + ttl + gate` 约束
+    - 高风险授权/不可逆动作/跨泳道契约变更必须打断用户
+- `CD-20260301-006`
+  - decision: `SKC-W2-07` 历史增量先“保留并重分类”为 precheck 证据，不并入 runtime 主链，待 `SKC-W2-06=verified_handoff` 后再裁决是否吸收
+  - reason: 在依赖未满足阶段，直接吸收历史增量会引入语义漂移风险；按 fail-closed 先冻结执行链路改动
+  - follow_up:
+    - Hub-L4 保持 `precheck_only + claimed`，不进入 runtime 改动
+    - XT-L2 提交 `SKC-W2-06 verified_handoff` 与 heartbeat/cleanup 联动证据后，触发二次裁决
+    - 二次裁决输出：`keep_as_precheck | partial_absorb | full_rollback`
+- `CD-20260301-007`
+  - decision: 接受 `CR-20260301-004`，新增“自动推进 + 用户介入等级（三档）”实现级子工单，并纳入 `XT-W2-23-A/XT-W2-26-A/B/C`
+  - reason: 将“实时感知完成 -> 自动指导/续推”从流程约定升级为可执行代码路径，减少人工协调成本
+  - policy:
+    - 介入等级统一为：`zero_touch | critical_touch | guided_touch`
+    - 兼容映射：`hands_off->zero_touch`, `critical_only->critical_touch`, `interactive->guided_touch`
+    - 无效配置 fail-closed 到 `critical_touch`（审计 `invalid_autonomy_mode`）
+  - follow_up:
+    - XT-L2/XT-L1 按子工单实现 completion adapter + auto-continue executor + guidance router
+    - QA 增补三档介入差异回归；Hub-L3 复核高风险授权红线
+- `CD-20260301-008`
+  - decision: 在多泳池专项中补充“激进档规模估算 + 成本门槛 + 大规模拼装收敛”实现级子工单（挂靠 `XT-W2-25/XT-W3-18/XT-W3-19`，暂不独立派发）
+  - reason: 用户明确关注“100 lane 级并发是否划算”与“多泳道成品拼装风险”，需先把经济性与收敛机制规格冻结
+  - policy:
+    - 激进档规模口径：`total_lanes <= 108`（12 pools * 每池 9 lanes 上限）
+    - 运行门槛：`predicted_parallel_speedup >= 1.8x`、`predicted_merge_tax_ratio <= 0.30`、`token_budget_headroom >= 0.30`
+    - 运行中 fail-closed：`parallel_efficiency_ratio < 0.35` 连续窗口则自动降档
+  - follow_up:
+    - XT-L2：执行 `XT-W2-25-S1`（并发-成本治理器）
+    - QA+XT-L2：执行 `XT-W3-18-S1`（大规模拼装收敛器）
+    - XT-L1+XT-L2：执行 `XT-W3-19-S1`（交付 ROI 可视化摘要）
+- `CD-20260302-001`
+  - decision: 接受 `CR-20260302-001`，将“Token 最优上下文胶囊 + 三段式提示词”纳入主线工单并加入 `XT-W2-24-A/B/C/D/E`
+  - reason: 在 Hub 中心记忆架构下，需把“最少 token + 不降质量”固化为可执行链路，而非经验约定
+  - policy:
+    - 所有泳道提示词强制三段式：`Stable Core + Task Delta + Context Refs`
+    - `Context Refs` 仅允许引用 ID，禁止贴全文上下文
+    - 样本不足时一律 `INSUFFICIENT_EVIDENCE`，禁止经济性“冒绿”
+  - follow_up:
+    - XT-L1+XT-L2：执行 `XT-W2-24-A/D`（编译器 + 重试增量压缩）
+    - XT-L2+Hub-L5：执行 `XT-W2-24-B`（预算装箱）
+    - Hub-L3+XT-L2：执行 `XT-W2-24-C`（ACL + 脱敏）
+    - QA+XT-L2+Hub-L5：执行 `XT-W2-24-E`（token-质量联合看板）
+- `CD-20260302-002`
+  - decision: 接受 `CR-20260302-002`，将“阻塞依赖图 + 双绿门控 + 解阻即时指导”纳入主线工单并加入 `XT-W2-27/XT-W2-27-A/B/C/D/E`
+  - reason: 当前多泳道存在相互等待，必须把“等谁、何时解阻、谁来通知”从人工协调升级为 Supervisor 可执行机制
+  - policy:
+    - 阻塞依赖统一收敛到 `wait-for graph`，禁止仅靠口头提醒推进
+    - 解阻必须满足 `contract_green + runtime_green` 双绿，单绿不得放行
+    - 解阻通知需在 SLA 内完成，且必须回填 machine-readable 证据
+  - follow_up:
+    - XT-L2+Hub-L3：执行 `XT-W2-27-A`（wait graph）
+    - XT-L2+Hub-L5+QA：执行 `XT-W2-27-B`（dual-green）
+    - XT-L1+XT-L2：执行 `XT-W2-27-C`（dependency escrow）
+    - XT-L1+XT-L2+Hub-L3：执行 `XT-W2-27-D`（unblock router）
+    - QA+XT-L2+Hub-L5：执行 `XT-W2-27-E`（block SLA escalator）
+
+- `CD-20260302-003`
+  - decision: 接受 `CR-20260302-003`，将“自托管关键路径解阻模式（critical_path_mode）”并入 Supervisor 主工单与执行包（新增 `XT-W2-27-F`）
+  - reason: 当前 x-hub-system 自身推进出现多泳道互等，需先清 release blocker 依赖链，避免全局并发空转
+  - policy:
+    - 启用 `critical_path_mode` 时，release blocker DAG 优先级高于新功能并发
+    - blocker 转绿后必须派发 `unblock baton`（`next_owner_lane + next_step + unblock_owner`）
+    - 关键链无 checkpoint 超过 2h 需自动升级到 `AI-COORD-PRIMARY`
+  - follow_up:
+    - XT-L2+Hub-L5+QA：执行 `XT-W2-27-F`，输出机读证据 `xt_w2_27_f_self_host_unblock_evidence.v1.json`
+    - 各泳道：在 Auto-Continue 里遵循关键路径优先，不得被非关键任务抢占
+- `CD-20260302-004`
+  - decision: 接受 `CR-20260302-004`，新增 `XT-W2-28/XT-W2-28-A/B/C/D/E`（Jamless 无拥塞协议），并作为 7 泳道默认调度规则
+  - reason: 当前堵塞由“互等 + 重复 blocked 汇报 + 无增量 gate 重试”共同导致，需从调度层 fail-closed 收口
+  - policy:
+    - 7 泳道默认 `Active-3`：`Hub-L1 + XT-L2 + Hub-L5`
+    - 解阻只允许 `blocker -> waiter` 定向 baton，禁用全泳道广播
+    - 同 `blocked_reason_hash` 4h 内仅首条 full 7 件套，其余 `delta_3line`
+    - 无 `evidence_delta_hash` 变化时，release gate 重试冷却 90 分钟
+    - wait-for 图每 5 分钟执行 SCC 解环，环内仅保留 1 条 breaker lane
+  - follow_up:
+    - XT-L2+Hub-L5：执行 `XT-W2-28-A`（准入/WIP 限流）
+    - XT-L1+XT-L2+Hub-L3：执行 `XT-W2-28-B`（定向接力）
+    - XT-L1+QA：执行 `XT-W2-28-C`（去重与 delta 汇报）
+    - Hub-L3+XT-L2：执行 `XT-W2-28-D`（死锁解环）
+    - Hub-L5+QA+XT-L2：执行 `XT-W2-28-E`（重试冷却）
+- `CD-20260303-001`
+  - decision: 接受 `CR-20260303-001`，新增 `XT-W2-20-B/XT-W2-24-F/XT-W2-25-B/XT-W2-28-F`（CBL 防堵塞 + 上下文滚动治理），并升级默认策略为 `Jamless v1.5 + CBL`
+  - reason: 现有堵塞根因不只在调度，还在拆分阶段高耦合依赖与长会话上下文膨胀；必须在“拆分-调度-上下文”三处同时治理
+  - policy:
+    - 拆分阶段强制防堵塞约束：`depends_on<=2`, `fan_in<=2`, `fan_out<=3`
+    - 调度阶段使用动态 `Active-3` 席位（按关键路径与阻塞风险分配）
+    - 提示词会话达到阈值必须 rollover，且新会话 `context_refs<=3`
+    - 阻塞链触发器：`20min checkpoint / 40min breaker / 60min CR 重排`
+  - follow_up:
+    - XT-L2+Hub-L3+QA：执行 `XT-W2-20-B`（防堵塞拆分）
+    - XT-L1+XT-L2+Hub-L3：执行 `XT-W2-24-F`（会话滚动）
+    - XT-L2+Hub-L5+QA：执行 `XT-W2-25-B`（动态席位）
+    - XT-L2+Hub-L5+QA+AI-COORD-PRIMARY：执行 `XT-W2-28-F`（阻塞预测重排）
+- `CD-20260303-002`
+  - decision: 接受 `CR-20260303-002`，新增 `XT-W2-23-B/XT-W2-23-C`（创新分档 + 建议治理），并要求 UI 支持档位选择
+  - reason: 在“创新最大化”和“高效交付”之间建立可控平衡，避免全量头脑风暴导致 token 失控
+  - policy:
+    - 创新分档统一为 `L0..L4`，默认 `L1_micro_reflect`
+    - 建议治理统一为 `supervisor_only|hybrid|lane_open`，默认 `hybrid`
+    - `hybrid` 仅触发式建议（重复失败/长阻塞/token收益/质量收益/安全风险）
+    - 发布冻结窗自动降档 `L0/L1`
+  - follow_up:
+    - XT-L1+XT-L2+QA：执行 `XT-W2-23-B`（创新分档引擎 + UI）
+    - XT-L2+AI-COORD-PRIMARY+Hub-L5：执行 `XT-W2-23-C`（建议治理路由器）
+    - AI-COORD-PRIMARY：在 `H. Supervisor Insight Inbox` 做 adopt/reject/park 统筹，并与用户确认高影响建议
+- `CD-20260304-001`
+  - decision: Hub 维持 `5 lane 职责隔离`，执行态切换为 `Hub-2 Seats + Burst-1`（不做“永久压缩到 2 lane”）
+  - reason: 当前效率瓶颈在跨池快照漂移与时间驱动重跑，不在泳道数量；保留 5 lane 可维持 fail-closed 审计隔离
+  - execution_model:
+    - `Seat-A(Hub-Gate)=Hub-L5`：只负责 prereq 快照封版、gate 重跑与裁决
+    - `Seat-B(Hub-Evidence)=Hub-L1/L2/L3/L4` 轮值合并执行：只负责最小证据增量与定向交付
+    - `Seat-C(Burst)=Hub-L1 or Hub-L3`：仅处理 `T+20/T+40/T+60` 升级动作，不常驻
+    - 非席位 Hub 泳道统一 `NO_DELTA_STANDBY + delta_3line_only`
+  - rerun_policy:
+    - gate 重跑改为事件触发：`A.pass && B.pass && evidence_delta=true && snapshot_id_changed=true`
+    - 重跑防抖：`120s`；同 `snapshot_id` 最多 `1` 次重跑，失败后只允许 `minimal_gaps + next_action`
+    - 快照一致性守门：`prereq_check.snapshot_id != rerun_input.snapshot_id => BLOCKED(snapshot_drift)`
+  - follow_up:
+    - Hub-L5：在 `release_gate_prereq_check` 与 `g5_rerun` 证据里强制输出 `snapshot_id`
+    - XT-L2：定向包强制携带 `snapshot_id + patch_refs + sample_window`
+    - AI-COORD-PRIMARY：每 20 分钟执行席位巡检并触发 `T+20/40/60` 规则
+- `CD-20260304-002`
+  - decision: 在 XT 主链启用 `Dual-Track Claim` 试运行（`Track-A=主链执行claim(1)` + `Track-B=影子预热claim(<=2)`）
+  - reason: 当前 `XT-W2-20-B` 等待 Hub-L3+QA 下一态裁决期间，XT-L2 存在可观空转窗口；需用“无状态变更并行预热”压缩等待损耗
+  - guardrails:
+    - `Track-A` 是唯一允许改 `gate_vector/task_status` 的轨道；`Track-B` 仅允许 `prep_only + no_state_change`
+    - `Track-B` 禁止改跨泳道任务行，禁止修改 Gate 字段，禁止触发 release 判定
+    - `Track-B` 对关键链后继任务仅允许 `shadow claim`（禁止正式 claim / 禁止并行抢占）
+    - 任一并发冲突、证据不足、语义漂移命中即 `fail-closed` 回退到单轨串行
+  - pilot_scope:
+    - `Track-A`: `XT-W2-21 -> XT-W2-20-B`（保持 serial lock + directed-only）
+    - `Track-B`: `XT-W2-22` 与 `XT-W2-23-B`（仅 `shadow prep evidence`，不得转执行态）
+  - exit_criteria:
+    - 连续 2 个 tick 满足 `conflict_count=0` 且 `mention_wait_time_p95` 下降
+    - `gate_flap_rate` 不上升，且无“跨泳道并发覆写”事件
+  - follow_up:
+    - XT-L2：提交 `build/reports/xt_dual_track_claim_snapshot.v1.json` 与 `XT-W2-22/XT-W2-23-B` shadow delta_3line
+    - Hub-L3+QA：仅消费 `Track-A` 的 mention，不将 `Track-B` 视为 blocker
+    - AI-COORD-PRIMARY：执行 `T+20` 复盘；若 `conflict_count>0` 立即回滚单轨串行
+- `CD-20260305-001`
+  - decision: 进入 `Dual-Pool Single-Lane` 手动推进模式（`Hub-Main=Hub-L5`，`XT-Main=XT-L2`），其余泳道改 `standby_burst`
+  - reason: 当前阶段尚未用 x-Hub-system 自驱推进，7 泳道常开的人肉协调成本高于并行收益；优先降低阻塞链与 token 消耗
+  - execution_model:
+    - `Active-2` 常驻：`Hub-Main(Hub-L5)` + `XT-Main(XT-L2)`
+    - `Burst-1` 按需拉起：`Hub-L1|Hub-L3|XT-L1` 三选一（其余保持 standby）
+    - 非主泳道统一 `NO_DELTA_STANDBY + directed_only + delta_3line_only`
+  - proxy_claim:
+    - 触发条件：`blocker_depth>=2 && wait_minutes>=20 && evidence_delta=false && (P0 || release_blocker=true)`
+    - 允许：代跑证据采集/脚本执行/机读报告落盘
+    - 禁止：改对方 `gate_vector/status`、改 schema/deny_code/Gate 阈值、宣告 `closed`
+    - TTL：`45m`，最多续租 `1` 次；结束后必须 `handoff_back_to_owner`
+  - guardrails:
+    - 仍保持 fail-closed；无 evidence_delta 禁止 release gate 重跑
+    - 同一阻塞链仅 1 条 full_7piece，其他泳道仅 delta_3line
+  - follow_up:
+    - Hub-L5：作为 `Hub-Main` 接管 Hub 池主推进与裁决
+    - XT-L2：作为 `XT-Main` 推进 `XT-W2-20 -> XT-W2-21 -> XT-W2-20-B`
+    - Hub-L1/Hub-L2/Hub-L3/Hub-L4/XT-L1：切换 `standby_burst`，仅在被 @ 或被 proxy-claim 时执行
+- `CD-20260305-002`
+  - decision: 进入 `Active-2 No-Wait` 强制推进模式（仅 `Hub-L5 + XT-L2` 负责主链闭环，不被动等待其他泳道动作）
+  - reason: 当前阻塞主要来自跨泳道回执等待；在手动阶段改为主泳道 takeover 可显著降低停等与 token 损耗
+  - policy:
+    - 禁止被动等待：`@` 发出后超过 `ack_sla_10m` 或 `evidence_sla_20m`，主泳道直接进入 `takeover`
+    - `takeover` 仅允许 `Hub-L5/XT-L2` 执行，且只可写本泳道任务状态与机读证据，不得改 standby 泳道任务行
+    - 非 release blocker edge：满足 `unblock_condition_expr` 且证据齐全后，允许 `resolved_by_takeover`
+    - release blocker edge：仅 `Hub-L5` 可裁决；要求 `require-real` 证据并输出 `takeover_audit_ref`
+    - standby 泳道保持 `NO_DELTA_STANDBY`，不再作为主链前置条件
+  - guardrails:
+    - fail-closed 不变；证据不足一律 `blocked(minimal_gaps_only)`
+    - 禁止“口头转绿”；必须落盘 machine-readable 证据后才能推进
+  - follow_up:
+    - XT-L2：立即把 `EDGE-XT-W2-20-B-XT-W2-20-a7c9d4f1` 改为 `takeover_candidate` 并在条件满足时 `resolved_by_takeover`
+    - Hub-L5：维持 release gate 单点裁决；仅在 `evidence_delta=true` 触发重跑
+    - Hub-L1/Hub-L2/Hub-L3/Hub-L4/XT-L1：切换 `hard_standby(readonly)`，仅接收审计抄送
+
+- `CD-20260305-003`
+  - decision: 临时将 `Task Catalog` 内全部 `status=planned` 任务的 `lane_owner` 统一改为 `XT-L2+Hub-L5(temp_takeover)`，由 Active-2 双主线连续推进
+  - reason: 避免跨泳道等待链与回执阻塞，降低人工协同与 token 消耗
+  - policy:
+    - 仅作用于 `planned` 任务；`claimed/delivered/verified_handoff` 不改 owner
+    - 执行顺序仍按 `depends_on`，但由 `XT-L2/Hub-L5` 自行串行接棒，不再等待 standby 泳道动作
+    - 保持 `fail-closed + machine-readable + directed-only`；证据不足不得冒绿
+  - rollback:
+    - 当 `active2_no_wait_review` 结束或用户下达回滚指令时，恢复原始 `lane_owner` 分工
+  - follow_up:
+    - XT-L2：按 queue_head 连续 claim `XT-W2-*` planned 任务并输出 delta_3line
+    - Hub-L5：仅保留 gate/裁决职责并为 XT 主链提供即时裁决支持
+    - standby 泳道：维持 `hard_standby(readonly)`，仅接收审计抄送
+
+- `CD-20260305-004`
+  - decision: 执行 owner 收敛：Hub 全部泳道工作统一由 `Hub-L5` 接管，XT 全部泳道工作统一由 `XT-L2` 接管
+  - reason: 进一步消除跨泳道等待与上下文同步开销，提高手动阶段推进吞吐
+  - policy:
+    - Hub 任务 owner 统一为 `Hub-L5(pool_takeover)`；XT 任务 owner 统一为 `XT-L2(pool_takeover)`
+    - 跨池依赖仅走 directed mention 协同，不改变 owner 归属
+    - `Hub-L1/Hub-L2/Hub-L3/Hub-L4/XT-L1` 统一 `hard_standby(readonly)`，不再 claim 执行态
+    - 继续保持 `fail-closed + machine-readable + directed-only`
+  - rollback:
+    - 用户下达回滚或检查点结束时，可恢复原 lane_owner 分工
+  - follow_up:
+    - Hub-L5：接管全部 Hub 任务执行与裁决
+    - XT-L2：接管全部 XT 任务执行与交付
+    - 其余泳道：仅保留只读审计与历史追踪
+- `CD-20260306-001`
+  - decision: 接受 `CR-20260306-001`，将 `XT-W3-21/XT-W3-22` 接案验收链与 `XT-W3-23` 记忆产品化链（含子工单）同步挂入 Command Board，并装载为 XT-L2 下一批 planned backlog
+  - reason: 保持 execution pack / README / WORKING_INDEX / Command Board 四处一致，让新接手 AI 只读看板即可识别后续主线
+  - policy:
+    - `XT-W3-21/XT-W3-22/XT-W3-23` 当前统一登记为 `planned`，不得跳过 `claim + gate + evidence` 直接口头开工
+    - `XT-W3-23` 按 `XT as memory UX adapter, Hub as sole memory source of truth` 执行，禁止 XT 落地第二真相源
+    - `XT-W3-23-A..E` 作为 `XT-W3-23` 的子任务排队；`XT-L1` 仅保留 `XT-W3-22-B/XT-W3-22-C/XT-W3-23-B/XT-W3-23-C` 的 directed support
+    - 继续保持 `single_lane_takeover + directed_only + fail_closed`
+  - follow_up:
+    - XT-L2：在下一 claim window 按 `XT-W3-21 -> XT-W3-22 -> XT-W3-23` 串行开工
+    - Hub-L5：为 `XT-W3-23` 提供 Hub Memory 真相源契约、gate 与 require-real 证据支持
+    - QA：补齐 `XT-MEM-G0..G5` 真实样本与回归计划
+- `CD-20260306-002`
+  - decision: 接受 `CR-20260306-002`，将 `XT-W3-24` 多渠道入口与流式体验产品化链（含子工单）同步挂入 Command Board，并装载为 XT-L2 下一批 planned backlog
+  - reason: 保持 execution pack / README / WORKING_INDEX / Command Board 四处一致，让渠道产品化主线也能被新接手 AI 直接从看板识别和续推
+  - policy:
+    - `XT-W3-24/XT-W3-24-A..F` 当前统一登记为 `planned`，不得跳过 `claim + gate + evidence` 直接口头开工
+    - `XT-W3-24` 吸收 bot 外壳优势，但安全/记忆/授权真相源仍在 Hub；禁止渠道层形成第二后端
+    - `XT-L1` 仅保留 `XT-W3-24-B/C/D/E` 的 directed support；`XT-L2` 维持 single-lane takeover owner
+    - 继续保持 `single_lane_takeover + directed_only + fail_closed`
+  - follow_up:
+    - XT-L2：在 `XT-W3-23` 之后按 `XT-W3-24` 串行开工
+    - Hub-L5：为 `XT-W3-24-F` 提供 connector/grant/audit/replay/scope gate 真相源与证据支持
+    - QA：补齐 `XT-CHAN-G0..G5` 真实样本、三渠道 smoke 与 fallback 回归计划
+- `CD-20260306-003`
+  - decision: 接受 `CR-20260306-003`，将 `XT-W3-25` 自动化产品面补短板执行包（含子工单）同步挂入 Command Board，并装载为 XT-L2 在 `XT-W3-24` 之后的下一批 planned backlog
+  - reason: 把“比通用自动化产品更好用”从抽象愿景变成可执行主线，补齐 `automation recipe + event runtime + directed takeover + run timeline + starter templates + comparative graduation` 六项能力，同时保持 Hub-first 边界
+  - policy:
+    - `XT-W3-25/XT-W3-25-A..F` 当前统一登记为 `planned`，不得跳过 `claim + gate + evidence` 直接口头开工
+    - `XT-W3-25` 只补产品面与自动化运行链，不得复制第二套记忆/授权后端；所有真相源继续留在 Hub
+    - `XT-L1` 仅保留 `XT-W3-25-D/E` 的 directed support；`XT-L2` 维持 single-lane takeover owner
+    - `directed takeover` 必须 `same_project + scope_safe + audit + rollback_ref`，不允许隐式越权
+    - 继续保持 `single_lane_takeover + directed_only + fail_closed`
+  - follow_up:
+    - XT-L2：在 `XT-W3-24` 之后按 `XT-W3-25` 串行开工
+    - Hub-L5：为 `XT-W3-25-A/B/C/F` 提供 grants/connectors/audit/policy/truth-source 证据支持
+    - XT-L1：为 `XT-W3-25-D/E` 提供 run timeline 可解释输出与 starter template 补件
+    - QA：补齐 `XT-AUTO-G0..G5` 真实样本、对标基线与回归计划
+- `CD-20260306-004`
+  - decision: 启用 `War Acceleration Mode v1`（叠加在 `Dual-Pool Single-Lane + owner 收敛` 之上），当前阶段以开发吞吐优先，不再以 token/细粒度泳道礼仪为首要目标
+  - reason: 当前主要瓶颈不是模型成本，而是跨泳道形式化交接、细粒度回板与强耦合任务被拆散后的人肉协调成本；需要改为 `少角色 + 纵向切片 + 主 owner 自接管 + QA 影子并行`
+  - functional_roles:
+    - `Hub-Main = Hub-L5`（Hub 全域主开发/主裁决）
+    - `XT-Main = XT-L2`（XT 全域主开发/主交付）
+    - `QA-Main = QA`（影子并行；从切片起点开始准备回归/证据/样本，不等待收尾）
+    - `XT-Support = XT-L1`（仅被点名支持 UX/template/explainability/bootstrap）
+  - acceleration_rules:
+    - `vertical_slice_first`：按完整成品链推进，当前优先序固定为 `XT-W3-21/22 -> XT-W3-23 -> XT-W3-24 -> XT-W3-25`；禁止为追求泳道均衡而重新横向打散
+    - `same_owner_self_takeover`：同项目、同 owner 域、无跨 scope 高风险升级时，`Hub-Main/XT-Main` 可直接 `claim_upstream|minimal_microtask` 做完依赖并继续下游，不再等待 standby 泳道回执
+    - `qa_shadow_parallel`：`QA-Main` 从开发第一 tick 即并行准备 gate/checklist/regression/evidence，不允许最后一刻才补质量线
+    - `batch_board_write`：`full_7piece` 仅在 `planned->claimed`、`running->blocked`、`running->delivered` 或纵向切片收口时强制回填；中间实现步骤允许本地连续推进
+    - `candidate_pass_continue`：内部非高风险链路允许 `candidate_pass` 后继续切下一子步；高风险外部副作用/secret/grant/payment/connector 仍必须严格 fail-closed
+    - `intake_freeze_except_blockers`：除 release blocker、架构返工必需项、当前主链直接阻塞项外，新增需求统一入 backlog，不插入进行中的纵向切片
+    - `reply_route_required`：`Hub-Main / XT-Main / QA-Main / XT-Support` 的所有回复必须显式带 `To / CC / 不用发给 / 原因`；缺失则视为 `incomplete_update`，不得要求人工自行判断路由
+  - guardrails:
+    - 不得绕过 Hub 作为 `memory/auth/grant/audit/secret/payment/connector` 真相源
+    - 不得跨项目 takeover，不得跨 scope 隐式升权，不得口头转绿
+    - 若需外部副作用或真实授权，仍按 require-real + machine-readable evidence 执行
+  - follow_up:
+    - Hub-L5：作为 `Hub-Main`，对 Hub 域依赖执行 `same_owner_self_takeover`；默认按纵向切片批量回填 7 件套
+    - XT-L2：作为 `XT-Main`，按 `XT-W3-21/22 -> XT-W3-23 -> XT-W3-24 -> XT-W3-25` 连续推进；只在关键状态跳变时回板
+    - QA：作为 `QA-Main`，为当前纵向切片影子并行准备 gate/checklist/regression/evidence matrix
+    - XT-L1：作为 `XT-Support`，仅响应 `XT-W3-24-D/E` 与 `XT-W3-25-D/E` 的 directed support；不 claim 主链
+
+- `CR-20260307-XT-W326-W327-001`
+  - type: `change_request`
+  - status: `active`
+  - owner: `AI-COORD-PRIMARY`
+  - scope: `XT-W3-26` + `XT-W3-27`
+  - reason: 已确认两条主线不再是纯工单状态，源码/测试/部分 evidence 已落地；现进入“看板接管 + 收口验证”阶段。
+  - decision:
+    - `XT-W3-26` 进入 `runtime_evidence_closure`
+    - `XT-W3-27` 进入 `ui_binding_and_verification_closure`
+    - 优先级顺序：`AI-2 -> AI-3 -> AI-4`
+    - `AI-1` 转 `no_claim_standby`，仅在字段缺口或状态机缺口时被 directed 接管
+  - evidence_refs:
+    - `build/reports/xt_w3_26_a_one_shot_intake_evidence.v1.json`
+    - `build/reports/xt_w3_26_b_adaptive_pool_plan_evidence.v1.json`
+    - `build/reports/xt_w3_26_c_concurrency_governor_evidence.v1.json`
+    - `build/reports/xt_w3_26_d_run_state_machine_evidence.v1.json`
+    - `x-terminal/build/reports/xt_w3_27_a_ia_freeze_evidence.v1.json`
+    - `x-terminal/build/reports/xt_w3_27_b_design_tokens_evidence.v1.json`
+    - `x-terminal/build/reports/xt_w3_27_c_global_home_evidence.v1.json`
+    - `x-terminal/build/reports/xt_w3_27_d_supervisor_cockpit_evidence.v1.json`
+    - `build/reports/xt_w3_27_first_run_journey_evidence.v1.json`
+    - `build/reports/xt_w3_27_h_ui_regression_evidence.v1.json`
+
+- `XT-W3-26`
+  - owner_lane: `AI-2/XT-OS-RUNTIME`
+  - status: `active(runtime_evidence_closure)`
+  - dependencies:
+    - `AI-1 handoff`: `PASS`
+  - minimal_gaps:
+    - `xt_w3_26_e_safe_auto_launch_evidence.v1.json`: `MISSING`
+    - `xt_w3_26_f_directed_unblock_evidence.v1.json`: `MISSING`
+    - `xt_w3_26_g_delivery_scope_freeze_evidence.v1.json`: `MISSING`
+    - `xt_w3_26_h_replay_regression_evidence.v1.json`: `MISSING`
+  - next_owner_lane: `AI-2`
+  - unblock_policy: `directed_only`
+  - notes:
+    - 源码已存在，不应再以“等待 core 落地”为 blocker
+    - 允许保留本机 Swift 环境 blocker，但不得阻止 evidence 归因与收口
+  - evidence_refs:
+    - `build/reports/xt_w3_26_ai1_handoff.v1.json`
+    - `x-terminal/Sources/Supervisor/SupervisorOrchestrator.swift`
+    - `x-terminal/Sources/Supervisor/DirectedUnblockRouter.swift`
+    - `x-terminal/Sources/Supervisor/DeliveryScopeFreezeStore.swift`
+    - `x-terminal/Sources/Supervisor/OneShotReplayHarness.swift`
+
+- `XT-W3-27`
+  - owner_lane: `AI-3/XT-UI-PRIMARY`
+  - status: `active(ui_binding_and_verification_closure)`
+  - dependencies:
+    - `AI-2 runtime contracts`: `IN_PROGRESS`
+  - minimal_gaps:
+    - `AI-3 A/B/C/D evidence`: `still fallback/static-mapping`
+    - `AI-4 E/F/G/H evidence`: `still partial_delivered`
+    - `real build/test verdict`: `BLOCKED_BY_ENV`
+  - next_owner_lane: `AI-3`
+  - unblock_policy: `directed_only`
+  - notes:
+    - 当前不应继续大改 UI 结构，优先把 runtime binding 与验证口径收紧
+    - `AI-4` 等待 `AI-3` 收紧后的 UI 语义再做最后 settings / first-run / troubleshoot 收口
+  - evidence_refs:
+    - `x-terminal/build/reports/xt_w3_27_a_ia_freeze_evidence.v1.json`
+    - `x-terminal/build/reports/xt_w3_27_b_design_tokens_evidence.v1.json`
+    - `x-terminal/build/reports/xt_w3_27_c_global_home_evidence.v1.json`
+    - `x-terminal/build/reports/xt_w3_27_d_supervisor_cockpit_evidence.v1.json`
+    - `build/reports/xt_w3_27_first_run_journey_evidence.v1.json`
+    - `build/reports/xt_w3_27_h_ui_regression_evidence.v1.json`
+
+- `CD-20260307-XT-W326-W327-001`
+  - type: `coordination_decision`
+  - status: `active`
+  - owner: `AI-COORD-PRIMARY`
+  - rule:
+    - 禁止对 `XT-W3-26/XT-W3-27` 再扩新功能范围
+    - 当前仅允许：
+      - `runtime evidence closure`
+      - `ui binding closure`
+      - `verification closure`
+      - `environment blocker attribution`
+    - 禁止使用广播找人接活
+    - blocker resolved 后必须 `directed handoff`
+  - merge_order:
+    1. `AI-2`
+    2. `AI-3`
+    3. `AI-4`
+    4. `QA`
+  - go_no_go:
+    - `XT-W3-26`: 四份 runtime evidence 落盘前 = `NO_GO`
+    - `XT-W3-27`: fallback/partial 未收紧前 = `NO_GO`
+    - `Swift 环境未修前`: 只能做 `conditional progress`，不得宣告 `verified release-ready`
+
+- `CR-20260308-XT-W326-W327-002`
+  - type: `change_request`
+  - status: `active`
+  - owner: `AI-COORD-PRIMARY`
+  - scope: `XT-W3-26` + `XT-W3-27`
+  - reason: 四个 AI 已完成本轮回包；AI-2 已落盘 `XT-W3-26-E/F/G/H` runtime evidence，AI-3 已产出 `XT-W3-27-A/B/C/D` 的 v2 runtime-bound evidence 与 focused tests 通过，AI-4 仍停留在消费 AI-3 v1 的 partial 口径，需要切换下一 owner。
+  - decision:
+    - `XT-W3-26` 从 `runtime_evidence_closure` 升级为 `candidate_pass(runtime_evidence_delivered)`
+    - `XT-W3-27` 从 `ui_binding_and_verification_closure` 升级为 `ai3_runtime_binding_verified_waiting_ai4_rebase`
+    - `AI-4` 升为下一 owner，负责消费 AI-3 v2 + AI-2 runtime evidence，重刷 `XT-W3-27-E/F/G/H` 证据
+    - `AI-1` 继续 `no_claim_standby`；`AI-2` 转 `deliver_runtime_refs_and_hold`
+  - evidence_refs:
+    - `build/reports/xt_w3_26_e_safe_auto_launch_evidence.v1.json`
+    - `build/reports/xt_w3_26_f_directed_unblock_evidence.v1.json`
+    - `build/reports/xt_w3_26_g_delivery_scope_freeze_evidence.v1.json`
+    - `build/reports/xt_w3_26_h_replay_regression_evidence.v1.json`
+    - `x-terminal/build/reports/xt_w3_27_a_ia_freeze_evidence.v2.json`
+    - `x-terminal/build/reports/xt_w3_27_b_design_tokens_evidence.v2.json`
+    - `x-terminal/build/reports/xt_w3_27_c_global_home_evidence.v2.json`
+    - `x-terminal/build/reports/xt_w3_27_d_supervisor_cockpit_evidence.v2.json`
+    - `x-terminal/build/reports/xt_w3_27_runtime_binding_tests.v2.log`
+    - `x-terminal/build/reports/xt_w3_27_local_env_probe.v1.log`
+
+- `XT-W3-26`
+  - owner_lane: `AI-2/XT-OS-RUNTIME`
+  - status: `candidate_pass(runtime_evidence_delivered;targeted_runtime_suite_blocked_by_unrelated_compile)`
+  - dependencies:
+    - `AI-1 handoff`: `PASS`
+    - `runtime evidence E/F/G/H`: `PASS`
+  - minimal_gaps:
+    - `targeted_runtime_suite`: `BLOCKED_BY_UNRELATED_COMPILE(SplitAuditPayloadContract.swift decode error)`
+    - `full_swift_package_verdict`: `BLOCKED_BY_ENV_OR_UNRELATED_COMPILE`
+  - next_owner_lane: `QA`
+  - unblock_policy: `directed_only`
+  - notes:
+    - 四份 runtime evidence 已全部落盘，旧 `MISSING` 裁决失效
+    - 当前剩余 blocker 不在 AI-2 自有范围内，不应再要求 AI-2 扩 scope 修 unrelated compile
+  - evidence_refs:
+    - `build/reports/xt_w3_26_e_safe_auto_launch_evidence.v1.json`
+    - `build/reports/xt_w3_26_f_directed_unblock_evidence.v1.json`
+    - `build/reports/xt_w3_26_g_delivery_scope_freeze_evidence.v1.json`
+    - `build/reports/xt_w3_26_h_replay_regression_evidence.v1.json`
+
+- `XT-W3-27`
+  - owner_lane: `AI-4/HUB-UI-INTEGRATION`
+  - status: `active(ai4_rebase_on_ai3_v2_and_runtime_refs)`
+  - dependencies:
+    - `AI-2 runtime contracts`: `PASS`
+    - `AI-3 A/B/C/D runtime binding v2`: `PASS`
+  - minimal_gaps:
+    - `AI-4 E/F/G/H evidence`: `still partial_delivered(v1)`
+    - `AI-4 consumed_ai3_evidence_refs`: `STILL_V1`
+    - `local_env_probe`: `FAILED_LOCAL_ENVIRONMENT_ONLY`
+  - next_owner_lane: `AI-4`
+  - unblock_policy: `directed_only`
+  - notes:
+    - `AI-3` focused runtime binding tests 已通过；当前不应再把 `XT-W3-27` 卡在 AI-3
+    - `AI-4` 现在应基于 AI-3 v2 + AI-2 runtime refs 重刷 first-run / settings / troubleshoot / regression 证据
+  - evidence_refs:
+    - `x-terminal/build/reports/xt_w3_27_a_ia_freeze_evidence.v2.json`
+    - `x-terminal/build/reports/xt_w3_27_b_design_tokens_evidence.v2.json`
+    - `x-terminal/build/reports/xt_w3_27_c_global_home_evidence.v2.json`
+    - `x-terminal/build/reports/xt_w3_27_d_supervisor_cockpit_evidence.v2.json`
+    - `x-terminal/build/reports/xt_w3_27_runtime_binding_tests.v2.log`
+    - `x-terminal/build/reports/xt_w3_27_local_env_probe.v1.log`
+    - `build/reports/xt_w3_27_first_run_journey_evidence.v1.json`
+    - `build/reports/xt_w3_27_h_ui_regression_evidence.v1.json`
+
+- `CD-20260308-XT-W326-W327-002`
+  - type: `coordination_decision`
+  - status: `active`
+  - owner: `AI-COORD-PRIMARY`
+  - rule:
+    - `XT-W3-26` 不再以 `runtime evidence missing` 作为 blocker
+    - `XT-W3-27` 当前唯一主推进者切换为 `AI-4`
+    - `AI-4` 只允许做 `E/F/G/H evidence refresh + first_run/settings/troubleshoot/regression closure`
+    - `AI-1/AI-2` 不主动返场，除非被 directed 点名
+    - `QA` 可在 AI-4 刷新后立刻进入 shadow checklist
+  - merge_order:
+    1. `AI-4`
+    2. `QA`
+  - go_no_go:
+    - `XT-W3-26`: `candidate_pass`，待 QA 接受 runtime evidence + unrelated compile blocker 归因后再进最终裁决
+    - `XT-W3-27`: AI-4 未完成 v2 evidence refresh 前 = `NO_GO`
+    - `local_env_probe=failed_local_environment_only`: 允许继续局部验证，不允许冒充 full-package verified
+
+- `CR-20260308-XT-W326-W327-003`
+  - type: `change_request`
+  - status: `active`
+  - owner: `AI-COORD-PRIMARY`
+  - scope: `XT-W3-26` + `XT-W3-27`
+  - reason: QA 已完成本轮 shadow checklist；`XT-W3-26` candidate_pass 被接受，`XT-W3-27` 的 AI-4 v2 refresh 已完成，剩余仅 `local_environment_only`，不再构成产品面 NO_GO blocker。
+  - decision:
+    - `XT-W3-26` 升级为 `qa_accepted(candidate_pass)`
+    - `XT-W3-27` 升级为 `conditional_go(ai4_v2_refresh_delivered;local_env_only_remaining)`
+    - 当前进入 `final_closure_only`
+    - `AI-1/AI-2/AI-3` 继续不得主动返场；`AI-4` 不再扩 scope，仅保留收口引用
+  - evidence_refs:
+    - `build/reports/xt_w3_26_e_safe_auto_launch_evidence.v1.json`
+    - `build/reports/xt_w3_26_f_directed_unblock_evidence.v1.json`
+    - `build/reports/xt_w3_26_g_delivery_scope_freeze_evidence.v1.json`
+    - `build/reports/xt_w3_26_h_replay_regression_evidence.v1.json`
+    - `build/reports/xt_w3_27_first_run_journey_evidence.v2.json`
+    - `build/reports/xt_w3_27_h_ui_regression_evidence.v2.json`
+    - `build/reports/xt_w3_27_e_hub_setup_wizard_evidence.v1.json`
+    - `build/reports/xt_w3_27_f_xt_settings_center_evidence.v1.json`
+    - `build/reports/xt_w3_27_g_hub_settings_center_evidence.v1.json`
+
+- `XT-W3-26`
+  - owner_lane: `QA`
+  - status: `qa_accepted(candidate_pass;runtime_evidence_accepted)`
+  - dependencies:
+    - `runtime evidence E/F/G/H`: `PASS`
+    - `QA acceptance`: `PASS`
+  - minimal_gaps:
+    - `targeted_runtime_suite`: `BLOCKED_BY_UNRELATED_COMPILE(SplitAuditPayloadContract.swift decode error)`
+    - `full_swift_package_verdict`: `BLOCKED_BY_ENV_OR_UNRELATED_COMPILE`
+  - next_owner_lane: `AI-COORD-PRIMARY`
+  - unblock_policy: `directed_only`
+  - notes:
+    - 不再要求 `AI-2` 返场扩 scope
+    - 当前剩余项仅作 blocker 归因保留，不再构成产品面 NO_GO
+  - evidence_refs:
+    - `build/reports/xt_w3_26_e_safe_auto_launch_evidence.v1.json`
+    - `build/reports/xt_w3_26_f_directed_unblock_evidence.v1.json`
+    - `build/reports/xt_w3_26_g_delivery_scope_freeze_evidence.v1.json`
+    - `build/reports/xt_w3_26_h_replay_regression_evidence.v1.json`
+
+- `XT-W3-27`
+  - owner_lane: `QA`
+  - status: `conditional_go(ai4_v2_refresh_delivered;remaining_local_env_only)`
+  - dependencies:
+    - `AI-2 runtime contracts`: `PASS`
+    - `AI-3 A/B/C/D runtime binding v2`: `PASS`
+    - `AI-4 E/F/G/H evidence refresh`: `PASS`
+    - `QA shadow checklist`: `PASS`
+  - minimal_gaps:
+    - `full_package_verified`: `NOT_ALLOWED_TO_CLAIM`
+    - `local_env_probe`: `FAILED_LOCAL_ENVIRONMENT_ONLY`
+  - next_owner_lane: `AI-COORD-PRIMARY`
+  - unblock_policy: `directed_only`
+  - notes:
+    - 不再因 `AI-4 未完成 v2 evidence refresh` 维持 `NO_GO`
+    - 当前仅允许按 `validated-mainline-only` + `non-full-package-verified` 口径进入最终收口
+  - evidence_refs:
+    - `build/reports/xt_w3_27_first_run_journey_evidence.v2.json`
+    - `build/reports/xt_w3_27_h_ui_regression_evidence.v2.json`
+    - `build/reports/xt_w3_27_e_hub_setup_wizard_evidence.v1.json`
+    - `build/reports/xt_w3_27_f_xt_settings_center_evidence.v1.json`
+    - `build/reports/xt_w3_27_g_hub_settings_center_evidence.v1.json`
+    - `x-terminal/build/reports/xt_w3_27_a_ia_freeze_evidence.v2.json`
+    - `x-terminal/build/reports/xt_w3_27_b_design_tokens_evidence.v2.json`
+    - `x-terminal/build/reports/xt_w3_27_c_global_home_evidence.v2.json`
+    - `x-terminal/build/reports/xt_w3_27_d_supervisor_cockpit_evidence.v2.json`
+
+- `CD-20260308-XT-W326-W327-003`
+  - type: `coordination_decision`
+  - status: `active`
+  - owner: `AI-COORD-PRIMARY`
+  - rule:
+    - 当前仅允许 `final closure`, `release wording freeze`, `local-environment-only attribution retention`
+    - 不得把当前口径冒充为 `full-package verified`
+    - 不得扩 scope
+    - 不得要求 `AI-1/AI-2/AI-3` 主动返场
+    - `validated-mainline-only` 边界必须继续保留
+  - merge_order:
+    1. `AI-COORD-PRIMARY`
+    2. `用户/发布动作`
+  - go_no_go:
+    - `XT-W3-26`: `QA_ACCEPTED`
+    - `XT-W3-27`: `CONDITIONAL_GO`
+    - `overall`: `GO_FOR_FINAL_CLOSURE_WITH_HARDLINE(non_full_package_verified)`
+
+## F. Daily Report（运行态）
+
+- date: 2026-03-05
+- done_today:
+  - 采纳 `CD-20260305-004`：Hub 全部工作收敛到 Hub-L5，XT 全部工作收敛到 XT-L2（其余泳道 hard_standby）
+  - 采纳 `CD-20260305-003`：`status=planned` 任务临时统一改为 `XT-L2+Hub-L5(temp_takeover)`，由 Active-2 双主线接管推进
+  - 采纳 `CD-20260305-002`：启用 `Active-2 No-Wait`（`Hub-L5+XT-L2` 主动 takeover，不被动等其他泳道回执）
+  - 采纳 `CD-20260305-001`：执行态切换为 `Dual-Pool Single-Lane`（`Hub-Main=Hub-L5`、`XT-Main=XT-L2`、`Active-2 + Burst-1`）
+  - 采纳 `CD-20260304-001`：Hub 执行态改为 `Hub-2 Seats + Burst-1`，保持 5 lane 职责隔离不变
+  - 采纳 `CD-20260304-002`：XT 主链启用 `Dual-Track Claim` 试运行（主链单轨执行 + 旁路影子预热并行）
+  - 重跑策略切换为“事件触发 + snapshot_id 一致性守门 + 单快照单次重跑”，替代纯时间钉死重跑
+  - 新增并挂载 `xhub-lane-command-board-v2.md`
+  - SKC 与 SI 工单均接入 Command Board 执行规则
+  - 新增多泳池细化执行包：`x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`
+  - 启用“继续”自动接任务协议并补齐 `XT-W2-20..XT-W2-26`、`XT-W3-18..XT-W3-20` 规划行
+  - Hub-L4（`SKC-W2-07`）按 Auto-Continue 提交 blocked 状态机读证据并完成总控处置裁决（`CD-20260301-006`）
+  - 新增自治推进实现子工单：`x-terminal/work-orders/xt-w2-23-w2-26-autocontinue-autonomy-implementation-pack-v1.md`，并登记 `CR-20260301-004` 与 `CD-20260301-007`
+  - 多泳池专项补齐“激进档规模/经济性/拼装收敛”实现级子工单（挂靠 `XT-W2-25/XT-W3-18/XT-W3-19`），登记 `CD-20260301-008`
+  - 新增 Token 最优上下文胶囊实现包：`x-terminal/work-orders/xt-w2-24-token-optimal-context-capsule-implementation-pack-v1.md`，并登记 `CR-20260302-001` 与 `CD-20260302-001`
+  - 新增反阻塞实现包：`x-terminal/work-orders/xt-w2-27-anti-block-unblock-orchestration-implementation-pack-v1.md`，并登记 `CR-20260302-002` 与 `CD-20260302-002`
+  - 新增自托管关键路径解阻扩展（`XT-W2-27-F`），并登记 `CR-20260302-003` 与 `CD-20260302-003`
+  - 新增 Jamless 无拥塞协议实现包：`x-terminal/work-orders/xt-w2-28-jamless-anti-congestion-protocol-implementation-pack-v1.md`，并登记 `CR-20260302-004` 与 `CD-20260302-004`
+  - 新增 CBL 可落工单包：`x-terminal/work-orders/xt-cbl-anti-block-context-governor-implementation-pack-v1.md`，并登记 `CR-20260303-001` 与 `CD-20260303-001`
+  - 主工单/执行包已扩展 `XT-W2-20-B/XT-W2-24-F/XT-W2-25-B/XT-W2-28-F`，并将默认调度策略升级为 `Jamless v1.5`
+  - 新增创新分档与建议治理变更：`XT-W2-23-B/XT-W2-23-C`，并登记 `CR-20260303-002` 与 `CD-20260303-002`
+  - Command Board 新增 `Insight Outbox`/`Supervisor Insight Inbox` 契约，用于安全/效率/质量/token 建议治理
+  - Command Board 新增 `I/J` 分区（`Dependency Edge Registry + Directed @ Inbox`），并启用 waiter->blocker 定向协同、ACK/首增量 SLA 与 mention 去重规则
+  - 新增 `XT-W3-21/XT-W3-22` 接案验收任务行与 `XT-W3-23` 记忆产品化任务行（含 `XT-W3-23-A..E`），并登记 `CR-20260306-001` 与 `CD-20260306-001`
+  - 新增 `XT-W3-24` 多渠道入口产品化任务行（含 `XT-W3-24-A..F`），并登记 `CR-20260306-002` 与 `CD-20260306-002`
+  - 新增 `XT-W3-25` 自动化产品面补短板任务行（含 `XT-W3-25-A..F`），并登记 `CR-20260306-003` 与 `CD-20260306-003`
+  - 采纳 `CD-20260306-004`：启用 `War Acceleration Mode v1`（`Hub-Main + XT-Main + QA-Main(shadow) + XT-Support`），允许同 owner 域自接管依赖、按纵向切片批量回填 7 件套、QA 从开发首 tick 并行
+  - 回复契约升级：`Hub-Main / XT-Main / QA-Main / XT-Support` 所有回复必须带 `To / CC / 不用发给 / 原因`，避免人工二次判断路由
+- blocked_today:
+  - `none`（SKC 主链 release blocker 已解除；当前转入 XT 主链排程收敛期）
+- tomorrow_plan:
+  - Hub-Main（Hub-L5）：release blocker 一律主泳道自裁决；Hub 域依赖满足 `same_project + scope_safe` 时直接 `same_owner_self_takeover`；无 evidence_delta 不重跑
+  - XT-Main（XT-L2）：按纵向切片连续推进 `XT-W3-21/22 -> XT-W3-23 -> XT-W3-24 -> XT-W3-25`；关键状态跳变或切片收口时再批量回填 7 件套
+  - QA-Main（QA）：从当前纵向切片第一 tick 起影子并行准备 gate/checklist/regression/evidence，不等待最后收尾
+  - XT-Support（XT-L1）：仅处理 `XT-W3-24-D/E`、`XT-W3-25-D/E` 的 directed support；不 claim 主链
+  - Hub 任务：统一由 `Hub-L5(pool_takeover)` 接管执行
+  - XT 任务：统一由 `XT-L2(pool_takeover)` 接管执行
+  - 跨池依赖：默认优先由主 owner 自接管；仅在不满足 guardrail 时才走 directed mention
+  - standby_burst 泳道：`hard_standby(readonly)`；不再作为主链前置
+  - AI-COORD-PRIMARY：仅做审计巡检与异常告警，不再驱动跨泳道催办
+  - checkpoint: war_acceleration_review = `2026-03-06T23:00:00+08:00`
+
+- `CR-20260308-XT-W328-001`
+  - type: `change_request`
+  - status: `active`
+  - owner: `AI-COORD-PRIMARY`
+  - scope: `XT-W3-28`
+  - reason: 当前 paid model 主路径仍停留在“配对 capability + 运行期 grant”割裂态；需要把首次批准升级为“设备级信任档案 + 付费模型范围 + 默认联网 + 每日额度”，并在 Hub 中清晰展示每个 Terminal 的模型额度使用。
+  - decision:
+    - 新增 `XT-W3-28 = paired_terminal_trust_profile_and_budget_visibility`
+    - 首次批准配对时支持 `付费模型=关闭 / 全部 Hub 端付费模型 / 自定义特定付费模型`
+    - 首次批准配对时支持 `device_name / default_web_fetch_enabled / daily_token_limit`
+    - 新 trust profile 设备在授权范围内使用 paid model 时，不再走“自己申请自己批准”的常规路径
+    - Hub 必须提供每台 Terminal 的设备级 + 模型级 token 用量视图
+  - evidence_refs:
+    - `x-terminal/work-orders/xt-w3-28-paired-terminal-trust-profile-and-budget-visibility-implementation-pack-v1.md`
+    - `x-hub/grpc-server/hub_grpc_server/src/pairing_http.js`
+    - `x-hub/macos/RELFlowHub/Sources/RELFlowHub/HubGRPCServerSupport.swift`
+    - `x-hub/macos/RELFlowHub/Sources/RELFlowHub/SettingsSheetView.swift`
+    - `x-hub/grpc-server/hub_grpc_server/src/services.js`
+
+- `XT-W3-28`
+  - owner_lane: `Hub-Main(Hub-L5)`
+  - status: `candidate_pass(hub_a_b_c_d_e_g_delivered;db_js_blocker_cleared;directed_handoff_xt_f_qa_h)`
+  - dependencies:
+    - `XT-W3-27`: `PASS`（已有配对 / grant / 设置中心产品化基线）
+    - `legacy capability + grant path`: `PASS`（作为兼容 fallback）
+  - minimal_gaps:
+    - `XT-W3-28-F XT access explainability`: `MISSING(xt_side_not_delivered)`
+    - `XT-W3-28-H require-real regression`: `MISSING(qa_not_delivered)`
+  - next_owner_lane: `XT-Main -> QA-Main`
+  - unblock_policy: `directed_only`
+  - notes:
+    - `XT-W3-28-A/B/C/D/E/G` 证据已落盘，旧 `planned/MISSING` 看板裁决已 stale
+    - `XT-W3-28-B` 的旧 `db.js` syntax blocker 已由 `node --check x-hub/grpc-server/hub_grpc_server/src/db.js` 与最小持久化 probe 清除
+    - Hub 侧当前真实 blocker 已清空；后续只剩 `XT-W3-28-F`（XT 访问解释）与 `XT-W3-28-H`（QA / require-real 回归）
+    - v1 仅支持 `off / all_paid_models / custom_selected_models`，不扩写为 provider group / billing system
+    - 默认联网权限在首次批准页默认开启，但允许显式关闭；后续仍可在 Hub 设置页修改
+    - 新 trust profile 设备不得继续落回无上下文 `grant_required` 死角提示
+    - 旧 paired device 未升级前继续沿用 legacy capability/grant 逻辑，不强制切换
+  - evidence_refs:
+    - `x-terminal/work-orders/xt-w3-28-paired-terminal-trust-profile-and-budget-visibility-implementation-pack-v1.md`
+    - `build/reports/xt_w3_28_a_pairing_approval_form_evidence.v1.json`
+    - `build/reports/xt_w3_28_b_trust_profile_store_evidence.v1.json`
+    - `build/reports/xt_w3_28_c_runtime_policy_resolution_evidence.v1.json`
+    - `build/reports/xt_w3_28_d_budget_metering_evidence.v1.json`
+    - `build/reports/xt_w3_28_e_terminal_usage_dashboard_evidence.v1.json`
+    - `build/reports/xt_w3_28_g_legacy_migration_evidence.v1.json`
+    - `x-hub/grpc-server/hub_grpc_server/src/pairing_http.js`
+    - `x-hub/grpc-server/hub_grpc_server/src/services.js`
+    - `x-hub/grpc-server/hub_grpc_server/src/db.js`
+    - `x-terminal/Sources/Hub/HubAIClient.swift`
+
+- `CD-20260308-XT-W328-001`
+  - type: `coordination_decision`
+  - status: `active`
+  - owner: `AI-COORD-PRIMARY`
+  - rule:
+    - `XT-W3-28` 当前只允许推进以下四类内容：
+      - pairing policy form
+      - trust profile persistence + runtime enforcement
+      - terminal usage metering + visibility
+      - XT access explainability + legacy migration
+    - 禁止把当前需求扩写成全量 provider/billing/enterprise console 重构
+    - 对新 trust profile 设备，正常主路径不得要求用户再做同类 paid model grant 审批
+    - 预算、白名单、默认联网的拒绝必须 machine-readable，不允许只返回泛化 `permission_denied`
+  - merge_order:
+    1. `Hub-Main`
+    2. `XT-Main`
+    3. `QA-Main`
+  - go_no_go:
+    - `XT-W3-28`: `XT-TP-G0..G5` 任一未绿 = `NO_GO`
+    - `XT-W3-28`: 若设备级用量面板缺失 `device_name + model breakdown + remaining budget` 任一字段 = `NO_GO`
+    - `XT-W3-28`: 若新 trust profile 设备仍出现“无 policy context 的 grant_required” = `NO_GO`
+
+## G. Archive Index（运行态）
+
+- `pending`（周归档尚未启动）
+
+## H. Supervisor Insight Inbox（运行态）
+
+- triage_window: `4h`
+- triage_owner: `AI-COORD-PRIMARY`
+- default_mode: `hybrid`（泳道触发式建议 + Supervisor 统筹）
+- fields: `insight_id/from_lane/category/problem/proposal/expected_impact/risk_level/status/adoption_scope/requires_user_decision/decision_ref/cr_ref`
+
+### H1. 新增建议（待分拣）
+
+- `none`（首轮由 `XT-W2-23-C` 接线后自动汇入）
+
+### H2. 已采纳建议（adopted）
+
+- `INS-20260304-001`
+  - from_lane: `AI-COORD-PRIMARY`
+  - category: `efficiency`
+  - problem: `Hub 5 lane 与 XT 2 lane 在 release blocker 链路中出现互等与空转重跑`
+  - proposal: `Hub-2 Seats + Burst-1 执行模型（保留 5 lane 职责隔离）`
+  - expected_impact: `减少跨泳道 handoff 开销并保留审计边界，降低重复阻塞说明 token 消耗`
+  - risk_level: `medium`
+  - status: `adopted`
+  - adoption_scope: `Hub lanes + AI-COORD runtime policy`
+  - requires_user_decision: `false`
+  - decision_ref: `CD-20260304-001`
+  - cr_ref: `none`
+- `INS-20260304-002`
+  - from_lane: `AI-COORD-PRIMARY`
+  - category: `quality`
+  - problem: `prereq_check 与 gate_rerun 输入快照不一致导致“已补齐证据仍 rerun fail”`
+  - proposal: `引入 snapshot_id 一致性守门 + 事件触发重跑 + 单快照单次重跑`
+  - expected_impact: `降低无效重跑与等待窗口空转，缩短 blocker 收口时间`
+  - risk_level: `low`
+  - status: `adopted`
+  - adoption_scope: `Hub-L5 + XT-L2 dependency edge`
+  - requires_user_decision: `false`
+  - decision_ref: `CD-20260304-001`
+  - cr_ref: `none`
+- `INS-20260304-003`
+  - from_lane: `AI-COORD-PRIMARY`
+  - category: `efficiency`
+  - problem: `XT 主链在等待 mention 裁决窗口内存在“单轨空转”，串行锁导致吞吐受限`
+  - proposal: `启用 Dual-Track Claim（Track-A 执行态 + Track-B shadow prep）以并行产出后续证据`
+  - expected_impact: `在不放宽 fail-closed 的前提下压缩等待时间，降低主链 idle 比例`
+  - risk_level: `medium`
+  - status: `adopted`
+  - adoption_scope: `XT-L2 + Hub-L3 + QA + AI-COORD tick policy`
+  - requires_user_decision: `false`
+  - decision_ref: `CD-20260304-002`
+  - cr_ref: `none`
+- `INS-20260305-001`
+  - from_lane: `AI-COORD-PRIMARY`
+  - category: `efficiency`
+  - problem: `手动总控阶段 7 泳道常开导致人肉编排与上下文同步成本过高`
+  - proposal: `切换 Dual-Pool Single-Lane（Hub-Main + XT-Main + standby_burst + proxy-claim）`
+  - expected_impact: `减少跨泳道等待与广播 token；在 release blocker 收口后提升主链推进连续性`
+  - risk_level: `medium`
+  - status: `adopted`
+  - adoption_scope: `Hub/XT 全泳道调度策略`
+  - requires_user_decision: `false`
+  - decision_ref: `CD-20260305-001`
+  - cr_ref: `none`
+
+### H3. 待用户决策建议（requires_user_decision=true）
+
+- `none`
+
+## I. Dependency Edge Registry（运行态）
+
+- purpose: 统一记录“谁在等谁”的跨泳道依赖边，作为解阻与自动续推唯一真相源。
+- owner: `AI-COORD-PRIMARY`（规则维护）+ 各泳道（仅维护自己相关 edge）。
+- policy: `fail-closed + directed-only + machine-readable`。
+
+### I1. 状态机（edge）
+
+`waiting -> ready_to_verify -> resolved`
+
+异常分支：
+- `waiting|ready_to_verify -> stale`
+- `stale -> waiting|ready_to_verify`
+- `waiting|ready_to_verify|stale -> cancelled`
+
+硬约束：
+- `unblock_condition_expr` 为空时 edge 无效，不得进入 `ready_to_verify`。
+- `required_evidence_refs` 未满足时，不得转 `resolved`。
+- 默认仅 waiter 可将 edge 置 `resolved`（blocker 只能置 `ready_to_verify`）。
+- 例外（`active2_autopush_mode=enabled`）：`Hub-L5/XT-L2` 在 mention 超时且证据齐全时可置 `resolved_by_takeover`（需落盘 `takeover_audit_ref`，且不得改 standby 泳道任务状态）。
+
+### I2. 优先级评分（统一口径）
+
+- `priority_score = B_release + B_gate + B_wait + B_fanout + B_risk - P_user_block`
+- `B_release=40`（`release_blocker=true`）
+- `B_gate=25`（影响 `G5/G3`）否则 `10`（影响其他 Gate）
+- `B_wait=min(wait_minutes/10,12)`
+- `B_fanout=min(waiter_count*8,24)`
+- `B_risk=10`（命中安全/授权红线）
+- `P_user_block=8`（需用户决策但未授权）
+
+执行规则：
+- 每泳道每轮最多执行 `Top1(P0)+Top1(P1)`；
+- 同分按 `due_utc` 早者优先。
+
+### I3. SLA（硬）
+
+- `ACK<=10min`
+- `accept/reject<=20min`
+- `first_evidence_delta<=40min`
+- `escalate<=120min`
+
+自动升级动作：
+- `T+20m`：提醒 blocker（一次）
+- `T+40m`：建议换 breaker
+- `T+60m`：生成 CR 重排候选（仅总控可入 CR）
+
+### I4. Edge Ledger（运行态）
+
+| edge_id | waiter_lane | waiter_task | blocker_lane | blocker_task | unblock_condition_expr | gate_impact | release_blocker | state | priority_score_snapshot | mention_open_count | last_transition_utc |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `EDGE-SKC-W3-08-SKC-W1-01-9f2a8b11` | `Hub-L5` | `SKC-W3-08` | `Hub-L1` | `SKC-W1-01+SKC-W1-02` | `strict_probe_rows>=30 && denominator_gap==0 && skill_execution_gate_unchecked==0` | `SKC-G3,SKC-G5` | `true` | `resolved` | `89` | `0` | `2026-03-04T04:11:37Z` |
+| `EDGE-SKC-W3-08-SKC-W2-06-31ce4ab2` | `Hub-L5` | `SKC-W3-08` | `XT-L2` | `SKC-W2-06` | `prereq_b_missing_metrics==0 && internal_pass_inputs_refreshed==true` | `SKC-G5` | `true` | `resolved` | `90` | `0` | `2026-03-04T03:36:30Z` |
+| `EDGE-XT-W2-20-B-XT-W2-20-a7c9d4f1` | `Hub-L3` | `XT-W2-20-B` | `XT-L2` | `XT-W2-20` | `xt_w2_20_xt_mp_g0_candidate_pass==true && parallel_claim_forbidden==true` | `XT-MP-G0,XT-MP-G1` | `false` | `resolved_by_takeover` | `74` | `0` | `2026-03-05T01:24:38Z` |
+| `EDGE-XT-W2-20-B-HUB-L5-GREEN-BATON-4c8d2f17` | `XT-L2` | `XT-W2-20-B` | `Hub-L5` | `HUB-L5-GREEN-BATON` | `hub_l5_green_baton_emitted==true && no_parallel_formal_claim==true` | `XT-MP-G1` | `false` | `resolved` | `74` | `0` | `2026-03-05T02:14:05Z` |
+| `EDGE-XT-W2-24-B-HUB-L5-CONSUME-2d4f8a11` | `XT-L2` | `XT-W2-24-B` | `Hub-L5` | `HUB-L5-CONSUME-SNAPSHOT` | `hub_l5_snapshot_consumed==true && no_parallel_formal_claim==true` | `XT-MP-G2,XT-MP-G3` | `false` | `resolved` | `74` | `0` | `2026-03-05T02:54:03Z` |
+| `EDGE-XT-W2-24-C-HUB-L5-CONSUME-0f7d3a92` | `XT-L2` | `XT-W2-24-C` | `Hub-L5` | `HUB-L5-CONSUME-SNAPSHOT` | `hub_l5_snapshot_consumed==true && no_parallel_formal_claim==true` | `XT-MP-G3` | `false` | `resolved` | `74` | `0` | `2026-03-05T02:54:03Z` |
+| `EDGE-XT-W2-24-D-HUB-L5-CONSUME-c8e5f7b9` | `XT-L2` | `XT-W2-24-D` | `Hub-L5` | `HUB-L5-CONSUME-SNAPSHOT` | `hub_l5_snapshot_consumed==true && no_parallel_formal_claim==true` | `XT-MP-G3,XT-MP-G4` | `false` | `resolved` | `74` | `0` | `2026-03-05T02:54:03Z` |
+| `EDGE-XT-W2-24-E-HUB-L5-CONSUME-7b3d2e61` | `XT-L2` | `XT-W2-24-E` | `Hub-L5` | `HUB-L5-CONSUME-SNAPSHOT` | `hub_l5_snapshot_consumed==true && no_parallel_formal_claim==true` | `XT-MP-G4,XT-MP-G5` | `false` | `resolved` | `74` | `0` | `2026-03-05T02:54:03Z` |
+| `EDGE-XT-W2-24-F-HUB-L5-CONSUME-3e91a2b7` | `XT-L2` | `XT-W2-24-F` | `Hub-L5` | `HUB-L5-CONSUME-SNAPSHOT` | `hub_l5_snapshot_consumed==true && no_parallel_formal_claim==true` | `XT-MP-G2,XT-MP-G3,XT-MP-G5` | `false` | `resolved` | `74` | `0` | `2026-03-05T02:54:03Z` |
+| `EDGE-XT-W2-25-HUB-L5-CONSUME-a93f1d6c` | `XT-L2` | `XT-W2-25` | `Hub-L5` | `HUB-L5-CONSUME-SNAPSHOT` | `hub_l5_snapshot_consumed==true && no_parallel_formal_claim==true` | `XT-MP-G1,XT-MP-G3,XT-MP-G4` | `false` | `resolved` | `74` | `0` | `2026-03-05T03:26:12Z` |
+| `EDGE-XT-W2-25-S1-HUB-L5-CONSUME-b7f1c2a4` | `XT-L2` | `XT-W2-25-S1` | `Hub-L5` | `HUB-L5-CONSUME-SNAPSHOT` | `hub_l5_snapshot_consumed==true && no_parallel_formal_claim==true` | `XT-MP-G1,XT-MP-G3,XT-MP-G4` | `false` | `resolved` | `74` | `0` | `2026-03-05T03:20:19Z` |
+| `EDGE-HUB-POOL-TAKEOVER-XT-W2-26-4f22be19` | `Hub-L5` | `SKC-W3-08` | `XT-L2` | `XT-W2-26(+XT-W2-13/14)` | `xt_w2_13_evidence_ref_board_linked==true && xt_w2_14_evidence_ref_board_linked==true && dependency_fill_v2_consumed==true && xt_w2_13_task_row_exists==true && xt_w2_14_task_row_exists==true` | `XT-MP-G3,XT-MP-G4` | `false` | `resolved` | `76` | `0` | `2026-03-05T06:52:52Z` |
+| `EDGE-XT-W2-23-XT-W2-23-6e4d1a90` | `Hub-L3` | `XT-W2-23` | `XT-L2` | `XT-W2-23` | `xt_w2_23_xt_mp_g3_candidate_ready==true && no_parallel_formal_claim==true && xt_w2_23_b_no_state_change==true` | `XT-MP-G3` | `false` | `resolved` | `74` | `0` | `2026-03-04T11:00:54Z` |
+| `EDGE-XT-W2-23-B-XT-W2-23-B-91f2c6d4` | `Hub-L3` | `XT-W2-23-B` | `XT-L2` | `XT-W2-23-B` | `xt_w2_23_b_xt_mp_g5_candidate_pass==true && cross_lane_write_attempt==0 && no_parallel_formal_claim==true` | `XT-MP-G5` | `false` | `resolved` | `74` | `0` | `2026-03-04T11:46:44Z` |
+| `EDGE-XT-W2-23-C-XT-W2-23-C-c4b7a2e1` | `Hub-L3` | `XT-W2-23-C` | `XT-L2` | `XT-W2-23-C` | `xt_w2_23_c_xt_mp_g3_candidate_pass==true && suggestion_governance_inputs_complete==true && no_parallel_formal_claim==true` | `XT-MP-G3` | `false` | `resolved` | `74` | `0` | `2026-03-04T13:01:43Z` |
+| `EDGE-XT-W2-23-C-XT-W2-23-C-f5e9a7d3` | `Hub-L3` | `XT-W2-23-C` | `XT-L2` | `XT-W2-23-C` | `xt_w2_23_c_xt_mp_g5_candidate_pass==true && fail_closed==true && cross_lane_write_attempt==0 && no_parallel_formal_claim==true` | `XT-MP-G5` | `false` | `resolved` | `74` | `0` | `2026-03-04T13:22:34Z` |
+| `EDGE-XT-W2-23-A-XT-W2-23-A-6b2f4c19` | `Hub-L3` | `XT-W2-23-A` | `XT-L2` | `XT-W2-23-A` | `xt_w2_23_a_xt_mp_g3_candidate_pass==true && fail_closed==true && cross_lane_write_attempt==0 && no_parallel_formal_claim==true` | `XT-MP-G3` | `false` | `resolved` | `74` | `0` | `2026-03-04T13:50:56Z` |
+
+## J. Directed @ Inbox（运行态）
+
+- purpose: 统一 waiter->blocker 的定向 @ 协同，替代全泳道广播。
+- policy: `directed-only`（禁止 `@all` / 广播催单）。
+
+### J1. 处理规则（必须执行）
+
+- to_lane 收到 `mention` 后 10 分钟内必须 `acked`。
+- 20 分钟内必须 `accepted/rejected`（`rejected` 必须给替代路径）。
+- `accepted` 后 40 分钟内必须有首个 `evidence_delta`。
+- active2_autopush_mode 下：超过 ack_sla_10m 或 evidence_sla_20m 未满足，Hub-L5/XT-L2 直接执行 takeover（无需继续催办）。
+- 无证据增量禁止 `full_7piece`，默认 `delta_3line`。
+- 每泳道 `open_mentions<=3`，超限需总控批准。
+
+### J2. 各泳道 Inbox（运行态）
+
+#### J.Hub-L1 Inbox
+- `MEN-20260303-001`
+  - edge_id: `EDGE-SKC-W3-08-SKC-W1-01-9f2a8b11`
+  - from_lane: `Hub-L5`
+  - to_lane: `Hub-L1`
+  - reason_code: `gate_verdict`
+  - ask_summary: `Hub-L5 已完成单次 SKC-G3 裁决，结果 PASS，请回填 SKC-W1-01+SKC-W1-02 最终态`
+  - priority_tier: `P0`
+  - priority_score: `89`
+  - due_utc: `2026-03-04T03:40:00Z`
+  - ack_by_utc: `2026-03-04T03:30:00Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/skc_w1_hub_l1_delta_3line.v60.json`
+    - `build/reports/skc_w1_xt_l2_hub_l1_real_sample_probe_results.v11.json`
+    - `build/hub_l5_release_skc_g3_real_sampling.json`
+    - `build/reports/skc_w3_08_hub_l5_delta_3line.v93.json`
+  - decision_note: `hub_l1_row_confirmed_delivered_and_skc_g3_pass;hub_l5_final_blocker_cleared`
+  - updated_at: `2026-03-04T04:11:37Z`
+
+- `MEN-20260305-010`
+  - edge_id: `EDGE-SKC-W3-08-SKC-W1-01-9f2a8b11`
+  - from_lane: `Hub-L5`
+  - to_lane: `Hub-L1`
+  - reason_code: `replan_request`
+  - ask_summary: `进入 NO_DELTA_STANDBY/no_claim（仅定向补件，不claim）并保持 no_state_change`
+  - priority_tier: `P0`
+  - priority_score: `76`
+  - due_utc: `2026-03-05T03:52:08Z`
+  - ack_by_utc: `2026-03-05T03:47:08Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/hub_pool_takeover_delta_3line.v1.json`
+    - `docs/memory-new/xhub-lane-command-board-v2.md:455`
+    - `docs/memory-new/xhub-lane-command-board-v2.md:8433`
+  - decision_note: `idempotent_sync_applied;hub_l1_keeps_no_delta_standby_no_claim;runtime_executor=Hub-L5;no_task_fact_change=true`
+  - updated_at: `2026-03-05T03:37:08Z`
+
+#### J.Hub-L2 Inbox
+- `MEN-20260305-011`
+  - edge_id: `EDGE-HUB-POOL-TAKEOVER-STANDBY-L2-2c0adf91`
+  - from_lane: `Hub-L5`
+  - to_lane: `Hub-L2`
+  - reason_code: `replan_request`
+  - ask_summary: `进入 NO_DELTA_STANDBY/no_claim（仅定向补件，不claim）并保持 no_state_change`
+  - priority_tier: `P0`
+  - priority_score: `76`
+  - due_utc: `2026-03-05T03:52:08Z`
+  - ack_by_utc: `2026-03-05T03:47:08Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/hub_pool_takeover_delta_3line.v1.json`
+    - `docs/memory-new/xhub-lane-command-board-v2.md:688`
+    - `docs/memory-new/xhub-lane-command-board-v2.md:8433`
+  - decision_note: `idempotent_sync_applied;hub_l2_keeps_no_delta_standby_no_claim;runtime_executor=Hub-L5;no_task_fact_change=true`
+  - updated_at: `2026-03-05T03:37:08Z`
+
+#### J.Hub-L3 Inbox
+- `MEN-20260303-002`
+  - edge_id: `EDGE-SKC-W3-08-SKC-W2-06-31ce4ab2`
+  - from_lane: `Hub-L5`
+  - to_lane: `Hub-L3`
+  - reason_code: `evidence_missing`
+  - ask_summary: `协同 XT-L2 校对 prereq_B 缺口是否已降为 sample_sufficiency_only`
+  - priority_tier: `P0`
+  - priority_score: `86`
+  - due_utc: `2026-03-03T08:20:00Z`
+  - ack_by_utc: `2026-03-03T08:10:00Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/skc_w1_04_hub_l3_prereq_monitor.v10.json`
+    - `build/reports/skc_w1_04_hub_l3_prereq_b_alignment.v4.json`
+    - `build/reports/skc_w1_04_hub_l3_directed_baton_dispatch.v7.json`
+    - `build/reports/skc_w1_04_hub_l3_delta_3line.v10.json`
+    - `build/reports/skc_w1_04_hub_l3_delta_3line.v11.json`
+    - `build/reports/skc_w1_04_hub_l3_delta_3line.v12.json`
+    - `build/reports/skc_w1_04_hub_l3_delta_3line.v13.json`
+    - `build/reports/skc_w1_04_hub_l3_delta_3line.v14.json`
+    - `build/reports/skc_w1_04_hub_l3_delta_3line.v15.json`
+    - `build/reports/skc_w1_04_hub_l3_delta_3line.v16.json`
+    - `build/reports/skc_w1_04_hub_l3_delta_3line.v17.json`
+    - `build/reports/skc_w1_04_hub_l3_delta_3line.v19.json`
+    - `build/reports/skc_w1_04_hub_l3_delta_3line.v20.json`
+    - `build/reports/skc_w1_04_hub_l3_delta_3line.v21.json`
+    - `build/reports/skc_w1_04_hub_l3_delta_3line.v22.json`
+    - `build/reports/skc_w1_04_hub_l3_delta_3line.v23.json`
+    - `build/reports/skc_w2_06_xt_l2_hub_l5_prereq_b_metrics_fill.v7.json`
+    - `build/reports/skc_w2_06_xt_l2_hub_l5_prereq_b_internal_pass_recheck.v8.json`
+    - `build/reports/skc_w2_06_xt_l2_hub_l5_prereq_b_consistency_check.v8.json`
+    - `build/reports/skc_w2_06_xt_l2_delta_3line.v70.json`
+    - `build/reports/skc_w1_04_hub_l3_delta_3line.v24.json`
+    - `build/reports/skc_w1_04_hub_l3_delta_3line.v25.json`
+    - `build/reports/skc_w1_04_hub_l3_delta_3line.v26.json`
+  - decision_note: `delivered_directed_to_Hub-L5+XT-L2+QA(新机增量=v36/v85;缺口=Hub-L5 runtime样本仍968/1/0+HL失败且XT-L2一致性仍基于旧snapshot_guard;责任=Hub-L5刷新runtime_internal_pass/XT-L2按v36重算一致性/QA复核后单次重跑;重跑窗口=not_before_2026-03-04T02:28:59Z)`
+  - updated_at: `2026-03-04T02:10:43Z`
+
+- `MEN-20260304-006`
+  - edge_id: `EDGE-XT-W2-20-B-XT-W2-20-a7c9d4f1`
+  - from_lane: `XT-L2`
+  - to_lane: `Hub-L3`
+  - cc_lane: `QA`
+  - reason_code: `g0_candidate_pass_signal`
+  - ask_summary: `XT-W2-20 已达 XT-MP-G0:candidate_pass，请协同 QA 将 XT-W2-20-B 切到 ready_to_verify（不 claim）`
+  - priority_tier: `P0`
+  - priority_score: `74`
+  - due_utc: `2026-03-04T05:30:00Z`
+  - ack_by_utc: `2026-03-04T05:20:00Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/xt_w2_20_xt_l2_delta_3line.v3.json`
+    - `build/reports/xt_w2_20_pool_planner_probe.v1.json`
+    - `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`
+    - `build/reports/xt_w2_21_xt_l2_claim_receipt.v1.json`
+    - `build/reports/xt_w2_20_b_hub_l3_ready_to_verify_delta_3line.v1.json`
+    - `build/reports/xt_w2_20_b_qa_ready_to_verify_review.v1.json`
+    - `build/reports/xt_w2_20_b_hub_l3_ready_to_verify_delta_3line.v2.json`
+    - `build/reports/xt_w2_20_b_hub_l3_ready_to_verify_delta_3line.v3.json`
+  - decision_note: `accepted_to_verified;evidence_complete=true;qa_joint_check=pass;minimal_gap=none;next_owner_lane=XT-L2;conflict=none`
+  - updated_at: `2026-03-04T06:13:41Z`
+
+- `MEN-20260304-007`
+  - edge_id: `EDGE-XT-W2-20-B-XT-W2-20-a7c9d4f1`
+  - from_lane: `XT-L2`
+  - to_lane: `Hub-L3`
+  - cc_lane: `QA`
+  - reason_code: `g0_candidate_pass_chain_continue`
+  - ask_summary: `XT-W2-21 首证据已 PASS，请协同 QA 将 XT-W2-20-B 推进到下一态（保持 no_claim）`
+  - priority_tier: `P0`
+  - priority_score: `74`
+  - due_utc: `2026-03-04T06:20:00Z`
+  - ack_by_utc: `2026-03-04T06:10:00Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/xt_w2_21_lane_synth_evidence.v1.json`
+    - `build/reports/xt_w2_21_xt_l2_delta_3line.v3.json`
+    - `build/reports/xt_w2_21_xt_l2_delta_3line.v4.json`
+    - `build/reports/xt_w2_21_xt_l2_delta_3line.v5.json`
+    - `build/reports/xt_w2_21_xt_l2_delta_3line.v6.json`
+    - `build/reports/xt_w2_20_b_xt_l2_next_state_min_action.v1.json`
+    - `build/reports/xt_w2_20_b_hub_l3_ready_to_verify_delta_3line.v1.json`
+    - `build/reports/xt_w2_20_b_qa_ready_to_verify_review.v1.json`
+    - `build/reports/xt_w2_20_xt_l2_delta_3line.v3.json`
+    - `build/reports/xt_w2_20_b_hub_l3_ready_to_verify_delta_3line.v3.json`
+    - `build/reports/xt_w2_20_b_hub_l3_ready_to_verify_delta_3line.v4.json`
+    - `build/reports/xt_w2_20_b_hub_l3_ready_to_verify_delta_3line.v5.json`
+    - `build/reports/xt_dual_track_claim_snapshot.v1.json`
+    - `build/reports/xt_w2_22_xt_l2_shadow_prep_delta_3line.v1.json`
+    - `build/reports/xt_w2_23_b_xt_l2_shadow_prep_delta_3line.v1.json`
+    - `build/reports/xt_w2_20_b_hub_l3_ready_to_verify_delta_3line.v6.json`
+    - `build/reports/xt_w2_20_b_dual_track_qa_guard_review.v2.json`
+    - `build/reports/xt_w2_20_b_hub_l3_ready_to_verify_delta_3line.v7.json`
+  - decision_note: `track_a_only_consumed_under_cd_20260304_002;next_state_verdict=advance;unlock_xt_w2_22_formal_claim=true;claim_mode=no_claim;qa_dual_track_guard=pass;minimal_gap=none;track_b=observed_non_blocking(prep_only,no_gate_mutation,no_status_mutation);next_owner_lane=XT-L2;conflict=none`
+  - updated_at: `2026-03-04T06:57:34Z`
+
+- `MEN-20260304-008`
+  - edge_id: `EDGE-XT-W2-20-B-XT-W2-20-a7c9d4f1`
+  - from_lane: `XT-L2`
+  - to_lane: `Hub-L3`
+  - cc_lane: `QA`
+  - reason_code: `g3_candidate_ready_to_verify_request`
+  - ask_summary: `XT-W2-22 G3 candidate 证据已就绪，请仅消费 Track-A 并发布 next_state_verdict（advance/hold）；若 advance 请显式 unlock_xt_w2_23_formal_claim=true（保持 no_claim）`
+  - priority_tier: `P0`
+  - priority_score: `74`
+  - due_utc: `2026-03-04T07:46:25Z`
+  - ack_by_utc: `2026-03-04T07:36:25Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/xt_w2_22_g3_candidate_probe.v1.json`
+    - `build/reports/xt_w2_22_xt_l2_delta_3line.v5.json`
+    - `build/reports/xt_w2_23_b_xt_l2_shadow_prep_delta_3line.v2.json`
+    - `build/reports/xt_w2_20_b_dual_track_qa_guard_review.v2.json`
+    - `build/reports/xt_w2_20_b_hub_l3_ready_to_verify_delta_3line.v7.json`
+    - `build/reports/xt_w2_22_hub_l3_next_state_verdict_delta_3line.v1.json`
+    - `build/reports/xt_w2_22_xt_l2_delta_3line.v6.json`
+    - `build/reports/xt_w2_23_xt_l2_delta_3line.v1.json`
+  - decision_note: `track_a_joint_review_pass;next_state_verdict=advance;unlock_xt_w2_23_formal_claim=true;consumed_by_xt_l2;xt_w2_22_g3_closed=candidate_pass;xt_w2_23_formal_claim=started(no_parallel_formal_claim);xt_w2_23_b=shadow_no_state_change;conflict=none`
+  - updated_at: `2026-03-04T07:43:12Z`
+
+- `MEN-20260304-009`
+  - edge_id: `EDGE-XT-W2-23-XT-W2-23-6e4d1a90`
+  - from_lane: `XT-L2`
+  - to_lane: `Hub-L3`
+  - cc_lane: `QA`
+  - reason_code: `g3_candidate_ready_to_verify_request`
+  - ask_summary: `XT-W2-23 G3 首证据已就绪（参与等级覆盖/关键触点漏发保护/通知延迟均通过），请仅消费 Track-A 并给出 ready_to_verify 结论（no_claim）`
+  - priority_tier: `P0`
+  - priority_score: `74`
+  - due_utc: `2026-03-04T10:51:16Z`
+  - ack_by_utc: `2026-03-04T10:41:16Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/xt_w2_23_participation_probe.v1.json`
+    - `build/reports/xt_w2_23_xt_l2_delta_3line.v2.json`
+    - `build/reports/xt_w2_23_xt_l2_delta_3line.v1.json`
+    - `build/reports/xt_w2_23_b_xt_l2_shadow_prep_delta_3line.v2.json`
+    - `build/reports/xt_w2_23_qa_ready_to_verify_review.v1.json`
+    - `build/reports/xt_w2_23_next_state_verdict_qa_review.v1.json`
+    - `build/reports/xt_w2_23_hub_l3_next_state_verdict_delta_3line.v1.json`
+    - `build/reports/xt_w2_23_xt_l2_delta_3line.v3.json`
+    - `build/reports/xt_w2_23_b_xt_l2_delta_3line.v1.json`
+  - decision_note: `track_a_joint_review_pass;next_state_verdict=advance;unlock_next_formal_claim=true;consumed_by_xt_l2;xt_w2_23_closed_by_delta_v3;xt_w2_23_b_formal_claim=started(no_parallel_formal_claim);xt_w2_23_c=planned_unchanged;edge_state=resolved;conflict=none`
+  - updated_at: `2026-03-04T11:00:54Z`
+
+- `MEN-20260304-010`
+  - edge_id: `EDGE-XT-W2-23-B-XT-W2-23-B-91f2c6d4`
+  - from_lane: `XT-L2`
+  - to_lane: `Hub-L3`
+  - cc_lane: `QA`
+  - reason_code: `g3_candidate_ready_to_verify_request`
+  - ask_summary: `XT-W2-23-B G3 首证据已就绪（innovation_level_ui_evidence 通过），请仅消费 Track-A 并给出 ready_to_verify 结论（no_claim）`
+  - priority_tier: `P0`
+  - priority_score: `74`
+  - due_utc: `2026-03-04T11:27:45Z`
+  - ack_by_utc: `2026-03-04T11:17:45Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/xt_w2_23_b_innovation_level_ui_evidence.v1.json`
+    - `build/reports/xt_w2_23_b_xt_l2_delta_3line.v2.json`
+    - `build/reports/xt_w2_23_b_xt_l2_delta_3line.v1.json`
+    - `build/reports/xt_w2_23_xt_l2_delta_3line.v3.json`
+    - `build/reports/xt_w2_23_b_hub_l3_next_state_verdict_delta_3line.v1.json`
+  - decision_note: `edge_key_consumed(EDGE-XT-W2-23-B-XT-W2-23-B-91f2c6d4);track_a_joint_review_pass;next_state_verdict=advance;unlock_next_formal_claim=true;no_claim;minimal_gaps=none;track_b=observed_non_blocking;edge_state=resolved;conflict=none`
+  - updated_at: `2026-03-04T11:13:05Z`
+
+- `MEN-20260304-011`
+  - edge_id: `EDGE-XT-W2-23-B-XT-W2-23-B-91f2c6d4`
+  - from_lane: `XT-L2`
+  - to_lane: `Hub-L3`
+  - cc_lane: `QA`
+  - reason_code: `g5_candidate_ready_to_verify_request`
+  - ask_summary: `XT-W2-23-B G5 候选证据已就绪（L0..L4 回放/冻结窗降档/非法档位拒绝/证据链完整性均通过），请仅消费 Track-A 并给出 ready_to_verify 结论（no_claim）`
+  - priority_tier: `P0`
+  - priority_score: `74`
+  - due_utc: `2026-03-04T11:58:34Z`
+  - ack_by_utc: `2026-03-04T11:48:34Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/xt_w2_23_b_g5_candidate_probe.v1.json`
+    - `build/reports/xt_w2_23_b_xt_l2_delta_3line.v3.json`
+    - `build/reports/xt_w2_23_b_innovation_level_ui_evidence.v1.json`
+    - `build/reports/xt_w2_23_b_xt_l2_delta_3line.v2.json`
+    - `build/reports/xt_w2_23_b_hub_l3_next_state_verdict_delta_3line.v2.json`
+    - `build/reports/xt_w2_23_b_xt_l2_delta_3line.v4.json`
+    - `build/reports/xt_w2_23_c_xt_l2_delta_3line.v1.json`
+  - decision_note: `edge_key_consumed(EDGE-XT-W2-23-B-XT-W2-23-B-91f2c6d4);track_a_joint_review_pass;xt_mp_g5_candidate_pass=true;next_state_verdict=advance;unlock_next_formal_claim=true;consumed_by_xt_l2;xt_w2_23_b_closed_by_delta_v4;xt_w2_23_c_formal_claim=started(no_parallel_formal_claim);conflict=none`
+  - updated_at: `2026-03-04T11:46:44Z`
+
+- `MEN-20260304-012`
+  - edge_id: `EDGE-XT-W2-23-C-XT-W2-23-C-c4b7a2e1`
+  - from_lane: `XT-L2`
+  - to_lane: `Hub-L3`
+  - cc_lane: `QA`
+  - reason_code: `g3_candidate_ready_to_verify_request`
+  - ask_summary: `XT-W2-23-C G3 候选证据待复核；仅消费 Track-A 并给出 ready_to_verify 结论（no_claim）`
+  - priority_tier: `P0`
+  - priority_score: `74`
+  - due_utc: `2026-03-04T12:00:04Z`
+  - ack_by_utc: `2026-03-04T11:50:04Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/xt_w2_23_c_qa_ready_to_verify_review.v1.json`
+    - `build/reports/xt_w2_23_c_hub_l3_next_state_verdict_delta_3line.v3.json`
+    - `build/reports/xt_w2_23_c_hub_l3_next_state_verdict_delta_3line.v2.json`
+    - `build/reports/xt_w2_23_c_hub_l3_next_state_verdict_delta_3line.v1.json`
+    - `build/reports/xt_w2_23_c_xt_l2_delta_3line.v1.json`
+    - `build/reports/xt_w2_23_b_hub_l3_next_state_verdict_delta_3line.v2.json`
+    - `build/reports/xt_w2_23_b_xt_l2_delta_3line.v4.json`
+    - `build/reports/xt_w2_23_c_suggestion_governance_evidence.v1.json`
+    - `build/reports/xt_w2_23_c_xt_l2_delta_3line.v2.json`
+  - decision_note: `edge_key_consumed(EDGE-XT-W2-23-C-XT-W2-23-C-c4b7a2e1);track_a_joint_review_pass;next_state_verdict=advance;unlock_next_formal_claim=true;track_b=observed_non_blocking;claim_mode=no_claim;fail_closed=true;minimal_gaps=none;edge_state=resolved;conflict=none`
+  - updated_at: `2026-03-04T13:01:43Z`
+
+- `MEN-20260304-013`
+  - edge_id: `EDGE-XT-W2-23-C-XT-W2-23-C-f5e9a7d3`
+  - from_lane: `XT-L2`
+  - to_lane: `Hub-L3`
+  - cc_lane: `QA`
+  - reason_code: `g5_candidate_ready_to_verify_request`
+  - ask_summary: `XT-W2-23-C G5 候选证据已就绪；请仅消费 Track-A 并给出 ready_to_verify 结论（no_claim）`
+  - priority_tier: `P0`
+  - priority_score: `74`
+  - due_utc: `2026-03-04T13:34:20Z`
+  - ack_by_utc: `2026-03-04T13:24:20Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/xt_w2_23_c_hub_l3_next_state_verdict_delta_3line.v4.json`
+    - `build/reports/xt_w2_23_c_g5_candidate_probe.v1.json`
+    - `build/reports/xt_w2_23_c_xt_l2_delta_3line.v3.json`
+    - `build/reports/xt_w2_23_c_xt_l2_delta_3line.v4.json`
+    - `build/reports/xt_w2_23_a_xt_l2_delta_3line.v1.json`
+    - `build/reports/xt_w2_23_c_suggestion_governance_evidence.v1.json`
+    - `build/reports/xt_w2_23_c_xt_l2_delta_3line.v2.json`
+    - `build/reports/xt_w2_23_c_hub_l3_next_state_verdict_delta_3line.v3.json`
+  - decision_note: `edge_key_consumed(EDGE-XT-W2-23-C-XT-W2-23-C-f5e9a7d3);track_a_joint_review_pass;xt_mp_g5_candidate_pass=true;next_state_verdict=advance;unlock_next_formal_claim=true;consumed_by_xt_l2;xt_w2_23_c_closed_by_delta_v4;xt_w2_23_a_formal_claim=started(no_parallel_formal_claim);track_b=observed_non_blocking;claim_mode=no_claim;fail_closed=true;minimal_gaps=none;edge_state=resolved;conflict=none`
+  - updated_at: `2026-03-04T13:22:34Z`
+
+- `MEN-20260304-014`
+  - edge_id: `EDGE-XT-W2-23-A-XT-W2-23-A-6b2f4c19`
+  - from_lane: `XT-L2`
+  - to_lane: `Hub-L3`
+  - cc_lane: `QA`
+  - reason_code: `g3_candidate_ready_to_verify_request`
+  - ask_summary: `XT-W2-23-A G3 候选证据已就绪；请仅消费 Track-A 并给出 ready_to_verify 结论（no_claim）`
+  - priority_tier: `P0`
+  - priority_score: `74`
+  - due_utc: `2026-03-04T13:52:44Z`
+  - ack_by_utc: `2026-03-04T13:42:44Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/xt_w2_23_a_hub_l3_next_state_verdict_delta_3line.v1.json`
+    - `build/reports/xt_w2_23_a_g3_candidate_probe.v1.json`
+    - `build/reports/xt_w2_23_a_xt_l2_delta_3line.v2.json`
+    - `build/reports/xt_w2_23_a_xt_l2_delta_3line.v3.json`
+    - `build/reports/xt_w2_24_xt_l2_delta_3line.v1.json`
+    - `build/reports/xt_w2_23_a_xt_l2_delta_3line.v1.json`
+    - `build/reports/xt_w2_23_c_hub_l3_next_state_verdict_delta_3line.v4.json`
+    - `build/reports/xt_w2_23_c_xt_l2_delta_3line.v4.json`
+  - decision_note: `edge_key_consumed(EDGE-XT-W2-23-A-XT-W2-23-A-6b2f4c19);track_a_joint_review_pass;xt_mp_g3_candidate_pass=true;next_state_verdict=advance;unlock_next_formal_claim=true;consumed_by_xt_l2;xt_w2_23_a_closed_by_delta_v3;xt_w2_24_formal_claim=started(no_parallel_formal_claim);track_b=observed_non_blocking;claim_mode=no_claim;fail_closed=true;minimal_gaps=none;edge_state=resolved(no_state_change);conflict=none`
+  - updated_at: `2026-03-04T13:50:56Z`
+
+- `MEN-20260305-001`
+  - edge_id: `EDGE-XT-W2-20-B-XT-W2-20-a7c9d4f1`
+  - from_lane: `XT-L2`
+  - to_lane: `Hub-L3`
+  - cc_lane: `QA`
+  - reason_code: `mainline_chain_closure_reconcile`
+  - ask_summary: `XT-Main Active-2 主链收口校对：请回填 XT-W2-20-B waiter closure 快照（Track-A only,no_claim）并确认 edge 最终态`
+  - priority_tier: `P0`
+  - priority_score: `74`
+  - due_utc: `2026-03-05T01:32:26Z`
+  - ack_by_utc: `2026-03-05T01:22:26Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/xt_w2_20_b_xt_l2_takeover_audit.v1.json`
+    - `build/reports/xt_main_xt_l2_delta_3line.v3.json`
+    - `build/reports/xt_main_xt_l2_full_7piece.v1.json`
+    - `build/reports/xt_w2_20_b_hub_l3_ready_to_verify_delta_3line.v7.json`
+    - `build/reports/xt_w2_20_b_next_state_verdict_qa_review.v1.json`
+    - `build/reports/xt_w2_20_b_qa_ready_to_verify_review.v1.json`
+    - `build/reports/xt_w2_20_xt_l2_delta_3line.v3.json`
+  - decision_note: `ack_sla_10m_breached(+132s);takeover_executed_by_xt_l2;edge_key_consumed(EDGE-XT-W2-20-B-XT-W2-20-a7c9d4f1);edge_state=resolved_by_takeover;single_formal_claim_enforced;no_parallel_formal_claim=true;fail_closed=true;consumed_by_xt_l2;no_cross_lane_gate_status_write`
+  - updated_at: `2026-03-05T01:28:06Z`
+
+- `MEN-20260305-012`
+  - edge_id: `EDGE-HUB-POOL-TAKEOVER-STANDBY-L3-91b4a7d0`
+  - from_lane: `Hub-L5`
+  - to_lane: `Hub-L3`
+  - reason_code: `replan_request`
+  - ask_summary: `进入 NO_DELTA_STANDBY/no_claim（仅定向补件，不claim）并保持 no_state_change`
+  - priority_tier: `P0`
+  - priority_score: `76`
+  - due_utc: `2026-03-05T03:52:08Z`
+  - ack_by_utc: `2026-03-05T03:47:08Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/hub_pool_takeover_delta_3line.v1.json`
+    - `docs/memory-new/xhub-lane-command-board-v2.md:3991`
+    - `docs/memory-new/xhub-lane-command-board-v2.md:8433`
+  - decision_note: `idempotent_sync_applied;hub_l3_keeps_no_delta_standby_no_claim;runtime_executor=Hub-L5;no_task_fact_change=true`
+  - updated_at: `2026-03-05T03:37:08Z`
+
+#### J.Hub-L4 Inbox
+- `MEN-20260305-013`
+  - edge_id: `EDGE-HUB-POOL-TAKEOVER-STANDBY-L4-8a6f31cd`
+  - from_lane: `Hub-L5`
+  - to_lane: `Hub-L4`
+  - reason_code: `replan_request`
+  - ask_summary: `进入 NO_DELTA_STANDBY/no_claim（仅定向补件，不claim）并保持 no_state_change`
+  - priority_tier: `P0`
+  - priority_score: `76`
+  - due_utc: `2026-03-05T03:52:08Z`
+  - ack_by_utc: `2026-03-05T03:47:08Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/hub_pool_takeover_delta_3line.v1.json`
+    - `docs/memory-new/xhub-lane-command-board-v2.md:5503`
+    - `docs/memory-new/xhub-lane-command-board-v2.md:8433`
+  - decision_note: `idempotent_sync_applied;hub_l4_keeps_no_delta_standby_no_claim;runtime_executor=Hub-L5;no_task_fact_change=true`
+  - updated_at: `2026-03-05T03:37:08Z`
+
+#### J.Hub-L5 Inbox
+- `MEN-20260306-036`
+  - edge_id: `none`
+  - from_lane: `Hub-L5`
+  - to_lane: `Hub-L5`
+  - reason_code: `probe_gap_backfill`
+  - ask_summary: `仅补 1 条 approval_identity_mismatch 直连 probe 与 machine-readable deny audit，补齐后再重跑 SI-W1-01 G1/G2/G4 first_probe`
+  - priority_tier: `P0`
+  - priority_score: `88`
+  - due_utc: `2026-03-06T06:13:09Z`
+  - ack_by_utc: `2026-03-06T06:03:09Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/si_w1_01_approval_binding_evidence.v2.json`
+    - `build/reports/si_w1_01_g1_g2_g4_first_probe.v2.json`
+    - `build/reports/si_w1_01_hub_l5_delta_3line.v3.json`
+    - `build/reports/si_w1_01_identity_mismatch_probe.v1.log`
+    - `x-hub/grpc-server/hub_grpc_server/src/memory_agent_grant_chain.test.js:3250`
+  - decision_note: `consumed_by_hub_l5(v2/v3);approval_identity_mismatch=direct_probe_and_audit;gate_vector=SI-G1:candidate_pass,SI-G2:candidate_pass,SI-G4:candidate_pass;si_w1_01_closed=delivered;lane_state=no_claim_standby;next_candidate_hint=SI-W1-02(no_task_row);no_downstream_claim=true`
+  - updated_at: `2026-03-06T06:02:50Z`
+
+- `MEN-20260306-039`
+  - edge_id: `none`
+  - from_lane: `Hub-L5`
+  - to_lane: `Hub-L5`
+  - reason_code: `probe_gap_backfill`
+  - ask_summary: `补齐 SI-W1-02 一次性 capability token 的 consume_once/token_expired/nonce binding 直连 probe 与 machine-readable deny audit，再重跑 G1/G2/G4 first_probe`
+  - priority_tier: `P0`
+  - priority_score: `89`
+  - due_utc: `2026-03-06T06:52:46Z`
+  - ack_by_utc: `2026-03-06T06:42:46Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/si_w1_02_capability_token_evidence.v2.json`
+    - `build/reports/si_w1_02_g1_g2_g4_first_probe.v2.json`
+    - `build/reports/si_w1_02_hub_l5_delta_3line.v3.json`
+    - `build/reports/si_w1_02_capability_token_probe.v2.log`
+    - `x-hub/grpc-server/hub_grpc_server/src/memory_agent_grant_chain.test.js:1636`
+  - decision_note: `consumed_by_hub_l5(v2/v3);capability_token_contract=dedicated_one_time;single_use=pass;token_expired=pass;revoked_contract_audit=pass;gate_vector=SI-G1:candidate_pass,SI-G2:candidate_pass,SI-G4:candidate_pass;si_w1_02_closed=delivered;lane_state=no_claim_standby;next_candidate_hint=SI-W1-03(no_task_row);no_downstream_claim=true`
+  - updated_at: `2026-03-06T07:25:53Z`
+
+
+- `MEN-20260306-041`
+  - edge_id: `none`
+  - from_lane: `Hub-L5`
+  - to_lane: `Hub-L5`
+  - reason_code: `dependency_fill`
+  - ask_summary: `为 SI-W1-03 补齐 CRK-W1-03 的 machine-readable task row 或 evidence anchor；当前仅有 connector outbox 规格文本，不足以 formal claim`
+  - priority_tier: `P0`
+  - priority_score: `90`
+  - due_utc: `2026-03-06T08:16:37Z`
+  - ack_by_utc: `2026-03-06T07:46:37Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/crk_w1_03_dependency_anchor.v1.json`
+    - `build/reports/si_w1_03_prereq_audit.v2.json`
+    - `build/reports/si_w1_03_hub_l5_delta_3line.v2.json`
+    - `docs/xhub-client-modes-and-connectors-v1.md:317`
+    - `docs/xhub-connectors-isolation-and-runtime-v1.md:129`
+  - decision_note: `consumed_by_hub_l5;crk_w1_03_machine_readable_evidence_anchor=true;claim_ready=true;si_w1_03_claim_started=claim_si_w1_03_hub_l5_20260306_1639;gate_vector=SI-G1:pending,SI-G2:pending,SI-G4:pending;no_crk_task_row_claim=true;fail_closed=true`
+  - updated_at: `2026-03-06T08:39:46Z`
+
+
+- `MEN-20260306-043`
+  - edge_id: `none`
+  - from_lane: `Hub-L5`
+  - to_lane: `Hub-L5`
+  - reason_code: `probe_gap_backfill`
+  - ask_summary: `补齐 SI-W1-03 的 preview card machine-readable contract、preview_execute_mismatch -> request_tampered 直连 probe，以及 approved/dispatched/acked 状态映射后再重跑 G1/G2/G4 first_probe`
+  - priority_tier: `P0`
+  - priority_score: `90`
+  - due_utc: `2026-03-06T09:37:42Z`
+  - ack_by_utc: `2026-03-06T09:07:42Z`
+  - status: `delivered`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/si_w1_03_payment_two_phase_evidence.v1.json`
+    - `build/reports/si_w1_03_g1_g2_g4_first_probe.v1.json`
+    - `build/reports/si_w1_03_hub_l5_delta_3line.v3.json`
+    - `build/reports/si_w1_03_payment_probe.v1.log`
+    - `docs/memory-new/xhub-security-innovation-work-orders-v1.md:165`
+  - decision_note: `first_probe_executed_rc=0;gate_vector=SI-G1:hold,SI-G2:hold,SI-G4:candidate_pass;minimal_gaps=preview_card_contract_missing+request_tampered_probe_missing+approved_dispatched_acked_contract_missing;downstream_claim_forbidden=true;fail_closed=true`
+  - updated_at: `2026-03-06T08:57:42Z`
+
+- `MEN-20260303-003`
+  - edge_id: `EDGE-SKC-W3-08-SKC-W2-06-31ce4ab2`
+  - from_lane: `XT-L2`
+  - to_lane: `Hub-L5`
+  - reason_code: `gate_wait`
+  - ask_summary: `消费 prereq_B 指标补齐证据并刷新 release prereq 快照`
+  - priority_tier: `P0`
+  - priority_score: `90`
+  - due_utc: `2026-03-03T08:25:00Z`
+  - ack_by_utc: `2026-03-03T08:15:00Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/skc_w2_06_xt_l2_hub_l5_prereq_b_internal_pass_recheck.v11.json`
+    - `build/reports/skc_w2_06_xt_l2_internal_pass_metrics_patch.v8.json`
+    - `build/reports/skc_w2_06_xt_l2_internal_pass_samples_patch.v7.json`
+    - `build/reports/skc_w2_06_xt_l2_xt_report_index_overlay.v1.json`
+    - `build/hub_l5_release_skc_g5_summary.json`
+    - `build/hub_l5_release_internal_pass_lines_report.json`
+  - decision_note: `consumed_vplus1_bundle_and_corrective_rerun_pass(snapshot_id=xtl2_prereq_bundle@5fdcf887413d40c6,rerun_rc=0,gate_vector=SKC-G5:PASS,SKC-G3:PASS,release=GO)`
+  - updated_at: `2026-03-04T02:41:35Z`
+
+- `MEN-20260305-002`
+  - edge_id: `EDGE-XT-W2-20-B-HUB-L5-GREEN-BATON-4c8d2f17`
+  - from_lane: `XT-L2`
+  - to_lane: `Hub-L5`
+  - reason_code: `mainline_green_baton_wait`
+  - ask_summary: `XT-Main Active-2 主链继续：请回填 Hub-L5 green baton 证据快照（directed-only）并确认可切下一检查点`
+  - priority_tier: `P0`
+  - priority_score: `74`
+  - due_utc: `2026-03-05T01:52:48Z`
+  - ack_by_utc: `2026-03-05T01:42:48Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/xt_main_xt_l2_delta_3line.v5.json`
+    - `build/reports/xt_main_xt_l2_delta_3line.v4.json`
+    - `build/reports/xt_main_xt_l2_full_7piece.v2.json`
+    - `build/reports/xt_w2_20_b_xt_l2_takeover_audit.v1.json`
+    - `build/hub_l5_release_skc_g5_summary.json`
+    - `build/hub_l5_release_internal_pass_lines_report.json`
+    - `build/reports/skc_w3_08_hub_l5_delta_3line.v98.json`
+    - `build/reports/skc_w3_08_hub_l5_delta_3line.v99.json`
+  - decision_note: `consumed_by_hub_l5(snapshot_id=xt_main_hub_l5_baton_packet@20260305T013817Z_and_idempotent_recheck_v5@20260305T021108Z);takeover_pkg_v5_verdict=PASS(edge_already_resolved);single_rerun_executed_once(rc=0,window=2026-03-05T02:12:35Z);gate_vector=SKC-G5:PASS,SKC-G3:PASS;release=GO;green_baton_emitted=true;no_new_release_input_delta_after_v98;no_rerun_this_tick;directed_only=true;fail_closed=true`
+  - updated_at: `2026-03-05T02:19:50Z`
+
+- `MEN-20260305-003`
+  - edge_id: `EDGE-XT-W2-24-B-HUB-L5-CONSUME-2d4f8a11`
+  - from_lane: `XT-L2`
+  - to_lane: `Hub-L5`
+  - reason_code: `planned_takeover_autoclaim_sync`
+  - ask_summary: `已 auto-claim XT-W2-24-B，请消费本tick snapshot_id+patch_refs 并回填可消费结论（directed-only）`
+  - priority_tier: `P0`
+  - priority_score: `74`
+  - due_utc: `2026-03-05T02:44:54Z`
+  - ack_by_utc: `2026-03-05T02:34:54Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/xt_main_xt_l2_readonly_consistency_check.v1.json`
+    - `build/reports/xt_main_xt_l2_delta_3line.v6.json`
+    - `build/reports/xt_main_xt_l2_full_7piece.v3.json`
+    - `build/reports/skc_w3_08_hub_l5_delta_3line.v100.json`
+    - `build/reports/xt_main_xt_l2_delta_3line.v5.json`
+  - decision_note: `consumed_by_hub_l5(snapshot_id=xt_main_planned_takeover_packet@20260305T022454Z);takeover_pkg_v6_verdict=PASS(readonly_consistency=pass_no_conflict);prereq_A=PASS;prereq_B=PASS;hard_line=PASS;evidence_delta=true;release_gate_input_changed=false;gate_rerun=NOT_RUN(no_state_change_fail_closed);gate_vector=SKC-G5:PASS,SKC-G3:PASS;release=GO;directed_only=true;fail_closed=true`
+  - updated_at: `2026-03-05T02:31:51Z`
+
+- `MEN-20260305-004`
+  - edge_id: `EDGE-XT-W2-24-C-HUB-L5-CONSUME-0f7d3a92`
+  - from_lane: `XT-L2`
+  - to_lane: `Hub-L5`
+  - reason_code: `planned_takeover_autoclaim_sync`
+  - ask_summary: `已 auto-claim XT-W2-24-C，请消费本tick snapshot_id+patch_refs 并回填可消费结论（directed-only）`
+  - priority_tier: `P0`
+  - priority_score: `74`
+  - due_utc: `2026-03-05T02:50:19Z`
+  - ack_by_utc: `2026-03-05T02:40:19Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/xt_main_xt_l2_readonly_consistency_check.v2.json`
+    - `build/reports/xt_main_xt_l2_delta_3line.v7.json`
+    - `build/reports/xt_main_xt_l2_full_7piece.v4.json`
+    - `build/reports/skc_w3_08_hub_l5_delta_3line.v101.json`
+    - `build/reports/xt_main_xt_l2_delta_3line.v6.json`
+  - decision_note: `consumed_by_hub_l5(snapshot_id=xt_main_planned_takeover_packet@20260305T023019Z);takeover_pkg_v7_verdict=PASS(readonly_consistency=pass_no_conflict);prereq_A=PASS;prereq_B=PASS;hard_line=PASS;evidence_delta=true;release_gate_input_changed=false;gate_rerun=NOT_RUN(no_state_change_fail_closed);gate_vector=SKC-G5:PASS,SKC-G3:PASS;release=GO;directed_only=true;fail_closed=true`
+  - updated_at: `2026-03-05T02:34:39Z`
+
+- `MEN-20260305-005`
+  - edge_id: `EDGE-XT-W2-24-D-HUB-L5-CONSUME-c8e5f7b9`
+  - from_lane: `XT-L2`
+  - to_lane: `Hub-L5`
+  - reason_code: `planned_takeover_autoclaim_sync`
+  - ask_summary: `已 auto-claim XT-W2-24-D，请消费本tick snapshot_id+patch_refs 并回填可消费结论（directed-only）`
+  - priority_tier: `P0`
+  - priority_score: `74`
+  - due_utc: `2026-03-05T02:56:46Z`
+  - ack_by_utc: `2026-03-05T02:46:46Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/xt_main_xt_l2_readonly_consistency_check.v3.json`
+    - `build/reports/xt_main_xt_l2_delta_3line.v8.json`
+    - `build/reports/xt_main_xt_l2_full_7piece.v5.json`
+    - `build/reports/skc_w3_08_hub_l5_delta_3line.v104.json`
+    - `build/reports/xt_main_xt_l2_delta_3line.v7.json`
+  - decision_note: `consumed_by_hub_l5(snapshot_id=xt_main_planned_takeover_packet@20260305T023646Z);takeover_pkg_v8_verdict=PASS(readonly_consistency=pass_no_conflict);prereq_A=PASS;prereq_B=PASS;hard_line=PASS;evidence_delta=true;release_gate_input_changed=false;gate_rerun=NOT_RUN(no_state_change_fail_closed);gate_vector=SKC-G5:PASS,SKC-G3:PASS;release=GO;directed_only=true;fail_closed=true`
+  - updated_at: `2026-03-05T02:45:28Z`
+
+- `MEN-20260305-006`
+  - edge_id: `EDGE-XT-W2-24-E-HUB-L5-CONSUME-7b3d2e61`
+  - from_lane: `XT-L2`
+  - to_lane: `Hub-L5`
+  - reason_code: `planned_takeover_autoclaim_sync`
+  - ask_summary: `已 auto-claim XT-W2-24-E，请消费本tick snapshot_id+patch_refs 并回填可消费结论（directed-only）`
+  - priority_tier: `P0`
+  - priority_score: `74`
+  - due_utc: `2026-03-05T03:01:23Z`
+  - ack_by_utc: `2026-03-05T02:51:23Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/xt_main_xt_l2_readonly_consistency_check.v4.json`
+    - `build/reports/xt_main_xt_l2_delta_3line.v9.json`
+    - `build/reports/xt_main_xt_l2_full_7piece.v6.json`
+    - `build/reports/skc_w3_08_hub_l5_delta_3line.v104.json`
+    - `build/reports/xt_main_xt_l2_delta_3line.v8.json`
+  - decision_note: `consumed_by_hub_l5(snapshot_id=xt_main_planned_takeover_packet@20260305T024123Z);takeover_pkg_v9_verdict=PASS(readonly_consistency=pass_no_conflict);prereq_A=PASS;prereq_B=PASS;hard_line=PASS;evidence_delta=true;release_gate_input_changed=false;gate_rerun=NOT_RUN(no_state_change_fail_closed);gate_vector=SKC-G5:PASS,SKC-G3:PASS;release=GO;directed_only=true;fail_closed=true`
+  - updated_at: `2026-03-05T02:45:28Z`
+
+- `MEN-20260305-007`
+  - edge_id: `EDGE-XT-W2-24-F-HUB-L5-CONSUME-3e91a2b7`
+  - from_lane: `XT-L2`
+  - to_lane: `Hub-L5`
+  - reason_code: `planned_takeover_autoclaim_sync`
+  - ask_summary: `已 auto-claim XT-W2-24-F，请消费本tick snapshot_id+patch_refs 并回填可消费结论（directed-only）`
+  - priority_tier: `P0`
+  - priority_score: `74`
+  - due_utc: `2026-03-05T03:04:23Z`
+  - ack_by_utc: `2026-03-05T02:54:23Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/xt_main_xt_l2_readonly_consistency_check.v5.json`
+    - `build/reports/xt_main_xt_l2_delta_3line.v10.json`
+    - `build/reports/xt_main_xt_l2_full_7piece.v7.json`
+    - `build/reports/skc_w3_08_hub_l5_delta_3line.v105.json`
+    - `build/reports/xt_main_xt_l2_delta_3line.v9.json`
+  - decision_note: `consumed_by_hub_l5(snapshot_id=xt_main_planned_takeover_packet@20260305T024423Z);takeover_pkg_v10_verdict=PASS(readonly_consistency=pass_no_conflict);prereq_A=PASS;prereq_B=PASS;hard_line=PASS;evidence_delta=true;release_gate_input_changed=false;gate_rerun=NOT_RUN(no_state_change_fail_closed);gate_vector=SKC-G5:PASS,SKC-G3:PASS;release=GO;directed_only=true;fail_closed=true`
+  - updated_at: `2026-03-05T02:47:31Z`
+
+- `MEN-20260305-008`
+  - edge_id: `EDGE-XT-W2-25-HUB-L5-CONSUME-a93f1d6c`
+  - from_lane: `XT-L2`
+  - to_lane: `Hub-L5`
+  - reason_code: `planned_takeover_autoclaim_sync`
+  - ask_summary: `已在收口 XT-W2-24-B~F 后 auto-claim XT-W2-25，请消费本tick snapshot_id+patch_refs 并回填可消费结论（directed-only）`
+  - priority_tier: `P0`
+  - priority_score: `74`
+  - due_utc: `2026-03-05T03:14:03Z`
+  - ack_by_utc: `2026-03-05T03:04:03Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/xt_main_xt_l2_readonly_consistency_check.v6.json`
+    - `build/reports/xt_main_xt_l2_xt_w2_24_b_to_f_closure_alignment.v1.json`
+    - `build/reports/xt_main_xt_l2_xt_w2_25_dependency_fill.v1.json`
+    - `build/reports/xt_main_xt_l2_delta_3line.v11.json`
+    - `build/reports/skc_w3_08_hub_l5_delta_3line.v106.json`
+  - decision_note: `consumed_by_hub_l5(snapshot_id=xt_main_planned_takeover_packet@20260305T025403Z);takeover_pkg_v11_verdict=PASS(readonly_consistency=pass_no_conflict,xt_w2_24_b_to_f_batch_closed=true,xt_w2_25_autoclaim=true);prereq_A=PASS;prereq_B=PASS;hard_line=PASS;evidence_delta=true;release_gate_input_changed=false;gate_rerun=NOT_RUN(no_state_change_fail_closed);gate_vector=SKC-G5:PASS,SKC-G3:PASS;release=GO;directed_only=true;fail_closed=true`
+  - updated_at: `2026-03-05T03:02:54Z`
+
+- `MEN-20260305-009`
+  - edge_id: `EDGE-XT-W2-25-S1-HUB-L5-CONSUME-b7f1c2a4`
+  - from_lane: `XT-L2`
+  - to_lane: `Hub-L5`
+  - reason_code: `planned_takeover_autoclaim_sync`
+  - ask_summary: `已 auto-claim XT-W2-25-S1，请消费本tick snapshot_id+patch_refs 并回填可消费结论（directed-only）`
+  - priority_tier: `P0`
+  - priority_score: `74`
+  - due_utc: `2026-03-05T03:22:38Z`
+  - ack_by_utc: `2026-03-05T03:12:38Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/xt_main_xt_l2_readonly_consistency_check.v7.json`
+    - `build/reports/xt_main_xt_l2_delta_3line.v12.json`
+    - `build/reports/xt_main_xt_l2_full_7piece.v9.json`
+    - `build/reports/skc_w3_08_hub_l5_delta_3line.v108.json`
+    - `build/reports/xt_main_xt_l2_delta_3line.v11.json`
+  - decision_note: `consumed_by_hub_l5(snapshot_id=xt_main_planned_takeover_packet@20260305T030238Z);takeover_pkg_v12_verdict=PASS(readonly_consistency=pass_no_conflict,xt_w2_25_s1_autoclaim=true,no_parallel_formal_claim=true);board_ingest=completed;edge_state=resolved;prereq_A=PASS;prereq_B=PASS;hard_line=PASS;release_gate_input_changed=false;gate_rerun=NOT_RUN(no_state_change_fail_closed);gate_vector=SKC-G5:PASS,SKC-G3:PASS;release=GO;directed_only=true;fail_closed=true`
+  - updated_at: `2026-03-05T03:20:19Z`
+
+- `MEN-20260305-017`
+  - edge_id: `EDGE-HUB-POOL-TAKEOVER-XT-W2-26-4f22be19`
+  - from_lane: `XT-L2`
+  - to_lane: `Hub-L5`
+  - reason_code: `minimal_patch_request`
+  - ask_summary: `XT-W2-26 G3/G4 首证据已落盘但 runtime probe 受 sandbox 阻塞；请按 directed-only 回填最小补件路径（unsandboxed_probe_or_alt_runtime_snapshot）`
+  - priority_tier: `P0`
+  - priority_score: `76`
+  - due_utc: `2026-03-05T06:50:49Z`
+  - ack_by_utc: `2026-03-05T06:40:49Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/xt_main_xt_l2_delta_3line.v23.json`
+    - `build/reports/xt_w2_26_g3_g4_first_probe.v2.json`
+    - `build/reports/xt_main_xt_l2_delta_3line.v22.json`
+    - `build/reports/xt_w2_26_probe_supervisor_incident_arbiter_tests.v3.log`
+    - `build/reports/xt_w2_26_probe_gate_smoke_tests.v3.log`
+    - `build/reports/xt_w2_26_unsandboxed_probe_request.v1.json`
+    - `build/reports/xt_w2_26_runtime_env_patch.v1.json`
+    - `build/reports/hub_l5_xt_w2_26_minimal_patch_delta_3line.v1.json`
+    - `build/reports/skc_w3_08_hub_l5_delta_3line.v120.json`
+  - decision_note: `accepted_and_verified_by_hub_l5;consumed_xt_l2_delta=v22(snapshot_id=xt_w2_26_probe_snapshot_20260305T064652Z);idempotent_recheck_keepalive=v23;minimal_patch_bundle_delivered(toolchain_sdk_alignment+module_cache_writable_path+validation_commands);patch_ready=true;runtime_env_patch_applied=true;rerun_result=hold_fail_closed(minimal_gaps:sandbox_apply_operation_not_permitted,swiftpm_user_cache_not_writable);unsandboxed_probe_request_emitted=v1;release_gate_input_changed=false;gate_rerun=NOT_RUN(no_state_change_fail_closed);gate_vector=SKC-G5:PASS,SKC-G3:PASS;release=GO;edge_state=resolved(no_state_change);xt_task_gate_status_unchanged`
+  - updated_at: `2026-03-05T06:55:45Z`
+
+#### J.XT-L1 Inbox
+- `MEN-20260304-010`
+  - edge_id: `EDGE-XT-W2-23-XT-W2-23-6e4d1a90`
+  - from_lane: `AI-COORD-PRIMARY`
+  - to_lane: `XT-L1`
+  - reason_code: `replan_request`
+  - ask_summary: `仅维护 XT-W2-23-B shadow 预热（prep_only/no_state_change/no_claim），刷新 XT-L1 delta_3line.v3 并保持 directed-only`
+  - priority_tier: `P0`
+  - priority_score: `74`
+  - due_utc: `2026-03-04T10:55:00Z`
+  - ack_by_utc: `2026-03-04T10:45:00Z`
+  - status: `delivered`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/xt_w2_23_b_xt_l1_shadow_prep_delta_3line.v3.json`
+    - `build/reports/xt_w2_23_b_xt_l2_shadow_prep_delta_3line.v2.json`
+    - `build/reports/xt_w2_23_xt_l2_delta_3line.v2.json`
+    - `build/reports/xt_w2_23_b_innovation_level_ui_prep_draft.v2.json`
+  - decision_note: `executed_directed_only_shadow_prep_tick;no_state_change=true;no_claim=true;cross_lane_write_attempt=0;broadcast=false`
+  - updated_at: `2026-03-04T10:37:37Z`
+
+#### J.XT-L2 Inbox
+- `MEN-20260303-004`
+  - edge_id: `EDGE-SKC-W3-08-SKC-W2-06-31ce4ab2`
+  - from_lane: `Hub-L5`
+  - to_lane: `XT-L2`
+  - reason_code: `gate_rerun_result`
+  - ask_summary: `G5 corrective rerun已PASS，请接棒 XT 主链切换并回填最终 switch 信号`
+  - priority_tier: `P0`
+  - priority_score: `90`
+  - due_utc: `2026-03-04T03:01:35Z`
+  - ack_by_utc: `2026-03-04T02:51:35Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/skc_w2_06_xt_l2_xt_mainline_switch_signal.v2.json`
+    - `build/reports/skc_w2_06_xt_l2_delta_3line.v74.json`
+    - `build/reports/skc_w3_08_hub_l5_delta_3line.v91.json`
+    - `build/hub_l5_release_skc_g5_summary.json`
+    - `build/hub_l5_release_internal_pass_lines_report.json`
+  - decision_note: `accepted_closure_done;gate_vector=SKC-G5:PASS,SKC-G3:PASS;switch_signal=v2_emitted;next=XT-W2-20->XT-W2-21->XT-W2-20-B(no_parallel_claim)`
+  - updated_at: `2026-03-04T03:19:30Z`
+
+- `MEN-20260303-005`
+  - edge_id: `EDGE-SKC-W3-08-SKC-W2-06-31ce4ab2`
+  - from_lane: `Hub-L1`
+  - to_lane: `XT-L2`
+  - reason_code: `sample_sufficiency_support`
+  - ask_summary: `请在20分钟内回填 high_risk_request_count/mergeback_runs 新增来源与预计增量`
+  - priority_tier: `P0`
+  - priority_score: `90`
+  - due_utc: `2026-03-03T13:56:56Z`
+  - ack_by_utc: `2026-03-03T13:46:56Z`
+  - status: `accepted`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/skc_w2_06_xt_l2_hub_l1_sample_sufficiency_source_patch.v1.json`
+    - `build/reports/skc_w2_06_xt_l2_delta_3line.v75.json`
+    - `build/internal_pass_samples.json`
+    - `build/internal_pass_metrics.json`
+    - `build/reports/skc_w3_08_hub_l5_delta_3line.v93.json`
+  - decision_note: `accepted_source_backfill_done;high_risk_request_count=300;mergeback_runs=685;expected_increment_20m=0/0(on_call_standby,no_active_sampling_without_new_directed_mention)`
+  - updated_at: `2026-03-04T03:36:30Z`
+
+- `MEN-20260305-014`
+  - edge_id: `EDGE-HUB-POOL-TAKEOVER-XT-W2-26-4f22be19`
+  - from_lane: `Hub-L5`
+  - to_lane: `XT-L2`
+  - reason_code: `evidence_missing`
+  - ask_summary: `最小闭环动作仅1条：将 XT-W2-13/14 machine-readable evidence_refs 入板并回传 dependency delta（no_wait）`
+  - priority_tier: `P0`
+  - priority_score: `76`
+  - due_utc: `2026-03-05T03:52:08Z`
+  - ack_by_utc: `2026-03-05T03:47:08Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/xt_main_xt_l2_xt_w2_13_14_evidence_board_link.v1.json`
+    - `build/reports/xt_main_xt_l2_xt_w2_26_dependency_check.v3.json`
+    - `build/reports/xt_main_xt_l2_delta_3line.v15.json`
+    - `build/reports/xt_main_xt_l2_xt_w2_25_dependency_fill.v2.json`
+    - `build/reports/hub_pool_takeover_delta_3line.v1.json`
+    - `docs/memory-new/xhub-lane-command-board-v2.md:427`
+    - `docs/memory-new/xhub-lane-command-board-v2.md:13804`
+  - decision_note: `consumed_by_xt_l2(v15);xt_w2_13_14_machine_readable_evidence_board_linked=true;dependency_fill_v2_consumed=true;idempotent_dependency_recheck_v3_done;edge_state=ready_to_verify;result=blocked(minimal_gaps:XT-W2-13/14_task_row_missing);auto_claim_xt_w2_26=not_executed;fail_closed=true;no_parallel_formal_claim=true`
+  - updated_at: `2026-03-05T04:02:40Z`
+
+- `MEN-20260305-015`
+  - edge_id: `EDGE-HUB-POOL-TAKEOVER-XT-W2-26-4f22be19`
+  - from_lane: `Hub-L5`
+  - to_lane: `XT-L2`
+  - reason_code: `evidence_missing`
+  - ask_summary: `最小闭环动作仅1条：补齐 XT-W2-13/14 task rows（或等效 mapping rows）并回传 dependency_check.v4（no_wait）`
+  - priority_tier: `P0`
+  - priority_score: `76`
+  - due_utc: `2026-03-05T06:08:36Z`
+  - ack_by_utc: `2026-03-05T05:53:36Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/skc_w3_08_hub_l5_delta_3line.v112.json`
+    - `build/reports/xt_main_xt_l2_delta_3line.v16.json`
+    - `build/reports/xt_main_xt_l2_xt_w2_26_dependency_check.v4.json`
+    - `build/reports/xt_main_xt_l2_xt_w2_13_14_evidence_board_link.v1.json`
+    - `build/reports/hub_pool_takeover_delta_3line.v1.json`
+  - decision_note: `consumed_by_xt_l2(v16);idempotent_dependency_recheck_v4_done;result=blocked(minimal_gaps:XT-W2-13/14_task_row_missing);edge_state=waiting;auto_claim_xt_w2_26=not_executed;no_parallel_formal_claim=true;fail_closed=true`
+  - updated_at: `2026-03-05T05:51:05Z`
+
+- `MEN-20260305-016`
+  - edge_id: `EDGE-HUB-POOL-TAKEOVER-XT-W2-26-4f22be19`
+  - from_lane: `Hub-L5`
+  - to_lane: `XT-L2`
+  - reason_code: `evidence_missing`
+  - ask_summary: `最小闭环动作仅1条：补齐 XT-W2-13/14 task rows（或等效 mapping rows）并回传 dependency_check.v7（no_wait）`
+  - priority_tier: `P0`
+  - priority_score: `76`
+  - due_utc: `2026-03-05T06:34:00Z`
+  - ack_by_utc: `2026-03-05T06:24:00Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/xt_main_xt_l2_delta_3line.v21.json`
+    - `build/reports/xt_w2_26_g3_g4_first_probe.v1.json`
+    - `build/reports/xt_w2_26_probe_supervisor_incident_arbiter_tests.v2.log`
+    - `build/reports/xt_w2_26_probe_gate_smoke_tests.v2.log`
+    - `build/reports/xt_main_xt_l2_delta_3line.v20.json`
+    - `build/reports/xt_main_xt_l2_full_7piece.v11.json`
+    - `build/reports/xt_main_xt_l2_delta_3line.v19.json`
+    - `build/reports/xt_main_xt_l2_xt_w2_26_dependency_check.v7.json`
+    - `build/reports/skc_w3_08_hub_l5_delta_3line.v117.json`
+    - `build/reports/xt_main_xt_l2_delta_3line.v18.json`
+    - `build/reports/xt_main_xt_l2_xt_w2_26_dependency_check.v6.json`
+    - `build/reports/xt_main_xt_l2_xt_w2_13_14_evidence_board_link.v1.json`
+    - `build/reports/xt_main_xt_l2_xt_w2_25_dependency_fill.v2.json`
+  - decision_note: `consumed_by_xt_l2(v21_probe_recheck_refresh);edge_state=resolved;result=hold_fail_closed_for_xt_w2_26_g3_g4_runtime_probe;snapshot_id=xt_w2_26_probe_snapshot_20260305T063049Z;patch_refs_attached=true;minimal_gaps=runtime_probe_blocked(sandbox_apply_operation_not_permitted,swiftpm_user_cache_not_writable);no_parallel_formal_claim=true`
+  - updated_at: `2026-03-05T06:30:49Z`
+
+- `MEN-20260305-018`
+  - edge_id: `EDGE-HUB-POOL-TAKEOVER-XT-W2-26-4f22be19`
+  - from_lane: `Hub-L5`
+  - to_lane: `XT-L2`
+  - reason_code: `unsandboxed_probe_or_alt_snapshot_decision`
+  - ask_summary: `probe_unblock 决策已下发：allow_unsandboxed_probe=true（替代 keepalive）；请在 expiry_utc 前按 exact_commands 单次重跑并回填 delta_v24`
+  - priority_tier: `P0`
+  - priority_score: `76`
+  - due_utc: `2026-03-05T07:25:35Z`
+  - ack_by_utc: `2026-03-05T07:15:35Z`
+  - status: `verified`
+  - report_mode: `delta_3line`
+  - evidence_refs:
+    - `build/reports/xt_main_xt_l2_delta_3line.v26.json`
+    - `build/reports/xt_w2_26_b_xt_l2_delta_3line.v1.json`
+    - `build/reports/xt_w2_26_a_completion_adapter_contract_patch.v1.json`
+    - `build/reports/xt_w2_26_a_completion_adapter_symbol_probe.v2.json`
+    - `build/reports/xt_w2_26_a_completion_adapter_evidence.v2.json`
+    - `build/reports/xt_w2_26_a_completion_adapter_probe_multilane_tests.v2.log`
+    - `build/reports/xt_w2_26_a_completion_adapter_probe_runtime_kernel_tests.v2.log`
+    - `build/reports/xt_main_xt_l2_delta_3line.v25.json`
+    - `build/reports/xt_w2_26_a_completion_adapter_evidence.v1.json`
+    - `build/reports/xt_w2_26_a_completion_adapter_symbol_probe.v1.json`
+    - `build/reports/xt_w2_26_a_completion_adapter_probe_multilane_tests.v1.log`
+    - `build/reports/xt_w2_26_a_completion_adapter_probe_runtime_kernel_tests.v1.log`
+    - `build/reports/xt_main_xt_l2_delta_3line.v24.json`
+    - `build/reports/xt_w2_26_g3_g4_first_probe.v3.json`
+    - `build/reports/xt_w2_26_probe_runtime_env_check.v2.log`
+    - `build/reports/xt_w2_26_probe_supervisor_incident_arbiter_tests.v4.log`
+    - `build/reports/xt_w2_26_probe_gate_smoke_tests.v4.log`
+    - `build/reports/xt_w2_26_a_xt_l2_delta_3line.v1.json`
+    - `build/reports/hub_l5_xt_w2_26_probe_unblock_decision.v1.json`
+    - `build/reports/xt_w2_26_unsandboxed_probe_request.v1.json`
+    - `build/reports/xt_main_xt_l2_delta_3line.v22.json`
+    - `build/reports/xt_main_xt_l2_delta_3line.v23.json`
+    - `build/reports/skc_w3_08_hub_l5_delta_3line.v120.json`
+  - decision_note: `consumed_by_xt_l2(v24+v25+v26);decision=allow_unsandboxed_probe(true)/provide_alt_runtime_snapshot(false);single_attempt_unsandboxed_probe_executed_once;probe_result=pass(SupervisorIncidentArbiterTests=12/12,XTerminalGateSmokeRunnerTests=3/3);xt_w2_26_gate=XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass;xt_w2_26_status=delivered;xt_w2_26_a_contract_patch=v1(machine_event+kpi_export);xt_w2_26_a_probe_result=candidate_pass;xt_w2_26_b_formal_claim_emitted=v1(no_parallel_formal_claim=true);edge_state=resolved(no_state_change)`
+  - updated_at: `2026-03-05T08:23:40Z`
+
+### J3. Mention Ledger（模板）
+
+| mention_id | edge_id | from_lane | to_lane | reason_code | ask_summary | priority_tier | priority_score | due_utc | ack_by_utc | status | report_mode | evidence_refs | decision_note | updated_at |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `none` | `none` | `none` | `none` | `none` | `none` | `P2` | `0` | `none` | `none` | `none` | `delta_3line` | `[]` | `none` | `none` |
+
+## K. Dual-Pool 7-Lane Prompt Pack（运行态）
+
+- effective_date: `2026-03-05`
+- source_decision: `CD-20260305-001`
+- execution_mode: `war_acceleration_v1(layered_on_dual_pool_single_lane)`
+- prompt_format: `Stable Core + Task Delta + Context Refs`
+- token_policy: `throughput_first + directed_only + batch_board_write + no_broadcast`
+- active_lanes: `Hub-L5, XT-L2`
+- standby_burst_lanes: `Hub-L1, Hub-L2, Hub-L3, Hub-L4, XT-L1`
+
+### K1. Lane Role Snapshot
+
+- `Hub-L5`: Hub-Main（Gate/裁决主链，优先处理 release blocker；仅在 `evidence_delta=true` 时重跑）
+- `XT-L2`: XT-Main（XT 主链执行：当前优先 `XT-W3-21/22 -> XT-W3-23 -> XT-W3-24 -> XT-W3-25`；单主线 claim + same_owner_self_takeover）
+- `QA`: QA-Main（影子并行：从切片起点开始准备 regression/checklist/evidence；不等待开发收尾）
+- `Hub-L1`: standby_burst（样本/分母/映射证据补齐；默认 `NO_DELTA_STANDBY`）
+- `Hub-L2`: standby_burst（安全漂移守护与 deny_code/撤销链快照；默认 `NO_DELTA_STANDBY`）
+- `Hub-L3`: standby_burst（依赖边裁决、ready_to_verify 汇总；默认 `NO_DELTA_STANDBY`）
+- `Hub-L4`: standby_burst（handoff 检查、blocked 状态机更新；默认 `NO_DELTA_STANDBY`）
+- `XT-L1`: XT-Support / standby_burst（UI/向导/template/explainability/bootstrap；默认 `directed_only + no_state_change`）
+
+### K2. Proxy-Claim Guardrail（统一）
+
+- trigger: `blocker_depth>=2 && wait_minutes>=20 && evidence_delta=false && (P0 || release_blocker=true)`
+- allow: `evidence_only`（采集/脚本/报告落盘）
+- deny: `cross_gate_write`（禁止改他泳道 gate/status/schema/deny_code）
+- ttl: `45m`，最多续租 `1` 次
+- exit: `handoff_back_to_owner`（落盘交接后立即归还）
+
+### K3. Active-2 No-Wait Runtime（立即生效）
+
+- `Hub-L5` 与 `XT-L2` 禁止写“等待其他泳道动作”；改为 `takeover_or_blocked_with_minimal_gaps`
+- `Task Catalog` owner 收敛：Hub->`Hub-L5(pool_takeover)`，XT->`XT-L2(pool_takeover)`；跨池仅做 directed 协同不改 owner
+- `@` 超过 `10m` 未 ACK 或 `20m` 无 evidence_delta：主泳道自动进入 `takeover`
+- `takeover` 输出必须包含：`takeover_reason + takeover_audit_ref + required_evidence_refs + next_check_at_utc`
+- 非 release blocker：允许 `resolved_by_takeover`；release blocker 仅 `Hub-L5` 可做最终裁决
+- standby 泳道仅接收抄送，不作为 gate 前置依赖

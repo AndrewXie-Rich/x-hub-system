@@ -1,0 +1,15 @@
+# NOTE:
+# - Replace these owner handles with your real GitHub user/team handles if needed.
+# - Keep this file in sync with repository module ownership.
+
+# Default owner
+* @andrewxie @andrew-xie
+
+# Core modules
+/x-hub/ @andrewxie @andrew-xie
+/x-terminal/ @andrewxie @andrew-xie
+
+# Governance and process
+/docs/ @andrewxie @andrew-xie
+/.github/ @AndrewXie-Rich
+

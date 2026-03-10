@@ -1,0 +1,22 @@
+{
+  "name": "hub_grpc_server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "smoke": "node src/smoke_client.js",
+    "list-models": "node src/list_models_client.js",
+    "skills": "node src/skills_client.js",
+    "chat": "node src/chat_client.js",
+    "rebuild-index": "node src/memory_rebuild_client.js",
+    "drill-memory-index": "node src/memory_index_reliability_drill.test.js",
+    "stress-paid": "node src/stress_paid_ai_queue.js",
+    "stress-paid-local": "bash scripts/run_stress_paid_ai_queue_local.sh",
+    "bench-paid-matrix": "bash scripts/benchmark_paid_ai_queue_matrix.sh"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.14.3",
+    "@grpc/proto-loader": "^0.8.0"
+  }
+}

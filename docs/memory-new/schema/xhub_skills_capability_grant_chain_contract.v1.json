@@ -1,0 +1,309 @@
+{
+  "schema_version": "xhub.skills_grant_chain_contract.v1",
+  "contract_version": "2026-03-01",
+  "contract_id": "HUB-L3-SKC-W1-04-W2-05-W2-06",
+  "owner_lane": "Hub-L3",
+  "execution_chain": [
+    "ingress",
+    "risk_classify",
+    "policy",
+    "grant",
+    "execute",
+    "audit"
+  ],
+  "required_grant_scope_order": [
+    "readonly",
+    "privileged",
+    "critical"
+  ],
+  "capability_scope_map": [
+    {
+      "capability": "ai.generate.local",
+      "aliases": [
+        "CAPABILITY_AI_GENERATE_LOCAL",
+        "ai_generate_local"
+      ],
+      "required_grant_scope": "readonly",
+      "risk_tier_floor": "low",
+      "grant_required": false,
+      "on_scope_drift": "request_tampered"
+    },
+    {
+      "capability": "ai.generate.paid",
+      "aliases": [
+        "CAPABILITY_AI_GENERATE_PAID",
+        "ai_generate_paid"
+      ],
+      "required_grant_scope": "privileged",
+      "risk_tier_floor": "high",
+      "grant_required": true,
+      "on_scope_drift": "request_tampered"
+    },
+    {
+      "capability": "web.fetch",
+      "aliases": [
+        "CAPABILITY_WEB_FETCH",
+        "web_fetch",
+        "need_network"
+      ],
+      "required_grant_scope": "privileged",
+      "risk_tier_floor": "high",
+      "grant_required": true,
+      "on_scope_drift": "request_tampered"
+    },
+    {
+      "capability": "terminal.exec",
+      "aliases": [
+        "terminal.exec.readonly",
+        "terminal.exec.write",
+        "shell.exec"
+      ],
+      "required_grant_scope": "privileged",
+      "risk_tier_floor": "high",
+      "grant_required": true,
+      "on_scope_drift": "request_tampered"
+    },
+    {
+      "capability": "filesystem.read",
+      "aliases": [
+        "fs.read",
+        "file.read"
+      ],
+      "required_grant_scope": "readonly",
+      "risk_tier_floor": "medium",
+      "grant_required": false,
+      "on_scope_drift": "request_tampered"
+    },
+    {
+      "capability": "filesystem.write",
+      "aliases": [
+        "fs.write",
+        "file.write"
+      ],
+      "required_grant_scope": "privileged",
+      "risk_tier_floor": "high",
+      "grant_required": true,
+      "on_scope_drift": "request_tampered"
+    },
+    {
+      "capability": "filesystem.delete",
+      "aliases": [
+        "fs.delete",
+        "file.delete"
+      ],
+      "required_grant_scope": "critical",
+      "risk_tier_floor": "critical",
+      "grant_required": true,
+      "on_scope_drift": "request_tampered"
+    },
+    {
+      "capability": "memory.longterm.writeback",
+      "aliases": [
+        "memory.write",
+        "longterm.writeback"
+      ],
+      "required_grant_scope": "privileged",
+      "risk_tier_floor": "high",
+      "grant_required": true,
+      "on_scope_drift": "request_tampered"
+    },
+    {
+      "capability": "connector.webhook.send",
+      "aliases": [
+        "connector.send",
+        "webhook.send"
+      ],
+      "required_grant_scope": "privileged",
+      "risk_tier_floor": "high",
+      "grant_required": true,
+      "on_scope_drift": "request_tampered"
+    },
+    {
+      "capability": "payment.intent.confirm",
+      "aliases": [
+        "payment.execute",
+        "payment.confirm"
+      ],
+      "required_grant_scope": "critical",
+      "risk_tier_floor": "critical",
+      "grant_required": true,
+      "on_scope_drift": "request_tampered"
+    }
+  ],
+  "incident_semantics": [
+    {
+      "incident_code": "grant_pending",
+      "chain_stage": "grant",
+      "hub_event_type": "grant.pending",
+      "supervisor_event_type": "supervisor.incident.grant_pending.handled",
+      "deny_code": "grant_pending",
+      "requires_user_ack": true,
+      "required_audit_fields": [
+        "event_type",
+        "request_id",
+        "session_id",
+        "deny_code",
+        "audit_ref",
+        "takeover_latency_ms",
+        "ext_json.chain"
+      ],
+      "ext_template": {
+        "op": "agent_tool_request",
+        "incident_code": "grant_pending",
+        "chain": "ingress->risk_classify->policy->grant->execute->audit"
+      }
+    },
+    {
+      "incident_code": "awaiting_instruction",
+      "chain_stage": "grant",
+      "hub_event_type": "grant.denied",
+      "supervisor_event_type": "supervisor.incident.awaiting_instruction.handled",
+      "deny_code": "awaiting_instruction",
+      "requires_user_ack": true,
+      "required_audit_fields": [
+        "event_type",
+        "request_id",
+        "session_id",
+        "tool_request_id",
+        "deny_code",
+        "audit_ref",
+        "takeover_latency_ms",
+        "ext_json.chain"
+      ],
+      "ext_template": {
+        "op": "agent_tool_grant_decision",
+        "incident_code": "awaiting_instruction",
+        "chain": "ingress->risk_classify->policy->grant->execute->audit"
+      }
+    },
+    {
+      "incident_code": "runtime_error",
+      "chain_stage": "execute",
+      "hub_event_type": "agent.tool.executed",
+      "supervisor_event_type": "supervisor.incident.runtime_error.handled",
+      "deny_code": "runtime_error",
+      "requires_user_ack": true,
+      "required_audit_fields": [
+        "event_type",
+        "request_id",
+        "session_id",
+        "tool_request_id",
+        "deny_code",
+        "audit_ref",
+        "takeover_latency_ms",
+        "error_code",
+        "ext_json.chain"
+      ],
+      "ext_template": {
+        "op": "agent_tool_execute",
+        "incident_code": "runtime_error",
+        "chain": "ingress->risk_classify->policy->grant->execute->audit"
+      }
+    }
+  ],
+  "skill_preflight_binding_standard": {
+    "preflight_order": [
+      "resolve_capabilities_required",
+      "derive_required_grant_scope_floor",
+      "risk_floor_guard",
+      "validate_exec_binding_inputs",
+      "persist_approval_binding",
+      "evaluate_policy",
+      "grant_decision"
+    ],
+    "unknown_capability_policy": {
+      "mode": "fail_closed",
+      "deny_code": "policy_denied"
+    },
+    "approval_binding_checks": [
+      {
+        "check_id": "binding.argv.type",
+        "description": "exec_argv accepts string arguments only",
+        "deny_code": "approval_binding_invalid"
+      },
+      {
+        "check_id": "binding.cwd.absolute_realpath",
+        "description": "exec_cwd must be absolute canonical realpath",
+        "deny_code": "approval_cwd_invalid"
+      },
+      {
+        "check_id": "binding.argv.exact_match",
+        "description": "execute argv must exactly match approval binding",
+        "deny_code": "approval_argv_mismatch"
+      },
+      {
+        "check_id": "binding.cwd.exact_match",
+        "description": "execute cwd canonical path must exactly match approval binding",
+        "deny_code": "approval_cwd_mismatch"
+      },
+      {
+        "check_id": "binding.identity.hash",
+        "description": "identity hash must bind session canonical project scope",
+        "deny_code": "approval_identity_mismatch"
+      }
+    ],
+    "grant_checks": [
+      {
+        "check_id": "grant.required_for_high_risk",
+        "deny_code": "grant_missing"
+      },
+      {
+        "check_id": "grant.expiry",
+        "deny_code": "grant_expired"
+      },
+      {
+        "check_id": "grant.binding_drift",
+        "deny_code": "request_tampered"
+      }
+    ],
+    "forbidden_patterns": [
+      "execute_before_audit",
+      "grant_reuse",
+      "risk_hint_downgrade_bypass"
+    ]
+  },
+  "deny_code_dictionary": [
+    "grant_pending",
+    "awaiting_instruction",
+    "runtime_error",
+    "grant_missing",
+    "grant_expired",
+    "request_tampered",
+    "policy_denied",
+    "approval_binding_invalid",
+    "approval_binding_missing",
+    "approval_binding_corrupt",
+    "approval_argv_mismatch",
+    "approval_cwd_invalid",
+    "approval_cwd_mismatch",
+    "approval_identity_mismatch"
+  ],
+  "dod_targets": {
+    "high_risk_lane_without_grant": 0,
+    "approval_mismatch_execution": 0,
+    "bypass_grant_execution": 0,
+    "low_risk_false_block_rate_lt": 0.029
+  },
+  "gate_targets": [
+    "SKC-G2",
+    "SKC-G4"
+  ],
+  "rollback_points": [
+    {
+      "id": "RB-HUBL3-001",
+      "artifact": "docs/memory-new/schema/xhub_skills_capability_grant_chain_contract.v1.json",
+      "rollback_rule": "restore previous contract_version and deny_code_dictionary together"
+    },
+    {
+      "id": "RB-HUBL3-002",
+      "artifact": "protocol/hub_protocol_v1.md",
+      "rollback_rule": "scope/deny_code wording must rollback as one atomic change"
+    }
+  ],
+  "source_docs": [
+    "docs/memory-new/xhub-memory-v3-m3-work-orders-v1.md",
+    "docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md",
+    "docs/memory-new/xhub-connector-reliability-kernel-work-orders-v1.md",
+    "x-terminal/work-orders/xt-openclaw-skills-compat-reliability-work-orders-v1.md"
+  ]
+}

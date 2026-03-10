@@ -1,0 +1,173 @@
+{
+  "schema_version": "xhub.memory.weekly_regression_report.v1",
+  "generated_at_ms": 1772150400000,
+  "sources": {
+    "current_report": "docs/memory-new/benchmarks/m2-w1/report_baseline_week1.json",
+    "baseline_report": "docs/memory-new/benchmarks/m2-w1/report_baseline_week1.json",
+    "thresholds": "docs/memory-new/benchmarks/m2-w1/regression_thresholds.json",
+    "dashboard": "docs/memory-new/benchmarks/m2-w5-observability/dashboard_snapshot.json",
+    "history": "docs/memory-new/benchmarks/m2-w5-weekly/weekly_regression_history.jsonl"
+  },
+  "baseline": {
+    "precision_at_k_avg": 0.2,
+    "recall_at_k_avg": 1,
+    "p95_latency_ms": 0.234,
+    "adversarial_match_rate": 0.5417
+  },
+  "current": {
+    "precision_at_k_avg": 0.2,
+    "recall_at_k_avg": 1,
+    "p95_latency_ms": 0.234,
+    "adversarial_match_rate": 0.5417,
+    "gate_hints": {
+      "gate1_correctness": true,
+      "gate2_performance": true,
+      "gate3_security": false
+    }
+  },
+  "deltas": {
+    "recall_delta": 0,
+    "precision_delta": 0,
+    "p95_latency_delta_ms": 0,
+    "p95_latency_ratio": 1,
+    "adversarial_match_delta": 0
+  },
+  "regression_thresholds": {
+    "recall_drop_max": 0.02,
+    "precision_drop_max": 0.03,
+    "p95_latency_growth_max": 0.5,
+    "adversarial_match_drop_max": 0.01
+  },
+  "checks": [
+    {
+      "key": "recall",
+      "pass": true,
+      "value": 0,
+      "threshold": -0.02,
+      "detail": "delta=0.0000 (max drop=0.02)"
+    },
+    {
+      "key": "precision",
+      "pass": true,
+      "value": 0,
+      "threshold": -0.03,
+      "detail": "delta=0.0000 (max drop=0.03)"
+    },
+    {
+      "key": "p95_latency",
+      "pass": true,
+      "value": 1,
+      "threshold": 1.5,
+      "detail": "ratio=1.0000 (max ratio=1.5000)"
+    },
+    {
+      "key": "adversarial_match",
+      "pass": true,
+      "value": 0,
+      "threshold": -0.01,
+      "detail": "delta=0.0000 (max drop=0.01)"
+    }
+  ],
+  "observability_alerts": {
+    "summary": {
+      "critical": 0,
+      "warn": 1,
+      "no_data": 7,
+      "total": 13
+    },
+    "critical_items": [],
+    "warn_items": [
+      {
+        "id": "pipeline.stage.top_anomaly",
+        "panel": "pipeline",
+        "metric": "top_stage_anomaly_score",
+        "status": "warn",
+        "severity": "warn",
+        "value": 66,
+        "threshold": 40,
+        "comparison": "max",
+        "samples": 0,
+        "stage_hint": "gate",
+        "hint": "no_block_pattern",
+        "breached": true,
+        "suppressed_by_noise": false
+      }
+    ],
+    "top_stage": {
+      "stage": "gate",
+      "trace_samples": 0,
+      "blocked_count": 0,
+      "deny_count": 22,
+      "in_total": 0,
+      "out_total": 0,
+      "avg_drop_ratio": 0,
+      "anomaly_score": 66,
+      "top_reasons": [
+        {
+          "reason": "no_block_pattern",
+          "count": 22
+        }
+      ]
+    }
+  },
+  "trends": {
+    "labels": [
+      "02-20",
+      "02-27"
+    ],
+    "recall_at_k_avg": [
+      1,
+      1
+    ],
+    "precision_at_k_avg": [
+      0.2,
+      0.2
+    ],
+    "adversarial_match_rate": [
+      0.5417,
+      0.5417
+    ],
+    "p95_latency_ratio_vs_baseline": [
+      1,
+      1
+    ],
+    "points": 2
+  },
+  "todos": [
+    {
+      "id": "todo.security.gate3",
+      "severity": "p0",
+      "owner": "security",
+      "source": "gate_hint",
+      "summary": "gate3_security is failing in weekly snapshot",
+      "detail": "Gate-3 requires prompt_bundle gate + secret_mode + credential deny + blocked consistency.",
+      "suggested_action": "Prioritize security gate hardening and verify adversarial block behavior.",
+      "stage_hint": "gate"
+    }
+  ],
+  "summary": {
+    "check_fail_count": 0,
+    "critical_alerts": 0,
+    "warn_alerts": 1,
+    "todo_count": 1,
+    "gate3_security": false
+  },
+  "history_entry": {
+    "schema_version": "xhub.memory.weekly_regression_history.v1",
+    "generated_at_ms": 1772150400000,
+    "source_current_report": "docs/memory-new/benchmarks/m2-w1/report_baseline_week1.json",
+    "source_dashboard": "docs/memory-new/benchmarks/m2-w5-observability/dashboard_snapshot.json",
+    "metrics": {
+      "precision_at_k_avg": 0.2,
+      "recall_at_k_avg": 1,
+      "p95_latency_ms": 0.234,
+      "adversarial_match_rate": 0.5417,
+      "gate1_correctness": true,
+      "gate2_performance": true,
+      "gate3_security": false,
+      "failed_checks": [],
+      "alerts_critical": 0,
+      "alerts_warn": 1
+    }
+  }
+}

@@ -1,0 +1,35 @@
+name: X-Terminal Doc Status
+
+on:
+  pull_request:
+    paths:
+      - "x-terminal/*.md"
+      - "x-terminal/scripts/generate_doc_status_dashboard.py"
+      - "x-terminal/DOC_STATUS_DASHBOARD.md"
+      - ".github/workflows/x-terminal-doc-status.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "x-terminal/*.md"
+      - "x-terminal/scripts/generate_doc_status_dashboard.py"
+      - "x-terminal/DOC_STATUS_DASHBOARD.md"
+      - ".github/workflows/x-terminal-doc-status.yml"
+
+jobs:
+  doc-status:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check x-terminal doc status dashboard is up-to-date
+        run: |
+          python3 ./x-terminal/scripts/generate_doc_status_dashboard.py \
+            --root ./x-terminal \
+            --check

@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>X-Hub</string>
+	<key>CFBundleExecutable</key>
+	<string>RELFlowHub</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.rel.flowhub</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>X-Hub</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.2.9</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>relflowhub</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>relflowhub</string>
+			</array>
+		</dict>
+	</array>
+	<key>CFBundleVersion</key>
+	<string>131</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAppSleepDisabled</key>
+	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Read local unread counts from Mail and Messages (counts only). X-Hub does not upload any data.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Show upcoming meetings and local reminders.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Show upcoming meetings and local reminders.</string>
+	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
+	<string>Create local reminders for upcoming meetings.</string>
+</dict>
+</plist>

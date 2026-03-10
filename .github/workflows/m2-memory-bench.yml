@@ -1,0 +1,321 @@
+name: M2 Memory Bench
+
+on:
+  workflow_dispatch:
+    inputs:
+      xt_ready_require_real_audit:
+        description: "Require real XT-Ready audit export (no sample fallback)"
+        required: false
+        default: false
+        type: boolean
+      xt_ready_audit_export_json:
+        description: "Path to real XT-Ready audit export JSON (repo-relative)"
+        required: false
+        default: "./build/xt_ready_audit_export.json"
+        type: string
+  pull_request:
+    paths:
+      - "scripts/m2_*"
+      - "scripts/m3_*"
+      - "scripts/fixtures/xt_ready_audit_events.sample.json"
+      - "scripts/fixtures/xt_ready_incident_events.sample.json"
+      - "scripts/fixtures/connector_ingress_gate_snapshot.sample.json"
+      - "docs/memory-new/benchmarks/m2-w1/**"
+      - "docs/memory-new/benchmarks/m2-w5-observability/**"
+      - "docs/memory-new/benchmarks/m2-w5-weekly/**"
+      - "docs/memory-new/xhub-memory-v3-*.md"
+      - "docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md"
+      - "docs/WORKING_INDEX.md"
+      - "X_MEMORY.md"
+      - "protocol/hub_protocol_v1.proto"
+      - "protocol/hub_protocol_v1.md"
+      - "x-terminal/work-orders/xterminal-parallel-work-orders-v1.md"
+      - "x-terminal/work-orders/xt-supervisor-autosplit-multilane-work-orders-v1.md"
+      - "x-hub/grpc-server/hub_grpc_server/src/memory_*.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/services.js"
+      - ".github/workflows/m2-memory-bench.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "scripts/m2_*"
+      - "scripts/m3_*"
+      - "scripts/fixtures/xt_ready_audit_events.sample.json"
+      - "scripts/fixtures/xt_ready_incident_events.sample.json"
+      - "scripts/fixtures/connector_ingress_gate_snapshot.sample.json"
+      - "docs/memory-new/benchmarks/m2-w1/**"
+      - "docs/memory-new/benchmarks/m2-w5-observability/**"
+      - "docs/memory-new/benchmarks/m2-w5-weekly/**"
+      - "docs/memory-new/xhub-memory-v3-*.md"
+      - "docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md"
+      - "docs/WORKING_INDEX.md"
+      - "X_MEMORY.md"
+      - "protocol/hub_protocol_v1.proto"
+      - "protocol/hub_protocol_v1.md"
+      - "x-terminal/work-orders/xterminal-parallel-work-orders-v1.md"
+      - "x-terminal/work-orders/xt-supervisor-autosplit-multilane-work-orders-v1.md"
+      - "x-hub/grpc-server/hub_grpc_server/src/memory_*.js"
+      - "x-hub/grpc-server/hub_grpc_server/src/services.js"
+      - ".github/workflows/m2-memory-bench.yml"
+
+jobs:
+  m2-benchmark-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Generate current benchmark report
+        env:
+          OUT_DIR: ${{ runner.temp }}/m2-bench-current
+          DB_PATH: data/hub.sqlite3
+          SEED: m2_w1_seed
+        run: ./scripts/m2_memory_bench.sh
+
+      - name: Gate on regression thresholds
+        env:
+          OUT_DIR: ${{ runner.temp }}/m2-bench-current
+        run: |
+          node ./scripts/m2_check_bench_regression.js \
+            --current "$OUT_DIR/report_baseline_week1.json" \
+            --thresholds ./docs/memory-new/benchmarks/m2-w1/regression_thresholds.json
+
+      - name: Run W2-05 correctness matrix
+        run: |
+          node ./x-hub/grpc-server/hub_grpc_server/src/memory_correctness_matrix.test.js
+
+      - name: Run W3-01 index changelog regression
+        run: |
+          node ./x-hub/grpc-server/hub_grpc_server/src/memory_index_changelog.test.js
+
+      - name: Run W3-02 index consumer checkpoint regression
+        run: |
+          node ./x-hub/grpc-server/hub_grpc_server/src/memory_index_consumer.test.js
+
+      - name: Run W3-03 atomic rebuild and swap regression
+        run: |
+          node ./x-hub/grpc-server/hub_grpc_server/src/memory_index_rebuild.test.js
+
+      - name: Run W3-04 rebuild-index CLI regression
+        run: |
+          node ./x-hub/grpc-server/hub_grpc_server/src/memory_rebuild_client.test.js
+
+      - name: Run W3-05 reliability drills (restart/corruption/concurrency)
+        run: |
+          node ./x-hub/grpc-server/hub_grpc_server/src/memory_index_reliability_drill.test.js
+
+      - name: Run W4-06 markdown projection regression
+        run: |
+          node ./x-hub/grpc-server/hub_grpc_server/src/memory_markdown_projection.test.js
+          node ./x-hub/grpc-server/hub_grpc_server/src/memory_longterm_markdown_export.test.js
+
+      - name: Run W4-07 markdown edit session regression
+        run: |
+          node ./x-hub/grpc-server/hub_grpc_server/src/memory_markdown_edit.test.js
+          node ./x-hub/grpc-server/hub_grpc_server/src/memory_longterm_markdown_edit.test.js
+
+      - name: Run W4-08 markdown review/writeback gate regression
+        run: |
+          node ./x-hub/grpc-server/hub_grpc_server/src/memory_markdown_review.test.js
+          node ./x-hub/grpc-server/hub_grpc_server/src/memory_longterm_markdown_review_writeback.test.js
+
+      - name: Run W4-09 markdown rollback regression
+        run: |
+          node ./x-hub/grpc-server/hub_grpc_server/src/memory_longterm_markdown_rollback.test.js
+
+      - name: Run W4-10 markdown view security/correctness matrix
+        run: |
+          node ./x-hub/grpc-server/hub_grpc_server/src/memory_markdown_view_matrix.test.js
+
+      - name: Run W5-01/W5-02/W5-03 memory metrics and security-block regression
+        run: |
+          node ./x-hub/grpc-server/hub_grpc_server/src/memory_metrics_schema.test.js
+          node ./x-hub/grpc-server/hub_grpc_server/src/memory_metrics_audit.test.js
+          node ./x-hub/grpc-server/hub_grpc_server/src/memory_remote_export_gate.test.js
+
+      - name: Run Gate-M3-0-CT deny_code coverage checker
+        run: |
+          mkdir -p ./build
+          node ./scripts/m3_check_lineage_contract_tests.js \
+            --out-json ./build/m3_lineage_contract_coverage_report.json
+          node ./scripts/m3_check_lineage_contract_tests.test.js
+
+      - name: Run Gate-M3-XT-Ready checker (doc + contract-e2e + checker tests)
+        run: |
+          mkdir -p ./build
+          node ./scripts/m3_check_xt_ready_gate.js \
+            --out-json ./build/xt_ready_gate_doc_report.json
+          node ./scripts/m3_generate_xt_ready_e2e_evidence.js \
+            --strict \
+            --events-json ./scripts/fixtures/xt_ready_incident_events.sample.json \
+            --out-json ./build/xt_ready_e2e_evidence.contract.json
+          node ./scripts/m3_check_xt_ready_gate.js \
+            --strict-e2e \
+            --e2e-evidence ./build/xt_ready_e2e_evidence.contract.json \
+            --out-json ./build/xt_ready_gate_e2e_contract_report.json
+          node ./scripts/m3_check_xt_ready_gate.test.js
+          node ./scripts/m3_generate_xt_ready_e2e_evidence.test.js
+          node ./scripts/m3_extract_xt_ready_incident_events_from_audit.test.js
+          node ./scripts/m3_fetch_connector_ingress_gate_snapshot.test.js
+          node ./scripts/m3_resolve_xt_ready_audit_input.test.js
+          node ./scripts/m3_export_xt_ready_audit_from_db.test.js
+
+      - name: Run M3-W1-03 project lineage + dispatch fail-closed regression
+        run: |
+          node ./x-hub/grpc-server/hub_grpc_server/src/memory_project_lineage.test.js
+
+      - name: Resolve XT-Ready audit export input (real preferred, sample fallback)
+        id: resolve_xt_ready_audit_export
+        env:
+          XT_READY_REQUIRE_REAL_AUDIT_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.xt_ready_require_real_audit || false }}
+          XT_READY_AUDIT_EXPORT_JSON_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.xt_ready_audit_export_json || '' }}
+        run: |
+          set -euo pipefail
+          require_real_audit="${XT_READY_REQUIRE_REAL_AUDIT:-0}"
+          if [ "${XT_READY_REQUIRE_REAL_AUDIT_INPUT}" = "true" ]; then
+            require_real_audit="1"
+          fi
+          export XT_READY_AUDIT_EXPORT_JSON="${XT_READY_AUDIT_EXPORT_JSON:-}"
+          if [ -n "${XT_READY_AUDIT_EXPORT_JSON_INPUT}" ]; then
+            export XT_READY_AUDIT_EXPORT_JSON="${XT_READY_AUDIT_EXPORT_JSON_INPUT}"
+          fi
+
+          args=(
+            --out-json ./build/xt_ready_evidence_source.json
+            --github-output "$GITHUB_OUTPUT"
+          )
+          echo "require_real_audit=${require_real_audit}" >> "$GITHUB_OUTPUT"
+          if [ "${require_real_audit}" = "1" ]; then
+            args+=(--require-real)
+          fi
+          node ./scripts/m3_resolve_xt_ready_audit_input.js "${args[@]}"
+
+      - name: Resolve XT-Ready connector ingress gate snapshot (Hub real preferred, sample fallback)
+        id: resolve_xt_ready_connector_gate_snapshot
+        env:
+          HUB_ADMIN_TOKEN: ${{ secrets.HUB_ADMIN_TOKEN }}
+          XT_READY_HUB_PAIRING_BASE_URL: ${{ vars.XT_READY_HUB_PAIRING_BASE_URL }}
+        run: |
+          set -euo pipefail
+          sample_json="./scripts/fixtures/connector_ingress_gate_snapshot.sample.json"
+          out_json="./build/connector_ingress_gate_snapshot.effective.json"
+          source_label="sample_fixture"
+          require_real_audit="${{ steps.resolve_xt_ready_audit_export.outputs.require_real_audit }}"
+          selected_audit_source="${{ steps.resolve_xt_ready_audit_export.outputs.selected_source }}"
+          base_url="${XT_READY_HUB_PAIRING_BASE_URL:-http://127.0.0.1:50052}"
+
+          if [ "${selected_audit_source}" != "sample_fixture" ]; then
+            if [ -n "${HUB_ADMIN_TOKEN:-}" ]; then
+              if node ./scripts/m3_fetch_connector_ingress_gate_snapshot.js \
+                --base-url "${base_url}" \
+                --admin-token "${HUB_ADMIN_TOKEN}" \
+                --source auto \
+                --out-json "${out_json}"; then
+                source_label="hub_admin_api"
+              else
+                if [ "${require_real_audit}" = "1" ]; then
+                  echo "error: require_real_audit=1 and connector gate snapshot fetch failed"
+                  exit 1
+                fi
+                cp "${sample_json}" "${out_json}"
+              fi
+            else
+              if [ "${require_real_audit}" = "1" ]; then
+                echo "error: require_real_audit=1 but HUB_ADMIN_TOKEN is missing for connector gate snapshot fetch"
+                exit 1
+              fi
+              cp "${sample_json}" "${out_json}"
+            fi
+          else
+            cp "${sample_json}" "${out_json}"
+          fi
+
+          echo "selected_connector_gate_json=${out_json}" >> "$GITHUB_OUTPUT"
+          echo "connector_gate_source=${source_label}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract XT-Ready incident events from selected audit export
+        run: |
+          node ./scripts/m3_extract_xt_ready_incident_events_from_audit.js \
+            --strict \
+            --audit-json "${{ steps.resolve_xt_ready_audit_export.outputs.selected_audit_json }}" \
+            --connector-gate-json "${{ steps.resolve_xt_ready_connector_gate_snapshot.outputs.selected_connector_gate_json }}" \
+            --out-json ./build/xt_ready_incident_events.effective.json
+
+      - name: Generate XT-Ready E2E evidence from extracted incident events
+        run: |
+          node ./scripts/m3_generate_xt_ready_e2e_evidence.js \
+            --strict \
+            --events-json ./build/xt_ready_incident_events.effective.json \
+            --out-json ./build/xt_ready_e2e_evidence.json
+
+      - name: Run XT-Ready strict E2E gate checker
+        run: |
+          args=(
+            --strict-e2e
+            --e2e-evidence ./build/xt_ready_e2e_evidence.json
+            --evidence-source ./build/xt_ready_evidence_source.json
+            --out-json ./build/xt_ready_gate_e2e_report.json
+          )
+          if [ "${{ steps.resolve_xt_ready_audit_export.outputs.require_real_audit }}" = "1" ]; then
+            args+=(--require-real-audit-source)
+          fi
+          node ./scripts/m3_check_xt_ready_gate.js "${args[@]}"
+
+      - name: Run W5-04 observability dashboard and alert-threshold regression
+        env:
+          OUT_DIR: ${{ runner.temp }}/m2-bench-current
+        run: |
+          node ./scripts/m2_observability_dashboard.test.js
+          node ./scripts/m2_build_observability_dashboard.js \
+            --report "$OUT_DIR/report_baseline_week1.json" \
+            --thresholds ./docs/memory-new/benchmarks/m2-w5-observability/observability_thresholds.json \
+            --out-json "$OUT_DIR/observability_dashboard.json" \
+            --out-md "$OUT_DIR/observability_dashboard.md"
+          node ./scripts/m2_check_observability_alerts.js \
+            --dashboard "$OUT_DIR/observability_dashboard.json" \
+            --max-critical 0 \
+            --max-warn 2
+
+      - name: Run W5-05 weekly regression report generation
+        env:
+          OUT_DIR: ${{ runner.temp }}/m2-bench-current
+        run: |
+          node ./scripts/m2_generate_weekly_regression_report.test.js
+          node ./scripts/m2_generate_weekly_regression_report.js \
+            --current "$OUT_DIR/report_baseline_week1.json" \
+            --baseline ./docs/memory-new/benchmarks/m2-w1/report_baseline_week1.json \
+            --thresholds ./docs/memory-new/benchmarks/m2-w1/regression_thresholds.json \
+            --dashboard "$OUT_DIR/observability_dashboard.json" \
+            --history ./docs/memory-new/benchmarks/m2-w5-weekly/weekly_regression_history.jsonl \
+            --out-json "$OUT_DIR/weekly_regression_report.json" \
+            --out-md "$OUT_DIR/weekly_regression_report.md" \
+            --append-history 0
+
+      - name: Upload benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m2-bench-current
+          path: |
+            ${{ runner.temp }}/m2-bench-current/bench_baseline.json
+            ${{ runner.temp }}/m2-bench-current/golden_queries.json
+            ${{ runner.temp }}/m2-bench-current/adversarial_queries.json
+            ${{ runner.temp }}/m2-bench-current/report_baseline_week1.json
+            ${{ runner.temp }}/m2-bench-current/report_baseline_week1.md
+            ${{ runner.temp }}/m2-bench-current/observability_dashboard.json
+            ${{ runner.temp }}/m2-bench-current/observability_dashboard.md
+            ${{ runner.temp }}/m2-bench-current/weekly_regression_report.json
+            ${{ runner.temp }}/m2-bench-current/weekly_regression_report.md
+            build/xt_ready_gate_doc_report.json
+            build/xt_ready_e2e_evidence.contract.json
+            build/xt_ready_gate_e2e_contract_report.json
+            build/connector_ingress_gate_snapshot.effective.json
+            build/xt_ready_incident_events.effective.json
+            build/xt_ready_evidence_source.json
+            build/xt_ready_e2e_evidence.json
+            build/xt_ready_gate_e2e_report.json

@@ -1,0 +1,268 @@
+{
+  "schema_version": "xhub.memory.bench_dataset.v1",
+  "generated_at_ms": 1772087796852,
+  "seed": "m2_w1_seed",
+  "source_mode": "synthetic_seeded",
+  "source_db": "data/hub.sqlite3",
+  "documents_count": 11,
+  "notes": [
+    "PII and credential-like patterns are redacted.",
+    "Encrypted at-rest payloads are represented as [ENCRYPTED_AT_REST].",
+    "Synthetic fallback is used when source DB has no memory rows."
+  ],
+  "documents": [
+    {
+      "id": "syn_001_a",
+      "type": "observation",
+      "title": "robot-water buy-water flow requires photo + price + paycode confirm",
+      "text": "Robot reaches destination, captures water photo, extracts price, sends paycode to hub, waits user approval from phone before payment.",
+      "scope": {
+        "device_id": "terminal-main",
+        "user_id": "user-main",
+        "app_id": "x-terminal",
+        "project_id": "proj-alpha",
+        "thread_id": "thread-proj-alpha"
+      },
+      "sensitivity": "internal",
+      "trust_level": "trusted",
+      "created_at_ms": 1766649660000,
+      "tags": [
+        "payment",
+        "robot",
+        "approval"
+      ],
+      "source": "synthetic",
+      "content_sha256": "2a5cd8b9b3d6435edbc81b33d06890cdd216e6f4bfd06e839caa3b53325ac590"
+    },
+    {
+      "id": "syn_001_b",
+      "type": "observation",
+      "title": "robot-water heartbeat includes status block reason and next action",
+      "text": "Each project heartbeat reports state, blocker reason, estimated next step, and queue wait trend to supervisor.",
+      "scope": {
+        "device_id": "terminal-main",
+        "user_id": "user-main",
+        "app_id": "x-terminal",
+        "project_id": "proj-alpha",
+        "thread_id": "thread-proj-alpha"
+      },
+      "sensitivity": "internal",
+      "trust_level": "trusted",
+      "created_at_ms": 1766649720000,
+      "tags": [
+        "heartbeat",
+        "parallel",
+        "supervisor"
+      ],
+      "source": "synthetic",
+      "content_sha256": "3710d3e825fa5858b82d344a3fbb9e9e7501112d20f896f802d7b5fd47547ea5"
+    },
+    {
+      "id": "syn_001_c",
+      "type": "canonical",
+      "title": "robot-water remote export gate default secret_mode deny",
+      "text": "Prompt bundle to remote must pass secondary DLP. Credential finding always deny. Blocked requests downgrade to local by default.",
+      "scope": {
+        "device_id": "hub",
+        "user_id": "user-main",
+        "app_id": "x-hub",
+        "project_id": "proj-alpha",
+        "thread_id": "thread-proj-alpha"
+      },
+      "sensitivity": "secret",
+      "trust_level": "trusted",
+      "created_at_ms": 1766649780000,
+      "tags": [
+        "security",
+        "remote-gate",
+        "dlp"
+      ],
+      "source": "synthetic",
+      "content_sha256": "5d5cb5d33cd310bdd2e84c390e71ad1e7f172cf015208ae1b300552963973af2"
+    },
+    {
+      "id": "syn_004_a",
+      "type": "observation",
+      "title": "supervisor-audio buy-water flow requires photo + price + paycode confirm",
+      "text": "Robot reaches destination, captures water photo, extracts price, sends paycode to hub, waits user approval from phone before payment.",
+      "scope": {
+        "device_id": "terminal-main",
+        "user_id": "user-main",
+        "app_id": "x-terminal",
+        "project_id": "proj-beta",
+        "thread_id": "thread-proj-beta"
+      },
+      "sensitivity": "internal",
+      "trust_level": "trusted",
+      "created_at_ms": 1766649840000,
+      "tags": [
+        "payment",
+        "robot",
+        "approval"
+      ],
+      "source": "synthetic",
+      "content_sha256": "5baa525082b6c5cd8624ae0dc83ef5eb64f9e576d210312daed2877fe12eb2e7"
+    },
+    {
+      "id": "syn_004_b",
+      "type": "observation",
+      "title": "supervisor-audio heartbeat includes status block reason and next action",
+      "text": "Each project heartbeat reports state, blocker reason, estimated next step, and queue wait trend to supervisor.",
+      "scope": {
+        "device_id": "terminal-main",
+        "user_id": "user-main",
+        "app_id": "x-terminal",
+        "project_id": "proj-beta",
+        "thread_id": "thread-proj-beta"
+      },
+      "sensitivity": "internal",
+      "trust_level": "trusted",
+      "created_at_ms": 1766649900000,
+      "tags": [
+        "heartbeat",
+        "parallel",
+        "supervisor"
+      ],
+      "source": "synthetic",
+      "content_sha256": "6d8bdde1778c19181f529bc8f3fd9e6d98465c52e2bc8ef0227366bc6847e60c"
+    },
+    {
+      "id": "syn_004_c",
+      "type": "canonical",
+      "title": "supervisor-audio remote export gate default secret_mode deny",
+      "text": "Prompt bundle to remote must pass secondary DLP. Credential finding always deny. Blocked requests downgrade to local by default.",
+      "scope": {
+        "device_id": "hub",
+        "user_id": "user-main",
+        "app_id": "x-hub",
+        "project_id": "proj-beta",
+        "thread_id": "thread-proj-beta"
+      },
+      "sensitivity": "secret",
+      "trust_level": "trusted",
+      "created_at_ms": 1766649960000,
+      "tags": [
+        "security",
+        "remote-gate",
+        "dlp"
+      ],
+      "source": "synthetic",
+      "content_sha256": "6c039f07c95823ef12db8af2d37c506b7d1c47eacc72deabcb9e4fdb478b0eab"
+    },
+    {
+      "id": "syn_007_a",
+      "type": "observation",
+      "title": "parallel-heartbeat buy-water flow requires photo + price + paycode confirm",
+      "text": "Robot reaches destination, captures water photo, extracts price, sends paycode to hub, waits user approval from phone before payment.",
+      "scope": {
+        "device_id": "terminal-main",
+        "user_id": "user-main",
+        "app_id": "x-terminal",
+        "project_id": "proj-gamma",
+        "thread_id": "thread-proj-gamma"
+      },
+      "sensitivity": "internal",
+      "trust_level": "trusted",
+      "created_at_ms": 1766650020000,
+      "tags": [
+        "payment",
+        "robot",
+        "approval"
+      ],
+      "source": "synthetic",
+      "content_sha256": "a09b7b345d3d16d3eb0c26b5ea13d0c16a72faa26ea0fc8fedb7f3c665150cf8"
+    },
+    {
+      "id": "syn_007_b",
+      "type": "observation",
+      "title": "parallel-heartbeat heartbeat includes status block reason and next action",
+      "text": "Each project heartbeat reports state, blocker reason, estimated next step, and queue wait trend to supervisor.",
+      "scope": {
+        "device_id": "terminal-main",
+        "user_id": "user-main",
+        "app_id": "x-terminal",
+        "project_id": "proj-gamma",
+        "thread_id": "thread-proj-gamma"
+      },
+      "sensitivity": "internal",
+      "trust_level": "trusted",
+      "created_at_ms": 1766650080000,
+      "tags": [
+        "heartbeat",
+        "parallel",
+        "supervisor"
+      ],
+      "source": "synthetic",
+      "content_sha256": "f7f022fb727044faad22b0f97f19ecb0c86214102206f6d43632bbca7ee42b6a"
+    },
+    {
+      "id": "syn_007_c",
+      "type": "canonical",
+      "title": "parallel-heartbeat remote export gate default secret_mode deny",
+      "text": "Prompt bundle to remote must pass secondary DLP. Credential finding always deny. Blocked requests downgrade to local by default.",
+      "scope": {
+        "device_id": "hub",
+        "user_id": "user-main",
+        "app_id": "x-hub",
+        "project_id": "proj-gamma",
+        "thread_id": "thread-proj-gamma"
+      },
+      "sensitivity": "secret",
+      "trust_level": "trusted",
+      "created_at_ms": 1766650140000,
+      "tags": [
+        "security",
+        "remote-gate",
+        "dlp"
+      ],
+      "source": "synthetic",
+      "content_sha256": "a199edf0f6fc75e1ef46d0e9b2b5c709fac5ca85cd8ac57bae4f3d6aa739cedb"
+    },
+    {
+      "id": "syn_100",
+      "type": "longterm",
+      "title": "progressive disclosure default path search_index timeline get_details",
+      "text": "Default workflow is index first, then timeline, then details. Keep token budget visible and bounded.",
+      "scope": {
+        "device_id": "hub",
+        "user_id": "user-main",
+        "app_id": "x-hub",
+        "project_id": "",
+        "thread_id": ""
+      },
+      "sensitivity": "internal",
+      "trust_level": "trusted",
+      "created_at_ms": 1766650200000,
+      "tags": [
+        "pd",
+        "token",
+        "workflow"
+      ],
+      "source": "synthetic",
+      "content_sha256": "808e5977de011421637e1e4e312b1a2b1a6785aff3c2656a40c3d50ae9da9d50"
+    },
+    {
+      "id": "syn_101",
+      "type": "longterm",
+      "title": "hybrid retrieval uses scope filter then rerank then gate",
+      "text": "Retrieval pipeline order is fixed to avoid bypass and keep explainability stable for regression.",
+      "scope": {
+        "device_id": "hub",
+        "user_id": "user-main",
+        "app_id": "x-hub",
+        "project_id": "",
+        "thread_id": ""
+      },
+      "sensitivity": "internal",
+      "trust_level": "trusted",
+      "created_at_ms": 1766650260000,
+      "tags": [
+        "hybrid",
+        "gate",
+        "ranking"
+      ],
+      "source": "synthetic",
+      "content_sha256": "42110f165f15cc59bffa3dabd2e6e56436ac8307ab40aadc330a19817e90abdd"
+    }
+  ]
+}

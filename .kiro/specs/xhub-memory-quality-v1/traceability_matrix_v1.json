@@ -1,0 +1,271 @@
+{
+  "schema_version": "xhub.memory.traceability_matrix.v1",
+  "spec_id": "xhub-memory-quality-v1",
+  "sources": {
+    "requirements": ".kiro/specs/xhub-memory-quality-v1/requirements.md",
+    "tasks": ".kiro/specs/xhub-memory-quality-v1/tasks.md"
+  },
+  "summary": {
+    "requirement_total": 8,
+    "task_total": 14,
+    "mapped_requirement_total": 8,
+    "orphan_requirements_count": 0,
+    "orphan_tasks_count": 0,
+    "unknown_requirement_references_count": 0,
+    "duplicate_requirement_ids_count": 0,
+    "duplicate_task_ids_count": 0,
+    "validation_passed": true
+  },
+  "validation_errors": [],
+  "duplicates": {
+    "requirement_ids": [],
+    "task_ids": []
+  },
+  "orphans": {
+    "requirement_ids": [],
+    "task_ids": []
+  },
+  "unknown_requirement_references": [],
+  "requirements": [
+    {
+      "requirement_id": "RQ-001",
+      "title": "Spec Triad Completeness (P0)",
+      "line": 17,
+      "mapped_task_ids": [
+        "KQ-W1-01"
+      ]
+    },
+    {
+      "requirement_id": "RQ-002",
+      "title": "Requirement-Task Traceability (P0)",
+      "line": 27,
+      "mapped_task_ids": [
+        "KQ-W1-02",
+        "KQ-W3-09"
+      ]
+    },
+    {
+      "requirement_id": "RQ-003",
+      "title": "Security Invariants as Tests (P0)",
+      "line": 37,
+      "mapped_task_ids": [
+        "KQ-W1-03",
+        "KQ-W2-07",
+        "KQ-W4-11"
+      ]
+    },
+    {
+      "requirement_id": "RQ-004",
+      "title": "Gate-Driven Release Blocking (P0)",
+      "line": 47,
+      "mapped_task_ids": [
+        "KQ-W1-04",
+        "KQ-W3-08"
+      ]
+    },
+    {
+      "requirement_id": "RQ-005",
+      "title": "Rework and Efficiency Controls (P0)",
+      "line": 57,
+      "mapped_task_ids": [
+        "KQ-W2-05",
+        "KQ-W3-09",
+        "KQ-W4-10",
+        "KQ-W4-12",
+        "KQ-W5-13"
+      ]
+    },
+    {
+      "requirement_id": "RQ-006",
+      "title": "Token Budget and Cost Guardrails (P0)",
+      "line": 67,
+      "mapped_task_ids": [
+        "KQ-W2-06",
+        "KQ-W4-11"
+      ]
+    },
+    {
+      "requirement_id": "RQ-007",
+      "title": "Fail-Closed Reliability (P0)",
+      "line": 77,
+      "mapped_task_ids": [
+        "KQ-W2-07",
+        "KQ-W3-08",
+        "KQ-W4-10"
+      ]
+    },
+    {
+      "requirement_id": "RQ-008",
+      "title": "Exception Governance (P1)",
+      "line": 87,
+      "mapped_task_ids": [
+        "KQ-W5-14"
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "task_id": "KQ-W1-01",
+      "title": "Create spec triad files and ID conventions.",
+      "line": 10,
+      "requirement_ids": [
+        "RQ-001"
+      ],
+      "property_ids": [
+        "CP-Trace-004"
+      ]
+    },
+    {
+      "task_id": "KQ-W1-02",
+      "title": "Implement traceability matrix checker and CI validation.",
+      "line": 14,
+      "requirement_ids": [
+        "RQ-002"
+      ],
+      "property_ids": [
+        "CP-Trace-004"
+      ]
+    },
+    {
+      "task_id": "KQ-W1-03",
+      "title": "Add security invariants test suite.",
+      "line": 18,
+      "requirement_ids": [
+        "RQ-003"
+      ],
+      "property_ids": [
+        "CP-Grant-001",
+        "CP-Secret-002",
+        "CP-Tamper-003"
+      ]
+    },
+    {
+      "task_id": "KQ-W1-04",
+      "title": "Implement gate runner (`KQ-G0..KQ-G5`) with blocking policy.",
+      "line": 22,
+      "requirement_ids": [
+        "RQ-004"
+      ],
+      "property_ids": [
+        "CP-Gate-005"
+      ]
+    },
+    {
+      "task_id": "KQ-W2-05",
+      "title": "Add efficiency/rework KPI pipeline and weekly report.",
+      "line": 26,
+      "requirement_ids": [
+        "RQ-005"
+      ],
+      "property_ids": [
+        "CP-Trace-004"
+      ]
+    },
+    {
+      "task_id": "KQ-W2-06",
+      "title": "Add token budget guardrails and fallback enforcement.",
+      "line": 30,
+      "requirement_ids": [
+        "RQ-006"
+      ],
+      "property_ids": [
+        "CP-Token-006",
+        "CP-Secret-002"
+      ]
+    },
+    {
+      "task_id": "KQ-W2-07",
+      "title": "Build fail-closed regression matrix automation.",
+      "line": 34,
+      "requirement_ids": [
+        "RQ-003",
+        "RQ-007"
+      ],
+      "property_ids": [
+        "CP-Grant-001",
+        "CP-Tamper-003"
+      ]
+    },
+    {
+      "task_id": "KQ-W3-08",
+      "title": "Add release checklist automation and rollback drills.",
+      "line": 38,
+      "requirement_ids": [
+        "RQ-004",
+        "RQ-007"
+      ],
+      "property_ids": [
+        "CP-Gate-005"
+      ]
+    },
+    {
+      "task_id": "KQ-W3-09",
+      "title": "Build spec diff impact analyzer.",
+      "line": 44,
+      "requirement_ids": [
+        "RQ-002",
+        "RQ-005"
+      ],
+      "property_ids": [
+        "CP-Trace-004"
+      ]
+    },
+    {
+      "task_id": "KQ-W4-10",
+      "title": "Standardize retry/backoff/rate-limit shared utility.",
+      "line": 48,
+      "requirement_ids": [
+        "RQ-005",
+        "RQ-007"
+      ],
+      "property_ids": [
+        "CP-Gate-005"
+      ]
+    },
+    {
+      "task_id": "KQ-W4-11",
+      "title": "Add prompt bundle sanitization and deny-code mapping.",
+      "line": 52,
+      "requirement_ids": [
+        "RQ-003",
+        "RQ-006"
+      ],
+      "property_ids": [
+        "CP-Secret-002"
+      ]
+    },
+    {
+      "task_id": "KQ-W4-12",
+      "title": "Build workflow summary and root-cause aggregation.",
+      "line": 56,
+      "requirement_ids": [
+        "RQ-005"
+      ],
+      "property_ids": [
+        "CP-Trace-004"
+      ]
+    },
+    {
+      "task_id": "KQ-W5-13",
+      "title": "Add work-order health score model.",
+      "line": 60,
+      "requirement_ids": [
+        "RQ-005"
+      ],
+      "property_ids": [
+        "CP-Trace-004"
+      ]
+    },
+    {
+      "task_id": "KQ-W5-14",
+      "title": "Implement emergency exception governance with 48h follow-up.",
+      "line": 64,
+      "requirement_ids": [
+        "RQ-008"
+      ],
+      "property_ids": [
+        "CP-Exception-007"
+      ]
+    }
+  ]
+}

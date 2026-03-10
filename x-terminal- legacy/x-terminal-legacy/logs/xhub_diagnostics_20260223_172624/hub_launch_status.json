@@ -1,0 +1,91 @@
+{
+  "degraded" : {
+    "blocked_capabilities" : [
+      "ai.generate.local"
+    ],
+    "is_degraded" : true
+  },
+  "launch_id" : "1A18CF6B-74F4-406D-88F7-A32A5B389BD5",
+  "root_cause" : {
+    "component" : "runtime",
+    "detail" : "MLX is unavailable.\n\nImport error:\nModuleNotFoundError: No module named 'mlx_lm'\n\nThis usually means MLX deps are not installed into the Python that Hub is using.\n\nFix (offline):\n1) Run: offline_mlx_deps_py311\/install_relflowhub_mlx_deps.command\n2) If macOS blocks dlopen\/system policy: run install_relflowhub_mlx_deps_system_python311.command instead\n3) Hub Settings -> AI Runtime -> Stop, then Start\n\nNote: Hub sets PYTHONNOUSERSITE=1, so pip --user (~\/Library\/Python\/...) won't be used.",
+    "error_code" : "XHUB_RT_LOCK_BUSY"
+  },
+  "schema_version" : "hub_launch_status.v1",
+  "state" : "DEGRADED_SERVING",
+  "steps" : [
+    {
+      "elapsed_ms" : 0,
+      "error_code" : "",
+      "error_hint" : "",
+      "ok" : true,
+      "state" : "BOOT_START",
+      "ts_ms" : 1771838740965
+    },
+    {
+      "elapsed_ms" : 3,
+      "error_code" : "",
+      "error_hint" : "",
+      "ok" : true,
+      "state" : "ENV_VALIDATE",
+      "ts_ms" : 1771838740968
+    },
+    {
+      "elapsed_ms" : 3,
+      "error_code" : "",
+      "error_hint" : "",
+      "ok" : true,
+      "state" : "START_GRPC_SERVER",
+      "ts_ms" : 1771838740968
+    },
+    {
+      "elapsed_ms" : 1011,
+      "error_code" : "",
+      "error_hint" : "",
+      "ok" : true,
+      "state" : "WAIT_GRPC_READY",
+      "ts_ms" : 1771838741976
+    },
+    {
+      "elapsed_ms" : 1011,
+      "error_code" : "",
+      "error_hint" : "",
+      "ok" : true,
+      "state" : "START_BRIDGE",
+      "ts_ms" : 1771838741976
+    },
+    {
+      "elapsed_ms" : 2012,
+      "error_code" : "",
+      "error_hint" : "",
+      "ok" : true,
+      "state" : "WAIT_BRIDGE_READY",
+      "ts_ms" : 1771838742977
+    },
+    {
+      "elapsed_ms" : 2012,
+      "error_code" : "",
+      "error_hint" : "",
+      "ok" : true,
+      "state" : "START_RUNTIME",
+      "ts_ms" : 1771838742977
+    },
+    {
+      "elapsed_ms" : 28098,
+      "error_code" : "XHUB_RT_LOCK_BUSY",
+      "error_hint" : "MLX is unavailable.\n\nImport error:\nModuleNotFoundError: No module named 'mlx_lm'\n\nThis usually means MLX deps are not installed into the Python that Hub is using.\n\nFix (offline):\n1) Run: offline_mlx_deps_py311\/install_relflowhub_mlx_deps.command\n2) If macOS blocks dlopen\/system policy: run install_relflowhub_mlx_deps_system_python311.command instead\n3) Hub Settings -> AI Runtime -> Stop, then Start\n\nNote: Hub sets PYTHONNOUSERSITE=1, so pip --user (~\/Library\/Python\/...) won't be used.",
+      "ok" : false,
+      "state" : "WAIT_RUNTIME_READY",
+      "ts_ms" : 1771838769063
+    },
+    {
+      "elapsed_ms" : 28098,
+      "error_code" : "",
+      "error_hint" : "",
+      "ok" : false,
+      "state" : "DEGRADED_SERVING",
+      "ts_ms" : 1771838769063
+    }
+  ],
+  "updated_at_ms" : 1771838769063
+}

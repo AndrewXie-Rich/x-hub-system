@@ -1,0 +1,32 @@
+{
+  "window_ms": 86400000,
+  "max_events": 5000,
+  "noise_control": {
+    "min_samples": 20,
+    "critical_margin_ratio": 0.2
+  },
+  "latency": {
+    "benchmark_p95_ms_max": 1500,
+    "benchmark_p99_ms_max": 2500,
+    "runtime_duration_p95_ms_max": 3000,
+    "runtime_queue_wait_p95_ms_max": 2000,
+    "runtime_queue_depth_p95_max": 64
+  },
+  "quality": {
+    "precision_at_k_min": 0.15,
+    "recall_at_k_min": 0.8
+  },
+  "freshness": {
+    "index_freshness_p95_ms_max": 300000,
+    "index_freshness_max_ms_max": 900000
+  },
+  "security": {
+    "adversarial_block_rate_min": 0.45,
+    "runtime_block_rate_max": 0.2,
+    "runtime_downgrade_rate_max": 0.3
+  },
+  "stage": {
+    "anomaly_score_warn": 40,
+    "anomaly_score_critical": 80
+  }
+}
