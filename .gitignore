@@ -43,3 +43,8 @@ yarn-error.log*
 .sandbox_tmp/
 .clang-module-cache/
 .swift-module-cache/
+
+# Temporary status files and legacy directories
+in_progress）
+White paper/
+x-terminal- legacy/
