@@ -14,11 +14,11 @@
 >
 > X-Hub keeps model routing, memory truth, constitutional constraints, grants, policy, audit, and execution safety inside one governed Hub, while terminals stay lightweight and untrusted by default.
 
-**X-Hub is not just another AI terminal. It is a security-first architecture for governable Agent execution.**
+**X-Hub-System is not just another AI terminal. It is a security-first architecture for governable Agent execution.**
 
 ## Public Preview Status
 
-X-Hub is currently a **public tech preview** of a system architecture for safe, governable Agent execution.
+X-Hub-System is currently a **public tech preview** of a system architecture for safe, governable Agent execution.
 
 Core Hub and X-Terminal paths already run: Hub-governed local and paid model routing, paired terminal execution, early Supervisor orchestration, Hub-backed memory governance, and honest runtime route visibility in X-Terminal.
 
@@ -33,7 +33,7 @@ The product surface is still incomplete, but the architecture thesis is already 
 
 ## Why Open Early
 
-We are publishing X-Hub before it is fully polished because the core direction is already differentiated:
+We are publishing X-Hub-System before it is fully polished because the core direction is already differentiated:
 
 - a Hub-first trust model instead of terminal-first sprawl
 - one governed plane for local models and paid models
@@ -47,7 +47,7 @@ If that direction matters to you, we want outside review, technical criticism, a
 
 Most AI apps stop at answering.
 
-X-Hub is built for the harder problem: making AI execution governable.
+X-Hub-System is built for the harder problem: making AI execution governable.
 
 - One Hub governs local models and paid models through the same control plane.
 - Terminals do not own trust, keys, grants, or final policy decisions.
@@ -56,7 +56,7 @@ X-Hub is built for the harder problem: making AI execution governable.
 
 ## Why Not Just Another AI Terminal?
 
-| Typical AI client | X-Hub |
+| Typical AI client | X-Hub-System |
 |---|---|
 | Trust is spread across desktop apps, plugins, and scripts | Trust is centralized in the Hub |
 | Local model path and paid model path drift apart | Local and paid models are governed together |
@@ -89,7 +89,7 @@ Hard release rules for this public package:
 
 The current repository and preview builds already demonstrate working foundations for:
 
-- X-Hub macOS app build and runtime
+- X-Hub-System macOS app build and runtime
 - X-Terminal source build and packaged app flow
 - paired Hub <-> Terminal routing across local and remote paths
 - Hub-governed local and paid model execution
@@ -119,9 +119,9 @@ These points describe the architecture-backed direction of the system. The valid
 - **Long-horizon stability**: Hub-backed memory reduces drift across multi-step work.
 - **Multi-terminal design**: terminals can stay fast and replaceable without becoming the trust anchor.
 
-## Who Should Use X-Hub First
+## Who Should Use X-Hub-System First
 
-X-Hub is especially suited for:
+X-Hub-System is especially suited for:
 
 - **Enterprises** that want centralized trust, audit, and model-governance controls.
 - **Public-sector teams** and other high-security environments that need stronger operational boundaries.
@@ -131,20 +131,20 @@ It is also a strong fit for **individual users** who want a safer AI setup, clea
 
 The key point is not organization size. The key point is whether you want a stronger safety posture than a terminal-only AI app can usually provide.
 
-## Recommended X-Hub Host Hardware
+## Recommended X-Hub-System Host Hardware
 
-Yes: for recommended X-Hub host hardware, **Mac mini** and **Mac Studio** are the right classes of machine to recommend.
+Yes: for recommended X-Hub-System host hardware, **Mac mini** and **Mac Studio** are the right classes of machine to recommend.
 
 Why:
 
-- X-Hub currently ships a native macOS Hub app and runtime surface.
+- X-Hub-System currently ships a native macOS Hub app and runtime surface.
 - The active Hub app package targets `macOS 13+`.
 - The Hub runtime also includes an MLX-based local runtime path, which aligns naturally with Apple silicon desktops.
 
 Recommended deployment tiers:
 
 - **Mac mini** for most individual users, pilots, small teams, and lighter Hub deployments
-  - best when X-Hub is primarily acting as the trusted control plane, with moderate local runtime load
+  - best when X-Hub-System is primarily acting as the trusted control plane, with moderate local runtime load
   - a strong default if you want a compact, lower-cost dedicated Hub machine
 - **Mac Studio** for heavier local-model workloads, higher concurrency, larger memory needs, or more demanding always-on deployments
   - better fit when the Hub is expected to carry more local inference work in addition to control-plane duties
@@ -157,7 +157,7 @@ Practical recommendation:
 
 For public positioning, the clean wording is:
 
-> X-Hub is recommended to run on Apple silicon desktop Macs, with Mac mini as the default recommendation and Mac Studio as the higher-capacity recommendation.
+> X-Hub-System is recommended to run on Apple silicon desktop Macs, with Mac mini as the default recommendation and Mac Studio as the higher-capacity recommendation.
 
 ## What Is Shipping Now
 
@@ -174,7 +174,7 @@ Everything else in this repository should be read as implementation context, roa
 
 ## Supervisor Orchestration Core
 
-X-Hub is not only a route-and-policy layer.
+X-Hub-System is not only a route-and-policy layer.
 
 The paired X-Terminal Supervisor is designed as an execution orchestrator for complex work, especially when one chat window is not enough to manage delivery safely.
 
@@ -216,7 +216,7 @@ Execution baseline:
 
 ## Memory-Backed Constitutional Guardrails
 
-X-Hub does not treat safety as prompt text alone.
+X-Hub-System does not treat safety as prompt text alone.
 
 The broader system design includes an **X-Constitution** layer that is anchored to the Hub-side memory system and used to stabilize agent behavior around risk, privacy, authorization, audit integrity, and side effects.
 
@@ -273,11 +273,11 @@ That separation matters because it lets you improve UX, swap clients, and run ri
 
 Most systems bolt paid APIs onto a separate path.
 
-X-Hub treats local models and paid models as operational peers under the same governance surface: routing, readiness, grants, and audit.
+X-Hub-System treats local models and paid models as operational peers under the same governance surface: routing, readiness, grants, and audit.
 
 ### 3. Fail-Closed Instead Of Pretend-Recovery
 
-If pairing is incomplete, model inventory is stale, bridge heartbeat is missing, or runtime verification is blocked, X-Hub surfaces that state directly instead of pretending the system is safe to continue.
+If pairing is incomplete, model inventory is stale, bridge heartbeat is missing, or runtime verification is blocked, X-Hub-System surfaces that state directly instead of pretending the system is safe to continue.
 
 ### 4. Memory Stays Attached To The System Of Record
 
@@ -287,7 +287,7 @@ The memory story is that the Hub remains the durable truth-source and terminals 
 
 ### 5. Safety Is Backed By Memory And Policy, Not Prompt Tricks Alone
 
-X-Hub uses constitutional guidance as part of a broader Hub-side control system.
+X-Hub-System uses constitutional guidance as part of a broader Hub-side control system.
 
 The goal is to keep behavior bounded by persistent memory-backed rules and then reinforce those rules with policy-engine enforcement, grant checks, audit, and fail-closed execution.
 
@@ -319,14 +319,19 @@ open build/X-Terminal.app
 
 ### Developer Source Run Notes
 
-For developers working from source, X-Terminal already uses the public executable name:
+For developers working from source, use the public executable names:
+
+```bash
+cd x-hub/macos/RELFlowHub
+swift run XHub
+```
 
 ```bash
 cd x-terminal
 swift run XTerminal
 ```
 
-The Hub-side Swift package still uses the historical internal target name `RELFlowHub` for source execution. The public product name remains `X-Hub`.
+The Hub-side Swift package still uses the historical internal target and package names under the hood, but `XHub` is now the preferred source-run executable alias. `RELFlowHub` remains available for compatibility.
 
 ### Run The XT Release Gate
 
@@ -343,7 +348,7 @@ XT_GATE_MODE=strict bash scripts/ci/xt_release_gate.sh
 
 ## Build With Us
 
-X-Hub is being opened early on purpose.
+X-Hub-System is being opened early on purpose.
 
 We are especially interested in contributors who care about:
 
@@ -395,6 +400,7 @@ Use this order for a quick system check:
 Detailed layout:
 
 - `docs/REPO_LAYOUT.md`
+- `docs/WORKING_INDEX.md`
 - `x-hub/README.md`
 - `x-terminal/README.md`
 - `protocol/README.md`
@@ -412,7 +418,7 @@ Detailed layout:
 
 ## FAQ
 
-### Is X-Hub only for enterprises?
+### Is X-Hub-System only for enterprises?
 
 No.
 
@@ -424,11 +430,11 @@ Not yet.
 
 This GitHub repository should currently be read as an early public preview and test release. Core runtime flows are already meaningful and increasingly usable, but onboarding, product completeness, operational polish, and some capability surfaces are still in progress.
 
-### Why is X-Hub safer than a terminal-only AI setup?
+### Why is X-Hub-System safer than a terminal-only AI setup?
 
 Because trust does not live in the terminal alone.
 
-X-Hub centralizes grants, route control, readiness checks, audit, and policy enforcement in the Hub, and it fails closed when critical conditions are incomplete.
+X-Hub-System centralizes grants, route control, readiness checks, audit, and policy enforcement in the Hub, and it fails closed when critical conditions are incomplete.
 
 ### Is the safety model just prompt engineering?
 
@@ -447,8 +453,8 @@ Public claims for this package are intentionally limited to the validated releas
 Use this order:
 
 1. `README.md`
-2. `docs/whitepaper-submodule.md`
-3. `docs/REPO_LAYOUT.md`
+2. `docs/REPO_LAYOUT.md`
+3. `X_MEMORY.md`
 4. `x-hub/README.md`
 5. `x-terminal/README.md`
 6. `docs/WORKING_INDEX.md`
@@ -470,12 +476,22 @@ Release and governance references:
 - `docs/whitepaper-submodule.md`
 - `docs/open-source/OSS_RELEASE_CHECKLIST_v1.md`
 - `docs/open-source/GITHUB_RELEASE_NOTES_TEMPLATE_v1.md`
+- `docs/open-source/GITHUB_RELEASE_NOTES_TEMPLATE_v1.en.md`
+
+Operator and release drafting references:
+
+- `docs/WORKING_INDEX.md`
+- `docs/REPO_LAYOUT.md`
+- `x-hub/README.md`
+- `x-hub/macos/README.md`
 
 ## Release Discipline
 
 This repository contains more implementation material than the currently validated public release slice.
 
 Public statements for this package must stay inside the validated mainline only. If a capability is not explicitly covered by that scope, treat it as not release-claimed.
+
+Internal work orders, operator navigation docs, and in-progress slices may move ahead of the validated public mainline. Do not mirror that internal progress directly into GitHub release notes, README claims, or external messaging.
 
 ## License
 
