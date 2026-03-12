@@ -305,19 +305,28 @@ x-hub/tools/build_hub_app.command
 bash x-terminal/tools/build_xterminal_app.command
 ```
 
-### Run X-Hub From Source
+### Launch The Built X-Hub App
 
 ```bash
-cd x-hub/macos/RELFlowHub
-swift run RELFlowHub
+open build/X-Hub.app
 ```
 
-### Run X-Terminal From Source
+### Launch The Built X-Terminal App
+
+```bash
+open build/X-Terminal.app
+```
+
+### Developer Source Run Notes
+
+For developers working from source, X-Terminal already uses the public executable name:
 
 ```bash
 cd x-terminal
 swift run XTerminal
 ```
+
+The Hub-side Swift package still uses the historical internal target name `RELFlowHub` for source execution. The public product name remains `X-Hub`.
 
 ### Run The XT Release Gate
 
