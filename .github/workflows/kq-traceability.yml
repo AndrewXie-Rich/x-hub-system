@@ -3,19 +3,19 @@ name: KQ Traceability
 on:
   pull_request:
     paths:
-      - ".kiro/specs/xhub-memory-quality-v1/**"
+      - "specs/xhub-memory-quality-v1/**"
       - "scripts/kq_traceability_matrix.js"
       - "scripts/kq_traceability_matrix.test.js"
-      - "docs/memory-new/xhub-kiro-spec-gates-work-orders-v1.md"
+      - "docs/memory-new/xhub-spec-gates-work-orders-v1.md"
       - ".github/workflows/kq-traceability.yml"
   push:
     branches:
       - main
     paths:
-      - ".kiro/specs/xhub-memory-quality-v1/**"
+      - "specs/xhub-memory-quality-v1/**"
       - "scripts/kq_traceability_matrix.js"
       - "scripts/kq_traceability_matrix.test.js"
-      - "docs/memory-new/xhub-kiro-spec-gates-work-orders-v1.md"
+      - "docs/memory-new/xhub-spec-gates-work-orders-v1.md"
       - ".github/workflows/kq-traceability.yml"
 
 jobs:
@@ -37,7 +37,7 @@ jobs:
       - name: Validate and lock traceability matrix
         run: |
           node ./scripts/kq_traceability_matrix.js \
-            --spec-dir ./.kiro/specs/xhub-memory-quality-v1 \
+            --spec-dir ./specs/xhub-memory-quality-v1 \
             --check 1
 
       - name: Upload traceability matrix
@@ -45,4 +45,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: xhub-traceability-matrix
-          path: ./.kiro/specs/xhub-memory-quality-v1/traceability_matrix_v1.json
+          path: ./specs/xhub-memory-quality-v1/traceability_matrix_v1.json

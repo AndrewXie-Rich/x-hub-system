@@ -1,7 +1,11 @@
 # X-Terminal Work Orders Index
 
-- updatedAt: 2026-03-07
+- updatedAt: 2026-03-11
 - scope: `x-terminal/` module only
+
+This page is an internal execution index for X-Terminal delivery packs.
+
+Use the repository root `README.md` and module READMEs for product overview and active entrypoints. Use this file when you need implementation-level work order references.
 
 ## Active
 
@@ -61,6 +65,10 @@
   - Purpose: 自动化产品面补短板执行包（补齐事件驱动、主动解阻、run timeline、一键启用与竞争性毕业线）
   - Includes: `XT-W3-25/XT-W3-25-A/B/C/D/E/F`、automation recipe、event runner、directed takeover、operator explainability、starter templates、comparative graduation
   - Release condition: must satisfy `xt-supervisor-multipool-lane-execution-pack-v1.md`, `xt-w2-27-anti-block-unblock-orchestration-implementation-pack-v1.md`, `xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, and `docs/memory-new/xhub-lane-command-board-v2.md`
+- `xt-w3-25-governed-automation-recipe-runtime-implementation-pack-v1.md`
+  - Purpose: XT-W3-25 直接执行细化包（把 goal -> recipe -> trigger -> run -> checkpoint -> timeline -> bootstrap 拉直到真实 governed automation runtime）
+  - Includes: `XT-W3-25-G/H/I/J/K/L/M/N`、goal compiler、recipe store/versioning、trigger router、launch gate、restart recovery、directed takeover guard、operator brief、first-run bootstrap
+  - Release condition: must satisfy `xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `docs/memory-new/xhub-trusted-automation-device-execution-plane-implementation-pack-v1.md`, and `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
 - `xt-w3-26-supervisor-one-shot-intake-adaptive-pool-planner-implementation-pack-v1.md`
   - Purpose: Supervisor 一次性接案 + 自适应泳池规划产品化包（用户输入一个大任务后自动归一化、规划、启动、续推、收口）
   - Includes: `XT-W3-26/XT-W3-26-A/B/C/D/E/F/G/H`、one-shot intake、adaptive pool planner、safe auto-launch、directed unblock baton、delivery scope freeze
@@ -69,18 +77,46 @@
   - Purpose: Hub / X-Terminal UI 产品化 R1 包（把工程控制面板收敛为主路径清晰、排障可达、视觉一致的产品界面）
   - Includes: `XT-W3-27/XT-W3-27-A/B/C/D/E/F/G/H`、IA freeze、design tokens、Global Home、Supervisor cockpit、Hub setup wizard、Hub/XT settings center
   - Release condition: must satisfy `xt-w3-26-supervisor-one-shot-intake-adaptive-pool-planner-implementation-pack-v1.md`, `xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, and `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
+- `xt-w3-29-supervisor-voice-progress-and-guided-authorization-implementation-pack-v1.md`
+  - Purpose: Supervisor 语音进度汇报与语音指导授权产品化包（主动播报 + 主动问答 + 方向指导 + 语音授权）
+  - Includes: `XT-W3-29/XT-W3-29-A/B/C/D/E/F`、wake phrase / prompt phrase、heartbeat 驱动语音简报、TTS 播报、voice directive 绑定、Hub voice challenge 授权桥、voice timeline / quiet hours / replay
+  - Release condition: must satisfy `xt-w3-26-supervisor-one-shot-intake-adaptive-pool-planner-implementation-pack-v1.md`, `xt-supervisor-rhythm-user-explainability-implementation-pack-v1.md`, `protocol/hub_protocol_v1.md`, and `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
+- `xt-w3-29-supervisor-conversation-window-persistent-session-implementation-pack-v1.md`
+  - Purpose: Supervisor 对话窗口与唤醒后短时常驻会话详细包（统一主链窗口、wake 自动开窗、TTL 常驻、fail-closed 语音状态栏）
+  - Includes: `XT-W3-29-A/F` 窗口集成支撑、shared conversation panel、window shell 收口、conversation session controller、wake -> open window 桥、voice state rail、TTL policy、回归矩阵
+  - Release condition: must satisfy both `xt-w3-29-supervisor-voice-progress-and-guided-authorization-implementation-pack-v1.md` and `xt-w3-29-whisperkit-funasr-voice-runtime-implementation-pack-v1.md`
+- `xt-w3-29-supervisor-voice-productization-gap-closure-implementation-pack-v1.md`
+  - Purpose: Supervisor 语音产品化差距补齐包（吸收成熟语音体验能力，但保持 Hub fail-closed、授权、Supervisor 真相源不变）
+  - Includes: `XT-W3-29-P1..P6`、pair-synced wake profile、continuous talk loop、interruptible streaming TTS、voice presence UX、device voice readiness、voice replay/safety invariants
+  - Release condition: must satisfy `xt-w3-29-supervisor-voice-progress-and-guided-authorization-implementation-pack-v1.md`, `xt-w3-29-whisperkit-funasr-voice-runtime-implementation-pack-v1.md`, and `xt-w3-29-supervisor-conversation-window-persistent-session-implementation-pack-v1.md`
 - `xt-w3-26-w3-27-4ai-parallel-dispatch-pack-v1.md`
   - Purpose: XT-W3-26 / XT-W3-27 的四 AI 并行派发包（低冲突写入边界 + directed handoff + 首条提示词）
   - Includes: AI-1/2/3/4 的 claim、文件写入边界、依赖边、合并顺序、4 条可直接派发的首条消息
   - Release condition: must satisfy both `xt-w3-26-supervisor-one-shot-intake-adaptive-pool-planner-implementation-pack-v1.md` and `xt-w3-27-hub-xt-ui-productization-r1-implementation-pack-v1.md`
-- `xt-openclaw-skills-compat-reliability-work-orders-v1.md`
-  - Purpose: OpenClaw Skills 兼容专项工单（兼容优先 + 可靠性/效率并重）
+- `xt-skills-compat-reliability-work-orders-v1.md`
+  - Purpose: Skills 兼容专项工单（兼容优先 + 可靠性/效率并重）
   - Includes: SKC-G0..G5、Hub 5 条 + XT 2 条泳道、P0/P1 工单、require-real 证据与发布回滚闭环
   - Release condition: must satisfy both `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md` and `docs/memory-new/xhub-internal-pass-lines-v1.md`
-- `xt-openclaw-assistant-runtime-alignment-implementation-pack-v1.md`
-  - Purpose: 吸收 OpenClaw 上层 assistant runtime 能力，但保持模型/配对/grant/device trust 主权继续只归 X-Hub
+- `xt-assistant-runtime-alignment-implementation-pack-v1.md`
+  - Purpose: 吸收 skills ecosystem 上层 assistant runtime 能力，但保持模型/配对/grant/device trust 主权继续只归 X-Hub
   - Includes: OCA-W1-01..05、assistant runtime skeleton、tool surface 扩展、skills handoff、doctor/onboarding、runtime-aware UI
-  - Release condition: must satisfy both `xt-openclaw-skills-compat-reliability-work-orders-v1.md` and `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
+  - Release condition: must satisfy both `xt-skills-compat-reliability-work-orders-v1.md` and `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
+- `xt-w3-30-openclaw-mode-capability-gap-closure-implementation-pack-v1.md`
+  - Purpose: 按 Hub-first 架构补齐桌面级 OpenClaw-mode 关键缺口（browser runtime、external trigger、email/channel action、autonomy policy、extension/MCP、node registry）
+  - Includes: `XT-W3-30/A/B/C/D/E/F/G`、P0/P1/P2 顺序、机读契约、require-real parity graduation、桌面级 ready 定义
+  - Release condition: must satisfy `xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `docs/memory-new/xhub-trusted-automation-device-execution-plane-implementation-pack-v1.md`, and `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
+- `xt-w3-31-supervisor-portfolio-awareness-and-project-action-feed-implementation-pack-v1.md`
+  - Purpose: Supervisor 跨项目总览与项目动作事件流产品化包（Supervisor 默认可见其管辖项目的进度、记忆摘要、当前动作，并以定向 delta 方式接收关键变化）
+  - Includes: `XT-W3-31/A/B/C/D/E/F/G/H`、jurisdiction registry、project capsule、action event feed、portfolio snapshot、notification policy、scope-safe drill-down、require-real 回归
+  - Release condition: must satisfy `xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, `xt-w3-26-supervisor-one-shot-intake-adaptive-pool-planner-implementation-pack-v1.md`, `xt-supervisor-rhythm-user-explainability-implementation-pack-v1.md`, and `docs/memory-new/xhub-terminal-hub-memory-governance-work-orders-v1.md`
+- `xt-w3-32-supervisor-skill-orchestration-and-governed-event-loop-implementation-pack-v1.md`
+  - Purpose: 把 Supervisor 从“只会看 portfolio 和给建议”的控制台升级为“可调用 skills、可维护 job/plan、可消费回调并自动续推”的受治理编排器
+  - Includes: `XT-W3-32/A/B/C/D/E/F/G`、Action Protocol v2、project-scoped skill registry、job/plan canonical state machine、governed skill dispatch、callback event loop、orchestration policy、require-real parity harness
+  - Release condition: must satisfy `xt-w3-30-openclaw-mode-capability-gap-closure-implementation-pack-v1.md`, `xt-w3-31-supervisor-portfolio-awareness-and-project-action-feed-implementation-pack-v1.md`, and `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
+- `xt-w3-33-supervisor-decision-kernel-routing-and-memory-governance-implementation-pack-v1.md`
+  - Purpose: 补齐 Supervisor 的正式决策轨、角色化模型路由、动作优先 dashboard、低风险默认建议与可解释记忆压缩
+  - Includes: `XT-W3-33/A/B/C/D/E/F/G/H`、project spec capsule、decision/background tracks、role-based model routing、actionability snapshot、rhythm v2、decision-blocker assist、memory compaction、require-real governance regression
+  - Release condition: must satisfy `xt-w3-31-supervisor-portfolio-awareness-and-project-action-feed-implementation-pack-v1.md`, `xt-w3-32-supervisor-skill-orchestration-and-governed-event-loop-implementation-pack-v1.md`, `docs/memory-new/xhub-terminal-hub-memory-governance-work-orders-v1.md`, and `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
 - `xt-w1-02-route-state-machine.md`
   - Purpose: XT-W1-02 delivery doc for route-state convergence (`auto|grpc|file`)
   - Includes: state machine matrix, fallback/error mapping, regression samples, manual verification commands
@@ -92,12 +128,12 @@
   - Includes: grant gate hook, reject-code standardization, bypass scanner and slash observability commands
 - `xt-w3-08-release-gate-skeleton.md`
   - Purpose: XT-W3-08 strict gate delivery doc for release gates automation
-  - Includes: XT-G0..G5 gate entry script, workflow wiring, report output, rollback verification, OpenClaw extension checks（XT-W2-17/18/19）
+  - Includes: XT-G0..G5 gate entry script, workflow wiring, report output, rollback verification, skills ecosystem extension checks（XT-W2-17/18/19）
 - `xt-w2-09-w2-11-split-proposal-prompt-contract.md`
   - Purpose: XT-W2-09/XT-W2-11 delivery doc for split proposal confirm/override flow and prompt contract lint gate
   - Includes: split flow state machine, AI-XT-2 machine-readable interfaces, runtime fixture generation/regression pipeline, gate evidence fields
-- `xt-l1-openclaw-skills-ux-preflight-runner-contract-v1.md`
-  - Purpose: XT-L1 delivery contract for OpenClaw skills UX/preflight/runner constraints (`SKC-W1-02`协同 + `SKC-W2-05` + `SKC-W4-11`)
+- `xt-l1-skills-ux-preflight-runner-contract-v1.md`
+  - Purpose: XT-L1 delivery contract for skills UX/preflight/runner constraints (`SKC-W1-02`协同 + `SKC-W2-05` + `SKC-W4-11`)
   - Includes: 搜索/导入/分层 pin 交互断言、preflight 修复卡片规范、runner 约束 deny_code、热更新回退契约与机读 fixture 检查
 - `docs/memory-new/xhub-internal-pass-lines-v1.md` (cross-module gate reference)
   - Purpose: internal GO/NO-GO pass lines for Hub + X-Terminal release decisions

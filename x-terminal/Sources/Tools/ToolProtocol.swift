@@ -17,6 +17,16 @@ enum ToolName: String, Codable, CaseIterable, Sendable {
     case memory_snapshot
     case project_snapshot
 
+    // Device automation (project-scoped + trusted automation gated)
+    case deviceUIObserve = "device.ui.observe"
+    case deviceUIAct = "device.ui.act"
+    case deviceUIStep = "device.ui.step"
+    case deviceClipboardRead = "device.clipboard.read"
+    case deviceClipboardWrite = "device.clipboard.write"
+    case deviceScreenCapture = "device.screen.capture"
+    case deviceBrowserControl = "device.browser.control"
+    case deviceAppleScript = "device.applescript"
+
     // Networking (via Hub Bridge)
     case need_network
     case bridge_status
@@ -124,7 +134,27 @@ enum ToolPolicy {
                 .bridge_status,
             ]
         case .full:
-            return Set(ToolName.allCases)
+            return [
+                .read_file,
+                .write_file,
+                .list_dir,
+                .search,
+                .run_command,
+                .git_status,
+                .git_diff,
+                .git_apply_check,
+                .git_apply,
+                .session_list,
+                .session_resume,
+                .session_compact,
+                .memory_snapshot,
+                .project_snapshot,
+                .need_network,
+                .bridge_status,
+                .web_fetch,
+                .web_search,
+                .browser_read,
+            ]
         }
     }
 
@@ -149,15 +179,32 @@ enum ToolPolicy {
     }
 
     static func effectiveAllowedTools(profileRaw: String, allowTokens: [String], denyTokens: [String]) -> Set<ToolName> {
+        usableTools(grantedTools(profileRaw: profileRaw, allowTokens: allowTokens, denyTokens: denyTokens))
+    }
+
+    static func sortedTools(_ tools: Set<ToolName>) -> [ToolName] {
+        ToolName.allCases.filter { tools.contains($0) }
+    }
+
+    static func runtimeRequiredTools(for tool: ToolName) -> Set<ToolName> {
+        switch tool {
+        case .deviceUIStep:
+            return [.deviceUIStep, .deviceUIObserve, .deviceUIAct]
+        default:
+            return [tool]
+        }
+    }
+
+    static func usableTools(_ tools: Set<ToolName>) -> Set<ToolName> {
+        Set(tools.filter { runtimeRequiredTools(for: $0).isSubset(of: tools) })
+    }
+
+    static func grantedTools(profileRaw: String, allowTokens: [String], denyTokens: [String]) -> Set<ToolName> {
         let profile = parseProfile(profileRaw)
         var allowed = tools(for: profile)
         allowed.formUnion(expandPolicyTokens(normalizePolicyTokens(allowTokens)))
         allowed.subtract(expandPolicyTokens(normalizePolicyTokens(denyTokens)))
         return allowed
-    }
-
-    static func sortedTools(_ tools: Set<ToolName>) -> [ToolName] {
-        ToolName.allCases.filter { tools.contains($0) }
     }
 
     static func toolSpec(_ tool: ToolName) -> String {
@@ -190,6 +237,22 @@ enum ToolPolicy {
             return "- memory_snapshot {mode?, project_id?}"
         case .project_snapshot:
             return "- project_snapshot {}"
+        case .deviceUIObserve:
+            return "- device.ui.observe {target_role?, target_title?, target_identifier?, target_description?, target_value_contains?, max_results?}"
+        case .deviceUIAct:
+            return "- device.ui.act {action, value?, target_role?, target_title?, target_identifier?, target_description?, target_value_contains?, target_index?}"
+        case .deviceUIStep:
+            return "- device.ui.step {action, value?, target_role?, target_title?, target_identifier?, target_description?, target_value_contains?, target_index?, max_results?}"
+        case .deviceClipboardRead:
+            return "- device.clipboard.read {}"
+        case .deviceClipboardWrite:
+            return "- device.clipboard.write {text|content|value}"
+        case .deviceScreenCapture:
+            return "- device.screen.capture {path?}"
+        case .deviceBrowserControl:
+            return "- device.browser.control {action=open|open_url|navigate|snapshot|extract|click|type|upload, url?, session_id?, selector?, text|content|value?, path?, grant_id?, timeout_sec?, max_bytes?}"
+        case .deviceAppleScript:
+            return "- device.applescript {source}"
         case .bridge_status:
             return "- bridge_status {}"
         case .need_network:
@@ -229,6 +292,8 @@ enum ToolPolicy {
                 out.formUnion([.git_status, .git_diff, .git_apply_check, .git_apply])
             case "group:network":
                 out.formUnion([.bridge_status, .need_network, .web_fetch, .web_search, .browser_read])
+            case "group:device_automation":
+                out.formUnion([.deviceUIObserve, .deviceUIAct, .deviceUIStep, .deviceClipboardRead, .deviceClipboardWrite, .deviceScreenCapture, .deviceBrowserControl, .deviceAppleScript])
             case "group:coding":
                 out.formUnion(tools(for: .coding))
             case "group:minimal":
@@ -252,6 +317,20 @@ enum ToolPolicy {
             return .safe
         case .session_list, .session_resume, .session_compact, .memory_snapshot, .project_snapshot:
             return .safe
+        case .deviceUIObserve:
+            return .needsConfirm
+        case .deviceUIAct:
+            return .needsConfirm
+        case .deviceUIStep:
+            return .needsConfirm
+        case .deviceClipboardRead, .deviceClipboardWrite:
+            return .safe
+        case .deviceScreenCapture:
+            return .needsConfirm
+        case .deviceBrowserControl:
+            return .needsConfirm
+        case .deviceAppleScript:
+            return .needsConfirm
         case .bridge_status:
             return .safe
         case .need_network:

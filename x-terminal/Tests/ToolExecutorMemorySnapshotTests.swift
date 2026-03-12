@@ -8,6 +8,11 @@ struct ToolExecutorMemorySnapshotTests {
         let response = HubIPCClient.MemoryContextResponsePayload(
             text: "[MEMORY_V1]\n[L1_CANONICAL]\nKeep release scope frozen.\n[/L1_CANONICAL]\n[/MEMORY_V1]",
             source: "hub_remote_snapshot",
+            resolvedMode: XTMemoryUseMode.projectChat.rawValue,
+            freshness: "fresh_remote",
+            cacheHit: false,
+            denyCode: nil,
+            downgradeCode: nil,
             budgetTotalTokens: 1600,
             usedTotalTokens: 120,
             layerUsage: [
@@ -33,11 +38,31 @@ struct ToolExecutorMemorySnapshotTests {
         #expect(jsonString(summary["project_id"]) == "project-memory")
         #expect(jsonString(summary["mode"]) == "project")
         #expect(jsonString(summary["source"]) == "hub_remote_snapshot")
+        #expect(jsonString(summary["resolved_mode"]) == XTMemoryUseMode.projectChat.rawValue)
+        #expect(jsonString(summary["freshness"]) == "fresh_remote")
+        #expect(jsonBool(summary["cache_hit"]) == false)
         #expect(jsonNumber(summary["budget_total_tokens"]) == 1600)
         #expect(jsonNumber(summary["used_total_tokens"]) == 120)
         #expect(jsonNumber(summary["redacted_items"]) == 1)
         #expect(jsonNumber(summary["private_drops"]) == 2)
         #expect(jsonArray(summary["truncated_layers"])?.contains(where: { jsonString($0) == "l4_raw_evidence" }) == true)
         #expect(toolBody(output).contains("Keep release scope frozen."))
+    }
+
+    @Test
+    func memorySnapshotRejectsUnknownMode() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "memory-snapshot-invalid-mode")
+        defer { fixture.cleanup() }
+
+        let result = try await ToolExecutor.execute(
+            call: ToolCall(tool: .memory_snapshot, args: ["mode": .string("not_a_real_mode")]),
+            projectRoot: fixture.root
+        )
+
+        #expect(result.ok == false)
+        let summary = try #require(toolSummaryObject(result.output))
+        #expect(jsonString(summary["deny_code"]) == XTMemoryUseDenyCode.memoryModeContractMissing.rawValue)
+        #expect(jsonString(summary["reason"]) == XTMemoryUseDenyCode.memoryModeContractMissing.rawValue)
+        #expect(toolBody(result.output) == XTMemoryUseDenyCode.memoryModeContractMissing.rawValue)
     }
 }

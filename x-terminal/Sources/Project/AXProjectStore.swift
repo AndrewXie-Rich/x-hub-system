@@ -49,6 +49,30 @@ enum AXProjectStore {
         try writeAtomic(data: data, to: ctx.configURL)
     }
 
+    @discardableResult
+    static func upsertAutomationRecipe(
+        _ recipe: AXAutomationRecipeRuntimeBinding,
+        activate: Bool = false,
+        for ctx: AXProjectContext
+    ) throws -> AXAutomationRecipeRuntimeBinding {
+        var config = try loadOrCreateConfig(for: ctx)
+        let stored = config.upsertAutomationRecipe(recipe, activate: activate)
+        try saveConfig(config, for: ctx)
+        appendRawLog(
+            [
+                "type": "automation_recipe",
+                "action": "upsert",
+                "recipe_id": stored.recipeID,
+                "recipe_ref": stored.ref,
+                "lifecycle_state": stored.lifecycleState.rawValue,
+                "active_recipe_ref": config.activeAutomationRecipeRef,
+                "timestamp_ms": Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
+            ],
+            for: ctx
+        )
+        return stored
+    }
+
     static func loadOrCreateMemory(for ctx: AXProjectContext) throws -> AXMemory {
         try ctx.ensureDirs()
 
@@ -233,6 +257,13 @@ enum AXProjectStore {
                 }
             }
         }
+
+        let config = try? loadOrCreateConfig(for: ctx)
+        HubIPCClient.syncProjectCanonicalMemory(
+            ctx: ctx,
+            memory: cur,
+            config: config
+        )
     }
 
     static func appendRawLog(_ entry: [String: Any], for ctx: AXProjectContext) {

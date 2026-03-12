@@ -470,6 +470,8 @@ struct XTMemoryCapsuleValidationResult: Equatable {
 }
 
 final class XTMemorySessionContinuityAdapter {
+    private let duplicateMemoryStoreCount = 1
+
     func resolveViaHub(_ request: XTMemorySessionRequest, now: Date = Date()) async -> XTMemorySessionContinuityEvidence? {
         let working = request.projectRoot.map { root -> String in
             let ctx = AXProjectContext(root: root)
@@ -477,7 +479,8 @@ final class XTMemorySessionContinuityAdapter {
             return recent.messages.suffix(8).map { "\($0.role): \($0.content)" }.joined(separator: "\n")
         }
         let response = await HubIPCClient.requestMemoryContext(
-            mode: "project",
+            useMode: .sessionResume,
+            requesterRole: .session,
             projectId: request.projectID.uuidString.lowercased(),
             projectRoot: request.projectRoot?.path,
             displayName: request.displayName,
@@ -556,6 +559,7 @@ final class XTMemorySessionContinuityAdapter {
         if validation.pass == false { gaps.append(validation.denyCode) }
         if relevance < 0.90 { gaps.append("session_continuity_relevance_below_threshold") }
         if memoryContext.usedTotalTokens > budgetTokens { gaps.append("capsule_budget_overflow") }
+        if duplicateMemoryStoreCount > 0 { gaps.append("local_memory_fallback_retained") }
         return XTMemorySessionContinuityEvidence(
             schemaVersion: "xt.memory_session_continuity_evidence.v1",
             projectID: projectToken,
@@ -566,8 +570,8 @@ final class XTMemorySessionContinuityAdapter {
             denyCode: validation.denyCode,
             relevanceScore: relevance,
             capsuleToReadyP95Ms: 820,
-            duplicateMemoryStoreCount: 0,
-            sourceOfTruthSingleHub: true,
+            duplicateMemoryStoreCount: duplicateMemoryStoreCount,
+            sourceOfTruthSingleHub: false,
             minimalGaps: xtOrderedUnique(gaps),
             auditRef: auditRef
         )
@@ -686,7 +690,7 @@ final class XTMemoryChannelSelectorEngine {
             selector: selector,
             crossScopeMemoryLeak: 0,
             auditCoverage: 1.0,
-            duplicateMemoryStoreCount: 0,
+            duplicateMemoryStoreCount: 1,
             minimalGaps: gaps,
             auditRef: auditRef
         )
@@ -1095,7 +1099,7 @@ final class XTMemoryUXAdapterEngine {
             gateVector: gateVector,
             sessionContinuityRelevancePassRate: session.relevanceScore,
             capsuleToReadyP95Ms: session.capsuleToReadyP95Ms,
-            duplicateMemoryStoreCount: 0,
+            duplicateMemoryStoreCount: max(session.duplicateMemoryStoreCount, channel.duplicateMemoryStoreCount),
             crossScopeMemoryLeak: channel.crossScopeMemoryLeak,
             memoryOpsRoundtripP95Ms: ops.memoryOpsRoundtripP95Ms,
             rollbackAuditCompleteness: ops.rollbackAuditCompleteness,

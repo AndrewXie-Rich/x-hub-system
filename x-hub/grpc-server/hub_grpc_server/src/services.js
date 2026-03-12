@@ -44,6 +44,7 @@ import {
   normalizeSecretHandling,
   sanitizeLongtermMarkdown,
 } from './memory_markdown_review.js';
+import { getVoiceWakeProfile, setVoiceWakeProfile } from './voicewake.js';
 
 
 function safeStringList(values) {
@@ -81,6 +82,7 @@ export function findRuntimeClientConfig(runtimeBaseDir, deviceId) {
 export function resolvePaidModelRuntimeAccess({
   runtimeClient,
   capabilityAllowed,
+  capabilityDenyCode = '',
   modelId,
   requestedTotalTokensEstimate = 0,
   usedTokensToday = 0,
@@ -96,6 +98,7 @@ export function resolvePaidModelRuntimeAccess({
   const singleRequestTokenLimit = nonNegativeInt(client?.single_request_token_limit ?? trustProfile?.budget_policy?.single_request_token_limit, 0);
   const requestedTokens = nonNegativeInt(requestedTotalTokensEstimate, 0);
   const usedTokens = nonNegativeInt(usedTokensToday, 0);
+  const explicitCapabilityDenyCode = String(capabilityDenyCode || '').trim();
   const resolved = {
     allow: false,
     trust_profile_present: trustProfilePresent,
@@ -114,6 +117,11 @@ export function resolvePaidModelRuntimeAccess({
     reason: !trustProfilePresent ? 'legacy_grant_flow_required' : '',
   };
   if (!trustProfilePresent) return resolved;
+  if (!capabilityAllowed && explicitCapabilityDenyCode === 'trusted_automation_capabilities_empty_blocked') {
+    resolved.deny_code = explicitCapabilityDenyCode;
+    resolved.reason = explicitCapabilityDenyCode;
+    return resolved;
+  }
   if (!capabilityAllowed || !paidModelPolicyMode || paidModelPolicyMode === 'off') {
     resolved.deny_code = 'device_paid_model_disabled';
     resolved.reason = 'device_paid_model_disabled';
@@ -369,7 +377,7 @@ function makeProtoSkillMeta(row) {
 }
 
 const SKILL_IMPORT_DENY_REMEDIATION = Object.freeze({
-  invalid_manifest: '检查 skill.json 是否包含 skill_id/version/entrypoint.command；若使用旧字段别名请参考 openclaw_skill_abi_compat.v1 映射表。',
+  invalid_manifest: '检查 skill.json 是否包含 skill_id/version/entrypoint.command；若使用旧字段别名请参考 skills_abi_compat.v1 映射表。',
   invalid_manifest_json: '修复 manifest_json 为合法 JSON（可先执行: jq . skill.json）。',
   missing_manifest_json: '请在上传请求里传入 manifest_json，或确保包内包含可解析的 skill.json。',
   invalid_package_bytes: '重新打包技能并确认 --file 指向 .tgz/.zip 二进制内容。',
@@ -462,6 +470,45 @@ function makeProtoPendingGrantItem(row) {
   };
 }
 
+function makeProtoConnectorIngressReceipt(row) {
+  if (!row) return null;
+  const receipt_id = String(row.receipt_id || '').trim();
+  if (!receipt_id) return null;
+  return {
+    receipt_id,
+    request_id: String(row.request_id || '').trim(),
+    project_id: String(row.project_id || '').trim(),
+    connector: String(row.connector || '').trim().toLowerCase(),
+    target_id: String(row.target_id || '').trim(),
+    ingress_type: String(row.ingress_type || '').trim().toLowerCase(),
+    channel_scope: String(row.channel_scope || '').trim().toLowerCase(),
+    source_id: String(row.source_id || '').trim(),
+    message_id: String(row.message_id || '').trim(),
+    dedupe_key: String(row.dedupe_key || '').trim(),
+    received_at_ms: Number(row.received_at_ms || 0),
+    event_sequence: Number(row.event_sequence || 0),
+    delivery_state: String(row.delivery_state || '').trim().toLowerCase(),
+    runtime_state: String(row.runtime_state || '').trim().toLowerCase(),
+  };
+}
+
+function makeProtoAutonomyPolicyOverrideItem(row) {
+  if (!row) return null;
+  const project_id = String(row.project_id || '').trim();
+  const override_mode = String(row.override_mode || '').trim().toLowerCase();
+  if (!project_id || !override_mode) return null;
+  if (!['none', 'clamp_guided', 'clamp_manual', 'kill_switch'].includes(override_mode)) {
+    return null;
+  }
+  return {
+    project_id,
+    override_mode,
+    updated_at_ms: Number(row.updated_at_ms || 0),
+    reason: String(row.reason || '').trim(),
+    audit_ref: String(row.audit_ref || '').trim(),
+  };
+}
+
 function makeProtoProjectLineageNode(row) {
   if (!row || typeof row !== 'object') return null;
   return {
@@ -537,6 +584,21 @@ function makeProtoVoiceGrantChallenge(row) {
     mobile_terminal_id: String(row.mobile_terminal_id || ''),
     issued_at_ms: Math.max(0, Number(row.issued_at_ms || 0)),
     expires_at_ms: Math.max(0, Number(row.expires_at_ms || 0)),
+  };
+}
+
+function makeProtoVoiceWakeProfile(row) {
+  if (!row || typeof row !== 'object') return null;
+  return {
+    schema_version: String(row.schema_version || 'xt.supervisor_voice_wake_profile.v1'),
+    profile_id: String(row.profile_id || 'default'),
+    trigger_words: Array.isArray(row.trigger_words) ? row.trigger_words.map((item) => String(item || '')).filter(Boolean) : [],
+    updated_at_ms: Math.max(0, Number(row.updated_at_ms || 0)),
+    scope: String(row.scope || 'paired_device_group'),
+    source: String(row.source || 'hub_pairing_sync'),
+    wake_mode: String(row.wake_mode || 'wake_phrase'),
+    requires_pairing_ready: !!row.requires_pairing_ready,
+    audit_ref: String(row.audit_ref || ''),
   };
 }
 
@@ -1794,6 +1856,79 @@ export function makeServices({ db, bus }) {
     };
   }
 
+  function buildConnectorIngressReceiptsSnapshot({
+    projectId = '',
+    limit = 200,
+  } = {}) {
+    const base = String(resolveRuntimeBaseDir() || '').trim();
+    const filePath = base ? path.join(base, 'connector_ingress_receipts_status.json') : '';
+    let decoded = null;
+    if (filePath) {
+      try {
+        decoded = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      } catch {
+        decoded = null;
+      }
+    }
+
+    const normalizedProjectId = String(projectId || '').trim();
+    const boundedLimit = parseIntInRange(limit, 200, 1, 500);
+    const rows = Array.isArray(decoded?.items) ? decoded.items : [];
+    const items = rows
+      .map(makeProtoConnectorIngressReceipt)
+      .filter(Boolean)
+      .filter((row) => !normalizedProjectId || String(row.project_id || '').trim() === normalizedProjectId)
+      .sort((left, right) => {
+        const lts = Number(left?.received_at_ms || 0);
+        const rts = Number(right?.received_at_ms || 0);
+        if (lts !== rts) return rts - lts;
+        return String(left?.receipt_id || '').localeCompare(String(right?.receipt_id || ''));
+      })
+      .slice(0, boundedLimit);
+
+    return {
+      updated_at_ms: Number(decoded?.updated_at_ms || 0),
+      items,
+    };
+  }
+
+  function buildAutonomyPolicyOverridesSnapshot({
+    projectId = '',
+    limit = 200,
+  } = {}) {
+    const base = String(resolveRuntimeBaseDir() || '').trim();
+    const filePath = base ? path.join(base, 'autonomy_policy_overrides_status.json') : '';
+    let decoded = null;
+    if (filePath) {
+      try {
+        decoded = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      } catch {
+        decoded = null;
+      }
+    }
+
+    const normalizedProjectId = String(projectId || '').trim();
+    const boundedLimit = parseIntInRange(limit, 200, 1, 500);
+    const rows = Array.isArray(decoded?.items) ? decoded.items : [];
+    const items = rows
+      .map(makeProtoAutonomyPolicyOverrideItem)
+      .filter(Boolean)
+      .filter((row) => !normalizedProjectId || String(row.project_id || '').trim() === normalizedProjectId)
+      .sort((left, right) => {
+        const lts = Number(left?.updated_at_ms || 0);
+        const rts = Number(right?.updated_at_ms || 0);
+        if (lts !== rts) return rts - lts;
+        return String(left?.project_id || '').localeCompare(String(right?.project_id || ''));
+      })
+      .slice(0, boundedLimit);
+
+    const updatedAtMs = Number(decoded?.updated_at_ms || 0);
+    return {
+      updated_at_ms: updatedAtMs > 0 ? updatedAtMs : (items[0]?.updated_at_ms || 0),
+      items,
+    };
+  }
+
   function writePendingGrantRequestsStatus(runtimeBaseDir) {
     const base = String(runtimeBaseDir || '').trim();
     if (!base) return;
@@ -1811,6 +1946,24 @@ export function makeServices({ db, bus }) {
     });
   }
 
+  function writeAutonomyPolicyOverridesStatus(runtimeBaseDir) {
+    const base = String(runtimeBaseDir || '').trim();
+    if (!base) return;
+    const filePath = path.join(base, 'autonomy_policy_overrides_status.json');
+    const snapshot = buildAutonomyPolicyOverridesSnapshot({
+      projectId: '',
+      limit: 400,
+    });
+    if (!fs.existsSync(filePath) && (!Array.isArray(snapshot.items) || snapshot.items.length === 0)) {
+      return;
+    }
+    writeJsonAtomic(filePath, {
+      schema_version: 'autonomy_policy_overrides_status.v1',
+      updated_at_ms: Number(snapshot.updated_at_ms || 0),
+      items: Array.isArray(snapshot.items) ? snapshot.items : [],
+    });
+  }
+
   // Periodically refresh the exported snapshot so the Hub UI can render near-real-time
   // token usage without requiring reconnects.
   const statusIntervalMs = Math.max(500, Number(process.env.HUB_GRPC_STATUS_EXPORT_MS || 2000));
@@ -1819,6 +1972,7 @@ export function makeServices({ db, bus }) {
       writeGrpcDevicesStatus(resolveRuntimeBaseDir());
       writePaidAISchedulerStatus(resolveRuntimeBaseDir());
       writePendingGrantRequestsStatus(resolveRuntimeBaseDir());
+      writeAutonomyPolicyOverridesStatus(resolveRuntimeBaseDir());
     } catch {
       // ignore
     }
@@ -1860,18 +2014,208 @@ export function makeServices({ db, bus }) {
   if (typeof paymentExpireTimer.unref === 'function') paymentExpireTimer.unref();
 
   function clientAllows(auth, capabilityKey) {
+    const requiresExplicitCapabilities = (() => {
+      const policyMode = String(auth?.policy_mode || '').trim().toLowerCase();
+      const trustMode = String(auth?.trust_mode || '').trim().toLowerCase();
+      const trustedAutomationMode = String(
+        auth?.trusted_automation_mode
+        || auth?.approved_trust_profile?.mode
+        || ''
+      ).trim().toLowerCase();
+      return policyMode === 'new_profile'
+        || trustMode === 'trusted_automation'
+        || trustedAutomationMode === 'trusted_automation';
+    })();
     const wanted = String(capabilityKey || '').trim();
-    if (!wanted) return true;
+    if (!wanted) {
+      if (auth && typeof auth === 'object') auth.capability_deny_code = '';
+      return true;
+    }
     const caps = Array.isArray(auth?.capabilities)
       ? auth.capabilities.map((c) => String(c || '').trim()).filter(Boolean)
       : [];
-    // Backward compatible default: if a client has no declared capabilities, allow all.
-    if (caps.length === 0) return true;
+    if (caps.length === 0) {
+      const denyCode = requiresExplicitCapabilities ? 'trusted_automation_capabilities_empty_blocked' : '';
+      if (auth && typeof auth === 'object') auth.capability_deny_code = denyCode;
+      return !denyCode;
+    }
     // Backward compatibility: existing clients created before HubSkills shipped only had
     // "memory" capability. Allow skills APIs for those clients to avoid a hard break.
     // Set HUB_REQUIRE_SKILLS_CAP=1 to require an explicit "skills" capability entry.
-    if (wanted === 'skills' && String(process.env.HUB_REQUIRE_SKILLS_CAP || '').trim() !== '1' && caps.includes('memory')) return true;
-    return caps.includes(wanted);
+    if (wanted === 'skills' && String(process.env.HUB_REQUIRE_SKILLS_CAP || '').trim() !== '1' && caps.includes('memory')) {
+      if (auth && typeof auth === 'object') auth.capability_deny_code = '';
+      return true;
+    }
+    const allowed = caps.includes(wanted);
+    if (auth && typeof auth === 'object') auth.capability_deny_code = allowed ? '' : 'permission_denied';
+    return allowed;
+  }
+
+  function capabilityDenyCode(auth) {
+    const code = String(auth?.trusted_automation_deny_code || auth?.capability_deny_code || '').trim();
+    return code || 'permission_denied';
+  }
+
+  function trustedAutomationMode(auth) {
+    return String(
+      auth?.trusted_automation_mode
+      || auth?.approved_trust_profile?.mode
+      || auth?.trust_mode
+      || ''
+    ).trim().toLowerCase();
+  }
+
+  function trustedAutomationState(auth) {
+    return String(
+      auth?.trusted_automation_state
+      || auth?.approved_trust_profile?.state
+      || ''
+    ).trim().toLowerCase();
+  }
+
+  function trustedAutomationEnabled(auth) {
+    return trustedAutomationMode(auth) === 'trusted_automation';
+  }
+
+  function normalizeTrustedAutomationRoot(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    try {
+      return path.resolve(raw);
+    } catch {
+      return raw;
+    }
+  }
+
+  function trustedAutomationPathWithinRoot(candidate, root) {
+    const target = normalizeTrustedAutomationRoot(candidate);
+    const base = normalizeTrustedAutomationRoot(root);
+    if (!target || !base) return false;
+    const rel = path.relative(base, target);
+    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  }
+
+  function trustedAutomationScopeFromRequest(req, client) {
+    const request = req && typeof req === 'object' ? req : {};
+    const actor = client && typeof client === 'object' ? client : {};
+    return {
+      project_id: String(
+        actor.project_id
+        || actor.projectId
+        || request.project_id
+        || request.projectId
+        || ''
+      ).trim(),
+      workspace_root: normalizeTrustedAutomationRoot(
+        actor.workspace_root
+        || actor.workspaceRoot
+        || actor.project_root
+        || actor.projectRoot
+        || request.workspace_root
+        || request.workspaceRoot
+        || request.project_root
+        || request.projectRoot
+        || ''
+      ),
+    };
+  }
+
+  function trustedAutomationScopeWithProject(scope, ...projectIds) {
+    const base = scope && typeof scope === 'object' ? scope : {};
+    const project_id = projectIds
+      .map((value) => String(value || '').trim())
+      .find(Boolean) || String(base.project_id || '').trim();
+    return {
+      project_id,
+      workspace_root: normalizeTrustedAutomationRoot(base.workspace_root || ''),
+    };
+  }
+
+  function setTrustedAutomationDenyCode(auth, code) {
+    if (auth && typeof auth === 'object') {
+      auth.trusted_automation_deny_code = String(code || '').trim();
+    }
+  }
+
+  function trustedAutomationAllows(auth, scope = {}) {
+    setTrustedAutomationDenyCode(auth, '');
+    if (!trustedAutomationEnabled(auth)) return true;
+
+    const trustProfilePresent = !!(auth?.trust_profile_present || auth?.approved_trust_profile);
+    if (!trustProfilePresent) {
+      setTrustedAutomationDenyCode(auth, 'trusted_automation_profile_missing');
+      return false;
+    }
+
+    const state = trustedAutomationState(auth);
+    if (!state || state === 'off' || state === 'blocked') {
+      setTrustedAutomationDenyCode(auth, 'trusted_automation_mode_off');
+      return false;
+    }
+
+    const allowedProjectIds = safeStringList(
+      auth?.allowed_project_ids
+      || auth?.approved_trust_profile?.allowed_project_ids
+      || []
+    );
+    const allowedWorkspaceRoots = safeStringList(
+      auth?.allowed_workspace_roots
+      || auth?.approved_trust_profile?.allowed_workspace_roots
+      || []
+    )
+      .map((root) => normalizeTrustedAutomationRoot(root))
+      .filter(Boolean);
+    const xtBindingRequired = !!(
+      auth?.xt_binding_required
+      ?? auth?.approved_trust_profile?.xt_binding_required
+    );
+    const devicePermissionOwnerRef = String(
+      auth?.device_permission_owner_ref
+      || auth?.approved_trust_profile?.device_permission_owner_ref
+      || ''
+    ).trim();
+    if (xtBindingRequired && !devicePermissionOwnerRef) {
+      setTrustedAutomationDenyCode(auth, 'device_permission_owner_missing');
+      return false;
+    }
+
+    const projectId = String(scope?.project_id || '').trim();
+    const workspaceRoot = normalizeTrustedAutomationRoot(scope?.workspace_root || '');
+    const hasProjectBindings = allowedProjectIds.length > 0;
+    const hasWorkspaceBindings = allowedWorkspaceRoots.length > 0;
+    if (xtBindingRequired && !hasProjectBindings && !hasWorkspaceBindings) {
+      setTrustedAutomationDenyCode(auth, 'trusted_automation_project_not_bound');
+      return false;
+    }
+
+    const projectProvided = !!projectId;
+    const workspaceProvided = !!workspaceRoot;
+    const projectMatched = hasProjectBindings && projectProvided && allowedProjectIds.includes(projectId);
+    const workspaceMatched = hasWorkspaceBindings
+      && workspaceProvided
+      && allowedWorkspaceRoots.some((root) => trustedAutomationPathWithinRoot(workspaceRoot, root));
+
+    if (hasProjectBindings && projectProvided && !projectMatched) {
+      setTrustedAutomationDenyCode(auth, 'trusted_automation_project_not_bound');
+      return false;
+    }
+    if (hasWorkspaceBindings && workspaceProvided && !workspaceMatched) {
+      setTrustedAutomationDenyCode(auth, 'trusted_automation_workspace_mismatch');
+      return false;
+    }
+    if (hasProjectBindings || hasWorkspaceBindings) {
+      if (projectMatched || workspaceMatched) return true;
+      if (hasProjectBindings && !projectProvided && !(hasWorkspaceBindings && workspaceMatched)) {
+        setTrustedAutomationDenyCode(auth, 'trusted_automation_project_not_bound');
+        return false;
+      }
+      if (hasWorkspaceBindings && !workspaceProvided && !(hasProjectBindings && projectMatched)) {
+        setTrustedAutomationDenyCode(auth, 'trusted_automation_workspace_mismatch');
+        return false;
+      }
+    }
+
+    return true;
   }
 
   function effectiveClientIdentity(raw, auth) {
@@ -1891,7 +2235,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'models')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
 
@@ -1920,6 +2264,8 @@ export function makeServices({ db, bus }) {
 
     const req = call.request || {};
     const client = effectiveClientIdentity(req.client || {}, auth);
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    if (trustedAutomationScope.project_id) client.project_id = trustedAutomationScope.project_id;
     const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
     const request_id = String(req.request_id || '').trim();
@@ -1931,7 +2277,11 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, capability)) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
     if (capability === 'ai.generate.paid' && !model_id) {
@@ -2459,8 +2809,12 @@ export function makeServices({ db, bus }) {
     const request_id = String(req.request_id || uuid());
     const device_id = String(client.device_id || '').trim() || 'unknown';
     const app_id = String(client.app_id || '').trim() || 'unknown';
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     const model_id = String(req.model_id || '').trim();
+    const failClosedOnDowngrade =
+      req.fail_closed_on_downgrade === true
+      || String(req.fail_closed_on_downgrade || '').trim() === '1';
     const created_at_ms = Number(req.created_at_ms || nowMs());
     const quota_day = utcDayKey(created_at_ms || nowMs());
     const quota_scope = `device:${device_id}`;
@@ -2585,6 +2939,7 @@ export function makeServices({ db, bus }) {
       ? resolvePaidModelRuntimeAccess({
           runtimeClient: runtimeClientConfig,
           capabilityAllowed,
+          capabilityDenyCode: capabilityDenyCode(auth),
           modelId: model_id,
           requestedTotalTokensEstimate: 0,
           usedTokensToday: 0,
@@ -2706,7 +3061,8 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!capabilityAllowed) {
-      const error = { code: 'permission_denied', message: 'permission_denied', retryable: false };
+      const denyCode = capabilityDenyCode(auth);
+      const error = { code: denyCode, message: denyCode, retryable: false };
       call.write({ error: { request_id, error } });
       call.end();
       db.appendAudit({
@@ -2759,7 +3115,7 @@ export function makeServices({ db, bus }) {
         model_id: model_id || null,
         decision: 'deny',
         policy_scope: 'ai_generate',
-        rule_ids: ['client_capability_denied'],
+        rule_ids: [denyCode],
         phase: 'execute',
         user_ack_understood: false,
         explain_rounds: 0,
@@ -2769,6 +3125,21 @@ export function makeServices({ db, bus }) {
         error_message: error.message,
       });
       bus.emitHubEvent(bus.requestStatus({ request_id, status: 'failed', error, client }));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      denyPaidModelWithContext({
+        code: denyCode,
+        message: denyCode,
+        ruleIds: [denyCode],
+        phase: 'scope_bind',
+        optionsPresented: false,
+        extraExt: {
+          project_binding_checked: true,
+          workspace_binding_checked: !!trustedAutomationScope.workspace_root,
+        },
+      });
       return;
     }
     if (isPaid && killSwitch?.network_disabled) {
@@ -3365,20 +3736,30 @@ export function makeServices({ db, bus }) {
       }
 
       const gateDenyCode = String(remoteExportGate?.deny_code || remoteExportGate?.gate_reason || 'remote_export_blocked');
+      const policyGateAction = String(remoteExportGate?.action || '');
+      const effectiveGateAction =
+        remoteExportGate?.blocked && policyGateAction === 'downgrade_to_local' && failClosedOnDowngrade
+          ? 'error'
+          : policyGateAction;
+      const effectiveDowngraded = remoteExportGate?.blocked
+        ? effectiveGateAction === 'downgrade_to_local'
+        : !!remoteExportGate?.downgraded;
       const gateExtBase = {
         created_at_ms,
         export_class: String(remoteExportGate?.export_class || 'prompt_bundle'),
         job_sensitivity: String(remoteExportGate?.job_sensitivity || ''),
         gate_reason: String(remoteExportGate?.gate_reason || ''),
         blocked: !!remoteExportGate?.blocked,
-        downgraded: !!remoteExportGate?.downgraded,
-        gate_action: String(remoteExportGate?.action || ''),
+        downgraded: effectiveDowngraded,
+        policy_gate_action: policyGateAction,
+        gate_action: effectiveGateAction,
+        requested_fail_closed_on_downgrade: failClosedOnDowngrade,
         findings_summary: remoteExportGate?.findings_summary || {},
         gate_order: Array.isArray(remoteExportGate?.gate_order) ? remoteExportGate.gate_order : [],
         requested_model_id: model_id,
       };
 
-      if (remoteExportGate?.blocked && remoteExportGate?.action === 'error') {
+      if (remoteExportGate?.blocked && effectiveGateAction === 'error') {
         const error = {
           code: gateDenyCode || 'remote_export_blocked',
           message: `remote_export_blocked:${gateDenyCode || 'unknown'}`,
@@ -3451,7 +3832,7 @@ export function makeServices({ db, bus }) {
         return;
       }
 
-      if (remoteExportGate?.blocked && remoteExportGate?.action === 'downgrade_to_local') {
+      if (remoteExportGate?.blocked && effectiveGateAction === 'downgrade_to_local') {
         const fallbackModelId = resolveLocalFallbackModelId({ db, runtimeBaseDir });
         if (!fallbackModelId) {
           const error = {
@@ -4475,11 +4856,13 @@ export function makeServices({ db, bus }) {
     const request_id = String(req.request_id || uuid());
     const device_id = String(client.device_id || '').trim() || 'unknown';
     const app_id = String(client.app_id || '').trim() || 'unknown';
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
 
     if (!clientAllows(auth, 'web.fetch')) {
+      const denyCode = capabilityDenyCode(auth);
       const finished_at_ms = nowMs();
-      const error = { code: 'permission_denied', message: 'permission_denied', retryable: false };
+      const error = { code: denyCode, message: denyCode, retryable: false };
       try {
         call.write({
           done: {
@@ -4533,8 +4916,80 @@ export function makeServices({ db, bus }) {
         model_id: null,
         decision: 'deny',
         policy_scope: 'web_fetch',
-        rule_ids: ['client_capability_denied'],
+        rule_ids: [denyCode],
         phase: 'execute',
+        user_ack_understood: false,
+        explain_rounds: 0,
+        options_presented: false,
+        ok: false,
+        error_code: error.code,
+        error_message: error.message,
+      });
+      bus.emitHubEvent(bus.requestStatus({ request_id, status: 'failed', error, client }));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      const finished_at_ms = nowMs();
+      const error = { code: denyCode, message: denyCode, retryable: false };
+      try {
+        call.write({
+          done: {
+            request_id,
+            ok: false,
+            status: 0,
+            final_url: '',
+            content_type: '',
+            truncated: false,
+            bytes: 0,
+            text: '',
+            finished_at_ms,
+            error,
+          },
+        });
+      } catch {
+        // ignore
+      }
+      try {
+        call.end();
+      } catch {
+        // ignore
+      }
+      db.appendAudit({
+        event_type: 'web.fetch.denied',
+        created_at_ms: finished_at_ms,
+        severity: 'security',
+        device_id,
+        user_id: client.user_id ? String(client.user_id) : null,
+        app_id,
+        project_id: project_id || null,
+        session_id: client.session_id ? String(client.session_id) : null,
+        request_id,
+        capability: 'web.fetch',
+        model_id: null,
+        network_allowed: false,
+        ok: false,
+        error_code: error.code,
+        error_message: error.message,
+        ext_json: JSON.stringify({
+          project_binding_checked: true,
+          workspace_binding_checked: !!trustedAutomationScope.workspace_root,
+        }),
+      });
+      appendPolicyEvalAudit({
+        created_at_ms: finished_at_ms,
+        device_id,
+        user_id: client.user_id ? String(client.user_id) : null,
+        app_id,
+        project_id: project_id || null,
+        session_id: client.session_id ? String(client.session_id) : null,
+        request_id,
+        capability: 'web.fetch',
+        model_id: null,
+        decision: 'deny',
+        policy_scope: 'web_fetch',
+        rule_ids: [denyCode],
+        phase: 'scope_bind',
         user_ack_understood: false,
         explain_rounds: 0,
         options_presented: false,
@@ -4975,16 +5430,21 @@ export function makeServices({ db, bus }) {
 
     const req = call.request || {};
     const client = effectiveClientIdentity(req.client || {}, auth);
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
     const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
     const user_id = String(client.user_id || '').trim();
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const project_id = trustedAutomationScope.project_id;
     const scopes = Array.isArray(req.scopes) ? req.scopes.map((s) => String(s || '').trim().toLowerCase()).filter(Boolean) : [];
     const scopeSet = new Set(scopes);
     const wantsAll = scopeSet.size === 0;
 
     // Identity is required for safe filtering.
     if (!device_id || !app_id) {
+      call.end();
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
       call.end();
       return;
     }
@@ -5096,6 +5556,8 @@ export function makeServices({ db, bus }) {
                 ? 'killswitch'
                 : ev.request_status
                   ? 'requests'
+                  : ev.voice_wake_profile_changed
+                    ? 'voicewake'
                   : 'unknown';
 
         if (!wantsAll && !scopeSet.has(kind)) return false;
@@ -5133,11 +5595,13 @@ export function makeServices({ db, bus }) {
   // -------------------- HubRuntime --------------------
   function runtimeScopedClientFromRequest(req, auth) {
     const client = effectiveClientIdentity(req?.client || {}, auth);
+    const scope = trustedAutomationScopeFromRequest(req, client);
     return {
       device_id: String(client.device_id || '').trim(),
       user_id: String(client.user_id || '').trim(),
       app_id: String(client.app_id || '').trim(),
-      project_id: String(client.project_id || '').trim(),
+      project_id: String(scope.project_id || '').trim(),
+      workspace_root: String(scope.workspace_root || '').trim(),
       session_id: String(client.session_id || '').trim(),
     };
   }
@@ -5184,7 +5648,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'events')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
 
@@ -5205,7 +5669,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'events')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
 
@@ -5216,6 +5680,10 @@ export function makeServices({ db, bus }) {
     const app_id = String(client.app_id || '').trim();
     if (!device_id || !app_id) {
       callback(new Error('invalid_client_identity'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, client)) {
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
 
@@ -5233,6 +5701,78 @@ export function makeServices({ db, bus }) {
     callback(null, snapshot);
   }
 
+  function GetConnectorIngressReceipts(call, callback) {
+    const auth = requireClientAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    if (!clientAllows(auth, 'events')) {
+      callback(new Error(capabilityDenyCode(auth)));
+      return;
+    }
+
+    const req = call.request || {};
+    const client = runtimeScopedClientFromRequest(req, auth);
+    const device_id = String(client.device_id || '').trim();
+    const user_id = String(client.user_id || '').trim();
+    const app_id = String(client.app_id || '').trim();
+    if (!device_id || !app_id) {
+      callback(new Error('invalid_client_identity'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, client)) {
+      callback(new Error(capabilityDenyCode(auth)));
+      return;
+    }
+
+    const reqProjectId = String(req.project_id || '').trim();
+    const project_id = reqProjectId || String(client.project_id || '').trim();
+    const limit = parseIntInRange(req.limit, 200, 1, 500);
+
+    const snapshot = buildConnectorIngressReceiptsSnapshot({
+      projectId: project_id,
+      limit,
+    });
+    callback(null, snapshot);
+  }
+
+  function GetAutonomyPolicyOverrides(call, callback) {
+    const auth = requireClientAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    if (!clientAllows(auth, 'events')) {
+      callback(new Error(capabilityDenyCode(auth)));
+      return;
+    }
+
+    const req = call.request || {};
+    const client = runtimeScopedClientFromRequest(req, auth);
+    const device_id = String(client.device_id || '').trim();
+    const user_id = String(client.user_id || '').trim();
+    const app_id = String(client.app_id || '').trim();
+    if (!device_id || !app_id) {
+      callback(new Error('invalid_client_identity'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, client)) {
+      callback(new Error(capabilityDenyCode(auth)));
+      return;
+    }
+
+    const reqProjectId = String(req.project_id || '').trim();
+    const project_id = reqProjectId || String(client.project_id || '').trim();
+    const limit = parseIntInRange(req.limit, 200, 1, 500);
+
+    const snapshot = buildAutonomyPolicyOverridesSnapshot({
+      projectId: project_id,
+      limit,
+    });
+    callback(null, snapshot);
+  }
+
   function ApprovePendingGrantRequest(call, callback) {
     const auth = requireClientAuth(call);
     if (!auth.ok) {
@@ -5240,7 +5780,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'events')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
 
@@ -5248,6 +5788,10 @@ export function makeServices({ db, bus }) {
     const client = runtimeScopedClientFromRequest(req, auth);
     if (!client.device_id || !client.app_id) {
       callback(new Error('invalid_client_identity'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, client)) {
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
 
@@ -5375,7 +5919,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'events')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
 
@@ -5383,6 +5927,10 @@ export function makeServices({ db, bus }) {
     const client = runtimeScopedClientFromRequest(req, auth);
     if (!client.device_id || !client.app_id) {
       callback(new Error('invalid_client_identity'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, client)) {
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
 
@@ -5518,19 +6066,38 @@ export function makeServices({ db, bus }) {
 	      return;
 	    }
 	    if (!clientAllows(auth, 'memory')) {
-	      callback(new Error('permission_denied'));
+	      callback(new Error(capabilityDenyCode(auth)));
 	      return;
 	    }
 	    const req = call.request || {};
 	    const client = effectiveClientIdentity(req.client || {}, auth);
 	    const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     const user_id = client.user_id ? String(client.user_id) : '';
     const thread_key = String(req.thread_key || 'default').trim() || 'default';
 
     if (!device_id || !app_id) {
       callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendDeniedAudit({
+        event_type: 'memory.thread.opened',
+        error_message: 'thread_open_denied',
+        op: 'get_or_create_thread',
+        client,
+        request_id: '',
+        project_id: project_id || null,
+        deny_code: denyCode,
+        ext: {
+          created: false,
+          thread_key,
+        },
+      });
+      callback(new Error(denyCode));
       return;
     }
 
@@ -5566,14 +6133,15 @@ export function makeServices({ db, bus }) {
 	      return;
 	    }
 	    if (!clientAllows(auth, 'memory')) {
-	      callback(new Error('permission_denied'));
+	      callback(new Error(capabilityDenyCode(auth)));
 	      return;
 	    }
 	    const req = call.request || {};
 	    const client = effectiveClientIdentity(req.client || {}, auth);
 	    const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     const user_id = client.user_id ? String(client.user_id) : '';
     const thread_id = String(req.thread_id || '').trim();
     const request_id = String(req.request_id || '').trim();
@@ -5581,6 +6149,10 @@ export function makeServices({ db, bus }) {
 
     if (!device_id || !app_id || !thread_id) {
       callback(new Error('invalid request: missing device_id/app_id/thread_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
 
@@ -5650,19 +6222,24 @@ export function makeServices({ db, bus }) {
 	      return;
 	    }
 	    if (!clientAllows(auth, 'memory')) {
-	      callback(new Error('permission_denied'));
+	      callback(new Error(capabilityDenyCode(auth)));
 	      return;
 	    }
 	    const req = call.request || {};
 	    const client = effectiveClientIdentity(req.client || {}, auth);
 	    const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     const thread_id = String(req.thread_id || '').trim();
     const limit = Math.max(1, Math.min(200, Number(req.limit || 50)));
 
     if (!device_id || !app_id || !thread_id) {
       callback(new Error('invalid request: missing device_id/app_id/thread_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
 
@@ -5696,14 +6273,15 @@ export function makeServices({ db, bus }) {
 	      return;
 	    }
 	    if (!clientAllows(auth, 'memory')) {
-	      callback(new Error('permission_denied'));
+	      callback(new Error(capabilityDenyCode(auth)));
 	      return;
 	    }
 	    const req = call.request || {};
 	    const client = effectiveClientIdentity(req.client || {}, auth);
 	    const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     const user_id = client.user_id ? String(client.user_id) : '';
     const scope = String(req.scope || '').trim() || 'thread';
     const thread_id = String(req.thread_id || '').trim();
@@ -5713,6 +6291,10 @@ export function makeServices({ db, bus }) {
 
     if (!device_id || !app_id || !key) {
       callback(new Error('invalid request: missing device_id/app_id/key'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
     if (scope === 'thread' && !thread_id) {
@@ -5758,18 +6340,23 @@ export function makeServices({ db, bus }) {
 	      return;
 	    }
 	    if (!clientAllows(auth, 'memory')) {
-	      callback(new Error('permission_denied'));
+	      callback(new Error(capabilityDenyCode(auth)));
 	      return;
 	    }
 	    const req = call.request || {};
 	    const client = effectiveClientIdentity(req.client || {}, auth);
 	    const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     const user_id = client.user_id ? String(client.user_id) : '';
 
     if (!device_id || !app_id) {
       callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
 
@@ -5794,6 +6381,79 @@ export function makeServices({ db, bus }) {
 	    callback(null, { items });
 	  }
 
+  function appendProjectRejectAudit({
+    event_type,
+    error_message,
+    op,
+    client,
+    request_id,
+    project_id,
+    deny_code,
+    ext,
+  } = {}) {
+    const actor = client && typeof client === 'object' ? client : {};
+    db.appendAudit({
+      event_type: String(event_type || 'project.lineage.rejected'),
+      created_at_ms: nowMs(),
+      severity: 'warn',
+      device_id: String(actor.device_id || ''),
+      user_id: actor.user_id ? String(actor.user_id) : null,
+      app_id: String(actor.app_id || ''),
+      project_id: project_id ? String(project_id) : null,
+      session_id: actor.session_id ? String(actor.session_id) : null,
+      request_id: request_id ? String(request_id) : null,
+      capability: 'unknown',
+      model_id: null,
+      ok: false,
+      error_code: String(deny_code || 'permission_denied'),
+      error_message: String(error_message || 'project_request_rejected'),
+      ext_json: JSON.stringify({
+        op: String(op || ''),
+        deny_code: String(deny_code || 'permission_denied'),
+        ...(ext && typeof ext === 'object' ? ext : {}),
+      }),
+    });
+  }
+
+  function appendDeniedAudit({
+    event_type,
+    error_message,
+    op,
+    client,
+    request_id,
+    project_id,
+    severity,
+    deny_code,
+    ext,
+  } = {}) {
+    const actor = client && typeof client === 'object' ? client : {};
+    try {
+      db.appendAudit({
+        event_type: String(event_type || 'request.denied'),
+        created_at_ms: nowMs(),
+        severity: String(severity || 'warn'),
+        device_id: String(actor.device_id || ''),
+        user_id: actor.user_id ? String(actor.user_id) : null,
+        app_id: String(actor.app_id || ''),
+        project_id: project_id ? String(project_id) : null,
+        session_id: actor.session_id ? String(actor.session_id) : null,
+        request_id: request_id ? String(request_id) : null,
+        capability: 'unknown',
+        model_id: null,
+        ok: false,
+        error_code: String(deny_code || 'permission_denied'),
+        error_message: String(error_message || 'request_denied'),
+        ext_json: JSON.stringify({
+          op: String(op || ''),
+          deny_code: String(deny_code || 'permission_denied'),
+          ...(ext && typeof ext === 'object' ? ext : {}),
+        }),
+      });
+    } catch {
+      // preserve fail-closed deny response even if audit sink fails
+    }
+  }
+
   function UpsertProjectLineage(call, callback) {
     const auth = requireClientAuth(call);
     if (!auth.ok) {
@@ -5801,7 +6461,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'memory')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
     const req = call.request || {};
@@ -5822,6 +6482,11 @@ export function makeServices({ db, bus }) {
     const child_index = Math.max(0, Math.floor(Number(lineage.child_index || 0)));
     const status = String(lineage.status || '').trim() || 'active';
     const created_at_ms = Math.max(0, Number(lineage.created_at_ms || 0));
+    const trustedAutomationScope = trustedAutomationScopeWithProject(
+      trustedAutomationScopeFromRequest(req, client),
+      root_project_id,
+      project_id,
+    );
     const now = nowMs();
 
     if (!device_id || !app_id) {
@@ -5855,6 +6520,28 @@ export function makeServices({ db, bus }) {
         created: false,
         deny_code: 'invalid_request',
       });
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendProjectRejectAudit({
+        event_type: 'project.lineage.rejected',
+        error_message: 'project_lineage_rejected',
+        op: 'upsert_project_lineage',
+        client,
+        request_id,
+        project_id: project_id || root_project_id || null,
+        deny_code: denyCode,
+        ext: {
+          root_project_id,
+          parent_project_id,
+          project_id,
+          lineage_path,
+          split_round,
+          child_index,
+        },
+      });
+      callback(new Error(denyCode));
       return;
     }
 
@@ -5959,7 +6646,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'memory')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
     const req = call.request || {};
@@ -5971,6 +6658,11 @@ export function makeServices({ db, bus }) {
     const project_id = String(req.project_id || '').trim();
     const max_depth = Number(req.max_depth || 0);
     const include_archived = !!req.include_archived;
+    const trustedAutomationScope = trustedAutomationScopeWithProject(
+      trustedAutomationScopeFromRequest(req, client),
+      root_project_id,
+      project_id,
+    );
 
     if (!device_id || !app_id) {
       callback(new Error('invalid client identity: missing device_id/app_id'));
@@ -5978,6 +6670,26 @@ export function makeServices({ db, bus }) {
     }
     if (!root_project_id) {
       callback(new Error('invalid request: missing root_project_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendProjectRejectAudit({
+        event_type: 'project.lineage.rejected',
+        error_message: 'project_lineage_rejected',
+        op: 'get_project_lineage_tree',
+        client,
+        request_id: '',
+        project_id: root_project_id || project_id || null,
+        deny_code: denyCode,
+        ext: {
+          root_project_id,
+          project_id,
+          max_depth,
+          include_archived,
+        },
+      });
+      callback(new Error(denyCode));
       return;
     }
 
@@ -6013,7 +6725,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'memory')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
     const req = call.request || {};
@@ -6035,6 +6747,11 @@ export function makeServices({ db, bus }) {
       : [];
     const attached_at_ms = Math.max(0, Number(dispatch.attached_at_ms || nowMs()));
     const attach_source = String(dispatch.attach_source || '').trim() || 'x_terminal';
+    const trustedAutomationScope = trustedAutomationScopeWithProject(
+      trustedAutomationScopeFromRequest(req, client),
+      root_project_id,
+      project_id,
+    );
 
     if (!device_id || !app_id) {
       callback(new Error('invalid client identity: missing device_id/app_id'));
@@ -6066,6 +6783,29 @@ export function makeServices({ db, bus }) {
         attached: false,
         deny_code: 'invalid_request',
       });
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendProjectRejectAudit({
+        event_type: 'project.lineage.rejected',
+        error_message: 'project_dispatch_rejected',
+        op: 'attach_dispatch_context',
+        client,
+        request_id,
+        project_id: project_id || root_project_id || null,
+        deny_code: denyCode,
+        ext: {
+          root_project_id,
+          parent_project_id,
+          project_id,
+          assigned_agent_profile,
+          parallel_lane_id,
+          budget_class,
+          queue_priority,
+        },
+      });
+      callback(new Error(denyCode));
       return;
     }
 
@@ -6170,7 +6910,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'memory')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
     const req = call.request || {};
@@ -6209,7 +6949,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'memory')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
     const req = call.request || {};
@@ -6217,9 +6957,27 @@ export function makeServices({ db, bus }) {
     const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
     const user_id = client.user_id ? String(client.user_id) : '';
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     if (!device_id || !app_id) {
       callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendDeniedAudit({
+        event_type: 'memory.risk_tuning.evaluated',
+        error_message: 'risk_tuning_evaluation_denied',
+        op: 'evaluate_risk_tuning_profile',
+        client,
+        request_id: String(req.request_id || '').trim(),
+        project_id: project_id || null,
+        deny_code: denyCode,
+        ext: {
+          profile_id: String(req?.profile?.profile_id || ''),
+        },
+      });
+      callback(new Error(denyCode));
       return;
     }
 
@@ -6309,7 +7067,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'memory')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
     const req = call.request || {};
@@ -6317,9 +7075,28 @@ export function makeServices({ db, bus }) {
     const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
     const user_id = client.user_id ? String(client.user_id) : '';
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     if (!device_id || !app_id) {
       callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendDeniedAudit({
+        event_type: 'memory.risk_tuning.promoted',
+        error_message: 'risk_tuning_promotion_denied',
+        op: 'promote_risk_tuning_profile',
+        client,
+        request_id: String(req.request_id || '').trim(),
+        project_id: project_id || null,
+        deny_code: denyCode,
+        ext: {
+          profile_id: String(req.profile_id || ''),
+          expected_active_profile_id: String(req.expected_active_profile_id || ''),
+        },
+      });
+      callback(new Error(denyCode));
       return;
     }
 
@@ -6393,6 +7170,156 @@ export function makeServices({ db, bus }) {
     });
   }
 
+  function GetVoiceWakeProfile(call, callback) {
+    const auth = requireClientAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    if (!clientAllows(auth, 'memory')) {
+      callback(new Error(capabilityDenyCode(auth)));
+      return;
+    }
+
+    const req = call.request || {};
+    const client = effectiveClientIdentity(req.client || {}, auth);
+    const device_id = String(client.device_id || '').trim();
+    const app_id = String(client.app_id || '').trim();
+    const user_id = client.user_id ? String(client.user_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
+    if (!device_id || !app_id) {
+      callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendDeniedAudit({
+        event_type: 'supervisor.voice.denied',
+        error_message: 'voice_wake_profile_get_denied',
+        op: 'get_voice_wake_profile',
+        client,
+        request_id: null,
+        project_id: project_id || null,
+        deny_code: denyCode,
+        ext: {
+          desired_wake_mode: String(req.desired_wake_mode || ''),
+        },
+      });
+      callback(new Error(denyCode));
+      return;
+    }
+
+    let out;
+    try {
+      out = getVoiceWakeProfile(resolveRuntimeBaseDir(), String(req.desired_wake_mode || '').trim());
+    } catch (e) {
+      callback(new Error(String(e?.message || e || 'voice_wake_profile_get_failed')));
+      return;
+    }
+
+    callback(null, {
+      profile: makeProtoVoiceWakeProfile(out?.profile),
+    });
+
+    db.appendAudit({
+      event_type: 'supervisor.voice.wake_profile_fetched',
+      created_at_ms: nowMs(),
+      severity: 'info',
+      device_id,
+      user_id: user_id || null,
+      app_id,
+      project_id: project_id || null,
+      session_id: client.session_id ? String(client.session_id) : null,
+      request_id: null,
+      capability: 'unknown',
+      model_id: null,
+      ok: true,
+      ext_json: JSON.stringify({
+        op: 'get_voice_wake_profile',
+        desired_wake_mode: String(req.desired_wake_mode || ''),
+        profile_id: String(out?.profile?.profile_id || ''),
+      }),
+    });
+  }
+
+  function SetVoiceWakeProfile(call, callback) {
+    const auth = requireClientAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    if (!clientAllows(auth, 'memory')) {
+      callback(new Error(capabilityDenyCode(auth)));
+      return;
+    }
+
+    const req = call.request || {};
+    const client = effectiveClientIdentity(req.client || {}, auth);
+    const device_id = String(client.device_id || '').trim();
+    const app_id = String(client.app_id || '').trim();
+    const user_id = client.user_id ? String(client.user_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
+    if (!device_id || !app_id) {
+      callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendDeniedAudit({
+        event_type: 'supervisor.voice.denied',
+        error_message: 'voice_wake_profile_set_denied',
+        op: 'set_voice_wake_profile',
+        client,
+        request_id: null,
+        project_id: project_id || null,
+        deny_code: denyCode,
+        ext: {
+          profile_id: String(req?.profile?.profile_id || ''),
+          wake_mode: String(req?.profile?.wake_mode || ''),
+        },
+      });
+      callback(new Error(denyCode));
+      return;
+    }
+
+    let out;
+    try {
+      out = setVoiceWakeProfile(resolveRuntimeBaseDir(), req.profile || {}, client);
+    } catch (e) {
+      callback(new Error(String(e?.message || e || 'voice_wake_profile_set_failed')));
+      return;
+    }
+
+    callback(null, {
+      profile: makeProtoVoiceWakeProfile(out?.profile),
+    });
+
+    bus.emitHubEvent(bus.voiceWakeProfileChanged(out?.changed || {}));
+
+    db.appendAudit({
+      event_type: 'supervisor.voice.wake_profile_updated',
+      created_at_ms: nowMs(),
+      severity: 'info',
+      device_id,
+      user_id: user_id || null,
+      app_id,
+      project_id: project_id || null,
+      session_id: client.session_id ? String(client.session_id) : null,
+      request_id: null,
+      capability: 'unknown',
+      model_id: null,
+      ok: true,
+      ext_json: JSON.stringify({
+        op: 'set_voice_wake_profile',
+        profile_id: String(out?.profile?.profile_id || ''),
+        trigger_words: Array.isArray(out?.profile?.trigger_words) ? out.profile.trigger_words : [],
+        updated_at_ms: Number(out?.profile?.updated_at_ms || 0),
+      }),
+    });
+  }
+
   function IssueVoiceGrantChallenge(call, callback) {
     const auth = requireClientAuth(call);
     if (!auth.ok) {
@@ -6400,7 +7327,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'memory')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
     const req = call.request || {};
@@ -6408,9 +7335,29 @@ export function makeServices({ db, bus }) {
     const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
     const user_id = client.user_id ? String(client.user_id) : '';
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     if (!device_id || !app_id) {
       callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendDeniedAudit({
+        event_type: 'supervisor.voice.denied',
+        error_message: 'voice_challenge_issue_denied',
+        op: 'issue_voice_grant_challenge',
+        client,
+        request_id: String(req.request_id || '').trim(),
+        project_id: project_id || null,
+        deny_code: denyCode,
+        ext: {
+          template_id: String(req.template_id || ''),
+          risk_level: String(req.risk_level || ''),
+          mobile_terminal_id: String(req.mobile_terminal_id || ''),
+        },
+      });
+      callback(new Error(denyCode));
       return;
     }
 
@@ -6477,7 +7424,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'memory')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
     const req = call.request || {};
@@ -6485,9 +7432,28 @@ export function makeServices({ db, bus }) {
     const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
     const user_id = client.user_id ? String(client.user_id) : '';
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     if (!device_id || !app_id) {
       callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendDeniedAudit({
+        event_type: 'supervisor.voice.denied',
+        error_message: 'voice_grant_verify_denied',
+        op: 'verify_voice_grant_response',
+        client,
+        request_id: String(req.request_id || '').trim(),
+        project_id: project_id || null,
+        deny_code: denyCode,
+        ext: {
+          challenge_id: String(req.challenge_id || ''),
+          transcript_hash: String(req.transcript_hash || ''),
+        },
+      });
+      callback(new Error(denyCode));
       return;
     }
 
@@ -6564,7 +7530,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'memory')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
 
@@ -6573,8 +7539,28 @@ export function makeServices({ db, bus }) {
     const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
     const user_id = client.user_id ? String(client.user_id) : '';
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     const request_id = String(req.request_id || '').trim();
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendDeniedAudit({
+        event_type: 'agent.capsule.denied',
+        error_message: 'agent_capsule_register_denied',
+        op: 'register_agent_capsule',
+        client,
+        request_id,
+        project_id: project_id || null,
+        deny_code: denyCode,
+        ext: {
+          capsule_id: String(req.capsule_id || ''),
+          agent_name: String(req.agent_name || ''),
+          agent_version: String(req.agent_version || ''),
+        },
+      });
+      callback(new Error(denyCode));
+      return;
+    }
     let out;
     try {
       out = db.registerAgentCapsule({
@@ -6649,7 +7635,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'memory')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
 
@@ -6658,8 +7644,26 @@ export function makeServices({ db, bus }) {
     const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
     const user_id = client.user_id ? String(client.user_id) : '';
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     const request_id = String(req.request_id || '').trim();
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendDeniedAudit({
+        event_type: 'agent.capsule.denied',
+        error_message: 'agent_capsule_verify_denied',
+        op: 'verify_agent_capsule',
+        client,
+        request_id,
+        project_id: project_id || null,
+        deny_code: denyCode,
+        ext: {
+          capsule_id: String(req.capsule_id || ''),
+        },
+      });
+      callback(new Error(denyCode));
+      return;
+    }
     let out;
     try {
       out = db.verifyAgentCapsule({
@@ -6722,7 +7726,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'memory')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
 
@@ -6731,8 +7735,26 @@ export function makeServices({ db, bus }) {
     const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
     const user_id = client.user_id ? String(client.user_id) : '';
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     const request_id = String(req.request_id || '').trim();
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendDeniedAudit({
+        event_type: 'agent.capsule.denied',
+        error_message: 'agent_capsule_activate_denied',
+        op: 'activate_agent_capsule',
+        client,
+        request_id,
+        project_id: project_id || null,
+        deny_code: denyCode,
+        ext: {
+          capsule_id: String(req.capsule_id || ''),
+        },
+      });
+      callback(new Error(denyCode));
+      return;
+    }
     let out;
     try {
       out = db.activateAgentCapsule({
@@ -6801,7 +7823,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'memory')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
 
@@ -6810,7 +7832,8 @@ export function makeServices({ db, bus }) {
     const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
     const user_id = client.user_id ? String(client.user_id) : '';
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     const request_id = String(req.request_id || '').trim();
     const agent_instance_id = String(req.agent_instance_id || '').trim();
     const agent_name = String(req.agent_name || '').trim();
@@ -6818,6 +7841,27 @@ export function makeServices({ db, bus }) {
     const gateway_provider = String(req.gateway_provider || '').trim();
 
     const openedAt = nowMs();
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendDeniedAudit({
+        event_type: 'agent.session.denied',
+        error_message: 'agent_session_open_denied',
+        op: 'agent_session_open',
+        client,
+        request_id,
+        project_id: project_id || null,
+        deny_code: denyCode,
+        ext: {
+          created: false,
+          agent_instance_id,
+          agent_name,
+          agent_version,
+          gateway_provider,
+        },
+      });
+      callback(new Error(denyCode));
+      return;
+    }
     let out;
     try {
       out = db.openAgentSession({
@@ -6887,7 +7931,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'memory')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
 
@@ -6896,7 +7940,8 @@ export function makeServices({ db, bus }) {
     const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
     const user_id = client.user_id ? String(client.user_id) : '';
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     const request_id = String(req.request_id || '').trim();
     const session_id = String(req.session_id || '').trim();
     const agent_instance_id = String(req.agent_instance_id || '').trim();
@@ -6958,6 +8003,47 @@ export function makeServices({ db, bus }) {
     const bindingProjectId = String(sessionBinding?.project_id || project_id || '').trim();
     const sessionGatewayProvider = String(sessionBinding?.gateway_provider || '').trim();
     const auditProjectId = bindingProjectId || project_id;
+    if (!trustedAutomationAllows(auth, {
+      project_id: bindingProjectId,
+      workspace_root: trustedAutomationScope.workspace_root,
+    })) {
+      const denyCode = capabilityDenyCode(auth);
+      try {
+        db.appendAudit({
+          event_type: 'grant.denied',
+          created_at_ms: nowMs(),
+          severity: 'warn',
+          device_id,
+          user_id: user_id || null,
+          app_id,
+          project_id: auditProjectId || null,
+          session_id: session_id || null,
+          request_id: request_id || null,
+          capability: 'unknown',
+          model_id: null,
+          ok: false,
+          error_code: denyCode,
+          error_message: 'agent_tool_request_trusted_automation_denied',
+          ext_json: JSON.stringify({
+            op: 'agent_tool_request',
+            deny_code: denyCode,
+            project_binding_checked: true,
+          }),
+        });
+      } catch {
+        // keep fail-closed response machine-readable even if audit sink fails
+      }
+      callback(null, {
+        accepted: false,
+        tool_request_id: '',
+        risk_tier: normalizeAgentRiskTier(req.risk_tier, 'high'),
+        decision: 'deny',
+        grant_id: '',
+        deny_code: denyCode,
+        expires_at_ms: 0,
+      });
+      return;
+    }
     const execArgv = normalizeExecutionArgv(req.exec_argv);
     const execArgvJson = execArgv.length > 0 ? JSON.stringify(execArgv) : '';
     const execCwd = resolveCanonicalExecutionCwd(req.exec_cwd);
@@ -7215,7 +8301,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'memory')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
 
@@ -7224,7 +8310,8 @@ export function makeServices({ db, bus }) {
     const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
     const user_id = client.user_id ? String(client.user_id) : '';
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     const request_id = String(req.request_id || '').trim();
     const session_id = String(req.session_id || '').trim();
     const tool_request_id = String(req.tool_request_id || '').trim();
@@ -7233,6 +8320,32 @@ export function makeServices({ db, bus }) {
     const approver_id = String(req.approver_id || '').trim();
     const note = String(req.note || '').trim();
     const deny_code = String(req.deny_code || '').trim();
+    const existingToolReq = tool_request_id && typeof db.getAgentToolRequest === 'function'
+      ? db.getAgentToolRequest({
+        tool_request_id,
+        session_id,
+        device_id,
+        user_id,
+        app_id,
+      })
+      : null;
+    const trustedAutomationProjectId = String(existingToolReq?.project_id || project_id || '').trim();
+    if (!trustedAutomationAllows(auth, {
+      project_id: trustedAutomationProjectId,
+      workspace_root: trustedAutomationScope.workspace_root,
+    })) {
+      const denyCode = capabilityDenyCode(auth);
+      callback(null, {
+        applied: false,
+        idempotent: false,
+        tool_request_id,
+        decision: 'deny',
+        grant_id: '',
+        deny_code: denyCode,
+        expires_at_ms: 0,
+      });
+      return;
+    }
 
     let out;
     try {
@@ -7323,7 +8436,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'memory')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
 
@@ -7332,7 +8445,8 @@ export function makeServices({ db, bus }) {
     const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
     const user_id = client.user_id ? String(client.user_id) : '';
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     const request_id = String(req.request_id || '').trim();
     const session_id = String(req.session_id || '').trim();
     const tool_request_id = String(req.tool_request_id || '').trim();
@@ -7381,6 +8495,36 @@ export function makeServices({ db, bus }) {
         idempotent: false,
         execution_id: '',
         deny_code: bindingDenyCode,
+        result_json: '',
+        executed_at_ms: nowMs(),
+      });
+      return;
+    }
+    let trustedAutomationProjectId = String(project_id || '').trim();
+    try {
+      const existingToolReq = tool_request_id && typeof db.getAgentToolRequest === 'function'
+        ? db.getAgentToolRequest({
+          tool_request_id,
+          session_id,
+          device_id,
+          user_id,
+          app_id,
+        })
+        : null;
+      trustedAutomationProjectId = String(existingToolReq?.project_id || trustedAutomationProjectId || '').trim();
+    } catch {
+      // ignore and fall back to request scope
+    }
+    if (!trustedAutomationAllows(auth, {
+      project_id: trustedAutomationProjectId,
+      workspace_root: trustedAutomationScope.workspace_root,
+    })) {
+      const denyCode = capabilityDenyCode(auth);
+      callback(null, {
+        executed: false,
+        idempotent: false,
+        execution_id: '',
+        deny_code: denyCode,
         result_json: '',
         executed_at_ms: nowMs(),
       });
@@ -7830,7 +8974,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'memory')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
     const req = call.request || {};
@@ -7838,7 +8982,8 @@ export function makeServices({ db, bus }) {
     const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
     const user_id = client.user_id ? String(client.user_id) : '';
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     const request_id = String(req.request_id || '').trim();
     const amount_minor = Math.floor(Number(req.amount_minor || 0));
     const currency = String(req.currency || '').trim().toUpperCase();
@@ -7854,6 +8999,28 @@ export function makeServices({ db, bus }) {
 
     if (!device_id || !app_id) {
       callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendPaymentAudit({
+        event_type: 'payment.intent.created',
+        client,
+        request_id,
+        project_id: project_id || null,
+        intent_id: '',
+        ok: false,
+        deny_code: denyCode,
+        error_message: 'payment_intent_create_rejected',
+        ext: {
+          op: 'create_payment_intent',
+          created: false,
+          amount_minor,
+          currency,
+          merchant_id,
+        },
+      });
+      callback(new Error(denyCode));
       return;
     }
 
@@ -7924,7 +9091,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'memory')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
     const req = call.request || {};
@@ -7932,7 +9099,8 @@ export function makeServices({ db, bus }) {
     const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
     const user_id = client.user_id ? String(client.user_id) : '';
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     const request_id = String(req.request_id || '').trim();
     const intent_id = String(req.intent_id || '').trim();
     const evidence = req.evidence && typeof req.evidence === 'object' ? req.evidence : {};
@@ -7948,6 +9116,28 @@ export function makeServices({ db, bus }) {
 
     if (!device_id || !app_id) {
       callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendPaymentAudit({
+        event_type: 'payment.evidence.verified',
+        client,
+        request_id,
+        project_id: project_id || null,
+        intent_id,
+        ok: false,
+        deny_code: denyCode,
+        error_message: 'payment_evidence_rejected',
+        ext: {
+          op: 'attach_payment_evidence',
+          price_amount_minor,
+          currency,
+          merchant_id,
+          nonce,
+        },
+      });
+      callback(new Error(denyCode));
       return;
     }
 
@@ -8018,7 +9208,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'memory')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
     const req = call.request || {};
@@ -8026,7 +9216,8 @@ export function makeServices({ db, bus }) {
     const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
     const user_id = client.user_id ? String(client.user_id) : '';
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     const request_id = String(req.request_id || '').trim();
     const intent_id = String(req.intent_id || '').trim();
     const mobile_terminal_id = String(req.mobile_terminal_id || '').trim();
@@ -8035,6 +9226,25 @@ export function makeServices({ db, bus }) {
 
     if (!device_id || !app_id) {
       callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendPaymentAudit({
+        event_type: 'payment.challenge.issued',
+        client,
+        request_id,
+        project_id: project_id || null,
+        intent_id,
+        ok: false,
+        deny_code: denyCode,
+        error_message: 'payment_challenge_rejected',
+        ext: {
+          op: 'issue_payment_challenge',
+          mobile_terminal_id,
+        },
+      });
+      callback(new Error(denyCode));
       return;
     }
 
@@ -8098,7 +9308,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'memory')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
     const req = call.request || {};
@@ -8106,7 +9316,8 @@ export function makeServices({ db, bus }) {
     const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
     const user_id = client.user_id ? String(client.user_id) : '';
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     const request_id = String(req.request_id || '').trim();
     const intent_id = String(req.intent_id || '').trim();
     const challenge_id = String(req.challenge_id || '').trim();
@@ -8117,6 +9328,28 @@ export function makeServices({ db, bus }) {
 
     if (!device_id || !app_id) {
       callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendPaymentAudit({
+        event_type: 'payment.confirmed',
+        client,
+        request_id,
+        project_id: project_id || null,
+        intent_id,
+        ok: false,
+        deny_code: denyCode,
+        error_message: 'payment_confirm_rejected',
+        ext: {
+          op: 'confirm_payment_intent',
+          challenge_id,
+          mobile_terminal_id,
+          auth_factor: auth_factor || 'tap_only',
+          idempotent: false,
+        },
+      });
+      callback(new Error(denyCode));
       return;
     }
 
@@ -8185,7 +9418,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'memory')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
     const req = call.request || {};
@@ -8193,7 +9426,8 @@ export function makeServices({ db, bus }) {
     const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
     const user_id = client.user_id ? String(client.user_id) : '';
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     const request_id = String(req.request_id || '').trim();
     const intent_id = String(req.intent_id || '').trim();
     const reason = String(req.reason || '').trim();
@@ -8201,6 +9435,27 @@ export function makeServices({ db, bus }) {
 
     if (!device_id || !app_id) {
       callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendPaymentAudit({
+        event_type: 'payment.aborted',
+        client,
+        request_id,
+        project_id: project_id || null,
+        intent_id,
+        ok: false,
+        deny_code: denyCode,
+        error_message: 'payment_abort_rejected',
+        ext: {
+          op: 'abort_payment_intent',
+          reason,
+          idempotent: false,
+          compensation_pending: false,
+        },
+      });
+      callback(new Error(denyCode));
       return;
     }
 
@@ -8269,7 +9524,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'memory')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
     const req = call.request || {};
@@ -8293,6 +9548,11 @@ export function makeServices({ db, bus }) {
     const risk_tier = String(heartbeat.risk_tier || '').trim();
     const heartbeat_seq = Math.max(0, Math.floor(Number(heartbeat.heartbeat_seq || 0)));
     const sent_at_ms = Math.max(0, Number(heartbeat.sent_at_ms || 0));
+    const trustedAutomationScope = trustedAutomationScopeWithProject(
+      trustedAutomationScopeFromRequest(req, client),
+      root_project_id,
+      project_id,
+    );
     const now = nowMs();
 
     if (!device_id || !app_id) {
@@ -8326,6 +9586,28 @@ export function makeServices({ db, bus }) {
         created: false,
         deny_code: 'invalid_request',
       });
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendProjectRejectAudit({
+        event_type: 'project.heartbeat.rejected',
+        error_message: 'project_heartbeat_rejected',
+        op: 'project_heartbeat',
+        client,
+        request_id,
+        project_id: project_id || root_project_id || null,
+        deny_code: denyCode,
+        ext: {
+          root_project_id,
+          parent_project_id,
+          project_id,
+          heartbeat_seq,
+          queue_depth,
+          oldest_wait_ms,
+        },
+      });
+      callback(new Error(denyCode));
       return;
     }
 
@@ -8432,7 +9714,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'memory')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
     const req = call.request || {};
@@ -8443,6 +9725,10 @@ export function makeServices({ db, bus }) {
     const request_id = String(req.request_id || '').trim();
     const root_project_id = String(req.root_project_id || '').trim();
     const max_projects = Math.max(1, Math.floor(Number(req.max_projects || 0)));
+    const trustedAutomationScope = trustedAutomationScopeWithProject(
+      trustedAutomationScopeFromRequest(req, client),
+      root_project_id,
+    );
     const now = nowMs();
 
     if (!device_id || !app_id) {
@@ -8479,6 +9765,24 @@ export function makeServices({ db, bus }) {
         conservative_mode: true,
         items: [],
       });
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendProjectRejectAudit({
+        event_type: 'project.dispatch.rejected',
+        error_message: 'project_dispatch_plan_rejected',
+        op: 'get_dispatch_plan',
+        client,
+        request_id,
+        project_id: root_project_id || null,
+        deny_code: denyCode,
+        ext: {
+          root_project_id,
+          max_projects,
+        },
+      });
+      callback(new Error(denyCode));
       return;
     }
 
@@ -8655,14 +9959,15 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'memory')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
     const req = call.request || {};
     const client = effectiveClientIdentity(req.client || {}, auth);
     const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     const user_id = client.user_id ? String(client.user_id) : '';
     const scope = req.scope ? String(req.scope).trim() : '';
     const thread_id = req.thread_id ? String(req.thread_id).trim() : '';
@@ -8680,6 +9985,26 @@ export function makeServices({ db, bus }) {
 
     if (!device_id || !app_id) {
       callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendDeniedAudit({
+        event_type: 'memory.longterm_markdown.exported',
+        error_message: 'markdown_export_denied',
+        op: 'markdown_export',
+        client,
+        request_id: '',
+        project_id: project_id || null,
+        deny_code: denyCode,
+        ext: {
+          scope: scope || 'all',
+          thread_id: thread_id || '',
+          remote_mode,
+          allow_untrusted,
+        },
+      });
+      callback(new Error(denyCode));
       return;
     }
     if (scope === 'thread' && !thread_id) {
@@ -8804,14 +10129,15 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'memory')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
     const req = call.request || {};
     const client = effectiveClientIdentity(req.client || {}, auth);
     const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     const user_id = client.user_id ? String(client.user_id) : '';
     const scope = req.scope ? String(req.scope).trim() : '';
     const thread_id = req.thread_id ? String(req.thread_id).trim() : '';
@@ -8836,6 +10162,26 @@ export function makeServices({ db, bus }) {
 
     if (!device_id || !app_id) {
       callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendDeniedAudit({
+        event_type: 'memory.longterm_markdown.begin_edit',
+        error_message: 'markdown_begin_edit_denied',
+        op: 'markdown_begin_edit',
+        client,
+        request_id: '',
+        project_id: project_id || null,
+        deny_code: denyCode,
+        ext: {
+          scope: scope || 'all',
+          thread_id: thread_id || '',
+          remote_mode,
+          allow_untrusted,
+        },
+      });
+      callback(new Error(denyCode));
       return;
     }
     if (scope === 'thread' && !thread_id) {
@@ -8994,14 +10340,15 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'memory')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
     const req = call.request || {};
     const client = effectiveClientIdentity(req.client || {}, auth);
     const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     const user_id = client.user_id ? String(client.user_id) : '';
     const edit_session_id = String(req.edit_session_id || '').trim();
     const base_version = String(req.base_version || '').trim();
@@ -9014,6 +10361,25 @@ export function makeServices({ db, bus }) {
 
     if (!device_id || !app_id) {
       callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendDeniedAudit({
+        event_type: 'memory.longterm_markdown.patch_applied',
+        error_message: 'markdown_apply_patch_denied',
+        op: 'markdown_apply_patch',
+        client,
+        request_id: '',
+        project_id: project_id || null,
+        deny_code: denyCode,
+        ext: {
+          edit_session_id,
+          base_version,
+          patch_mode: String(patch_mode || ''),
+        },
+      });
+      callback(new Error(denyCode));
       return;
     }
     if (!edit_session_id) {
@@ -9240,14 +10606,15 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'memory')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
     const req = call.request || {};
     const client = effectiveClientIdentity(req.client || {}, auth);
     const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     const user_id = client.user_id ? String(client.user_id) : '';
     const pending_change_id = String(req.pending_change_id || '').trim();
     const expected_status = String(req.expected_status || '').trim();
@@ -9258,6 +10625,26 @@ export function makeServices({ db, bus }) {
 
     if (!device_id || !app_id) {
       callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendDeniedAudit({
+        event_type: 'memory.longterm_markdown.reviewed',
+        error_message: 'markdown_review_denied',
+        op: 'markdown_review',
+        client,
+        request_id: '',
+        project_id: project_id || null,
+        deny_code: denyCode,
+        ext: {
+          pending_change_id,
+          expected_status,
+          review_decision,
+          on_secret,
+        },
+      });
+      callback(new Error(denyCode));
       return;
     }
     if (!pending_change_id) {
@@ -9432,14 +10819,15 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'memory')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
     const req = call.request || {};
     const client = effectiveClientIdentity(req.client || {}, auth);
     const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     const user_id = client.user_id ? String(client.user_id) : '';
     const pending_change_id = String(req.pending_change_id || '').trim();
     const expected_status = String(req.expected_status || '').trim() || 'approved';
@@ -9448,6 +10836,24 @@ export function makeServices({ db, bus }) {
 
     if (!device_id || !app_id) {
       callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendDeniedAudit({
+        event_type: 'memory.longterm_markdown.written',
+        error_message: 'markdown_writeback_denied',
+        op: 'markdown_writeback',
+        client,
+        request_id: '',
+        project_id: project_id || null,
+        deny_code: denyCode,
+        ext: {
+          pending_change_id,
+          expected_status,
+        },
+      });
+      callback(new Error(denyCode));
       return;
     }
     if (!pending_change_id) {
@@ -9606,14 +11012,15 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'memory')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
     const req = call.request || {};
     const client = effectiveClientIdentity(req.client || {}, auth);
     const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     const user_id = client.user_id ? String(client.user_id) : '';
     const pending_change_id = String(req.pending_change_id || '').trim();
     const expected_status = String(req.expected_status || '').trim() || 'written';
@@ -9622,6 +11029,24 @@ export function makeServices({ db, bus }) {
 
     if (!device_id || !app_id) {
       callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendDeniedAudit({
+        event_type: 'memory.longterm_markdown.rolled_back',
+        error_message: 'markdown_rollback_denied',
+        op: 'markdown_rollback',
+        client,
+        request_id: '',
+        project_id: project_id || null,
+        deny_code: denyCode,
+        ext: {
+          pending_change_id,
+          expected_status,
+        },
+      });
+      callback(new Error(denyCode));
       return;
     }
     if (!pending_change_id) {
@@ -9781,12 +11206,14 @@ export function makeServices({ db, bus }) {
 
   function skillsIdentityFromRequest(req, auth) {
     const client = effectiveClientIdentity(req?.client || {}, auth);
+    const scope = trustedAutomationScopeFromRequest(req, client);
     return {
       client,
       device_id: String(client.device_id || '').trim(),
       user_id: client.user_id ? String(client.user_id) : '',
       app_id: String(client.app_id || '').trim(),
-      project_id: client.project_id ? String(client.project_id) : '',
+      project_id: scope.project_id,
+      workspace_root: scope.workspace_root,
       session_id: client.session_id ? String(client.session_id) : '',
     };
   }
@@ -9798,7 +11225,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'skills')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
 
@@ -9807,9 +11234,34 @@ export function makeServices({ db, bus }) {
     const device_id = String(client.device_id || '').trim();
     const user_id = client.user_id ? String(client.user_id) : '';
     const app_id = String(client.app_id || '').trim();
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     if (!device_id || !app_id) {
       callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      const query = String(req.query || '').trim();
+      const source_filter = String(req.source_filter || '').trim();
+      const limit = Math.max(1, Math.min(100, Number(req.limit || 20)));
+      appendSkillsAudit({
+        event_type: 'skills.search.performed',
+        device_id,
+        user_id,
+        app_id,
+        project_id,
+        session_id: client.session_id ? String(client.session_id) : null,
+        request_id: '',
+        ok: false,
+        error_code: denyCode,
+        ext: {
+          query,
+          source_filter,
+          limit,
+        },
+      });
+      callback(new Error(denyCode));
       return;
     }
 
@@ -9851,7 +11303,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'skills')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
 
@@ -9860,9 +11312,14 @@ export function makeServices({ db, bus }) {
     const device_id = String(client.device_id || '').trim();
     const user_id = client.user_id ? String(client.user_id) : '';
     const app_id = String(client.app_id || '').trim();
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     if (!device_id || !app_id) {
       callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
 
@@ -9978,7 +11435,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'skills')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
 
@@ -9987,9 +11444,14 @@ export function makeServices({ db, bus }) {
     const device_id = String(client.device_id || '').trim();
     const user_id = client.user_id ? String(client.user_id) : '';
     const app_id = String(client.app_id || '').trim();
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     if (!device_id || !app_id) {
       callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
     if (!user_id) {
@@ -10083,7 +11545,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'skills')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
 
@@ -10092,9 +11554,14 @@ export function makeServices({ db, bus }) {
     const device_id = String(client.device_id || '').trim();
     const user_id = client.user_id ? String(client.user_id) : '';
     const app_id = String(client.app_id || '').trim();
-    const project_id = client.project_id ? String(client.project_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
     if (!device_id || !app_id || !user_id) {
       callback(new Error('invalid client identity: missing device_id/user_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
 
@@ -10138,7 +11605,7 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'skills')) {
-      callback(new Error('permission_denied'));
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
     const req = call.request || {};
@@ -10148,11 +11615,16 @@ export function makeServices({ db, bus }) {
       user_id,
       app_id,
       project_id,
+      workspace_root,
       session_id,
     } = identity;
     const package_sha256 = String(req.package_sha256 || '').trim().toLowerCase();
     if (!package_sha256) {
       callback(new Error('missing_package_sha256'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, { project_id, workspace_root })) {
+      callback(new Error(capabilityDenyCode(auth)));
       return;
     }
     let manifest_json = '';
@@ -10229,7 +11701,11 @@ export function makeServices({ db, bus }) {
       return;
     }
     if (!clientAllows(auth, 'skills')) {
-      closeErr('permission_denied');
+      closeErr(capabilityDenyCode(auth));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, { project_id: identity?.project_id, workspace_root: identity?.workspace_root })) {
+      closeErr(capabilityDenyCode(auth));
       return;
     }
 
@@ -10400,7 +11876,14 @@ export function makeServices({ db, bus }) {
     HubAI: { Generate, Cancel },
     HubWeb: { Fetch },
     HubEvents: { Subscribe },
-    HubRuntime: { GetSchedulerStatus, GetPendingGrantRequests, ApprovePendingGrantRequest, DenyPendingGrantRequest },
+    HubRuntime: {
+      GetSchedulerStatus,
+      GetPendingGrantRequests,
+      GetConnectorIngressReceipts,
+      GetAutonomyPolicyOverrides,
+      ApprovePendingGrantRequest,
+      DenyPendingGrantRequest,
+    },
     HubAudit: { ListAuditEvents },
     HubMemory: {
       GetOrCreateThread,
@@ -10414,6 +11897,8 @@ export function makeServices({ db, bus }) {
       GetRiskTuningProfile,
       EvaluateRiskTuningProfile,
       PromoteRiskTuningProfile,
+      GetVoiceWakeProfile,
+      SetVoiceWakeProfile,
       IssueVoiceGrantChallenge,
       VerifyVoiceGrantResponse,
       RegisterAgentCapsule,

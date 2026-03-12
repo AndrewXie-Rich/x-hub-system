@@ -318,6 +318,7 @@ Scope (string):
 gRPC (draft v1):
 - `HubAdmin.SetKillSwitch` / `HubAdmin.GetKillSwitch` (see proto).
 - `HubRuntime.GetSchedulerStatus` (paid AI queue/in-flight snapshot for Supervisor dashboards).
+- `HubRuntime.GetConnectorIngressReceipts` (recent connector/webhook ingress receipts for XT-side governed automation binding).
 
 Push:
 - Hub SHOULD push `kill_switch_updated` over WebSocket/gRPC events so clients can update UI immediately.
@@ -333,6 +334,7 @@ Push:
 - `messages` (OpenAI-style): `[{role, content}]`
 - sampling: `max_tokens`, `temperature`, `top_p`
 - optional (recommended for token efficiency): `thread_id` (+ `working_set_limit`) to let Hub assemble context from Hub Memory
+- optional: `fail_closed_on_downgrade=true` to force deny instead of local downgrade when remote export/policy blocks a paid route
 
 ### 7.2 HTTP (non-streaming)
 #### POST `/ai/generate`
@@ -345,6 +347,7 @@ Request:
   "app_id": "ax_coder_mac",
   "project_id": "optional",
   "thread_id": "optional (Hub memory thread)",
+  "fail_closed_on_downgrade": true,
   "model_id": "mlx/qwen2.5-7b-instruct",
   "messages": [
     {"role":"system","content":"..."},
@@ -633,7 +636,7 @@ See `service HubMemory` in `protocol/hub_protocol_v1.proto`:
 
 ## 13) Skills (Discovery + Import v1)
 
-Goal: preserve Openclaw-style “search + install skill” UX while keeping Hub as the single control plane:
+Goal: preserve a portable “search + install skill” UX while keeping Hub as the single control plane:
 - Hub stores/pins/audits skills; Hub does **not** execute third-party skill code.
 - v1 import is **Client Pull + Upload** (Terminal downloads, Hub verifies/stores).
 

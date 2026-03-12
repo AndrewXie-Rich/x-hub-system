@@ -647,7 +647,7 @@ function sha256Hex(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
 }
 
-export const OPENCLAW_SKILL_ABI_COMPAT_VERSION = 'openclaw_skill_abi_compat.v1';
+export const SKILL_ABI_COMPAT_VERSION = 'skills_abi_compat.v1';
 
 export function skillsStoreBaseDir(runtimeBaseDir) {
   const base = safeString(runtimeBaseDir);
@@ -963,7 +963,7 @@ function normalizePackageEntry(it) {
     source_id: safeString(it.source_id || 'local'),
     manifest_json: safeString(it.manifest_json),
     manifest_sha256: safeString(it.manifest_sha256).toLowerCase(),
-    abi_compat_version: safeString(it.abi_compat_version || OPENCLAW_SKILL_ABI_COMPAT_VERSION) || OPENCLAW_SKILL_ABI_COMPAT_VERSION,
+    abi_compat_version: safeString(it.abi_compat_version || SKILL_ABI_COMPAT_VERSION) || SKILL_ABI_COMPAT_VERSION,
     compatibility_state: safeString(it.compatibility_state || 'supported') || 'supported',
     mapping_aliases_used: safeStringArray(it.mapping_aliases_used),
     defaults_applied: safeStringArray(it.defaults_applied),
@@ -1137,7 +1137,7 @@ function normalizeEntrypoint(manifestObj, tracker) {
   };
 }
 
-export function normalizeOpenClawSkillManifest(manifestObj, { sourceId, packageSha = '' } = {}) {
+export function normalizeCompatibleSkillManifest(manifestObj, { sourceId, packageSha = '' } = {}) {
   const obj = isPlainObject(manifestObj) ? manifestObj : {};
   const tracker = {
     aliases: new Set(),
@@ -1203,7 +1203,7 @@ export function normalizeOpenClawSkillManifest(manifestObj, { sourceId, packageS
   const mapping_aliases_used = Array.from(tracker.aliases).sort();
   const defaults_applied = Array.from(tracker.defaults).sort();
   return {
-    abi_compat_version: OPENCLAW_SKILL_ABI_COMPAT_VERSION,
+    abi_compat_version: SKILL_ABI_COMPAT_VERSION,
     compatibility_state: mapping_aliases_used.length > 0 ? 'partial' : 'supported',
     mapping_aliases_used,
     defaults_applied,
@@ -1235,7 +1235,7 @@ function normalizeUploadSourceId(runtimeBaseDir, sourceId) {
 }
 
 function skillMetaFromManifest(manifestObj, sourceId, packageSha = '') {
-  const mapped = normalizeOpenClawSkillManifest(manifestObj, { sourceId, packageSha });
+  const mapped = normalizeCompatibleSkillManifest(manifestObj, { sourceId, packageSha });
   return {
     ...mapped.skill,
     manifest_sha256: mapped.manifest_sha256,
@@ -1303,7 +1303,7 @@ export function uploadSkillPackage(runtimeBaseDir, { packageBytes, manifestJson,
     packageBytes,
     package_sha256,
   });
-  const mapped = normalizeOpenClawSkillManifest(manifestObj, { sourceId: normalizedSourceId, packageSha: package_sha256 });
+  const mapped = normalizeCompatibleSkillManifest(manifestObj, { sourceId: normalizedSourceId, packageSha: package_sha256 });
   const meta = {
     ...skillMetaFromManifest(manifestObj, normalizedSourceId, package_sha256),
     source_id: normalizedSourceId,

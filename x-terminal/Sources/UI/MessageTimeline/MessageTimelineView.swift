@@ -4,6 +4,7 @@ import SwiftUI
 struct MessageTimelineView: View {
     let ctx: AXProjectContext
     @ObservedObject var session: ChatSessionModel
+    var bottomPadding: CGFloat = 24
     @Namespace private var bottomID
 
     var body: some View {
@@ -31,7 +32,7 @@ struct MessageTimelineView: View {
                         .id(bottomID)
                 }
                 .padding(20)
-                .padding(.bottom, 140) // 增加底部空间，确保可以滚动到最底部
+                .padding(.bottom, bottomPadding)
             }
             .onChange(of: session.messages.count) { _ in
                 withAnimation(.easeOut(duration: 0.3)) {
@@ -44,6 +45,9 @@ struct MessageTimelineView: View {
                         proxy.scrollTo(bottomID, anchor: .bottom)
                     }
                 }
+            }
+            .onChange(of: session.messages.last?.content ?? "") { _ in
+                proxy.scrollTo(bottomID, anchor: .bottom)
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
@@ -530,6 +534,20 @@ struct ToolCallCard: View {
             return "memorychip"
         case .project_snapshot:
             return "folder.badge.gearshape"
+        case .deviceUIObserve:
+            return "eye"
+        case .deviceUIAct:
+            return "hand.tap"
+        case .deviceUIStep:
+            return "point.3.connected.trianglepath.dotted"
+        case .deviceClipboardRead, .deviceClipboardWrite:
+            return "list.clipboard"
+        case .deviceScreenCapture:
+            return "camera.viewfinder"
+        case .deviceBrowserControl:
+            return "safari"
+        case .deviceAppleScript:
+            return "apple.logo"
         case .need_network, .bridge_status, .web_fetch, .web_search, .browser_read:
             return "network"
         }

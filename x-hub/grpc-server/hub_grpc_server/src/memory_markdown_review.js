@@ -13,6 +13,9 @@ const SECRET_HINT_PATTERNS = [
   { kind: 'hex.long', re: /\b[0-9a-f]{32,}\b/gi },
 ];
 
+const BENIGN_HEX_CONTEXT_RE = /\b(sha(?:1|224|256|384|512)?|digest|checksum|hash|project[_\s-]*id|thread[_\s-]*id|session[_\s-]*id|request[_\s-]*id|device[_\s-]*id|event[_\s-]*id|trace[_\s-]*id|scope[_\s-]*id|lane[_\s-]*id|row[_\s-]*id|message[_\s-]*id|grant[_\s-]*request[_\s-]*id|project id|thread id|session id|request id|device id|event id|trace id|scope id|lane id|row id|message id|grant request id)\b/i;
+const SENSITIVE_HEX_CONTEXT_RE = /\b(api[_\s-]*key|secret|token|bearer|password|passcode|authorization[_\s-]*code|auth[_\s-]*code|private[_\s-]*key|client[_\s-]*secret|session[_\s-]*secret|cookie)\b/i;
+
 function safeStr(v) {
   return String(v || '').trim();
 }
@@ -35,6 +38,19 @@ function collectMatches(text, re, maxMatches = 10) {
   return out;
 }
 
+function surroundingContext(text, start, length, radius = 32) {
+  const from = Math.max(0, Number(start || 0) - radius);
+  const to = Math.min(String(text || '').length, Number(start || 0) + Number(length || 0) + radius);
+  return String(text || '').slice(from, to);
+}
+
+function longHexSeverity(text, match) {
+  const context = surroundingContext(text, match?.offset || 0, match?.length || 0);
+  if (SENSITIVE_HEX_CONTEXT_RE.test(context)) return 'secret';
+  if (BENIGN_HEX_CONTEXT_RE.test(context)) return 'internal';
+  return 'internal';
+}
+
 export function analyzeLongtermMarkdownFindings(markdown = '') {
   const text = String(markdown || '');
   const findings = [];
@@ -52,6 +68,26 @@ export function analyzeLongtermMarkdownFindings(markdown = '') {
   for (const item of SECRET_HINT_PATTERNS) {
     const matches = collectMatches(text, item.re);
     if (matches.length <= 0) continue;
+    if (String(item.kind || '') === 'hex.long') {
+      const severityMap = new Map();
+      for (const match of matches) {
+        const severity = longHexSeverity(text, match);
+        if (!severityMap.has(severity)) {
+          severityMap.set(severity, []);
+        }
+        severityMap.get(severity).push(match);
+      }
+      for (const [severity, bucket] of severityMap.entries()) {
+        if (!Array.isArray(bucket) || bucket.length <= 0) continue;
+        findings.push({
+          kind: String(item.kind || 'secret'),
+          severity,
+          match_count: bucket.length,
+          matches: bucket,
+        });
+      }
+      continue;
+    }
     findings.push({
       kind: String(item.kind || 'secret'),
       severity: 'secret',
@@ -105,4 +141,3 @@ export function normalizeSecretHandling(value) {
   if (s === 'deny') return 'deny';
   return '';
 }
-

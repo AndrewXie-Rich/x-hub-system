@@ -1,11 +1,11 @@
-# X-Hub Agent Efficiency & Safety Governance v1（Openclaw 优先 / 可执行规范 / Draft）
+# X-Hub Agent Efficiency & Safety Governance v1（skills ecosystem 优先 / 可执行规范 / Draft）
 
 - Status: Draft（用于直接落地实现；后续按版本迭代）
 - Updated: 2026-02-13
 - Applies to:
   - X-Hub（Hub Core + Bridge + gRPC server + AI runtime）
   - X-Terminal（Hub 托管 skills / 可选使用 Hub memory）
-  - Generic Terminal（含 Openclaw：通过 Hub 的 AI / Web / Connectors / Skills Store 获得更顺畅体验）
+  - Generic Terminal（含 skills ecosystem：通过 Hub 的 AI / Web / Connectors / Skills Store 获得更顺畅体验）
 
 > 本规范把 “AI Agent = 大模型(思考) + Memory(记忆) + RAG(知识) + MCP(手脚) + Skills(经验)”
 > 这 5 个维度的**效率提升**与**安全治理**统一成一套可执行的 Hub 控制面：风险分层、可审计、可撤销、可降级，
@@ -19,7 +19,7 @@
 - 统一“用户可控”的安全/体验平衡：提供 `fast|balanced|strict` 三档策略，并支持 scope 覆盖与临时 override。
 - 统一能力门禁：以 `Capability` + `Grant/Pre-Grant` + Policy Engine 为核心，覆盖 `ai.generate.*`、`web.fetch`、connectors 外部动作、skills 安装/启用。
 - 统一审计：所有 allow/deny/override 必须落库（默认 metadata-only），并可导出诊断包（与启动状态机对齐）。
-- 在不牺牲 Openclaw 体验的前提下，把“付费模型 / Secrets / 联网 / 外部副作用动作”尽可能收敛到 Hub。
+- 在不牺牲 skills ecosystem 体验的前提下，把“付费模型 / Secrets / 联网 / 外部副作用动作”尽可能收敛到 Hub。
 
 非目标（v1 不强制）
 - “强制阻止”客户端私自联网/本机执行（Generic Terminal 天然不可信；Hub 只能对“走 Hub 的能力”做强保证）。
@@ -403,11 +403,11 @@ Definition of Done（v1）
   - 产出：`hub_grpc_clients.json` entry 增加 `user_id`；服务端将请求里的 user_id 覆盖为绑定值
   - 验收：同 token 携带不同 user_id 的请求不会影响审计归属与策略生效
 
-### 7.3 Openclaw 体验（默认不打断）
+### 7.3 skills ecosystem 体验（默认不打断）
 
 - [ ] **GOV-V1-020** 提供 CLI：`axhubctl policy set --profile fast|balanced|strict` + `axhubctl policy get`
   - 产出：axhubctl 子命令（或等价 UI）
-  - 验收：Openclaw 用户可不打开 Hub UI 直接切策略；并能看到当前生效来源（hub/user/project）
+  - 验收：skills ecosystem 用户可不打开 Hub UI 直接切策略；并能看到当前生效来源（hub/user/project）
 
 - [ ] **GOV-V1-021** 默认降级策略闭环（blocked -> downgrade）
   - 产出：当 `secret_mode=deny` 阻断 paid 时，客户端可自动重试 local（或提示一键重试）
@@ -427,4 +427,4 @@ Definition of Done（v1）
 
 - [ ] **GOV-V1-060** `skills.search` + v1 import 闭环（复用 SKL-V1 清单）
   - 产出：`skills.search`、Client Pull + Upload、分层 pin、撤销生效
-  - 验收：Openclaw/X-Terminal 都能把技能纳入 Hub 治理（审计齐全）
+  - 验收：skills ecosystem/X-Terminal 都能把技能纳入 Hub 治理（审计齐全）

@@ -11,7 +11,7 @@ struct SettingsSheetView: View {
     @State private var didAutoRequestCalendarOnOpen = false
     @State private var remoteModels: [RemoteModelEntry] = RemoteModelStorage.load().models
     @State private var showAddRemoteModel: Bool = false
-    @State private var showImportOpencodeZen: Bool = false
+    @State private var showImportRemoteCatalog: Bool = false
     @State private var networkPolicies: [HubNetworkPolicyRule] = HubNetworkPolicyStorage.load().policies
     @State private var showAddNetworkPolicy: Bool = false
     @State private var showAddGRPCClient: Bool = false
@@ -91,9 +91,9 @@ struct SettingsSheetView: View {
                 upsertRemoteModels(entries)
             }
         }
-        .sheet(isPresented: $showImportOpencodeZen) {
-            ImportOpencodeZenSheet { result in
-                importOpencodeZen(result)
+        .sheet(isPresented: $showImportRemoteCatalog) {
+            ImportRemoteCatalogSheet { result in
+                importRemoteCatalog(result)
             }
         }
         .sheet(isPresented: $showAddNetworkPolicy) {
@@ -2913,7 +2913,7 @@ Example Allowed CIDRs:
             HStack {
                 Text("Remote Models")
                 Spacer()
-                Button("OpenCode Zen…") { showImportOpencodeZen = true }
+                Button("Remote Catalog Import…") { showImportRemoteCatalog = true }
                 Button("Add…") { showAddRemoteModel = true }
             }
             if remoteModels.isEmpty {
@@ -2921,26 +2921,45 @@ Example Allowed CIDRs:
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(remoteModels) { m in
-                    HStack(spacing: 10) {
-                        Toggle("", isOn: bindingRemoteEnabled(m.id))
-                            .labelsHidden()
-
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(m.name.isEmpty ? m.id : m.name)
-                                .font(.callout.weight(.semibold))
-                            Text(remoteModelSubtitle(m))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                            keychainStatusLine(model: m)
+                ForEach(remoteModelGroups) { group in
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(alignment: .firstTextBaseline) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(group.title)
+                                    .font(.callout.weight(.semibold))
+                                Text(group.summary)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                keychainStatusLine(model: group.primaryModel)
+                            }
+                            Spacer()
+                            Button("Remove Key Group") {
+                                removeRemoteModelGroup(keyReference: group.keyReference)
+                            }
                         }
-                        Spacer()
-                        Button("Remove") { removeRemoteModel(id: m.id) }
+
+                        ForEach(group.models) { m in
+                            HStack(spacing: 10) {
+                                Toggle("", isOn: bindingRemoteEnabled(m.id))
+                                    .labelsHidden()
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(m.name.isEmpty ? m.id : m.name)
+                                        .font(.callout.weight(.semibold))
+                                    Text(remoteModelSubtitle(m))
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                Button("Remove") { removeRemoteModel(id: m.id) }
+                            }
+                        }
                     }
+                    .padding(.vertical, 4)
                 }
             }
-            Text("Enabled remote models are written into models_state.json as Loaded so X-Terminal can select them.")
+            Text("Only runnable enabled remote models are written into models_state.json as Loaded. Entries missing an API key or failing endpoint validation stay local to Hub settings and are not pushed to X-Terminal.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -3352,8 +3371,15 @@ Example Allowed CIDRs:
     }
 
     private func removeRemoteModel(id: String) {
-        remoteModels.removeAll { $0.id == id }
-        persistRemoteModels()
+        let snap = RemoteModelStorage.remove(id: id)
+        remoteModels = snap.models.sorted { $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending }
+        ModelStore.shared.refresh()
+    }
+
+    private func removeRemoteModelGroup(keyReference: String) {
+        let snap = RemoteModelStorage.removeGroup(keyReference: keyReference)
+        remoteModels = snap.models.sorted { $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending }
+        ModelStore.shared.refresh()
     }
 
     private func persistRemoteModels() {
@@ -3362,20 +3388,20 @@ Example Allowed CIDRs:
         ModelStore.shared.refresh()
     }
 
-    private func importOpencodeZen(_ result: ImportOpencodeZenResult) {
+    private func importRemoteCatalog(_ result: ImportRemoteCatalogResult) {
         let apiKey = result.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !apiKey.isEmpty else { return }
 
-        let apiKeyRef = "opencode:default"
+        let apiKeyRef = "remote_catalog:default"
 
-        let baseURL = OpencodeZenClient.defaultBaseURL.absoluteString
+        let baseURL = RemoteCatalogClient.defaultBaseURL.absoluteString
         let idPrefix = normalizeModelPrefix(result.idPrefix)
 
         var imported: [RemoteModelEntry] = []
         for raw in result.modelIds {
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty { continue }
-            let baseModelId = normalizeOpencodeZenModelId(trimmed)
+            let baseModelId = normalizeRemoteCatalogModelID(trimmed)
             if baseModelId.isEmpty { continue }
 
             let fullId: String = {
@@ -3388,15 +3414,15 @@ Example Allowed CIDRs:
 
             let entry = RemoteModelEntry(
                 id: fullId,
-                name: opencodeZenDisplayName(modelId: baseModelId),
-                backend: "opencode_zen",
-                contextLength: opencodeZenContextLength(modelId: baseModelId),
+                name: remoteCatalogDisplayName(modelId: baseModelId),
+                backend: "remote_catalog",
+                contextLength: remoteCatalogContextLength(modelId: baseModelId),
                 enabled: result.enabled,
                 baseURL: baseURL,
                 apiKeyRef: apiKeyRef,
                 upstreamModelId: baseModelId,
                 apiKey: apiKey,
-                note: "OpenCode Zen"
+                note: "Remote Catalog"
             )
             imported.append(entry)
         }
@@ -3407,7 +3433,7 @@ Example Allowed CIDRs:
 
         var updated = remoteModels
         if result.replaceExisting {
-            updated.removeAll { $0.backend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "opencode_zen" }
+            updated.removeAll { RemoteProviderEndpoints.isRemoteCatalogBackend($0.backend) }
         }
         for m in imported {
             if let idx = updated.firstIndex(where: { $0.id == m.id }) {
@@ -3431,11 +3457,11 @@ Example Allowed CIDRs:
         return s
     }
 
-    private func normalizeOpencodeZenModelId(_ raw: String) -> String {
+    private func normalizeRemoteCatalogModelID(_ raw: String) -> String {
         RemoteProviderEndpoints.stripModelRef(raw)
     }
 
-    private func opencodeZenDisplayName(modelId: String) -> String {
+    private func remoteCatalogDisplayName(modelId: String) -> String {
         let t = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
         if t.isEmpty { return "" }
         let map: [String: String] = [
@@ -3455,7 +3481,7 @@ Example Allowed CIDRs:
         return t
     }
 
-    private func opencodeZenContextLength(modelId: String) -> Int {
+    private func remoteCatalogContextLength(modelId: String) -> Int {
         let t = modelId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if t.isEmpty { return 128_000 }
         let map: [String: Int] = [
@@ -3515,7 +3541,7 @@ Example Allowed CIDRs:
 
     private func remoteModelSubtitle(_ model: RemoteModelEntry) -> String {
         let upstream = (model.upstreamModelId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let keyRef = (model.apiKeyRef ?? model.id).trimmingCharacters(in: .whitespacesAndNewlines)
+        let keyRef = RemoteModelStorage.keyReference(for: model)
         if upstream.isEmpty || upstream == model.id {
             return "\(model.id) · \(model.backend) · ctx \(model.contextLength) · key \(keyRef)"
         }
@@ -3532,7 +3558,7 @@ Example Allowed CIDRs:
         }
 
         let hasEncrypted = !(model.apiKeyCiphertext ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let acct = (model.apiKeyRef ?? model.id).trimmingCharacters(in: .whitespacesAndNewlines)
+        let acct = RemoteModelStorage.keyReference(for: model)
 
         // Avoid triggering repeated Keychain prompts in ad-hoc/dev builds (no shared access group).
         if !KeychainStore.hasSharedAccessGroup {
@@ -3556,6 +3582,49 @@ Example Allowed CIDRs:
             }
             return ("API Key: Keychain 错误 (\(msg))", .red)
         }
+    }
+
+    private var remoteModelGroups: [RemoteModelKeyGroup] {
+        let grouped = Dictionary(grouping: remoteModels) { model in
+            RemoteModelStorage.keyReference(for: model)
+        }
+
+        return grouped
+            .map { keyRef, models in
+                let sortedModels = models.sorted { lhs, rhs in
+                    let lhsName = lhs.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let rhsName = rhs.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if lhsName != rhsName {
+                        return lhsName.localizedCaseInsensitiveCompare(rhsName) == .orderedAscending
+                    }
+                    return lhs.id.localizedCaseInsensitiveCompare(rhs.id) == .orderedAscending
+                }
+                return RemoteModelKeyGroup(keyReference: keyRef, models: sortedModels)
+            }
+            .sorted { lhs, rhs in
+                lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
+    }
+}
+
+private struct RemoteModelKeyGroup: Identifiable {
+    let keyReference: String
+    let models: [RemoteModelEntry]
+
+    var id: String { keyReference }
+
+    var primaryModel: RemoteModelEntry {
+        models[0]
+    }
+
+    var title: String {
+        keyReference.isEmpty ? "Ungrouped API Key" : keyReference
+    }
+
+    var summary: String {
+        let count = models.count
+        let enabled = models.filter(\.enabled).count
+        return "\(count) model\(count == 1 ? "" : "s") share this API key · \(enabled) enabled"
     }
 }
 

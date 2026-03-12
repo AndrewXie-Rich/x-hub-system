@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import RELFlowHubCore
 
 // File-based IPC for sandboxed builds.
@@ -69,9 +70,79 @@ final class FileIPC: @unchecked Sendable {
         writeInternalStatus(lastHeartbeatAt: 0, lastDrainAt: 0, lastDrainFilesSeen: 0)
     }
 
+    private func secureDirectory(_ dir: URL) throws {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let rc = dir.path.withCString { ptr in
+            Darwin.chmod(ptr, mode_t(0o700))
+        }
+        guard rc == 0 else {
+            throw NSError(
+                domain: "relflowhub.fileipc",
+                code: 1,
+                userInfo: [
+                    "path": dir.path,
+                    "label": "chmod_dir",
+                    "errno": errno,
+                ]
+            )
+        }
+    }
+
+    private func secureFile(_ url: URL) throws {
+        let rc = url.path.withCString { ptr in
+            Darwin.chmod(ptr, mode_t(0o600))
+        }
+        guard rc == 0 else {
+            throw NSError(
+                domain: "relflowhub.fileipc",
+                code: 2,
+                userInfo: [
+                    "path": url.path,
+                    "label": "chmod_file",
+                    "errno": errno,
+                ]
+            )
+        }
+    }
+
+    private func writeProtectedData(_ data: Data, to url: URL) {
+        do {
+            try data.write(to: url, options: .atomic)
+            try secureFile(url)
+        } catch {
+            return
+        }
+    }
+
+    private func writeProtectedData(_ data: Data, tmp: URL, out: URL) {
+        do {
+            try? FileManager.default.removeItem(at: tmp)
+            try data.write(to: tmp, options: .atomic)
+            try secureFile(tmp)
+            if FileManager.default.fileExists(atPath: out.path) {
+                try? FileManager.default.removeItem(at: out)
+            }
+            try FileManager.default.moveItem(at: tmp, to: out)
+            try secureFile(out)
+        } catch {
+            try? FileManager.default.removeItem(at: tmp)
+        }
+    }
+
+    private func isTrustedInboundEventFile(_ url: URL) -> Bool {
+        var st = stat()
+        let rc = url.path.withCString { ptr in
+            Darwin.lstat(ptr, &st)
+        }
+        guard rc == 0 else { return false }
+        guard (st.st_mode & S_IFMT) == S_IFREG else { return false }
+        return st.st_uid == Darwin.geteuid()
+    }
+
     func start() throws {
-        try FileManager.default.createDirectory(at: eventsDir, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: responsesDir, withIntermediateDirectories: true)
+        try secureDirectory(baseDir)
+        try secureDirectory(eventsDir)
+        try secureDirectory(responsesDir)
 
         // Poll new event files.
         let poll = DispatchSource.makeTimerSource(queue: pollQueue)
@@ -131,7 +202,7 @@ final class FileIPC: @unchecked Sendable {
             modelsUpdatedAt: ms.updatedAt
         )
         if let data = try? JSONEncoder().encode(st) {
-            try? data.write(to: statusFile, options: .atomic)
+            writeProtectedData(data, to: statusFile)
         }
 
         writeInternalStatus(lastHeartbeatAt: Date().timeIntervalSince1970, lastDrainAt: 0, lastDrainFilesSeen: -1)
@@ -153,6 +224,10 @@ final class FileIPC: @unchecked Sendable {
         for url in batch {
             // Only process json files.
             if url.pathExtension.lowercased() != "json" {
+                continue
+            }
+            guard isTrustedInboundEventFile(url) else {
+                try? FileManager.default.removeItem(at: url)
                 continue
             }
             guard let data = try? Data(contentsOf: url) else {
@@ -184,6 +259,35 @@ final class FileIPC: @unchecked Sendable {
             }
             return
         }
+        if req.type == "project_canonical_memory" {
+            if let payload = req.projectCanonicalMemory {
+                let snapshot = HubProjectCanonicalMemorySnapshot(
+                    projectId: payload.projectId,
+                    projectRoot: payload.projectRoot ?? "",
+                    displayName: payload.displayName ?? payload.projectId,
+                    updatedAt: payload.updatedAt ?? Date().timeIntervalSince1970,
+                    items: payload.items.map { row in
+                        HubProjectCanonicalMemoryItem(key: row.key, value: row.value)
+                    }
+                )
+                _ = HubProjectCanonicalMemoryStorage.upsert(snapshot)
+            }
+            return
+        }
+        if req.type == "device_canonical_memory" {
+            if let payload = req.deviceCanonicalMemory {
+                let snapshot = HubDeviceCanonicalMemorySnapshot(
+                    supervisorId: payload.supervisorId,
+                    displayName: payload.displayName ?? payload.supervisorId,
+                    updatedAt: payload.updatedAt ?? Date().timeIntervalSince1970,
+                    items: payload.items.map { row in
+                        HubDeviceCanonicalMemoryItem(key: row.key, value: row.value)
+                    }
+                )
+                _ = HubDeviceCanonicalMemoryStorage.upsert(snapshot)
+            }
+            return
+        }
         if req.type == "need_network" {
             if let n = req.network {
                 let rid = (req.reqId ?? n.id).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -207,10 +311,39 @@ final class FileIPC: @unchecked Sendable {
             writeResponse(IPCResponse(type: "memory_context_ack", reqId: rid, ok: true, id: nil, error: nil, memoryContext: built))
             return
         }
+        if req.type == "voice_wake_profile_get" {
+            let rid = (req.reqId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !rid.isEmpty else { return }
+            guard let payload = req.voiceWakeProfileRequest else {
+                writeResponse(IPCResponse(type: "voice_wake_profile_ack", reqId: rid, ok: false, id: nil, error: "missing_voice_wake_profile_request"))
+                return
+            }
+            let profile = HubVoiceWakeProfileStorage.fetch(desiredWakeMode: payload.desiredWakeMode)
+            writeResponse(IPCResponse(type: "voice_wake_profile_ack", reqId: rid, ok: true, id: profile.profileID, error: nil, voiceWakeProfile: profile))
+            return
+        }
+        if req.type == "voice_wake_profile_set" {
+            let rid = (req.reqId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !rid.isEmpty else { return }
+            guard let payload = req.voiceWakeProfile else {
+                writeResponse(IPCResponse(type: "voice_wake_profile_ack", reqId: rid, ok: false, id: nil, error: "missing_voice_wake_profile"))
+                return
+            }
+            let profile = HubVoiceWakeProfileStorage.update(profile: payload)
+            writeResponse(IPCResponse(type: "voice_wake_profile_ack", reqId: rid, ok: true, id: profile.profileID, error: nil, voiceWakeProfile: profile))
+            return
+        }
         if req.type == "supervisor_incident_audit" {
             guard let payload = req.supervisorIncident else { return }
             Task { @MainActor in
                 _ = self.store.appendSupervisorIncidentAudit(payload)
+            }
+            return
+        }
+        if req.type == "supervisor_project_action_audit" {
+            guard let payload = req.supervisorProjectAction else { return }
+            Task { @MainActor in
+                _ = self.store.appendSupervisorProjectActionAudit(payload)
             }
             return
         }
@@ -243,8 +376,7 @@ final class FileIPC: @unchecked Sendable {
         let tmp = responsesDir.appendingPathComponent(".resp_\(rid).tmp")
         let out = responsesDir.appendingPathComponent("resp_\(rid).json")
         if let data = try? JSONEncoder().encode(resp) {
-            try? data.write(to: tmp, options: .atomic)
-            try? FileManager.default.moveItem(at: tmp, to: out)
+            writeProtectedData(data, tmp: tmp, out: out)
         }
     }
 
@@ -272,7 +404,7 @@ final class FileIPC: @unchecked Sendable {
         if lastDrainFilesSeen >= 0 { st.lastDrainFilesSeen = lastDrainFilesSeen }
 
         if let data = try? JSONEncoder().encode(st) {
-            try? data.write(to: internalStatusFile, options: .atomic)
+            writeProtectedData(data, to: internalStatusFile)
         }
     }
 }

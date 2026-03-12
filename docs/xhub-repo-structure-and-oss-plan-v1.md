@@ -17,7 +17,7 @@
 - 优点：把 Hub 与 Terminal 分开、把全局脚本集中、把根目录放 README/LICENSE
 - 主要缺口（建议补上）：
   1) `protocol/`（.proto + 契约文档）需要放到根层或 `x-hub/` 下的共享位置
-  2) `third_party/`（MIT 可 vendoring 的 Openclaw 子集 + LICENSE/NOTICE）必须有
+  2) `third_party/`（MIT 可 vendoring 的 skills ecosystem 子集 + LICENSE/NOTICE）必须有
   3) “应用 vs 服务”建议进一步分层（macOS app/bridge/dock-agent vs grpc server vs python runtime）
   4) OSS 治理文件缺失：`SECURITY.md`/`CONTRIBUTING.md`/`CODE_OF_CONDUCT.md`/`NOTICE.md`
   5) 大体积产物与私密内容要从仓库剥离：DMG/zip/offline kit/refer open source/（尤其 AGPL）
@@ -42,12 +42,12 @@ x-hub-system/
     tools/
   docs/                    # 全局 spec（你现在的 docs/ 直接迁进来）
   third_party/
-    openclaw/              # 仅 vendoring 我们实际复用的 MIT 子集 + LICENSE/NOTICE
+    skill/              # 仅 vendoring 我们实际复用的 MIT 子集 + LICENSE/NOTICE
   scripts/                 # cross-module scripts（dev helpers）
   .gitmodules              # White paper submodule
   README.md
   LICENSE                  # MIT（主仓库）
-  NOTICE.md                # 第三方声明（含 Openclaw）
+  NOTICE.md                # 第三方声明（含 skills ecosystem）
   SECURITY.md
   CONTRIBUTING.md
   CODE_OF_CONDUCT.md
@@ -55,22 +55,22 @@ x-hub-system/
 
 说明：
 - `docs/`：你当前写的可执行规范文件（memory/connectors/skills/crypto/release）非常适合直接作为开源 repo 的核心资产。
-- `third_party/openclaw/`：只放你真正复用的文件子集（不要整个 openclaw 复制进来），并保留 MIT LICENSE 与来源说明。
-- Claude‑Mem（AGPL）：**不要 vendoring** 到主仓库。只在文档里“引用方法论/链接/对比”，避免让主仓库看起来像 AGPL 混合项目。
+- `third_party/skill/`：只放你真正复用的文件子集（不要整个 skill 复制进来），并保留 MIT LICENSE 与来源说明。
+- progressive-disclosure reference architecture（AGPL）：**不要 vendoring** 到主仓库。只在文档里“引用方法论/链接/对比”，避免让主仓库看起来像 AGPL 混合项目。
 
 ---
 
 ## 2) 许可与第三方（MIT 主仓库下必须做到的事）
 
-### 2.1 Openclaw（MIT，可借代码）
+### 2.1 skills ecosystem（MIT，可借代码）
 建议策略：
-- 采用 vendoring：`third_party/openclaw/`
+- 采用 vendoring：`third_party/skill/`
 - 必备文件：
-  - `third_party/openclaw/LICENSE`（原文）
-  - `third_party/openclaw/NOTICE.md`（写明来源版本/commit 与改动说明）
-- 在你的 `NOTICE.md` 里也列出 Openclaw 使用范围
+  - `third_party/skill/LICENSE`（原文）
+  - `third_party/skill/NOTICE.md`（写明来源版本/commit 与改动说明）
+- 在你的 `NOTICE.md` 里也列出 skills ecosystem 使用范围
 
-### 2.2 Claude‑Mem（AGPL，不可抄代码）
+### 2.2 progressive-disclosure reference architecture（AGPL，不可抄代码）
 建议策略：
 - 主仓库仅保留“方法论引用”：
   - Progressive Disclosure 的概念描述

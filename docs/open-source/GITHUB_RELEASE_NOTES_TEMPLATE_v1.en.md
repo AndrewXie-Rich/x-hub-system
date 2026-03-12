@@ -1,0 +1,137 @@
+# GitHub Release Notes Template v1
+
+Purpose:
+
+- This template is intended for direct use on the GitHub Release page
+- External wording must stay inside the current validated release slice
+- Do not use the release page to expand scope
+
+Recommended companions:
+
+- `README.md`
+- `RELEASE.md`
+- `docs/open-source/OSS_RELEASE_CHECKLIST_v1.md`
+
+---
+
+## Copy-Paste Template
+
+```md
+# X-Hub v0.1.0-alpha
+
+X-Hub is a trusted control plane for AI execution.
+
+This release is intentionally narrow and only reflects the currently validated public release slice.
+
+## What This Release Covers
+
+Validated release slice:
+
+- `XT-W3-23 -> XT-W3-24 -> XT-W3-25`
+
+Validated public statements for this release:
+
+- XT memory UX adapter backed by Hub truth-source
+- Hub-governed multi-channel gateway
+- Hub-first governed automations
+
+## Why It Matters
+
+X-Hub keeps model routing, memory truth, grants, policy, audit, and execution safety inside one governed Hub, while terminals stay lightweight and untrusted by default.
+
+Compared with a terminal-only AI setup, this release emphasizes:
+
+- Hub-first trust boundaries
+- unified governance for local and paid models
+- memory-backed constitutional guardrails reinforced by Hub policy controls
+- fail-closed readiness and execution behavior
+- safer automation paths under Hub control
+
+## Recommended Host Hardware
+
+X-Hub is recommended to run on Apple silicon desktop Macs.
+
+- **Mac mini**: default recommendation for most deployments
+- **Mac Studio**: higher-capacity recommendation for heavier local-model load, more memory, or more concurrency
+
+This makes X-Hub a strong fit for:
+
+- enterprises
+- public-sector teams
+- regulated or security-sensitive environments
+- individuals who want a safer and more controlled AI setup
+
+## Included In This Release
+
+- root product and navigation docs
+- active Hub and terminal source trees
+- protocol contracts
+- open-source release and packaging docs
+
+## Quick Start
+
+Build the Hub app:
+
+```bash
+x-hub/tools/build_hub_app.command
+```
+
+Run X-Hub from source:
+
+```bash
+cd x-hub/macos/RELFlowHub
+swift run RELFlowHub
+```
+
+Run X-Terminal from source:
+
+```bash
+cd x-terminal
+swift run XTerminal
+```
+
+Run the XT release gate:
+
+```bash
+bash x-terminal/scripts/ci/xt_release_gate.sh
+```
+
+## Security Posture
+
+- high-risk paths fail closed when critical readiness is incomplete
+- the terminal is not the trust anchor
+- constitutional guidance is intended to be pinned on the Hub side and reinforced by policy controls
+- grants, routing, and execution safety stay under Hub control
+
+If you mention constitutional or memory-backed guardrails in release notes, keep them in the system safety posture lane. Do not present them as additional validated feature claims beyond the approved release slice.
+
+## Known Scope Limits
+
+This release does **not** claim the full internal document set as publicly validated capability.
+
+If a capability is not explicitly covered by the validated release slice above, treat it as outside the scope of this release.
+
+## Release References
+
+- `README.md`
+- `RELEASE.md`
+- `docs/REPO_LAYOUT.md`
+- `docs/open-source/OSS_RELEASE_CHECKLIST_v1.md`
+
+## Rollback Reference
+
+If rollback is required, use the last known good tag and the rollback procedure documented in `RELEASE.md`.
+```
+
+---
+
+## Usage Rules
+
+Before publishing, confirm:
+
+1. the tag, scope, and validated claims match `README.md`
+2. no unverified capability wording was added
+3. if you add a “What changed” section, keep it inside the actual public release scope
+4. if you mention host hardware, keep the wording as:
+   - `Mac mini` as the default recommendation
+   - `Mac Studio` as the higher-capacity recommendation

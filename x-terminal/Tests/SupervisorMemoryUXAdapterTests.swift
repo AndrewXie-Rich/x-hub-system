@@ -30,11 +30,13 @@ struct SupervisorMemoryUXAdapterTests {
         )
 
         #expect(evidence.capsule.sourceOfTruth == "hub")
-        #expect(evidence.duplicateMemoryStoreCount == 0)
+        #expect(evidence.duplicateMemoryStoreCount == 1)
+        #expect(evidence.sourceOfTruthSingleHub == false)
         #expect(evidence.validationPass)
         #expect(evidence.relevanceScore >= 0.90)
         #expect(evidence.cacheEntry.ttlSeconds == 3600)
         #expect(evidence.capsule.workingSetRefs.count == 1)
+        #expect(evidence.minimalGaps.contains("local_memory_fallback_retained"))
 
         let stale = adapter.validateCapsule(
             evidence.capsule,
@@ -175,7 +177,7 @@ struct SupervisorMemoryUXAdapterTests {
                 ref: "docs/xt-memory.md",
                 kind: .markdown,
                 contents: """
-                project_goal: Productize XT memory UX adapter on top of Hub truth source
+                project_goal: Productize XT memory UX adapter on top of Hub-governed memory routing
                 touch_policy: critical_touch
                 innovation_level: L2
                 suggestion_governance: hybrid
@@ -196,7 +198,7 @@ struct SupervisorMemoryUXAdapterTests {
 
                 ## constraints
                 - fail closed on stale capsule
-                - hub remains source of truth
+                - hub remains the default governed memory path while local fallback stays retained
 
                 ## acceptance_targets
                 - gate_green
@@ -256,7 +258,7 @@ struct SupervisorMemoryUXAdapterTests {
             text: """
             [MEMORY_V1]
             [L0_CONSTITUTION]
-            minimal exposure and hub truth source
+            minimal exposure and hub-governed memory context
             [/L0_CONSTITUTION]
 
             [L1_CANONICAL]

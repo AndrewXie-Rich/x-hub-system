@@ -2,13 +2,19 @@
 
 This document defines the minimum process for cutting a public release.
 
+This guide is release-operations facing. Use `README.md` for the product narrative and validated public wording.
+
 Primary gate source:
 - `docs/open-source/OSS_RELEASE_CHECKLIST_v1.md`
+
+GitHub Release page template:
+- `docs/open-source/GITHUB_RELEASE_NOTES_TEMPLATE_v1.md`
+- `docs/open-source/GITHUB_RELEASE_NOTES_TEMPLATE_v1.en.md`
 
 
 ## 0) R1 Validated Scope
 
-This GitHub minimal runnable package is limited to `XT-W3-23 -> XT-W3-24 -> XT-W3-25 mainline only`.
+The validated public release slice is limited to `XT-W3-23 -> XT-W3-24 -> XT-W3-25`.
 
 Validated external statements for R1 are limited to:
 - `XT memory UX adapter backed by Hub truth-source`
@@ -20,6 +26,14 @@ Hard lines:
 - `no_unverified_claims=true`
 - public package stays `allowlist-first + fail-closed`
 - `build/**`, `data/**`, `*.sqlite*`, `*kek*.json`, and other restricted artifacts remain excluded from public Git
+
+## 0.1 Security Posture Note
+
+The repository also documents a broader safety posture around Hub-side memory, X-Constitution guidance, and policy-engine enforcement.
+
+That posture should be described as a Hub-side, memory-backed behavioral boundary reinforced by policy controls, audit, grants, and fail-closed execution. It is not a license to describe terminal-local prompt wording as if it were the trust boundary.
+
+That material may be referenced in release notes as part of the system's security posture, but it must not be used to expand the validated public release slice beyond the three approved statements above.
 
 ## 1) Release Types
 
@@ -59,7 +73,8 @@ Confirm no forbidden runtime artifacts are staged.
 
 1. Update `CHANGELOG.md`.
 2. Confirm release scope and known limitations.
-   - R1 wording must stay inside the validated mainline only and the three approved statements.
+   - R1 wording must stay inside the validated release slice and the three approved statements.
+   - If constitutional or memory-backed guardrails are mentioned, present them as system safety posture rather than as additional validated feature claims.
 3. Prepare release notes with:
    - major changes
    - risk notes
@@ -80,7 +95,7 @@ Rollback must be documented in release notes and include:
 - last known good tag
 - impact scope
 - operator steps
-- validated-mainline rollback evidence: `build/reports/xt_w3_25_competitive_rollback.v1.json`
+- validated release-slice rollback evidence: `build/reports/xt_w3_25_competitive_rollback.v1.json`
 
 Minimal rollback example:
 
@@ -93,4 +108,3 @@ git checkout <last_known_good_tag>
 - Announce release summary.
 - Track first external feedback via issues.
 - If critical issue appears, start hotfix branch and update changelog.
-

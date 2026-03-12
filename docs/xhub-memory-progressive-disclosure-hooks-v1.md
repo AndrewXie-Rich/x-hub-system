@@ -3,7 +3,7 @@
 - Status: Draft
 - Updated: 2026-02-12
 - Scope: X-Terminal ↔ X-Hub 的“会话生命周期事件（hooks）”+ Hub 端自动生成 Observations/Summaries + 渐进披露（Index→Timeline→Get）
-- Inspiration (concept only): Claude‑Mem（AGPL，仅借思想/方法；**不能拷贝代码**）
+- Inspiration (concept only): progressive-disclosure reference architecture（AGPL，仅借思想/方法；**不能拷贝代码**）
 - Must align with: `docs/xhub-memory-core-policy-v1.md`（敏感分级、单写入者、远程外发 gate、晋升策略）
 
 > 目标：不牺牲终端体验（无强制人工队列），但把“上下文注入”变成可控、可审计、可回滚的流水线：**先给 index 与成本，让模型按需取回**。
@@ -233,7 +233,7 @@ CREATE INDEX IF NOT EXISTS idx_obs_type_time ON observations(obs_type, created_a
 ```
 
 ### 4.2 Observation 类型图例（建议固定）
-对齐 Claude‑Mem 的扫描体验（只是“表现层”，不绑定实现）：
+对齐 progressive-disclosure reference architecture 的扫描体验（只是“表现层”，不绑定实现）：
 - 🎯 `session_request`
 - 🔴 `gotcha`
 - 🟡 `problem_solution`
@@ -321,7 +321,7 @@ Index 只返回：
 ```
 
 token_cost_est 估算（v1 直接可用）：
-- `ceil(len(narrative)/4)`（与 Claude‑Mem 相同的粗估）
+- `ceil(len(narrative)/4)`（与 progressive-disclosure reference architecture 相同的粗估）
 
 ### 6.2 Timeline（围绕 anchor 看上下文）
 输入：
@@ -381,13 +381,13 @@ CREATE INDEX IF NOT EXISTS idx_jobs_status_time ON memory_jobs(status, created_a
 
 ---
 
-## 8) 与 Hybrid Index 的连接点（本 spec 与 Openclaw Port 的融合位）
+## 8) 与 Hybrid Index 的连接点（本 spec 与 skills ecosystem Port 的融合位）
 
 当 `observations/longterm/canonical` 发生变化：
 - enqueue `index_sync`（增量）
 - Search API 优先走 hybrid index（FTS/vec），而不是直接扫 `observations` 表
 
-对应实现细节见：`docs/xhub-memory-hybrid-index-openclaw-port-v1.md`
+对应实现细节见：`docs/xhub-memory-hybrid-index-v1.md`
 
 ---
 

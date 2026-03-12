@@ -3,7 +3,7 @@
 - Status: Draft
 - Updated: 2026-02-12
 - Purpose:
-  1) 定义“速度/成本/精度/可用性/安全”等关键指标，便于把 X‑Hub 与 Openclaw / Claude‑Mem 做可量化对比
+  1) 定义“速度/成本/精度/可用性/安全”等关键指标，便于把 X‑Hub 与 skills ecosystem / progressive-disclosure reference architecture 做可量化对比
   2) 给出可执行的 benchmark 方案（不依赖外网）
 
 ---
@@ -22,8 +22,8 @@
 - `get_runtime_p50/p95`
 
 对比口径建议：
-- Openclaw：memory_search / memory_get 的耗时（本地 SQLite + embeddings provider）
-- Claude‑Mem：search/timeline/get_observations 的耗时（SQLite + Chroma）
+- skills ecosystem：memory_search / memory_get 的耗时（本地 SQLite + embeddings provider）
+- progressive-disclosure reference architecture：search/timeline/get_observations 的耗时（SQLite + Chroma）
 
 ### 1.2 Token Cost（token 消耗）
 对比要分 3 类成本：
@@ -31,7 +31,7 @@
 - `disclosure_tokens`：按需 Get 的额外 token 数（timeline/get）
 - `maintenance_tokens`：记忆维护（extract/summarize/aggregate）调用模型的 token 数
 
-> Claude‑Mem 有 `discovery_tokens` 概念（ROI），X‑Hub 建议也记录：每条 observation 的“产生成本”。
+> progressive-disclosure reference architecture 有 `discovery_tokens` 概念（ROI），X‑Hub 建议也记录：每条 observation 的“产生成本”。
 
 ### 1.3 Retrieval Quality（检索精度/召回）
 建议用离线标注集评估（每个 query 标注相关 items）：
@@ -41,8 +41,8 @@
 - `nDCG@k`
 
 对比解释：
-- Openclaw：hybrid（vector+bm25）通常提升 recall（尤其相似表达）
-- Claude‑Mem：有语义向量库 + metadata 分组，index 更“语义友好”，但 keyword 精确匹配依赖实现
+- skills ecosystem：hybrid（vector+bm25）通常提升 recall（尤其相似表达）
+- progressive-disclosure reference architecture：有语义向量库 + metadata 分组，index 更“语义友好”，但 keyword 精确匹配依赖实现
 - X‑Hub（v1 FTS-only）：keyword 精确匹配强，语义 recall 弱；v2 引入向量后补齐
 
 ### 1.4 Freshness（新鲜度）

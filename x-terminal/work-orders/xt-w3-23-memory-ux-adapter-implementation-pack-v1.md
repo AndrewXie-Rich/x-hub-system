@@ -10,6 +10,7 @@
   - `x-terminal/work-orders/xt-w2-24-token-optimal-context-capsule-implementation-pack-v1.md`
   - `x-terminal/work-orders/xt-w2-27-anti-block-unblock-orchestration-implementation-pack-v1.md`
   - `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md`
+  - `docs/memory-new/xhub-terminal-hub-memory-layer-usage-work-orders-v1.md`
   - `docs/xhub-memory-system-spec-v2.md`
   - `docs/memory-new/xhub-memory-v3-execution-plan.md`
   - `docs/memory-new/xhub-security-innovation-work-orders-v1.md`
@@ -17,17 +18,19 @@
 
 ## 0) 目标与硬边界
 
-- 目标：给 X-Terminal 增加一层“像 Claude-Mem 一样即插即用”的 `session continuity UX`，但底层记忆真相源仍然是 Hub，而不是在 XT 复制第二套 canonical memory。
+- 目标：给 X-Terminal 增加一层“像 progressive-disclosure reference architecture 一样即插即用”的 `session continuity UX`，但底层记忆真相源仍然是 Hub，而不是在 XT 复制第二套 canonical memory。
 - 目标：把“用户长期偏好/身份级记忆”与“项目级上下文/交付级记忆”做成显式双通道，避免混注、误注和跨项目串味。
 - 目标：把记忆查看、编辑、审核、回写、回滚都收敛成可审计操作台，XT 只做入口与 UX，真正写入仍走 Hub 审计门。
 - 目标：默认采用最小暴露注入策略，严格执行 `scope -> sensitivity/trust -> retrieval -> rerank -> gate -> inject`；命中 secret/remote policy 时必须 fail-closed 或 downgrade。
 - 目标：让 Supervisor 拥有一条专用 `memory bus`，用于项目接案、泳池拆分、blocked 诊断、泳道交接、验收收口，但传递的是引用与胶囊，不是全文广播。
+- 目标：后续把“Hub 多层记忆如何被 XT 正确使用”继续收口到专门工单包，避免 chat/tool/supervisor/lane 各自自由发挥。
 - 硬边界：
   - XT 不得创建第二个 canonical/longterm 真相源；本地仅允许短期缓存、崩溃恢复缓冲、胶囊快照，且必须可过期、可重建。
   - 任意记忆编辑/回写/回滚必须落到 Hub API 与审计链，禁止直接改本地缓存冒充成功。
   - 用户记忆不得跨项目默认注入；项目记忆不得跨项目复用；需要跨 scope 时必须有显式 selector 与审计。
   - `secret`、`credential`、`private` 内容默认不允许进入 remote prompt bundle；命中远程外发场景必须按 `remote_export.secret_mode` gate 处理。
   - Supervisor/Lane 之间只传 `Context Refs + Capsule + Delta`，禁止把整份 memory 文档全文粘到多泳道提示词里。
+  - `chat / supervisor / tool_plan / tool_act_high_risk / lane_handoff / remote_prompt_bundle` 的 layer 使用差异，后续统一按 `xhub-terminal-hub-memory-layer-usage-work-orders-v1.md` 收口。
 
 ## 1) 机读契约
 

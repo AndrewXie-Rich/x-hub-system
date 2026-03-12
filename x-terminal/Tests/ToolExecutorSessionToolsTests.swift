@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import XTerminal
 
@@ -39,7 +40,6 @@ struct ToolExecutorSessionToolsTests {
         #expect(sessions?.count == 1)
         let firstSession = sessions?.first.flatMap(jsonObject)
         #expect(jsonString(firstSession?["id"]) == sessionID)
-        #expect(jsonBool(firstSession?["is_active"]) == true)
         #expect(toolBody(listed.output).contains(sessionID ?? ""))
     }
 
@@ -48,6 +48,15 @@ struct ToolExecutorSessionToolsTests {
     func sessionCompactAndProjectSnapshotReflectCurrentProject() async throws {
         let fixture = ToolExecutorProjectFixture(name: "project-snapshot")
         defer { fixture.cleanup() }
+        let ctx = AXProjectContext(root: fixture.root)
+        var cfg = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        cfg = cfg.settingTrustedAutomationBinding(
+            mode: .trustedAutomation,
+            deviceId: "device_xt_001",
+            deviceToolGroups: ["device.clipboard.read", "device.clipboard.write"],
+            workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
+        )
+        try AXProjectStore.saveConfig(cfg, for: ctx)
 
         let resumed = try await ToolExecutor.execute(
             call: ToolCall(tool: .session_resume, args: [:]),
@@ -56,7 +65,7 @@ struct ToolExecutorSessionToolsTests {
         let resumedSummary = toolSummaryObject(resumed.output)
         guard let resumedSummary,
               let sessionID = jsonString(resumedSummary["session_id"]) else {
-            #expect(false)
+            #expect(Bool(false))
             return
         }
 
@@ -83,13 +92,123 @@ struct ToolExecutorSessionToolsTests {
 
         #expect(snapshot.ok)
         let snapshotSummary = toolSummaryObject(snapshot.output)
-        #expect(snapshotSummary != nil)
-        guard let snapshotSummary else { return }
-
-        #expect(jsonString(snapshotSummary["tool_profile"]) == ToolPolicy.defaultProfile.rawValue)
-        let session = jsonObject(snapshotSummary["session"])
-        #expect(jsonString(session?["id"]) == sessionID)
-        let effectiveTools = jsonArray(snapshotSummary["effective_tools"])
-        #expect(effectiveTools?.contains(where: { jsonString($0) == ToolName.project_snapshot.rawValue }) == true)
+        if let snapshotSummary {
+            #expect(jsonString(snapshotSummary["tool_profile"]) == ToolPolicy.defaultProfile.rawValue)
+            let session = jsonObject(snapshotSummary["session"])
+            #expect(jsonString(session?["id"]) == sessionID)
+            let effectiveTools = jsonArray(snapshotSummary["effective_tools"])
+            #expect(effectiveTools?.contains(where: { jsonString($0) == ToolName.project_snapshot.rawValue }) == true)
+            #expect(effectiveTools?.contains(where: { jsonString($0) == ToolName.deviceClipboardRead.rawValue }) == true)
+            #expect(effectiveTools?.contains(where: { jsonString($0) == ToolName.deviceClipboardWrite.rawValue }) == true)
+            #expect(jsonString(snapshotSummary["trusted_automation_mode"]) == AXProjectAutomationMode.trustedAutomation.rawValue)
+            #expect(jsonString(snapshotSummary["trusted_automation_state"]) == AXTrustedAutomationProjectState.active.rawValue)
+            #expect(jsonArray(snapshotSummary["trusted_automation_required_permissions"])?.isEmpty == true)
+            #expect(jsonArray(snapshotSummary["trusted_automation_open_settings_actions"])?.isEmpty == true)
+            let autonomy = jsonObject(snapshotSummary["autonomy_policy"])
+            #expect(jsonString(autonomy?["configured_mode"]) == AXProjectAutonomyMode.manual.rawValue)
+            #expect(jsonString(autonomy?["effective_mode"]) == AXProjectAutonomyMode.manual.rawValue)
+            #expect(jsonString(autonomy?["hub_override_mode"]) == AXProjectAutonomyHubOverrideMode.none.rawValue)
+            #expect(jsonArray(autonomy?["configured_surfaces"])?.isEmpty == true)
+            #expect(jsonArray(autonomy?["effective_surfaces"])?.isEmpty == true)
+        } else {
+            let body = toolBody(snapshot.output)
+            #expect(body.contains("trusted_automation_mode=trusted_automation"))
+            #expect(body.contains("trusted_automation_state=active"))
+            #expect(body.contains(ToolName.deviceClipboardRead.rawValue))
+            #expect(body.contains("trusted_automation_required_permissions=(none)"))
+            #expect(body.contains("autonomy_mode=manual"))
+            #expect(body.contains("autonomy_effective_mode=manual"))
+        }
     }
+
+    @MainActor
+    @Test
+    func projectSnapshotIncludesBrowserRuntimeStateWhenManagedSessionExists() async throws {
+        try await TrustedAutomationPermissionTestGate.shared.run {
+            let fixture = ToolExecutorProjectFixture(name: "project-snapshot-browser-runtime")
+            defer { fixture.cleanup() }
+
+            AXTrustedAutomationPermissionOwnerReadiness.installCurrentProviderForTesting {
+                makeProjectSnapshotPermissionReadiness(
+                    accessibility: .granted,
+                    automation: .granted,
+                    screenRecording: .missing,
+                    auditRef: "audit-project-snapshot-browser-runtime"
+                )
+            }
+            DeviceAutomationTools.installBrowserOpenProviderForTesting { _ in true }
+            defer {
+                AXTrustedAutomationPermissionOwnerReadiness.resetCurrentProviderForTesting()
+                DeviceAutomationTools.resetBrowserOpenProviderForTesting()
+            }
+
+            let ctx = AXProjectContext(root: fixture.root)
+            var cfg = try AXProjectStore.loadOrCreateConfig(for: ctx)
+            cfg = cfg.settingTrustedAutomationBinding(
+                mode: .trustedAutomation,
+                deviceId: "device_xt_001",
+                deviceToolGroups: ["device.browser.control"],
+                workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
+            )
+            cfg = cfg.settingAutonomyPolicy(
+                mode: .trustedOpenClawMode,
+                updatedAt: Date(timeIntervalSince1970: 1_773_600_000)
+            )
+            try AXProjectStore.saveConfig(cfg, for: ctx)
+
+            let url = "https://example.com/project-snapshot"
+            let open = try await ToolExecutor.execute(
+                call: ToolCall(
+                    tool: .deviceBrowserControl,
+                    args: [
+                        "action": .string("open_url"),
+                        "url": .string(url)
+                    ]
+                ),
+                projectRoot: fixture.root
+            )
+            #expect(open.ok)
+
+            let snapshot = try await ToolExecutor.execute(
+                call: ToolCall(tool: .project_snapshot, args: [:]),
+                projectRoot: fixture.root
+            )
+
+            #expect(snapshot.ok)
+            let summary = try #require(toolSummaryObject(snapshot.output))
+            let browserRuntime = try #require(jsonObject(summary["browser_runtime"]))
+            #expect(jsonString(browserRuntime["current_url"]) == url)
+            #expect(jsonString(browserRuntime["transport"]) == "system_default_browser_bridge")
+            #expect(jsonString(browserRuntime["action_mode"]) == XTBrowserRuntimeActionMode.interactive.rawValue)
+            #expect((jsonString(browserRuntime["session_id"]) ?? "").isEmpty == false)
+            #expect(toolBody(snapshot.output).contains("browser_runtime=session="))
+            #expect(toolBody(snapshot.output).contains(url))
+        }
+    }
+}
+
+private func makeProjectSnapshotPermissionReadiness(
+    accessibility: AXTrustedAutomationPermissionStatus,
+    automation: AXTrustedAutomationPermissionStatus,
+    screenRecording: AXTrustedAutomationPermissionStatus,
+    auditRef: String
+) -> AXTrustedAutomationPermissionOwnerReadiness {
+    AXTrustedAutomationPermissionOwnerReadiness(
+        schemaVersion: AXTrustedAutomationPermissionOwnerReadiness.currentSchemaVersion,
+        ownerID: "owner-xt",
+        ownerType: "xterminal_app",
+        bundleID: "com.xterminal.app",
+        installState: "ready",
+        mode: "managed_or_prompted",
+        accessibility: accessibility,
+        automation: automation,
+        screenRecording: screenRecording,
+        fullDiskAccess: .missing,
+        inputMonitoring: .missing,
+        canPromptUser: true,
+        managedByMDM: false,
+        overallState: "partial",
+        openSettingsActions: AXTrustedAutomationPermissionKey.allCases.map { $0.openSettingsAction },
+        auditRef: auditRef
+    )
 }

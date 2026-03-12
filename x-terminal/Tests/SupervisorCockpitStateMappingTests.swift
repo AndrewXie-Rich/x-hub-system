@@ -28,6 +28,9 @@ struct SupervisorCockpitStateMappingTests {
         #expect(presentation.releaseFreezeStatus.state == .releaseFrozen)
         #expect(presentation.actions.first?.id == "submit_intake")
         #expect(presentation.consumedFrozenFields.contains("xt.one_shot_run_state.v1.state"))
+        #expect(stage(presentation, id: "access")?.progress == .active)
+        #expect(stage(presentation, id: "runtime")?.progress == .pending)
+        #expect(stage(presentation, id: "access")?.actionID == "resolve_access")
     }
 
     @Test
@@ -84,6 +87,155 @@ struct SupervisorCockpitStateMappingTests {
         #expect(ready.plannerExplain.contains("当前处于 ready"))
     }
 
+    @Test
+    func oneShotAwaitingGrantMapsGrantRequiredWithoutPendingGrantSnapshot() {
+        let presentation = SupervisorCockpitPresentation.map(
+            input: SupervisorCockpitPresentationInput(
+                isProcessing: false,
+                pendingGrantCount: 0,
+                hasFreshPendingGrantSnapshot: true,
+                doctorStatusLine: "Doctor 已通过（0 个告警）",
+                doctorSuggestionCount: 0,
+                releaseBlockedByDoctorWithoutReport: 0,
+                laneSummary: .empty,
+                abnormalLaneStatus: nil,
+                abnormalLaneRecommendation: nil,
+                xtReadyStatus: "ready",
+                xtReadyStrictE2EReady: true,
+                xtReadyIssueCount: 0,
+                xtReadyReportPath: "build/xt_ready_gate_e2e_report.json",
+                oneShotRuntimeState: OneShotRunStateStatus.awaitingGrant.rawValue,
+                oneShotRuntimeOwner: "xt_l2",
+                oneShotRuntimeTopBlocker: "grant_required",
+                oneShotRuntimeSummary: "one-shot intake 已被授权门拦住，需先完成 voice / grant 审批。",
+                oneShotRuntimeNextTarget: "grant_center",
+                oneShotRuntimeActiveLaneCount: 0
+            )
+        )
+
+        #expect(presentation.intakeStatus.state == .grantRequired)
+        #expect(presentation.intakeStatus.whatHappened.contains("授权门"))
+        #expect(presentation.blockerStatus.headline.contains("grant_required"))
+        #expect(presentation.plannerExplain.contains("awaiting_grant"))
+        #expect(stage(presentation, id: "access")?.surfaceState == .grantRequired)
+        #expect(stage(presentation, id: "runtime")?.progress == .pending)
+        #expect(stage(presentation, id: "access")?.actionLabel == "Open grant")
+    }
+
+    @Test
+    func oneShotRunningTakesPrecedenceOverIdleLaneSummary() {
+        let presentation = SupervisorCockpitPresentation.map(
+            input: SupervisorCockpitPresentationInput(
+                isProcessing: false,
+                pendingGrantCount: 0,
+                hasFreshPendingGrantSnapshot: true,
+                doctorStatusLine: "Doctor 已通过（0 个告警）",
+                doctorSuggestionCount: 0,
+                releaseBlockedByDoctorWithoutReport: 0,
+                laneSummary: .empty,
+                abnormalLaneStatus: nil,
+                abnormalLaneRecommendation: nil,
+                xtReadyStatus: "ready",
+                xtReadyStrictE2EReady: true,
+                xtReadyIssueCount: 0,
+                xtReadyReportPath: "build/xt_ready_gate_e2e_report.json",
+                oneShotRuntimeState: OneShotRunStateStatus.running.rawValue,
+                oneShotRuntimeOwner: "xt_l2",
+                oneShotRuntimeTopBlocker: "none",
+                oneShotRuntimeSummary: "XT-L2 正在真实执行已授权的一次性复杂任务。",
+                oneShotRuntimeNextTarget: "mergeback_gate",
+                oneShotRuntimeActiveLaneCount: 2
+            )
+        )
+
+        #expect(presentation.intakeStatus.state == .inProgress)
+        #expect(presentation.intakeStatus.headline.contains("真实执行"))
+        #expect(presentation.blockerStatus.headline == "Top blocker: none")
+        #expect(presentation.plannerExplain.contains("当前处于 running"))
+        #expect(stage(presentation, id: "intake")?.progress == .completed)
+        #expect(stage(presentation, id: "runtime")?.progress == .active)
+        #expect(stage(presentation, id: "runtime")?.surfaceState == .inProgress)
+        #expect(stage(presentation, id: "intake")?.actionID == "submit_intake")
+    }
+
+    @Test
+    func oneShotFailedClosedSurfacesExplicitRuntimeBlocker() {
+        let presentation = SupervisorCockpitPresentation.map(
+            input: SupervisorCockpitPresentationInput(
+                isProcessing: false,
+                pendingGrantCount: 0,
+                hasFreshPendingGrantSnapshot: true,
+                doctorStatusLine: "Doctor 已通过（0 个告警）",
+                doctorSuggestionCount: 0,
+                releaseBlockedByDoctorWithoutReport: 0,
+                laneSummary: .empty,
+                abnormalLaneStatus: nil,
+                abnormalLaneRecommendation: nil,
+                xtReadyStatus: "ready",
+                xtReadyStrictE2EReady: true,
+                xtReadyIssueCount: 0,
+                xtReadyReportPath: "build/xt_ready_gate_e2e_report.json",
+                oneShotRuntimeState: OneShotRunStateStatus.failedClosed.rawValue,
+                oneShotRuntimeOwner: "xt_l2",
+                oneShotRuntimeTopBlocker: "bridge_route_unavailable",
+                oneShotRuntimeSummary: "Bridge / tool route 缺失，session runtime 已 fail-closed。",
+                oneShotRuntimeNextTarget: "repair_bridge_tool_route",
+                oneShotRuntimeActiveLaneCount: 0
+            )
+        )
+
+        #expect(presentation.intakeStatus.state == .blockedWaitingUpstream)
+        #expect(presentation.intakeStatus.headline.contains("fail-closed"))
+        #expect(presentation.blockerStatus.headline.contains("bridge_route_unavailable"))
+        #expect(presentation.plannerExplain.contains("failed_closed"))
+        #expect(stage(presentation, id: "runtime")?.progress == .blocked)
+        #expect(stage(presentation, id: "runtime")?.detail?.contains("fail-closed") == true)
+        #expect(stage(presentation, id: "runtime")?.actionID == nil)
+    }
+
+    @Test
+    func oneShotBlockedWithDirectedResumeExposesContinueLaneAction() {
+        let presentation = SupervisorCockpitPresentation.map(
+            input: SupervisorCockpitPresentationInput(
+                isProcessing: false,
+                pendingGrantCount: 0,
+                hasFreshPendingGrantSnapshot: true,
+                doctorStatusLine: "Doctor 已通过（0 个告警）",
+                doctorSuggestionCount: 0,
+                releaseBlockedByDoctorWithoutReport: 0,
+                laneSummary: LaneHealthSummary(
+                    total: 2,
+                    running: 0,
+                    blocked: 1,
+                    stalled: 0,
+                    failed: 0,
+                    waiting: 1,
+                    recovering: 0,
+                    completed: 0
+                ),
+                abnormalLaneStatus: "blocked",
+                abnormalLaneRecommendation: "继续当前 lane，不要扩 scope。",
+                xtReadyStatus: "blocked_waiting_upstream",
+                xtReadyStrictE2EReady: true,
+                xtReadyIssueCount: 0,
+                xtReadyReportPath: "build/xt_ready_gate_e2e_report.json",
+                directedUnblockBatonCount: 1,
+                nextDirectedResumeAction: "continue_current_task_only",
+                nextDirectedResumeLane: "XT-W3-29-E-L2",
+                oneShotRuntimeState: OneShotRunStateStatus.blocked.rawValue,
+                oneShotRuntimeOwner: "xt_l2",
+                oneShotRuntimeTopBlocker: "awaiting_instruction",
+                oneShotRuntimeSummary: "上游依赖已解锁，但当前 lane 仍需按 baton 约束续推。",
+                oneShotRuntimeNextTarget: "XT-W3-29-E-L2",
+                oneShotRuntimeActiveLaneCount: 1
+            )
+        )
+
+        #expect(stage(presentation, id: "runtime")?.progress == .blocked)
+        #expect(stage(presentation, id: "runtime")?.actionID == "directed_resume")
+        #expect(stage(presentation, id: "runtime")?.actionLabel == "Continue lane")
+    }
+
 
     @Test
     func runtimeContractsMapPermissionDenyScopeFreezeAndReplay() {
@@ -130,6 +282,8 @@ struct SupervisorCockpitStateMappingTests {
         #expect(presentation.plannerExplain.contains("freeze=no_go"))
         #expect(presentation.consumedFrozenFields.contains("xt.unblock_baton.v1.next_action"))
         #expect(presentation.consumedFrozenFields.contains("xt.one_shot_replay_regression.v1.scenarios"))
+        #expect(stage(presentation, id: "access")?.actionID == "resolve_access")
+        #expect(stage(presentation, id: "freeze")?.actionID == "review_delivery")
     }
 
     @Test
@@ -186,5 +340,9 @@ struct SupervisorCockpitStateMappingTests {
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(value)
         try data.write(to: url)
+    }
+
+    private func stage(_ presentation: SupervisorCockpitPresentation, id: String) -> SupervisorRuntimeStageItemPresentation? {
+        presentation.runtimeStageRail.items.first { $0.id == id }
     }
 }

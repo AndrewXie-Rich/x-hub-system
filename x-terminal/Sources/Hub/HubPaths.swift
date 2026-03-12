@@ -3,10 +3,26 @@ import Foundation
 enum HubPaths {
     private static let lock = DispatchQueue(label: "xterminal.hubpaths")
     private static var _baseDirOverride: URL? = nil
+    private static var _baseDirOverridePinned: Bool = false
 
     static func setBaseDirOverride(_ url: URL?) {
         lock.sync {
+            guard !_baseDirOverridePinned else { return }
             _baseDirOverride = url
+        }
+    }
+
+    static func setPinnedBaseDirOverride(_ url: URL?) {
+        lock.sync {
+            _baseDirOverride = url
+            _baseDirOverridePinned = (url != nil)
+        }
+    }
+
+    static func clearPinnedBaseDirOverride() {
+        lock.sync {
+            _baseDirOverridePinned = false
+            _baseDirOverride = nil
         }
     }
 

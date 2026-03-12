@@ -17,6 +17,10 @@ Rules:
 2. Enforce a hard denylist on top of allowlist scope.
 3. If evidence is incomplete, release decision is `NO-GO`.
 
+The currently validated public release slice is limited to:
+
+- `XT-W3-23 -> XT-W3-24 -> XT-W3-25`
+
 ---
 
 ## 1) Public Allowlist (Directory-level recursive publish)
@@ -24,7 +28,7 @@ Rules:
 > Files under these paths are publishable by default, but still constrained by the denylist in Section 3.
 
 - `.github/**`
-- `.kiro/specs/**`
+- `specs/**`
 - `docs/**`
 - `protocol/**`
 - `scripts/**`
@@ -116,7 +120,7 @@ Rules:
 
 ### 3.4 Suggested deferrals for first release
 
-- `x-terminal- legacy/**` (legacy implementation; archive separately later)
+- `archive/x-terminal-legacy/**` (archived legacy terminal implementation; keep out of the active tree)
 - `docs/legacy/**` (publish only after curation)
 - root-level temporary status marker files (for example `conservative`, `in_progress）`)
 
@@ -150,7 +154,7 @@ find . -type f \
   -not -path "*/.sandbox_home/*" \
   -not -path "*/.sandbox_tmp/*" \
   -not -path "*/node_modules/*" \
-  -not -path "./x-terminal- legacy/*" \
+  -not -path "./archive/x-terminal-legacy/*" \
   | sort
 ```
 
@@ -162,7 +166,7 @@ find . -type f \
 2. **Freeze license boundaries**: keep only MIT-allowed vendoring in-repo; AGPL projects are links only.
 3. **Evidence before claim**: every release gets a `GO|NO-GO|INSUFFICIENT_EVIDENCE` record.
 4. **Fail-closed by default**: deny high-risk operations without valid grants.
-5. **Single doc entry**: external contributors should onboard via `README.md -> docs/WORKING_INDEX.md -> target work-order`.
+5. **Clear doc entry**: external contributors should onboard via `README.md -> docs/REPO_LAYOUT.md -> module README -> docs/WORKING_INDEX.md`.
 6. **Community-readiness first**: templates, CODEOWNERS, and security contact must be valid and monitored.
 7. **Avoid legacy payload in first release**: split/archive legacy and temporary debug assets.
 8. **Clear tag strategy**: `v0.1.0-alpha` (explore), `v0.2.0-beta` (stabilize), `v1.0.0` (compat commitment).

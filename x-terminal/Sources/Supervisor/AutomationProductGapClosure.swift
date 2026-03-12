@@ -120,6 +120,38 @@ struct XTAutomationTriggerEnvelope: Codable, Equatable, Identifiable {
     }
 }
 
+struct XTAutomationExternalTriggerIngressEnvelope: Codable, Equatable, Identifiable {
+    static let currentSchemaVersion = "xt.external_trigger_ingress_envelope.v1"
+
+    let schemaVersion: String
+    let triggerID: String
+    let triggerType: XTAutomationTriggerType
+    let source: XTAutomationTriggerSource
+    let connectorID: String
+    let projectID: String
+    let payloadRef: String
+    let dedupeKey: String
+    let requiresGrant: Bool
+    let cooldownSec: Int
+    let auditRef: String
+
+    var id: String { triggerID }
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case triggerID = "trigger_id"
+        case triggerType = "trigger_type"
+        case source
+        case connectorID = "connector_id"
+        case projectID = "project_id"
+        case payloadRef = "payload_ref"
+        case dedupeKey = "dedupe_key"
+        case requiresGrant = "requires_grant"
+        case cooldownSec = "cooldown_sec"
+        case auditRef = "audit_ref"
+    }
+}
+
 struct XTAutomationRunTimeline: Codable, Equatable {
     let schemaVersion: String
     let runID: String
@@ -200,11 +232,113 @@ struct XTAutomationTriggerSeed: Equatable {
     let dedupeKey: String
 }
 
+enum XTAutomationTriggerRoute: String, Codable, Equatable {
+    case run
+    case hold
+    case drop
+}
+
+enum XTAutomationGateDecision: String, Codable, Equatable {
+    case allow
+    case hold
+    case deny
+}
+
+enum XTAutomationRunLaunchAction: String, Codable, Equatable {
+    case run
+    case hold
+    case downgrade
+    case deny
+}
+
+struct XTAutomationTriggerRouteDecision: Codable, Equatable, Identifiable {
+    let schemaVersion: String
+    let triggerID: String
+    let projectID: String
+    let dedupeKey: String
+    let route: XTAutomationTriggerRoute
+    let cooldownSeconds: Int
+    let replayGuardPass: Bool
+    let grantRequired: Bool
+    let policyBound: Bool
+    let sameProjectScope: Bool
+    let decision: XTAutomationGateDecision
+    let denyCode: String
+    let runID: String
+    let auditRef: String
+
+    var id: String { triggerID }
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case triggerID = "trigger_id"
+        case projectID = "project_id"
+        case dedupeKey = "dedupe_key"
+        case route
+        case cooldownSeconds = "cooldown_seconds"
+        case replayGuardPass = "replay_guard_pass"
+        case grantRequired = "grant_required"
+        case policyBound = "policy_bound"
+        case sameProjectScope = "same_project_scope"
+        case decision
+        case denyCode = "deny_code"
+        case runID = "run_id"
+        case auditRef = "audit_ref"
+    }
+}
+
+struct XTAutomationRunLaunchGate: Codable, Equatable {
+    let deliveryTargetPresent: Bool
+    let acceptancePackPresent: Bool
+    let triggerRoutesPass: Bool
+    let grantBindingPass: Bool
+    let routeReady: Bool
+    let budgetOK: Bool
+    let trustedAutomationReady: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case deliveryTargetPresent = "delivery_target_present"
+        case acceptancePackPresent = "acceptance_pack_present"
+        case triggerRoutesPass = "trigger_routes_pass"
+        case grantBindingPass = "grant_binding_pass"
+        case routeReady = "route_ready"
+        case budgetOK = "budget_ok"
+        case trustedAutomationReady = "trusted_automation_ready"
+    }
+}
+
+struct XTAutomationRunLaunchDecision: Codable, Equatable {
+    let schemaVersion: String
+    let runID: String
+    let recipeID: String
+    let transportMode: String
+    let launchGate: XTAutomationRunLaunchGate
+    let degradeMode: XTAutomationDegradeMode?
+    let decision: XTAutomationRunLaunchAction
+    let holdReason: String
+    let operatorRef: String
+    let auditRef: String
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case runID = "run_id"
+        case recipeID = "recipe_id"
+        case transportMode = "transport_mode"
+        case launchGate = "launch_gate"
+        case degradeMode = "degrade_mode"
+        case decision
+        case holdReason = "hold_reason"
+        case operatorRef = "operator_ref"
+        case auditRef = "audit_ref"
+    }
+}
+
 struct XTAutomationRecipeManifestEvidence: Codable, Equatable {
     let schemaVersion: String
     let projectID: String
     let recipeManifest: XTAutomationRecipeManifest
     let triggerEnvelopes: [XTAutomationTriggerEnvelope]
+    let externalTriggerIngressEnvelopes: [XTAutomationExternalTriggerIngressEnvelope]
     let recipeManifestSchemaCoverage: Double
     let ambiguousTriggerFieldCount: Int
     let acceptanceDeliveryBound: Bool
@@ -216,6 +350,7 @@ struct XTAutomationRecipeManifestEvidence: Codable, Equatable {
         case projectID = "project_id"
         case recipeManifest = "recipe_manifest"
         case triggerEnvelopes = "trigger_envelopes"
+        case externalTriggerIngressEnvelopes = "external_trigger_ingress_envelopes"
         case recipeManifestSchemaCoverage = "recipe_manifest_schema_coverage"
         case ambiguousTriggerFieldCount = "ambiguous_trigger_field_count"
         case acceptanceDeliveryBound = "acceptance_delivery_bound"
@@ -243,10 +378,14 @@ struct XTAutomationRunTransition: Codable, Equatable, Identifiable {
 struct XTAutomationEventRunnerEvidence: Codable, Equatable {
     let schemaVersion: String
     let recipeID: String
+    let recipeBindingRef: String
     let runTimeline: XTAutomationRunTimeline
     let statePath: [XTAutomationRunState]
     let stateTransitions: [XTAutomationRunTransition]
     let triggerEnvelopes: [XTAutomationTriggerEnvelope]
+    let externalTriggerIngressEnvelopes: [XTAutomationExternalTriggerIngressEnvelope]
+    let triggerRouteDecisions: [XTAutomationTriggerRouteDecision]
+    let launchDecision: XTAutomationRunLaunchDecision
     let triggerDedupeFalseNegative: Int
     let replayGuardPass: Bool
     let grantBindingPass: Bool
@@ -260,10 +399,14 @@ struct XTAutomationEventRunnerEvidence: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case recipeID = "recipe_id"
+        case recipeBindingRef = "recipe_binding_ref"
         case runTimeline = "run_timeline"
         case statePath = "state_path"
         case stateTransitions = "state_transitions"
         case triggerEnvelopes = "trigger_envelopes"
+        case externalTriggerIngressEnvelopes = "external_trigger_ingress_envelopes"
+        case triggerRouteDecisions = "trigger_route_decisions"
+        case launchDecision = "launch_decision"
         case triggerDedupeFalseNegative = "trigger_dedupe_false_negative"
         case replayGuardPass = "replay_guard_pass"
         case grantBindingPass = "grant_binding_pass"
@@ -271,6 +414,52 @@ struct XTAutomationEventRunnerEvidence: Codable, Equatable {
         case retryAfterSeconds = "retry_after_seconds"
         case runIdentityStable = "run_identity_stable"
         case downgradePaths = "downgrade_paths"
+        case minimalGaps = "minimal_gaps"
+        case auditRef = "audit_ref"
+    }
+}
+
+struct XTAutomationRunCheckpointRecoveryEvidence: Codable, Equatable {
+    let schemaVersion: String
+    let runID: String
+    let recipeID: String
+    let checkpoints: [XTAutomationRunCheckpoint]
+    let restartRecoveryDecision: XTAutomationRestartRecoveryDecision
+    let manualCancelDecision: XTAutomationRestartRecoveryDecision
+    let staleRunDecision: XTAutomationRestartRecoveryDecision
+    let boundedRetryDecision: XTAutomationRestartRecoveryDecision
+    let recoveredRunID: String
+    let recoveredState: XTAutomationRunState
+    let statePathRebuilt: [XTAutomationRunState]
+    let checkpointPathRebuildPass: Bool
+    let stableIdentityPass: Bool
+    let manualCancelBlocksRestart: Bool
+    let boundedRetryPass: Bool
+    let staleRunScavenged: Bool
+    let recoverableCheckpointCount: Int
+    let latestResumeToken: String
+    let minimalGaps: [String]
+    let auditRef: String
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case runID = "run_id"
+        case recipeID = "recipe_id"
+        case checkpoints
+        case restartRecoveryDecision = "restart_recovery_decision"
+        case manualCancelDecision = "manual_cancel_decision"
+        case staleRunDecision = "stale_run_decision"
+        case boundedRetryDecision = "bounded_retry_decision"
+        case recoveredRunID = "recovered_run_id"
+        case recoveredState = "recovered_state"
+        case statePathRebuilt = "state_path_rebuilt"
+        case checkpointPathRebuildPass = "checkpoint_path_rebuild_pass"
+        case stableIdentityPass = "stable_identity_pass"
+        case manualCancelBlocksRestart = "manual_cancel_blocks_restart"
+        case boundedRetryPass = "bounded_retry_pass"
+        case staleRunScavenged = "stale_run_scavenged"
+        case recoverableCheckpointCount = "recoverable_checkpoint_count"
+        case latestResumeToken = "latest_resume_token"
         case minimalGaps = "minimal_gaps"
         case auditRef = "audit_ref"
     }
@@ -471,6 +660,7 @@ struct XTAutomationGapClosureEvidence: Codable, Equatable {
 struct XTAutomationVerticalSliceResult: Codable, Equatable {
     let recipeManifest: XTAutomationRecipeManifestEvidence
     let eventRunner: XTAutomationEventRunnerEvidence
+    let checkpointRecovery: XTAutomationRunCheckpointRecoveryEvidence
     let directedTakeover: XTAutomationDirectedTakeoverEvidence
     let runTimeline: XTAutomationRunTimelineEvidence
     let bootstrapTemplates: XTAutomationBootstrapTemplatesEvidence
@@ -480,6 +670,7 @@ struct XTAutomationVerticalSliceResult: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case recipeManifest = "recipe_manifest"
         case eventRunner = "event_runner"
+        case checkpointRecovery = "checkpoint_recovery"
         case directedTakeover = "directed_takeover"
         case runTimeline = "run_timeline"
         case bootstrapTemplates = "bootstrap_templates"
@@ -509,6 +700,16 @@ struct XTAutomationVerticalSliceInput {
     let deliveryRef: String
     let firstRunChecklistRef: String
     let triggerSeeds: [XTAutomationTriggerSeed]
+    let hubTransportMode: HubTransportMode
+    let hasRemoteProfile: Bool
+    let budgetOK: Bool
+    let requiresTrustedAutomation: Bool
+    let trustedAutomationReady: Bool
+    let permissionOwnerReady: Bool
+    let workspaceBindingHash: String
+    let grantPolicyRef: String
+    let trustedDeviceID: String
+    let requiredDeviceToolGroups: [String]
     let intakeWorkflow: ProjectIntakeWorkflowResult?
     let acceptanceWorkflow: AcceptanceWorkflowResult?
     let additionalEvidenceRefs: [String]
@@ -533,6 +734,11 @@ struct XTAutomationRecipeEngine {
                 auditRef: auditRef
             )
         }
+        let externalTriggerIngressEnvelopes = xtAutomationBuildExternalTriggerIngressEnvelopes(
+            projectID: projectToken,
+            triggerSeeds: triggerSeeds,
+            auditRef: auditRef
+        )
         let recipeManifest = XTAutomationRecipeManifest(
             schemaVersion: "xt.automation_recipe_manifest.v1",
             recipeID: input.recipeID,
@@ -565,6 +771,7 @@ struct XTAutomationRecipeEngine {
             projectID: projectToken,
             recipeManifest: recipeManifest,
             triggerEnvelopes: triggerEnvelopes,
+            externalTriggerIngressEnvelopes: externalTriggerIngressEnvelopes,
             recipeManifestSchemaCoverage: coverage,
             ambiguousTriggerFieldCount: ambiguousTriggerFieldCount,
             acceptanceDeliveryBound: acceptanceDeliveryBound,
@@ -574,45 +781,388 @@ struct XTAutomationRecipeEngine {
     }
 }
 
+struct XTAutomationTriggerRouterEngine {
+    func buildDecisions(
+        recipe: XTAutomationRecipeManifestEvidence,
+        binding: AXAutomationRecipeRuntimeBinding,
+        runID: String,
+        auditRef: String
+    ) -> [XTAutomationTriggerRouteDecision] {
+        recipe.triggerEnvelopes.map { envelope in
+            let replayGuardPass = !envelope.dedupeKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let sameProjectScope = envelope.projectID == recipe.projectID
+            let policyBound = !envelope.policyRef.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !binding.grantPolicyRef.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
+            let decision: XTAutomationGateDecision
+            let route: XTAutomationTriggerRoute
+            let denyCode: String
+
+            if !sameProjectScope {
+                decision = .deny
+                route = .drop
+                denyCode = "automation_route_project_scope_mismatch"
+            } else if !replayGuardPass {
+                decision = .hold
+                route = .hold
+                denyCode = "automation_trigger_dedupe_key_missing"
+            } else if envelope.requiresGrant && !policyBound {
+                decision = .hold
+                route = .hold
+                denyCode = "automation_trigger_policy_unbound"
+            } else {
+                decision = .allow
+                route = .run
+                denyCode = ""
+            }
+
+            return XTAutomationTriggerRouteDecision(
+                schemaVersion: "xt.automation_trigger_route_decision.v1",
+                triggerID: envelope.triggerID,
+                projectID: envelope.projectID,
+                dedupeKey: envelope.dedupeKey,
+                route: route,
+                cooldownSeconds: xtAutomationCooldownSeconds(for: envelope.triggerType),
+                replayGuardPass: replayGuardPass,
+                grantRequired: envelope.requiresGrant,
+                policyBound: policyBound,
+                sameProjectScope: sameProjectScope,
+                decision: decision,
+                denyCode: denyCode,
+                runID: decision == .allow ? runID : "",
+                auditRef: auditRef
+            )
+        }
+    }
+}
+
+struct XTAutomationLaunchGateEngine {
+    func buildDecision(
+        input: XTAutomationVerticalSliceInput,
+        recipe: XTAutomationRecipeManifestEvidence,
+        binding: AXAutomationRecipeRuntimeBinding,
+        triggerRouteDecisions: [XTAutomationTriggerRouteDecision],
+        auditRef: String
+    ) -> XTAutomationRunLaunchDecision {
+        let routeDecision = HubRouteStateMachine.resolve(
+            mode: input.hubTransportMode,
+            hasRemoteProfile: input.hasRemoteProfile
+        )
+        let deliveryTargetPresent = !recipe.recipeManifest.deliveryTargets.isEmpty
+        let acceptancePackPresent = !recipe.recipeManifest.acceptancePackRef.isEmpty
+        let deniedRoute = triggerRouteDecisions.first(where: { $0.decision == .deny })
+        let heldRoute = triggerRouteDecisions.first(where: { $0.decision == .hold })
+        let triggerRoutesPass = deniedRoute == nil && heldRoute == nil
+        let grantBindingPass = triggerRouteDecisions.allSatisfy { !$0.grantRequired || $0.policyBound }
+            && !binding.grantPolicyRef.isEmpty
+        let routeReady = !routeDecision.requiresRemote || routeDecision.hasRemoteProfile
+        let trustedAutomationReady = !binding.requiresTrustedAutomation
+            || (input.trustedAutomationReady && input.permissionOwnerReady)
+        let launchGate = XTAutomationRunLaunchGate(
+            deliveryTargetPresent: deliveryTargetPresent,
+            acceptancePackPresent: acceptancePackPresent,
+            triggerRoutesPass: triggerRoutesPass,
+            grantBindingPass: grantBindingPass,
+            routeReady: routeReady,
+            budgetOK: input.budgetOK,
+            trustedAutomationReady: trustedAutomationReady
+        )
+
+        let decision: XTAutomationRunLaunchAction
+        let degradeMode: XTAutomationDegradeMode?
+        let holdReason: String
+
+        if !deliveryTargetPresent || !acceptancePackPresent {
+            decision = .hold
+            degradeMode = nil
+            holdReason = "launch_gate_missing_delivery_or_acceptance"
+        } else if let deniedRoute {
+            decision = .deny
+            degradeMode = nil
+            holdReason = deniedRoute.denyCode
+        } else if let heldRoute {
+            decision = .hold
+            degradeMode = nil
+            holdReason = heldRoute.denyCode
+        } else if !routeReady {
+            decision = .hold
+            degradeMode = nil
+            holdReason = routeDecision.remoteUnavailableReasonCode ?? "hub_route_unavailable"
+        } else if !input.budgetOK {
+            decision = .downgrade
+            degradeMode = .readOnly
+            holdReason = "budget_blocked_downgrade_to_read_only"
+        } else if !trustedAutomationReady {
+            decision = .hold
+            degradeMode = nil
+            holdReason = input.permissionOwnerReady
+                ? "trusted_automation_not_ready"
+                : "device_permission_owner_missing"
+        } else {
+            decision = .run
+            degradeMode = nil
+            holdReason = ""
+        }
+
+        return XTAutomationRunLaunchDecision(
+            schemaVersion: "xt.automation_run_launch_decision.v1",
+            runID: input.runID,
+            recipeID: input.recipeID,
+            transportMode: input.hubTransportMode.rawValue,
+            launchGate: launchGate,
+            degradeMode: degradeMode,
+            decision: decision,
+            holdReason: holdReason,
+            operatorRef: input.deliveryRef,
+            auditRef: auditRef
+        )
+    }
+}
+
 struct XTAutomationEventRunnerEngine {
+    private let triggerRouter = XTAutomationTriggerRouterEngine()
+    private let launchGate = XTAutomationLaunchGateEngine()
+
     func buildEvidence(input: XTAutomationVerticalSliceInput, recipe: XTAutomationRecipeManifestEvidence, auditRef: String) -> XTAutomationEventRunnerEvidence {
+        let runtimeBinding = recipe.recipeManifest.runtimeBinding(
+            recipeVersion: 1,
+            lifecycleState: .ready,
+            requiredToolGroups: ["group:full"],
+            requiredDeviceToolGroups: input.requiredDeviceToolGroups,
+            requiresTrustedAutomation: input.requiresTrustedAutomation,
+            trustedDeviceID: input.trustedDeviceID,
+            workspaceBindingHash: input.workspaceBindingHash,
+            grantPolicyRef: input.grantPolicyRef,
+            lastEditedAt: input.now
+        )
+        let routeDecisions = triggerRouter.buildDecisions(
+            recipe: recipe,
+            binding: runtimeBinding,
+            runID: input.runID,
+            auditRef: auditRef
+        )
+        let launchDecision = launchGate.buildDecision(
+            input: input,
+            recipe: recipe,
+            binding: runtimeBinding,
+            triggerRouteDecisions: routeDecisions,
+            auditRef: auditRef
+        )
+        let (timelineState, topBlocker, transitions, retryAfterSeconds): (XTAutomationRunState, String, [XTAutomationRunTransition], Int) = {
+            switch launchDecision.decision {
+            case .run:
+                return (
+                    .delivered,
+                    "none",
+                    [
+                        XTAutomationRunTransition(toState: .queued, reason: "trigger_route_allowed", retryAfterSeconds: nil, auditRef: auditRef),
+                        XTAutomationRunTransition(toState: .running, reason: "launch_gate_run", retryAfterSeconds: nil, auditRef: auditRef),
+                        XTAutomationRunTransition(toState: .blocked, reason: "grant_pending_connector_side_effect", retryAfterSeconds: 600, auditRef: auditRef),
+                        XTAutomationRunTransition(toState: .takeover, reason: "directed_takeover_authorized_same_project", retryAfterSeconds: nil, auditRef: auditRef),
+                        XTAutomationRunTransition(toState: .downgraded, reason: "fallback_to_restricted_local_before_grant", retryAfterSeconds: 300, auditRef: auditRef),
+                        XTAutomationRunTransition(toState: .running, reason: "grant_released_resume_pipeline", retryAfterSeconds: nil, auditRef: auditRef),
+                        XTAutomationRunTransition(toState: .delivered, reason: "delivery_target_notified", retryAfterSeconds: nil, auditRef: auditRef)
+                    ],
+                    600
+                )
+            case .downgrade:
+                return (
+                    .downgraded,
+                    launchDecision.holdReason,
+                    [
+                        XTAutomationRunTransition(toState: .queued, reason: "trigger_route_allowed", retryAfterSeconds: nil, auditRef: auditRef),
+                        XTAutomationRunTransition(toState: .downgraded, reason: launchDecision.holdReason, retryAfterSeconds: 300, auditRef: auditRef)
+                    ],
+                    300
+                )
+            case .hold:
+                return (
+                    .blocked,
+                    launchDecision.holdReason,
+                    [
+                        XTAutomationRunTransition(toState: .blocked, reason: launchDecision.holdReason, retryAfterSeconds: 600, auditRef: auditRef)
+                    ],
+                    600
+                )
+            case .deny:
+                return (
+                    .failed,
+                    launchDecision.holdReason,
+                    [
+                        XTAutomationRunTransition(toState: .failed, reason: launchDecision.holdReason, retryAfterSeconds: nil, auditRef: auditRef)
+                    ],
+                    0
+                )
+            }
+        }()
         let runTimeline = XTAutomationRunTimeline(
             schemaVersion: "xt.automation_run_timeline.v1",
             runID: input.runID,
             recipeID: input.recipeID,
-            state: .delivered,
+            state: timelineState,
             currentOwner: input.currentOwner,
             activePoolCount: input.activePoolCount,
             activeLaneCount: input.activeLaneCount,
-            topBlocker: "none",
+            topBlocker: topBlocker,
             latestDeltaRef: input.latestDeltaRef,
             deliveryRef: input.deliveryRef,
             auditRef: auditRef
         )
-        let transitions = [
-            XTAutomationRunTransition(toState: .queued, reason: "trigger_compiled", retryAfterSeconds: nil, auditRef: auditRef),
-            XTAutomationRunTransition(toState: .running, reason: "run_graph_materialized", retryAfterSeconds: nil, auditRef: auditRef),
-            XTAutomationRunTransition(toState: .blocked, reason: "grant_pending_connector_side_effect", retryAfterSeconds: 600, auditRef: auditRef),
-            XTAutomationRunTransition(toState: .takeover, reason: "directed_takeover_authorized_same_project", retryAfterSeconds: nil, auditRef: auditRef),
-            XTAutomationRunTransition(toState: .downgraded, reason: "fallback_to_restricted_local_before_grant", retryAfterSeconds: 300, auditRef: auditRef),
-            XTAutomationRunTransition(toState: .running, reason: "grant_released_resume_pipeline", retryAfterSeconds: nil, auditRef: auditRef),
-            XTAutomationRunTransition(toState: .delivered, reason: "delivery_target_notified", retryAfterSeconds: nil, auditRef: auditRef)
-        ]
+        let minimalGaps = xtAutomationOrderedUniqueStrings(
+            routeDecisions.compactMap { $0.denyCode.isEmpty ? nil : $0.denyCode }
+                + (launchDecision.holdReason.isEmpty ? [] : [launchDecision.holdReason])
+        )
         return XTAutomationEventRunnerEvidence(
             schemaVersion: "xt.automation_event_runner_evidence.v1",
             recipeID: input.recipeID,
+            recipeBindingRef: runtimeBinding.ref,
             runTimeline: runTimeline,
-            statePath: transitions.map(\ .toState),
+            statePath: transitions.map(\.toState),
             stateTransitions: transitions,
             triggerEnvelopes: recipe.triggerEnvelopes,
+            externalTriggerIngressEnvelopes: recipe.externalTriggerIngressEnvelopes,
+            triggerRouteDecisions: routeDecisions,
+            launchDecision: launchDecision,
             triggerDedupeFalseNegative: 0,
-            replayGuardPass: true,
-            grantBindingPass: true,
+            replayGuardPass: routeDecisions.allSatisfy(\.replayGuardPass),
+            grantBindingPass: launchDecision.launchGate.grantBindingPass,
             manualCancelSupported: true,
-            retryAfterSeconds: 600,
+            retryAfterSeconds: retryAfterSeconds,
             runIdentityStable: true,
             downgradePaths: XTAutomationDegradeMode.allCases,
-            minimalGaps: [],
+            minimalGaps: minimalGaps,
+            auditRef: auditRef
+        )
+    }
+}
+
+struct XTAutomationCheckpointRecoveryEngine {
+    private let maxAttempts = 3
+
+    func buildEvidence(
+        input: XTAutomationVerticalSliceInput,
+        runner: XTAutomationEventRunnerEvidence,
+        auditRef: String
+    ) -> XTAutomationRunCheckpointRecoveryEvidence {
+        let store = XTAutomationRunCheckpointStore(maxAttempts: maxAttempts)
+        if let firstTransition = runner.stateTransitions.first {
+            _ = store.bootstrap(
+                runID: input.runID,
+                recipeID: input.recipeID,
+                initialState: firstTransition.toState,
+                retryAfterSeconds: firstTransition.retryAfterSeconds ?? 0,
+                auditRef: firstTransition.auditRef
+            )
+            for transition in runner.stateTransitions.dropFirst() {
+                _ = store.transition(
+                    to: transition.toState,
+                    retryAfterSeconds: transition.retryAfterSeconds ?? 0,
+                    auditRef: transition.auditRef
+                )
+            }
+        } else {
+            _ = store.bootstrap(
+                runID: input.runID,
+                recipeID: input.recipeID,
+                initialState: runner.runTimeline.state,
+                retryAfterSeconds: runner.retryAfterSeconds,
+                auditRef: auditRef
+            )
+        }
+
+        let checkpoints = store.history
+        let recoverableCheckpoint = store.latestRecoverableCheckpoint ?? checkpoints.last
+        let baseRecoveryDecision = recoverableCheckpoint.map {
+            XTAutomationRunCheckpointStore.recoveryDecision(
+                for: $0,
+                wasCancelled: false,
+                checkpointAgeSeconds: 120,
+                maxAttempts: maxAttempts,
+                auditRef: auditRef
+            )
+        } ?? store.recoverAfterRestart(checkpointAgeSeconds: 120, auditRef: auditRef)
+        let manualCancelDecision = recoverableCheckpoint.map {
+            XTAutomationRunCheckpointStore.recoveryDecision(
+                for: $0,
+                wasCancelled: true,
+                checkpointAgeSeconds: 120,
+                maxAttempts: maxAttempts,
+                auditRef: auditRef
+            )
+        } ?? baseRecoveryDecision
+        let staleRunDecision = recoverableCheckpoint.map {
+            XTAutomationRunCheckpointStore.recoveryDecision(
+                for: $0,
+                wasCancelled: false,
+                checkpointAgeSeconds: 3_600,
+                staleAfterSeconds: 900,
+                maxAttempts: maxAttempts,
+                auditRef: auditRef
+            )
+        } ?? baseRecoveryDecision
+        let boundedRetryDecision = recoverableCheckpoint.map {
+            XTAutomationRunCheckpointStore.recoveryDecision(
+                for: XTAutomationRunCheckpoint(
+                    schemaVersion: $0.schemaVersion,
+                    runID: $0.runID,
+                    recipeID: $0.recipeID,
+                    state: $0.state,
+                    attempt: maxAttempts + 1,
+                    lastTransition: $0.lastTransition,
+                    retryAfterSeconds: max($0.retryAfterSeconds, 90),
+                    resumeToken: $0.resumeToken,
+                    checkpointRef: $0.checkpointRef,
+                    stableIdentity: $0.stableIdentity,
+                    auditRef: $0.auditRef
+                ),
+                wasCancelled: false,
+                checkpointAgeSeconds: 120,
+                maxAttempts: maxAttempts,
+                auditRef: auditRef
+            )
+        } ?? baseRecoveryDecision
+
+        let statePathRebuilt = checkpoints.map(\.state)
+        let checkpointPathRebuildPass = statePathRebuilt == runner.statePath
+        let stableIdentityPass = checkpoints.allSatisfy { $0.runID == input.runID && $0.stableIdentity }
+        let manualCancelBlocksRestart = manualCancelDecision.decision == .suppressed
+            && manualCancelDecision.holdReason == "manual_cancelled"
+        let boundedRetryPass = boundedRetryDecision.decision == .hold
+            && boundedRetryDecision.holdReason == "retry_budget_exhausted"
+        let staleRunScavenged = staleRunDecision.decision == .scavenged
+            && staleRunDecision.holdReason == "stale_run_scavenged"
+        let recoverableCheckpointCount = checkpoints.filter {
+            XTAutomationRunCheckpointStore.recoverableStates.contains($0.state)
+        }.count
+        let latestResumeToken = recoverableCheckpoint?.resumeToken ?? checkpoints.last?.resumeToken ?? ""
+        let minimalGaps = xtAutomationOrderedUniqueStrings([
+            checkpointPathRebuildPass ? nil : "checkpoint_state_path_rebuild_failed",
+            stableIdentityPass ? nil : "checkpoint_run_identity_drifted",
+            manualCancelBlocksRestart ? nil : "manual_cancel_restart_guard_missing",
+            boundedRetryPass ? nil : "bounded_retry_guard_missing",
+            staleRunScavenged ? nil : "stale_run_scavenge_guard_missing"
+        ].compactMap { $0 })
+
+        return XTAutomationRunCheckpointRecoveryEvidence(
+            schemaVersion: "xt.automation_run_checkpoint_recovery_evidence.v1",
+            runID: input.runID,
+            recipeID: input.recipeID,
+            checkpoints: checkpoints,
+            restartRecoveryDecision: baseRecoveryDecision,
+            manualCancelDecision: manualCancelDecision,
+            staleRunDecision: staleRunDecision,
+            boundedRetryDecision: boundedRetryDecision,
+            recoveredRunID: baseRecoveryDecision.runID,
+            recoveredState: baseRecoveryDecision.recoveredState,
+            statePathRebuilt: statePathRebuilt,
+            checkpointPathRebuildPass: checkpointPathRebuildPass,
+            stableIdentityPass: stableIdentityPass,
+            manualCancelBlocksRestart: manualCancelBlocksRestart,
+            boundedRetryPass: boundedRetryPass,
+            staleRunScavenged: staleRunScavenged,
+            recoverableCheckpointCount: recoverableCheckpointCount,
+            latestResumeToken: latestResumeToken,
+            minimalGaps: minimalGaps,
             auditRef: auditRef
         )
     }
@@ -697,7 +1247,7 @@ struct XTAutomationBootstrapTemplatesEngine {
             XTAutomationStarterTemplateSpec(kind: .docSync, displayName: "Doc Sync", recommendedTouchMode: .guidedTouch, highRisk: false, generatedFiles: bundle.generatedFiles, deliveryTargetRequired: true, acceptancePackRequired: true),
             XTAutomationStarterTemplateSpec(kind: .releaseAssistant, displayName: "Release Assistant", recommendedTouchMode: .criticalTouch, highRisk: true, generatedFiles: bundle.generatedFiles, deliveryTargetRequired: true, acceptancePackRequired: true)
         ]
-        let highRiskTouchGuardPass = templates.filter(\ .highRisk).allSatisfy { $0.recommendedTouchMode != .zeroTouch }
+        let highRiskTouchGuardPass = templates.filter(\.highRisk).allSatisfy { $0.recommendedTouchMode != .zeroTouch }
         return XTAutomationBootstrapTemplatesEvidence(
             schemaVersion: "xt.automation_bootstrap_templates_evidence.v1",
             bundle: bundle,
@@ -720,9 +1270,9 @@ struct XTAutomationCompetitiveGraduationEngine {
             XTAutomationCompetitiveSample(kind: .docSync, realSampleRef: "real://samples/doc-refresh-001", recipeToFirstRunMs: 110_000, blockedRunWithoutDirectedAction: 0, deliverySuccessRate: 0.98, tokenPerDelivery: 690, baselineTokenPerDelivery: 900, whereIsMyRunQuestionRate: 0.05),
             XTAutomationCompetitiveSample(kind: .releaseAssistant, realSampleRef: "real://samples/channel-summary-delivery-001", recipeToFirstRunMs: 130_000, blockedRunWithoutDirectedAction: 0, deliverySuccessRate: 0.99, tokenPerDelivery: 760, baselineTokenPerDelivery: 1_020, whereIsMyRunQuestionRate: 0.04)
         ]
-        let deliveryRate = samples.map(\ .deliverySuccessRate).reduce(0, +) / Double(samples.count)
+        let deliveryRate = samples.map(\.deliverySuccessRate).reduce(0, +) / Double(samples.count)
         let tokenDelta = samples.map { Double($0.tokenPerDelivery - $0.baselineTokenPerDelivery) / Double($0.baselineTokenPerDelivery) }.reduce(0, +) / Double(samples.count)
-        let questionRate = samples.map(\ .whereIsMyRunQuestionRate).reduce(0, +) / Double(samples.count)
+        let questionRate = samples.map(\.whereIsMyRunQuestionRate).reduce(0, +) / Double(samples.count)
         return XTAutomationCompetitiveGraduationEvidence(
             schemaVersion: "xt.automation_competitive_graduation_evidence.v1",
             requireRealPass: samples.allSatisfy { $0.realSampleRef.hasPrefix("real://") },
@@ -742,6 +1292,7 @@ struct XTAutomationCompetitiveGraduationEngine {
 struct XTAutomationProductGapClosureEngine {
     private let recipeEngine = XTAutomationRecipeEngine()
     private let runnerEngine = XTAutomationEventRunnerEngine()
+    private let checkpointEngine = XTAutomationCheckpointRecoveryEngine()
     private let takeoverEngine = XTAutomationDirectedTakeoverEngine()
     private let timelineEngine = XTAutomationRunTimelineEngine()
     private let bootstrapEngine = XTAutomationBootstrapTemplatesEngine()
@@ -751,14 +1302,17 @@ struct XTAutomationProductGapClosureEngine {
         let auditRef = xtAutomationAuditRef(prefix: "xt-auto", projectID: input.projectID, now: input.now)
         let recipe = recipeEngine.buildEvidence(input, auditRef: auditRef)
         let runner = runnerEngine.buildEvidence(input: input, recipe: recipe, auditRef: auditRef)
+        let checkpointRecovery = checkpointEngine.buildEvidence(input: input, runner: runner, auditRef: auditRef)
         let takeover = takeoverEngine.buildEvidence(input: input, auditRef: auditRef)
         let timeline = timelineEngine.buildEvidence(input: input, runner: runner, auditRef: auditRef)
         let bootstrap = bootstrapEngine.buildEvidence(input: input, auditRef: auditRef)
         let graduation = graduationEngine.buildEvidence(auditRef: auditRef)
+        let launchReady = runner.launchDecision.decision == .run || runner.launchDecision.decision == .downgrade
         let gateStatuses: [(String, Bool)] = [
             ("XT-AUTO-G0", recipe.recipeManifestSchemaCoverage == 1.0 && recipe.triggerEnvelopes.count == 4),
             ("XT-AUTO-G1", bootstrap.recipeToFirstRunP95Ms <= 180_000 && bootstrap.firstRunSuccessRate == 1.0 && runner.runTimeline.state == .delivered),
-            ("XT-AUTO-G2", runner.triggerDedupeFalseNegative == 0 && runner.replayGuardPass && runner.grantBindingPass && Set(runner.downgradePaths) == Set(XTAutomationDegradeMode.allCases)),
+            ("XT-AUTO-G2", runner.triggerDedupeFalseNegative == 0 && runner.replayGuardPass && runner.grantBindingPass && Set(runner.downgradePaths) == Set(XTAutomationDegradeMode.allCases) && launchReady),
+            ("XT-AUTO-G2R", checkpointRecovery.checkpointPathRebuildPass && checkpointRecovery.stableIdentityPass && checkpointRecovery.manualCancelBlocksRestart && checkpointRecovery.boundedRetryPass && checkpointRecovery.staleRunScavenged),
             ("XT-AUTO-G3", takeover.blockedRunWithoutDirectedAction == 0 && takeover.criticalPathTakeoverSuccessRate >= 0.95 && takeover.guardViolationCount == 0),
             ("XT-AUTO-G4", timeline.visibleFieldsCoverage == 1.0 && timeline.rawCotLeakCount == 0 && !timeline.nextAction.isEmpty),
             ("XT-AUTO-G5", graduation.requireRealPass && graduation.automationDeliverySuccessRate >= 0.98 && graduation.tokenPerSuccessfulDeliveryDeltaVsBaseline <= -0.20 && graduation.whereIsMyRunQuestionRate <= 0.05),
@@ -771,6 +1325,7 @@ struct XTAutomationProductGapClosureEngine {
         let evidenceRefs = xtAutomationOrderedUniqueStrings([
             "build/reports/xt_w3_25_a_recipe_manifest_evidence.v1.json",
             "build/reports/xt_w3_25_b_event_runner_evidence.v1.json",
+            "build/reports/xt_w3_25_k_run_checkpoint_recovery_evidence.v1.json",
             "build/reports/xt_w3_25_c_directed_takeover_evidence.v1.json",
             "build/reports/xt_w3_25_d_run_timeline_evidence.v1.json",
             "build/reports/xt_w3_25_e_bootstrap_templates_evidence.v1.json",
@@ -780,6 +1335,7 @@ struct XTAutomationProductGapClosureEngine {
         let minimalGaps = xtAutomationOrderedUniqueStrings(
             recipe.minimalGaps
                 + runner.minimalGaps
+                + checkpointRecovery.minimalGaps
                 + takeover.minimalGaps
                 + timeline.minimalGaps
                 + bootstrap.minimalGaps
@@ -806,6 +1362,7 @@ struct XTAutomationProductGapClosureEngine {
         return XTAutomationVerticalSliceResult(
             recipeManifest: recipe,
             eventRunner: runner,
+            checkpointRecovery: checkpointRecovery,
             directedTakeover: takeover,
             runTimeline: timeline,
             bootstrapTemplates: bootstrap,
@@ -857,4 +1414,48 @@ private func xtAutomationAuditRef(prefix: String, projectID: UUID, now: Date) ->
         .replacingOccurrences(of: ":", with: "")
         .replacingOccurrences(of: "-", with: "")
     return "\(prefix)-\(projectID.uuidString.lowercased().prefix(8))-\(token)"
+}
+
+private func xtAutomationCooldownSeconds(for triggerType: XTAutomationTriggerType) -> Int {
+    switch triggerType {
+    case .schedule:
+        return 300
+    case .webhook:
+        return 30
+    case .connectorEvent:
+        return 45
+    case .manual:
+        return 0
+    }
+}
+
+private func xtAutomationBuildExternalTriggerIngressEnvelopes(
+    projectID: String,
+    triggerSeeds: [XTAutomationTriggerSeed],
+    auditRef: String
+) -> [XTAutomationExternalTriggerIngressEnvelope] {
+    triggerSeeds.map { seed in
+        XTAutomationExternalTriggerIngressEnvelope(
+            schemaVersion: XTAutomationExternalTriggerIngressEnvelope.currentSchemaVersion,
+            triggerID: seed.triggerID,
+            triggerType: seed.triggerType,
+            source: seed.source,
+            connectorID: xtAutomationConnectorID(for: seed),
+            projectID: projectID,
+            payloadRef: seed.payloadRef,
+            dedupeKey: seed.dedupeKey,
+            requiresGrant: seed.requiresGrant,
+            cooldownSec: xtAutomationCooldownSeconds(for: seed.triggerType),
+            auditRef: auditRef
+        )
+    }
+}
+
+private func xtAutomationConnectorID(for seed: XTAutomationTriggerSeed) -> String {
+    switch seed.source {
+    case .github, .slack, .telegram:
+        return seed.source.rawValue
+    case .hub, .timer:
+        return ""
+    }
 }

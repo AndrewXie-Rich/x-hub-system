@@ -83,6 +83,14 @@ struct HubRemoteModelsResult: Sendable {
 struct HubRemoteGenerateResult: Sendable {
     var ok: Bool
     var text: String
+    var modelId: String?
+    var requestedModelId: String? = nil
+    var actualModelId: String? = nil
+    var runtimeProvider: String? = nil
+    var executionPath: String? = nil
+    var fallbackReasonCode: String? = nil
+    var promptTokens: Int? = nil
+    var completionTokens: Int? = nil
     var reasonCode: String?
     var logLines: [String]
 
@@ -136,6 +144,29 @@ struct HubRemoteProjectSyncPayload: Sendable {
     var lastSummaryAt: Double?
     var lastEventAt: Double?
     var updatedAt: Double?
+}
+
+struct HubRemoteProjectConversationPayload: Sendable {
+    var projectId: String
+    var threadKey: String
+    var requestId: String
+    var createdAtMs: Int64
+    var userText: String
+    var assistantText: String
+}
+
+struct HubRemoteCanonicalMemoryItem: Codable, Equatable, Sendable {
+    var key: String
+    var value: String
+}
+
+struct HubRemoteProjectCanonicalMemoryPayload: Sendable {
+    var projectId: String
+    var items: [HubRemoteCanonicalMemoryItem]
+}
+
+struct HubRemoteDeviceCanonicalMemoryPayload: Sendable {
+    var items: [HubRemoteCanonicalMemoryItem]
 }
 
 struct HubRemoteNotificationPayload: Sendable {
@@ -231,6 +262,57 @@ struct HubRemotePendingGrantRequestsResult: Sendable {
     }
 }
 
+struct HubRemoteConnectorIngressReceipt: Sendable {
+    var receiptId: String
+    var requestId: String
+    var projectId: String
+    var connector: String
+    var targetId: String
+    var ingressType: String
+    var channelScope: String
+    var sourceId: String
+    var messageId: String
+    var dedupeKey: String
+    var receivedAtMs: Double
+    var eventSequence: Int64
+    var deliveryState: String
+    var runtimeState: String
+}
+
+struct HubRemoteConnectorIngressReceiptsResult: Sendable {
+    var ok: Bool
+    var source: String
+    var updatedAtMs: Double
+    var items: [HubRemoteConnectorIngressReceipt]
+    var reasonCode: String?
+    var logLines: [String]
+
+    var logText: String {
+        logLines.joined(separator: "\n")
+    }
+}
+
+struct HubRemoteAutonomyPolicyOverrideItem: Sendable {
+    var projectId: String
+    var overrideMode: AXProjectAutonomyHubOverrideMode
+    var updatedAtMs: Double
+    var reason: String
+    var auditRef: String
+}
+
+struct HubRemoteAutonomyPolicyOverridesResult: Sendable {
+    var ok: Bool
+    var source: String
+    var updatedAtMs: Double
+    var items: [HubRemoteAutonomyPolicyOverrideItem]
+    var reasonCode: String?
+    var logLines: [String]
+
+    var logText: String {
+        logLines.joined(separator: "\n")
+    }
+}
+
 enum HubRemotePendingGrantActionDecision: String, Sendable {
     case approved
     case denied
@@ -243,6 +325,60 @@ struct HubRemotePendingGrantActionResult: Sendable {
     var grantRequestId: String?
     var grantId: String?
     var expiresAtMs: Double?
+    var reasonCode: String?
+    var logLines: [String]
+
+    var logText: String {
+        logLines.joined(separator: "\n")
+    }
+}
+
+struct HubRemoteVoiceGrantChallenge: Sendable {
+    var challengeId: String
+    var templateId: String
+    var actionDigest: String
+    var scopeDigest: String
+    var amountDigest: String
+    var challengeCode: String
+    var riskLevel: String
+    var requiresMobileConfirm: Bool
+    var allowVoiceOnly: Bool
+    var boundDeviceId: String
+    var mobileTerminalId: String
+    var issuedAtMs: Double
+    var expiresAtMs: Double
+}
+
+struct HubRemoteVoiceGrantChallengeResult: Sendable {
+    var ok: Bool
+    var source: String
+    var challenge: HubRemoteVoiceGrantChallenge?
+    var reasonCode: String?
+    var logLines: [String]
+
+    var logText: String {
+        logLines.joined(separator: "\n")
+    }
+}
+
+enum HubRemoteVoiceGrantVerificationDecision: String, Sendable {
+    case allow
+    case deny
+    case failed
+}
+
+struct HubRemoteVoiceGrantVerificationResult: Sendable {
+    var ok: Bool
+    var verified: Bool
+    var decision: HubRemoteVoiceGrantVerificationDecision
+    var source: String
+    var denyCode: String?
+    var challengeId: String?
+    var transcriptHash: String?
+    var semanticMatchScore: Double
+    var challengeMatch: Bool
+    var deviceBindingOK: Bool
+    var mobileConfirmed: Bool
     var reasonCode: String?
     var logLines: [String]
 
@@ -875,6 +1011,7 @@ actor HubPairingCoordinator {
         appId: String?,
         projectId: String?,
         sessionId: String?,
+        failClosedOnDowngrade: Bool = false,
         requestId: String?
     ) -> HubRemoteGenerateResult {
         let opts = sanitize(rawOptions)
@@ -886,6 +1023,7 @@ actor HubPairingCoordinator {
             return HubRemoteGenerateResult(
                 ok: false,
                 text: "",
+                modelId: nil,
                 reasonCode: "prompt_empty",
                 logLines: ["prompt is empty for remote generate"]
             )
@@ -910,6 +1048,7 @@ actor HubPairingCoordinator {
             return HubRemoteGenerateResult(
                 ok: false,
                 text: "",
+                modelId: nil,
                 reasonCode: "hub_env_missing",
                 logLines: ["missing hub env: \(hubEnv.path)"]
             )
@@ -918,6 +1057,7 @@ actor HubPairingCoordinator {
             return HubRemoteGenerateResult(
                 ok: false,
                 text: "",
+                modelId: nil,
                 reasonCode: "client_kit_missing",
                 logLines: ["missing client kit src: \(clientKitSrc.path)"]
             )
@@ -925,13 +1065,29 @@ actor HubPairingCoordinator {
 
         let exported = readEnvExports(from: hubEnv)
         let merged = mergedAxhubEnv(options: opts, extra: exported)
-        let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged)
+        var nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged)
+        if nodeBin == nil {
+            let install = runAxhubctl(
+                args: ["install-client"],
+                options: opts,
+                env: [:],
+                timeoutSec: 120.0
+            )
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged)
+            }
+        }
         guard let nodeBin else {
             return HubRemoteGenerateResult(
                 ok: false,
                 text: "",
+                modelId: nil,
                 reasonCode: "node_missing",
-                logLines: ["missing node runtime for remote generate"]
+                logLines: logs + [
+                    "missing node runtime for remote generate",
+                    "looked for bundled X-Terminal node, client_kit/bin/relflowhub_node, and system node"
+                ]
             )
         }
 
@@ -947,6 +1103,7 @@ actor HubPairingCoordinator {
         scriptEnv["XTERMINAL_GEN_TEMPERATURE"] = "\(limitedTemp)"
         scriptEnv["XTERMINAL_GEN_TOP_P"] = "\(limitedTopP)"
         scriptEnv["XTERMINAL_GEN_TIMEOUT_SEC"] = "240"
+        scriptEnv["XTERMINAL_GEN_FAIL_CLOSED_ON_DOWNGRADE"] = failClosedOnDowngrade ? "1" : "0"
 
         let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
         func runScript() -> StepOutput {
@@ -1010,6 +1167,7 @@ actor HubPairingCoordinator {
                 return HubRemoteGenerateResult(
                     ok: false,
                     text: "",
+                    modelId: nil,
                     reasonCode: reason,
                     logLines: logs
                 )
@@ -1019,13 +1177,17 @@ actor HubPairingCoordinator {
                 return HubRemoteGenerateResult(
                     ok: false,
                     text: "",
+                    modelId: nil,
                     reasonCode: normalizedFailureReason(from: decoded, step: step, fallback: "remote_chat_failed"),
                     logLines: logs
                 )
             }
 
-            let text = decoded.text ?? ""
-            if text.isEmpty {
+            guard let success = Self.successfulRemoteGenerateResult(
+                from: decoded,
+                fallbackModelId: modelId,
+                logLines: logs
+            ) else {
                 return HubRemoteGenerateResult(
                     ok: false,
                     text: "",
@@ -1034,12 +1196,7 @@ actor HubPairingCoordinator {
                 )
             }
 
-            return HubRemoteGenerateResult(
-                ok: true,
-                text: text,
-                reasonCode: nil,
-                logLines: logs
-            )
+            return success
         }
 
         guard let decoded = decodeGenerateStep(step) else {
@@ -1060,6 +1217,7 @@ actor HubPairingCoordinator {
                     let grant = requestRemotePaidAIGrant(
                         options: opts,
                         modelId: paidModelId,
+                        appId: limitedAppId,
                         requestedSeconds: 1800,
                         requestedTokenCap: min(5000, max(1024, limitedMaxTokens * 2)),
                         reason: "x_terminal paid generate \(limitedTaskType)",
@@ -1105,8 +1263,11 @@ actor HubPairingCoordinator {
             )
         }
 
-        let text = decoded.text ?? ""
-        if text.isEmpty {
+        guard let success = Self.successfulRemoteGenerateResult(
+            from: decoded,
+            fallbackModelId: modelId,
+            logLines: logs
+        ) else {
             return HubRemoteGenerateResult(
                 ok: false,
                 text: "",
@@ -1115,12 +1276,7 @@ actor HubPairingCoordinator {
             )
         }
 
-        return HubRemoteGenerateResult(
-            ok: true,
-            text: text,
-            reasonCode: nil,
-            logLines: logs
-        )
+        return success
     }
 
     func requestRemoteNetworkGrant(
@@ -1269,6 +1425,7 @@ actor HubPairingCoordinator {
     func requestRemotePaidAIGrant(
         options rawOptions: HubRemoteConnectOptions,
         modelId rawModelId: String,
+        appId rawAppId: String? = nil,
         requestedSeconds: Int,
         requestedTokenCap: Int,
         reason: String?,
@@ -1331,6 +1488,10 @@ actor HubPairingCoordinator {
         }
 
         var scriptEnv = merged
+        let effectiveAppId = rawAppId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !effectiveAppId.isEmpty {
+            scriptEnv["HUB_APP_ID"] = effectiveAppId
+        }
         scriptEnv["XTERMINAL_GRANT_CAPABILITY"] = "CAPABILITY_AI_GENERATE_PAID"
         scriptEnv["XTERMINAL_GRANT_MODEL_ID"] = paidModelId
         scriptEnv["XTERMINAL_GRANT_SECONDS"] = "\(max(30, min(86_400, requestedSeconds)))"
@@ -1663,6 +1824,297 @@ actor HubPairingCoordinator {
             ?? nonEmpty(decoded.reason)
             ?? nonEmpty(decoded.errorMessage)
             ?? ((decoded.ok ?? false) ? nil : "remote_project_sync_failed")
+
+        return HubRemoteMutationResult(
+            ok: decoded.ok ?? false,
+            reasonCode: reason?.replacingOccurrences(of: " ", with: "_"),
+            logLines: logs
+        )
+    }
+
+    func appendRemoteProjectConversationTurn(
+        options rawOptions: HubRemoteConnectOptions,
+        payload: HubRemoteProjectConversationPayload
+    ) -> HubRemoteMutationResult {
+        let opts = sanitize(rawOptions)
+        var logs: [String] = []
+
+        let pid = payload.projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let threadKey = payload.threadKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let requestId = payload.requestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let userText = payload.userText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let assistantText = payload.assistantText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !pid.isEmpty else {
+            return HubRemoteMutationResult(ok: false, reasonCode: "project_id_empty", logLines: ["conversation project_id is empty"])
+        }
+        guard !threadKey.isEmpty else {
+            return HubRemoteMutationResult(ok: false, reasonCode: "thread_key_empty", logLines: ["conversation thread_key is empty"])
+        }
+        guard !requestId.isEmpty else {
+            return HubRemoteMutationResult(ok: false, reasonCode: "request_id_empty", logLines: ["conversation request_id is empty"])
+        }
+        guard !userText.isEmpty || !assistantText.isEmpty else {
+            return HubRemoteMutationResult(ok: false, reasonCode: "turn_empty", logLines: ["conversation turn payload is empty"])
+        }
+
+        let stateDir = opts.stateDir ?? defaultStateDir()
+        let hubEnv = stateDir.appendingPathComponent("hub.env")
+        let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
+        let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
+        let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
+
+        guard FileManager.default.fileExists(atPath: hubEnv.path) else {
+            return HubRemoteMutationResult(ok: false, reasonCode: "hub_env_missing", logLines: ["missing hub env: \(hubEnv.path)"])
+        }
+        guard FileManager.default.fileExists(atPath: clientKitSrc.path) else {
+            return HubRemoteMutationResult(ok: false, reasonCode: "client_kit_missing", logLines: ["missing client kit src: \(clientKitSrc.path)"])
+        }
+
+        let exported = readEnvExports(from: hubEnv)
+        let merged = mergedAxhubEnv(options: opts, extra: exported)
+        let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged)
+        guard let nodeBin else {
+            return HubRemoteMutationResult(ok: false, reasonCode: "node_missing", logLines: ["missing node runtime for remote project conversation append"])
+        }
+
+        var scriptEnv = merged
+        scriptEnv["XTERMINAL_CONV_PROJECT_ID"] = pid
+        scriptEnv["XTERMINAL_CONV_THREAD_KEY"] = threadKey
+        scriptEnv["XTERMINAL_CONV_REQUEST_ID"] = requestId
+        scriptEnv["XTERMINAL_CONV_CREATED_AT_MS"] = String(max(Int64(0), payload.createdAtMs))
+        scriptEnv["XTERMINAL_CONV_USER_TEXT"] = userText
+        scriptEnv["XTERMINAL_CONV_ASSISTANT_TEXT"] = assistantText
+
+        let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
+        func runScript() -> StepOutput {
+            do {
+                let script = remoteProjectConversationAppendScriptSource()
+                let result = try ProcessCapture.run(
+                    nodeBin,
+                    ["--input-type=module", "-"],
+                    cwd: clientKitHub,
+                    stdin: script.data(using: .utf8),
+                    timeoutSec: 20.0,
+                    env: scriptEnv
+                )
+                return StepOutput(exitCode: result.exitCode, output: result.combined, command: command)
+            } catch {
+                return StepOutput(exitCode: 127, output: String(describing: error), command: command)
+            }
+        }
+
+        var step = runScript()
+        appendStepLogs(into: &logs, step: step)
+        if step.exitCode != 0, shouldRetryAfterClientKitInstall(step.output) {
+            let install = runAxhubctl(args: ["install-client"], options: opts, env: [:], timeoutSec: 120.0)
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                step = runScript()
+                appendStepLogs(into: &logs, step: step)
+            }
+        }
+
+        guard let jsonLine = extractTrailingJSONObjectLine(step.output),
+              let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteMutationScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(from: step.output, fallback: "remote_project_conversation_append_failed")
+            return HubRemoteMutationResult(ok: false, reasonCode: fallback, logLines: logs)
+        }
+
+        let reason = nonEmpty(decoded.errorCode)
+            ?? nonEmpty(decoded.reason)
+            ?? nonEmpty(decoded.errorMessage)
+            ?? ((decoded.ok ?? false) ? nil : "remote_project_conversation_append_failed")
+
+        return HubRemoteMutationResult(
+            ok: decoded.ok ?? false,
+            reasonCode: reason?.replacingOccurrences(of: " ", with: "_"),
+            logLines: logs
+        )
+    }
+
+    func upsertRemoteProjectCanonicalMemory(
+        options rawOptions: HubRemoteConnectOptions,
+        payload: HubRemoteProjectCanonicalMemoryPayload
+    ) -> HubRemoteMutationResult {
+        let opts = sanitize(rawOptions)
+        var logs: [String] = []
+
+        let projectId = payload.projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !projectId.isEmpty else {
+            return HubRemoteMutationResult(ok: false, reasonCode: "project_id_empty", logLines: ["canonical memory project_id is empty"])
+        }
+
+        let items = payload.items.compactMap { raw -> HubRemoteCanonicalMemoryItem? in
+            let key = raw.key.trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = raw.value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty, !value.isEmpty else { return nil }
+            return HubRemoteCanonicalMemoryItem(key: key, value: value)
+        }
+        guard !items.isEmpty else {
+            return HubRemoteMutationResult(ok: false, reasonCode: "canonical_memory_items_empty", logLines: ["canonical memory payload is empty"])
+        }
+
+        let stateDir = opts.stateDir ?? defaultStateDir()
+        let hubEnv = stateDir.appendingPathComponent("hub.env")
+        let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
+        let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
+        let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
+
+        guard FileManager.default.fileExists(atPath: hubEnv.path) else {
+            return HubRemoteMutationResult(ok: false, reasonCode: "hub_env_missing", logLines: ["missing hub env: \(hubEnv.path)"])
+        }
+        guard FileManager.default.fileExists(atPath: clientKitSrc.path) else {
+            return HubRemoteMutationResult(ok: false, reasonCode: "client_kit_missing", logLines: ["missing client kit src: \(clientKitSrc.path)"])
+        }
+
+        guard let itemsData = try? JSONEncoder().encode(items) else {
+            return HubRemoteMutationResult(ok: false, reasonCode: "canonical_memory_encode_failed", logLines: ["failed to encode canonical memory items"])
+        }
+
+        let exported = readEnvExports(from: hubEnv)
+        let merged = mergedAxhubEnv(options: opts, extra: exported)
+        let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged)
+        guard let nodeBin else {
+            return HubRemoteMutationResult(ok: false, reasonCode: "node_missing", logLines: ["missing node runtime for remote project canonical memory upsert"])
+        }
+
+        var scriptEnv = merged
+        scriptEnv["XTERMINAL_PROJECT_MEMORY_PROJECT_ID"] = projectId
+        scriptEnv["XTERMINAL_PROJECT_MEMORY_ITEMS_B64"] = itemsData.base64EncodedString()
+
+        let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
+        func runScript() -> StepOutput {
+            do {
+                let script = remoteProjectCanonicalMemoryUpsertScriptSource()
+                let result = try ProcessCapture.run(
+                    nodeBin,
+                    ["--input-type=module", "-"],
+                    cwd: clientKitHub,
+                    stdin: script.data(using: .utf8),
+                    timeoutSec: 20.0,
+                    env: scriptEnv
+                )
+                return StepOutput(exitCode: result.exitCode, output: result.combined, command: command)
+            } catch {
+                return StepOutput(exitCode: 127, output: String(describing: error), command: command)
+            }
+        }
+
+        var step = runScript()
+        appendStepLogs(into: &logs, step: step)
+        if step.exitCode != 0, shouldRetryAfterClientKitInstall(step.output) {
+            let install = runAxhubctl(args: ["install-client"], options: opts, env: [:], timeoutSec: 120.0)
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                step = runScript()
+                appendStepLogs(into: &logs, step: step)
+            }
+        }
+
+        guard let jsonLine = extractTrailingJSONObjectLine(step.output),
+              let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteMutationScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(from: step.output, fallback: "remote_project_canonical_memory_upsert_failed")
+            return HubRemoteMutationResult(ok: false, reasonCode: fallback, logLines: logs)
+        }
+
+        let reason = nonEmpty(decoded.errorCode)
+            ?? nonEmpty(decoded.reason)
+            ?? nonEmpty(decoded.errorMessage)
+            ?? ((decoded.ok ?? false) ? nil : "remote_project_canonical_memory_upsert_failed")
+
+        return HubRemoteMutationResult(
+            ok: decoded.ok ?? false,
+            reasonCode: reason?.replacingOccurrences(of: " ", with: "_"),
+            logLines: logs
+        )
+    }
+
+    func upsertRemoteDeviceCanonicalMemory(
+        options rawOptions: HubRemoteConnectOptions,
+        payload: HubRemoteDeviceCanonicalMemoryPayload
+    ) -> HubRemoteMutationResult {
+        let opts = sanitize(rawOptions)
+        var logs: [String] = []
+
+        let items = payload.items.compactMap { raw -> HubRemoteCanonicalMemoryItem? in
+            let key = raw.key.trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = raw.value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty, !value.isEmpty else { return nil }
+            return HubRemoteCanonicalMemoryItem(key: key, value: value)
+        }
+        guard !items.isEmpty else {
+            return HubRemoteMutationResult(ok: false, reasonCode: "device_canonical_memory_items_empty", logLines: ["device canonical memory payload is empty"])
+        }
+
+        let stateDir = opts.stateDir ?? defaultStateDir()
+        let hubEnv = stateDir.appendingPathComponent("hub.env")
+        let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
+        let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
+        let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
+
+        guard FileManager.default.fileExists(atPath: hubEnv.path) else {
+            return HubRemoteMutationResult(ok: false, reasonCode: "hub_env_missing", logLines: ["missing hub env: \(hubEnv.path)"])
+        }
+        guard FileManager.default.fileExists(atPath: clientKitSrc.path) else {
+            return HubRemoteMutationResult(ok: false, reasonCode: "client_kit_missing", logLines: ["missing client kit src: \(clientKitSrc.path)"])
+        }
+
+        guard let itemsData = try? JSONEncoder().encode(items) else {
+            return HubRemoteMutationResult(ok: false, reasonCode: "device_canonical_memory_encode_failed", logLines: ["failed to encode device canonical memory items"])
+        }
+
+        let exported = readEnvExports(from: hubEnv)
+        let merged = mergedAxhubEnv(options: opts, extra: exported)
+        let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged)
+        guard let nodeBin else {
+            return HubRemoteMutationResult(ok: false, reasonCode: "node_missing", logLines: ["missing node runtime for remote device canonical memory upsert"])
+        }
+
+        var scriptEnv = merged
+        scriptEnv["XTERMINAL_DEVICE_MEMORY_ITEMS_B64"] = itemsData.base64EncodedString()
+
+        let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
+        func runScript() -> StepOutput {
+            do {
+                let script = remoteDeviceCanonicalMemoryUpsertScriptSource()
+                let result = try ProcessCapture.run(
+                    nodeBin,
+                    ["--input-type=module", "-"],
+                    cwd: clientKitHub,
+                    stdin: script.data(using: .utf8),
+                    timeoutSec: 20.0,
+                    env: scriptEnv
+                )
+                return StepOutput(exitCode: result.exitCode, output: result.combined, command: command)
+            } catch {
+                return StepOutput(exitCode: 127, output: String(describing: error), command: command)
+            }
+        }
+
+        var step = runScript()
+        appendStepLogs(into: &logs, step: step)
+        if step.exitCode != 0, shouldRetryAfterClientKitInstall(step.output) {
+            let install = runAxhubctl(args: ["install-client"], options: opts, env: [:], timeoutSec: 120.0)
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                step = runScript()
+                appendStepLogs(into: &logs, step: step)
+            }
+        }
+
+        guard let jsonLine = extractTrailingJSONObjectLine(step.output),
+              let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteMutationScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(from: step.output, fallback: "remote_device_canonical_memory_upsert_failed")
+            return HubRemoteMutationResult(ok: false, reasonCode: fallback, logLines: logs)
+        }
+
+        let reason = nonEmpty(decoded.errorCode)
+            ?? nonEmpty(decoded.reason)
+            ?? nonEmpty(decoded.errorMessage)
+            ?? ((decoded.ok ?? false) ? nil : "remote_device_canonical_memory_upsert_failed")
 
         return HubRemoteMutationResult(
             ok: decoded.ok ?? false,
@@ -2173,6 +2625,265 @@ actor HubPairingCoordinator {
         )
     }
 
+    func fetchRemoteConnectorIngressReceipts(
+        options rawOptions: HubRemoteConnectOptions,
+        projectId: String?,
+        limit: Int
+    ) -> HubRemoteConnectorIngressReceiptsResult {
+        let opts = sanitize(rawOptions)
+        var logs: [String] = []
+
+        let stateDir = opts.stateDir ?? defaultStateDir()
+        let hubEnv = stateDir.appendingPathComponent("hub.env")
+        let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
+        let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
+        let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
+
+        guard FileManager.default.fileExists(atPath: hubEnv.path) else {
+            return HubRemoteConnectorIngressReceiptsResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                updatedAtMs: 0,
+                items: [],
+                reasonCode: "hub_env_missing",
+                logLines: ["missing hub env: \(hubEnv.path)"]
+            )
+        }
+        guard FileManager.default.fileExists(atPath: clientKitSrc.path) else {
+            return HubRemoteConnectorIngressReceiptsResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                updatedAtMs: 0,
+                items: [],
+                reasonCode: "client_kit_missing",
+                logLines: ["missing client kit src: \(clientKitSrc.path)"]
+            )
+        }
+
+        let exported = readEnvExports(from: hubEnv)
+        let merged = mergedAxhubEnv(options: opts, extra: exported)
+        let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged)
+        guard let nodeBin else {
+            return HubRemoteConnectorIngressReceiptsResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                updatedAtMs: 0,
+                items: [],
+                reasonCode: "node_missing",
+                logLines: ["missing node runtime for remote connector ingress receipts"]
+            )
+        }
+
+        var scriptEnv = merged
+        scriptEnv["XTERMINAL_CONNECTOR_INGRESS_PROJECT_ID"] = projectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        scriptEnv["XTERMINAL_CONNECTOR_INGRESS_LIMIT"] = String(max(1, min(500, limit)))
+
+        let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
+        func runScript() -> StepOutput {
+            do {
+                let script = remoteConnectorIngressReceiptsScriptSource()
+                let result = try ProcessCapture.run(
+                    nodeBin,
+                    ["--input-type=module", "-"],
+                    cwd: clientKitHub,
+                    stdin: script.data(using: .utf8),
+                    timeoutSec: 12.0,
+                    env: scriptEnv
+                )
+                return StepOutput(exitCode: result.exitCode, output: result.combined, command: command)
+            } catch {
+                return StepOutput(exitCode: 127, output: String(describing: error), command: command)
+            }
+        }
+
+        var step = runScript()
+        appendStepLogs(into: &logs, step: step)
+        if step.exitCode != 0, shouldRetryAfterClientKitInstall(step.output) {
+            let install = runAxhubctl(args: ["install-client"], options: opts, env: [:], timeoutSec: 120.0)
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                step = runScript()
+                appendStepLogs(into: &logs, step: step)
+            }
+        }
+
+        guard let jsonLine = extractTrailingJSONObjectLine(step.output),
+              let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteConnectorIngressReceiptsScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(from: step.output, fallback: "remote_connector_ingress_receipts_failed")
+            return HubRemoteConnectorIngressReceiptsResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                updatedAtMs: 0,
+                items: [],
+                reasonCode: fallback,
+                logLines: logs
+            )
+        }
+
+        let reason = nonEmpty(decoded.errorCode)
+            ?? nonEmpty(decoded.reason)
+            ?? nonEmpty(decoded.errorMessage)
+            ?? ((decoded.ok ?? false) ? nil : "remote_connector_ingress_receipts_failed")
+
+        let items: [HubRemoteConnectorIngressReceipt] = (decoded.items ?? []).compactMap { row in
+            let receiptId = row.receiptId.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !receiptId.isEmpty else { return nil }
+            return HubRemoteConnectorIngressReceipt(
+                receiptId: receiptId,
+                requestId: row.requestId.trimmingCharacters(in: .whitespacesAndNewlines),
+                projectId: row.projectId.trimmingCharacters(in: .whitespacesAndNewlines),
+                connector: row.connector.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                targetId: row.targetId.trimmingCharacters(in: .whitespacesAndNewlines),
+                ingressType: row.ingressType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                channelScope: row.channelScope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                sourceId: row.sourceId.trimmingCharacters(in: .whitespacesAndNewlines),
+                messageId: row.messageId.trimmingCharacters(in: .whitespacesAndNewlines),
+                dedupeKey: row.dedupeKey.trimmingCharacters(in: .whitespacesAndNewlines),
+                receivedAtMs: max(0, row.receivedAtMs ?? 0),
+                eventSequence: Swift.max(Int64(0), row.eventSequence ?? 0),
+                deliveryState: row.deliveryState.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                runtimeState: row.runtimeState.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            )
+        }
+
+        return HubRemoteConnectorIngressReceiptsResult(
+            ok: decoded.ok ?? false,
+            source: nonEmpty(decoded.source) ?? "hub_runtime_grpc",
+            updatedAtMs: max(0, decoded.updatedAtMs ?? 0),
+            items: items,
+            reasonCode: reason?.replacingOccurrences(of: " ", with: "_"),
+            logLines: logs
+        )
+    }
+
+    func fetchRemoteAutonomyPolicyOverrides(
+        options rawOptions: HubRemoteConnectOptions,
+        projectId: String?,
+        limit: Int
+    ) -> HubRemoteAutonomyPolicyOverridesResult {
+        let opts = sanitize(rawOptions)
+        var logs: [String] = []
+
+        let stateDir = opts.stateDir ?? defaultStateDir()
+        let hubEnv = stateDir.appendingPathComponent("hub.env")
+        let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
+        let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
+        let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
+
+        guard FileManager.default.fileExists(atPath: hubEnv.path) else {
+            return HubRemoteAutonomyPolicyOverridesResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                updatedAtMs: 0,
+                items: [],
+                reasonCode: "hub_env_missing",
+                logLines: ["missing hub env: \(hubEnv.path)"]
+            )
+        }
+        guard FileManager.default.fileExists(atPath: clientKitSrc.path) else {
+            return HubRemoteAutonomyPolicyOverridesResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                updatedAtMs: 0,
+                items: [],
+                reasonCode: "client_kit_missing",
+                logLines: ["missing client kit src: \(clientKitSrc.path)"]
+            )
+        }
+
+        let exported = readEnvExports(from: hubEnv)
+        let merged = mergedAxhubEnv(options: opts, extra: exported)
+        let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged)
+        guard let nodeBin else {
+            return HubRemoteAutonomyPolicyOverridesResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                updatedAtMs: 0,
+                items: [],
+                reasonCode: "node_missing",
+                logLines: ["missing node runtime for remote autonomy policy overrides"]
+            )
+        }
+
+        var scriptEnv = merged
+        scriptEnv["XTERMINAL_AUTONOMY_OVERRIDE_PROJECT_ID"] = projectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        scriptEnv["XTERMINAL_AUTONOMY_OVERRIDE_LIMIT"] = String(max(1, min(500, limit)))
+
+        let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
+        func runScript() -> StepOutput {
+            do {
+                let script = remoteAutonomyPolicyOverridesScriptSource()
+                let result = try ProcessCapture.run(
+                    nodeBin,
+                    ["--input-type=module", "-"],
+                    cwd: clientKitHub,
+                    stdin: script.data(using: .utf8),
+                    timeoutSec: 12.0,
+                    env: scriptEnv
+                )
+                return StepOutput(exitCode: result.exitCode, output: result.combined, command: command)
+            } catch {
+                return StepOutput(exitCode: 127, output: String(describing: error), command: command)
+            }
+        }
+
+        var step = runScript()
+        appendStepLogs(into: &logs, step: step)
+        if step.exitCode != 0, shouldRetryAfterClientKitInstall(step.output) {
+            let install = runAxhubctl(args: ["install-client"], options: opts, env: [:], timeoutSec: 120.0)
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                step = runScript()
+                appendStepLogs(into: &logs, step: step)
+            }
+        }
+
+        guard let jsonLine = extractTrailingJSONObjectLine(step.output),
+              let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteAutonomyPolicyOverridesScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(from: step.output, fallback: "remote_autonomy_policy_overrides_failed")
+            return HubRemoteAutonomyPolicyOverridesResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                updatedAtMs: 0,
+                items: [],
+                reasonCode: fallback,
+                logLines: logs
+            )
+        }
+
+        let reason = nonEmpty(decoded.errorCode)
+            ?? nonEmpty(decoded.reason)
+            ?? nonEmpty(decoded.errorMessage)
+            ?? ((decoded.ok ?? false) ? nil : "remote_autonomy_policy_overrides_failed")
+
+        let items: [HubRemoteAutonomyPolicyOverrideItem] = (decoded.items ?? []).compactMap { row in
+            let projectId = row.projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+            let rawMode = row.overrideMode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !projectId.isEmpty,
+                  let overrideMode = AXProjectAutonomyHubOverrideMode(rawValue: rawMode) else {
+                return nil
+            }
+            return HubRemoteAutonomyPolicyOverrideItem(
+                projectId: projectId,
+                overrideMode: overrideMode,
+                updatedAtMs: max(0, row.updatedAtMs ?? 0),
+                reason: row.reason.trimmingCharacters(in: .whitespacesAndNewlines),
+                auditRef: row.auditRef.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        }
+
+        return HubRemoteAutonomyPolicyOverridesResult(
+            ok: decoded.ok ?? false,
+            source: nonEmpty(decoded.source) ?? "hub_runtime_grpc",
+            updatedAtMs: max(0, decoded.updatedAtMs ?? 0),
+            items: items,
+            reasonCode: reason?.replacingOccurrences(of: " ", with: "_"),
+            logLines: logs
+        )
+    }
+
     func approveRemotePendingGrantRequest(
         options rawOptions: HubRemoteConnectOptions,
         grantRequestId: String,
@@ -2208,6 +2919,693 @@ actor HubPairingCoordinator {
             tokenCap: nil,
             note: nil,
             reason: reason
+        )
+    }
+
+    func fetchRemoteVoiceWakeProfile(
+        options rawOptions: HubRemoteConnectOptions,
+        desiredWakeMode: VoiceWakeMode
+    ) -> VoiceWakeProfileSyncResult {
+        let opts = sanitize(rawOptions)
+        var logs: [String] = []
+
+        let stateDir = opts.stateDir ?? defaultStateDir()
+        let hubEnv = stateDir.appendingPathComponent("hub.env")
+        let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
+        let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
+        let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
+
+        guard FileManager.default.fileExists(atPath: hubEnv.path) else {
+            return VoiceWakeProfileSyncResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                profile: nil,
+                reasonCode: "hub_env_missing",
+                logLines: ["missing hub env: \(hubEnv.path)"],
+                syncedAtMs: nil
+            )
+        }
+        guard FileManager.default.fileExists(atPath: clientKitSrc.path) else {
+            return VoiceWakeProfileSyncResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                profile: nil,
+                reasonCode: "client_kit_missing",
+                logLines: ["missing client kit src: \(clientKitSrc.path)"],
+                syncedAtMs: nil
+            )
+        }
+
+        let exported = readEnvExports(from: hubEnv)
+        let merged = mergedAxhubEnv(options: opts, extra: exported)
+        guard let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged) else {
+            return VoiceWakeProfileSyncResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                profile: nil,
+                reasonCode: "node_missing",
+                logLines: ["missing node runtime for remote voice wake profile fetch"],
+                syncedAtMs: nil
+            )
+        }
+
+        var scriptEnv = merged
+        scriptEnv["XTERMINAL_VOICE_WAKE_DESIRED_MODE"] = desiredWakeMode.rawValue
+
+        let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
+        func runScript() -> StepOutput {
+            do {
+                let script = remoteVoiceWakeProfileGetScriptSource()
+                let result = try ProcessCapture.run(
+                    nodeBin,
+                    ["--input-type=module", "-"],
+                    cwd: clientKitHub,
+                    stdin: script.data(using: .utf8),
+                    timeoutSec: 12.0,
+                    env: scriptEnv
+                )
+                return StepOutput(exitCode: result.exitCode, output: result.combined, command: command)
+            } catch {
+                return StepOutput(exitCode: 127, output: String(describing: error), command: command)
+            }
+        }
+
+        var step = runScript()
+        appendStepLogs(into: &logs, step: step)
+        if step.exitCode != 0, shouldRetryAfterClientKitInstall(step.output) {
+            let install = runAxhubctl(args: ["install-client"], options: opts, env: [:], timeoutSec: 120.0)
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                step = runScript()
+                appendStepLogs(into: &logs, step: step)
+            }
+        }
+
+        guard let jsonLine = extractTrailingJSONObjectLine(step.output),
+              let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteVoiceWakeProfileScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(from: step.output, fallback: "remote_voice_wake_profile_fetch_failed")
+            return VoiceWakeProfileSyncResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                profile: nil,
+                reasonCode: fallback,
+                logLines: logs,
+                syncedAtMs: nil
+            )
+        }
+
+        let profile: VoiceWakeProfile? = {
+            guard let row = decoded.profile else { return nil }
+            let sanitized = VoiceWakeProfile(
+                schemaVersion: row.schemaVersion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? VoiceWakeProfile.currentSchemaVersion
+                    : row.schemaVersion.trimmingCharacters(in: .whitespacesAndNewlines),
+                profileID: row.profileID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? "default"
+                    : row.profileID.trimmingCharacters(in: .whitespacesAndNewlines),
+                triggerWords: row.triggerWords,
+                updatedAtMs: max(0, Int64(row.updatedAtMs ?? 0)),
+                scope: .pairedDeviceGroup,
+                source: .hubPairingSync,
+                wakeMode: desiredWakeMode,
+                requiresPairingReady: row.requiresPairingReady ?? true,
+                auditRef: nonEmpty(row.auditRef)
+            ).sanitized()
+            return sanitized.isValid ? sanitized : nil
+        }()
+
+        let ok = (decoded.ok ?? (profile != nil)) && profile != nil
+        let reasonCode = nonEmpty(decoded.errorCode)
+            ?? nonEmpty(decoded.reason)
+            ?? nonEmpty(decoded.errorMessage)
+            ?? (ok ? nil : "remote_voice_wake_profile_fetch_failed")
+
+        return VoiceWakeProfileSyncResult(
+            ok: ok,
+            source: nonEmpty(decoded.source) ?? "hub_memory_v1_grpc",
+            profile: profile,
+            reasonCode: reasonCode?.replacingOccurrences(of: " ", with: "_"),
+            logLines: logs,
+            syncedAtMs: profile?.updatedAtMs
+        )
+    }
+
+    func setRemoteVoiceWakeProfile(
+        options rawOptions: HubRemoteConnectOptions,
+        profile: VoiceWakeProfile
+    ) -> VoiceWakeProfileSyncResult {
+        let opts = sanitize(rawOptions)
+        var logs: [String] = []
+
+        guard let payloadData = try? JSONEncoder().encode(profile.sanitized()) else {
+            return VoiceWakeProfileSyncResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                profile: nil,
+                reasonCode: "voice_wake_profile_encode_failed",
+                logLines: ["failed to encode voice wake profile payload"],
+                syncedAtMs: nil
+            )
+        }
+
+        let stateDir = opts.stateDir ?? defaultStateDir()
+        let hubEnv = stateDir.appendingPathComponent("hub.env")
+        let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
+        let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
+        let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
+
+        guard FileManager.default.fileExists(atPath: hubEnv.path) else {
+            return VoiceWakeProfileSyncResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                profile: nil,
+                reasonCode: "hub_env_missing",
+                logLines: ["missing hub env: \(hubEnv.path)"],
+                syncedAtMs: nil
+            )
+        }
+        guard FileManager.default.fileExists(atPath: clientKitSrc.path) else {
+            return VoiceWakeProfileSyncResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                profile: nil,
+                reasonCode: "client_kit_missing",
+                logLines: ["missing client kit src: \(clientKitSrc.path)"],
+                syncedAtMs: nil
+            )
+        }
+
+        let exported = readEnvExports(from: hubEnv)
+        let merged = mergedAxhubEnv(options: opts, extra: exported)
+        guard let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged) else {
+            return VoiceWakeProfileSyncResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                profile: nil,
+                reasonCode: "node_missing",
+                logLines: ["missing node runtime for remote voice wake profile set"],
+                syncedAtMs: nil
+            )
+        }
+
+        var scriptEnv = merged
+        scriptEnv["XTERMINAL_VOICE_WAKE_PROFILE_JSON_B64"] = payloadData.base64EncodedString()
+
+        let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
+        func runScript() -> StepOutput {
+            do {
+                let script = remoteVoiceWakeProfileSetScriptSource()
+                let result = try ProcessCapture.run(
+                    nodeBin,
+                    ["--input-type=module", "-"],
+                    cwd: clientKitHub,
+                    stdin: script.data(using: .utf8),
+                    timeoutSec: 12.0,
+                    env: scriptEnv
+                )
+                return StepOutput(exitCode: result.exitCode, output: result.combined, command: command)
+            } catch {
+                return StepOutput(exitCode: 127, output: String(describing: error), command: command)
+            }
+        }
+
+        var step = runScript()
+        appendStepLogs(into: &logs, step: step)
+        if step.exitCode != 0, shouldRetryAfterClientKitInstall(step.output) {
+            let install = runAxhubctl(args: ["install-client"], options: opts, env: [:], timeoutSec: 120.0)
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                step = runScript()
+                appendStepLogs(into: &logs, step: step)
+            }
+        }
+
+        guard let jsonLine = extractTrailingJSONObjectLine(step.output),
+              let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteVoiceWakeProfileScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(from: step.output, fallback: "remote_voice_wake_profile_set_failed")
+            return VoiceWakeProfileSyncResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                profile: nil,
+                reasonCode: fallback,
+                logLines: logs,
+                syncedAtMs: nil
+            )
+        }
+
+        let syncedProfile: VoiceWakeProfile? = {
+            guard let row = decoded.profile else { return nil }
+            let wakeMode = VoiceWakeMode(rawValue: row.wakeMode.trimmingCharacters(in: .whitespacesAndNewlines)) ?? profile.wakeMode
+            let sanitized = VoiceWakeProfile(
+                schemaVersion: row.schemaVersion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? VoiceWakeProfile.currentSchemaVersion
+                    : row.schemaVersion.trimmingCharacters(in: .whitespacesAndNewlines),
+                profileID: row.profileID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? "default"
+                    : row.profileID.trimmingCharacters(in: .whitespacesAndNewlines),
+                triggerWords: row.triggerWords,
+                updatedAtMs: max(0, Int64(row.updatedAtMs ?? 0)),
+                scope: .pairedDeviceGroup,
+                source: .hubPairingSync,
+                wakeMode: wakeMode,
+                requiresPairingReady: row.requiresPairingReady ?? true,
+                auditRef: nonEmpty(row.auditRef)
+            ).sanitized()
+            return sanitized.isValid ? sanitized : nil
+        }()
+
+        let ok = (decoded.ok ?? (syncedProfile != nil)) && syncedProfile != nil
+        let reasonCode = nonEmpty(decoded.errorCode)
+            ?? nonEmpty(decoded.reason)
+            ?? nonEmpty(decoded.errorMessage)
+            ?? (ok ? nil : "remote_voice_wake_profile_set_failed")
+
+        return VoiceWakeProfileSyncResult(
+            ok: ok,
+            source: nonEmpty(decoded.source) ?? "hub_memory_v1_grpc",
+            profile: syncedProfile,
+            reasonCode: reasonCode?.replacingOccurrences(of: " ", with: "_"),
+            logLines: logs,
+            syncedAtMs: syncedProfile?.updatedAtMs
+        )
+    }
+
+    func issueRemoteVoiceGrantChallenge(
+        options rawOptions: HubRemoteConnectOptions,
+        requestId: String,
+        projectId: String?,
+        templateId: String,
+        actionDigest: String,
+        scopeDigest: String,
+        amountDigest: String?,
+        challengeCode: String?,
+        riskLevel: String,
+        boundDeviceId: String?,
+        mobileTerminalId: String?,
+        allowVoiceOnly: Bool,
+        requiresMobileConfirm: Bool,
+        ttlMs: Int
+    ) -> HubRemoteVoiceGrantChallengeResult {
+        let normalizedRequestId = requestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedRequestId.isEmpty else {
+            return HubRemoteVoiceGrantChallengeResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                challenge: nil,
+                reasonCode: "request_id_empty",
+                logLines: ["voice grant challenge missing request_id"]
+            )
+        }
+
+        let normalizedTemplateId = templateId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedActionDigest = actionDigest.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedScopeDigest = scopeDigest.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedTemplateId.isEmpty, !normalizedActionDigest.isEmpty, !normalizedScopeDigest.isEmpty else {
+            return HubRemoteVoiceGrantChallengeResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                challenge: nil,
+                reasonCode: "invalid_request",
+                logLines: ["voice grant challenge missing template/action/scope digest"]
+            )
+        }
+
+        let opts = sanitize(rawOptions)
+        var logs: [String] = []
+
+        let stateDir = opts.stateDir ?? defaultStateDir()
+        let hubEnv = stateDir.appendingPathComponent("hub.env")
+        let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
+        let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
+        let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
+
+        guard FileManager.default.fileExists(atPath: hubEnv.path) else {
+            return HubRemoteVoiceGrantChallengeResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                challenge: nil,
+                reasonCode: "hub_env_missing",
+                logLines: ["missing hub env: \(hubEnv.path)"]
+            )
+        }
+        guard FileManager.default.fileExists(atPath: clientKitSrc.path) else {
+            return HubRemoteVoiceGrantChallengeResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                challenge: nil,
+                reasonCode: "client_kit_missing",
+                logLines: ["missing client kit src: \(clientKitSrc.path)"]
+            )
+        }
+
+        let exported = readEnvExports(from: hubEnv)
+        let merged = mergedAxhubEnv(options: opts, extra: exported)
+        let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged)
+        guard let nodeBin else {
+            return HubRemoteVoiceGrantChallengeResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                challenge: nil,
+                reasonCode: "node_missing",
+                logLines: ["missing node runtime for remote voice grant challenge"]
+            )
+        }
+
+        var scriptEnv = merged
+        scriptEnv["XTERMINAL_VOICE_CHALLENGE_REQUEST_ID"] = normalizedRequestId
+        scriptEnv["XTERMINAL_VOICE_CHALLENGE_TEMPLATE_ID"] = normalizedTemplateId
+        scriptEnv["XTERMINAL_VOICE_CHALLENGE_ACTION_DIGEST"] = normalizedActionDigest
+        scriptEnv["XTERMINAL_VOICE_CHALLENGE_SCOPE_DIGEST"] = normalizedScopeDigest
+        scriptEnv["XTERMINAL_VOICE_CHALLENGE_AMOUNT_DIGEST"] = amountDigest?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        scriptEnv["XTERMINAL_VOICE_CHALLENGE_CODE"] = challengeCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        scriptEnv["XTERMINAL_VOICE_CHALLENGE_RISK_LEVEL"] = riskLevel.trimmingCharacters(in: .whitespacesAndNewlines)
+        scriptEnv["XTERMINAL_VOICE_CHALLENGE_BOUND_DEVICE_ID"] = boundDeviceId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        scriptEnv["XTERMINAL_VOICE_CHALLENGE_MOBILE_TERMINAL_ID"] = mobileTerminalId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        scriptEnv["XTERMINAL_VOICE_CHALLENGE_ALLOW_VOICE_ONLY"] = allowVoiceOnly ? "1" : "0"
+        scriptEnv["XTERMINAL_VOICE_CHALLENGE_REQUIRES_MOBILE_CONFIRM"] = requiresMobileConfirm ? "1" : "0"
+        scriptEnv["XTERMINAL_VOICE_CHALLENGE_TTL_MS"] = String(max(10_000, min(600_000, ttlMs)))
+        if let projectId, !projectId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            scriptEnv["HUB_PROJECT_ID"] = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
+        func runScript() -> StepOutput {
+            do {
+                let script = remoteVoiceGrantChallengeScriptSource()
+                let result = try ProcessCapture.run(
+                    nodeBin,
+                    ["--input-type=module", "-"],
+                    cwd: clientKitHub,
+                    stdin: script.data(using: .utf8),
+                    timeoutSec: 12.0,
+                    env: scriptEnv
+                )
+                return StepOutput(exitCode: result.exitCode, output: result.combined, command: command)
+            } catch {
+                return StepOutput(exitCode: 127, output: String(describing: error), command: command)
+            }
+        }
+
+        var step = runScript()
+        appendStepLogs(into: &logs, step: step)
+        if step.exitCode != 0, shouldRetryAfterClientKitInstall(step.output) {
+            let install = runAxhubctl(args: ["install-client"], options: opts, env: [:], timeoutSec: 120.0)
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                step = runScript()
+                appendStepLogs(into: &logs, step: step)
+            }
+        }
+
+        guard let jsonLine = extractTrailingJSONObjectLine(step.output),
+              let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteVoiceGrantChallengeScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(from: step.output, fallback: "remote_voice_grant_challenge_failed")
+            return HubRemoteVoiceGrantChallengeResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                challenge: nil,
+                reasonCode: fallback,
+                logLines: logs
+            )
+        }
+
+        let challenge: HubRemoteVoiceGrantChallenge? = {
+            guard let row = decoded.challenge else { return nil }
+            let challengeId = row.challengeId.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !challengeId.isEmpty else { return nil }
+            return HubRemoteVoiceGrantChallenge(
+                challengeId: challengeId,
+                templateId: row.templateId.trimmingCharacters(in: .whitespacesAndNewlines),
+                actionDigest: row.actionDigest.trimmingCharacters(in: .whitespacesAndNewlines),
+                scopeDigest: row.scopeDigest.trimmingCharacters(in: .whitespacesAndNewlines),
+                amountDigest: row.amountDigest.trimmingCharacters(in: .whitespacesAndNewlines),
+                challengeCode: row.challengeCode.trimmingCharacters(in: .whitespacesAndNewlines),
+                riskLevel: row.riskLevel.trimmingCharacters(in: .whitespacesAndNewlines),
+                requiresMobileConfirm: row.requiresMobileConfirm ?? false,
+                allowVoiceOnly: row.allowVoiceOnly ?? false,
+                boundDeviceId: row.boundDeviceId.trimmingCharacters(in: .whitespacesAndNewlines),
+                mobileTerminalId: row.mobileTerminalId.trimmingCharacters(in: .whitespacesAndNewlines),
+                issuedAtMs: max(0, row.issuedAtMs ?? 0),
+                expiresAtMs: max(0, row.expiresAtMs ?? 0)
+            )
+        }()
+
+        let ok = (decoded.ok ?? (challenge != nil)) && challenge != nil
+        let reasonCode = nonEmpty(decoded.errorCode)
+            ?? nonEmpty(decoded.reason)
+            ?? nonEmpty(decoded.errorMessage)
+            ?? (ok ? nil : "remote_voice_grant_challenge_failed")
+
+        return HubRemoteVoiceGrantChallengeResult(
+            ok: ok,
+            source: nonEmpty(decoded.source) ?? "hub_memory_v1_grpc",
+            challenge: challenge,
+            reasonCode: reasonCode?.replacingOccurrences(of: " ", with: "_"),
+            logLines: logs
+        )
+    }
+
+    func verifyRemoteVoiceGrantResponse(
+        options rawOptions: HubRemoteConnectOptions,
+        requestId: String,
+        projectId: String?,
+        challengeId: String,
+        challengeCode: String?,
+        transcript: String?,
+        transcriptHash: String?,
+        semanticMatchScore: Double?,
+        parsedActionDigest: String?,
+        parsedScopeDigest: String?,
+        parsedAmountDigest: String?,
+        verifyNonce: String,
+        boundDeviceId: String?,
+        mobileConfirmed: Bool
+    ) -> HubRemoteVoiceGrantVerificationResult {
+        let normalizedRequestId = requestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedChallengeId = challengeId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedVerifyNonce = verifyNonce.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedRequestId.isEmpty else {
+            return HubRemoteVoiceGrantVerificationResult(
+                ok: false,
+                verified: false,
+                decision: .failed,
+                source: "hub_memory_v1_grpc",
+                denyCode: nil,
+                challengeId: nil,
+                transcriptHash: nil,
+                semanticMatchScore: 0,
+                challengeMatch: false,
+                deviceBindingOK: false,
+                mobileConfirmed: mobileConfirmed,
+                reasonCode: "request_id_empty",
+                logLines: ["voice grant verify missing request_id"]
+            )
+        }
+        guard !normalizedChallengeId.isEmpty else {
+            return HubRemoteVoiceGrantVerificationResult(
+                ok: false,
+                verified: false,
+                decision: .failed,
+                source: "hub_memory_v1_grpc",
+                denyCode: nil,
+                challengeId: nil,
+                transcriptHash: nil,
+                semanticMatchScore: 0,
+                challengeMatch: false,
+                deviceBindingOK: false,
+                mobileConfirmed: mobileConfirmed,
+                reasonCode: "challenge_id_empty",
+                logLines: ["voice grant verify missing challenge_id"]
+            )
+        }
+        guard !normalizedVerifyNonce.isEmpty else {
+            return HubRemoteVoiceGrantVerificationResult(
+                ok: false,
+                verified: false,
+                decision: .failed,
+                source: "hub_memory_v1_grpc",
+                denyCode: nil,
+                challengeId: normalizedChallengeId,
+                transcriptHash: nil,
+                semanticMatchScore: 0,
+                challengeMatch: false,
+                deviceBindingOK: false,
+                mobileConfirmed: mobileConfirmed,
+                reasonCode: "verify_nonce_empty",
+                logLines: ["voice grant verify missing verify_nonce"]
+            )
+        }
+
+        let opts = sanitize(rawOptions)
+        var logs: [String] = []
+
+        let stateDir = opts.stateDir ?? defaultStateDir()
+        let hubEnv = stateDir.appendingPathComponent("hub.env")
+        let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
+        let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
+        let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
+
+        guard FileManager.default.fileExists(atPath: hubEnv.path) else {
+            return HubRemoteVoiceGrantVerificationResult(
+                ok: false,
+                verified: false,
+                decision: .failed,
+                source: "hub_memory_v1_grpc",
+                denyCode: nil,
+                challengeId: normalizedChallengeId,
+                transcriptHash: nil,
+                semanticMatchScore: semanticMatchScore ?? 0,
+                challengeMatch: false,
+                deviceBindingOK: false,
+                mobileConfirmed: mobileConfirmed,
+                reasonCode: "hub_env_missing",
+                logLines: ["missing hub env: \(hubEnv.path)"]
+            )
+        }
+        guard FileManager.default.fileExists(atPath: clientKitSrc.path) else {
+            return HubRemoteVoiceGrantVerificationResult(
+                ok: false,
+                verified: false,
+                decision: .failed,
+                source: "hub_memory_v1_grpc",
+                denyCode: nil,
+                challengeId: normalizedChallengeId,
+                transcriptHash: nil,
+                semanticMatchScore: semanticMatchScore ?? 0,
+                challengeMatch: false,
+                deviceBindingOK: false,
+                mobileConfirmed: mobileConfirmed,
+                reasonCode: "client_kit_missing",
+                logLines: ["missing client kit src: \(clientKitSrc.path)"]
+            )
+        }
+
+        let exported = readEnvExports(from: hubEnv)
+        let merged = mergedAxhubEnv(options: opts, extra: exported)
+        let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged)
+        guard let nodeBin else {
+            return HubRemoteVoiceGrantVerificationResult(
+                ok: false,
+                verified: false,
+                decision: .failed,
+                source: "hub_memory_v1_grpc",
+                denyCode: nil,
+                challengeId: normalizedChallengeId,
+                transcriptHash: nil,
+                semanticMatchScore: semanticMatchScore ?? 0,
+                challengeMatch: false,
+                deviceBindingOK: false,
+                mobileConfirmed: mobileConfirmed,
+                reasonCode: "node_missing",
+                logLines: ["missing node runtime for remote voice grant verify"]
+            )
+        }
+
+        var scriptEnv = merged
+        scriptEnv["XTERMINAL_VOICE_VERIFY_REQUEST_ID"] = normalizedRequestId
+        scriptEnv["XTERMINAL_VOICE_VERIFY_CHALLENGE_ID"] = normalizedChallengeId
+        scriptEnv["XTERMINAL_VOICE_VERIFY_CHALLENGE_CODE"] = challengeCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        scriptEnv["XTERMINAL_VOICE_VERIFY_TRANSCRIPT"] = transcript ?? ""
+        scriptEnv["XTERMINAL_VOICE_VERIFY_TRANSCRIPT_HASH"] = transcriptHash?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if let semanticMatchScore, semanticMatchScore.isFinite {
+            scriptEnv["XTERMINAL_VOICE_VERIFY_SEMANTIC_MATCH_SCORE"] = String(semanticMatchScore)
+        } else {
+            scriptEnv["XTERMINAL_VOICE_VERIFY_SEMANTIC_MATCH_SCORE"] = ""
+        }
+        scriptEnv["XTERMINAL_VOICE_VERIFY_PARSED_ACTION_DIGEST"] = parsedActionDigest?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        scriptEnv["XTERMINAL_VOICE_VERIFY_PARSED_SCOPE_DIGEST"] = parsedScopeDigest?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        scriptEnv["XTERMINAL_VOICE_VERIFY_PARSED_AMOUNT_DIGEST"] = parsedAmountDigest?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        scriptEnv["XTERMINAL_VOICE_VERIFY_NONCE"] = normalizedVerifyNonce
+        scriptEnv["XTERMINAL_VOICE_VERIFY_BOUND_DEVICE_ID"] = boundDeviceId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        scriptEnv["XTERMINAL_VOICE_VERIFY_MOBILE_CONFIRMED"] = mobileConfirmed ? "1" : "0"
+        if let projectId, !projectId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            scriptEnv["HUB_PROJECT_ID"] = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
+        func runScript() -> StepOutput {
+            do {
+                let script = remoteVoiceGrantVerifyScriptSource()
+                let result = try ProcessCapture.run(
+                    nodeBin,
+                    ["--input-type=module", "-"],
+                    cwd: clientKitHub,
+                    stdin: script.data(using: .utf8),
+                    timeoutSec: 12.0,
+                    env: scriptEnv
+                )
+                return StepOutput(exitCode: result.exitCode, output: result.combined, command: command)
+            } catch {
+                return StepOutput(exitCode: 127, output: String(describing: error), command: command)
+            }
+        }
+
+        var step = runScript()
+        appendStepLogs(into: &logs, step: step)
+        if step.exitCode != 0, shouldRetryAfterClientKitInstall(step.output) {
+            let install = runAxhubctl(args: ["install-client"], options: opts, env: [:], timeoutSec: 120.0)
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                step = runScript()
+                appendStepLogs(into: &logs, step: step)
+            }
+        }
+
+        guard let jsonLine = extractTrailingJSONObjectLine(step.output),
+              let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteVoiceGrantVerificationScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(from: step.output, fallback: "remote_voice_grant_verify_failed")
+            return HubRemoteVoiceGrantVerificationResult(
+                ok: false,
+                verified: false,
+                decision: .failed,
+                source: "hub_memory_v1_grpc",
+                denyCode: nil,
+                challengeId: normalizedChallengeId,
+                transcriptHash: nil,
+                semanticMatchScore: semanticMatchScore ?? 0,
+                challengeMatch: false,
+                deviceBindingOK: false,
+                mobileConfirmed: mobileConfirmed,
+                reasonCode: fallback,
+                logLines: logs
+            )
+        }
+
+        let mappedDecision: HubRemoteVoiceGrantVerificationDecision = {
+            switch (decoded.decision ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "allow":
+                return .allow
+            case "deny":
+                return .deny
+            default:
+                return .failed
+            }
+        }()
+
+        let ok = decoded.ok ?? (mappedDecision != .failed)
+        let reasonCode = nonEmpty(decoded.errorCode)
+            ?? nonEmpty(decoded.reason)
+            ?? nonEmpty(decoded.errorMessage)
+            ?? (ok ? nil : "remote_voice_grant_verify_failed")
+
+        return HubRemoteVoiceGrantVerificationResult(
+            ok: ok,
+            verified: decoded.verified ?? false,
+            decision: mappedDecision,
+            source: nonEmpty(decoded.source) ?? "hub_memory_v1_grpc",
+            denyCode: nonEmpty(decoded.denyCode),
+            challengeId: nonEmpty(decoded.challengeId) ?? normalizedChallengeId,
+            transcriptHash: nonEmpty(decoded.transcriptHash),
+            semanticMatchScore: decoded.semanticMatchScore ?? 0,
+            challengeMatch: decoded.challengeMatch ?? false,
+            deviceBindingOK: decoded.deviceBindingOk ?? false,
+            mobileConfirmed: decoded.mobileConfirmed ?? false,
+            reasonCode: reasonCode?.replacingOccurrences(of: " ", with: "_"),
+            logLines: logs
         )
     }
 
@@ -2391,6 +3789,11 @@ actor HubPairingCoordinator {
         var ok: Bool?
         var text: String?
         var modelId: String?
+        var requestedModelId: String?
+        var actualModelId: String?
+        var runtimeProvider: String?
+        var executionPath: String?
+        var fallbackReasonCode: String?
         var reason: String?
         var errorCode: String?
         var errorMessage: String?
@@ -2402,6 +3805,11 @@ actor HubPairingCoordinator {
             case ok
             case text
             case modelId = "model_id"
+            case requestedModelId = "requested_model_id"
+            case actualModelId = "actual_model_id"
+            case runtimeProvider = "runtime_provider"
+            case executionPath = "execution_path"
+            case fallbackReasonCode = "fallback_reason_code"
             case reason
             case errorCode = "error_code"
             case errorMessage = "error_message"
@@ -2409,6 +3817,49 @@ actor HubPairingCoordinator {
             case completionTokens = "completion_tokens"
             case totalTokens = "total_tokens"
         }
+    }
+
+    private static func successfulRemoteGenerateResult(
+        from decoded: RemoteGenerateScriptResult,
+        fallbackModelId: String?,
+        logLines: [String]
+    ) -> HubRemoteGenerateResult? {
+        func cleaned(_ value: String?) -> String? {
+            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        let text = decoded.text ?? ""
+        guard !text.isEmpty else { return nil }
+        return HubRemoteGenerateResult(
+            ok: true,
+            text: text,
+            modelId: cleaned(decoded.modelId) ?? cleaned(fallbackModelId),
+            requestedModelId: cleaned(decoded.requestedModelId) ?? cleaned(fallbackModelId),
+            actualModelId: cleaned(decoded.actualModelId) ?? cleaned(decoded.modelId) ?? cleaned(fallbackModelId),
+            runtimeProvider: cleaned(decoded.runtimeProvider),
+            executionPath: cleaned(decoded.executionPath),
+            fallbackReasonCode: cleaned(decoded.fallbackReasonCode),
+            promptTokens: decoded.promptTokens,
+            completionTokens: decoded.completionTokens,
+            reasonCode: nil,
+            logLines: logLines
+        )
+    }
+
+    nonisolated static func remoteGenerateResultForTesting(
+        jsonLine: String,
+        requestedModelId: String? = nil
+    ) -> HubRemoteGenerateResult? {
+        guard let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteGenerateScriptResult.self, from: data),
+              decoded.ok == true else {
+            return nil
+        }
+        return successfulRemoteGenerateResult(
+            from: decoded,
+            fallbackModelId: requestedModelId,
+            logLines: []
+        )
     }
 
     private struct RemoteNetworkGrantScriptResult: Codable {
@@ -2615,6 +4066,96 @@ actor HubPairingCoordinator {
         }
     }
 
+    private struct RemoteConnectorIngressReceiptRow: Codable {
+        var receiptId: String
+        var requestId: String
+        var projectId: String
+        var connector: String
+        var targetId: String
+        var ingressType: String
+        var channelScope: String
+        var sourceId: String
+        var messageId: String
+        var dedupeKey: String
+        var receivedAtMs: Double?
+        var eventSequence: Int64?
+        var deliveryState: String
+        var runtimeState: String
+
+        enum CodingKeys: String, CodingKey {
+            case receiptId = "receipt_id"
+            case requestId = "request_id"
+            case projectId = "project_id"
+            case connector
+            case targetId = "target_id"
+            case ingressType = "ingress_type"
+            case channelScope = "channel_scope"
+            case sourceId = "source_id"
+            case messageId = "message_id"
+            case dedupeKey = "dedupe_key"
+            case receivedAtMs = "received_at_ms"
+            case eventSequence = "event_sequence"
+            case deliveryState = "delivery_state"
+            case runtimeState = "runtime_state"
+        }
+    }
+
+    private struct RemoteConnectorIngressReceiptsScriptResult: Codable {
+        var ok: Bool?
+        var source: String?
+        var updatedAtMs: Double?
+        var items: [RemoteConnectorIngressReceiptRow]?
+        var reason: String?
+        var errorCode: String?
+        var errorMessage: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case updatedAtMs = "updated_at_ms"
+            case items
+            case reason
+            case errorCode = "error_code"
+            case errorMessage = "error_message"
+        }
+    }
+
+    private struct RemoteAutonomyPolicyOverrideRow: Codable {
+        var projectId: String
+        var overrideMode: String
+        var updatedAtMs: Double?
+        var reason: String
+        var auditRef: String
+
+        enum CodingKeys: String, CodingKey {
+            case projectId = "project_id"
+            case overrideMode = "override_mode"
+            case updatedAtMs = "updated_at_ms"
+            case reason
+            case auditRef = "audit_ref"
+        }
+    }
+
+    private struct RemoteAutonomyPolicyOverridesScriptResult: Codable {
+        var ok: Bool?
+        var source: String?
+        var updatedAtMs: Double?
+        var items: [RemoteAutonomyPolicyOverrideRow]?
+        var reason: String?
+        var errorCode: String?
+        var errorMessage: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case updatedAtMs = "updated_at_ms"
+            case items
+            case reason
+            case errorCode = "error_code"
+            case errorMessage = "error_message"
+        }
+    }
+
     private struct RemotePendingGrantActionScriptResult: Codable {
         var ok: Bool?
         var decision: String?
@@ -2631,6 +4172,128 @@ actor HubPairingCoordinator {
             case grantRequestId = "grant_request_id"
             case grantId = "grant_id"
             case expiresAtMs = "expires_at_ms"
+            case reason
+            case errorCode = "error_code"
+            case errorMessage = "error_message"
+        }
+    }
+
+    private struct RemoteVoiceWakeProfileRow: Codable {
+        var schemaVersion: String
+        var profileID: String
+        var triggerWords: [String]
+        var updatedAtMs: Double?
+        var wakeMode: String
+        var requiresPairingReady: Bool?
+        var auditRef: String?
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+            case profileID = "profile_id"
+            case triggerWords = "trigger_words"
+            case updatedAtMs = "updated_at_ms"
+            case wakeMode = "wake_mode"
+            case requiresPairingReady = "requires_pairing_ready"
+            case auditRef = "audit_ref"
+        }
+    }
+
+    private struct RemoteVoiceWakeProfileScriptResult: Codable {
+        var ok: Bool?
+        var source: String?
+        var profile: RemoteVoiceWakeProfileRow?
+        var reason: String?
+        var errorCode: String?
+        var errorMessage: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case profile
+            case reason
+            case errorCode = "error_code"
+            case errorMessage = "error_message"
+        }
+    }
+
+    private struct RemoteVoiceGrantChallengeRow: Codable {
+        var challengeId: String
+        var templateId: String
+        var actionDigest: String
+        var scopeDigest: String
+        var amountDigest: String
+        var challengeCode: String
+        var riskLevel: String
+        var requiresMobileConfirm: Bool?
+        var allowVoiceOnly: Bool?
+        var boundDeviceId: String
+        var mobileTerminalId: String
+        var issuedAtMs: Double?
+        var expiresAtMs: Double?
+
+        enum CodingKeys: String, CodingKey {
+            case challengeId = "challenge_id"
+            case templateId = "template_id"
+            case actionDigest = "action_digest"
+            case scopeDigest = "scope_digest"
+            case amountDigest = "amount_digest"
+            case challengeCode = "challenge_code"
+            case riskLevel = "risk_level"
+            case requiresMobileConfirm = "requires_mobile_confirm"
+            case allowVoiceOnly = "allow_voice_only"
+            case boundDeviceId = "bound_device_id"
+            case mobileTerminalId = "mobile_terminal_id"
+            case issuedAtMs = "issued_at_ms"
+            case expiresAtMs = "expires_at_ms"
+        }
+    }
+
+    private struct RemoteVoiceGrantChallengeScriptResult: Codable {
+        var ok: Bool?
+        var source: String?
+        var challenge: RemoteVoiceGrantChallengeRow?
+        var reason: String?
+        var errorCode: String?
+        var errorMessage: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case challenge
+            case reason
+            case errorCode = "error_code"
+            case errorMessage = "error_message"
+        }
+    }
+
+    private struct RemoteVoiceGrantVerificationScriptResult: Codable {
+        var ok: Bool?
+        var source: String?
+        var verified: Bool?
+        var decision: String?
+        var denyCode: String?
+        var challengeId: String?
+        var transcriptHash: String?
+        var semanticMatchScore: Double?
+        var challengeMatch: Bool?
+        var deviceBindingOk: Bool?
+        var mobileConfirmed: Bool?
+        var reason: String?
+        var errorCode: String?
+        var errorMessage: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case verified
+            case decision
+            case denyCode = "deny_code"
+            case challengeId = "challenge_id"
+            case transcriptHash = "transcript_hash"
+            case semanticMatchScore = "semantic_match_score"
+            case challengeMatch = "challenge_match"
+            case deviceBindingOk = "device_binding_ok"
+            case mobileConfirmed = "mobile_confirmed"
             case reason
             case errorCode = "error_code"
             case errorMessage = "error_message"
@@ -3013,8 +4676,35 @@ async function listModels(modelsClient, md, client) {
   });
 }
 
-function selectModelId(models, wantedModelId) {
+function normalizeWantedModelId(models, wantedModelId) {
   const wanted = safe(wantedModelId);
+  if (!wanted) return '';
+
+  const all = Array.isArray(models) ? models : [];
+  const exact = all.find((m) => safe(m?.model_id || '').toLowerCase() === wanted.toLowerCase());
+  if (exact) {
+    return safe(exact?.model_id || '');
+  }
+
+  if (wanted.includes('/')) {
+    return wanted;
+  }
+
+  const needle = wanted.toLowerCase();
+  const suffixMatches = all.filter((m) => {
+    const id = safe(m?.model_id || '').toLowerCase();
+    if (!id) return false;
+    return id === needle || id.endsWith(`/${needle}`);
+  });
+  if (suffixMatches.length === 1) {
+    return safe(suffixMatches[0]?.model_id || '');
+  }
+
+  return wanted;
+}
+
+function selectModelId(models, wantedModelId) {
+  const wanted = normalizeWantedModelId(models, wantedModelId);
   if (wanted) return wanted;
   const available = models.filter((m) => safe(m?.visibility) === 'MODEL_VISIBILITY_AVAILABLE');
   if (available.length > 0) {
@@ -3026,6 +4716,62 @@ function selectModelId(models, wantedModelId) {
     if (id) return id;
   }
   return '';
+}
+
+function modelById(models, modelId) {
+  const wanted = safe(modelId);
+  if (!wanted) return null;
+  return (Array.isArray(models) ? models : []).find((m) => safe(m?.model_id || '').toLowerCase() === wanted.toLowerCase()) || null;
+}
+
+function isPaidModel(model) {
+  const kind = safe(model?.kind || '');
+  return kind === 'MODEL_KIND_PAID_ONLINE' || kind === '2';
+}
+
+function isLocalModel(model) {
+  const kind = safe(model?.kind || '');
+  if (kind === 'MODEL_KIND_LOCAL_OFFLINE' || kind === '1') return true;
+  const backend = safe(model?.backend || '').toLowerCase();
+  return backend === 'mlx';
+}
+
+function buildExecutionDescriptor(models, requestedModelId, actualModelId) {
+  const requested = safe(requestedModelId);
+  const actual = safe(actualModelId || requestedModelId);
+  const requestedMeta = modelById(models, requested);
+  const actualMeta = modelById(models, actual);
+  const requestedPaid = isPaidModel(requestedMeta);
+  const actualPaid = isPaidModel(actualMeta);
+  const actualLocal = isLocalModel(actualMeta);
+
+  if (!requestedPaid) {
+    return {
+      requested_model_id: requested,
+      actual_model_id: actual,
+      runtime_provider: 'Hub (Local)',
+      execution_path: 'local_runtime',
+      fallback_reason_code: '',
+    };
+  }
+
+  if (requested && actual && requested.toLowerCase() !== actual.toLowerCase() && (actualLocal || !actualPaid)) {
+    return {
+      requested_model_id: requested,
+      actual_model_id: actual,
+      runtime_provider: 'Hub (Local)',
+      execution_path: 'hub_downgraded_to_local',
+      fallback_reason_code: 'downgrade_to_local',
+    };
+  }
+
+  return {
+    requested_model_id: requested,
+    actual_model_id: actual,
+    runtime_provider: 'Hub (Remote)',
+    execution_path: 'remote_model',
+    fallback_reason_code: '',
+  };
 }
 
 async function generateOnce(aiClient, md, req, timeoutMs) {
@@ -3093,12 +4839,16 @@ async function main() {
     throw new Error('prompt_empty');
   }
 
+  let models = [];
   let modelId = wantedModelId;
-  if (!modelId && modelsClient) {
+  if (modelsClient) {
     try {
-      const models = await listModels(modelsClient, md, client);
+      models = await listModels(modelsClient, md, client);
       modelId = selectModelId(models, wantedModelId);
-    } catch {}
+    } catch {
+      models = [];
+      modelId = wantedModelId;
+    }
   }
   if (!modelId) {
     throw new Error('no_model_routed');
@@ -3108,6 +4858,7 @@ async function main() {
   const temperatureRaw = Number.parseFloat(safe(process.env.XTERMINAL_GEN_TEMPERATURE || '0.2'));
   const topPRaw = Number.parseFloat(safe(process.env.XTERMINAL_GEN_TOP_P || '0.95'));
   const timeoutSecRaw = Number.parseFloat(safe(process.env.XTERMINAL_GEN_TIMEOUT_SEC || '240'));
+  const failClosedOnDowngrade = safe(process.env.XTERMINAL_GEN_FAIL_CLOSED_ON_DOWNGRADE || '') === '1';
 
   const req = {
     request_id: reqId,
@@ -3119,6 +4870,7 @@ async function main() {
     top_p: Math.max(0.01, Math.min(1, Number.isFinite(topPRaw) ? topPRaw : 0.95)),
     stream: true,
     created_at_ms: Date.now(),
+    fail_closed_on_downgrade: failClosedOnDowngrade,
   };
 
   const streamResult = await generateOnce(
@@ -3161,11 +4913,18 @@ async function main() {
   const promptTokens = Number(usage.prompt_tokens || 0) || 0;
   const completionTokens = Number(usage.completion_tokens || 0) || 0;
   const totalTokens = Number(usage.total_tokens || 0) || (promptTokens + completionTokens);
+  const actualModelId = safe(streamResult?.model_id || modelId);
+  const execution = buildExecutionDescriptor(models, modelId, actualModelId);
 
   out({
     ok: done ? done.ok !== false : true,
     text: asText(streamResult?.assistantText || ''),
-    model_id: streamResult?.model_id || modelId,
+    model_id: actualModelId || modelId,
+    requested_model_id: execution.requested_model_id,
+    actual_model_id: execution.actual_model_id,
+    runtime_provider: execution.runtime_provider,
+    execution_path: execution.execution_path,
+    fallback_reason_code: execution.fallback_reason_code,
     reason: safe(done?.reason || 'eos') || 'eos',
     prompt_tokens: promptTokens,
     completion_tokens: completionTokens,
@@ -3961,6 +5720,469 @@ main().catch((err) => {
 """#
     }
 
+    private func remoteProjectConversationAppendScriptSource() -> String {
+        #"""
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
+
+const safe = (v) => String(v ?? '').trim();
+const out = (obj) => {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+};
+
+function reqClientFromEnv(projectIdOverride) {
+  const projectId = safe(projectIdOverride || process.env.HUB_PROJECT_ID || '');
+  return {
+    device_id: safe(process.env.HUB_DEVICE_ID || 'terminal_device'),
+    user_id: safe(process.env.HUB_USER_ID || ''),
+    app_id: safe(process.env.HUB_APP_ID || 'x_terminal'),
+    project_id: projectId,
+    session_id: safe(process.env.HUB_SESSION_ID || ''),
+  };
+}
+
+function metadataFromEnv() {
+  const tok = safe(process.env.HUB_CLIENT_TOKEN || '');
+  const md = new grpc.Metadata();
+  if (tok) md.set('authorization', `Bearer ${tok}`);
+  return md;
+}
+
+async function resolveProtoPath() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'proto_path.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.resolveHubProtoPath === 'function') {
+        const p = safe(mod.resolveHubProtoPath(process.env));
+        if (p) return p;
+      }
+    } catch {}
+  }
+  const candidates = [
+    path.resolve(process.cwd(), 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', '..', 'protocol', 'hub_protocol_v1.proto'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+function loadProto(protoPath) {
+  const packageDef = protoLoader.loadSync(protoPath, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+  });
+  const loaded = grpc.loadPackageDefinition(packageDef);
+  return loaded?.ax?.hub?.v1;
+}
+
+async function makeClientCreds() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'client_credentials.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.makeClientCredentials === 'function') {
+        const built = mod.makeClientCredentials(process.env);
+        if (built?.creds) return { creds: built.creds, options: built.options || {} };
+      }
+    } catch {}
+  }
+  return { creds: grpc.credentials.createInsecure(), options: {} };
+}
+
+async function getOrCreateThread(memoryClient, md, client, threadKey) {
+  const resp = await new Promise((resolve, reject) => {
+    memoryClient.GetOrCreateThread({ client, thread_key: threadKey }, md, (err, out) => {
+      if (err) reject(err);
+      else resolve(out || {});
+    });
+  });
+  return resp?.thread || null;
+}
+
+async function appendTurns(memoryClient, md, client, threadId, requestId, createdAtMs, userText, assistantText) {
+  const messages = [];
+  if (userText) messages.push({ role: 'user', content: userText });
+  if (assistantText) messages.push({ role: 'assistant', content: assistantText });
+  if (messages.length === 0) throw new Error('turn_empty');
+
+  return await new Promise((resolve, reject) => {
+    memoryClient.AppendTurns(
+      {
+        request_id: requestId,
+        client,
+        thread_id: threadId,
+        messages,
+        created_at_ms: createdAtMs,
+        allow_private: false,
+      },
+      md,
+      (err, out) => {
+        if (err) reject(err);
+        else resolve(out || {});
+      }
+    );
+  });
+}
+
+async function main() {
+  const projectId = safe(process.env.XTERMINAL_CONV_PROJECT_ID || '');
+  const threadKey = safe(process.env.XTERMINAL_CONV_THREAD_KEY || '');
+  const requestId = safe(process.env.XTERMINAL_CONV_REQUEST_ID || '');
+  const userText = safe(process.env.XTERMINAL_CONV_USER_TEXT || '');
+  const assistantText = safe(process.env.XTERMINAL_CONV_ASSISTANT_TEXT || '');
+  const createdAtMsRaw = Number.parseInt(safe(process.env.XTERMINAL_CONV_CREATED_AT_MS || `${Date.now()}`), 10);
+  const createdAtMs = Number.isFinite(createdAtMsRaw) ? createdAtMsRaw : Date.now();
+
+  if (!projectId) throw new Error('project_id_empty');
+  if (!threadKey) throw new Error('thread_key_empty');
+  if (!requestId) throw new Error('request_id_empty');
+  if (!userText && !assistantText) throw new Error('turn_empty');
+
+  const protoPath = await resolveProtoPath();
+  const proto = loadProto(protoPath);
+  if (!proto?.HubMemory) throw new Error('hub_memory_missing');
+
+  const host = safe(process.env.HUB_HOST || '127.0.0.1');
+  const port = Number.parseInt(safe(process.env.HUB_PORT || '50051'), 10) || 50051;
+  const addr = `${host}:${port}`;
+  const client = reqClientFromEnv(projectId);
+
+  const { creds, options } = await makeClientCreds();
+  const memoryClient = new proto.HubMemory(addr, creds, options);
+  const md = metadataFromEnv();
+
+  const th = await getOrCreateThread(memoryClient, md, client, threadKey);
+  const threadId = safe(th?.thread_id || '');
+  if (!threadId) throw new Error('thread_missing');
+
+  await appendTurns(memoryClient, md, client, threadId, requestId, createdAtMs, userText, assistantText);
+  out({ ok: true });
+}
+
+main().catch((err) => {
+  const msg = safe(err?.message || err);
+  out({ ok: false, error_code: msg || 'remote_project_conversation_append_failed', error_message: msg || 'remote_project_conversation_append_failed' });
+  process.exit(1);
+});
+"""#
+    }
+
+    private func remoteProjectCanonicalMemoryUpsertScriptSource() -> String {
+        #"""
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
+
+const safe = (v) => String(v ?? '').trim();
+const out = (obj) => {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+};
+
+function reqClientFromEnv(projectIdOverride) {
+  const projectId = safe(projectIdOverride || process.env.HUB_PROJECT_ID || '');
+  return {
+    device_id: safe(process.env.HUB_DEVICE_ID || 'terminal_device'),
+    user_id: safe(process.env.HUB_USER_ID || ''),
+    app_id: safe(process.env.HUB_APP_ID || 'x_terminal'),
+    project_id: projectId,
+    session_id: safe(process.env.HUB_SESSION_ID || ''),
+  };
+}
+
+function metadataFromEnv() {
+  const tok = safe(process.env.HUB_CLIENT_TOKEN || '');
+  const md = new grpc.Metadata();
+  if (tok) md.set('authorization', `Bearer ${tok}`);
+  return md;
+}
+
+async function resolveProtoPath() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'proto_path.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.resolveHubProtoPath === 'function') {
+        const p = safe(mod.resolveHubProtoPath(process.env));
+        if (p) return p;
+      }
+    } catch {}
+  }
+  const candidates = [
+    path.resolve(process.cwd(), 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', '..', 'protocol', 'hub_protocol_v1.proto'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+function loadProto(protoPath) {
+  const packageDef = protoLoader.loadSync(protoPath, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+  });
+  const loaded = grpc.loadPackageDefinition(packageDef);
+  return loaded?.ax?.hub?.v1;
+}
+
+async function makeClientCreds() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'client_credentials.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.makeClientCredentials === 'function') {
+        const built = mod.makeClientCredentials(process.env);
+        if (built?.creds) return { creds: built.creds, options: built.options || {} };
+      }
+    } catch {}
+  }
+  return { creds: grpc.credentials.createInsecure(), options: {} };
+}
+
+async function upsert(memoryClient, md, client, key, value) {
+  return await new Promise((resolve, reject) => {
+    memoryClient.UpsertCanonicalMemory(
+      {
+        client,
+        scope: 'project',
+        thread_id: '',
+        key,
+        value,
+        pinned: false,
+      },
+      md,
+      (err, out) => {
+        if (err) reject(err);
+        else resolve(out || {});
+      }
+    );
+  });
+}
+
+async function main() {
+  const projectId = safe(process.env.XTERMINAL_PROJECT_MEMORY_PROJECT_ID || process.env.HUB_PROJECT_ID || '');
+  if (!projectId) throw new Error('project_id_empty');
+
+  const encoded = safe(process.env.XTERMINAL_PROJECT_MEMORY_ITEMS_B64 || '');
+  if (!encoded) throw new Error('project_memory_items_missing');
+
+  let items = [];
+  try {
+    items = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+  } catch {
+    throw new Error('project_memory_items_invalid');
+  }
+  if (!Array.isArray(items) || items.length === 0) {
+    throw new Error('project_memory_items_empty');
+  }
+
+  const protoPath = await resolveProtoPath();
+  const proto = loadProto(protoPath);
+  if (!proto?.HubMemory) throw new Error('hub_memory_missing');
+
+  const host = safe(process.env.HUB_HOST || '127.0.0.1');
+  const port = Number.parseInt(safe(process.env.HUB_PORT || '50051'), 10) || 50051;
+  const addr = `${host}:${port}`;
+
+  const client = reqClientFromEnv(projectId);
+  if (!safe(client.project_id)) throw new Error('project_id_empty');
+
+  const { creds, options } = await makeClientCreds();
+  const memoryClient = new proto.HubMemory(addr, creds, options);
+  const md = metadataFromEnv();
+
+  for (const row of items) {
+    const key = safe(row?.key || '');
+    const value = safe(row?.value || '');
+    if (!key || !value) continue;
+    await upsert(memoryClient, md, client, key, value);
+  }
+
+  out({ ok: true });
+}
+
+main().catch((err) => {
+  const msg = safe(err?.message || err);
+  out({
+    ok: false,
+    error_code: msg || 'remote_project_canonical_memory_upsert_failed',
+    error_message: msg || 'remote_project_canonical_memory_upsert_failed',
+  });
+  process.exit(1);
+});
+"""#
+    }
+
+    private func remoteDeviceCanonicalMemoryUpsertScriptSource() -> String {
+        #"""
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
+
+const safe = (v) => String(v ?? '').trim();
+const out = (obj) => {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+};
+
+function reqClientFromEnv() {
+  return {
+    device_id: safe(process.env.HUB_DEVICE_ID || 'terminal_device'),
+    user_id: safe(process.env.HUB_USER_ID || ''),
+    app_id: safe(process.env.HUB_APP_ID || 'x_terminal'),
+    project_id: '',
+    session_id: safe(process.env.HUB_SESSION_ID || ''),
+  };
+}
+
+function metadataFromEnv() {
+  const tok = safe(process.env.HUB_CLIENT_TOKEN || '');
+  const md = new grpc.Metadata();
+  if (tok) md.set('authorization', `Bearer ${tok}`);
+  return md;
+}
+
+async function resolveProtoPath() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'proto_path.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.resolveHubProtoPath === 'function') {
+        const p = safe(mod.resolveHubProtoPath(process.env));
+        if (p) return p;
+      }
+    } catch {}
+  }
+  const candidates = [
+    path.resolve(process.cwd(), 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', '..', 'protocol', 'hub_protocol_v1.proto'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+function loadProto(protoPath) {
+  const packageDef = protoLoader.loadSync(protoPath, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+  });
+  const loaded = grpc.loadPackageDefinition(packageDef);
+  return loaded?.ax?.hub?.v1;
+}
+
+async function makeClientCreds() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'client_credentials.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.makeClientCredentials === 'function') {
+        const built = mod.makeClientCredentials(process.env);
+        if (built?.creds) return { creds: built.creds, options: built.options || {} };
+      }
+    } catch {}
+  }
+  return { creds: grpc.credentials.createInsecure(), options: {} };
+}
+
+async function upsert(memoryClient, md, client, key, value) {
+  return await new Promise((resolve, reject) => {
+    memoryClient.UpsertCanonicalMemory(
+      {
+        client,
+        scope: 'device',
+        thread_id: '',
+        key,
+        value,
+        pinned: false,
+      },
+      md,
+      (err, out) => {
+        if (err) reject(err);
+        else resolve(out || {});
+      }
+    );
+  });
+}
+
+async function main() {
+  const encoded = safe(process.env.XTERMINAL_DEVICE_MEMORY_ITEMS_B64 || '');
+  if (!encoded) throw new Error('device_canonical_memory_items_missing');
+
+  let items = [];
+  try {
+    items = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+  } catch {
+    throw new Error('device_canonical_memory_items_invalid');
+  }
+  if (!Array.isArray(items) || items.length === 0) {
+    throw new Error('device_canonical_memory_items_empty');
+  }
+
+  const protoPath = await resolveProtoPath();
+  const proto = loadProto(protoPath);
+  if (!proto?.HubMemory) throw new Error('hub_memory_missing');
+
+  const host = safe(process.env.HUB_HOST || '127.0.0.1');
+  const port = Number.parseInt(safe(process.env.HUB_PORT || '50051'), 10) || 50051;
+  const addr = `${host}:${port}`;
+
+  const { creds, options } = await makeClientCreds();
+  const memoryClient = new proto.HubMemory(addr, creds, options);
+  const md = metadataFromEnv();
+  const client = reqClientFromEnv();
+
+  for (const row of items) {
+    const key = safe(row?.key || '');
+    const value = safe(row?.value || '');
+    if (!key || !value) continue;
+    await upsert(memoryClient, md, client, key, value);
+  }
+
+  out({ ok: true });
+}
+
+main().catch((err) => {
+  const msg = safe(err?.message || err);
+  out({
+    ok: false,
+    error_code: msg || 'remote_device_canonical_memory_upsert_failed',
+    error_message: msg || 'remote_device_canonical_memory_upsert_failed',
+  });
+  process.exit(1);
+});
+"""#
+    }
+
     private func remoteMemorySnapshotScriptSource() -> String {
         #"""
 import fs from 'node:fs';
@@ -4348,6 +6570,341 @@ main().catch((err) => {
 """#
     }
 
+    private func remoteConnectorIngressReceiptsScriptSource() -> String {
+        #"""
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
+
+const safe = (v) => String(v ?? '').trim();
+const out = (obj) => {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+};
+
+function reqClientFromEnv() {
+  return {
+    device_id: safe(process.env.HUB_DEVICE_ID || 'terminal_device'),
+    user_id: safe(process.env.HUB_USER_ID || ''),
+    app_id: safe(process.env.HUB_APP_ID || 'x_terminal'),
+    project_id: safe(process.env.HUB_PROJECT_ID || ''),
+    session_id: safe(process.env.HUB_SESSION_ID || ''),
+  };
+}
+
+function metadataFromEnv() {
+  const tok = safe(process.env.HUB_CLIENT_TOKEN || '');
+  const md = new grpc.Metadata();
+  if (tok) md.set('authorization', `Bearer ${tok}`);
+  return md;
+}
+
+async function resolveProtoPath() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'proto_path.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.resolveHubProtoPath === 'function') {
+        const p = safe(mod.resolveHubProtoPath(process.env));
+        if (p) return p;
+      }
+    } catch {}
+  }
+
+  const candidates = [
+    path.resolve(process.cwd(), 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', '..', 'protocol', 'hub_protocol_v1.proto'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+function loadProto(protoPath) {
+  const packageDef = protoLoader.loadSync(protoPath, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+  });
+  const loaded = grpc.loadPackageDefinition(packageDef);
+  return loaded?.ax?.hub?.v1;
+}
+
+async function makeClientCreds() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'client_credentials.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.makeClientCredentials === 'function') {
+        const built = mod.makeClientCredentials(process.env);
+        if (built?.creds) {
+          return { creds: built.creds, options: built.options || {} };
+        }
+      }
+    } catch {}
+  }
+  return { creds: grpc.credentials.createInsecure(), options: {} };
+}
+
+function asInt(v, fallback = 0) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.floor(n));
+}
+
+function asMs(v, fallback = 0) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.floor(n));
+}
+
+async function main() {
+  const projectId = safe(process.env.XTERMINAL_CONNECTOR_INGRESS_PROJECT_ID || '');
+  const limitRaw = Number.parseInt(safe(process.env.XTERMINAL_CONNECTOR_INGRESS_LIMIT || '200'), 10);
+  const limit = Math.max(1, Math.min(500, Number.isFinite(limitRaw) ? limitRaw : 200));
+
+  const protoPath = await resolveProtoPath();
+  const proto = loadProto(protoPath);
+  if (!proto?.HubRuntime) throw new Error('hub_runtime_missing');
+
+  const host = safe(process.env.HUB_HOST || '127.0.0.1');
+  const port = Number.parseInt(safe(process.env.HUB_PORT || '50051'), 10) || 50051;
+  const addr = `${host}:${port}`;
+  const client = reqClientFromEnv();
+  const md = metadataFromEnv();
+  const { creds, options } = await makeClientCreds();
+  const runtimeClient = new proto.HubRuntime(addr, creds, options);
+
+  const resp = await new Promise((resolve, reject) => {
+    runtimeClient.GetConnectorIngressReceipts(
+      {
+        client,
+        project_id: projectId,
+        limit,
+      },
+      md,
+      (err, out) => {
+        if (err) reject(err);
+        else resolve(out || {});
+      }
+    );
+  });
+
+  const items = Array.isArray(resp?.items)
+    ? resp.items.map((it) => ({
+        receipt_id: safe(it?.receipt_id || ''),
+        request_id: safe(it?.request_id || ''),
+        project_id: safe(it?.project_id || ''),
+        connector: safe(it?.connector || ''),
+        target_id: safe(it?.target_id || ''),
+        ingress_type: safe(it?.ingress_type || ''),
+        channel_scope: safe(it?.channel_scope || ''),
+        source_id: safe(it?.source_id || ''),
+        message_id: safe(it?.message_id || ''),
+        dedupe_key: safe(it?.dedupe_key || ''),
+        received_at_ms: asMs(it?.received_at_ms || 0),
+        event_sequence: asMs(it?.event_sequence || 0),
+        delivery_state: safe(it?.delivery_state || ''),
+        runtime_state: safe(it?.runtime_state || ''),
+      })).filter((it) => it.receipt_id)
+    : [];
+
+  out({
+    ok: true,
+    source: 'hub_runtime_grpc',
+    updated_at_ms: asMs(resp?.updated_at_ms || 0),
+    items,
+  });
+}
+
+main().catch((err) => {
+  const msg = safe(err?.message || err);
+  const lower = msg.toLowerCase();
+  const code = lower.includes('unimplemented') ? 'hub_runtime_unimplemented' : (msg || 'remote_connector_ingress_receipts_failed');
+  out({
+    ok: false,
+    source: 'hub_runtime_grpc',
+    updated_at_ms: 0,
+    items: [],
+    reason: code,
+    error_code: code,
+    error_message: msg || code,
+  });
+  process.exit(1);
+});
+"""#
+    }
+
+    private func remoteAutonomyPolicyOverridesScriptSource() -> String {
+        #"""
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
+
+const safe = (v) => String(v ?? '').trim();
+const out = (obj) => {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+};
+
+function reqClientFromEnv() {
+  return {
+    device_id: safe(process.env.HUB_DEVICE_ID || 'terminal_device'),
+    user_id: safe(process.env.HUB_USER_ID || ''),
+    app_id: safe(process.env.HUB_APP_ID || 'x_terminal'),
+    project_id: safe(process.env.HUB_PROJECT_ID || ''),
+    session_id: safe(process.env.HUB_SESSION_ID || ''),
+  };
+}
+
+function metadataFromEnv() {
+  const tok = safe(process.env.HUB_CLIENT_TOKEN || '');
+  const md = new grpc.Metadata();
+  if (tok) md.set('authorization', `Bearer ${tok}`);
+  return md;
+}
+
+async function resolveProtoPath() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'proto_path.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.resolveHubProtoPath === 'function') {
+        const p = safe(mod.resolveHubProtoPath(process.env));
+        if (p) return p;
+      }
+    } catch {}
+  }
+
+  const candidates = [
+    path.resolve(process.cwd(), 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', '..', 'protocol', 'hub_protocol_v1.proto'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+function loadProto(protoPath) {
+  const packageDef = protoLoader.loadSync(protoPath, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+  });
+  const loaded = grpc.loadPackageDefinition(packageDef);
+  return loaded?.ax?.hub?.v1;
+}
+
+async function makeClientCreds() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'client_credentials.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.makeClientCredentials === 'function') {
+        const built = mod.makeClientCredentials(process.env);
+        if (built?.creds) {
+          return { creds: built.creds, options: built.options || {} };
+        }
+      }
+    } catch {}
+  }
+  return { creds: grpc.credentials.createInsecure(), options: {} };
+}
+
+function asInt(v, fallback = 0) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.floor(n));
+}
+
+function asMs(v, fallback = 0) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.floor(n));
+}
+
+async function main() {
+  const projectId = safe(process.env.XTERMINAL_AUTONOMY_OVERRIDE_PROJECT_ID || '');
+  const limitRaw = Number.parseInt(safe(process.env.XTERMINAL_AUTONOMY_OVERRIDE_LIMIT || '200'), 10);
+  const limit = Math.max(1, Math.min(500, Number.isFinite(limitRaw) ? limitRaw : 200));
+
+  const protoPath = await resolveProtoPath();
+  const proto = loadProto(protoPath);
+  if (!proto?.HubRuntime) throw new Error('hub_runtime_missing');
+
+  const host = safe(process.env.HUB_HOST || '127.0.0.1');
+  const port = Number.parseInt(safe(process.env.HUB_PORT || '50051'), 10) || 50051;
+  const addr = `${host}:${port}`;
+  const client = reqClientFromEnv();
+  const md = metadataFromEnv();
+  const { creds, options } = await makeClientCreds();
+  const runtimeClient = new proto.HubRuntime(addr, creds, options);
+
+  const resp = await new Promise((resolve, reject) => {
+    runtimeClient.GetAutonomyPolicyOverrides(
+      {
+        client,
+        project_id: projectId,
+        limit,
+      },
+      md,
+      (err, out) => {
+        if (err) reject(err);
+        else resolve(out || {});
+      }
+    );
+  });
+
+  const items = Array.isArray(resp?.items)
+    ? resp.items.map((it) => ({
+        project_id: safe(it?.project_id || ''),
+        override_mode: safe(it?.override_mode || '').toLowerCase(),
+        updated_at_ms: asMs(it?.updated_at_ms || 0),
+        reason: safe(it?.reason || ''),
+        audit_ref: safe(it?.audit_ref || ''),
+      })).filter((it) => it.project_id && it.override_mode)
+    : [];
+
+  out({
+    ok: true,
+    source: 'hub_runtime_grpc',
+    updated_at_ms: asMs(resp?.updated_at_ms || 0),
+    items,
+  });
+}
+
+main().catch((err) => {
+  const msg = safe(err?.message || err);
+  const lower = msg.toLowerCase();
+  const code = lower.includes('unimplemented') ? 'hub_runtime_unimplemented' : (msg || 'remote_autonomy_policy_overrides_failed');
+  out({
+    ok: false,
+    source: 'hub_runtime_grpc',
+    updated_at_ms: 0,
+    items: [],
+    reason: code,
+    error_code: code,
+    error_message: msg || code,
+  });
+  process.exit(1);
+});
+"""#
+    }
+
     private func remotePendingGrantActionScriptSource() -> String {
         #"""
 import fs from 'node:fs';
@@ -4528,6 +7085,711 @@ main().catch((err) => {
   out({
     ok: false,
     decision: 'failed',
+    reason: code,
+    error_code: code,
+    error_message: msg || code,
+  });
+  process.exit(1);
+});
+"""#
+    }
+
+    private func remoteVoiceWakeProfileGetScriptSource() -> String {
+        #"""
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
+
+const safe = (v) => String(v ?? '').trim();
+const out = (obj) => {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+};
+
+function reqClientFromEnv() {
+  return {
+    device_id: safe(process.env.HUB_DEVICE_ID || 'terminal_device'),
+    user_id: safe(process.env.HUB_USER_ID || ''),
+    app_id: safe(process.env.HUB_APP_ID || 'x_terminal'),
+    project_id: safe(process.env.HUB_PROJECT_ID || ''),
+    session_id: safe(process.env.HUB_SESSION_ID || ''),
+  };
+}
+
+function metadataFromEnv() {
+  const tok = safe(process.env.HUB_CLIENT_TOKEN || '');
+  const md = new grpc.Metadata();
+  if (tok) md.set('authorization', `Bearer ${tok}`);
+  return md;
+}
+
+async function resolveProtoPath() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'proto_path.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.resolveHubProtoPath === 'function') {
+        const p = safe(mod.resolveHubProtoPath(process.env));
+        if (p) return p;
+      }
+    } catch {}
+  }
+
+  const candidates = [
+    path.resolve(process.cwd(), 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', '..', 'protocol', 'hub_protocol_v1.proto'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+function loadProto(protoPath) {
+  const packageDef = protoLoader.loadSync(protoPath, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+  });
+  const loaded = grpc.loadPackageDefinition(packageDef);
+  return loaded?.ax?.hub?.v1;
+}
+
+async function makeClientCreds() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'client_credentials.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.makeClientCredentials === 'function') {
+        const built = mod.makeClientCredentials(process.env);
+        if (built?.creds) {
+          return { creds: built.creds, options: built.options || {} };
+        }
+      }
+    } catch {}
+  }
+  return { creds: grpc.credentials.createInsecure(), options: {} };
+}
+
+function asMs(v, fallback = 0) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.floor(n));
+}
+
+async function main() {
+  const protoPath = await resolveProtoPath();
+  const proto = loadProto(protoPath);
+  if (!proto?.HubMemory) throw new Error('hub_memory_missing');
+
+  const host = safe(process.env.HUB_HOST || '127.0.0.1');
+  const port = Number.parseInt(safe(process.env.HUB_PORT || '50051'), 10) || 50051;
+  const addr = `${host}:${port}`;
+  const client = reqClientFromEnv();
+  const md = metadataFromEnv();
+  const { creds, options } = await makeClientCreds();
+  const memoryClient = new proto.HubMemory(addr, creds, options);
+  const desiredWakeMode = safe(process.env.XTERMINAL_VOICE_WAKE_DESIRED_MODE || 'wake_phrase') || 'wake_phrase';
+
+  const resp = await new Promise((resolve, reject) => {
+    memoryClient.GetVoiceWakeProfile(
+      {
+        client,
+        desired_wake_mode: desiredWakeMode,
+      },
+      md,
+      (err, out) => {
+        if (err) reject(err);
+        else resolve(out || {});
+      }
+    );
+  });
+
+  const profile = resp?.profile || {};
+  out({
+    ok: true,
+    source: 'hub_memory_v1_grpc',
+    profile: {
+      schema_version: safe(profile?.schema_version || ''),
+      profile_id: safe(profile?.profile_id || 'default'),
+      trigger_words: Array.isArray(profile?.trigger_words) ? profile.trigger_words.map((item) => safe(item)).filter(Boolean) : [],
+      updated_at_ms: asMs(profile?.updated_at_ms || 0),
+      wake_mode: safe(profile?.wake_mode || desiredWakeMode),
+      requires_pairing_ready: !!profile?.requires_pairing_ready,
+      audit_ref: safe(profile?.audit_ref || ''),
+    },
+  });
+}
+
+main().catch((err) => {
+  const msg = safe(err?.message || err);
+  const lower = msg.toLowerCase();
+  const code = lower.includes('unimplemented')
+    ? 'hub_memory_unimplemented'
+    : (msg || 'remote_voice_wake_profile_fetch_failed');
+  out({
+    ok: false,
+    source: 'hub_memory_v1_grpc',
+    reason: code,
+    error_code: code,
+    error_message: msg || code,
+  });
+  process.exit(1);
+});
+"""#
+    }
+
+    private func remoteVoiceWakeProfileSetScriptSource() -> String {
+        #"""
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
+
+const safe = (v) => String(v ?? '').trim();
+const out = (obj) => {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+};
+
+function reqClientFromEnv() {
+  return {
+    device_id: safe(process.env.HUB_DEVICE_ID || 'terminal_device'),
+    user_id: safe(process.env.HUB_USER_ID || ''),
+    app_id: safe(process.env.HUB_APP_ID || 'x_terminal'),
+    project_id: safe(process.env.HUB_PROJECT_ID || ''),
+    session_id: safe(process.env.HUB_SESSION_ID || ''),
+  };
+}
+
+function metadataFromEnv() {
+  const tok = safe(process.env.HUB_CLIENT_TOKEN || '');
+  const md = new grpc.Metadata();
+  if (tok) md.set('authorization', `Bearer ${tok}`);
+  return md;
+}
+
+async function resolveProtoPath() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'proto_path.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.resolveHubProtoPath === 'function') {
+        const p = safe(mod.resolveHubProtoPath(process.env));
+        if (p) return p;
+      }
+    } catch {}
+  }
+
+  const candidates = [
+    path.resolve(process.cwd(), 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', '..', 'protocol', 'hub_protocol_v1.proto'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+function loadProto(protoPath) {
+  const packageDef = protoLoader.loadSync(protoPath, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+  });
+  const loaded = grpc.loadPackageDefinition(packageDef);
+  return loaded?.ax?.hub?.v1;
+}
+
+async function makeClientCreds() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'client_credentials.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.makeClientCredentials === 'function') {
+        const built = mod.makeClientCredentials(process.env);
+        if (built?.creds) {
+          return { creds: built.creds, options: built.options || {} };
+        }
+      }
+    } catch {}
+  }
+  return { creds: grpc.credentials.createInsecure(), options: {} };
+}
+
+function asMs(v, fallback = 0) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.floor(n));
+}
+
+function decodeProfileFromEnv() {
+  const encoded = safe(process.env.XTERMINAL_VOICE_WAKE_PROFILE_JSON_B64 || '');
+  if (!encoded) {
+    throw new Error('voice_wake_profile_payload_missing');
+  }
+  const json = Buffer.from(encoded, 'base64').toString('utf8');
+  const parsed = JSON.parse(json);
+  return {
+    schema_version: safe(parsed?.schema_version || ''),
+    profile_id: safe(parsed?.profile_id || 'default'),
+    trigger_words: Array.isArray(parsed?.trigger_words) ? parsed.trigger_words.map((item) => safe(item)).filter(Boolean) : [],
+    updated_at_ms: asMs(parsed?.updated_at_ms || 0),
+    scope: safe(parsed?.scope || ''),
+    source: safe(parsed?.source || ''),
+    wake_mode: safe(parsed?.wake_mode || 'wake_phrase'),
+    requires_pairing_ready: !!parsed?.requires_pairing_ready,
+    audit_ref: safe(parsed?.audit_ref || ''),
+  };
+}
+
+async function main() {
+  const protoPath = await resolveProtoPath();
+  const proto = loadProto(protoPath);
+  if (!proto?.HubMemory) throw new Error('hub_memory_missing');
+
+  const host = safe(process.env.HUB_HOST || '127.0.0.1');
+  const port = Number.parseInt(safe(process.env.HUB_PORT || '50051'), 10) || 50051;
+  const addr = `${host}:${port}`;
+  const client = reqClientFromEnv();
+  const md = metadataFromEnv();
+  const { creds, options } = await makeClientCreds();
+  const memoryClient = new proto.HubMemory(addr, creds, options);
+  const profile = decodeProfileFromEnv();
+
+  const resp = await new Promise((resolve, reject) => {
+    memoryClient.SetVoiceWakeProfile(
+      {
+        client,
+        profile,
+      },
+      md,
+      (err, out) => {
+        if (err) reject(err);
+        else resolve(out || {});
+      }
+    );
+  });
+
+  const synced = resp?.profile || {};
+  out({
+    ok: true,
+    source: 'hub_memory_v1_grpc',
+    profile: {
+      schema_version: safe(synced?.schema_version || ''),
+      profile_id: safe(synced?.profile_id || profile.profile_id || 'default'),
+      trigger_words: Array.isArray(synced?.trigger_words) ? synced.trigger_words.map((item) => safe(item)).filter(Boolean) : [],
+      updated_at_ms: asMs(synced?.updated_at_ms || 0),
+      wake_mode: safe(synced?.wake_mode || profile.wake_mode || 'wake_phrase'),
+      requires_pairing_ready: !!synced?.requires_pairing_ready,
+      audit_ref: safe(synced?.audit_ref || profile.audit_ref || ''),
+    },
+  });
+}
+
+main().catch((err) => {
+  const msg = safe(err?.message || err);
+  const lower = msg.toLowerCase();
+  const code = lower.includes('unimplemented')
+    ? 'hub_memory_unimplemented'
+    : (msg || 'remote_voice_wake_profile_set_failed');
+  out({
+    ok: false,
+    source: 'hub_memory_v1_grpc',
+    reason: code,
+    error_code: code,
+    error_message: msg || code,
+  });
+  process.exit(1);
+});
+"""#
+    }
+
+    private func remoteVoiceGrantChallengeScriptSource() -> String {
+        #"""
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
+
+const safe = (v) => String(v ?? '').trim();
+const out = (obj) => {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+};
+
+function reqClientFromEnv(projectOverride = '') {
+  const projectId = safe(projectOverride || process.env.HUB_PROJECT_ID || '');
+  return {
+    device_id: safe(process.env.HUB_DEVICE_ID || 'terminal_device'),
+    user_id: safe(process.env.HUB_USER_ID || ''),
+    app_id: safe(process.env.HUB_APP_ID || 'x_terminal'),
+    project_id: projectId,
+    session_id: safe(process.env.HUB_SESSION_ID || ''),
+  };
+}
+
+function metadataFromEnv() {
+  const tok = safe(process.env.HUB_CLIENT_TOKEN || '');
+  const md = new grpc.Metadata();
+  if (tok) md.set('authorization', `Bearer ${tok}`);
+  return md;
+}
+
+async function resolveProtoPath() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'proto_path.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.resolveHubProtoPath === 'function') {
+        const p = safe(mod.resolveHubProtoPath(process.env));
+        if (p) return p;
+      }
+    } catch {}
+  }
+
+  const candidates = [
+    path.resolve(process.cwd(), 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', '..', 'protocol', 'hub_protocol_v1.proto'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+function loadProto(protoPath) {
+  const packageDef = protoLoader.loadSync(protoPath, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+  });
+  const loaded = grpc.loadPackageDefinition(packageDef);
+  return loaded?.ax?.hub?.v1;
+}
+
+async function makeClientCreds() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'client_credentials.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.makeClientCredentials === 'function') {
+        const built = mod.makeClientCredentials(process.env);
+        if (built?.creds) {
+          return { creds: built.creds, options: built.options || {} };
+        }
+      }
+    } catch {}
+  }
+  return { creds: grpc.credentials.createInsecure(), options: {} };
+}
+
+function parseBool(v, fallback = false) {
+  const raw = safe(v).toLowerCase();
+  if (!raw) return fallback;
+  if (['1', 'true', 'yes', 'y', 'on'].includes(raw)) return true;
+  if (['0', 'false', 'no', 'n', 'off'].includes(raw)) return false;
+  return fallback;
+}
+
+function asMs(v, fallback = 0) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.floor(n));
+}
+
+async function main() {
+  const requestId = safe(process.env.XTERMINAL_VOICE_CHALLENGE_REQUEST_ID || '');
+  const templateId = safe(process.env.XTERMINAL_VOICE_CHALLENGE_TEMPLATE_ID || '');
+  const actionDigest = safe(process.env.XTERMINAL_VOICE_CHALLENGE_ACTION_DIGEST || '');
+  const scopeDigest = safe(process.env.XTERMINAL_VOICE_CHALLENGE_SCOPE_DIGEST || '');
+  if (!requestId || !templateId || !actionDigest || !scopeDigest) {
+    throw new Error('invalid_request');
+  }
+
+  const protoPath = await resolveProtoPath();
+  const proto = loadProto(protoPath);
+  if (!proto?.HubMemory) throw new Error('hub_memory_missing');
+
+  const host = safe(process.env.HUB_HOST || '127.0.0.1');
+  const port = Number.parseInt(safe(process.env.HUB_PORT || '50051'), 10) || 50051;
+  const addr = `${host}:${port}`;
+  const client = reqClientFromEnv();
+  const md = metadataFromEnv();
+  const { creds, options } = await makeClientCreds();
+  const memoryClient = new proto.HubMemory(addr, creds, options);
+
+  const ttlRaw = Number.parseInt(safe(process.env.XTERMINAL_VOICE_CHALLENGE_TTL_MS || '120000'), 10);
+  const resp = await new Promise((resolve, reject) => {
+    memoryClient.IssueVoiceGrantChallenge(
+      {
+        request_id: requestId,
+        client,
+        template_id: templateId,
+        action_digest: actionDigest,
+        scope_digest: scopeDigest,
+        amount_digest: safe(process.env.XTERMINAL_VOICE_CHALLENGE_AMOUNT_DIGEST || ''),
+        challenge_code: safe(process.env.XTERMINAL_VOICE_CHALLENGE_CODE || ''),
+        risk_level: safe(process.env.XTERMINAL_VOICE_CHALLENGE_RISK_LEVEL || 'high'),
+        bound_device_id: safe(process.env.XTERMINAL_VOICE_CHALLENGE_BOUND_DEVICE_ID || ''),
+        mobile_terminal_id: safe(process.env.XTERMINAL_VOICE_CHALLENGE_MOBILE_TERMINAL_ID || ''),
+        allow_voice_only: parseBool(process.env.XTERMINAL_VOICE_CHALLENGE_ALLOW_VOICE_ONLY || '', false),
+        requires_mobile_confirm: parseBool(process.env.XTERMINAL_VOICE_CHALLENGE_REQUIRES_MOBILE_CONFIRM || '', true),
+        ttl_ms: Number.isFinite(ttlRaw) ? Math.max(10000, Math.min(600000, ttlRaw)) : 120000,
+      },
+      md,
+      (err, out) => {
+        if (err) reject(err);
+        else resolve(out || {});
+      }
+    );
+  });
+
+  const challenge = resp?.challenge || null;
+  const challengeId = safe(challenge?.challenge_id || '');
+  if (!challengeId) {
+    out({
+      ok: false,
+      source: 'hub_memory_v1_grpc',
+      reason: 'voice_grant_challenge_missing',
+      error_code: 'voice_grant_challenge_missing',
+      error_message: 'voice_grant_challenge_missing',
+    });
+    process.exit(1);
+    return;
+  }
+
+  out({
+    ok: true,
+    source: 'hub_memory_v1_grpc',
+    challenge: {
+      challenge_id: challengeId,
+      template_id: safe(challenge?.template_id || ''),
+      action_digest: safe(challenge?.action_digest || ''),
+      scope_digest: safe(challenge?.scope_digest || ''),
+      amount_digest: safe(challenge?.amount_digest || ''),
+      challenge_code: safe(challenge?.challenge_code || ''),
+      risk_level: safe(challenge?.risk_level || 'high'),
+      requires_mobile_confirm: !!challenge?.requires_mobile_confirm,
+      allow_voice_only: !!challenge?.allow_voice_only,
+      bound_device_id: safe(challenge?.bound_device_id || ''),
+      mobile_terminal_id: safe(challenge?.mobile_terminal_id || ''),
+      issued_at_ms: asMs(challenge?.issued_at_ms || 0),
+      expires_at_ms: asMs(challenge?.expires_at_ms || 0),
+    },
+  });
+}
+
+main().catch((err) => {
+  const msg = safe(err?.message || err);
+  const lower = msg.toLowerCase();
+  const code = lower.includes('unimplemented')
+    ? 'hub_memory_unimplemented'
+    : (msg || 'remote_voice_grant_challenge_failed');
+  out({
+    ok: false,
+    source: 'hub_memory_v1_grpc',
+    reason: code,
+    error_code: code,
+    error_message: msg || code,
+  });
+  process.exit(1);
+});
+"""#
+    }
+
+    private func remoteVoiceGrantVerifyScriptSource() -> String {
+        #"""
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
+
+const safe = (v) => String(v ?? '').trim();
+const out = (obj) => {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+};
+
+function reqClientFromEnv(projectOverride = '') {
+  const projectId = safe(projectOverride || process.env.HUB_PROJECT_ID || '');
+  return {
+    device_id: safe(process.env.HUB_DEVICE_ID || 'terminal_device'),
+    user_id: safe(process.env.HUB_USER_ID || ''),
+    app_id: safe(process.env.HUB_APP_ID || 'x_terminal'),
+    project_id: projectId,
+    session_id: safe(process.env.HUB_SESSION_ID || ''),
+  };
+}
+
+function metadataFromEnv() {
+  const tok = safe(process.env.HUB_CLIENT_TOKEN || '');
+  const md = new grpc.Metadata();
+  if (tok) md.set('authorization', `Bearer ${tok}`);
+  return md;
+}
+
+async function resolveProtoPath() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'proto_path.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.resolveHubProtoPath === 'function') {
+        const p = safe(mod.resolveHubProtoPath(process.env));
+        if (p) return p;
+      }
+    } catch {}
+  }
+
+  const candidates = [
+    path.resolve(process.cwd(), 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', '..', 'protocol', 'hub_protocol_v1.proto'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+function loadProto(protoPath) {
+  const packageDef = protoLoader.loadSync(protoPath, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+  });
+  const loaded = grpc.loadPackageDefinition(packageDef);
+  return loaded?.ax?.hub?.v1;
+}
+
+async function makeClientCreds() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'client_credentials.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.makeClientCredentials === 'function') {
+        const built = mod.makeClientCredentials(process.env);
+        if (built?.creds) {
+          return { creds: built.creds, options: built.options || {} };
+        }
+      }
+    } catch {}
+  }
+  return { creds: grpc.credentials.createInsecure(), options: {} };
+}
+
+function parseBool(v, fallback = false) {
+  const raw = safe(v).toLowerCase();
+  if (!raw) return fallback;
+  if (['1', 'true', 'yes', 'y', 'on'].includes(raw)) return true;
+  if (['0', 'false', 'no', 'n', 'off'].includes(raw)) return false;
+  return fallback;
+}
+
+function parseScore(v) {
+  const n = Number(safe(v || ''));
+  if (!Number.isFinite(n)) return 0;
+  return n;
+}
+
+async function main() {
+  const requestId = safe(process.env.XTERMINAL_VOICE_VERIFY_REQUEST_ID || '');
+  const challengeId = safe(process.env.XTERMINAL_VOICE_VERIFY_CHALLENGE_ID || '');
+  const verifyNonce = safe(process.env.XTERMINAL_VOICE_VERIFY_NONCE || '');
+  if (!requestId || !challengeId || !verifyNonce) {
+    throw new Error('invalid_request');
+  }
+
+  const protoPath = await resolveProtoPath();
+  const proto = loadProto(protoPath);
+  if (!proto?.HubMemory) throw new Error('hub_memory_missing');
+
+  const host = safe(process.env.HUB_HOST || '127.0.0.1');
+  const port = Number.parseInt(safe(process.env.HUB_PORT || '50051'), 10) || 50051;
+  const addr = `${host}:${port}`;
+  const client = reqClientFromEnv();
+  const md = metadataFromEnv();
+  const { creds, options } = await makeClientCreds();
+  const memoryClient = new proto.HubMemory(addr, creds, options);
+
+  const resp = await new Promise((resolve, reject) => {
+    memoryClient.VerifyVoiceGrantResponse(
+      {
+        request_id: requestId,
+        client,
+        challenge_id: challengeId,
+        challenge_code: safe(process.env.XTERMINAL_VOICE_VERIFY_CHALLENGE_CODE || ''),
+        transcript: String(process.env.XTERMINAL_VOICE_VERIFY_TRANSCRIPT || ''),
+        transcript_hash: safe(process.env.XTERMINAL_VOICE_VERIFY_TRANSCRIPT_HASH || ''),
+        semantic_match_score: parseScore(process.env.XTERMINAL_VOICE_VERIFY_SEMANTIC_MATCH_SCORE || ''),
+        parsed_action_digest: safe(process.env.XTERMINAL_VOICE_VERIFY_PARSED_ACTION_DIGEST || ''),
+        parsed_scope_digest: safe(process.env.XTERMINAL_VOICE_VERIFY_PARSED_SCOPE_DIGEST || ''),
+        parsed_amount_digest: safe(process.env.XTERMINAL_VOICE_VERIFY_PARSED_AMOUNT_DIGEST || ''),
+        verify_nonce: verifyNonce,
+        bound_device_id: safe(process.env.XTERMINAL_VOICE_VERIFY_BOUND_DEVICE_ID || ''),
+        mobile_confirmed: parseBool(process.env.XTERMINAL_VOICE_VERIFY_MOBILE_CONFIRMED || '', false),
+      },
+      md,
+      (err, out) => {
+        if (err) reject(err);
+        else resolve(out || {});
+      }
+    );
+  });
+
+  out({
+    ok: true,
+    source: 'hub_memory_v1_grpc',
+    verified: !!resp?.verified,
+    decision: safe(resp?.decision || (resp?.verified ? 'allow' : 'deny')),
+    deny_code: safe(resp?.deny_code || ''),
+    challenge_id: safe(resp?.challenge_id || challengeId),
+    transcript_hash: safe(resp?.transcript_hash || ''),
+    semantic_match_score: Number(resp?.semantic_match_score || 0),
+    challenge_match: !!resp?.challenge_match,
+    device_binding_ok: !!resp?.device_binding_ok,
+    mobile_confirmed: !!resp?.mobile_confirmed,
+  });
+}
+
+main().catch((err) => {
+  const msg = safe(err?.message || err);
+  const lower = msg.toLowerCase();
+  const code = lower.includes('unimplemented')
+    ? 'hub_memory_unimplemented'
+    : (msg || 'remote_voice_grant_verify_failed');
+  out({
+    ok: false,
+    source: 'hub_memory_v1_grpc',
+    verified: false,
+    decision: 'failed',
+    deny_code: '',
+    challenge_id: '',
+    transcript_hash: '',
+    semantic_match_score: 0,
+    challenge_match: false,
+    device_binding_ok: false,
+    mobile_confirmed: false,
     reason: code,
     error_code: code,
     error_message: msg || code,

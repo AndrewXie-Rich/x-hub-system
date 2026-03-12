@@ -19,12 +19,44 @@ struct AXProjectContext: Equatable {
         xterminalDir.appendingPathComponent("raw_log.jsonl")
     }
 
+    var supervisorJobsURL: URL {
+        xterminalDir.appendingPathComponent("supervisor_jobs.json")
+    }
+
+    var supervisorPlansURL: URL {
+        xterminalDir.appendingPathComponent("supervisor_plans.json")
+    }
+
+    var supervisorSkillCallsURL: URL {
+        xterminalDir.appendingPathComponent("supervisor_skill_calls.json")
+    }
+
     var usageLogURL: URL {
         xterminalDir.appendingPathComponent("usage.jsonl")
     }
 
     var configURL: URL {
         xterminalDir.appendingPathComponent("config.json")
+    }
+
+    var browserRuntimeDir: URL {
+        xterminalDir.appendingPathComponent("browser_runtime", isDirectory: true)
+    }
+
+    var browserRuntimeSessionURL: URL {
+        browserRuntimeDir.appendingPathComponent("session.json")
+    }
+
+    var browserRuntimeSnapshotsDir: URL {
+        browserRuntimeDir.appendingPathComponent("snapshots", isDirectory: true)
+    }
+
+    var browserRuntimeProfilesDir: URL {
+        browserRuntimeDir.appendingPathComponent("profiles", isDirectory: true)
+    }
+
+    var browserRuntimeActionLogURL: URL {
+        browserRuntimeDir.appendingPathComponent("action_log.jsonl")
     }
 
     func ensureDirs() throws {

@@ -81,6 +81,44 @@ public enum RemoteModelStorage {
         syncEnabledRemoteModelsIntoModelState(snap)
     }
 
+    public static func exportableEnabledModels() -> [RemoteModelEntry] {
+        exportableEnabledModels(from: load())
+    }
+
+    public static func exportableEnabledModels(from snap: RemoteModelSnapshot) -> [RemoteModelEntry] {
+        snap.models.filter(isExecutionReadyRemoteModel)
+    }
+
+    public static func isExecutionReadyRemoteModel(_ model: RemoteModelEntry) -> Bool {
+        guard model.enabled else { return false }
+        let modelID = trimmed(model.id)
+        guard !modelID.isEmpty else { return false }
+
+        let apiKey = trimmed(model.apiKey)
+        guard !apiKey.isEmpty else { return false }
+        guard hasValidExplicitBaseURL(model.baseURL) else { return false }
+
+        let providerModel = providerModelId(for: model)
+        guard !providerModel.isEmpty else { return false }
+
+        let backend = RemoteProviderEndpoints.canonicalBackend(model.backend)
+        switch backend {
+        case "anthropic":
+            return RemoteProviderEndpoints.anthropicMessagesURL(baseURL: model.baseURL) != nil
+        case "gemini":
+            return RemoteProviderEndpoints.geminiGenerateURL(
+                baseURL: model.baseURL,
+                modelId: providerModel,
+                apiKey: apiKey
+            ) != nil
+        default:
+            return RemoteProviderEndpoints.openAIChatCompletionsURL(
+                baseURL: model.baseURL,
+                backend: backend
+            ) != nil
+        }
+    }
+
     public static func url() -> URL {
         if let g = SharedPaths.appGroupDirectory() {
             return g.appendingPathComponent(fileName)
@@ -105,7 +143,7 @@ public enum RemoteModelStorage {
         var needsResave = false
         for i in obj.models.indices {
             var m = obj.models[i]
-            let account = accountName(for: m)
+            let account = keyReference(for: m)
             let fileKey = trimmed(m.apiKey)
             let ciphertext = trimmed(m.apiKeyCiphertext)
 
@@ -171,7 +209,7 @@ public enum RemoteModelStorage {
         for i in cur.models.indices {
             var m = cur.models[i]
             let key = trimmed(m.apiKey)
-            let account = accountName(for: m)
+            let account = keyReference(for: m)
 
             if !key.isEmpty {
                 if KeychainStore.hasSharedAccessGroup, !account.isEmpty {
@@ -234,10 +272,10 @@ public enum RemoteModelStorage {
         cur.models.removeAll { $0.id == id }
         save(cur)
 
-        let acct = accountName(for: removed)
+        let acct = keyReference(for: removed)
         if KeychainStore.hasSharedAccessGroup, !acct.isEmpty {
             let stillUsed = cur.models.contains { m in
-                accountName(for: m) == acct
+                keyReference(for: m) == acct
             }
             if !stillUsed {
                 _ = KeychainStore.delete(account: acct)
@@ -247,7 +285,25 @@ public enum RemoteModelStorage {
         return load()
     }
 
-    private static func accountName(for model: RemoteModelEntry?) -> String {
+    public static func removeGroup(keyReference rawKeyReference: String) -> RemoteModelSnapshot {
+        let groupKey = trimmed(rawKeyReference)
+        guard !groupKey.isEmpty else { return load() }
+
+        var cur = load()
+        let removedAny = cur.models.contains { keyReference(for: $0) == groupKey }
+        guard removedAny else { return cur }
+
+        cur.models.removeAll { keyReference(for: $0) == groupKey }
+        save(cur)
+
+        if KeychainStore.hasSharedAccessGroup {
+            _ = KeychainStore.delete(account: groupKey)
+        }
+
+        return load()
+    }
+
+    public static func keyReference(for model: RemoteModelEntry?) -> String {
         guard let model else { return "" }
         return trimmed(model.apiKeyRef).isEmpty ? trimmed(model.id) : trimmed(model.apiKeyRef)
     }
@@ -271,8 +327,8 @@ public enum RemoteModelStorage {
     }
 
     private static func syncEnabledRemoteModelsIntoModelState(_ snap: RemoteModelSnapshot) {
-        // Only include enabled remote models.
-        let enabled = snap.models.filter { $0.enabled }
+        // Only include enabled remote models that can actually be executed now.
+        let enabled = exportableEnabledModels(from: snap)
         if enabled.isEmpty {
             // Best-effort: prune any stale remote entries.
             let base = ModelStateStorage.load()
@@ -375,5 +431,30 @@ public enum RemoteModelStorage {
 
     private static func trimmed(_ raw: String?) -> String {
         (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func hasValidExplicitBaseURL(_ raw: String?) -> Bool {
+        let trimmedBase = trimmed(raw)
+        guard !trimmedBase.isEmpty else { return true }
+        let candidate = trimmedBase.replacingOccurrences(of: "{model}", with: "model")
+        guard let comps = URLComponents(string: candidate) else { return false }
+        guard let scheme = comps.scheme?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !scheme.isEmpty else { return false }
+        guard let host = comps.host?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !host.isEmpty else { return false }
+        return true
+    }
+
+    private static func providerModelId(for remote: RemoteModelEntry) -> String {
+        let raw = trimmed(remote.upstreamModelId)
+        let model = raw.isEmpty ? trimmed(remote.id) : raw
+        let backend = RemoteProviderEndpoints.canonicalBackend(remote.backend)
+        if backend == "gemini" || backend == "remote_catalog" {
+            return RemoteProviderEndpoints.stripModelRef(model)
+        }
+        if model.hasPrefix("models/") {
+            return RemoteProviderEndpoints.stripModelRef(model)
+        }
+        return model
     }
 }

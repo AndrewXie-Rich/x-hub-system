@@ -2,7 +2,6 @@
 //  CreateProjectSheet.swift
 //  XTerminal
 //
-//  Created by Claude on 2026-02-27.
 //  创建项目对话框
 //
 

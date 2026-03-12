@@ -47,8 +47,8 @@ run("KQ-W1-02/buildTraceabilityMatrix validates mapped requirements without orph
     specId: "xhub-memory-quality-v1",
     requirementsMarkdown,
     tasksMarkdown,
-    sourceRequirementsPath: ".kiro/specs/xhub-memory-quality-v1/requirements.md",
-    sourceTasksPath: ".kiro/specs/xhub-memory-quality-v1/tasks.md",
+    sourceRequirementsPath: "specs/xhub-memory-quality-v1/requirements.md",
+    sourceTasksPath: "specs/xhub-memory-quality-v1/tasks.md",
   });
 
   assert.equal(matrix.summary.requirement_total, 3);
@@ -84,8 +84,8 @@ run("KQ-W1-02/buildTraceabilityMatrix flags orphan task and unknown requirement 
     specId: "xhub-memory-quality-v1",
     requirementsMarkdown,
     tasksMarkdown,
-    sourceRequirementsPath: ".kiro/specs/xhub-memory-quality-v1/requirements.md",
-    sourceTasksPath: ".kiro/specs/xhub-memory-quality-v1/tasks.md",
+    sourceRequirementsPath: "specs/xhub-memory-quality-v1/requirements.md",
+    sourceTasksPath: "specs/xhub-memory-quality-v1/tasks.md",
   });
 
   assert.equal(matrix.summary.validation_passed, false);

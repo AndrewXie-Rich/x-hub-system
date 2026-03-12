@@ -166,6 +166,8 @@ message GenerateRequest {
   // Optional: when present, Hub MAY persist turns and build a token-efficient prompt using Hub memory.
   string thread_id = 10;
   int32 working_set_limit = 11;
+  // Optional: when true, Hub MUST deny instead of silently downgrading a blocked remote request to a local model.
+  bool fail_closed_on_downgrade = 12;
 }
 
 message GenerateStart {
@@ -298,6 +300,31 @@ message RequestStatus {
   ClientIdentity client = 5;
 }
 
+message VoiceWakeProfile {
+  string schema_version = 1;
+  string profile_id = 2;
+  repeated string trigger_words = 3;
+  int64 updated_at_ms = 4;
+  string scope = 5;
+  string source = 6;
+  string wake_mode = 7;
+  bool requires_pairing_ready = 8;
+  string audit_ref = 9;
+}
+
+message VoiceWakeProfileChanged {
+  string schema_version = 1;
+  string profile_id = 2;
+  repeated string trigger_words = 3;
+  int64 updated_at_ms = 4;
+  string scope = 5;
+  string source = 6;
+  bool requires_pairing_ready = 7;
+  string audit_ref = 8;
+  string changed_by_device_id = 9;
+  string changed_by_app_id = 10;
+}
+
 message HubEvent {
   string event_id = 1;
   int64 created_at_ms = 2;
@@ -307,13 +334,32 @@ message HubEvent {
     QuotaUpdated quota_updated = 12;
     KillSwitchUpdated kill_switch_updated = 13;
     RequestStatus request_status = 14;
+    VoiceWakeProfileChanged voice_wake_profile_changed = 15;
   }
 }
 
 message SubscribeRequest {
   ClientIdentity client = 1;
-  repeated string scopes = 2; // "models|grants|quota|killswitch|requests"
+  repeated string scopes = 2; // "models|grants|quota|killswitch|requests|voicewake"
   string last_event_id = 3;   // resume cursor
+}
+
+message GetVoiceWakeProfileRequest {
+  ClientIdentity client = 1;
+  string desired_wake_mode = 2;
+}
+
+message GetVoiceWakeProfileResponse {
+  VoiceWakeProfile profile = 1;
+}
+
+message SetVoiceWakeProfileRequest {
+  ClientIdentity client = 1;
+  VoiceWakeProfile profile = 2;
+}
+
+message SetVoiceWakeProfileResponse {
+  VoiceWakeProfile profile = 1;
 }
 
 // -------------------- Runtime / Scheduler Observability --------------------
@@ -385,6 +431,53 @@ message GetPendingGrantRequestsRequest {
 message GetPendingGrantRequestsResponse {
   int64 updated_at_ms = 1;
   repeated PendingGrantItem items = 2;
+}
+
+message ConnectorIngressReceipt {
+  string receipt_id = 1;
+  string request_id = 2;
+  string project_id = 3;
+  string connector = 4;
+  string target_id = 5;
+  string ingress_type = 6;
+  string channel_scope = 7;
+  string source_id = 8;
+  string message_id = 9;
+  string dedupe_key = 10;
+  int64 received_at_ms = 11;
+  int64 event_sequence = 12;
+  string delivery_state = 13;
+  string runtime_state = 14;
+}
+
+message GetConnectorIngressReceiptsRequest {
+  ClientIdentity client = 1;
+  string project_id = 2; // optional filter
+  int32 limit = 3;       // optional, server-side bounded
+}
+
+message GetConnectorIngressReceiptsResponse {
+  int64 updated_at_ms = 1;
+  repeated ConnectorIngressReceipt items = 2;
+}
+
+message AutonomyPolicyOverrideItem {
+  string project_id = 1;
+  string override_mode = 2;
+  int64 updated_at_ms = 3;
+  string reason = 4;
+  string audit_ref = 5;
+}
+
+message GetAutonomyPolicyOverridesRequest {
+  ClientIdentity client = 1;
+  string project_id = 2; // optional filter
+  int32 limit = 3;       // optional, server-side bounded
+}
+
+message GetAutonomyPolicyOverridesResponse {
+  int64 updated_at_ms = 1;
+  repeated AutonomyPolicyOverrideItem items = 2;
 }
 
 message ApprovePendingGrantRequestRequest {
@@ -1377,6 +1470,8 @@ service HubEvents {
 service HubRuntime {
   rpc GetSchedulerStatus(GetSchedulerStatusRequest) returns (GetSchedulerStatusResponse);
   rpc GetPendingGrantRequests(GetPendingGrantRequestsRequest) returns (GetPendingGrantRequestsResponse);
+  rpc GetConnectorIngressReceipts(GetConnectorIngressReceiptsRequest) returns (GetConnectorIngressReceiptsResponse);
+  rpc GetAutonomyPolicyOverrides(GetAutonomyPolicyOverridesRequest) returns (GetAutonomyPolicyOverridesResponse);
   rpc ApprovePendingGrantRequest(ApprovePendingGrantRequestRequest) returns (ApprovePendingGrantRequestResponse);
   rpc DenyPendingGrantRequest(DenyPendingGrantRequestRequest) returns (DenyPendingGrantRequestResponse);
 }
@@ -1399,6 +1494,8 @@ service HubMemory {
   rpc GetRiskTuningProfile(GetRiskTuningProfileRequest) returns (GetRiskTuningProfileResponse);
   rpc EvaluateRiskTuningProfile(EvaluateRiskTuningProfileRequest) returns (EvaluateRiskTuningProfileResponse);
   rpc PromoteRiskTuningProfile(PromoteRiskTuningProfileRequest) returns (PromoteRiskTuningProfileResponse);
+  rpc GetVoiceWakeProfile(GetVoiceWakeProfileRequest) returns (GetVoiceWakeProfileResponse);
+  rpc SetVoiceWakeProfile(SetVoiceWakeProfileRequest) returns (SetVoiceWakeProfileResponse);
   rpc IssueVoiceGrantChallenge(IssueVoiceGrantChallengeRequest) returns (IssueVoiceGrantChallengeResponse);
   rpc VerifyVoiceGrantResponse(VerifyVoiceGrantResponseRequest) returns (VerifyVoiceGrantResponseResponse);
   rpc RegisterAgentCapsule(RegisterAgentCapsuleRequest) returns (RegisterAgentCapsuleResponse);

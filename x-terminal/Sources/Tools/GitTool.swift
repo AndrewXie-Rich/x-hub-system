@@ -2,7 +2,20 @@ import Foundation
 
 enum GitTool {
     static func isGitRepo(root: URL) -> Bool {
-        FileManager.default.fileExists(atPath: root.appendingPathComponent(".git").path)
+        let fm = FileManager.default
+        var candidate = root.standardizedFileURL
+
+        while true {
+            if fm.fileExists(atPath: candidate.appendingPathComponent(".git").path) {
+                return true
+            }
+
+            let parent = candidate.deletingLastPathComponent()
+            if parent.path == candidate.path {
+                return false
+            }
+            candidate = parent
+        }
     }
 
     static func status(root: URL) throws -> ProcessResult {

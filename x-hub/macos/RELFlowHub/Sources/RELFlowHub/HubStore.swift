@@ -85,6 +85,111 @@ private func runCapture(_ exe: String, _ args: [String], env: [String: String] =
 }
 
 @MainActor
+var hubAuditDatabaseURLProvider: @Sendable () -> URL = {
+    SharedPaths.ensureHubDirectory()
+        .appendingPathComponent("hub_grpc", isDirectory: true)
+        .appendingPathComponent("hub.sqlite3")
+}
+
+@MainActor
+func appendSupervisorProjectActionAuditToHubDB(_ payload: IPCSupervisorProjectActionAuditPayload) -> Bool {
+    let eventId = payload.eventId.trimmingCharacters(in: .whitespacesAndNewlines)
+    let projectId = payload.projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+    let projectName = payload.projectName.trimmingCharacters(in: .whitespacesAndNewlines)
+    let actionEventType = payload.eventType.trimmingCharacters(in: .whitespacesAndNewlines)
+    let severity = payload.severity.trimmingCharacters(in: .whitespacesAndNewlines)
+    let actionTitle = payload.actionTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+    let actionSummary = payload.actionSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+    let whyItMatters = payload.whyItMatters.trimmingCharacters(in: .whitespacesAndNewlines)
+    let nextAction = payload.nextAction.trimmingCharacters(in: .whitespacesAndNewlines)
+    let deliveryChannel = payload.deliveryChannel.trimmingCharacters(in: .whitespacesAndNewlines)
+    let deliveryStatus = payload.deliveryStatus.trimmingCharacters(in: .whitespacesAndNewlines)
+    let auditRef = payload.auditRef.trimmingCharacters(in: .whitespacesAndNewlines)
+
+    guard !eventId.isEmpty,
+          !projectId.isEmpty,
+          !projectName.isEmpty,
+          !actionEventType.isEmpty,
+          !severity.isEmpty,
+          !actionTitle.isEmpty,
+          !actionSummary.isEmpty,
+          !whyItMatters.isEmpty,
+          !nextAction.isEmpty,
+          !deliveryChannel.isEmpty,
+          !deliveryStatus.isEmpty,
+          !auditRef.isEmpty else {
+        return false
+    }
+
+    let dbURL = hubAuditDatabaseURLProvider()
+    guard FileManager.default.fileExists(atPath: dbURL.path) else {
+        return false
+    }
+
+    let occurredAtMs = max(0, payload.occurredAtMs)
+    let createdAtMs = occurredAtMs > 0 ? occurredAtMs : Int64(Date().timeIntervalSince1970 * 1000.0)
+    let storedEventType = "supervisor.project_action.\(actionEventType)"
+    let source = payload.source?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let jurisdictionRole = payload.jurisdictionRole?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let grantedScope = payload.grantedScope?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+    let ext: [String: Any] = [
+        "event_id": eventId,
+        "project_id": projectId,
+        "project_name": projectName,
+        "event_type": actionEventType,
+        "severity": severity,
+        "action_title": actionTitle,
+        "action_summary": actionSummary,
+        "why_it_matters": whyItMatters,
+        "next_action": nextAction,
+        "occurred_at_ms": occurredAtMs,
+        "delivery_channel": deliveryChannel,
+        "delivery_status": deliveryStatus,
+        "jurisdiction_role": jurisdictionRole ?? "",
+        "granted_scope": grantedScope ?? "",
+        "audit_ref": auditRef,
+        "audit_event_type": "supervisor.project_action.delivery",
+        "source": source ?? "x_terminal_supervisor",
+    ]
+    guard JSONSerialization.isValidJSONObject(ext),
+          let extData = try? JSONSerialization.data(withJSONObject: ext, options: []),
+          let extJSON = String(data: extData, encoding: .utf8) else {
+        return false
+    }
+
+    func sqlQuoted(_ text: String) -> String {
+        "'\(text.replacingOccurrences(of: "'", with: "''"))'"
+    }
+    func sqlNullable(_ text: String?) -> String {
+        guard let text, !text.isEmpty else { return "NULL" }
+        return sqlQuoted(text)
+    }
+
+    let sql = """
+PRAGMA busy_timeout=1500;
+INSERT OR IGNORE INTO audit_events(
+  event_id, event_type, created_at_ms, severity,
+  device_id, user_id, app_id, project_id, session_id,
+  request_id, capability, model_id,
+  prompt_tokens, completion_tokens, total_tokens, cost_usd_estimate,
+  network_allowed, ok, error_code, error_message, duration_ms, ext_json
+) VALUES (
+  \(sqlQuoted("supervisor_project_action_\(auditRef.lowercased())")), \(sqlQuoted(storedEventType)), \(createdAtMs), \(sqlQuoted(severity)),
+  'x_terminal', 'x_terminal', 'x_terminal', \(sqlQuoted(projectId)),
+  NULL, \(sqlQuoted(eventId)),
+  'supervisor_project_action_feed', NULL,
+  NULL, NULL, NULL, NULL,
+  NULL, 1, NULL, NULL,
+  NULL, \(sqlQuoted(extJSON))
+);
+"""
+
+    let result = runCapture("/usr/bin/sqlite3", [dbURL.path, sql], timeoutSec: 1.5)
+    return result.code == 0
+}
+
+@MainActor
 private func waitForProcessExit(_ p: Process, timeoutSec: Double) -> Bool {
     let deadline = Date().addingTimeInterval(max(0.1, timeoutSec))
     while p.isRunning && Date() < deadline {
@@ -992,9 +1097,7 @@ final class HubStore: ObservableObject {
             return false
         }
 
-        let dbURL = SharedPaths.ensureHubDirectory()
-            .appendingPathComponent("hub_grpc", isDirectory: true)
-            .appendingPathComponent("hub.sqlite3")
+        let dbURL = hubAuditDatabaseURLProvider()
         guard FileManager.default.fileExists(atPath: dbURL.path) else {
             return false
         }
@@ -1076,6 +1179,10 @@ INSERT OR IGNORE INTO audit_events(
 
         let result = runCapture("/usr/bin/sqlite3", [dbURL.path, sql], timeoutSec: 1.5)
         return result.code == 0
+    }
+
+    func appendSupervisorProjectActionAudit(_ payload: IPCSupervisorProjectActionAuditPayload) -> Bool {
+        appendSupervisorProjectActionAuditToHubDB(payload)
     }
 
     func approveNetworkRequest(_ req: HubNetworkRequest, seconds: Int) {

@@ -4,9 +4,11 @@ struct SupervisorView: View {
     @StateObject private var supervisor = SupervisorManager.shared
     @State private var inputText: String = ""
     @State private var autoSendVoice: Bool = true
+    @State private var conversationFocusRequestID: Int = 0
     @State private var laneHealthFilter: LaneHealthFilter = .abnormal
     @State private var focusedSplitLaneID: String?
-    @FocusState private var isInputFocused: Bool
+    @State private var selectedPortfolioProjectID: String?
+    @State private var selectedPortfolioDrillDownScope: SupervisorProjectDrillDownScope = .capsuleOnly
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openURL) private var openURL
     @EnvironmentObject private var appModel: AppModel
@@ -39,6 +41,25 @@ struct SupervisorView: View {
         )
     }
 
+    private var selectedAutomationProject: AXProjectEntry? {
+        guard let projectID = appModel.selectedProjectId,
+              projectID != AXProjectRegistry.globalHomeId else {
+            return nil
+        }
+        return appModel.registry.project(for: projectID)
+    }
+
+    private var selectedAutomationRecipe: AXAutomationRecipeRuntimeBinding? {
+        guard selectedAutomationProject != nil else { return nil }
+        return appModel.projectConfig?.activeAutomationRecipe
+    }
+
+    private var selectedAutomationLastLaunchRef: String {
+        guard selectedAutomationProject != nil else { return "" }
+        return (appModel.projectConfig?.lastAutomationLaunchRef ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     var body: some View {
         GeometryReader { proxy in
             VStack(spacing: 0) {
@@ -55,20 +76,36 @@ struct SupervisorView: View {
 
                 Divider()
 
-                messageList
-                    .frame(maxHeight: .infinity)
-
-                Divider()
-
-                inputArea
+                SupervisorConversationPanel(
+                    supervisor: supervisor,
+                    inputText: $inputText,
+                    autoSendVoice: $autoSendVoice,
+                    focusRequestID: conversationFocusRequestID
+                )
+                .frame(maxHeight: .infinity)
             }
         }
         .frame(minWidth: 800, minHeight: 600)
         .onAppear {
             supervisor.setAppModel(appModel)
-            DispatchQueue.main.async {
-                isInputFocused = true
-            }
+            supervisor.syncAutomationRuntimeSnapshot(forSelectedProject: selectedAutomationProject)
+            supervisor.refreshSupervisorMemorySnapshotNow()
+            requestConversationFocus()
+        }
+        .onChange(of: appModel.selectedProjectId) { _ in
+            supervisor.syncAutomationRuntimeSnapshot(forSelectedProject: selectedAutomationProject)
+        }
+        .onChange(of: selectedAutomationLastLaunchRef) { _ in
+            supervisor.syncAutomationRuntimeSnapshot(forSelectedProject: selectedAutomationProject)
+        }
+        .onChange(of: selectedPortfolioProjectID) { _ in
+            refreshSelectedPortfolioDrillDown()
+        }
+        .onChange(of: selectedPortfolioDrillDownScope) { _ in
+            refreshSelectedPortfolioDrillDown()
+        }
+        .onChange(of: supervisor.supervisorPortfolioSnapshot.updatedAt) { _ in
+            refreshSelectedPortfolioDrillDown()
         }
     }
 
@@ -77,9 +114,17 @@ struct SupervisorView: View {
         VStack(spacing: 0) {
             cockpitSummaryBoard
             Divider()
+            supervisorPortfolioBoard
+            Divider()
+            supervisorMemoryBoard
+            Divider()
+            pendingSupervisorSkillApprovalBoard
+            Divider()
             pendingHubGrantBoard
             Divider()
             supervisorDoctorBoard
+            Divider()
+            automationRuntimeBoard
             Divider()
             splitProposalBoard
             Divider()
@@ -144,7 +189,8 @@ struct SupervisorView: View {
             supervisorManager: supervisor,
             orchestrator: appModel.supervisor.orchestrator,
             monitor: appModel.supervisor.orchestrator.executionMonitor,
-            onTap: handleCockpitAction
+            onTap: handleCockpitAction,
+            onStageTap: handleRuntimeStageTap
         )
     }
 
@@ -154,7 +200,7 @@ struct SupervisorView: View {
             if inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 inputText = "请开始一个复杂任务：目标 / 约束 / 交付物 / 风险"
             }
-            isInputFocused = true
+            requestConversationFocus()
         case "approve_risk":
             supervisor.refreshPendingHubGrantSnapshotNow()
         case "review_delivery":
@@ -169,6 +215,139 @@ struct SupervisorView: View {
         default:
             break
         }
+    }
+
+    private func handleRuntimeStageTap(_ item: SupervisorRuntimeStageItemPresentation) {
+        guard let actionID = item.actionID else { return }
+        switch actionID {
+        case "submit_intake":
+            handleCockpitAction(
+                PrimaryActionRailAction(
+                    id: "submit_intake",
+                    title: "",
+                    subtitle: nil,
+                    systemImage: "paperplane.circle.fill",
+                    style: .primary
+                )
+            )
+        case "review_delivery":
+            handleCockpitAction(
+                PrimaryActionRailAction(
+                    id: "review_delivery",
+                    title: "",
+                    subtitle: nil,
+                    systemImage: "doc.text.magnifyingglass",
+                    style: .diagnostic
+                )
+            )
+        case "resolve_access":
+            resolveAccessStage()
+        case "directed_resume":
+            prepareDirectedResumeDraft()
+        default:
+            break
+        }
+    }
+
+    private func resolveAccessStage() {
+        if let action = supervisor.pendingHubGrants.first?.actionURL?.trimmingCharacters(in: .whitespacesAndNewlines),
+           let url = URL(string: action),
+           !action.isEmpty {
+            openURL(url)
+            return
+        }
+        if let action = supervisor.pendingSupervisorSkillApprovals.first?.actionURL?.trimmingCharacters(in: .whitespacesAndNewlines),
+           let url = URL(string: action),
+           !action.isEmpty {
+            openURL(url)
+            return
+        }
+
+        let accessSurface = cockpitPresentation.runtimeStageRail.items
+            .first(where: { $0.id == "access" })?
+            .surfaceState
+
+        switch accessSurface {
+        case .permissionDenied:
+            openWindow(id: "model_settings")
+        case .grantRequired:
+            supervisor.refreshPendingHubGrantSnapshotNow()
+            openWindow(id: "hub_setup")
+        default:
+            openWindow(id: "hub_setup")
+        }
+    }
+
+    private func prepareDirectedResumeDraft() {
+        guard let baton = appModel.supervisor.orchestrator.executionMonitor.directedUnblockBatons.first else {
+            inputText = "请先说明当前 blocker 和目标 lane，再决定是否继续当前任务。"
+            requestConversationFocus()
+            return
+        }
+
+        let laneID = baton.blockedLane.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !laneID.isEmpty {
+            focusedSplitLaneID = laneID
+        }
+
+        let draft = [
+            "请只继续当前任务，不要扩 scope，不要 claim 新 lane。",
+            laneID.isEmpty ? nil : "目标 lane=\(laneID)。",
+            "next_action=\(baton.nextAction)。",
+            baton.mustNotDo.isEmpty ? nil : "must_not_do=\(baton.mustNotDo.joined(separator: ","))。",
+            "基于现有 directed unblock baton 续推，并显式汇报 blocker 是否已解除。"
+        ]
+        .compactMap { $0 }
+        .joined(separator: " ")
+
+        inputText = draft
+        requestConversationFocus()
+    }
+
+    private func requestConversationFocus() {
+        conversationFocusRequestID += 1
+    }
+
+    private var pendingSupervisorSkillApprovalBoard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Image(systemName: supervisor.pendingSupervisorSkillApprovals.isEmpty ? "checkmark.shield" : "hand.raised.fill")
+                    .foregroundColor(supervisor.pendingSupervisorSkillApprovals.isEmpty ? .secondary : .orange)
+                Text("Supervisor 待批技能：\(supervisor.pendingSupervisorSkillApprovals.count)")
+                    .font(.headline)
+
+                Spacer()
+
+                Text("local gate")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Button(action: supervisor.refreshPendingSupervisorSkillApprovalsNow) {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .help("刷新 Supervisor 本地待批技能")
+            }
+
+            if supervisor.pendingSupervisorSkillApprovals.isEmpty {
+                Text("当前没有待审批的 Supervisor 高风险技能。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(supervisor.pendingSupervisorSkillApprovals) { approval in
+                            supervisorSkillApprovalRowView(approval)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                .frame(maxHeight: 178)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(Color(NSColor.windowBackgroundColor))
     }
 
     private var pendingHubGrantBoard: some View {
@@ -217,6 +396,603 @@ struct SupervisorView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .background(Color(NSColor.windowBackgroundColor))
+    }
+
+    private var supervisorMemoryBoard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Image(systemName: supervisor.supervisorMemoryProjectDigests.isEmpty ? "memorychip" : "internaldrive.fill")
+                    .foregroundColor(supervisor.supervisorMemoryProjectDigests.isEmpty ? .secondary : .accentColor)
+                Text("Supervisor Memory")
+                    .font(.headline)
+
+                Spacer()
+
+                Text(supervisor.supervisorMemoryStatusLine)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                Button(action: supervisor.refreshSupervisorMemorySnapshotNow) {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .help("刷新 Supervisor memory 汇总")
+            }
+
+            Text("mode=\(XTMemoryUseMode.supervisorOrchestration.rawValue) · source=\(supervisor.supervisorMemorySource.isEmpty ? "(none)" : supervisor.supervisorMemorySource)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+
+            Text(supervisor.supervisorSkillRegistryStatusLine)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+
+            if let snapshot = supervisor.supervisorSkillRegistrySnapshot,
+               !snapshot.items.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Focused Skill Registry")
+                        .font(.caption.weight(.semibold))
+                    ForEach(snapshot.items.prefix(4)) { item in
+                        supervisorSkillRegistryRow(item)
+                    }
+                }
+            }
+
+            if supervisor.supervisorMemoryProjectDigests.isEmpty {
+                Text("当前还没有项目级记忆摘要。创建项目、生成 `.xterminal/AX_MEMORY.md` 或等待 registry 状态更新后，这里会显示所有案子的汇总。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(supervisor.supervisorMemoryProjectDigests.prefix(8)) { digest in
+                            supervisorMemoryRow(digest)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                .frame(maxHeight: 176)
+            }
+
+            if !supervisor.supervisorMemoryPreview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(supervisorMemoryPreviewExcerpt)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .lineLimit(8)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(Color(NSColor.windowBackgroundColor))
+    }
+
+    private var supervisorPortfolioBoard: some View {
+        let snapshot = supervisor.supervisorPortfolioSnapshot
+        let actionability = snapshot.actionabilitySnapshot()
+        let actionabilityByProject = Dictionary(grouping: actionability.recommendedActions, by: \.projectId)
+        let cards = Array(snapshot.projects.prefix(6))
+        let criticalQueue = Array(snapshot.criticalQueue.prefix(3))
+        let todayQueue = Array(actionability.recommendedActions.prefix(4))
+        let actionEvents = Array(supervisor.supervisorRecentProjectActionEvents.prefix(4))
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Image(systemName: snapshot.projects.isEmpty ? "square.stack.3d.up" : "square.stack.3d.up.fill")
+                    .foregroundColor(snapshot.projects.isEmpty ? .secondary : .accentColor)
+                Text("Project Portfolio")
+                    .font(.headline)
+
+                Spacer()
+
+                Text(snapshot.statusLine)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            HStack(spacing: 8) {
+                portfolioCountBadge(title: "Active", count: snapshot.counts.active, color: .accentColor)
+                portfolioCountBadge(title: "Blocked", count: snapshot.counts.blocked, color: .orange)
+                portfolioCountBadge(title: "Auth", count: snapshot.counts.awaitingAuthorization, color: .red)
+                portfolioCountBadge(title: "Done", count: snapshot.counts.completed, color: .green)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    portfolioMetricBadge(title: "Changed 24h", count: actionability.projectsChangedLast24h, color: .accentColor)
+                    portfolioMetricBadge(title: "Decision blocker", count: actionability.decisionBlockerProjectsCount, color: .red)
+                    portfolioMetricBadge(title: "Missing next", count: actionability.projectsMissingNextStep, color: .orange)
+                }
+
+                HStack(spacing: 8) {
+                    portfolioMetricBadge(title: "Stalled", count: actionability.stalledProjects, color: .orange)
+                    portfolioMetricBadge(title: "Zombie", count: actionability.zombieProjects, color: .secondary)
+                    portfolioMetricBadge(title: "Action today", count: actionability.actionableToday, color: .accentColor)
+                }
+            }
+
+            if supervisor.supervisorProjectNotificationSnapshot.hasActivity {
+                Text(supervisor.supervisorProjectNotificationSnapshot.statusLine)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            if cards.isEmpty {
+                Text("当前还没有可展示的受辖项目。项目进入 registry 并产生状态摘要后，这里会显示当前动作、阻塞和下一步。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                if !todayQueue.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Today to Handle")
+                            .font(.caption.weight(.semibold))
+                        Text(actionability.statusLine)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        ForEach(todayQueue) { item in
+                            supervisorPortfolioActionabilityRow(item)
+                        }
+                    }
+                }
+
+                if !criticalQueue.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Critical Queue")
+                            .font(.caption.weight(.semibold))
+                        ForEach(criticalQueue) { item in
+                            Text("• \(item.projectName): \(item.reason) → \(item.nextAction)")
+                                .font(.caption2)
+                                .foregroundStyle(item.severity == .authorizationRequired ? .red : .orange)
+                                .lineLimit(2)
+                        }
+                    }
+                }
+
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(cards) { card in
+                            supervisorPortfolioProjectRow(
+                                card,
+                                actionabilityItems: Array((actionabilityByProject[card.projectId] ?? []).prefix(2)),
+                                isSelected: selectedPortfolioProjectID == card.projectId
+                            ) {
+                                selectedPortfolioProjectID = card.projectId
+                                appModel.selectedProjectId = card.projectId
+                            }
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                .frame(maxHeight: 170)
+
+                if let drillDown = supervisor.supervisorLastProjectDrillDownSnapshot,
+                   selectedPortfolioProjectID == drillDown.projectId {
+                    supervisorProjectDrillDownPanel(drillDown)
+                }
+
+                if !actionEvents.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Recent Action Feed")
+                            .font(.caption.weight(.semibold))
+                        ForEach(actionEvents) { event in
+                            supervisorPortfolioActionEventRow(event)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(Color(NSColor.windowBackgroundColor))
+    }
+
+    private func supervisorMemoryRow(_ digest: SupervisorManager.SupervisorMemoryProjectDigest) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(digest.displayName)
+                    .font(.caption.weight(.semibold))
+                Text(digest.runtimeState)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("recent=\(digest.recentMessageCount)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                Text(supervisorMemoryUpdatedText(digest.updatedAt))
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+
+            Text("source: \(digest.source)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            Text("goal: \(digest.goal)")
+                .font(.caption2)
+                .lineLimit(2)
+
+            Text("next: \(digest.nextStep)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+
+            if digest.blocker != "(无)" {
+                Text("blocker: \(digest.blocker)")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
+        .background(Color(NSColor.controlBackgroundColor).opacity(0.55))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func supervisorSkillRegistryRow(_ item: SupervisorSkillRegistryItem) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(item.displayName)
+                    .font(.caption.weight(.semibold))
+                Text(item.skillId)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer()
+                Text(item.requiresGrant ? "grant" : item.riskLevel.rawValue)
+                    .font(.caption2)
+                    .foregroundStyle(item.requiresGrant ? .orange : .secondary)
+            }
+
+            Text("\(item.policyScope) · \(item.sideEffectClass) · timeout \(item.timeoutMs)ms · retry \(item.maxRetries)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            if !item.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(item.description)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
+        .background(Color(NSColor.controlBackgroundColor).opacity(0.55))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func portfolioCountBadge(title: String, count: Int, color: Color) -> some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(color)
+                .frame(width: 7, height: 7)
+            Text("\(title) \(count)")
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
+        .clipShape(Capsule())
+    }
+
+    private func portfolioMetricBadge(title: String, count: Int, color: Color) -> some View {
+        HStack(spacing: 5) {
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(color)
+                .frame(width: 8, height: 8)
+            Text("\(title) \(count)")
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color(NSColor.controlBackgroundColor).opacity(0.4))
+        .clipShape(Capsule())
+    }
+
+    private func supervisorPortfolioProjectRow(
+        _ card: SupervisorPortfolioProjectCard,
+        actionabilityItems: [SupervisorPortfolioActionabilityItem],
+        isSelected: Bool,
+        onSelect: @escaping () -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(card.displayName)
+                    .font(.caption.weight(.semibold))
+                Text(card.projectState.rawValue)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(portfolioStateColor(card.projectState))
+                Spacer()
+                Text(card.memoryFreshness.rawValue)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(portfolioFreshnessColor(card.memoryFreshness))
+                Text("recent=\(card.recentMessageCount)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                Button(isSelected ? "Selected" : "View") {
+                    onSelect()
+                }
+                .buttonStyle(.borderless)
+                .font(.caption2)
+            }
+
+            if !actionabilityItems.isEmpty {
+                HStack(spacing: 6) {
+                    ForEach(actionabilityItems) { item in
+                        portfolioActionabilityTag(item)
+                    }
+                }
+            }
+
+            Text("action: \(card.currentAction)")
+                .font(.caption2)
+                .lineLimit(2)
+
+            Text("next: \(card.nextStep)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+
+            if !card.topBlocker.isEmpty {
+                Text("blocker: \(card.topBlocker)")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
+        .background(Color(NSColor.controlBackgroundColor).opacity(0.55))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(isSelected ? Color.accentColor : .clear, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func supervisorPortfolioActionabilityRow(
+        _ item: SupervisorPortfolioActionabilityItem
+    ) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Circle()
+                .fill(portfolioActionabilityColor(item.kind))
+                .frame(width: 8, height: 8)
+                .padding(.top, 4)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(item.projectName) · \(item.kindLabel)")
+                    .font(.caption2.weight(.semibold))
+                Text(item.recommendedNextAction)
+                    .font(.caption2)
+                    .lineLimit(2)
+                Text("why: \(item.whyItMatters)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+    }
+
+    private func portfolioActionabilityTag(
+        _ item: SupervisorPortfolioActionabilityItem
+    ) -> some View {
+        Text(item.kindLabel)
+            .font(.caption2.monospaced())
+            .foregroundStyle(portfolioActionabilityColor(item.kind))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(portfolioActionabilityColor(item.kind).opacity(0.12))
+            .clipShape(Capsule())
+    }
+
+    @ViewBuilder
+    private func supervisorProjectDrillDownPanel(_ snapshot: SupervisorProjectDrillDownSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("Project Drill-down")
+                    .font(.caption.weight(.semibold))
+                Spacer()
+                Text(snapshot.projectName)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+
+            let allowedScopes = supervisor.supervisorJurisdictionRegistry.allowedDrillDownScopes(projectId: snapshot.projectId)
+            Picker("Drill-down Scope", selection: $selectedPortfolioDrillDownScope) {
+                Text("Capsule").tag(SupervisorProjectDrillDownScope.capsuleOnly)
+                Text("Capsule+Recent").tag(SupervisorProjectDrillDownScope.capsulePlusRecent)
+            }
+            .pickerStyle(.segmented)
+
+            if !allowedScopes.contains(.capsulePlusRecent) {
+                Text("当前管辖仅允许 `capsule_only`。更深 recent 视图已按 scope-safe 规则禁用。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            switch snapshot.status {
+            case .allowed:
+                if let capsule = snapshot.capsule {
+                    Text("action: \(capsule.currentAction)")
+                        .font(.caption2)
+                        .lineLimit(2)
+                    Text("next: \(capsule.nextStep)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    if !capsule.topBlocker.isEmpty {
+                        Text("blocker: \(capsule.topBlocker)")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                            .lineLimit(2)
+                    }
+                }
+
+                if snapshot.recentMessages.isEmpty {
+                    Text(selectedPortfolioDrillDownScope == .capsuleOnly
+                        ? "当前只展示 capsule 摘要。切到 `capsule_plus_recent` 后可查看最近短上下文。"
+                        : "当前没有可展示的 recent short context。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Recent Short Context")
+                            .font(.caption2.weight(.semibold))
+                        ForEach(Array(snapshot.recentMessages.enumerated()), id: \.offset) { _, message in
+                            Text("\(message.role): \(message.content)")
+                                .font(.caption2)
+                                .foregroundStyle(message.role == "assistant" ? .secondary : .primary)
+                                .lineLimit(2)
+                        }
+                    }
+                }
+
+                if !snapshot.refs.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Scope-safe Refs")
+                            .font(.caption2.weight(.semibold))
+                        ForEach(Array(snapshot.refs.prefix(4).enumerated()), id: \.offset) { _, ref in
+                            Text(ref)
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                }
+            case .deniedProjectInvisible, .deniedScope, .projectNotFound:
+                Text(snapshot.denyReason ?? snapshot.status.rawValue)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .lineLimit(3)
+            }
+        }
+        .padding(10)
+        .background(Color(NSColor.controlBackgroundColor).opacity(0.45))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func supervisorPortfolioActionEventRow(_ event: SupervisorProjectActionEvent) -> some View {
+        let recommendation = SupervisorRhythmRecommendationEngine.recommendation(for: event)
+        return HStack(alignment: .top, spacing: 8) {
+            Circle()
+                .fill(portfolioSeverityColor(event.severity))
+                .frame(width: 8, height: 8)
+                .padding(.top, 4)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(event.actionTitle)
+                    .font(.caption2.weight(.semibold))
+                Text(recommendation.whatChanged)
+                    .font(.caption2)
+                    .lineLimit(2)
+                Text("next: \(recommendation.recommendedNextAction)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                Text("why: \(recommendation.whyItMatters)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+    }
+
+    private var supervisorMemoryPreviewExcerpt: String {
+        let trimmed = supervisor.supervisorMemoryPreview.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > 800 else { return trimmed }
+        let idx = trimmed.index(trimmed.startIndex, offsetBy: 800)
+        return String(trimmed[..<idx]) + "…"
+    }
+
+    private func supervisorMemoryUpdatedText(_ timestamp: TimeInterval) -> String {
+        guard timestamp > 0 else { return "updated=(none)" }
+        return "updated=\(Int(timestamp))"
+    }
+
+    private func portfolioStateColor(_ state: SupervisorPortfolioProjectState) -> Color {
+        switch state {
+        case .active:
+            return .accentColor
+        case .blocked:
+            return .orange
+        case .awaitingAuthorization:
+            return .red
+        case .completed:
+            return .green
+        case .idle:
+            return .secondary
+        }
+    }
+
+    private func portfolioFreshnessColor(_ freshness: SupervisorPortfolioMemoryFreshness) -> Color {
+        switch freshness {
+        case .fresh:
+            return .green
+        case .ttlCached:
+            return .orange
+        case .stale:
+            return .red
+        }
+    }
+
+    private func portfolioSeverityColor(_ severity: SupervisorProjectActionSeverity) -> Color {
+        switch severity {
+        case .silentLog:
+            return .secondary
+        case .badgeOnly:
+            return .accentColor
+        case .briefCard:
+            return .orange
+        case .interruptNow, .authorizationRequired:
+            return .red
+        }
+    }
+
+    private func portfolioActionabilityColor(_ kind: SupervisorPortfolioActionabilityKind) -> Color {
+        switch kind {
+        case .decisionBlocker:
+            return .red
+        case .missingNextStep:
+            return .orange
+        case .stalled:
+            return .orange
+        case .zombie:
+            return .secondary
+        case .activeFollowUp:
+            return .accentColor
+        }
+    }
+
+    private func refreshSelectedPortfolioDrillDown() {
+        let visibleProjectIDs = Set(supervisor.supervisorPortfolioSnapshot.projects.map(\.projectId))
+        let resolvedProjectID: String
+        if let current = selectedPortfolioProjectID, visibleProjectIDs.contains(current) {
+            resolvedProjectID = current
+        } else if let first = supervisor.supervisorPortfolioSnapshot.projects.first?.projectId {
+            selectedPortfolioProjectID = first
+            return
+        } else {
+            return
+        }
+
+        let allowedScopes = supervisor.supervisorJurisdictionRegistry.allowedDrillDownScopes(projectId: resolvedProjectID)
+        if !allowedScopes.contains(selectedPortfolioDrillDownScope) {
+            selectedPortfolioDrillDownScope = .capsuleOnly
+            return
+        }
+        _ = supervisor.buildSupervisorProjectDrillDown(
+            projectId: resolvedProjectID,
+            requestedScope: selectedPortfolioDrillDownScope
+        )
     }
 
     private var splitProposalBoard: some View {
@@ -412,6 +1188,406 @@ struct SupervisorView: View {
         .background(Color(NSColor.windowBackgroundColor))
     }
 
+    private var automationRuntimeBoard: some View {
+        let project = selectedAutomationProject
+        let recipe = selectedAutomationRecipe
+        let lastLaunchRef = selectedAutomationLastLaunchRef
+        let currentCheckpoint = supervisor.automationCurrentCheckpoint
+        let currentRunMatchesSelection = !lastLaunchRef.isEmpty && currentCheckpoint?.runID == lastLaunchRef
+        let trustedStatus = project.map {
+            (appModel.projectConfig ?? .default(forProjectRoot: ctxRoot(for: $0)))
+                .trustedAutomationStatus(
+                    forProjectRoot: ctxRoot(for: $0),
+                    permissionReadiness: AXTrustedAutomationPermissionOwnerReadiness.current(),
+                    requiredDeviceToolGroups: recipe?.requiredDeviceToolGroups ?? []
+                )
+        }
+        let trustedRequiredPermissions = trustedStatus.map {
+            AXTrustedAutomationPermissionOwnerReadiness.requiredPermissionKeys(forDeviceToolGroups: $0.deviceToolGroups)
+        } ?? []
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Image(systemName: automationRuntimeIconName(recipe: recipe, currentRunMatchesSelection: currentRunMatchesSelection))
+                    .foregroundColor(automationRuntimeColor(recipe: recipe, checkpoint: currentCheckpoint, currentRunMatchesSelection: currentRunMatchesSelection))
+                Text("Automation Runtime")
+                    .font(.headline)
+
+                Spacer()
+
+                Text(supervisor.automationStatusLine)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                Button(action: { triggerAutomationCommand("/automation status") }) {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .help("刷新当前项目 automation runtime 状态")
+            }
+
+            if let project {
+                Text("project: \(project.displayName) (\(project.projectId))")
+                    .font(.caption)
+                    .textSelection(.enabled)
+
+                Text("recipe: \(recipe?.ref ?? "(未激活)")")
+                    .font(.caption2)
+                    .foregroundStyle(recipe == nil ? .orange : .secondary)
+                    .textSelection(.enabled)
+
+                if let recipe, !recipe.goal.isEmpty {
+                    Text("goal: \(recipe.goal)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+
+                let selfIterateMode = appModel.projectConfig?.automationSelfIterateEnabled == true ? "enabled" : "disabled"
+                let maxAutoRetryDepth = appModel.projectConfig?.automationMaxAutoRetryDepth ?? 2
+                Text("self_iterate: \(selfIterateMode) · max_auto_retry_depth=\(maxAutoRetryDepth)")
+                    .font(.caption2)
+                    .foregroundStyle(appModel.projectConfig?.automationSelfIterateEnabled == true ? .orange : .secondary)
+
+                HStack(spacing: 12) {
+                    Toggle("Auto Self-Iterate", isOn: automationSelfIterateEnabledBinding)
+                        .toggleStyle(.switch)
+                        .font(.caption2)
+
+                    Stepper(value: automationMaxAutoRetryDepthBinding, in: 1...8) {
+                        Text("max_depth=\(appModel.projectConfig?.automationMaxAutoRetryDepth ?? 2)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: 220, alignment: .leading)
+                }
+
+                Text("bounded_auto_retry_only: 当前只会生成受控 runtime patch overlay / retry recipe proposal，不会自由改 planner")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                if let recipe, !recipe.requiredDeviceToolGroups.isEmpty {
+                    Text("required_device_tool_groups: \(recipe.requiredDeviceToolGroups.joined(separator: ", "))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let trustedStatus {
+                    Text("trusted_automation: \(trustedStatus.state.rawValue)")
+                        .font(.caption2)
+                        .foregroundStyle(trustedStatus.state == .active ? .green : trustedStatus.state == .off ? .secondary : .orange)
+
+                    if !trustedRequiredPermissions.isEmpty {
+                        Text("required_permissions: \(trustedRequiredPermissions.joined(separator: ", "))")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if !trustedStatus.armedDeviceToolGroups.isEmpty {
+                        Text("armed_device_tool_groups: \(trustedStatus.armedDeviceToolGroups.joined(separator: ", "))")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+
+                    if !trustedStatus.missingPrerequisites.isEmpty {
+                        Text("trusted_missing: \(trustedStatus.missingPrerequisites.joined(separator: ", "))")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                            .lineLimit(2)
+                    }
+
+                    if !trustedStatus.missingRequiredDeviceToolGroups.isEmpty {
+                        Text("missing_required_device_groups: \(trustedStatus.missingRequiredDeviceToolGroups.joined(separator: ", "))")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                            .lineLimit(2)
+                    }
+                }
+
+                Text("last_launch: \(lastLaunchRef.isEmpty ? "(none)" : lastLaunchRef)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+
+                if currentRunMatchesSelection, let report = supervisor.automationLatestExecutionReport {
+                    Text("execution: \(report.finalState.rawValue) · actions=\(report.executedActionCount)/\(report.totalActionCount)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    if let lineage = report.lineage {
+                        Text("lineage: \(lineage.lineageID) · root=\(lineage.rootRunID) · depth=\(lineage.retryDepth)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                        if !lineage.parentRunID.isEmpty {
+                            Text("parent_run: \(lineage.parentRunID)")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                    }
+                    if let handoffPath = report.handoffArtifactPath,
+                       !handoffPath.isEmpty {
+                        Text("handoff: \(handoffPath)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    if let verification = report.verificationReport,
+                       verification.required {
+                        Text("verify: \(verification.passedCommandCount)/\(verification.commandCount) · \(verification.detail)")
+                            .font(.caption2)
+                            .foregroundStyle(verification.ok ? Color.secondary : Color.orange)
+                    }
+                }
+
+                if currentRunMatchesSelection, let checkpoint = currentCheckpoint {
+                    Text("checkpoint: \(checkpoint.state.rawValue) · attempt=\(checkpoint.attempt) · retry_after=\(checkpoint.retryAfterSeconds)s")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else if !lastLaunchRef.isEmpty {
+                    Text("checkpoint: 使用 Status / Recover 可从 raw_log 重放最新状态")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let retryPackage = supervisor.automationLatestRetryPackage,
+                   retryPackage.projectID == project.projectId {
+                    Text("retry: \(retryPackage.retryStrategy) · from=\(retryPackage.sourceRunID)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    if let lineage = retryPackage.lineage {
+                        Text("retry_lineage: \(lineage.lineageID) · root=\(lineage.rootRunID) · depth=\(lineage.retryDepth)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                        if !lineage.parentRunID.isEmpty {
+                            Text("retry_parent_run: \(lineage.parentRunID)")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                    }
+                    if let planningMode = retryPackage.planningMode,
+                       !planningMode.isEmpty {
+                        Text("retry_planning_mode: \(planningMode)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let planningSummary = retryPackage.planningSummary,
+                       !planningSummary.isEmpty {
+                        Text("retry_planning_summary: \(planningSummary)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(3)
+                    }
+                    if let revisedVerifyCommands = retryPackage.revisedVerifyCommands,
+                       !revisedVerifyCommands.isEmpty {
+                        Text("retry_revised_verify_commands: \(revisedVerifyCommands.joined(separator: " || "))")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    let runtimePatchOverlayKeys = xtAutomationRuntimePatchOverlayKeys(retryPackage.runtimePatchOverlay)
+                    if !runtimePatchOverlayKeys.isEmpty {
+                        Text("retry_runtime_patch_overlay_keys: \(runtimePatchOverlayKeys.joined(separator: ", "))")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    if let recipeProposalArtifactPath = retryPackage.recipeProposalArtifactPath?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !recipeProposalArtifactPath.isEmpty {
+                        Text("retry_recipe_proposal_artifact: \(recipeProposalArtifactPath)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    if let planningArtifactPath = retryPackage.planningArtifactPath?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !planningArtifactPath.isEmpty {
+                        Text("retry_planning_artifact: \(planningArtifactPath)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    Text("retry_trigger: \(supervisor.automationRetryTriggerForTesting())")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text("retry_handoff: \(retryPackage.sourceHandoffArtifactPath)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+
+                if currentRunMatchesSelection, let decision = supervisor.automationRecoveryDecision {
+                    let holdReason = decision.holdReason.isEmpty ? "none" : decision.holdReason
+                    Text("recovery: \(decision.decision.rawValue) (\(holdReason))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                HStack(spacing: 8) {
+                    Button("Start") {
+                        triggerAutomationCommand("/automation start")
+                    }
+                    .disabled(recipe == nil)
+
+                    Button("Recover") {
+                        triggerAutomationCommand("/automation recover")
+                    }
+                    .disabled(lastLaunchRef.isEmpty)
+
+                    Button("Cancel") {
+                        triggerAutomationCommand("/automation cancel")
+                    }
+                    .disabled(lastLaunchRef.isEmpty)
+
+                    Menu("Advance") {
+                        ForEach(automationAdvanceStates, id: \.rawValue) { state in
+                            Button(state.rawValue) {
+                                triggerAutomationCommand("/automation advance \(state.rawValue)")
+                            }
+                        }
+                    }
+                    .disabled(lastLaunchRef.isEmpty)
+
+                    Spacer(minLength: 8)
+                }
+            } else {
+                Text("请选择一个具体项目后再触发 automation runtime。当前 Home 视图不会直接启动项目级 run。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(Color(NSColor.windowBackgroundColor))
+    }
+
+    @ViewBuilder
+    private func supervisorSkillApprovalRowView(
+        _ approval: SupervisorManager.SupervisorPendingSkillApproval
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Label(
+                    "\(approval.projectName) · \(approval.skillId)",
+                    systemImage: supervisorSkillApprovalIcon(approval)
+                )
+                .font(.subheadline)
+                .fontWeight(.medium)
+
+                Spacer(minLength: 8)
+
+                Text(grantAgeText(approval.createdAt))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if !approval.reason.isEmpty {
+                Text(approval.reason)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            if !approval.toolSummary.isEmpty {
+                Text("目标：\(approval.toolSummary)")
+                    .font(.caption)
+                    .lineLimit(2)
+            }
+
+            HStack(alignment: .center, spacing: 8) {
+                Text("request=\(approval.requestId)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+
+                Spacer(minLength: 8)
+
+                if let action = approval.actionURL,
+                   let actionURL = URL(string: action) {
+                    Button("Open") {
+                        openURL(actionURL)
+                    }
+                }
+
+                Button("Approve") {
+                    supervisor.approvePendingSupervisorSkillApproval(approval)
+                }
+
+                Button("Deny") {
+                    supervisor.denyPendingSupervisorSkillApproval(approval)
+                }
+            }
+        }
+        .padding(10)
+        .background(Color.secondary.opacity(0.08))
+        .cornerRadius(10)
+    }
+
+    @ViewBuilder
+    private func pendingSupervisorSkillApprovalRow(
+        _ approval: SupervisorManager.SupervisorPendingSkillApproval
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Label(
+                    "\(approval.projectName) · \(approval.skillId)",
+                    systemImage: supervisorSkillApprovalIcon(approval)
+                )
+                .font(.subheadline)
+                .fontWeight(.medium)
+
+                Spacer(minLength: 8)
+
+                Text(grantAgeText(approval.createdAt))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if !approval.reason.isEmpty {
+                Text(approval.reason)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            if !approval.toolSummary.isEmpty {
+                Text("目标：\(approval.toolSummary)")
+                    .font(.caption)
+                    .lineLimit(2)
+            }
+
+            HStack(alignment: .center, spacing: 8) {
+                Text("request=\(approval.requestId)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+
+                Spacer(minLength: 8)
+
+                if let action = approval.actionURL,
+                   let actionURL = URL(string: action) {
+                    Button("Open") {
+                        openURL(actionURL)
+                    }
+                }
+
+                Button("Approve") {
+                    supervisor.approvePendingSupervisorSkillApproval(approval)
+                }
+
+                Button("Deny") {
+                    supervisor.denyPendingSupervisorSkillApproval(approval)
+                }
+            }
+        }
+        .padding(10)
+        .background(Color.secondary.opacity(0.08))
+        .cornerRadius(10)
+    }
+
     @ViewBuilder
     private func pendingHubGrantRow(_ grant: SupervisorManager.SupervisorPendingGrant) -> some View {
         let grantId = grant.grantRequestId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -529,6 +1705,31 @@ struct SupervisorView: View {
         return "source=\(sourceText) · 更新 \(relativeTimeText(updatedAt)) · \(freshness)"
     }
 
+    private func supervisorSkillApprovalIcon(
+        _ approval: SupervisorManager.SupervisorPendingSkillApproval
+    ) -> String {
+        switch approval.tool {
+        case .some(.read_file):
+            return "doc.text"
+        case .some(.write_file):
+            return "pencil"
+        case .some(.search):
+            return "magnifyingglass"
+        case .some(.run_command):
+            return "terminal"
+        case .some(.deviceBrowserControl):
+            return "safari"
+        case .some(.web_fetch), .some(.web_search), .some(.browser_read):
+            return "network"
+        case .some(.project_snapshot):
+            return "folder.badge.gearshape"
+        case .some(.memory_snapshot):
+            return "memorychip"
+        default:
+            return "hand.raised.fill"
+        }
+    }
+
     private func grantCapabilityText(_ grant: SupervisorManager.SupervisorPendingGrant) -> String {
         let capability = grant.capability.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let modelId = grant.modelId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -560,6 +1761,65 @@ struct SupervisorView: View {
         let hours = mins / 60
         if hours < 48 { return "\(hours) 小时前" }
         return "\(hours / 24) 天前"
+    }
+
+    private var automationAdvanceStates: [XTAutomationRunState] {
+        [.queued, .running, .blocked, .takeover, .delivered, .failed, .downgraded]
+    }
+
+    private func triggerAutomationCommand(_ command: String) {
+        _ = supervisor.performAutomationRuntimeCommand(command, emitSystemMessage: true)
+    }
+
+    private var automationSelfIterateEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { appModel.projectConfig?.automationSelfIterateEnabled ?? false },
+            set: { appModel.setProjectAutomationSelfIteration(enabled: $0) }
+        )
+    }
+
+    private var automationMaxAutoRetryDepthBinding: Binding<Int> {
+        Binding(
+            get: { appModel.projectConfig?.automationMaxAutoRetryDepth ?? 2 },
+            set: { appModel.setProjectAutomationSelfIteration(maxAutoRetryDepth: $0) }
+        )
+    }
+
+    private func ctxRoot(for project: AXProjectEntry) -> URL {
+        URL(fileURLWithPath: project.rootPath, isDirectory: true)
+    }
+
+    private func automationRuntimeIconName(
+        recipe: AXAutomationRecipeRuntimeBinding?,
+        currentRunMatchesSelection: Bool
+    ) -> String {
+        if recipe == nil {
+            return "bolt.slash.circle"
+        }
+        if currentRunMatchesSelection {
+            return "bolt.circle.fill"
+        }
+        return "bolt.circle"
+    }
+
+    private func automationRuntimeColor(
+        recipe: AXAutomationRecipeRuntimeBinding?,
+        checkpoint: XTAutomationRunCheckpoint?,
+        currentRunMatchesSelection: Bool
+    ) -> Color {
+        guard recipe != nil else { return .secondary }
+        guard currentRunMatchesSelection, let checkpoint else { return .blue }
+
+        switch checkpoint.state {
+        case .queued, .running:
+            return .blue
+        case .blocked, .takeover, .downgraded:
+            return .orange
+        case .delivered:
+            return .green
+        case .failed:
+            return .red
+        }
     }
 
     private var doctorStatusIconName: String {
@@ -815,130 +2075,6 @@ struct SupervisorView: View {
         return value
     }
     
-    private var messageList: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
-                    if supervisor.messages.isEmpty {
-                        emptyState
-                    } else {
-                        ForEach(supervisor.messages) { message in
-                            MessageBubble(message: message)
-                                .id(message.id)
-                        }
-                    }
-                }
-                .padding(16)
-            }
-            .onChange(of: supervisor.messages.count) { _ in
-                if let lastMessage = supervisor.messages.last {
-                    withAnimation {
-                        proxy.scrollTo(lastMessage.id, anchor: .bottom)
-                    }
-                }
-            }
-        }
-    }
-    
-    private var emptyState: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "person.3.fill")
-                .font(.system(size: 48))
-                .foregroundColor(.secondary)
-            
-            VStack(spacing: 8) {
-                Text("欢迎使用Supervisor AI")
-                    .font(.title2)
-                    .fontWeight(.semibold)
-                
-                Text("我可以帮你管理所有项目，了解进度、分析卡点、提供下一步建议")
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("你可以问我：")
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-                    
-                    Text("• 查看所有项目进度")
-                    Text("• 哪个项目卡住了")
-                    Text("• 接下来该做什么")
-                    Text("• 告诉项目A做xxx")
-                }
-                .font(.body)
-                .foregroundStyle(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-    
-    private var inputArea: some View {
-        VStack(spacing: 12) {
-            HStack(alignment: .bottom, spacing: 12) {
-                TextEditor(text: $inputText)
-                    .focused($isInputFocused)
-                    .frame(minHeight: 60, maxHeight: 120)
-                    .scrollContentBackground(.hidden)
-                    .background(Color(NSColor.controlBackgroundColor))
-                    .cornerRadius(8)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
-                    )
-                    .onTapGesture {
-                        isInputFocused = true
-                    }
-                
-                VStack(spacing: 8) {
-                    VoiceInputButton(text: $inputText, autoAppend: !autoSendVoice) { recognized in
-                        handleVoiceRecognized(recognized)
-                    }
-                    
-                    Button(action: sendMessage) {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 32))
-                            .foregroundColor(.accentColor)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            }
-            .padding(.horizontal, 16)
-            
-            HStack {
-                Text("💡 提示：你可以使用 Cmd+Enter 发送消息，或使用语音输入")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Toggle("语音自动发送", isOn: $autoSendVoice)
-                    .toggleStyle(.switch)
-                    .font(.caption)
-                
-                Spacer()
-            }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 8)
-        }
-        .background(Color(NSColor.windowBackgroundColor))
-    }
-    
-    private func sendMessage() {
-        let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        
-        supervisor.sendMessage(trimmed, fromVoice: false)
-        inputText = ""
-        isInputFocused = true
-    }
-
-    private func handleVoiceRecognized(_ recognized: String) {
-        let trimmed = recognized.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard autoSendVoice, !trimmed.isEmpty else { return }
-        supervisor.sendMessage(trimmed, fromVoice: true)
-        inputText = ""
-        isInputFocused = true
-    }
 }
 
 private struct SplitProposalPanel: View {
@@ -1434,6 +2570,7 @@ private struct SupervisorCockpitSummarySection: View {
     @ObservedObject var orchestrator: SupervisorOrchestrator
     @ObservedObject var monitor: ExecutionMonitor
     let onTap: (PrimaryActionRailAction) -> Void
+    let onStageTap: (SupervisorRuntimeStageItemPresentation) -> Void
 
     private var presentation: SupervisorCockpitPresentation {
         SupervisorCockpitPresentation.fromRuntime(
@@ -1468,6 +2605,11 @@ private struct SupervisorCockpitSummarySection: View {
                 onTap: onTap
             )
 
+            OneShotRuntimeStageRail(
+                presentation: presentation.runtimeStageRail,
+                onTap: onStageTap
+            )
+
             StatusExplanationCard(explanation: presentation.intakeStatus)
 
             VStack(alignment: .leading, spacing: 12) {
@@ -1493,113 +2635,15 @@ private struct SupervisorCockpitSummarySection: View {
 
             StatusExplanationCard(explanation: presentation.blockerStatus)
             StatusExplanationCard(explanation: presentation.releaseFreezeStatus)
+            if supervisorManager.voiceAuthorizationResolution != nil || supervisorManager.activeVoiceChallenge != nil {
+                SupervisorVoiceAuthorizationCard(supervisorManager: supervisorManager)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
         .background(Color(NSColor.windowBackgroundColor))
     }
 }
-
-private struct MessageBubble: View {
-    let message: SupervisorMessage
-    
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            avatar
-            
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text(roleText)
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                    
-                    if message.isVoice {
-                        Image(systemName: "mic.fill")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    
-                    Spacer()
-                    
-                    Text(timeText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                
-                Text(message.content)
-                    .font(.body)
-                    .textSelection(.enabled)
-                    .padding(12)
-                    .background(backgroundColor)
-                    .cornerRadius(12)
-            }
-        }
-    }
-    
-    private var avatar: some View {
-        ZStack {
-            Circle()
-                .fill(avatarColor)
-                .frame(width: 32, height: 32)
-            
-            Image(systemName: iconName)
-                .foregroundColor(.white)
-                .font(.system(size: 14))
-        }
-    }
-    
-    private var roleText: String {
-        switch message.role {
-        case .user:
-            return "你"
-        case .assistant:
-            return "Supervisor"
-        case .system:
-            return "系统"
-        }
-    }
-    
-    private var iconName: String {
-        switch message.role {
-        case .user:
-            return "person.fill"
-        case .assistant:
-            return "person.3.fill"
-        case .system:
-            return "gear.fill"
-        }
-    }
-    
-    private var avatarColor: Color {
-        switch message.role {
-        case .user:
-            return .blue
-        case .assistant:
-            return .accentColor
-        case .system:
-            return .secondary
-        }
-    }
-    
-    private var backgroundColor: Color {
-        switch message.role {
-        case .user:
-            return Color.blue.opacity(0.1)
-        case .assistant:
-            return Color.accentColor.opacity(0.1)
-        case .system:
-            return Color.secondary.opacity(0.1)
-        }
-    }
-    
-    private var timeText: String {
-        let date = Date(timeIntervalSince1970: message.timestamp)
-        let formatter = DateFormatter()
-        formatter.timeStyle = .short
-        return formatter.string(from: date)
-    }
-}
-
 
 struct SupervisorCockpitPresentationInput: Codable, Equatable {
     let isProcessing: Bool
@@ -1633,6 +2677,12 @@ struct SupervisorCockpitPresentationInput: Codable, Equatable {
     let replayScenarioCount: Int
     let replayFailClosedScenarioCount: Int
     let replayEvidenceRefs: [String]
+    let oneShotRuntimeState: String?
+    let oneShotRuntimeOwner: String?
+    let oneShotRuntimeTopBlocker: String?
+    let oneShotRuntimeSummary: String?
+    let oneShotRuntimeNextTarget: String?
+    let oneShotRuntimeActiveLaneCount: Int
 
     init(
         isProcessing: Bool,
@@ -1665,7 +2715,13 @@ struct SupervisorCockpitPresentationInput: Codable, Equatable {
         replayPass: Bool? = nil,
         replayScenarioCount: Int = 0,
         replayFailClosedScenarioCount: Int = 0,
-        replayEvidenceRefs: [String] = []
+        replayEvidenceRefs: [String] = [],
+        oneShotRuntimeState: String? = nil,
+        oneShotRuntimeOwner: String? = nil,
+        oneShotRuntimeTopBlocker: String? = nil,
+        oneShotRuntimeSummary: String? = nil,
+        oneShotRuntimeNextTarget: String? = nil,
+        oneShotRuntimeActiveLaneCount: Int = 0
     ) {
         self.isProcessing = isProcessing
         self.pendingGrantCount = pendingGrantCount
@@ -1698,6 +2754,12 @@ struct SupervisorCockpitPresentationInput: Codable, Equatable {
         self.replayScenarioCount = replayScenarioCount
         self.replayFailClosedScenarioCount = replayFailClosedScenarioCount
         self.replayEvidenceRefs = replayEvidenceRefs
+        self.oneShotRuntimeState = oneShotRuntimeState
+        self.oneShotRuntimeOwner = oneShotRuntimeOwner
+        self.oneShotRuntimeTopBlocker = oneShotRuntimeTopBlocker
+        self.oneShotRuntimeSummary = oneShotRuntimeSummary
+        self.oneShotRuntimeNextTarget = oneShotRuntimeNextTarget
+        self.oneShotRuntimeActiveLaneCount = oneShotRuntimeActiveLaneCount
     }
 
     enum CodingKeys: String, CodingKey {
@@ -1732,11 +2794,18 @@ struct SupervisorCockpitPresentationInput: Codable, Equatable {
         case replayScenarioCount = "replay_scenario_count"
         case replayFailClosedScenarioCount = "replay_fail_closed_scenario_count"
         case replayEvidenceRefs = "replay_evidence_refs"
+        case oneShotRuntimeState = "one_shot_runtime_state"
+        case oneShotRuntimeOwner = "one_shot_runtime_owner"
+        case oneShotRuntimeTopBlocker = "one_shot_runtime_top_blocker"
+        case oneShotRuntimeSummary = "one_shot_runtime_summary"
+        case oneShotRuntimeNextTarget = "one_shot_runtime_next_target"
+        case oneShotRuntimeActiveLaneCount = "one_shot_runtime_active_lane_count"
     }
 }
 
 struct SupervisorCockpitPresentation: Codable, Equatable {
     let badge: ValidatedScopePresentation
+    let runtimeStageRail: SupervisorRuntimeStageRailPresentation
     let intakeStatus: StatusExplanation
     let blockerStatus: StatusExplanation
     let releaseFreezeStatus: StatusExplanation
@@ -1748,6 +2817,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case badge
+        case runtimeStageRail = "runtime_stage_rail"
         case intakeStatus = "intake_status"
         case blockerStatus = "blocker_status"
         case releaseFreezeStatus = "release_freeze_status"
@@ -1783,6 +2853,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                 lhs.laneID.localizedCaseInsensitiveCompare(rhs.laneID) == .orderedAscending
             }
         let nextBaton = monitor.directedUnblockBatons.first
+        let oneShotRunState = supervisorManager.oneShotRunState
 
         return map(
             input: SupervisorCockpitPresentationInput(
@@ -1816,7 +2887,13 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                 replayPass: replayReport?.pass,
                 replayScenarioCount: replayReport?.scenarios.count ?? 0,
                 replayFailClosedScenarioCount: replayReport?.scenarios.filter(\.failClosed).count ?? 0,
-                replayEvidenceRefs: replayReport?.evidenceRefs ?? []
+                replayEvidenceRefs: replayReport?.evidenceRefs ?? [],
+                oneShotRuntimeState: oneShotRunState?.state.rawValue,
+                oneShotRuntimeOwner: oneShotRunState?.currentOwner.rawValue,
+                oneShotRuntimeTopBlocker: oneShotRunState?.topBlocker,
+                oneShotRuntimeSummary: oneShotRunState?.userVisibleSummary,
+                oneShotRuntimeNextTarget: oneShotRunState?.nextDirectedTarget,
+                oneShotRuntimeActiveLaneCount: oneShotRunState?.activeLanes.count ?? 0
             )
         )
     }
@@ -1824,17 +2901,33 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
     static func map(input: SupervisorCockpitPresentationInput) -> SupervisorCockpitPresentation {
         let badge = ValidatedScopePresentation.validatedMainlineOnly
         let freezeDecision = input.scopeFreezeDecision ?? "pending"
+        let oneShotState = input.oneShotRuntimeState.flatMap(OneShotRunStateStatus.init(rawValue:))
+        let oneShotOwner = input.oneShotRuntimeOwner ?? "none"
+        let oneShotTopBlocker = input.oneShotRuntimeTopBlocker ?? "none"
+        let oneShotSummary = input.oneShotRuntimeSummary ?? ""
+        let oneShotNextTarget = input.oneShotRuntimeNextTarget ?? "none"
         let replayStatus: String
         if let replayPass = input.replayPass {
             replayStatus = replayPass ? "pass" : "fail"
         } else {
             replayStatus = "pending"
         }
-        let plannerMachineStatusRef = "processing=\(input.isProcessing); pending_grants=\(input.pendingGrantCount); grant_snapshot_fresh=\(input.hasFreshPendingGrantSnapshot); lane_running=\(input.laneSummary.running); lane_blocked=\(input.laneSummary.blocked); lane_stalled=\(input.laneSummary.stalled); lane_failed=\(input.laneSummary.failed); xt_ready_status=\(input.xtReadyStatus); xt_ready_issues=\(input.xtReadyIssueCount); auto_confirm=\(input.autoConfirmPolicy ?? "none"); auto_launch=\(input.autoLaunchPolicy ?? "none"); freeze=\(freezeDecision); denied_launches=\(input.deniedLaunchCount); batons=\(input.directedUnblockBatonCount); replay=\(replayStatus)"
+        let plannerMachineStatusRef = "processing=\(input.isProcessing); pending_grants=\(input.pendingGrantCount); grant_snapshot_fresh=\(input.hasFreshPendingGrantSnapshot); lane_running=\(input.laneSummary.running); lane_blocked=\(input.laneSummary.blocked); lane_stalled=\(input.laneSummary.stalled); lane_failed=\(input.laneSummary.failed); xt_ready_status=\(input.xtReadyStatus); xt_ready_issues=\(input.xtReadyIssueCount); one_shot_state=\(input.oneShotRuntimeState ?? "none"); one_shot_owner=\(oneShotOwner); one_shot_blocker=\(oneShotTopBlocker); one_shot_next=\(oneShotNextTarget); one_shot_active_lanes=\(input.oneShotRuntimeActiveLaneCount); auto_confirm=\(input.autoConfirmPolicy ?? "none"); auto_launch=\(input.autoLaunchPolicy ?? "none"); freeze=\(freezeDecision); denied_launches=\(input.deniedLaunchCount); batons=\(input.directedUnblockBatonCount); replay=\(replayStatus)"
+        let runtimeStageRail = buildRuntimeStageRail(
+            input: input,
+            oneShotState: oneShotState,
+            oneShotOwner: oneShotOwner,
+            oneShotTopBlocker: oneShotTopBlocker,
+            oneShotSummary: oneShotSummary,
+            oneShotNextTarget: oneShotNextTarget,
+            freezeDecision: freezeDecision,
+            plannerMachineStatusRef: plannerMachineStatusRef
+        )
         let contractSummary = [
             input.autoConfirmPolicy.map { "auto_confirm=\($0)" },
             input.autoLaunchPolicy.map { "auto_launch=\($0)" },
             input.grantGateMode.map { "grant_gate=\($0)" },
+            input.oneShotRuntimeState.map { "one_shot=\($0)" },
             "freeze=\(freezeDecision)",
             "replay=\(replayStatus)"
         ]
@@ -1850,34 +2943,35 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
         let blockerStatus: StatusExplanation
         let plannerExplain: String
 
-        if input.pendingGrantCount > 0 || input.topLaunchDenyCode == "grant_required" {
+        if input.pendingGrantCount > 0 || input.topLaunchDenyCode == "grant_required" || oneShotState == .awaitingGrant {
             intakeStatus = StatusExplanation(
                 state: .grantRequired,
                 headline: "one-shot intake 已接收，但等待风险授权",
-                whatHappened: "Cockpit 发现授权链仍未完成，runtime policy 保持 fail-closed，不放行高风险 lane。",
-                whyItHappened: "grant_required 来自 AI-2 runtime 合同与 lane launch deny 决策；未授权前不会越过 grant gate。",
+                whatHappened: oneShotSummary.isEmpty ? "Cockpit 发现授权链仍未完成，runtime policy 保持 fail-closed，不放行高风险 lane。" : oneShotSummary,
+                whyItHappened: "grant_required 来自 AI-2 runtime 合同、one-shot run state 与 lane launch deny 决策；未授权前不会越过 grant gate。",
                 userAction: directedResumeSummary ?? "先审批风险授权，再继续当前 one-shot intake。",
                 machineStatusRef: plannerMachineStatusRef,
                 hardLine: "grant_fail_closed must remain visible",
                 highlights: [
                     contractSummary,
                     "human_touchpoints=\(input.humanTouchpointCount)",
-                    "denied_launches=\(input.deniedLaunchCount)"
+                    "denied_launches=\(input.deniedLaunchCount)",
+                    "owner=\(oneShotOwner)"
                 ].filter { !$0.isEmpty }
             )
             blockerStatus = StatusExplanation(
                 state: .grantRequired,
-                headline: "Top blocker: grant_required",
+                headline: "Top blocker: \(oneShotTopBlocker == "none" ? "grant_required" : oneShotTopBlocker)",
                 whatHappened: "当前主 blocker 是 grant chain 未完成，auto-launch 被显式 deny。",
                 whyItHappened: "AI-2 的 `oneShotAutonomyPolicy` 与 `laneLaunchDecisions` 明确要求保持 fail-closed。",
                 userAction: directedResumeSummary ?? "在 grant center 完成审批，然后回到当前 intake。",
                 machineStatusRef: plannerMachineStatusRef,
                 hardLine: "high-risk path remains fail-closed",
-                highlights: [input.grantGateMode.map { "grant_gate_mode=\($0)" } ?? ""]
+                highlights: [input.grantGateMode.map { "grant_gate_mode=\($0)" } ?? "", "next_target=\(oneShotNextTarget)"]
                     .filter { !$0.isEmpty }
             )
             plannerExplain = "\(contractSummary)。one-shot intake → planner explain → blocker triage → delivery freeze。当前停在 awaiting_grant；grant gate 未绿前不会自动继续。"
-        } else if input.topLaunchDenyCode == "permission_denied" {
+        } else if input.topLaunchDenyCode == "permission_denied" || oneShotTopBlocker == "permission_denied" {
             intakeStatus = StatusExplanation(
                 state: .permissionDenied,
                 headline: "runtime patch 检出 permission_denied，自动启动保持关闭",
@@ -1945,13 +3039,40 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                 highlights: ["release_blocked_by_doctor_without_report=\(input.releaseBlockedByDoctorWithoutReport)"]
             )
             plannerExplain = "\(contractSummary)。当前停在 diagnostic_required，因为 Doctor / secret scrub 证据尚未齐备。"
-        } else if input.laneSummary.failed > 0 || input.laneSummary.stalled > 0 || input.laneSummary.blocked > 0 {
+        } else if oneShotState == .failedClosed {
+            let recommendation = directedResumeSummary ?? input.scopeFreezeNextActions.first ?? "先修复 fail-closed blocker，再重新发起当前 one-shot。"
+            intakeStatus = StatusExplanation(
+                state: .blockedWaitingUpstream,
+                headline: "one-shot runtime 已 fail-closed",
+                whatHappened: oneShotSummary.isEmpty ? "运行时没有继续假装可恢复，而是明确停在 fail-closed。" : oneShotSummary,
+                whyItHappened: "真实 one-shot run state 已进入 failed_closed；cockpit 必须直出 blocker，而不是退回泛化的 planning / ready 文案。",
+                userAction: recommendation,
+                machineStatusRef: plannerMachineStatusRef,
+                hardLine: "fail_closed must remain visible",
+                highlights: [
+                    contractSummary,
+                    "owner=\(oneShotOwner)",
+                    "top_blocker=\(oneShotTopBlocker)"
+                ].filter { !$0.isEmpty }
+            )
+            blockerStatus = StatusExplanation(
+                state: .blockedWaitingUpstream,
+                headline: "Top blocker: \(oneShotTopBlocker)",
+                whatHappened: "当前主 blocker 来自 one-shot runtime fail-closed。",
+                whyItHappened: "执行链已经做出 fail-closed 判定，所以 UI 不能回退成普通等待态。",
+                userAction: recommendation,
+                machineStatusRef: plannerMachineStatusRef,
+                hardLine: "runtime blocker stays explicit",
+                highlights: [input.oneShotRuntimeState.map { "one_shot_state=\($0)" } ?? ""].filter { !$0.isEmpty }
+            )
+            plannerExplain = "\(contractSummary)。当前停在 failed_closed；需先消除 blocker=\(oneShotTopBlocker)，再允许重试当前 one-shot 主链。"
+        } else if oneShotState == .blocked || input.laneSummary.failed > 0 || input.laneSummary.stalled > 0 || input.laneSummary.blocked > 0 {
             let abnormalStatus = input.abnormalLaneStatus ?? "lane_health_abnormal"
             let recommendation = directedResumeSummary ?? input.abnormalLaneRecommendation ?? "查看 lane 健康态与阻塞原因，按 next action 续推。"
             intakeStatus = StatusExplanation(
                 state: .blockedWaitingUpstream,
                 headline: "one-shot run 已进入执行，但当前存在 blocker",
-                whatHappened: "lane snapshot 显示 blocked/stalled/failed，且可选 directed resume baton 已可消费。",
+                whatHappened: oneShotSummary.isEmpty ? "lane snapshot 显示 blocked/stalled/failed，且可选 directed resume baton 已可消费。" : oneShotSummary,
                 whyItHappened: "冻结契约要求 Supervisor cockpit 清楚暴露 blocker、resume baton 与 next action，而不是只显示聊天流水。",
                 userAction: recommendation,
                 machineStatusRef: plannerMachineStatusRef,
@@ -1959,13 +3080,14 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                 highlights: [
                     contractSummary,
                     "lane_blocked=\(input.laneSummary.blocked)",
-                    "batons=\(input.directedUnblockBatonCount)"
+                    "batons=\(input.directedUnblockBatonCount)",
+                    "owner=\(oneShotOwner)"
                 ].filter { !$0.isEmpty }
             )
             blockerStatus = StatusExplanation(
                 state: .blockedWaitingUpstream,
-                headline: "Top blocker: \(abnormalStatus)",
-                whatHappened: "当前主 blocker 来自 lane health abnormal。",
+                headline: "Top blocker: \(oneShotTopBlocker == "none" ? abnormalStatus : oneShotTopBlocker)",
+                whatHappened: oneShotState == .blocked ? "当前主 blocker 已被 one-shot runtime 直接声明。" : "当前主 blocker 来自 lane health abnormal。",
                 whyItHappened: "planner 不会隐藏上游依赖或 runtime blocker；已有 baton 时也只允许 directed resume。",
                 userAction: recommendation,
                 machineStatusRef: plannerMachineStatusRef,
@@ -1976,11 +3098,18 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                 ].filter { !$0.isEmpty }
             )
             plannerExplain = "\(contractSummary)。one-shot intake → planner explain → blocker triage → delivery freeze。当前停在 blocked_waiting_upstream；如 baton 已发出，则只允许 directed resume。"
-        } else if input.isProcessing || input.laneSummary.running > 0 || input.laneSummary.recovering > 0 {
+        } else if input.isProcessing
+            || input.laneSummary.running > 0
+            || input.laneSummary.recovering > 0
+            || oneShotState == .planning
+            || oneShotState == .launching
+            || oneShotState == .running
+            || oneShotState == .resuming
+            || oneShotState == .mergeback {
             intakeStatus = StatusExplanation(
                 state: .inProgress,
-                headline: "one-shot intake 已进入 planning / running",
-                whatHappened: "Cockpit 发现 planner 正在归一化任务、分配 lane，并带着 AI-2 runtime policy / freeze / replay 合同推进。",
+                headline: oneShotState == .running || oneShotState == .mergeback ? "one-shot run 正在真实执行" : "one-shot intake 已进入 planning / running",
+                whatHappened: oneShotSummary.isEmpty ? "Cockpit 发现 planner 正在归一化任务、分配 lane，并带着 AI-2 runtime policy / freeze / replay 合同推进。" : oneShotSummary,
                 whyItHappened: "XT-W3-27-D 现已绑定真实 runtime 数据，不再只依赖 mock 状态映射。",
                 userAction: directedResumeSummary ?? "保持关注 planner explain；如果出现授权提示，先处理授权再继续。",
                 machineStatusRef: plannerMachineStatusRef,
@@ -1988,7 +3117,8 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                 highlights: [
                     contractSummary,
                     "replay_scenarios=\(input.replayScenarioCount)",
-                    "allowed_public_statements=\(input.allowedPublicStatementCount)"
+                    "allowed_public_statements=\(input.allowedPublicStatementCount)",
+                    "active_lanes=\(input.oneShotRuntimeActiveLaneCount)"
                 ].filter { !$0.isEmpty }
             )
             blockerStatus = StatusExplanation(
@@ -1999,14 +3129,14 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                 userAction: directedResumeSummary ?? "继续观察 planner explain，并在需要时 review delivery。",
                 machineStatusRef: plannerMachineStatusRef,
                 hardLine: "scope freeze still applies",
-                highlights: ["xt_ready_status=\(input.xtReadyStatus)"]
+                highlights: ["xt_ready_status=\(input.xtReadyStatus)", "owner=\(oneShotOwner)"]
             )
-            plannerExplain = "\(contractSummary)。one-shot intake → planner explain → blocker triage → delivery freeze。当前处于 planning / running，并附带 replay=\(replayStatus)、freeze=\(freezeDecision) 的解释上下文。"
-        } else if !input.xtReadyStrictE2EReady || input.xtReadyIssueCount > 0 {
+            plannerExplain = "\(contractSummary)。one-shot intake → planner explain → blocker triage → delivery freeze。当前处于 \(input.oneShotRuntimeState ?? "planning_or_running")，并附带 replay=\(replayStatus)、freeze=\(freezeDecision) 的解释上下文。"
+        } else if oneShotState == .deliveryFreeze || oneShotState == .completed || !input.xtReadyStrictE2EReady || input.xtReadyIssueCount > 0 {
             intakeStatus = StatusExplanation(
                 state: .diagnosticRequired,
                 headline: "交付冻结前仍需 review delivery",
-                whatHappened: "XT-Ready 还存在未清零问题，Cockpit 因此不把当前状态上提为已交付完成。",
+                whatHappened: oneShotSummary.isEmpty ? "XT-Ready 还存在未清零问题，Cockpit 因此不把当前状态上提为已交付完成。" : oneShotSummary,
                 whyItHappened: "delivery freeze 需要 strict e2e 与 incident 证据；问题未清零时继续保持 explainable hold。",
                 userAction: input.scopeFreezeNextActions.first ?? "先 review delivery，确认 XT-Ready issues 再决定是否推进。",
                 machineStatusRef: plannerMachineStatusRef,
@@ -2098,6 +3228,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
 
         return SupervisorCockpitPresentation(
             badge: badge,
+            runtimeStageRail: runtimeStageRail,
             intakeStatus: intakeStatus,
             blockerStatus: blockerStatus,
             releaseFreezeStatus: releaseFreezeStatus,
@@ -2117,5 +3248,242 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             ]
         )
     }
-}
 
+    private static func buildRuntimeStageRail(
+        input: SupervisorCockpitPresentationInput,
+        oneShotState: OneShotRunStateStatus?,
+        oneShotOwner: String,
+        oneShotTopBlocker: String,
+        oneShotSummary: String,
+        oneShotNextTarget: String,
+        freezeDecision: String,
+        plannerMachineStatusRef: String
+    ) -> SupervisorRuntimeStageRailPresentation {
+        let accessItem = runtimeAccessStage(input: input, oneShotState: oneShotState, oneShotTopBlocker: oneShotTopBlocker)
+        let runtimeItem = runtimeExecutionStage(
+            input: input,
+            oneShotState: oneShotState,
+            oneShotTopBlocker: oneShotTopBlocker,
+            oneShotSummary: oneShotSummary
+        )
+        let freezeItem = runtimeFreezeStage(
+            input: input,
+            oneShotState: oneShotState,
+            freezeDecision: freezeDecision
+        )
+        let summary = [
+            "state=\(oneShotState?.rawValue ?? "none")",
+            "owner=\(oneShotOwner)",
+            "next=\(oneShotNextTarget)",
+            oneShotTopBlocker == "none" ? nil : "blocker=\(oneShotTopBlocker)"
+        ]
+        .compactMap { $0 }
+        .joined(separator: " · ")
+
+        return SupervisorRuntimeStageRailPresentation(
+            headline: "One-shot Runtime Stage",
+            summary: summary.isEmpty ? "submit_intake 后会进入 access gate、runtime 和 freeze。" : summary,
+            items: [
+                SupervisorRuntimeStageItemPresentation(
+                    id: "intake",
+                    title: "Intake",
+                    detail: oneShotState == nil
+                        ? "等待提交复杂任务并冻结目标/约束/交付物。"
+                        : "请求已被 intake 接收并写入 runtime contract。",
+                    progress: oneShotState == nil ? .active : .completed,
+                    surfaceState: oneShotState == nil ? .ready : .inProgress,
+                    actionID: "submit_intake",
+                    actionLabel: "Open intake"
+                ),
+                accessItem,
+                runtimeItem,
+                freezeItem
+            ],
+            machineStatusRef: plannerMachineStatusRef
+        )
+    }
+
+    private static func runtimeAccessStage(
+        input: SupervisorCockpitPresentationInput,
+        oneShotState: OneShotRunStateStatus?,
+        oneShotTopBlocker: String
+    ) -> SupervisorRuntimeStageItemPresentation {
+        if input.topLaunchDenyCode == "permission_denied" || oneShotTopBlocker == "permission_denied" {
+            return SupervisorRuntimeStageItemPresentation(
+                id: "access",
+                title: "Access",
+                detail: "权限链路拒绝，需先修复 trust / authz 配置。",
+                progress: .blocked,
+                surfaceState: .permissionDenied,
+                actionID: "resolve_access",
+                actionLabel: "Open repair"
+            )
+        }
+
+        if input.pendingGrantCount > 0 || input.topLaunchDenyCode == "grant_required" || oneShotState == .awaitingGrant {
+            return SupervisorRuntimeStageItemPresentation(
+                id: "access",
+                title: "Access",
+                detail: "风险授权仍未完成，grant gate 保持 fail-closed。",
+                progress: .active,
+                surfaceState: .grantRequired,
+                actionID: "resolve_access",
+                actionLabel: "Open grant"
+            )
+        }
+
+        if let oneShotState,
+           oneShotState != .intakeNormalized {
+            return SupervisorRuntimeStageItemPresentation(
+                id: "access",
+                title: "Access",
+                detail: "授权链已验证通过，或当前路径无需额外授权。",
+                progress: .completed,
+                surfaceState: .ready,
+                actionID: nil,
+                actionLabel: nil
+            )
+        }
+
+        return SupervisorRuntimeStageItemPresentation(
+            id: "access",
+            title: "Access",
+            detail: "等待 risk gate / permission gate 决议。",
+            progress: .pending,
+            surfaceState: .ready,
+            actionID: nil,
+            actionLabel: nil
+        )
+    }
+
+    private static func runtimeExecutionStage(
+        input: SupervisorCockpitPresentationInput,
+        oneShotState: OneShotRunStateStatus?,
+        oneShotTopBlocker: String,
+        oneShotSummary: String
+    ) -> SupervisorRuntimeStageItemPresentation {
+        switch oneShotState {
+        case .planning, .launching, .running, .resuming, .mergeback:
+            return SupervisorRuntimeStageItemPresentation(
+                id: "runtime",
+                title: "Runtime",
+                detail: oneShotSummary.isEmpty
+                    ? "active_lanes=\(input.oneShotRuntimeActiveLaneCount) · planner / launch / mergeback 正在推进。"
+                    : oneShotSummary,
+                progress: .active,
+                surfaceState: .inProgress,
+                actionID: nil,
+                actionLabel: nil
+            )
+        case .blocked:
+            let hasDirectedResume = input.directedUnblockBatonCount > 0
+                && (input.nextDirectedResumeAction?.isEmpty == false)
+            return SupervisorRuntimeStageItemPresentation(
+                id: "runtime",
+                title: "Runtime",
+                detail: oneShotSummary.isEmpty
+                    ? "runtime 当前阻塞于 \(oneShotTopBlocker)。"
+                    : oneShotSummary,
+                progress: .blocked,
+                surfaceState: .blockedWaitingUpstream,
+                actionID: hasDirectedResume ? "directed_resume" : nil,
+                actionLabel: hasDirectedResume ? "Continue lane" : nil
+            )
+        case .failedClosed:
+            return SupervisorRuntimeStageItemPresentation(
+                id: "runtime",
+                title: "Runtime",
+                detail: oneShotSummary.isEmpty
+                    ? "runtime 已 fail-closed，blocker=\(oneShotTopBlocker)。"
+                    : oneShotSummary,
+                progress: .blocked,
+                surfaceState: oneShotTopBlocker == "permission_denied" ? .permissionDenied : .blockedWaitingUpstream,
+                actionID: nil,
+                actionLabel: nil
+            )
+        case .deliveryFreeze, .completed:
+            return SupervisorRuntimeStageItemPresentation(
+                id: "runtime",
+                title: "Runtime",
+                detail: "主执行链已结束，进入 freeze / completion 收口。",
+                progress: .completed,
+                surfaceState: .ready,
+                actionID: nil,
+                actionLabel: nil
+            )
+        case .awaitingGrant:
+            return SupervisorRuntimeStageItemPresentation(
+                id: "runtime",
+                title: "Runtime",
+                detail: "等待 access gate 放行后才会真正执行。",
+                progress: .pending,
+                surfaceState: .ready,
+                actionID: nil,
+                actionLabel: nil
+            )
+        case .intakeNormalized, nil:
+            return SupervisorRuntimeStageItemPresentation(
+                id: "runtime",
+                title: "Runtime",
+                detail: "等待 planner / launcher 接手当前 one-shot。",
+                progress: .pending,
+                surfaceState: .ready,
+                actionID: nil,
+                actionLabel: nil
+            )
+        }
+    }
+
+    private static func runtimeFreezeStage(
+        input: SupervisorCockpitPresentationInput,
+        oneShotState: OneShotRunStateStatus?,
+        freezeDecision: String
+    ) -> SupervisorRuntimeStageItemPresentation {
+        if input.topLaunchDenyCode == "scope_expansion" || freezeDecision == "no_go" || !input.scopeFreezeBlockedExpansionItems.isEmpty {
+            return SupervisorRuntimeStageItemPresentation(
+                id: "freeze",
+                title: "Freeze",
+                detail: input.scopeFreezeBlockedExpansionItems.isEmpty
+                    ? "validated scope freeze 当前为 \(freezeDecision)。"
+                    : "blocked_expansion=\(input.scopeFreezeBlockedExpansionItems.joined(separator: ","))",
+                progress: .blocked,
+                surfaceState: .blockedWaitingUpstream,
+                actionID: "review_delivery",
+                actionLabel: "Open review"
+            )
+        }
+
+        switch oneShotState {
+        case .deliveryFreeze:
+            return SupervisorRuntimeStageItemPresentation(
+                id: "freeze",
+                title: "Freeze",
+                detail: "交付冻结进行中，等待 strict evidence / review delivery。",
+                progress: .active,
+                surfaceState: input.xtReadyStrictE2EReady && input.xtReadyIssueCount == 0 ? .releaseFrozen : .diagnosticRequired,
+                actionID: "review_delivery",
+                actionLabel: "Open review"
+            )
+        case .completed:
+            return SupervisorRuntimeStageItemPresentation(
+                id: "freeze",
+                title: "Freeze",
+                detail: "validated mainline 已完成冻结收口。",
+                progress: .completed,
+                surfaceState: .releaseFrozen,
+                actionID: "review_delivery",
+                actionLabel: "Open report"
+            )
+        default:
+            return SupervisorRuntimeStageItemPresentation(
+                id: "freeze",
+                title: "Freeze",
+                detail: "当前尚未进入 delivery freeze。",
+                progress: .pending,
+                surfaceState: .ready,
+                actionID: nil,
+                actionLabel: nil
+            )
+        }
+    }
+}

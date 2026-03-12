@@ -91,6 +91,36 @@ Response (socket mode)
 {"type":"project_ack","req_id":"...","ok":true,"id":"<project_id>"}
 ```
 
+## project_canonical_memory
+Request
+```json
+{
+  "type": "project_canonical_memory",
+  "req_id": "...",
+  "project_canonical_memory": {
+    "project_id": "hash",
+    "project_root": "/path/to/project",
+    "display_name": "My Project",
+    "updated_at": 1730000000.0,
+    "items": [
+      {
+        "key": "xterminal.project.memory.goal",
+        "value": "Make Hub memory the default governed source."
+      },
+      {
+        "key": "xterminal.project.memory.next_steps",
+        "value": "1. Add file/socket IPC parity"
+      }
+    ]
+  }
+}
+```
+
+Response (socket mode)
+```json
+{"type":"project_canonical_memory_ack","req_id":"...","ok":true,"id":"<project_id>"}
+```
+
 ## need_network
 Request
 ```json

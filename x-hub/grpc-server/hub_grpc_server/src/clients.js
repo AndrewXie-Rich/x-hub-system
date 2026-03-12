@@ -90,6 +90,57 @@ function normalizeClientTrustProfileFields(raw, { device_id, name, capabilities 
     0
   );
   const auditRef = safeString(src.audit_ref || src.auditRef || approvedTrustProfile.audit_ref || approvedTrustProfile.auditRef);
+  const rawTrustedAutomationMode = safeString(
+    src.trusted_automation_mode
+      || src.trustedAutomationMode
+      || src.mode
+      || approvedTrustProfile.trusted_automation_mode
+      || approvedTrustProfile.trustedAutomationMode
+      || approvedTrustProfile.mode
+  ).toLowerCase();
+  const trustedAutomationMode = rawTrustedAutomationMode
+    || (trustMode === 'trusted_automation' ? 'trusted_automation' : (Object.keys(approvedTrustProfile).length > 0 ? 'standard' : ''));
+  const rawTrustedAutomationState = safeString(
+    src.trusted_automation_state
+      || src.trustedAutomationState
+      || src.state
+      || approvedTrustProfile.trusted_automation_state
+      || approvedTrustProfile.trustedAutomationState
+      || approvedTrustProfile.state
+  ).toLowerCase();
+  const trustedAutomationState = rawTrustedAutomationState
+    || (trustedAutomationMode === 'trusted_automation' ? 'armed' : (Object.keys(approvedTrustProfile).length > 0 ? 'off' : ''));
+  const allowedProjectIds = safeStringArray(
+    src.allowed_project_ids
+      || src.allowedProjectIds
+      || approvedTrustProfile.allowed_project_ids
+      || approvedTrustProfile.allowedProjectIds
+  );
+  const allowedWorkspaceRoots = safeStringArray(
+    src.allowed_workspace_roots
+      || src.allowedWorkspaceRoots
+      || approvedTrustProfile.allowed_workspace_roots
+      || approvedTrustProfile.allowedWorkspaceRoots
+  );
+  const xtBindingRequired = safeBool(
+    src.xt_binding_required
+      ?? src.xtBindingRequired
+      ?? approvedTrustProfile.xt_binding_required
+      ?? approvedTrustProfile.xtBindingRequired,
+    trustedAutomationMode === 'trusted_automation'
+  );
+  const autoGrantProfile = safeString(
+    src.auto_grant_profile
+      || src.autoGrantProfile
+      || approvedTrustProfile.auto_grant_profile
+      || approvedTrustProfile.autoGrantProfile
+  );
+  const devicePermissionOwnerRef = safeString(
+    src.device_permission_owner_ref
+      || src.devicePermissionOwnerRef
+      || approvedTrustProfile.device_permission_owner_ref
+      || approvedTrustProfile.devicePermissionOwnerRef
+  );
 
   const trustProfilePresent = Object.keys(approvedTrustProfile).length > 0
     || policyMode === 'new_profile'
@@ -97,7 +148,13 @@ function normalizeClientTrustProfileFields(raw, { device_id, name, capabilities 
     || !!paidModelPolicyMode
     || paidModelAllowedModelIds.length > 0
     || dailyTokenLimit > 0
-    || singleRequestTokenLimit > 0;
+    || singleRequestTokenLimit > 0
+    || !!trustedAutomationMode
+    || !!trustedAutomationState
+    || allowedProjectIds.length > 0
+    || allowedWorkspaceRoots.length > 0
+    || !!autoGrantProfile
+    || !!devicePermissionOwnerRef;
 
   const normalizedTrustProfile = trustProfilePresent
     ? {
@@ -105,11 +162,18 @@ function normalizeClientTrustProfileFields(raw, { device_id, name, capabilities 
         device_id,
         device_name: safeString(approvedTrustProfile.device_name || approvedTrustProfile.deviceName || src.device_name || src.deviceName || name),
         trust_mode: trustMode || 'trusted_daily',
+        mode: trustedAutomationMode || 'standard',
+        state: trustedAutomationState || 'off',
         capabilities: uniqueStrings(
           Array.isArray(approvedTrustProfile.capabilities) && approvedTrustProfile.capabilities.length > 0
             ? approvedTrustProfile.capabilities
             : capabilities
         ),
+        allowed_project_ids: allowedProjectIds,
+        allowed_workspace_roots: allowedWorkspaceRoots,
+        xt_binding_required: !!xtBindingRequired,
+        auto_grant_profile: autoGrantProfile,
+        device_permission_owner_ref: devicePermissionOwnerRef,
         paid_model_policy: {
           schema_version: safeString(paidPolicy.schema_version || paidPolicy.schemaVersion) || 'hub.paired_terminal_paid_model_policy.v1',
           mode: paidModelPolicyMode || 'off',
@@ -136,6 +200,13 @@ function normalizeClientTrustProfileFields(raw, { device_id, name, capabilities 
     default_web_fetch_enabled: normalizedTrustProfile ? !!normalizedTrustProfile.network_policy.default_web_fetch_enabled : false,
     daily_token_limit: normalizedTrustProfile ? safeInt(normalizedTrustProfile.budget_policy.daily_token_limit, 0) : 0,
     single_request_token_limit: normalizedTrustProfile ? safeInt(normalizedTrustProfile.budget_policy.single_request_token_limit, 0) : 0,
+    trusted_automation_mode: normalizedTrustProfile ? safeString(normalizedTrustProfile.mode).toLowerCase() : '',
+    trusted_automation_state: normalizedTrustProfile ? safeString(normalizedTrustProfile.state).toLowerCase() : '',
+    allowed_project_ids: normalizedTrustProfile ? safeStringArray(normalizedTrustProfile.allowed_project_ids) : [],
+    allowed_workspace_roots: normalizedTrustProfile ? safeStringArray(normalizedTrustProfile.allowed_workspace_roots) : [],
+    xt_binding_required: normalizedTrustProfile ? !!normalizedTrustProfile.xt_binding_required : false,
+    auto_grant_profile: normalizedTrustProfile ? safeString(normalizedTrustProfile.auto_grant_profile) : '',
+    device_permission_owner_ref: normalizedTrustProfile ? safeString(normalizedTrustProfile.device_permission_owner_ref) : '',
     audit_ref: normalizedTrustProfile ? safeString(normalizedTrustProfile.audit_ref) : '',
     trust_profile: normalizedTrustProfile,
     approved_trust_profile: normalizedTrustProfile,

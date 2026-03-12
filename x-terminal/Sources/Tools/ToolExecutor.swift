@@ -9,6 +9,8 @@ enum ToolExecutor {
     private static let sandboxModeDefaultsKey = "xterminal_tool_sandbox_mode"
     private static let legacySandboxModeDefaultsKey = "xterminal_tool_sandbox_mode"
     private static let highRiskGrantLedger = HighRiskGrantLedger()
+    private static let uiObservationProofLedger = UIObservationProofLedger()
+    private static let uiObservationProofTTLSeconds: TimeInterval = 180
 
     struct HighRiskGrantBypassFinding: Identifiable, Equatable {
         var id: String
@@ -52,10 +54,44 @@ enum ToolExecutor {
         var detail: String
     }
 
+    private struct HighRiskMemoryRecheckDecision {
+        var required: Bool
+        var ok: Bool
+        var useMode: XTMemoryUseMode
+        var source: String
+        var freshness: String
+        var cacheHit: Bool
+        var denyCode: String?
+        var reasonCode: String?
+        var detail: String
+    }
+
     private struct SearchResultItem: Equatable {
         var title: String
         var url: String
         var snippet: String
+    }
+
+    private struct UIObservationProof: Equatable {
+        var selectorSignature: String
+        var observedAt: TimeInterval
+        var matchCount: Int
+    }
+
+    private actor UIObservationProofLedger {
+        private var proofsByProject: [String: [String: UIObservationProof]] = [:]
+
+        func record(projectRoot: URL, proof: UIObservationProof) {
+            let key = projectRoot.standardizedFileURL.path
+            var bucket = proofsByProject[key] ?? [:]
+            bucket[proof.selectorSignature] = proof
+            proofsByProject[key] = bucket
+        }
+
+        func latest(projectRoot: URL, selectorSignature: String) -> UIObservationProof? {
+            let key = projectRoot.standardizedFileURL.path
+            return proofsByProject[key]?[selectorSignature]
+        }
     }
 
     static func sandboxMode() -> ToolSandboxMode {
@@ -87,6 +123,27 @@ enum ToolExecutor {
     }
 
     static func execute(call: ToolCall, projectRoot: URL, stream: (@MainActor @Sendable (String) -> Void)? = nil) async throws -> ToolResult {
+        let ctx = AXProjectContext(root: projectRoot)
+        let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: projectRoot)
+        if !isDeviceAutomationTool(call.tool) {
+            let runtimePolicyDecision = xtToolRuntimePolicyDecision(call: call, config: config)
+            if !runtimePolicyDecision.allowed {
+                return deniedRuntimePolicyResult(
+                    call: call,
+                    projectRoot: projectRoot,
+                    config: config,
+                    decision: runtimePolicyDecision
+                )
+            }
+        }
+        if let precheckDenied = await deniedHighRiskMemoryRecheckResultIfNeeded(
+            call: call,
+            projectRoot: projectRoot,
+            config: config
+        ) {
+            return precheckDenied
+        }
+
         switch call.tool {
         case .read_file:
             let path = strArg(call, "path")
@@ -230,6 +287,30 @@ Please switch to Terminal mode (Chat/Terminal toggle) and run it there:
 
         case .project_snapshot:
             return await executeProjectSnapshot(call: call, projectRoot: projectRoot)
+
+        case .deviceUIObserve:
+            return await executeDeviceUIObserve(call: call, projectRoot: projectRoot)
+
+        case .deviceUIAct:
+            return await executeDeviceUIAct(call: call, projectRoot: projectRoot)
+
+        case .deviceUIStep:
+            return await executeDeviceUIStep(call: call, projectRoot: projectRoot)
+
+        case .deviceClipboardRead:
+            return await executeDeviceClipboardRead(call: call, projectRoot: projectRoot)
+
+        case .deviceClipboardWrite:
+            return await executeDeviceClipboardWrite(call: call, projectRoot: projectRoot)
+
+        case .deviceScreenCapture:
+            return await executeDeviceScreenCapture(call: call, projectRoot: projectRoot)
+
+        case .deviceBrowserControl:
+            return await executeDeviceBrowserControl(call: call, projectRoot: projectRoot)
+
+        case .deviceAppleScript:
+            return await executeDeviceAppleScript(call: call, projectRoot: projectRoot)
 
         case .bridge_status:
             let st = HubBridgeClient.status()
@@ -586,9 +667,26 @@ content_type=\(res.contentType)
 
     private static func executeMemorySnapshot(call: ToolCall, projectRoot: URL) async -> ToolResult {
         let projectId = optStrArg(call, "project_id") ?? AXProjectRegistryStore.projectId(forRoot: projectRoot)
-        let mode = optStrArg(call, "mode") ?? "project"
+        let modeToken = optStrArg(call, "mode") ?? XTMemoryUseMode.projectChat.rawValue
+        guard let useMode = XTMemoryUseMode.parse(modeToken) else {
+            let summary: [String: JSONValue] = [
+                "tool": .string(call.tool.rawValue),
+                "ok": .bool(false),
+                "project_id": .string(projectId),
+                "mode": .string(modeToken),
+                "deny_code": .string(XTMemoryUseDenyCode.memoryModeContractMissing.rawValue),
+                "reason": .string(XTMemoryUseDenyCode.memoryModeContractMissing.rawValue),
+            ]
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: structuredOutput(summary: summary, body: XTMemoryUseDenyCode.memoryModeContractMissing.rawValue)
+            )
+        }
         let response = await HubIPCClient.requestMemoryContext(
-            mode: mode,
+            useMode: useMode,
+            requesterRole: .tool,
             projectId: projectId,
             projectRoot: projectRoot.standardizedFileURL.path,
             displayName: projectRoot.lastPathComponent,
@@ -607,7 +705,7 @@ content_type=\(res.contentType)
                 "tool": .string(call.tool.rawValue),
                 "ok": .bool(false),
                 "project_id": .string(projectId),
-                "mode": .string(mode),
+                "mode": .string(useMode.rawValue),
                 "reason": .string("hub_memory_snapshot_unavailable"),
             ]
             return ToolResult(
@@ -622,7 +720,7 @@ content_type=\(res.contentType)
             id: call.id,
             tool: call.tool,
             ok: true,
-            output: renderMemorySnapshotOutput(response: response, projectId: projectId, mode: mode)
+            output: renderMemorySnapshotOutput(response: response, projectId: projectId, mode: useMode.rawValue)
         )
     }
 
@@ -644,6 +742,11 @@ content_type=\(res.contentType)
             "project_id": .string(projectId),
             "mode": .string(mode),
             "source": .string(response.source),
+            "resolved_mode": response.resolvedMode.map(JSONValue.string) ?? .null,
+            "freshness": response.freshness.map(JSONValue.string) ?? .null,
+            "cache_hit": response.cacheHit.map(JSONValue.bool) ?? .null,
+            "deny_code": response.denyCode.map(JSONValue.string) ?? .null,
+            "downgrade_code": response.downgradeCode.map(JSONValue.string) ?? .null,
             "budget_total_tokens": .number(Double(response.budgetTotalTokens)),
             "used_total_tokens": .number(Double(response.usedTotalTokens)),
             "truncated_layers": .array(response.truncatedLayers.map(JSONValue.string)),
@@ -661,11 +764,18 @@ content_type=\(res.contentType)
         let registry = AXProjectRegistryStore.load()
         let entry = registry.project(for: projectId)
         let config = try? AXProjectStore.loadOrCreateConfig(for: ctx)
+        let resolvedConfig = config ?? .default(forProjectRoot: projectRoot)
+        let autonomyState = await xtResolveProjectAutonomyPolicy(
+            projectRoot: projectRoot,
+            config: resolvedConfig
+        )
+        let effectiveAutonomy = autonomyState.effectivePolicy
+        let configuredAutonomySurfaces = resolvedConfig.configuredAutonomySurfaceLabels
         let effectiveTools = ToolPolicy.sortedTools(
             ToolPolicy.effectiveAllowedTools(
-                profileRaw: config?.toolProfile ?? ToolPolicy.defaultProfile.rawValue,
-                allowTokens: config?.toolAllow ?? [],
-                denyTokens: config?.toolDeny ?? []
+                profileRaw: resolvedConfig.toolProfile,
+                allowTokens: resolvedConfig.toolAllow,
+                denyTokens: resolvedConfig.toolDeny
             )
         ).map { $0.rawValue }
         let session = await MainActor.run { () -> AXSessionInfo? in
@@ -686,6 +796,55 @@ content_type=\(res.contentType)
             }
             return (role.rawValue, .string(value))
         })
+        let permissionReadiness = await MainActor.run {
+            AXTrustedAutomationPermissionOwnerReadiness.current()
+        }
+        let trustedAutomationStatus = (config ?? .default(forProjectRoot: projectRoot))
+            .trustedAutomationStatus(forProjectRoot: projectRoot, permissionReadiness: permissionReadiness)
+        let trustedRequiredPermissions = AXTrustedAutomationPermissionOwnerReadiness.requiredPermissionKeys(
+            forDeviceToolGroups: trustedAutomationStatus.deviceToolGroups
+        )
+        let trustedOpenSettingsActions = permissionReadiness.suggestedOpenSettingsActions(
+            forDeviceToolGroups: trustedAutomationStatus.deviceToolGroups
+        )
+        let trustedPermissionStatuses: [String: JSONValue] = Dictionary(
+            uniqueKeysWithValues: AXTrustedAutomationPermissionKey.allCases.map { key in
+                (key.rawValue, .string(permissionReadiness.permissionStatus(for: key).rawValue))
+            }
+        )
+        let autonomyPolicyObject: JSONValue = .object([
+            "configured_mode": .string(resolvedConfig.autonomyMode.rawValue),
+            "effective_mode": .string(effectiveAutonomy.effectiveMode.rawValue),
+            "hub_override_mode": .string(effectiveAutonomy.hubOverrideMode.rawValue),
+            "local_override_mode": .string(effectiveAutonomy.localOverrideMode.rawValue),
+            "remote_override_mode": .string(effectiveAutonomy.remoteOverrideMode.rawValue),
+            "remote_override_source": .string(effectiveAutonomy.remoteOverrideSource),
+            "remote_override_updated_at_ms": .number(Double(effectiveAutonomy.remoteOverrideUpdatedAtMs)),
+            "ttl_sec": .number(Double(resolvedConfig.autonomyTTLSeconds)),
+            "remaining_sec": .number(Double(effectiveAutonomy.remainingSeconds)),
+            "expired": .bool(effectiveAutonomy.expired),
+            "kill_switch_engaged": .bool(effectiveAutonomy.killSwitchEngaged),
+            "configured_surfaces": .array(configuredAutonomySurfaces.map(JSONValue.string)),
+            "effective_surfaces": .array(effectiveAutonomy.allowedSurfaceLabels.map(JSONValue.string)),
+            "updated_at_ms": .number(Double(resolvedConfig.autonomyUpdatedAtMs)),
+        ])
+        let browserRuntimeSession = XTBrowserRuntimeStore.loadSession(for: ctx)
+        let browserRuntimeObject: JSONValue = {
+            guard let browserRuntimeSession else { return .null }
+            return .object([
+                "session_id": .string(browserRuntimeSession.sessionID),
+                "profile_id": .string(browserRuntimeSession.profileID),
+                "profile_path": .string(XTBrowserRuntimeStore.managedProfilePath(for: ctx, session: browserRuntimeSession)),
+                "snapshot_ref": .string(browserRuntimeSession.snapshotRef),
+                "action_mode": .string(browserRuntimeSession.actionMode.rawValue),
+                "transport": .string(browserRuntimeSession.transport),
+                "browser_engine": .string(browserRuntimeSession.browserEngine),
+                "current_url": .string(browserRuntimeSession.currentURL),
+                "open_tabs": .number(Double(browserRuntimeSession.openTabs)),
+                "grant_policy_ref": .string(browserRuntimeSession.grantPolicyRef),
+                "audit_ref": .string(browserRuntimeSession.auditRef),
+            ])
+        }()
 
         let sessionIDValue: JSONValue = {
             guard let session else { return .null }
@@ -715,22 +874,1643 @@ content_type=\(res.contentType)
         summary["tool_profile"] = .string(config?.toolProfile ?? ToolPolicy.defaultProfile.rawValue)
         summary["effective_tools"] = .array(effectiveTools.map(JSONValue.string))
         summary["model_overrides"] = .object(modelOverrides)
+        summary["trusted_automation_mode"] = .string(trustedAutomationStatus.mode.rawValue)
+        summary["trusted_automation_state"] = .string(trustedAutomationStatus.state.rawValue)
+        summary["trusted_automation_device_id"] = .string(trustedAutomationStatus.boundDeviceID)
+        summary["trusted_automation_workspace_binding_hash"] = .string(trustedAutomationStatus.workspaceBindingHash)
+        summary["trusted_automation_expected_workspace_binding_hash"] = .string(trustedAutomationStatus.expectedWorkspaceBindingHash)
+        summary["trusted_automation_ready"] = .bool(trustedAutomationStatus.trustedAutomationReady)
+        summary["trusted_automation_permission_owner_ready"] = .bool(trustedAutomationStatus.permissionOwnerReady)
+        summary["trusted_automation_device_tool_groups"] = .array(trustedAutomationStatus.deviceToolGroups.map(JSONValue.string))
+        summary["trusted_automation_required_permissions"] = .array(trustedRequiredPermissions.map(JSONValue.string))
+        summary["trusted_automation_permission_statuses"] = .object(trustedPermissionStatuses)
+        summary["trusted_automation_open_settings_actions"] = .array(trustedOpenSettingsActions.map(JSONValue.string))
+        summary["trusted_automation_missing_prerequisites"] = .array(trustedAutomationStatus.missingPrerequisites.map(JSONValue.string))
+        summary["autonomy_policy"] = autonomyPolicyObject
+        summary["browser_runtime"] = browserRuntimeObject
         summary["is_git_repo"] = .bool(isGitRepo)
         summary["git_dirty"] = .bool(isGitRepo && !gitSummary.isEmpty)
         summary["session"] = .object(sessionSummary)
 
-        let verifyText = (config?.verifyCommands ?? []).isEmpty ? "(none)" : (config?.verifyCommands ?? []).joined(separator: " | ")
+        let verifyText = resolvedConfig.verifyCommands.isEmpty ? "(none)" : resolvedConfig.verifyCommands.joined(separator: " | ")
+        let browserRuntimeText: String = {
+            guard let browserRuntimeSession else { return "(none)" }
+            let currentURL = browserRuntimeSession.currentURL.isEmpty ? "(none)" : browserRuntimeSession.currentURL
+            let snapshotRef = browserRuntimeSession.snapshotRef.isEmpty ? "(none)" : browserRuntimeSession.snapshotRef
+            return "session=\(browserRuntimeSession.sessionID) mode=\(browserRuntimeSession.actionMode.rawValue) url=\(currentURL) snapshot=\(snapshotRef)"
+        }()
+        let configuredAutonomySurfaceText = configuredAutonomySurfaces.isEmpty ? "(none)" : configuredAutonomySurfaces.joined(separator: ",")
+        let effectiveAutonomySurfaceText = effectiveAutonomy.allowedSurfaceLabels.isEmpty ? "(none)" : effectiveAutonomy.allowedSurfaceLabels.joined(separator: ",")
+        let autonomyRemainingText: String = {
+            if effectiveAutonomy.killSwitchEngaged {
+                return "kill_switch"
+            }
+            if effectiveAutonomy.expired {
+                return "expired"
+            }
+            if resolvedConfig.autonomyMode == .manual {
+                return "n/a"
+            }
+            return String(effectiveAutonomy.remainingSeconds)
+        }()
         let body = """
 project=\(entry?.displayName ?? projectRoot.lastPathComponent)
 root=\(projectRoot.standardizedFileURL.path)
 status_digest=\(entry?.statusDigest ?? "(none)")
 verify_commands=\(verifyText)
-tool_profile=\(config?.toolProfile ?? ToolPolicy.defaultProfile.rawValue)
+tool_profile=\(resolvedConfig.toolProfile)
 effective_tools=\(effectiveTools.isEmpty ? "(none)" : effectiveTools.joined(separator: ", "))
+trusted_automation_mode=\(trustedAutomationStatus.mode.rawValue)
+trusted_automation_state=\(trustedAutomationStatus.state.rawValue)
+trusted_automation_device_id=\(trustedAutomationStatus.boundDeviceID.isEmpty ? "(none)" : trustedAutomationStatus.boundDeviceID)
+trusted_automation_required_permissions=\(trustedRequiredPermissions.isEmpty ? "(none)" : trustedRequiredPermissions.joined(separator: ","))
+trusted_automation_open_settings_actions=\(trustedOpenSettingsActions.isEmpty ? "(none)" : trustedOpenSettingsActions.joined(separator: ","))
+trusted_automation_missing=\(trustedAutomationStatus.missingPrerequisites.isEmpty ? "(none)" : trustedAutomationStatus.missingPrerequisites.joined(separator: ","))
+autonomy_mode=\(resolvedConfig.autonomyMode.rawValue)
+autonomy_effective_mode=\(effectiveAutonomy.effectiveMode.rawValue)
+autonomy_hub_override_mode=\(effectiveAutonomy.hubOverrideMode.rawValue)
+autonomy_local_override_mode=\(effectiveAutonomy.localOverrideMode.rawValue)
+autonomy_remote_override_mode=\(effectiveAutonomy.remoteOverrideMode.rawValue)
+autonomy_remote_override_source=\(effectiveAutonomy.remoteOverrideSource.isEmpty ? "(none)" : effectiveAutonomy.remoteOverrideSource)
+autonomy_remote_override_updated_at_ms=\(effectiveAutonomy.remoteOverrideUpdatedAtMs)
+autonomy_configured_surfaces=\(configuredAutonomySurfaceText)
+autonomy_effective_surfaces=\(effectiveAutonomySurfaceText)
+autonomy_ttl_remaining=\(autonomyRemainingText)
+browser_runtime=\(browserRuntimeText)
 session_state=\(session?.runtime?.state.rawValue ?? AXSessionRuntimeState.idle.rawValue)
 git=\(isGitRepo ? (gitSummary.isEmpty ? "clean" : gitSummary) : "not_git_repo")
 """
         return ToolResult(id: call.id, tool: call.tool, ok: true, output: structuredOutput(summary: summary, body: body))
+    }
+
+    private static func executeDeviceClipboardRead(call: ToolCall, projectRoot: URL) async -> ToolResult {
+        let ctx = AXProjectContext(root: projectRoot)
+        let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: projectRoot)
+        let permissionReadiness = await MainActor.run {
+            AXTrustedAutomationPermissionOwnerReadiness.current()
+        }
+        let decision = DeviceAutomationTools.evaluateGate(
+            for: call.tool,
+            projectRoot: projectRoot,
+            config: config,
+            permissionReadiness: permissionReadiness
+        )
+        guard decision.allowed else {
+            return deniedDeviceAutomationResult(call: call, projectRoot: projectRoot, decision: decision)
+        }
+        let autonomyState = await xtResolveProjectAutonomyPolicy(
+            projectRoot: projectRoot,
+            config: config
+        )
+        let runtimePolicyDecision = xtToolRuntimePolicyDecision(
+            call: call,
+            config: config,
+            effectiveAutonomy: autonomyState.effectivePolicy
+        )
+        guard runtimePolicyDecision.allowed else {
+            return deniedRuntimePolicyResult(
+                call: call,
+                projectRoot: projectRoot,
+                config: config,
+                decision: runtimePolicyDecision,
+                effectiveAutonomy: autonomyState.effectivePolicy
+            )
+        }
+
+        let text = await MainActor.run {
+            DeviceAutomationTools.readClipboardText()
+        }
+        var summary = deviceAutomationSummaryBase(
+            call: call,
+            projectRoot: projectRoot,
+            decision: decision,
+            ok: true
+        )
+        summary["text_present"] = .bool(!text.isEmpty)
+        summary["character_count"] = .number(Double(text.count))
+        let body = text.isEmpty ? "(empty clipboard)" : text
+        return ToolResult(id: call.id, tool: call.tool, ok: true, output: structuredOutput(summary: summary, body: body))
+    }
+
+    private static func executeDeviceUIObserve(call: ToolCall, projectRoot: URL) async -> ToolResult {
+        let ctx = AXProjectContext(root: projectRoot)
+        let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: projectRoot)
+        let permissionReadiness = await MainActor.run {
+            AXTrustedAutomationPermissionOwnerReadiness.current()
+        }
+        let decision = DeviceAutomationTools.evaluateGate(
+            for: call.tool,
+            projectRoot: projectRoot,
+            config: config,
+            permissionReadiness: permissionReadiness
+        )
+        guard decision.allowed else {
+            return deniedDeviceAutomationResult(call: call, projectRoot: projectRoot, decision: decision)
+        }
+        let autonomyState = await xtResolveProjectAutonomyPolicy(
+            projectRoot: projectRoot,
+            config: config
+        )
+        let runtimePolicyDecision = xtToolRuntimePolicyDecision(
+            call: call,
+            config: config,
+            effectiveAutonomy: autonomyState.effectivePolicy
+        )
+        guard runtimePolicyDecision.allowed else {
+            return deniedRuntimePolicyResult(
+                call: call,
+                projectRoot: projectRoot,
+                config: config,
+                decision: runtimePolicyDecision,
+                effectiveAutonomy: autonomyState.effectivePolicy
+            )
+        }
+
+        let observationRequest = XTDeviceUIObservationRequest(
+            selector: XTDeviceUISelector(
+                role: normalizedToolTextArg(call, "target_role"),
+                title: normalizedToolTextArg(call, "target_title"),
+                identifier: normalizedToolTextArg(call, "target_identifier"),
+                elementDescription: normalizedToolTextArg(call, "target_description"),
+                valueContains: normalizedToolTextArg(call, "target_value_contains"),
+                matchIndex: 0
+            ),
+            maxResults: min(20, max(1, Int(optDoubleArg(call, "max_results") ?? 5)))
+        )
+
+        guard let observation = await MainActor.run(resultType: XTDeviceUIObservationResult?.self, body: {
+            DeviceAutomationTools.captureFrontmostUIObservation(observationRequest)
+        }) else {
+            var summary = deviceAutomationSummaryBase(
+                call: call,
+                projectRoot: projectRoot,
+                decision: decision,
+                ok: false
+            )
+            summary["deny_code"] = .string(XTDeviceAutomationRejectCode.uiObserveUnavailable.rawValue)
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: structuredOutput(summary: summary, body: "ui_observe_unavailable")
+            )
+        }
+        let snapshot = observation.snapshot
+        if !observationRequest.selector.isEmpty {
+            await uiObservationProofLedger.record(
+                projectRoot: projectRoot,
+                proof: UIObservationProof(
+                    selectorSignature: uiObservationSelectorSignature(observationRequest.selector),
+                    observedAt: Date().timeIntervalSince1970,
+                    matchCount: observation.matchedElements.count
+                )
+            )
+        }
+
+        var summary = deviceAutomationSummaryBase(
+            call: call,
+            projectRoot: projectRoot,
+            decision: decision,
+            ok: true
+        )
+        summary["target_resolution_mode"] = .string(observationRequest.selector.isEmpty ? "focused" : "selector")
+        summary["requested_max_results"] = .number(Double(observationRequest.maxResults))
+        summary["match_count"] = .number(Double(observation.matchedElements.count))
+        if !observationRequest.selector.role.isEmpty {
+            summary["target_selector_role"] = .string(observationRequest.selector.role)
+        }
+        if !observationRequest.selector.title.isEmpty {
+            summary["target_selector_title"] = .string(observationRequest.selector.title)
+        }
+        if !observationRequest.selector.identifier.isEmpty {
+            summary["target_selector_identifier"] = .string(observationRequest.selector.identifier)
+        }
+        if !observationRequest.selector.elementDescription.isEmpty {
+            summary["target_selector_description"] = .string(observationRequest.selector.elementDescription)
+        }
+        if !observationRequest.selector.valueContains.isEmpty {
+            summary["target_selector_value_contains"] = .string(observationRequest.selector.valueContains)
+        }
+        summary["frontmost_app_name"] = .string(snapshot.frontmostAppName)
+        summary["frontmost_app_bundle_id"] = .string(snapshot.frontmostBundleID)
+        summary["frontmost_app_pid"] = .number(Double(snapshot.frontmostPID))
+        summary["focused_window_title"] = .string(snapshot.focusedWindowTitle)
+        summary["focused_window_role"] = .string(snapshot.focusedWindowRole)
+        summary["focused_window_subrole"] = .string(snapshot.focusedWindowSubrole)
+        if let element = snapshot.focusedElement {
+            summary["focused_element_role"] = .string(element.role)
+            summary["focused_element_subrole"] = .string(element.subrole)
+            summary["focused_element_title"] = .string(element.title)
+            summary["focused_element_description"] = .string(element.elementDescription)
+            summary["focused_element_value_preview"] = .string(element.valuePreview)
+            summary["focused_element_identifier"] = .string(element.identifier)
+            summary["focused_element_help"] = .string(element.help)
+            summary["focused_element_child_count"] = .number(Double(element.childCount))
+        } else {
+            summary["focused_element_role"] = .string("")
+            summary["focused_element_subrole"] = .string("")
+            summary["focused_element_title"] = .string("")
+            summary["focused_element_description"] = .string("")
+            summary["focused_element_value_preview"] = .string("")
+            summary["focused_element_identifier"] = .string("")
+            summary["focused_element_help"] = .string("")
+            summary["focused_element_child_count"] = .number(0)
+        }
+        summary["matched_elements"] = .array(observation.matchedElements.map { element in
+            .object([
+                "role": .string(element.role),
+                "subrole": .string(element.subrole),
+                "title": .string(element.title),
+                "description": .string(element.elementDescription),
+                "value_preview": .string(element.valuePreview),
+                "identifier": .string(element.identifier),
+                "help": .string(element.help),
+                "child_count": .number(Double(element.childCount)),
+            ])
+        })
+
+        var bodyLines = [
+            "app_name=\(snapshot.frontmostAppName.isEmpty ? "(unknown)" : snapshot.frontmostAppName)",
+            "bundle_id=\(snapshot.frontmostBundleID.isEmpty ? "(unknown)" : snapshot.frontmostBundleID)",
+            "pid=\(snapshot.frontmostPID)",
+            "focused_window_title=\(snapshot.focusedWindowTitle.isEmpty ? "(none)" : snapshot.focusedWindowTitle)",
+            "focused_window_role=\(snapshot.focusedWindowRole.isEmpty ? "(none)" : snapshot.focusedWindowRole)",
+        ]
+        if let element = snapshot.focusedElement {
+            bodyLines.append("focused_element_role=\(element.role.isEmpty ? "(none)" : element.role)")
+            bodyLines.append("focused_element_title=\(element.title.isEmpty ? "(none)" : element.title)")
+            bodyLines.append("focused_element_description=\(element.elementDescription.isEmpty ? "(none)" : element.elementDescription)")
+            bodyLines.append("focused_element_value=\(element.valuePreview.isEmpty ? "(none)" : element.valuePreview)")
+            bodyLines.append("focused_element_identifier=\(element.identifier.isEmpty ? "(none)" : element.identifier)")
+            bodyLines.append("focused_element_child_count=\(element.childCount)")
+        } else {
+            bodyLines.append("focused_element=(none)")
+        }
+        if observationRequest.selector.isEmpty {
+            bodyLines.append("candidate_count=0")
+        } else {
+            bodyLines.append("candidate_count=\(observation.matchedElements.count)")
+            if observation.matchedElements.isEmpty {
+                bodyLines.append("candidate_matches=(none)")
+            } else {
+                for (index, candidate) in observation.matchedElements.enumerated() {
+                    bodyLines.append("candidate[\(index)].role=\(candidate.role.isEmpty ? "(none)" : candidate.role)")
+                    bodyLines.append("candidate[\(index)].title=\(candidate.title.isEmpty ? "(none)" : candidate.title)")
+                    bodyLines.append("candidate[\(index)].identifier=\(candidate.identifier.isEmpty ? "(none)" : candidate.identifier)")
+                    bodyLines.append("candidate[\(index)].description=\(candidate.elementDescription.isEmpty ? "(none)" : candidate.elementDescription)")
+                    bodyLines.append("candidate[\(index)].value=\(candidate.valuePreview.isEmpty ? "(none)" : candidate.valuePreview)")
+                }
+            }
+        }
+        return ToolResult(
+            id: call.id,
+            tool: call.tool,
+            ok: true,
+            output: structuredOutput(summary: summary, body: bodyLines.joined(separator: "\n"))
+        )
+    }
+
+    private static func executeDeviceUIAct(call: ToolCall, projectRoot: URL) async -> ToolResult {
+        let ctx = AXProjectContext(root: projectRoot)
+        let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: projectRoot)
+        let permissionReadiness = await MainActor.run {
+            AXTrustedAutomationPermissionOwnerReadiness.current()
+        }
+        let decision = DeviceAutomationTools.evaluateGate(
+            for: call.tool,
+            projectRoot: projectRoot,
+            config: config,
+            permissionReadiness: permissionReadiness
+        )
+        guard decision.allowed else {
+            return deniedDeviceAutomationResult(call: call, projectRoot: projectRoot, decision: decision)
+        }
+        let autonomyState = await xtResolveProjectAutonomyPolicy(
+            projectRoot: projectRoot,
+            config: config
+        )
+        let runtimePolicyDecision = xtToolRuntimePolicyDecision(
+            call: call,
+            config: config,
+            effectiveAutonomy: autonomyState.effectivePolicy
+        )
+        guard runtimePolicyDecision.allowed else {
+            return deniedRuntimePolicyResult(
+                call: call,
+                projectRoot: projectRoot,
+                config: config,
+                decision: runtimePolicyDecision,
+                effectiveAutonomy: autonomyState.effectivePolicy
+            )
+        }
+
+        let action = (optStrArg(call, "action") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let normalizedValue = [
+            optStrArg(call, "value"),
+            optStrArg(call, "text"),
+            optStrArg(call, "content"),
+        ]
+        .compactMap { raw in
+            let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        .first
+        let selector = XTDeviceUISelector(
+            role: normalizedToolTextArg(call, "target_role"),
+            title: normalizedToolTextArg(call, "target_title"),
+            identifier: normalizedToolTextArg(call, "target_identifier"),
+            elementDescription: normalizedToolTextArg(call, "target_description"),
+            valueContains: normalizedToolTextArg(call, "target_value_contains"),
+            matchIndex: max(0, Int(optDoubleArg(call, "target_index") ?? 0))
+        )
+        let selectorRequiresObservationProof = !selector.isEmpty
+        let targetIndexWasExplicit = call.args["target_index"] != nil
+        let supported = Set(["press_focused", "press", "set_focused_value", "set_value", "type_text"])
+        guard supported.contains(action) else {
+            var summary = deviceAutomationSummaryBase(
+                call: call,
+                projectRoot: projectRoot,
+                decision: decision,
+                ok: false
+            )
+            summary["action"] = .string(action)
+            summary["deny_code"] = .string(XTDeviceAutomationRejectCode.uiActionUnsupported.rawValue)
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: structuredOutput(summary: summary, body: "unsupported_ui_action")
+            )
+        }
+
+        if selectorRequiresObservationProof, !targetIndexWasExplicit {
+            var summary = deviceAutomationSummaryBase(
+                call: call,
+                projectRoot: projectRoot,
+                decision: decision,
+                ok: false
+            )
+            summary["action"] = .string(action)
+            summary["target_resolution_mode"] = .string("selector")
+            summary["deny_code"] = .string(XTDeviceAutomationRejectCode.uiTargetIndexRequired.rawValue)
+            if !selector.role.isEmpty {
+                summary["target_selector_role"] = .string(selector.role)
+            }
+            if !selector.title.isEmpty {
+                summary["target_selector_title"] = .string(selector.title)
+            }
+            if !selector.identifier.isEmpty {
+                summary["target_selector_identifier"] = .string(selector.identifier)
+            }
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: structuredOutput(summary: summary, body: "target_index_required")
+            )
+        }
+
+        if selectorRequiresObservationProof {
+            guard let proof = await uiObservationProofLedger.latest(
+                projectRoot: projectRoot,
+                selectorSignature: uiObservationSelectorSignature(selector)
+            ) else {
+                var summary = deviceAutomationSummaryBase(
+                    call: call,
+                    projectRoot: projectRoot,
+                    decision: decision,
+                    ok: false
+                )
+                summary["action"] = .string(action)
+                summary["target_resolution_mode"] = .string("selector")
+                summary["target_index"] = .number(Double(selector.matchIndex))
+                summary["deny_code"] = .string(XTDeviceAutomationRejectCode.uiObservationRequired.rawValue)
+                if !selector.role.isEmpty {
+                    summary["target_selector_role"] = .string(selector.role)
+                }
+                if !selector.title.isEmpty {
+                    summary["target_selector_title"] = .string(selector.title)
+                }
+                if !selector.identifier.isEmpty {
+                    summary["target_selector_identifier"] = .string(selector.identifier)
+                }
+                return ToolResult(
+                    id: call.id,
+                    tool: call.tool,
+                    ok: false,
+                    output: structuredOutput(summary: summary, body: "observe_candidates_first")
+                )
+            }
+
+            let ageSeconds = max(0, Date().timeIntervalSince1970 - proof.observedAt)
+            if ageSeconds > uiObservationProofTTLSeconds {
+                var summary = deviceAutomationSummaryBase(
+                    call: call,
+                    projectRoot: projectRoot,
+                    decision: decision,
+                    ok: false
+                )
+                summary["action"] = .string(action)
+                summary["target_resolution_mode"] = .string("selector")
+                summary["target_index"] = .number(Double(selector.matchIndex))
+                summary["observation_proof_age_sec"] = .number(ageSeconds)
+                summary["observation_match_count"] = .number(Double(proof.matchCount))
+                summary["deny_code"] = .string(XTDeviceAutomationRejectCode.uiObservationExpired.rawValue)
+                return ToolResult(
+                    id: call.id,
+                    tool: call.tool,
+                    ok: false,
+                    output: structuredOutput(summary: summary, body: "observation_proof_expired")
+                )
+            }
+
+            if selector.matchIndex >= proof.matchCount {
+                var summary = deviceAutomationSummaryBase(
+                    call: call,
+                    projectRoot: projectRoot,
+                    decision: decision,
+                    ok: false
+                )
+                summary["action"] = .string(action)
+                summary["target_resolution_mode"] = .string("selector")
+                summary["target_index"] = .number(Double(selector.matchIndex))
+                summary["observation_proof_age_sec"] = .number(ageSeconds)
+                summary["observation_match_count"] = .number(Double(proof.matchCount))
+                summary["deny_code"] = .string(XTDeviceAutomationRejectCode.uiObservationTargetIndexOutOfRange.rawValue)
+                return ToolResult(
+                    id: call.id,
+                    tool: call.tool,
+                    ok: false,
+                    output: structuredOutput(summary: summary, body: "target_index_out_of_range_for_last_observation")
+                )
+            }
+        }
+
+        if ["set_focused_value", "set_value", "type_text"].contains(action), normalizedValue == nil {
+            var summary = deviceAutomationSummaryBase(
+                call: call,
+                projectRoot: projectRoot,
+                decision: decision,
+                ok: false
+            )
+            summary["action"] = .string(action)
+            summary["deny_code"] = .string(XTDeviceAutomationRejectCode.uiActionValueMissing.rawValue)
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: structuredOutput(summary: summary, body: "missing_value")
+            )
+        }
+
+        let result = await MainActor.run {
+            DeviceAutomationTools.performUIAction(
+                XTDeviceUIActionRequest(
+                    action: action,
+                    value: normalizedValue,
+                    selector: selector
+                )
+            )
+        }
+        var summary = deviceAutomationSummaryBase(
+            call: call,
+            projectRoot: projectRoot,
+            decision: decision,
+            ok: result.ok
+        )
+        summary["action"] = .string(action)
+        summary["target_resolution_mode"] = .string(selector.isEmpty ? "focused" : "selector")
+        summary["target_index"] = .number(Double(selector.matchIndex))
+        if !selector.role.isEmpty {
+            summary["target_selector_role"] = .string(selector.role)
+        }
+        if !selector.title.isEmpty {
+            summary["target_selector_title"] = .string(selector.title)
+        }
+        if !selector.identifier.isEmpty {
+            summary["target_selector_identifier"] = .string(selector.identifier)
+        }
+        if !selector.elementDescription.isEmpty {
+            summary["target_selector_description"] = .string(selector.elementDescription)
+        }
+        if !selector.valueContains.isEmpty {
+            summary["target_selector_value_contains"] = .string(selector.valueContains)
+        }
+        if let normalizedValue {
+            summary["value_length"] = .number(Double(normalizedValue.count))
+        }
+        if let target = result.targetElement {
+            summary["target_element_role"] = .string(target.role)
+            summary["target_element_title"] = .string(target.title)
+            summary["target_element_identifier"] = .string(target.identifier)
+        }
+        if !result.ok {
+            summary["deny_code"] = .string((result.rejectCode ?? .uiActionFailed).rawValue)
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: structuredOutput(summary: summary, body: result.errorMessage.isEmpty ? "ui_action_failed" : result.errorMessage)
+            )
+        }
+        return ToolResult(
+            id: call.id,
+            tool: call.tool,
+            ok: true,
+            output: structuredOutput(summary: summary, body: result.output.isEmpty ? "ok" : result.output)
+        )
+    }
+
+    private static func executeDeviceUIStep(call: ToolCall, projectRoot: URL) async -> ToolResult {
+        let ctx = AXProjectContext(root: projectRoot)
+        let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: projectRoot)
+        let permissionReadiness = await MainActor.run {
+            AXTrustedAutomationPermissionOwnerReadiness.current()
+        }
+        let observeGateDecision = DeviceAutomationTools.evaluateGate(
+            for: .deviceUIObserve,
+            projectRoot: projectRoot,
+            config: config,
+            permissionReadiness: permissionReadiness
+        )
+        guard observeGateDecision.allowed else {
+            return deniedDeviceAutomationResult(
+                call: call,
+                projectRoot: projectRoot,
+                decision: observeGateDecision,
+                detailOverride: xtDeviceAutomationGateDeniedDetail(
+                    tool: call.tool,
+                    gateTool: .deviceUIObserve,
+                    decision: observeGateDecision
+                )
+            )
+        }
+        let actGateDecision = DeviceAutomationTools.evaluateGate(
+            for: .deviceUIAct,
+            projectRoot: projectRoot,
+            config: config,
+            permissionReadiness: permissionReadiness
+        )
+        guard actGateDecision.allowed else {
+            return deniedDeviceAutomationResult(
+                call: call,
+                projectRoot: projectRoot,
+                decision: actGateDecision,
+                detailOverride: xtDeviceAutomationGateDeniedDetail(
+                    tool: call.tool,
+                    gateTool: .deviceUIAct,
+                    decision: actGateDecision
+                )
+            )
+        }
+        let autonomyState = await xtResolveProjectAutonomyPolicy(
+            projectRoot: projectRoot,
+            config: config
+        )
+        let runtimePolicyDecision = xtToolRuntimePolicyDecision(
+            call: call,
+            config: config,
+            effectiveAutonomy: autonomyState.effectivePolicy
+        )
+        guard runtimePolicyDecision.allowed else {
+            return deniedRuntimePolicyResult(
+                call: call,
+                projectRoot: projectRoot,
+                config: config,
+                decision: runtimePolicyDecision,
+                effectiveAutonomy: autonomyState.effectivePolicy
+            )
+        }
+
+        let observeArgs = uiSelectorObserveArgs(from: call)
+        let preObserve = await executeDeviceUIObserve(
+            call: ToolCall(id: "\(call.id)_preobserve", tool: .deviceUIObserve, args: observeArgs),
+            projectRoot: projectRoot
+        )
+        guard preObserve.ok else {
+            return uiStepFailureResult(
+                call: call,
+                stage: "pre_observe",
+                inner: preObserve,
+                selectedIndex: nil,
+                autoSelected: false
+            )
+        }
+
+        let preParsed = parseStructuredToolOutput(preObserve.output)
+        guard case .object(let preSummary)? = preParsed.summary else {
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: structuredOutput(
+                    summary: [
+                        "tool": .string(call.tool.rawValue),
+                        "ok": .bool(false),
+                        "deny_code": .string(XTDeviceAutomationRejectCode.uiObserveUnavailable.rawValue),
+                    ],
+                    body: "ui_step_preobserve_parse_failed"
+                )
+            )
+        }
+
+        let targetIndexArg = call.args["target_index"]
+        let preMatches = jsonArrayValue(preSummary["matched_elements"]) ?? []
+        let selectedIndex: Int
+        let autoSelected: Bool
+        if let rawTargetIndex = targetIndexArg {
+            if case .number(let n) = rawTargetIndex {
+                selectedIndex = max(0, Int(n))
+            } else if case .string(let s) = rawTargetIndex, let n = Double(s.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                selectedIndex = max(0, Int(n))
+            } else {
+                selectedIndex = 0
+            }
+            autoSelected = false
+        } else {
+            if preMatches.isEmpty {
+                return ToolResult(
+                    id: call.id,
+                    tool: call.tool,
+                    ok: false,
+                    output: structuredOutput(
+                        summary: uiStepSummaryBase(
+                            tool: call.tool,
+                            preSummary: preSummary,
+                            action: normalizedToolTextArg(call, "action").lowercased(),
+                            selectedIndex: nil,
+                            autoSelected: false,
+                            ok: false,
+                            denyCode: XTDeviceAutomationRejectCode.uiStepNoCandidates.rawValue
+                        ),
+                        body: preParsed.body + "\n\nui_step_no_candidates"
+                    )
+                )
+            }
+            if preMatches.count > 1 {
+                return ToolResult(
+                    id: call.id,
+                    tool: call.tool,
+                    ok: false,
+                    output: structuredOutput(
+                        summary: uiStepSummaryBase(
+                            tool: call.tool,
+                            preSummary: preSummary,
+                            action: normalizedToolTextArg(call, "action").lowercased(),
+                            selectedIndex: nil,
+                            autoSelected: false,
+                            ok: false,
+                            denyCode: XTDeviceAutomationRejectCode.uiStepTargetAmbiguous.rawValue
+                        ),
+                        body: preParsed.body + "\n\nui_step_target_ambiguous"
+                    )
+                )
+            }
+            selectedIndex = 0
+            autoSelected = true
+        }
+
+        let actArgs = uiSelectorActArgs(from: call, selectedIndex: selectedIndex)
+        let act = await executeDeviceUIAct(
+            call: ToolCall(id: "\(call.id)_act", tool: .deviceUIAct, args: actArgs),
+            projectRoot: projectRoot
+        )
+        guard act.ok else {
+            return uiStepFailureResult(
+                call: call,
+                stage: "act",
+                inner: act,
+                selectedIndex: selectedIndex,
+                autoSelected: autoSelected
+            )
+        }
+
+        let postObserve = await executeDeviceUIObserve(
+            call: ToolCall(id: "\(call.id)_postobserve", tool: .deviceUIObserve, args: observeArgs),
+            projectRoot: projectRoot
+        )
+        guard postObserve.ok else {
+            return uiStepFailureResult(
+                call: call,
+                stage: "post_observe",
+                inner: postObserve,
+                selectedIndex: selectedIndex,
+                autoSelected: autoSelected
+            )
+        }
+
+        let actParsed = parseStructuredToolOutput(act.output)
+        let postParsed = parseStructuredToolOutput(postObserve.output)
+        guard case .object(let actSummary)? = actParsed.summary,
+              case .object(let postSummary)? = postParsed.summary else {
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: structuredOutput(
+                    summary: [
+                        "tool": .string(call.tool.rawValue),
+                        "ok": .bool(false),
+                        "deny_code": .string(XTDeviceAutomationRejectCode.uiActionFailed.rawValue),
+                    ],
+                    body: "ui_step_summary_parse_failed"
+                )
+            )
+        }
+
+        var summary = actSummary
+        summary["tool"] = .string(call.tool.rawValue)
+        summary["ok"] = .bool(true)
+        summary["side_effect_class"] = .string("ui_step")
+        summary["step_mode"] = .string("observe_act_reobserve")
+        summary["pre_match_count"] = preSummary["match_count"] ?? .number(Double(preMatches.count))
+        summary["post_match_count"] = postSummary["match_count"] ?? .number(0)
+        summary["selected_target_index"] = .number(Double(selectedIndex))
+        summary["selected_target_auto"] = .bool(autoSelected)
+        summary["pre_matched_elements"] = preSummary["matched_elements"] ?? .array([])
+        summary["post_matched_elements"] = postSummary["matched_elements"] ?? .array([])
+        let body = """
+PREPARE
+\(preParsed.body)
+
+ACTION
+\(actParsed.body)
+
+VERIFY
+\(postParsed.body)
+"""
+        return ToolResult(
+            id: call.id,
+            tool: call.tool,
+            ok: true,
+            output: structuredOutput(summary: summary, body: body)
+        )
+    }
+
+    private static func executeDeviceClipboardWrite(call: ToolCall, projectRoot: URL) async -> ToolResult {
+        let ctx = AXProjectContext(root: projectRoot)
+        let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: projectRoot)
+        let permissionReadiness = await MainActor.run {
+            AXTrustedAutomationPermissionOwnerReadiness.current()
+        }
+        let decision = DeviceAutomationTools.evaluateGate(
+            for: call.tool,
+            projectRoot: projectRoot,
+            config: config,
+            permissionReadiness: permissionReadiness
+        )
+        guard decision.allowed else {
+            return deniedDeviceAutomationResult(call: call, projectRoot: projectRoot, decision: decision)
+        }
+        let autonomyState = await xtResolveProjectAutonomyPolicy(
+            projectRoot: projectRoot,
+            config: config
+        )
+        let runtimePolicyDecision = xtToolRuntimePolicyDecision(
+            call: call,
+            config: config,
+            effectiveAutonomy: autonomyState.effectivePolicy
+        )
+        guard runtimePolicyDecision.allowed else {
+            return deniedRuntimePolicyResult(
+                call: call,
+                projectRoot: projectRoot,
+                config: config,
+                decision: runtimePolicyDecision,
+                effectiveAutonomy: autonomyState.effectivePolicy
+            )
+        }
+
+        let text = [
+            optStrArg(call, "text"),
+            optStrArg(call, "content"),
+            optStrArg(call, "value"),
+        ]
+        .compactMap { $0 }
+        .first
+
+        guard let text else {
+            var summary = deviceAutomationSummaryBase(
+                call: call,
+                projectRoot: projectRoot,
+                decision: decision,
+                ok: false
+            )
+            summary["deny_code"] = .string(XTDeviceAutomationRejectCode.clipboardTextMissing.rawValue)
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: structuredOutput(summary: summary, body: "missing_text")
+            )
+        }
+
+        let wrote = await MainActor.run {
+            DeviceAutomationTools.writeClipboardText(text)
+        }
+        var summary = deviceAutomationSummaryBase(
+            call: call,
+            projectRoot: projectRoot,
+            decision: decision,
+            ok: wrote
+        )
+        summary["character_count"] = .number(Double(text.count))
+        if !wrote {
+            summary["deny_code"] = .string(XTDeviceAutomationRejectCode.clipboardWriteFailed.rawValue)
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: structuredOutput(summary: summary, body: "clipboard_write_failed")
+            )
+        }
+        return ToolResult(id: call.id, tool: call.tool, ok: true, output: structuredOutput(summary: summary, body: "ok"))
+    }
+
+    private static func executeDeviceScreenCapture(call: ToolCall, projectRoot: URL) async -> ToolResult {
+        let ctx = AXProjectContext(root: projectRoot)
+        let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: projectRoot)
+        let permissionReadiness = await MainActor.run {
+            AXTrustedAutomationPermissionOwnerReadiness.current()
+        }
+        let decision = DeviceAutomationTools.evaluateGate(
+            for: call.tool,
+            projectRoot: projectRoot,
+            config: config,
+            permissionReadiness: permissionReadiness
+        )
+        guard decision.allowed else {
+            return deniedDeviceAutomationResult(call: call, projectRoot: projectRoot, decision: decision)
+        }
+        let autonomyState = await xtResolveProjectAutonomyPolicy(
+            projectRoot: projectRoot,
+            config: config
+        )
+        let runtimePolicyDecision = xtToolRuntimePolicyDecision(
+            call: call,
+            config: config,
+            effectiveAutonomy: autonomyState.effectivePolicy
+        )
+        guard runtimePolicyDecision.allowed else {
+            return deniedRuntimePolicyResult(
+                call: call,
+                projectRoot: projectRoot,
+                config: config,
+                decision: runtimePolicyDecision,
+                effectiveAutonomy: autonomyState.effectivePolicy
+            )
+        }
+
+        guard let capture = await MainActor.run(resultType: (data: Data, width: Int, height: Int)?.self, body: {
+            DeviceAutomationTools.captureMainDisplayPNG()
+        }) else {
+            var summary = deviceAutomationSummaryBase(
+                call: call,
+                projectRoot: projectRoot,
+                decision: decision,
+                ok: false
+            )
+            summary["deny_code"] = .string(XTDeviceAutomationRejectCode.screenCaptureFailed.rawValue)
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: structuredOutput(summary: summary, body: "screen_capture_failed")
+            )
+        }
+
+        let defaultPath = "build/reports/xt_device_screen_capture_\(Int(Date().timeIntervalSince1970 * 1000)).png"
+        let rawPath = optStrArg(call, "path") ?? defaultPath
+        let target = FileTool.resolvePath(rawPath, projectRoot: projectRoot)
+        do {
+            try PathGuard.requireInside(root: projectRoot, target: target)
+            try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try capture.data.write(to: target)
+        } catch {
+            var summary = deviceAutomationSummaryBase(
+                call: call,
+                projectRoot: projectRoot,
+                decision: decision,
+                ok: false
+            )
+            summary["deny_code"] = .string(XTDeviceAutomationRejectCode.screenCaptureEncodeFailed.rawValue)
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: structuredOutput(summary: summary, body: error.localizedDescription)
+            )
+        }
+
+        var summary = deviceAutomationSummaryBase(
+            call: call,
+            projectRoot: projectRoot,
+            decision: decision,
+            ok: true
+        )
+        summary["path"] = .string(target.path)
+        summary["bytes"] = .number(Double(capture.data.count))
+        summary["width"] = .number(Double(capture.width))
+        summary["height"] = .number(Double(capture.height))
+        return ToolResult(
+            id: call.id,
+            tool: call.tool,
+            ok: true,
+            output: structuredOutput(summary: summary, body: target.path)
+        )
+    }
+
+    private static func executeDeviceBrowserControl(call: ToolCall, projectRoot: URL) async -> ToolResult {
+        let ctx = AXProjectContext(root: projectRoot)
+        let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: projectRoot)
+        let permissionReadiness = await MainActor.run {
+            AXTrustedAutomationPermissionOwnerReadiness.current()
+        }
+        let decision = DeviceAutomationTools.evaluateGate(
+            for: call.tool,
+            projectRoot: projectRoot,
+            config: config,
+            permissionReadiness: permissionReadiness
+        )
+        guard decision.allowed else {
+            return deniedDeviceAutomationResult(call: call, projectRoot: projectRoot, decision: decision)
+        }
+        let autonomyState = await xtResolveProjectAutonomyPolicy(
+            projectRoot: projectRoot,
+            config: config
+        )
+        let runtimePolicyDecision = xtToolRuntimePolicyDecision(
+            call: call,
+            config: config,
+            effectiveAutonomy: autonomyState.effectivePolicy
+        )
+        guard runtimePolicyDecision.allowed else {
+            return deniedRuntimePolicyResult(
+                call: call,
+                projectRoot: projectRoot,
+                config: config,
+                decision: runtimePolicyDecision,
+                effectiveAutonomy: autonomyState.effectivePolicy
+            )
+        }
+
+        let rawAction = (optStrArg(call, "action") ?? "open_url")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard let requestedAction = XTBrowserRuntimeRequestedAction.parse(rawAction) else {
+            return deviceBrowserControlFailure(
+                call: call,
+                projectRoot: projectRoot,
+                decision: decision,
+                rejectCode: .browserActionUnsupported,
+                action: rawAction,
+                url: optStrArg(call, "url"),
+                body: "unsupported_browser_action"
+            )
+        }
+
+        let requestedSessionID = (optStrArg(call, "session_id") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let now = Date()
+        let projectID = AXProjectRegistryStore.projectId(forRoot: projectRoot)
+        let auditRef = browserRuntimeAuditRef(action: requestedAction, projectID: projectID, now: now)
+        let existingSession = XTBrowserRuntimeStore.resolvedSession(
+            for: ctx,
+            requestedSessionID: requestedSessionID
+        )
+
+        if !requestedSessionID.isEmpty, existingSession == nil {
+            return deviceBrowserControlFailure(
+                call: call,
+                projectRoot: projectRoot,
+                decision: decision,
+                rejectCode: .browserSessionMissing,
+                action: requestedAction.rawValue,
+                url: optStrArg(call, "url"),
+                body: "browser_session_missing"
+            )
+        }
+
+        switch requestedAction {
+        case .open, .navigate:
+            guard let rawURL = optStrArg(call, "url") else {
+                return deviceBrowserControlFailure(
+                    call: call,
+                    projectRoot: projectRoot,
+                    decision: decision,
+                    rejectCode: .browserURLMissing,
+                    action: requestedAction.rawValue,
+                    url: nil,
+                    body: "missing_url"
+                )
+            }
+            guard let url = validatedBrowserURL(rawURL) else {
+                return deviceBrowserControlFailure(
+                    call: call,
+                    projectRoot: projectRoot,
+                    decision: decision,
+                    rejectCode: .browserURLInvalid,
+                    action: requestedAction.rawValue,
+                    url: rawURL,
+                    body: "invalid_url"
+                )
+            }
+
+            let opened = await MainActor.run {
+                DeviceAutomationTools.openURLInDefaultBrowser(url)
+            }
+            guard opened else {
+                return deviceBrowserControlFailure(
+                    call: call,
+                    projectRoot: projectRoot,
+                    decision: decision,
+                    rejectCode: .browserOpenFailed,
+                    action: requestedAction.rawValue,
+                    url: url.absoluteString,
+                    body: "browser_open_failed"
+                )
+            }
+
+            var session = existingSession ?? XTBrowserRuntimeStore.bootstrapSession(
+                for: ctx,
+                projectID: projectID,
+                actionMode: browserRuntimeActionMode(for: requestedAction),
+                now: now
+            )
+            session = session.setting(
+                currentURL: url.absoluteString,
+                actionMode: browserRuntimeActionMode(for: requestedAction),
+                updatedAt: now,
+                auditRef: auditRef
+            )
+
+            do {
+                let snapshotRef = try XTBrowserRuntimeStore.writeSnapshot(
+                    session: session,
+                    action: requestedAction,
+                    snapshotKind: "runtime_state",
+                    excerpt: "",
+                    detail: "browser action routed through system_default_browser_bridge",
+                    auditRef: auditRef,
+                    for: ctx,
+                    now: now
+                )
+                session = session.setting(snapshotRef: snapshotRef, updatedAt: now, auditRef: auditRef)
+                try XTBrowserRuntimeStore.saveSession(session, for: ctx)
+                recordBrowserRuntimeAction(
+                    session: session,
+                    action: requestedAction,
+                    ok: true,
+                    url: url.absoluteString,
+                    snapshotRef: snapshotRef,
+                    detail: "browser runtime \(requestedAction.rawValue) succeeded",
+                    rejectCode: nil,
+                    auditRef: auditRef,
+                    ctx: ctx,
+                    now: now
+                )
+
+                var summary = deviceAutomationSummaryBase(
+                    call: call,
+                    projectRoot: projectRoot,
+                    decision: decision,
+                    ok: true
+                )
+                summary["action"] = .string(requestedAction.rawValue)
+                summary["url"] = .string(url.absoluteString)
+                summary.merge(browserRuntimeSummary(session: session, ctx: ctx), uniquingKeysWith: { _, new in new })
+
+                let body = """
+session_id=\(session.sessionID)
+profile_id=\(session.profileID)
+transport=\(session.transport)
+snapshot_ref=\(session.snapshotRef)
+url=\(url.absoluteString)
+"""
+                return ToolResult(
+                    id: call.id,
+                    tool: call.tool,
+                    ok: true,
+                    output: structuredOutput(summary: summary, body: body)
+                )
+            } catch {
+                return deviceBrowserControlFailure(
+                    call: call,
+                    projectRoot: projectRoot,
+                    decision: decision,
+                    rejectCode: .browserSnapshotFailed,
+                    action: requestedAction.rawValue,
+                    url: url.absoluteString,
+                    body: "browser_snapshot_failed"
+                )
+            }
+
+        case .snapshot:
+            var session = existingSession ?? XTBrowserRuntimeStore.bootstrapSession(
+                for: ctx,
+                projectID: projectID,
+                actionMode: browserRuntimeActionMode(for: requestedAction),
+                now: now
+            )
+            let targetURL = (optStrArg(call, "url") ?? session.currentURL).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !targetURL.isEmpty else {
+                return deviceBrowserControlFailure(
+                    call: call,
+                    projectRoot: projectRoot,
+                    decision: decision,
+                    rejectCode: .browserSessionNoActiveURL,
+                    action: requestedAction.rawValue,
+                    url: nil,
+                    body: "browser_session_no_active_url"
+                )
+            }
+
+            session = session.setting(
+                currentURL: targetURL,
+                actionMode: browserRuntimeActionMode(for: requestedAction),
+                updatedAt: now,
+                auditRef: auditRef
+            )
+            do {
+                let snapshotRef = try XTBrowserRuntimeStore.writeSnapshot(
+                    session: session,
+                    action: requestedAction,
+                    snapshotKind: "runtime_state",
+                    excerpt: "",
+                    detail: "runtime state snapshot without browser-side mutation",
+                    auditRef: auditRef,
+                    for: ctx,
+                    now: now
+                )
+                session = session.setting(snapshotRef: snapshotRef, updatedAt: now, auditRef: auditRef)
+                try XTBrowserRuntimeStore.saveSession(session, for: ctx)
+                recordBrowserRuntimeAction(
+                    session: session,
+                    action: requestedAction,
+                    ok: true,
+                    url: targetURL,
+                    snapshotRef: snapshotRef,
+                    detail: "browser runtime snapshot captured",
+                    rejectCode: nil,
+                    auditRef: auditRef,
+                    ctx: ctx,
+                    now: now
+                )
+
+                var summary = deviceAutomationSummaryBase(
+                    call: call,
+                    projectRoot: projectRoot,
+                    decision: decision,
+                    ok: true
+                )
+                summary["action"] = .string(requestedAction.rawValue)
+                summary["url"] = .string(targetURL)
+                summary.merge(browserRuntimeSummary(session: session, ctx: ctx), uniquingKeysWith: { _, new in new })
+                return ToolResult(
+                    id: call.id,
+                    tool: call.tool,
+                    ok: true,
+                    output: structuredOutput(summary: summary, body: snapshotRef)
+                )
+            } catch {
+                return deviceBrowserControlFailure(
+                    call: call,
+                    projectRoot: projectRoot,
+                    decision: decision,
+                    rejectCode: .browserSnapshotFailed,
+                    action: requestedAction.rawValue,
+                    url: targetURL,
+                    body: "browser_snapshot_failed"
+                )
+            }
+
+        case .extract:
+            var session = existingSession ?? XTBrowserRuntimeStore.bootstrapSession(
+                for: ctx,
+                projectID: projectID,
+                actionMode: browserRuntimeActionMode(for: requestedAction),
+                now: now
+            )
+            let targetURL = (optStrArg(call, "url") ?? session.currentURL).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !targetURL.isEmpty else {
+                return deviceBrowserControlFailure(
+                    call: call,
+                    projectRoot: projectRoot,
+                    decision: decision,
+                    rejectCode: .browserSessionNoActiveURL,
+                    action: requestedAction.rawValue,
+                    url: nil,
+                    body: "browser_session_no_active_url"
+                )
+            }
+
+            let extractCall = ToolCall(
+                id: "\(call.id)_browser_read",
+                tool: .browser_read,
+                args: [
+                    "url": .string(targetURL),
+                    "grant_id": call.args["grant_id"] ?? .null,
+                    "timeout_sec": call.args["timeout_sec"] ?? .number(15),
+                    "max_bytes": call.args["max_bytes"] ?? .number(900_000),
+                ]
+            )
+            let extracted: ToolResult
+            do {
+                extracted = try await execute(call: extractCall, projectRoot: projectRoot)
+            } catch {
+                return deviceBrowserControlFailure(
+                    call: call,
+                    projectRoot: projectRoot,
+                    decision: decision,
+                    rejectCode: .browserExtractFailed,
+                    action: requestedAction.rawValue,
+                    url: targetURL,
+                    body: "browser_extract_failed"
+                )
+            }
+            guard extracted.ok else {
+                var summary = deviceAutomationSummaryBase(
+                    call: call,
+                    projectRoot: projectRoot,
+                    decision: decision,
+                    ok: false
+                )
+                summary["action"] = .string(requestedAction.rawValue)
+                summary["url"] = .string(targetURL)
+                summary["deny_code"] = .string(XTDeviceAutomationRejectCode.browserExtractFailed.rawValue)
+                return ToolResult(
+                    id: call.id,
+                    tool: call.tool,
+                    ok: false,
+                    output: wrappedFailureOutput(
+                        tool: call.tool,
+                        body: extracted.output,
+                        extra: summary
+                    )
+                )
+            }
+
+            let parsed = parseStructuredToolOutput(extracted.output)
+            session = session.setting(
+                currentURL: targetURL,
+                actionMode: browserRuntimeActionMode(for: requestedAction),
+                updatedAt: now,
+                auditRef: auditRef
+            )
+            do {
+                let snapshotRef = try XTBrowserRuntimeStore.writeSnapshot(
+                    session: session,
+                    action: requestedAction,
+                    snapshotKind: "extracted_text",
+                    excerpt: parsed.body,
+                    detail: "extract delegated to browser_read",
+                    auditRef: auditRef,
+                    for: ctx,
+                    now: now
+                )
+                session = session.setting(snapshotRef: snapshotRef, updatedAt: now, auditRef: auditRef)
+                try XTBrowserRuntimeStore.saveSession(session, for: ctx)
+                recordBrowserRuntimeAction(
+                    session: session,
+                    action: requestedAction,
+                    ok: true,
+                    url: targetURL,
+                    snapshotRef: snapshotRef,
+                    detail: "browser runtime extract succeeded",
+                    rejectCode: nil,
+                    auditRef: auditRef,
+                    ctx: ctx,
+                    now: now
+                )
+
+                var summary = deviceAutomationSummaryBase(
+                    call: call,
+                    projectRoot: projectRoot,
+                    decision: decision,
+                    ok: true
+                )
+                summary["action"] = .string(requestedAction.rawValue)
+                summary["url"] = .string(targetURL)
+                summary["text_chars"] = .number(Double(parsed.body.count))
+                if case .object(let extractedSummary)? = parsed.summary {
+                    if let finalURL = extractedSummary["final_url"] {
+                        summary["browser_read_final_url"] = finalURL
+                    }
+                    if let contentType = extractedSummary["content_type"] {
+                        summary["browser_read_content_type"] = contentType
+                    }
+                }
+                summary.merge(browserRuntimeSummary(session: session, ctx: ctx), uniquingKeysWith: { _, new in new })
+                return ToolResult(
+                    id: call.id,
+                    tool: call.tool,
+                    ok: true,
+                    output: structuredOutput(summary: summary, body: parsed.body)
+                )
+            } catch {
+                return deviceBrowserControlFailure(
+                    call: call,
+                    projectRoot: projectRoot,
+                    decision: decision,
+                    rejectCode: .browserSnapshotFailed,
+                    action: requestedAction.rawValue,
+                    url: targetURL,
+                    body: "browser_snapshot_failed"
+                )
+            }
+
+        case .click, .typeText, .upload:
+            guard let sessionForAction = existingSession else {
+                return deviceBrowserControlFailure(
+                    call: call,
+                    projectRoot: projectRoot,
+                    decision: decision,
+                    rejectCode: .browserSessionMissing,
+                    action: requestedAction.rawValue,
+                    url: optStrArg(call, "url"),
+                    body: "browser_session_missing"
+                )
+            }
+
+            let targetURL = (optStrArg(call, "url") ?? sessionForAction.currentURL)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !targetURL.isEmpty else {
+                return deviceBrowserControlFailure(
+                    call: call,
+                    projectRoot: projectRoot,
+                    decision: decision,
+                    rejectCode: .browserSessionNoActiveURL,
+                    action: requestedAction.rawValue,
+                    url: nil,
+                    body: "browser_session_no_active_url"
+                )
+            }
+
+            let attemptedSession = sessionForAction.setting(
+                currentURL: targetURL,
+                actionMode: browserRuntimeActionMode(for: requestedAction),
+                updatedAt: now,
+                auditRef: auditRef
+            )
+            let managedDriverReject = XTDeviceAutomationRejectCode.browserManagedDriverUnavailable
+            recordBrowserRuntimeAction(
+                session: attemptedSession,
+                action: requestedAction,
+                ok: false,
+                url: targetURL,
+                snapshotRef: "",
+                detail: "managed browser driver is not implemented for \(requestedAction.rawValue)",
+                rejectCode: managedDriverReject.rawValue,
+                auditRef: auditRef,
+                ctx: ctx,
+                now: now
+            )
+
+            var summary = deviceAutomationSummaryBase(
+                call: call,
+                projectRoot: projectRoot,
+                decision: decision,
+                ok: false
+            )
+            summary["action"] = .string(requestedAction.rawValue)
+            summary["url"] = .string(targetURL)
+            summary["deny_code"] = .string(managedDriverReject.rawValue)
+            summary["browser_runtime_driver_state"] = .string("unavailable")
+            if let selector = optStrArg(call, "selector")?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !selector.isEmpty {
+                summary["selector"] = .string(selector)
+            }
+            if requestedAction == .typeText {
+                let inputText = [
+                    optStrArg(call, "text"),
+                    optStrArg(call, "content"),
+                    optStrArg(call, "value"),
+                ]
+                .compactMap { raw -> String? in
+                    let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    return trimmed.isEmpty ? nil : trimmed
+                }
+                .first ?? ""
+                summary["input_chars"] = .number(Double(inputText.count))
+            }
+            if requestedAction == .upload,
+               let path = optStrArg(call, "path")?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !path.isEmpty {
+                summary["path"] = .string(path)
+            }
+            summary.merge(browserRuntimeSummary(session: attemptedSession, ctx: ctx), uniquingKeysWith: { _, new in new })
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: structuredOutput(summary: summary, body: "managed_browser_driver_unavailable")
+            )
+        }
+    }
+
+    private static func validatedBrowserURL(_ raw: String) -> URL? {
+        guard let url = URL(string: raw),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else {
+            return nil
+        }
+        return url
+    }
+
+    private static func browserRuntimeActionMode(
+        for action: XTBrowserRuntimeRequestedAction
+    ) -> XTBrowserRuntimeActionMode {
+        switch action {
+        case .open, .navigate, .click, .typeText:
+            return .interactive
+        case .upload:
+            return .interactiveWithUpload
+        case .snapshot, .extract:
+            return .readOnly
+        }
+    }
+
+    private static func browserRuntimeSummary(
+        session: XTBrowserRuntimeSession,
+        ctx: AXProjectContext
+    ) -> [String: JSONValue] {
+        [
+            "browser_runtime_session_id": .string(session.sessionID),
+            "browser_runtime_profile_id": .string(session.profileID),
+            "browser_runtime_profile_path": .string(XTBrowserRuntimeStore.managedProfilePath(for: ctx, session: session)),
+            "browser_runtime_snapshot_ref": .string(session.snapshotRef),
+            "browser_runtime_action_mode": .string(session.actionMode.rawValue),
+            "browser_runtime_transport": .string(session.transport),
+            "browser_runtime_browser_engine": .string(session.browserEngine),
+            "browser_runtime_current_url": .string(session.currentURL),
+            "browser_runtime_open_tabs": .number(Double(session.openTabs)),
+            "browser_runtime_grant_policy_ref": .string(session.grantPolicyRef),
+        ]
+    }
+
+    private static func deviceBrowserControlFailure(
+        call: ToolCall,
+        projectRoot: URL,
+        decision: XTDeviceAutomationGateDecision,
+        rejectCode: XTDeviceAutomationRejectCode,
+        action: String,
+        url: String?,
+        body: String
+    ) -> ToolResult {
+        var summary = deviceAutomationSummaryBase(
+            call: call,
+            projectRoot: projectRoot,
+            decision: decision,
+            ok: false
+        )
+        summary["action"] = .string(action)
+        if let url, !url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            summary["url"] = .string(url)
+        }
+        summary["deny_code"] = .string(rejectCode.rawValue)
+        return ToolResult(
+            id: call.id,
+            tool: call.tool,
+            ok: false,
+            output: structuredOutput(summary: summary, body: body)
+        )
+    }
+
+    private static func recordBrowserRuntimeAction(
+        session: XTBrowserRuntimeSession,
+        action: XTBrowserRuntimeRequestedAction,
+        ok: Bool,
+        url: String,
+        snapshotRef: String,
+        detail: String,
+        rejectCode: String?,
+        auditRef: String,
+        ctx: AXProjectContext,
+        now: Date
+    ) {
+        XTBrowserRuntimeStore.appendActionLog(
+            session: session,
+            action: action,
+            ok: ok,
+            url: url,
+            snapshotRef: snapshotRef,
+            detail: detail,
+            rejectCode: rejectCode,
+            auditRef: auditRef,
+            for: ctx,
+            now: now
+        )
+        var rawLogRow: [String: Any] = [
+            "type": "browser_runtime_action",
+            "created_at": now.timeIntervalSince1970,
+            "project_id": session.projectID,
+            "session_id": session.sessionID,
+            "profile_id": session.profileID,
+            "action": action.rawValue,
+            "ok": ok,
+            "url": url,
+            "snapshot_ref": snapshotRef,
+            "audit_ref": auditRef,
+            "transport": session.transport
+        ]
+        if let rejectCode, !rejectCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            rawLogRow["reject_code"] = rejectCode
+        }
+        AXProjectStore.appendRawLog(rawLogRow, for: ctx)
+    }
+
+    private static func browserRuntimeAuditRef(
+        action: XTBrowserRuntimeRequestedAction,
+        projectID: String,
+        now: Date
+    ) -> String {
+        let token = projectID
+            .lowercased()
+            .replacingOccurrences(of: " ", with: "_")
+        return "audit-xt-browser-\(action.rawValue)-\(token)-\(Int(now.timeIntervalSince1970))"
+    }
+
+    private static func executeDeviceAppleScript(call: ToolCall, projectRoot: URL) async -> ToolResult {
+        let ctx = AXProjectContext(root: projectRoot)
+        let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: projectRoot)
+        let permissionReadiness = await MainActor.run {
+            AXTrustedAutomationPermissionOwnerReadiness.current()
+        }
+        let decision = DeviceAutomationTools.evaluateGate(
+            for: call.tool,
+            projectRoot: projectRoot,
+            config: config,
+            permissionReadiness: permissionReadiness
+        )
+        guard decision.allowed else {
+            return deniedDeviceAutomationResult(call: call, projectRoot: projectRoot, decision: decision)
+        }
+        let autonomyState = await xtResolveProjectAutonomyPolicy(
+            projectRoot: projectRoot,
+            config: config
+        )
+        let runtimePolicyDecision = xtToolRuntimePolicyDecision(
+            call: call,
+            config: config,
+            effectiveAutonomy: autonomyState.effectivePolicy
+        )
+        guard runtimePolicyDecision.allowed else {
+            return deniedRuntimePolicyResult(
+                call: call,
+                projectRoot: projectRoot,
+                config: config,
+                decision: runtimePolicyDecision,
+                effectiveAutonomy: autonomyState.effectivePolicy
+            )
+        }
+
+        let source = (optStrArg(call, "source") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !source.isEmpty else {
+            var summary = deviceAutomationSummaryBase(
+                call: call,
+                projectRoot: projectRoot,
+                decision: decision,
+                ok: false
+            )
+            summary["source_length"] = .number(0)
+            summary["deny_code"] = .string(XTDeviceAutomationRejectCode.appleScriptSourceMissing.rawValue)
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: structuredOutput(summary: summary, body: "missing_source")
+            )
+        }
+
+        let result = await MainActor.run {
+            DeviceAutomationTools.runAppleScript(source)
+        }
+        var summary = deviceAutomationSummaryBase(
+            call: call,
+            projectRoot: projectRoot,
+            decision: decision,
+            ok: result.ok
+        )
+        summary["source_length"] = .number(Double(source.count))
+        summary["output_length"] = .number(Double(result.output.count))
+        if !result.ok {
+            summary["deny_code"] = .string(XTDeviceAutomationRejectCode.appleScriptExecutionFailed.rawValue)
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: structuredOutput(summary: summary, body: result.errorMessage.isEmpty ? "applescript_execution_failed" : result.errorMessage)
+            )
+        }
+
+        let body = result.output.isEmpty ? "(no output)" : result.output
+        return ToolResult(
+            id: call.id,
+            tool: call.tool,
+            ok: true,
+            output: structuredOutput(summary: summary, body: body)
+        )
     }
 
     private static func executeWebSearch(call: ToolCall, projectRoot: URL) async throws -> ToolResult {
@@ -864,9 +2644,9 @@ git=\(isGitRepo ? (gitSummary.isEmpty ? "clean" : gitSummary) : "not_git_repo")
         guard !trimmed.isEmpty else {
             return (nil, "")
         }
-        if let range = trimmed.range(of: "\n\n") {
-            let header = String(trimmed[..<range.lowerBound])
-            let body = String(trimmed[range.upperBound...])
+        if let boundary = structuredHeaderBoundary(in: trimmed) {
+            let header = String(trimmed[..<boundary])
+            let body = String(trimmed[boundary...]).trimmingCharacters(in: .whitespacesAndNewlines)
             if let data = header.data(using: .utf8),
                let value = try? JSONDecoder().decode(JSONValue.self, from: data) {
                 return (value, body)
@@ -906,6 +2686,46 @@ git=\(isGitRepo ? (gitSummary.isEmpty ? "clean" : gitSummary) : "not_git_repo")
             .map(String.init)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return firstLine?.isEmpty == false ? firstLine! : "tool_failed"
+    }
+
+    private static func structuredHeaderBoundary(in text: String) -> String.Index? {
+        guard let first = text.first, first == "{" || first == "[" else {
+            return nil
+        }
+
+        var depth = 0
+        var inString = false
+        var escaping = false
+
+        for index in text.indices {
+            let character = text[index]
+            if inString {
+                if escaping {
+                    escaping = false
+                } else if character == "\\" {
+                    escaping = true
+                } else if character == "\"" {
+                    inString = false
+                }
+                continue
+            }
+
+            switch character {
+            case "\"":
+                inString = true
+            case "{", "[":
+                depth += 1
+            case "}", "]":
+                depth -= 1
+                if depth == 0 {
+                    return text.index(after: index)
+                }
+            default:
+                break
+            }
+        }
+
+        return nil
     }
 
     private static func parseWebFetchOutput(_ output: String) -> (header: [String: String], body: String) {
@@ -1089,11 +2909,413 @@ git=\(isGitRepo ? (gitSummary.isEmpty ? "clean" : gitSummary) : "not_git_repo")
         return nil
     }
 
+    private static func normalizedToolTextArg(_ call: ToolCall, _ key: String) -> String {
+        (optStrArg(call, key) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func uiObservationSelectorSignature(_ selector: XTDeviceUISelector) -> String {
+        [
+            selector.role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            selector.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            selector.identifier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            selector.elementDescription.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            selector.valueContains.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+        ]
+        .joined(separator: "\u{1F}")
+    }
+
+    private static func uiSelectorObserveArgs(from call: ToolCall) -> [String: JSONValue] {
+        var args: [String: JSONValue] = [:]
+        for key in ["target_role", "target_title", "target_identifier", "target_description", "target_value_contains", "max_results"] {
+            if let value = call.args[key] {
+                args[key] = value
+            }
+        }
+        return args
+    }
+
+    private static func uiSelectorActArgs(from call: ToolCall, selectedIndex: Int) -> [String: JSONValue] {
+        var args: [String: JSONValue] = [:]
+        for key in ["action", "value", "text", "content", "target_role", "target_title", "target_identifier", "target_description", "target_value_contains"] {
+            if let value = call.args[key] {
+                args[key] = value
+            }
+        }
+        args["target_index"] = .number(Double(selectedIndex))
+        return args
+    }
+
+    private static func uiStepFailureResult(
+        call: ToolCall,
+        stage: String,
+        inner: ToolResult,
+        selectedIndex: Int?,
+        autoSelected: Bool
+    ) -> ToolResult {
+        let parsed = parseStructuredToolOutput(inner.output)
+        var summary: [String: JSONValue]
+        if case .object(let object)? = parsed.summary {
+            summary = object
+        } else {
+            summary = [:]
+        }
+        summary["tool"] = .string(call.tool.rawValue)
+        summary["ok"] = .bool(false)
+        summary["side_effect_class"] = .string("ui_step")
+        summary["step_mode"] = .string("observe_act_reobserve")
+        summary["step_stage"] = .string(stage)
+        if let selectedIndex {
+            summary["selected_target_index"] = .number(Double(selectedIndex))
+            summary["selected_target_auto"] = .bool(autoSelected)
+        }
+        let body = """
+UI step stage failed: \(stage)
+
+\(parsed.body)
+"""
+        return ToolResult(
+            id: call.id,
+            tool: call.tool,
+            ok: false,
+            output: structuredOutput(summary: summary, body: body)
+        )
+    }
+
+    private static func uiStepSummaryBase(
+        tool: ToolName,
+        preSummary: [String: JSONValue],
+        action: String,
+        selectedIndex: Int?,
+        autoSelected: Bool,
+        ok: Bool,
+        denyCode: String
+    ) -> [String: JSONValue] {
+        var summary = preSummary
+        summary["tool"] = .string(tool.rawValue)
+        summary["ok"] = .bool(ok)
+        summary["side_effect_class"] = .string("ui_step")
+        summary["step_mode"] = .string("observe_act_reobserve")
+        summary["action"] = .string(action)
+        summary["deny_code"] = .string(denyCode)
+        if let selectedIndex {
+            summary["selected_target_index"] = .number(Double(selectedIndex))
+        }
+        summary["selected_target_auto"] = .bool(autoSelected)
+        return summary
+    }
+
+    private static func jsonArrayValue(_ value: JSONValue?) -> [JSONValue]? {
+        guard case .array(let array)? = value else { return nil }
+        return array
+    }
+
     private static func shouldUseSandbox(_ call: ToolCall) -> Bool {
         if let explicit = optBoolArg(call, "sandbox") {
             return explicit
         }
         return sandboxMode() == .sandbox
+    }
+
+    private static func deniedDeviceAutomationResult(
+        call: ToolCall,
+        projectRoot: URL,
+        decision: XTDeviceAutomationGateDecision,
+        detailOverride: String? = nil
+    ) -> ToolResult {
+        var summary = deviceAutomationSummaryBase(
+            call: call,
+            projectRoot: projectRoot,
+            decision: decision,
+            ok: false
+        )
+        summary["deny_code"] = .string(decision.rejectCode?.rawValue ?? XTDeviceAutomationRejectCode.toolNotSupported.rawValue)
+        return ToolResult(
+            id: call.id,
+            tool: call.tool,
+            ok: false,
+            output: structuredOutput(summary: summary, body: detailOverride ?? decision.detail)
+        )
+    }
+
+    private static func deniedRuntimePolicyResult(
+        call: ToolCall,
+        projectRoot: URL,
+        config: AXProjectConfig,
+        decision: XTToolRuntimePolicyDecision,
+        effectiveAutonomy: AXProjectAutonomyEffectivePolicy? = nil
+    ) -> ToolResult {
+        let summary = xtToolRuntimePolicyDeniedSummary(
+            call: call,
+            projectRoot: projectRoot,
+            config: config,
+            decision: decision,
+            effectiveAutonomy: effectiveAutonomy
+        )
+        return ToolResult(
+            id: call.id,
+            tool: call.tool,
+            ok: false,
+            output: structuredOutput(summary: summary, body: decision.detail)
+        )
+    }
+
+    static func deniedHighRiskMemoryRecheckResultIfNeeded(
+        call: ToolCall,
+        projectRoot: URL,
+        config: AXProjectConfig,
+        resolutionOverride: HubIPCClient.MemoryContextResolutionResult? = nil
+    ) async -> ToolResult? {
+        let decision = await highRiskMemoryRecheckDecision(
+            call: call,
+            projectRoot: projectRoot,
+            config: config,
+            resolutionOverride: resolutionOverride
+        )
+        guard decision.required, !decision.ok else { return nil }
+
+        var summary: [String: JSONValue] = [
+            "tool": .string(call.tool.rawValue),
+            "ok": .bool(false),
+            "memory_mode": .string(decision.useMode.rawValue),
+            "memory_source": .string(decision.source),
+            "memory_freshness": .string(decision.freshness),
+            "memory_cache_hit": .bool(decision.cacheHit),
+            "deny_code": .string(decision.denyCode ?? XTMemoryUseDenyCode.memorySnapshotStaleForHighRiskAct.rawValue),
+        ]
+        if let reasonCode = decision.reasonCode {
+            summary["memory_reason_code"] = .string(reasonCode)
+        }
+        return ToolResult(
+            id: call.id,
+            tool: call.tool,
+            ok: false,
+            output: structuredOutput(summary: summary, body: decision.detail)
+        )
+    }
+
+    private static func highRiskMemoryRecheckDecision(
+        call: ToolCall,
+        projectRoot: URL,
+        config: AXProjectConfig,
+        resolutionOverride: HubIPCClient.MemoryContextResolutionResult? = nil
+    ) async -> HighRiskMemoryRecheckDecision {
+        guard XTProjectMemoryGovernance.prefersHubMemory(config) else {
+            return HighRiskMemoryRecheckDecision(
+                required: false,
+                ok: true,
+                useMode: .toolActLowRisk,
+                source: "disabled",
+                freshness: "not_required",
+                cacheHit: false,
+                denyCode: nil,
+                reasonCode: nil,
+                detail: "hub memory disabled for project"
+            )
+        }
+
+        guard requiresFreshMemoryRecheck(call: call, projectRoot: projectRoot) else {
+            return HighRiskMemoryRecheckDecision(
+                required: false,
+                ok: true,
+                useMode: .toolActLowRisk,
+                source: "not_required",
+                freshness: "not_required",
+                cacheHit: false,
+                denyCode: nil,
+                reasonCode: nil,
+                detail: "fresh hub recheck not required"
+            )
+        }
+
+        let projectId = AXProjectRegistryStore.projectId(forRoot: projectRoot)
+        let result = if let resolutionOverride {
+            resolutionOverride
+        } else {
+            await HubIPCClient.requestMemoryContextDetailed(
+                useMode: .toolActHighRisk,
+                requesterRole: .tool,
+                projectId: projectId,
+                projectRoot: projectRoot.standardizedFileURL.path,
+                displayName: projectRoot.lastPathComponent,
+                latestUser: highRiskMemoryRecheckLatestUser(call: call),
+                constitutionHint: nil,
+                canonicalText: nil,
+                observationsText: highRiskMemoryRecheckObservationSummary(projectRoot: projectRoot),
+                workingSetText: highRiskMemoryRecheckWorkingSet(projectRoot: projectRoot),
+                rawEvidenceText: highRiskMemoryRecheckEvidence(call: call),
+                budgets: nil,
+                timeoutSec: 1.6
+            )
+        }
+        if result.response != nil {
+            return HighRiskMemoryRecheckDecision(
+                required: true,
+                ok: true,
+                useMode: .toolActHighRisk,
+                source: result.source,
+                freshness: result.freshness,
+                cacheHit: result.cacheHit,
+                denyCode: nil,
+                reasonCode: nil,
+                detail: "fresh hub recheck satisfied"
+            )
+        }
+
+        let denyCode = result.denyCode ?? XTMemoryUseDenyCode.memorySnapshotStaleForHighRiskAct.rawValue
+        let detail = "high_risk_fresh_recheck_required (\(denyCode))" +
+            (result.reasonCode.map { " reason=\($0)" } ?? "")
+        return HighRiskMemoryRecheckDecision(
+            required: true,
+            ok: false,
+            useMode: .toolActHighRisk,
+            source: result.source,
+            freshness: result.freshness,
+            cacheHit: result.cacheHit,
+            denyCode: denyCode,
+            reasonCode: result.reasonCode,
+            detail: detail
+        )
+    }
+
+    private static func requiresFreshMemoryRecheck(call: ToolCall, projectRoot: URL) -> Bool {
+        switch call.tool {
+        case .git_apply, .deviceUIAct, .deviceUIStep, .deviceBrowserControl, .deviceAppleScript:
+            return true
+        case .write_file:
+            guard let path = optStrArg(call, "path") else { return false }
+            let target = resolvedProjectPath(path, projectRoot: projectRoot)
+            return FileManager.default.fileExists(atPath: target.path)
+        case .run_command:
+            return isHighRiskCommand(optStrArg(call, "command") ?? "")
+        default:
+            return false
+        }
+    }
+
+    private static func highRiskMemoryRecheckLatestUser(call: ToolCall) -> String {
+        switch call.tool {
+        case .write_file:
+            return "tool.write_file path=\(optStrArg(call, "path") ?? "(none)")"
+        case .run_command:
+            return "tool.run_command command=\(optStrArg(call, "command") ?? "(none)")"
+        case .git_apply:
+            return "tool.git_apply patch_mutation"
+        default:
+            return "tool.\(call.tool.rawValue)"
+        }
+    }
+
+    private static func highRiskMemoryRecheckWorkingSet(projectRoot: URL) -> String? {
+        let recent = AXRecentContextStore.load(for: AXProjectContext(root: projectRoot))
+        let text = recent.messages
+            .suffix(6)
+            .map { "\($0.role): \($0.content)" }
+            .joined(separator: "\n")
+        return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : text
+    }
+
+    private static func highRiskMemoryRecheckObservationSummary(projectRoot: URL) -> String? {
+        let projectId = AXProjectRegistryStore.projectId(forRoot: projectRoot)
+        let registry = AXProjectRegistryStore.load()
+        guard let entry = registry.project(for: projectId) else { return nil }
+        let digest = (entry.statusDigest ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let updated = Int(registry.updatedAt)
+        return """
+project_id: \(projectId)
+status_digest: \(digest.isEmpty ? "(none)" : digest)
+project_updated_at: \(updated)
+"""
+    }
+
+    private static func highRiskMemoryRecheckEvidence(call: ToolCall) -> String? {
+        switch call.tool {
+        case .write_file:
+            let path = optStrArg(call, "path") ?? "(none)"
+            let content = strArg(call, "content")
+            return "write_target=\(path)\ncontent_chars=\(content.count)"
+        case .run_command:
+            let command = optStrArg(call, "command") ?? "(none)"
+            return "command=\(command)"
+        case .git_apply:
+            let patch = strArg(call, "patch")
+            return "patch_chars=\(patch.count)\nmutation_scope=repo"
+        case .deviceBrowserControl:
+            return "browser_action=\(optStrArg(call, "action") ?? "open_url")\nurl=\(optStrArg(call, "url") ?? "(none)")"
+        case .deviceAppleScript:
+            return "applescript_source_chars=\((optStrArg(call, "source") ?? "").count)"
+        default:
+            return "tool=\(call.tool.rawValue)"
+        }
+    }
+
+    private static func isHighRiskCommand(_ raw: String) -> Bool {
+        let command = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !command.isEmpty else { return false }
+        let tokens = [
+            "git push",
+            "rm ",
+            "mv ",
+            "cp ",
+            "sed -i",
+            "perl -pi",
+            "launchctl ",
+            "defaults write",
+            "sudo ",
+            "ssh ",
+            "scp ",
+            "rsync ",
+            "docker push",
+            "npm publish",
+            "cargo publish",
+            "gh release create",
+            "xcodebuild -exportarchive"
+        ]
+        if tokens.contains(where: { command.contains($0) }) {
+            return true
+        }
+        if command.contains("curl ") && (command.contains(" -x post") || command.contains(" --data") || command.contains(" -d ")) {
+            return true
+        }
+        return false
+    }
+
+    private static func resolvedProjectPath(_ rawPath: String, projectRoot: URL) -> URL {
+        let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return projectRoot }
+        if trimmed.hasPrefix("/") {
+            return URL(fileURLWithPath: trimmed).standardizedFileURL
+        }
+        return projectRoot.appendingPathComponent(trimmed).standardizedFileURL
+    }
+
+    private static func isDeviceAutomationTool(_ tool: ToolName) -> Bool {
+        switch tool {
+        case .deviceUIObserve,
+             .deviceUIAct,
+             .deviceUIStep,
+             .deviceClipboardRead,
+             .deviceClipboardWrite,
+             .deviceScreenCapture,
+             .deviceBrowserControl,
+             .deviceAppleScript:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func deviceAutomationSummaryBase(
+        call: ToolCall,
+        projectRoot: URL,
+        decision: XTDeviceAutomationGateDecision,
+        ok: Bool
+    ) -> [String: JSONValue] {
+        xtDeviceAutomationSummaryBase(
+            call: call,
+            projectRoot: projectRoot,
+            decision: decision,
+            ok: ok
+        )
     }
 
     private static func requiresTTY(_ command: String) -> Bool {
@@ -1347,6 +3569,24 @@ High-risk bypass scan \(report.ok ? "PASS" : "FAIL")
                 detail: "state=\(missingState.rawValue)"
             ),
         ]
+    }
+
+    static func activateHighRiskGrantForSupervisor(
+        projectRoot: URL,
+        capability: String,
+        grantRequestId: String?,
+        fallbackSeconds: Int
+    ) async -> String? {
+        let token = capability.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard token == HighRiskCapability.webFetch.rawValue.lowercased() else {
+            return nil
+        }
+        return await noteActiveHighRiskGrant(
+            projectRoot: projectRoot,
+            capability: .webFetch,
+            grantRequestId: grantRequestId,
+            fallbackSeconds: fallbackSeconds
+        )
     }
 
     private static func gateHighRiskWebFetch(call: ToolCall, projectRoot: URL) async -> HighRiskGrantGateDecision {

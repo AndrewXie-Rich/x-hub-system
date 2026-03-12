@@ -522,6 +522,9 @@ enum HubAIError: Error, LocalizedError {
             if r == "base_url_invalid" {
                 return "Remote model base URL is invalid. Check Base URL in Hub -> Settings -> Remote Models."
             }
+            if r == "node_missing" {
+                return "This X-Terminal install cannot find a usable Node runtime for the Hub client kit. Re-run Hub pairing One-Click / install-client, or install Node.js on this Mac. If you distribute X-Terminal as a packaged app, bundle relflowhub_node to avoid this dependency."
+            }
             if r == "node_runtime_killed" {
                 return "Remote Hub client runtime was killed by macOS. In Hub Setup run Reset Pairing + One-Click to reinstall/sign client kit, or install system Node.js on this Mac."
             }
@@ -572,6 +575,9 @@ actor HubAIClient {
         var deviceName: String
         var preferredModelId: String?
         var explicitModelId: String?
+        var runtimeProvider: String
+        var executionPath: String
+        var fallbackReasonCode: String?
 
         var resolvedModelId: String {
             if let explicitModelId, !explicitModelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -690,12 +696,21 @@ actor HubAIClient {
         let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
         let decision = HubRouteStateMachine.resolve(mode: mode, hasRemoteProfile: hasRemote)
         let runtimeAlive = (loadRuntimeStatus()?.isAlive(ttl: 3.0) == true)
+        let modelSnapshot = await loadModelsState()
+        let resolvedPreferredModelId = Self.normalizeConfiguredModelID(
+            preferredModelId,
+            availableModels: modelSnapshot.models
+        )
+        let resolvedExplicitModelId = Self.normalizeConfiguredModelID(
+            explicitModelId,
+            availableModels: modelSnapshot.models
+        )
 
         if decision.preferRemote {
             return enqueueRemoteGenerate(
                 prompt: prompt,
-                preferredModelId: preferredModelId,
-                explicitModelId: explicitModelId,
+                preferredModelId: resolvedPreferredModelId,
+                explicitModelId: resolvedExplicitModelId,
                 maxTokens: maxTokens,
                 temperature: temperature,
                 topP: topP,
@@ -719,8 +734,8 @@ actor HubAIClient {
         return try await enqueueLocalGenerate(
             prompt: prompt,
             taskType: taskType,
-            preferredModelId: preferredModelId,
-            explicitModelId: explicitModelId,
+            preferredModelId: resolvedPreferredModelId,
+            explicitModelId: resolvedExplicitModelId,
             appId: appId,
             maxTokens: maxTokens,
             temperature: temperature,
@@ -781,7 +796,10 @@ actor HubAIClient {
         pendingGenerateContexts[rid] = PendingGenerateContext(
             deviceName: Host.current().localizedName ?? "X-Terminal",
             preferredModelId: preferredModelId,
-            explicitModelId: explicitModelId
+            explicitModelId: explicitModelId,
+            runtimeProvider: "Hub (Local)",
+            executionPath: "local_runtime",
+            fallbackReasonCode: nil
         )
 
         return rid
@@ -819,7 +837,10 @@ actor HubAIClient {
         pendingGenerateContexts[rid] = PendingGenerateContext(
             deviceName: loadRemoteConnectOptions().deviceName,
             preferredModelId: preferredModelId,
-            explicitModelId: explicitModelId
+            explicitModelId: explicitModelId,
+            runtimeProvider: "Hub (Remote)",
+            executionPath: "remote_model",
+            fallbackReasonCode: nil
         )
         return rid
     }
@@ -879,6 +900,59 @@ actor HubAIClient {
         return localFileStreamResponse(reqId: reqId, context: context, timeoutSec: timeoutSec, pollMs: pollMs)
     }
 
+    private static func responseMetadata(
+        requestedModelId: String,
+        actualModelId: String,
+        runtimeProvider: String,
+        executionPath: String,
+        fallbackReasonCode: String
+    ) -> [String: JSONValue] {
+        var raw: [String: JSONValue] = [:]
+        if !requestedModelId.isEmpty {
+            raw["requested_model_id"] = .string(requestedModelId)
+        }
+        if !actualModelId.isEmpty {
+            raw["actual_model_id"] = .string(actualModelId)
+        }
+        if !runtimeProvider.isEmpty {
+            raw["runtime_provider"] = .string(runtimeProvider)
+        }
+        if !executionPath.isEmpty {
+            raw["execution_path"] = .string(executionPath)
+        }
+        if !fallbackReasonCode.isEmpty {
+            raw["fallback_reason_code"] = .string(fallbackReasonCode)
+        }
+        return raw
+    }
+
+    private static func mergeMetadata(
+        into event: HubAIResponseEvent,
+        requestedModelId: String,
+        actualModelId: String,
+        runtimeProvider: String,
+        executionPath: String,
+        fallbackReasonCode: String
+    ) -> HubAIResponseEvent {
+        var merged = event
+        let metadata = Self.responseMetadata(
+            requestedModelId: requestedModelId,
+            actualModelId: actualModelId,
+            runtimeProvider: runtimeProvider,
+            executionPath: executionPath,
+            fallbackReasonCode: fallbackReasonCode
+        )
+        if metadata.isEmpty {
+            return merged
+        }
+        var raw = merged.raw ?? [:]
+        for (key, value) in metadata {
+            raw[key] = value
+        }
+        merged.raw = raw
+        return merged
+    }
+
     private func localFileStreamResponse(
         reqId: String,
         context: PendingGenerateContext?,
@@ -893,6 +967,7 @@ actor HubAIClient {
                 let deadline = Date().addingTimeInterval(timeoutSec)
                 var offset: UInt64 = 0
                 var buf = Data()
+                var startedModelId: String = ""
 
                 func drainLines() {
                     while true {
@@ -904,7 +979,36 @@ actor HubAIClient {
                             if trimmed.isEmpty { continue }
 
                             do {
-                                let ev = try decoder.decode(HubAIResponseEvent.self, from: Data(trimmed))
+                                var ev = try decoder.decode(HubAIResponseEvent.self, from: Data(trimmed))
+                                if ev.type == "start",
+                                   let modelId = ev.model_id?.trimmingCharacters(in: .whitespacesAndNewlines),
+                                   !modelId.isEmpty {
+                                    startedModelId = modelId
+                                }
+
+                                if (ev.model_id?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true),
+                                   !startedModelId.isEmpty,
+                                   ev.type == "done" {
+                                    ev.model_id = startedModelId
+                                }
+
+                                let requestedModelId = context?.resolvedModelId ?? ""
+                                let actualModelId = ev.model_id?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                                    ? ev.model_id!.trimmingCharacters(in: .whitespacesAndNewlines)
+                                    : startedModelId
+                                let fallbackReasonCode = context?.fallbackReasonCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                                let runtimeProvider = context?.runtimeProvider ?? "Hub (Local)"
+                                let executionPath = fallbackReasonCode.isEmpty
+                                    ? (context?.executionPath ?? "local_runtime")
+                                    : "local_fallback_after_remote_error"
+                                ev = Self.mergeMetadata(
+                                    into: ev,
+                                    requestedModelId: requestedModelId,
+                                    actualModelId: actualModelId,
+                                    runtimeProvider: runtimeProvider,
+                                    executionPath: executionPath,
+                                    fallbackReasonCode: fallbackReasonCode
+                                )
                                 continuation.yield(ev)
                                 if ev.type == "done" {
                                     if ev.ok == true {
@@ -986,10 +1090,31 @@ actor HubAIClient {
                     appId: pending.appId,
                     projectId: pending.projectId,
                     sessionId: pending.sessionId,
+                    failClosedOnDowngrade: false,
                     requestId: reqId
                 )
 
                 if report.ok {
+                    let requestedModelId = report.requestedModelId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                        ? report.requestedModelId!.trimmingCharacters(in: .whitespacesAndNewlines)
+                        : (preferred?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
+                    let actualModelId = report.actualModelId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                        ? report.actualModelId!.trimmingCharacters(in: .whitespacesAndNewlines)
+                        : (report.modelId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? requestedModelId)
+                    let runtimeProvider = report.runtimeProvider?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                        ? report.runtimeProvider!.trimmingCharacters(in: .whitespacesAndNewlines)
+                        : (actualModelId == requestedModelId ? "Hub (Remote)" : "Hub (Local)")
+                    let executionPath = report.executionPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                        ? report.executionPath!.trimmingCharacters(in: .whitespacesAndNewlines)
+                        : "remote_model"
+                    let fallbackReasonCode = report.fallbackReasonCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    let raw = Self.responseMetadata(
+                        requestedModelId: requestedModelId,
+                        actualModelId: actualModelId,
+                        runtimeProvider: runtimeProvider,
+                        executionPath: executionPath,
+                        fallbackReasonCode: fallbackReasonCode
+                    )
                     continuation.yield(
                         HubAIResponseEvent(
                             type: "delta",
@@ -997,7 +1122,9 @@ actor HubAIClient {
                             ok: true,
                             reason: nil,
                             text: report.text,
-                            seq: 1
+                            seq: 1,
+                            model_id: report.modelId,
+                            raw: raw
                         )
                     )
                     continuation.yield(
@@ -1005,7 +1132,11 @@ actor HubAIClient {
                             type: "done",
                             req_id: reqId,
                             ok: true,
-                            reason: "eos"
+                            reason: "eos",
+                            model_id: report.modelId,
+                            promptTokens: report.promptTokens,
+                            generationTokens: report.completionTokens,
+                            raw: raw
                         )
                     )
                     continuation.finish()
@@ -1027,7 +1158,11 @@ actor HubAIClient {
                                 autoLoad: pending.autoLoad,
                                 forcedReqId: reqId
                             )
-                            let fallbackContext = pendingGenerateContexts.removeValue(forKey: localReqId) ?? context
+                            var fallbackContext = pendingGenerateContexts.removeValue(forKey: localReqId) ?? context
+                            if fallbackContext != nil {
+                                fallbackContext?.fallbackReasonCode = reason
+                                fallbackContext?.executionPath = "local_fallback_after_remote_error"
+                            }
                             for try await event in localFileStreamResponse(
                                 reqId: localReqId,
                                 context: fallbackContext,
@@ -1063,6 +1198,37 @@ actor HubAIClient {
 
     private func loadRemoteConnectOptions() -> HubRemoteConnectOptions {
         Self.remoteConnectOptionsFromDefaults(stateDir: nil)
+    }
+
+    static func normalizeConfiguredModelID(
+        _ raw: String?,
+        availableModels: [HubModel]
+    ) -> String? {
+        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return nil }
+
+        if let exact = availableModels.first(where: {
+            $0.id.trimmingCharacters(in: .whitespacesAndNewlines)
+                .caseInsensitiveCompare(trimmed) == .orderedSame
+        }) {
+            return exact.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        guard !trimmed.contains("/") else { return trimmed }
+
+        let needle = trimmed.lowercased()
+        let suffixMatches = availableModels.filter { model in
+            let id = model.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !id.isEmpty else { return false }
+            return id == needle || id.hasSuffix("/\(needle)")
+        }
+        if suffixMatches.count == 1,
+           let resolved = suffixMatches.first?.id.trimmingCharacters(in: .whitespacesAndNewlines),
+           !resolved.isEmpty {
+            return resolved
+        }
+
+        return trimmed
     }
 
     func generateText(
@@ -1132,7 +1298,16 @@ actor HubAIClient {
             }
             if ev.type == "done" {
                 if let pt = ev.promptTokens, let gt = ev.generationTokens {
-                    usage = HubAIUsage(promptTokens: pt, generationTokens: gt, generationTPS: ev.generationTPS ?? 0.0)
+                    usage = HubAIUsage(
+                        promptTokens: pt,
+                        generationTokens: gt,
+                        generationTPS: ev.generationTPS ?? 0.0,
+                        requestedModelId: ev.requestedModelIdFromMetadata,
+                        actualModelId: ev.actualModelIdFromMetadata,
+                        runtimeProvider: ev.runtimeProviderFromMetadata,
+                        executionPath: ev.executionPathFromMetadata,
+                        fallbackReasonCode: ev.fallbackReasonCodeFromMetadata
+                    )
                 }
             }
         }

@@ -10,7 +10,7 @@
   - `docs/WORKING_INDEX.md`
   - `docs/memory-new/xhub-memory-v3-m3-work-orders-v1.md`
   - `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
-  - `docs/memory-new/xhub-kiro-spec-gates-work-orders-v1.md`
+  - `docs/memory-new/xhub-spec-gates-work-orders-v1.md`
 
 ## 0) 使用方式（先看）
 
@@ -142,6 +142,7 @@ Definition of Done (DoD)
 20. `XT-W4-12` Skill 热更新一致性（watcher + snapshot）
 21. `XT-W5-13` 回归日报自动化（效率/安全/token 三轴）
 22. `XT-W5-14` 灰度与回滚演练产品化
+23. `XT-W3-32` Supervisor Skill Orchestration + Governed Event Loop（把 portfolio/action feed 升级成真正的受治理编排控制平面）
 
 ## 6.1 Supervisor 自动拆分专项（详细入口）
 
@@ -212,7 +213,7 @@ Definition of Done (DoD)
 - 目标：任何高风险动作必须携带有效 `grant_id`。
 - 依赖：`XT-W1-02`。
 - 交付物：统一 gate hook、旁路扫描器、拒绝码标准化。
-- OpenClaw 经验回灌：非消息入口（reaction/pin/member/webhook）同样纳入授权主链，禁止“消息以外”的旁路。
+- skills ecosystem 经验回灌：非消息入口（reaction/pin/member/webhook）同样纳入授权主链，禁止“消息以外”的旁路。
 - 实施记录：见 `work-orders/xt-w1-04-high-risk-grant-enforcement.md`（Lane-C）。
 - 验收指标：`bypass_grant_execution = 0`。
 - 回归样例：
@@ -505,10 +506,10 @@ Definition of Done (DoD)
 
 - 与 `docs/memory-new/xhub-memory-v3-m3-work-orders-v1.md` 对齐：X-Terminal 侧只保留模块级执行细则与接口落点。
 - 与 `M3-W1-03` 对齐：谱系字段与拒绝码保持一致（`lineage_parent_missing` / `lineage_cycle_detected` / `lineage_root_mismatch`）。
-- 与 `docs/memory-new/xhub-kiro-spec-gates-work-orders-v1.md` 对齐：共用 spec-driven 与门禁方法，不重复定义规则。
+- 与 `docs/memory-new/xhub-spec-gates-work-orders-v1.md` 对齐：共用 spec-driven 与门禁方法，不重复定义规则。
 - 与 `X_MEMORY.md` 对齐：主记忆只记入口与状态，详细变更在本工单维护。
 
-## 9.1 OpenClaw 经验回灌（2026-02-24 ~ 2026-02-27）
+## 9.1 skills ecosystem 经验回灌（2026-02-24 ~ 2026-02-27）
 
 - 入口一致性：授权与风控不要只盯 message，reaction/pin/member/webhook 等“非消息入口”必须同策略。
 - 预鉴权防护：发布门禁新增 pre-auth body/key cap 与 WS unauthorized flood breaker 检查项。

@@ -11,6 +11,7 @@ final class UnixSocketServer: @unchecked Sendable {
     private var listenSource: DispatchSourceRead?
     private var clientSources: [Int32: DispatchSourceRead] = [:]
     private var clientBuffers: [Int32: Data] = [:]
+    private var activeSocketPath: String?
 
     private let queue = DispatchQueue(label: "com.rel.flowhub.unixsocket")
     private let maxBufferedBytesPerClient = 1_048_576 // 1MB
@@ -28,13 +29,54 @@ final class UnixSocketServer: @unchecked Sendable {
         return SharedPaths.ipcSocketPath()
     }
 
+    private func makeSocketError(_ code: Int, _ label: String, path: String) -> NSError {
+        let e = errno
+        let msg = String(cString: strerror(e))
+        return NSError(
+            domain: "relflowhub.socket",
+            code: code,
+            userInfo: [
+                "label": label,
+                "errno": e,
+                "error": msg,
+                "path": path,
+            ]
+        )
+    }
+
+    private func secureDirectory(_ dir: URL, path: String) throws {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let rc = dir.path.withCString { ptr in
+            Darwin.chmod(ptr, mode_t(0o700))
+        }
+        guard rc == 0 else {
+            throw makeSocketError(10, "chmod_parent", path: path)
+        }
+    }
+
+    private func secureSocketFile(path: String) throws {
+        let rc = path.withCString { ptr in
+            Darwin.chmod(ptr, mode_t(0o600))
+        }
+        guard rc == 0 else {
+            throw makeSocketError(11, "chmod_socket", path: path)
+        }
+    }
+
+    private func peerMatchesCurrentUser(_ fd: Int32) -> Bool {
+        var uid: uid_t = 0
+        var gid: gid_t = 0
+        guard Darwin.getpeereid(fd, &uid, &gid) == 0 else { return false }
+        return uid == Darwin.geteuid()
+    }
+
     func start() throws {
         let path = socketPath()
 
         // Ensure parent directory exists (especially important under App Sandbox).
         do {
             let dir = URL(fileURLWithPath: path).deletingLastPathComponent()
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try secureDirectory(dir, path: path)
         } catch {
             throw NSError(
                 domain: "relflowhub.socket",
@@ -50,23 +92,8 @@ final class UnixSocketServer: @unchecked Sendable {
         // Remove existing socket file.
         unlink(path)
 
-        func makeErr(_ code: Int, _ label: String) -> NSError {
-            let e = errno
-            let msg = String(cString: strerror(e))
-            return NSError(
-                domain: "relflowhub.socket",
-                code: code,
-                userInfo: [
-                    "label": label,
-                    "errno": e,
-                    "error": msg,
-                    "path": path,
-                ]
-            )
-        }
-
         listenFD = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
-        guard listenFD >= 0 else { throw makeErr(1, "socket") }
+        guard listenFD >= 0 else { throw makeSocketError(1, "socket", path: path) }
 
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
@@ -91,15 +118,24 @@ final class UnixSocketServer: @unchecked Sendable {
             }
         }
         guard bindRC == 0 else {
-            let err = makeErr(3, "bind")
+            let err = makeSocketError(3, "bind", path: path)
             close(listenFD)
             listenFD = -1
             unlink(path)
             throw err
         }
 
+        do {
+            try secureSocketFile(path: path)
+        } catch {
+            close(listenFD)
+            listenFD = -1
+            unlink(path)
+            throw error
+        }
+
         guard listen(listenFD, 16) == 0 else {
-            let err = makeErr(4, "listen")
+            let err = makeSocketError(4, "listen", path: path)
             close(listenFD)
             listenFD = -1
             unlink(path)
@@ -114,6 +150,7 @@ final class UnixSocketServer: @unchecked Sendable {
             if fd >= 0 { close(fd) }
         }
         listenSource = src
+        activeSocketPath = path
         src.resume()
 
         // UI state is updated by HubStore after start() returns.
@@ -133,6 +170,10 @@ final class UnixSocketServer: @unchecked Sendable {
         clientSources.removeAll()
         clientBuffers.removeAll()
 
+        if let path = activeSocketPath {
+            unlink(path)
+        }
+        activeSocketPath = nil
         listenFD = -1
     }
 
@@ -142,6 +183,10 @@ final class UnixSocketServer: @unchecked Sendable {
         var len: socklen_t = socklen_t(MemoryLayout<sockaddr>.size)
         let fd = Darwin.accept(listenFD, &addr, &len)
         if fd < 0 { return }
+        guard peerMatchesCurrentUser(fd) else {
+            close(fd)
+            return
+        }
 
         clientBuffers[fd] = Data()
 
@@ -235,6 +280,41 @@ final class UnixSocketServer: @unchecked Sendable {
             writeResponse(fd, IPCResponse(type: "project_ack", reqId: req.reqId, ok: false, id: nil, error: "missing_project"))
             return
         }
+        if typ == "project_canonical_memory" {
+            guard let payload = req.projectCanonicalMemory else {
+                writeResponse(fd, IPCResponse(type: "project_canonical_memory_ack", reqId: req.reqId, ok: false, id: nil, error: "missing_project_canonical_memory"))
+                return
+            }
+            let snapshot = HubProjectCanonicalMemorySnapshot(
+                projectId: payload.projectId,
+                projectRoot: payload.projectRoot ?? "",
+                displayName: payload.displayName ?? payload.projectId,
+                updatedAt: payload.updatedAt ?? Date().timeIntervalSince1970,
+                items: payload.items.map { row in
+                    HubProjectCanonicalMemoryItem(key: row.key, value: row.value)
+                }
+            )
+            _ = HubProjectCanonicalMemoryStorage.upsert(snapshot)
+            writeResponse(fd, IPCResponse(type: "project_canonical_memory_ack", reqId: req.reqId, ok: true, id: payload.projectId, error: nil))
+            return
+        }
+        if typ == "device_canonical_memory" {
+            guard let payload = req.deviceCanonicalMemory else {
+                writeResponse(fd, IPCResponse(type: "device_canonical_memory_ack", reqId: req.reqId, ok: false, id: nil, error: "missing_device_canonical_memory"))
+                return
+            }
+            let snapshot = HubDeviceCanonicalMemorySnapshot(
+                supervisorId: payload.supervisorId,
+                displayName: payload.displayName ?? payload.supervisorId,
+                updatedAt: payload.updatedAt ?? Date().timeIntervalSince1970,
+                items: payload.items.map { row in
+                    HubDeviceCanonicalMemoryItem(key: row.key, value: row.value)
+                }
+            )
+            _ = HubDeviceCanonicalMemoryStorage.upsert(snapshot)
+            writeResponse(fd, IPCResponse(type: "device_canonical_memory_ack", reqId: req.reqId, ok: true, id: payload.supervisorId, error: nil))
+            return
+        }
         if typ == "need_network" {
             if let n = req.network {
                 Task { @MainActor in
@@ -262,6 +342,24 @@ final class UnixSocketServer: @unchecked Sendable {
             writeResponse(fd, IPCResponse(type: "memory_context_ack", reqId: req.reqId, ok: true, id: nil, error: nil, memoryContext: built))
             return
         }
+        if typ == "voice_wake_profile_get" {
+            guard let payload = req.voiceWakeProfileRequest else {
+                writeResponse(fd, IPCResponse(type: "voice_wake_profile_ack", reqId: req.reqId, ok: false, id: nil, error: "missing_voice_wake_profile_request"))
+                return
+            }
+            let profile = HubVoiceWakeProfileStorage.fetch(desiredWakeMode: payload.desiredWakeMode)
+            writeResponse(fd, IPCResponse(type: "voice_wake_profile_ack", reqId: req.reqId, ok: true, id: profile.profileID, error: nil, voiceWakeProfile: profile))
+            return
+        }
+        if typ == "voice_wake_profile_set" {
+            guard let payload = req.voiceWakeProfile else {
+                writeResponse(fd, IPCResponse(type: "voice_wake_profile_ack", reqId: req.reqId, ok: false, id: nil, error: "missing_voice_wake_profile"))
+                return
+            }
+            let profile = HubVoiceWakeProfileStorage.update(profile: payload)
+            writeResponse(fd, IPCResponse(type: "voice_wake_profile_ack", reqId: req.reqId, ok: true, id: profile.profileID, error: nil, voiceWakeProfile: profile))
+            return
+        }
         if typ == "supervisor_incident_audit" {
             guard let payload = req.supervisorIncident else {
                 writeResponse(fd, IPCResponse(type: "supervisor_incident_audit_ack", reqId: req.reqId, ok: false, id: nil, error: "missing_supervisor_incident"))
@@ -273,6 +371,26 @@ final class UnixSocketServer: @unchecked Sendable {
                     fd,
                     IPCResponse(
                         type: "supervisor_incident_audit_ack",
+                        reqId: req.reqId,
+                        ok: ok,
+                        id: payload.auditRef,
+                        error: ok ? nil : "audit_write_failed"
+                    )
+                )
+            }
+            return
+        }
+        if typ == "supervisor_project_action_audit" {
+            guard let payload = req.supervisorProjectAction else {
+                writeResponse(fd, IPCResponse(type: "supervisor_project_action_audit_ack", reqId: req.reqId, ok: false, id: nil, error: "missing_supervisor_project_action"))
+                return
+            }
+            Task { @MainActor in
+                let ok = self.store.appendSupervisorProjectActionAudit(payload)
+                writeResponse(
+                    fd,
+                    IPCResponse(
+                        type: "supervisor_project_action_audit_ack",
                         reqId: req.reqId,
                         ok: ok,
                         id: payload.auditRef,

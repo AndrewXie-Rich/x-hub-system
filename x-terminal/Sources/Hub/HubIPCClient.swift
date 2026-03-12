@@ -1,6 +1,24 @@
 import Foundation
+import Darwin
 
 enum HubIPCClient {
+    private static let remoteMemorySnapshotCache = HubRemoteMemorySnapshotCache(ttlSeconds: 15.0)
+    private static let remoteAutonomyPolicyOverrideCache = HubRemoteAutonomyPolicyOverrideCache(ttlSeconds: 3.0)
+
+    struct AutonomyPolicyOverrideItem: Equatable, Sendable {
+        var projectId: String
+        var overrideMode: AXProjectAutonomyHubOverrideMode
+        var updatedAtMs: Int64
+        var reason: String
+        var auditRef: String
+    }
+
+    struct AutonomyPolicyOverridesSnapshot: Equatable, Sendable {
+        var source: String
+        var updatedAtMs: Int64
+        var items: [AutonomyPolicyOverrideItem]
+    }
+
     struct ProjectSyncPayload: Codable {
         var projectId: String
         var rootPath: String
@@ -30,6 +48,81 @@ enum HubIPCClient {
             case type
             case reqId = "req_id"
             case project
+        }
+    }
+
+    struct ProjectCanonicalMemoryItemPayload: Codable {
+        var key: String
+        var value: String
+    }
+
+    struct ProjectCanonicalMemoryPayload: Codable {
+        var projectId: String
+        var projectRoot: String?
+        var displayName: String?
+        var updatedAt: Double?
+        var items: [ProjectCanonicalMemoryItemPayload]
+
+        enum CodingKeys: String, CodingKey {
+            case projectId = "project_id"
+            case projectRoot = "project_root"
+            case displayName = "display_name"
+            case updatedAt = "updated_at"
+            case items
+        }
+    }
+
+    struct ProjectCanonicalMemoryIPCRequest: Codable {
+        var type: String
+        var reqId: String
+        var projectCanonicalMemory: ProjectCanonicalMemoryPayload
+
+        enum CodingKeys: String, CodingKey {
+            case type
+            case reqId = "req_id"
+            case projectCanonicalMemory = "project_canonical_memory"
+        }
+    }
+
+    struct DeviceCanonicalMemoryPayload: Codable {
+        var supervisorId: String
+        var displayName: String?
+        var updatedAt: Double?
+        var items: [ProjectCanonicalMemoryItemPayload]
+
+        enum CodingKeys: String, CodingKey {
+            case supervisorId = "supervisor_id"
+            case displayName = "display_name"
+            case updatedAt = "updated_at"
+            case items
+        }
+    }
+
+    struct DeviceCanonicalMemoryIPCRequest: Codable {
+        var type: String
+        var reqId: String
+        var deviceCanonicalMemory: DeviceCanonicalMemoryPayload
+
+        enum CodingKeys: String, CodingKey {
+            case type
+            case reqId = "req_id"
+            case deviceCanonicalMemory = "device_canonical_memory"
+        }
+    }
+
+    struct AckIPCResponse: Codable {
+        var type: String
+        var reqId: String?
+        var ok: Bool
+        var id: String?
+        var error: String?
+
+        enum CodingKeys: String, CodingKey {
+            case type
+            case reqId = "req_id"
+            case ok
+            case id
+            case error
         }
     }
 
@@ -169,6 +262,56 @@ enum HubIPCClient {
         }
     }
 
+    struct SupervisorProjectActionAuditPayload: Codable {
+        var eventId: String
+        var projectId: String
+        var projectName: String
+        var eventType: String
+        var severity: String
+        var actionTitle: String
+        var actionSummary: String
+        var whyItMatters: String
+        var nextAction: String
+        var occurredAtMs: Int64
+        var deliveryChannel: String
+        var deliveryStatus: String
+        var jurisdictionRole: String?
+        var grantedScope: String?
+        var auditRef: String
+        var source: String?
+
+        enum CodingKeys: String, CodingKey {
+            case eventId = "event_id"
+            case projectId = "project_id"
+            case projectName = "project_name"
+            case eventType = "event_type"
+            case severity
+            case actionTitle = "action_title"
+            case actionSummary = "action_summary"
+            case whyItMatters = "why_it_matters"
+            case nextAction = "next_action"
+            case occurredAtMs = "occurred_at_ms"
+            case deliveryChannel = "delivery_channel"
+            case deliveryStatus = "delivery_status"
+            case jurisdictionRole = "jurisdiction_role"
+            case grantedScope = "granted_scope"
+            case auditRef = "audit_ref"
+            case source
+        }
+    }
+
+    struct SupervisorProjectActionAuditIPCRequest: Codable {
+        var type: String
+        var reqId: String
+        var supervisorProjectAction: SupervisorProjectActionAuditPayload
+
+        enum CodingKeys: String, CodingKey {
+            case type
+            case reqId = "req_id"
+            case supervisorProjectAction = "supervisor_project_action"
+        }
+    }
+
     struct MemoryContextBudgets: Codable, Equatable {
         var totalTokens: Int?
         var l0Tokens: Int?
@@ -242,6 +385,11 @@ enum HubIPCClient {
     struct MemoryContextResponsePayload: Codable, Equatable {
         var text: String
         var source: String
+        var resolvedMode: String?
+        var freshness: String?
+        var cacheHit: Bool?
+        var denyCode: String?
+        var downgradeCode: String?
         var budgetTotalTokens: Int
         var usedTotalTokens: Int
         var layerUsage: [MemoryContextLayerUsage]
@@ -249,9 +397,44 @@ enum HubIPCClient {
         var redactedItems: Int
         var privateDrops: Int
 
+        init(
+            text: String,
+            source: String,
+            resolvedMode: String? = nil,
+            freshness: String? = nil,
+            cacheHit: Bool? = nil,
+            denyCode: String? = nil,
+            downgradeCode: String? = nil,
+            budgetTotalTokens: Int,
+            usedTotalTokens: Int,
+            layerUsage: [MemoryContextLayerUsage],
+            truncatedLayers: [String],
+            redactedItems: Int,
+            privateDrops: Int
+        ) {
+            self.text = text
+            self.source = source
+            self.resolvedMode = resolvedMode
+            self.freshness = freshness
+            self.cacheHit = cacheHit
+            self.denyCode = denyCode
+            self.downgradeCode = downgradeCode
+            self.budgetTotalTokens = budgetTotalTokens
+            self.usedTotalTokens = usedTotalTokens
+            self.layerUsage = layerUsage
+            self.truncatedLayers = truncatedLayers
+            self.redactedItems = redactedItems
+            self.privateDrops = privateDrops
+        }
+
         enum CodingKeys: String, CodingKey {
             case text
             case source
+            case resolvedMode = "resolved_mode"
+            case freshness
+            case cacheHit = "cache_hit"
+            case denyCode = "deny_code"
+            case downgradeCode = "downgrade_code"
             case budgetTotalTokens = "budget_total_tokens"
             case usedTotalTokens = "used_total_tokens"
             case layerUsage = "layer_usage"
@@ -259,6 +442,17 @@ enum HubIPCClient {
             case redactedItems = "redacted_items"
             case privateDrops = "private_drops"
         }
+    }
+
+    struct MemoryContextResolutionResult {
+        var response: MemoryContextResponsePayload?
+        var source: String
+        var resolvedMode: XTMemoryUseMode
+        var freshness: String
+        var cacheHit: Bool
+        var denyCode: String?
+        var downgradeCode: String?
+        var reasonCode: String?
     }
 
     struct MemoryContextIPCResponse: Codable {
@@ -276,6 +470,56 @@ enum HubIPCClient {
             case id
             case error
             case memoryContext = "memory_context"
+        }
+    }
+
+    struct VoiceWakeProfileRequestPayload: Codable, Equatable {
+        var desiredWakeMode: String
+
+        enum CodingKeys: String, CodingKey {
+            case desiredWakeMode = "desired_wake_mode"
+        }
+    }
+
+    struct VoiceWakeProfileGetIPCRequest: Codable {
+        var type: String
+        var reqId: String
+        var voiceWakeProfileRequest: VoiceWakeProfileRequestPayload
+
+        enum CodingKeys: String, CodingKey {
+            case type
+            case reqId = "req_id"
+            case voiceWakeProfileRequest = "voice_wake_profile_request"
+        }
+    }
+
+    struct VoiceWakeProfileSetIPCRequest: Codable {
+        var type: String
+        var reqId: String
+        var voiceWakeProfile: VoiceWakeProfile
+
+        enum CodingKeys: String, CodingKey {
+            case type
+            case reqId = "req_id"
+            case voiceWakeProfile = "voice_wake_profile"
+        }
+    }
+
+    struct VoiceWakeProfileIPCResponse: Codable {
+        var type: String
+        var reqId: String?
+        var ok: Bool
+        var id: String?
+        var error: String?
+        var voiceWakeProfile: VoiceWakeProfile?
+
+        enum CodingKeys: String, CodingKey {
+            case type
+            case reqId = "req_id"
+            case ok
+            case id
+            case error
+            case voiceWakeProfile = "voice_wake_profile"
         }
     }
 
@@ -328,6 +572,31 @@ enum HubIPCClient {
         var items: [PendingGrantItem]
     }
 
+    struct ConnectorIngressReceipt: Codable, Equatable, Identifiable {
+        var receiptId: String
+        var requestId: String
+        var projectId: String
+        var connector: String
+        var targetId: String
+        var ingressType: String
+        var channelScope: String
+        var sourceId: String
+        var messageId: String
+        var dedupeKey: String
+        var receivedAtMs: Double
+        var eventSequence: Int64
+        var deliveryState: String
+        var runtimeState: String
+
+        var id: String { receiptId }
+    }
+
+    struct ConnectorIngressSnapshot: Codable, Equatable {
+        var source: String
+        var updatedAtMs: Double
+        var items: [ConnectorIngressReceipt]
+    }
+
     enum PendingGrantActionDecision: String {
         case approved
         case denied
@@ -344,9 +613,162 @@ enum HubIPCClient {
         var reasonCode: String?
     }
 
+    struct VoiceGrantChallengeRequestPayload: Codable, Equatable {
+        var requestId: String
+        var projectId: String?
+        var templateId: String
+        var actionDigest: String
+        var scopeDigest: String
+        var amountDigest: String?
+        var challengeCode: String?
+        var riskLevel: String
+        var boundDeviceId: String?
+        var mobileTerminalId: String?
+        var allowVoiceOnly: Bool
+        var requiresMobileConfirm: Bool
+        var ttlMs: Int
+
+        enum CodingKeys: String, CodingKey {
+            case requestId = "request_id"
+            case projectId = "project_id"
+            case templateId = "template_id"
+            case actionDigest = "action_digest"
+            case scopeDigest = "scope_digest"
+            case amountDigest = "amount_digest"
+            case challengeCode = "challenge_code"
+            case riskLevel = "risk_level"
+            case boundDeviceId = "bound_device_id"
+            case mobileTerminalId = "mobile_terminal_id"
+            case allowVoiceOnly = "allow_voice_only"
+            case requiresMobileConfirm = "requires_mobile_confirm"
+            case ttlMs = "ttl_ms"
+        }
+    }
+
+    struct VoiceGrantChallengeSnapshot: Codable, Equatable, Identifiable {
+        var challengeId: String
+        var templateId: String
+        var actionDigest: String
+        var scopeDigest: String
+        var amountDigest: String
+        var challengeCode: String
+        var riskLevel: String
+        var requiresMobileConfirm: Bool
+        var allowVoiceOnly: Bool
+        var boundDeviceId: String
+        var mobileTerminalId: String
+        var issuedAtMs: Double
+        var expiresAtMs: Double
+
+        var id: String { challengeId }
+
+        enum CodingKeys: String, CodingKey {
+            case challengeId = "challenge_id"
+            case templateId = "template_id"
+            case actionDigest = "action_digest"
+            case scopeDigest = "scope_digest"
+            case amountDigest = "amount_digest"
+            case challengeCode = "challenge_code"
+            case riskLevel = "risk_level"
+            case requiresMobileConfirm = "requires_mobile_confirm"
+            case allowVoiceOnly = "allow_voice_only"
+            case boundDeviceId = "bound_device_id"
+            case mobileTerminalId = "mobile_terminal_id"
+            case issuedAtMs = "issued_at_ms"
+            case expiresAtMs = "expires_at_ms"
+        }
+    }
+
+    struct VoiceGrantChallengeResult: Codable, Equatable {
+        var ok: Bool
+        var source: String
+        var challenge: VoiceGrantChallengeSnapshot?
+        var reasonCode: String?
+    }
+
+    struct VoiceGrantVerificationPayload: Codable, Equatable {
+        var requestId: String
+        var projectId: String?
+        var challengeId: String
+        var challengeCode: String?
+        var transcript: String?
+        var transcriptHash: String?
+        var semanticMatchScore: Double?
+        var parsedActionDigest: String?
+        var parsedScopeDigest: String?
+        var parsedAmountDigest: String?
+        var verifyNonce: String
+        var boundDeviceId: String?
+        var mobileConfirmed: Bool
+
+        enum CodingKeys: String, CodingKey {
+            case requestId = "request_id"
+            case projectId = "project_id"
+            case challengeId = "challenge_id"
+            case challengeCode = "challenge_code"
+            case transcript
+            case transcriptHash = "transcript_hash"
+            case semanticMatchScore = "semantic_match_score"
+            case parsedActionDigest = "parsed_action_digest"
+            case parsedScopeDigest = "parsed_scope_digest"
+            case parsedAmountDigest = "parsed_amount_digest"
+            case verifyNonce = "verify_nonce"
+            case boundDeviceId = "bound_device_id"
+            case mobileConfirmed = "mobile_confirmed"
+        }
+    }
+
+    enum VoiceGrantVerificationDecision: String, Codable {
+        case allow
+        case deny
+        case failed
+    }
+
+    struct VoiceGrantVerificationResult: Codable, Equatable {
+        var ok: Bool
+        var verified: Bool
+        var decision: VoiceGrantVerificationDecision
+        var source: String
+        var denyCode: String?
+        var challengeId: String?
+        var transcriptHash: String?
+        var semanticMatchScore: Double
+        var challengeMatch: Bool
+        var deviceBindingOK: Bool
+        var mobileConfirmed: Bool
+        var reasonCode: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case verified
+            case decision
+            case source
+            case denyCode = "deny_code"
+            case challengeId = "challenge_id"
+            case transcriptHash = "transcript_hash"
+            case semanticMatchScore = "semantic_match_score"
+            case challengeMatch = "challenge_match"
+            case deviceBindingOK = "device_binding_ok"
+            case mobileConfirmed = "mobile_confirmed"
+            case reasonCode = "reason_code"
+        }
+    }
+
     struct NetworkRequestTicket: Equatable {
         var reqId: String
         var baseDir: URL
+    }
+
+    private struct LocalIPCTransport {
+        var mode: String
+        var ipcURL: URL
+        var baseDir: URL
+    }
+
+    private struct NetworkIPCDispatchResult {
+        var ticket: NetworkRequestTicket
+        var ack: NetworkIPCResponse?
+        var source: String
     }
 
     enum NetworkAccessState: String {
@@ -369,6 +791,166 @@ enum HubIPCClient {
         let mode = HubAIClient.transportMode()
         let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
         return HubRouteStateMachine.resolve(mode: mode, hasRemoteProfile: hasRemote)
+    }
+
+    private static func localIPCTransport(ttl: Double = 3.0) -> LocalIPCTransport? {
+        guard let st = HubConnector.readHubStatusIfAny(ttl: ttl) else { return nil }
+        let mode = (st.ipcMode ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let ipcPath = (st.ipcPath ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !mode.isEmpty, !ipcPath.isEmpty else { return nil }
+
+        let ipcURL: URL
+        switch mode {
+        case "file":
+            ipcURL = URL(fileURLWithPath: ipcPath, isDirectory: true)
+        case "socket":
+            ipcURL = URL(fileURLWithPath: ipcPath, isDirectory: false)
+        default:
+            return nil
+        }
+
+        return LocalIPCTransport(
+            mode: mode,
+            ipcURL: ipcURL,
+            baseDir: URL(fileURLWithPath: st.baseDir, isDirectory: true)
+        )
+    }
+
+    private static func writeAll(_ data: Data, to fd: Int32) -> Bool {
+        var totalWritten = 0
+        return data.withUnsafeBytes { rawBuffer in
+            guard let base = rawBuffer.baseAddress else { return false }
+            while totalWritten < data.count {
+                let written = Darwin.write(fd, base.advanced(by: totalWritten), data.count - totalWritten)
+                if written <= 0 { return false }
+                totalWritten += written
+            }
+            return true
+        }
+    }
+
+    private static func sendSocketRequest<Request: Encodable, Response: Decodable>(
+        _ request: Request,
+        socketURL: URL,
+        timeoutSec: Double = 2.0
+    ) -> Response? {
+        let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let maxLen = MemoryLayout.size(ofValue: addr.sun_path)
+        let bytes = Array(socketURL.path.utf8) + [0]
+        guard bytes.count <= maxLen else { return nil }
+        withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
+            ptr.withMemoryRebound(to: UInt8.self, capacity: maxLen) { buf in
+                for index in 0..<bytes.count {
+                    buf[index] = bytes[index]
+                }
+            }
+        }
+
+        var socketAddr = addr
+        let connectRC = withUnsafePointer(to: &socketAddr) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
+                Darwin.connect(fd, sockaddrPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard connectRC == 0 else { return nil }
+
+        let clampedTimeout = max(0.2, min(4.0, timeoutSec))
+        var timeout = timeval(
+            tv_sec: Int(clampedTimeout.rounded(.down)),
+            tv_usec: __darwin_suseconds_t((clampedTimeout.truncatingRemainder(dividingBy: 1)) * 1_000_000)
+        )
+        withUnsafePointer(to: &timeout) { ptr in
+            _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, ptr, socklen_t(MemoryLayout<timeval>.size))
+            _ = setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, ptr, socklen_t(MemoryLayout<timeval>.size))
+        }
+
+        guard let encoded = try? JSONEncoder().encode(request) else { return nil }
+        var payload = encoded
+        payload.append(0x0A)
+        guard writeAll(payload, to: fd) else { return nil }
+
+        var buffer = Data()
+        var chunk = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let n = Darwin.read(fd, &chunk, chunk.count)
+            if n <= 0 { break }
+            buffer.append(contentsOf: chunk[0..<n])
+            if buffer.count > 262_144 { return nil }
+            if buffer.contains(0x0A) { break }
+        }
+
+        guard let lineEnd = buffer.firstIndex(of: 0x0A) else { return nil }
+        let line = buffer.prefix(upTo: lineEnd)
+        return try? JSONDecoder().decode(Response.self, from: line)
+    }
+
+    static func fetchVoiceWakeProfile(
+        desiredWakeMode: VoiceWakeMode
+    ) async -> VoiceWakeProfileSyncResult {
+        let routeDecision = await currentRouteDecision()
+
+        if routeDecision.preferRemote {
+            let remote = await HubPairingCoordinator.shared.fetchRemoteVoiceWakeProfile(
+                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                desiredWakeMode: desiredWakeMode
+            )
+            if remote.ok || !routeDecision.allowFileFallback {
+                return remote
+            }
+        }
+
+        if routeDecision.requiresRemote {
+            return VoiceWakeProfileSyncResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                profile: nil,
+                reasonCode: normalizedReasonCode(
+                    routeDecision.remoteUnavailableReasonCode,
+                    fallback: "hub_env_missing"
+                ),
+                logLines: ["voice wake profile fetch requires remote route"],
+                syncedAtMs: nil
+            )
+        }
+
+        return await fetchVoiceWakeProfileViaLocalIPC(desiredWakeMode: desiredWakeMode)
+    }
+
+    static func setVoiceWakeProfile(
+        _ profile: VoiceWakeProfile
+    ) async -> VoiceWakeProfileSyncResult {
+        let routeDecision = await currentRouteDecision()
+
+        if routeDecision.preferRemote {
+            let remote = await HubPairingCoordinator.shared.setRemoteVoiceWakeProfile(
+                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                profile: profile
+            )
+            if remote.ok || !routeDecision.allowFileFallback {
+                return remote
+            }
+        }
+
+        if routeDecision.requiresRemote {
+            return VoiceWakeProfileSyncResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                profile: nil,
+                reasonCode: normalizedReasonCode(
+                    routeDecision.remoteUnavailableReasonCode,
+                    fallback: "hub_env_missing"
+                ),
+                logLines: ["voice wake profile set requires remote route"],
+                syncedAtMs: nil
+            )
+        }
+
+        return await setVoiceWakeProfileViaLocalIPC(profile)
     }
 
     static func syncProject(_ entry: AXProjectEntry) {
@@ -394,6 +976,206 @@ enum HubIPCClient {
             }
         case .fileIPC:
             _ = writeProjectSyncViaFileIPC(payload)
+        }
+    }
+
+    static func appendProjectConversationTurn(
+        ctx: AXProjectContext,
+        userText: String,
+        assistantText: String,
+        createdAt: Double,
+        config: AXProjectConfig?
+    ) async -> Bool {
+        guard XTProjectMemoryGovernance.prefersHubMemory(config) else { return false }
+
+        let mirroredMessages = XTProjectConversationMirror.messages(
+            userText: userText,
+            assistantText: assistantText
+        )
+        guard !mirroredMessages.isEmpty else { return false }
+
+        let routeDecision = await currentRouteDecision()
+        guard routeDecision.preferRemote else { return false }
+
+        let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+        let payload = HubRemoteProjectConversationPayload(
+            projectId: projectId,
+            threadKey: XTProjectConversationMirror.projectThreadKey(projectId: projectId),
+            requestId: XTProjectConversationMirror.requestID(projectId: projectId, createdAt: createdAt),
+            createdAtMs: XTProjectConversationMirror.createdAtMs(createdAt),
+            userText: mirroredMessages.first(where: { $0.role == "user" })?.content ?? "",
+            assistantText: mirroredMessages.first(where: { $0.role == "assistant" })?.content ?? ""
+        )
+
+        let remote = await HubPairingCoordinator.shared.appendRemoteProjectConversationTurn(
+            options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+            payload: payload
+        )
+        if remote.ok {
+            await remoteMemorySnapshotCache.invalidate(projectId: projectId)
+        }
+        return remote.ok
+    }
+
+    static func syncProjectCanonicalMemory(
+        ctx: AXProjectContext,
+        memory: AXMemory,
+        config: AXProjectConfig?
+    ) {
+        guard XTProjectMemoryGovernance.prefersHubMemory(config) else { return }
+
+        let payload = ProjectCanonicalMemoryPayload(
+            projectId: AXProjectRegistryStore.projectId(forRoot: ctx.root),
+            projectRoot: ctx.root.path,
+            displayName: ctx.projectName(),
+            updatedAt: memory.updatedAt,
+            items: XTProjectCanonicalMemorySync.items(memory: memory).map { item in
+                ProjectCanonicalMemoryItemPayload(key: item.key, value: item.value)
+            }
+        )
+        guard !payload.items.isEmpty else { return }
+
+        let mode = HubAIClient.transportMode()
+        switch mode {
+        case .grpc:
+            Task {
+                _ = await syncProjectCanonicalMemoryViaPreferredRoute(payload: payload, allowFileFallback: false)
+            }
+        case .auto:
+            Task {
+                _ = await syncProjectCanonicalMemoryViaPreferredRoute(payload: payload, allowFileFallback: true)
+            }
+        case .fileIPC:
+            if writeProjectCanonicalMemoryViaLocalIPC(payload) {
+                Task {
+                    await remoteMemorySnapshotCache.invalidate(projectId: payload.projectId)
+                }
+            }
+        }
+    }
+
+    static func syncSupervisorProjectCapsule(_ capsule: SupervisorProjectCapsule) {
+        let payload = ProjectCanonicalMemoryPayload(
+            projectId: capsule.projectId,
+            projectRoot: nil,
+            displayName: capsule.projectName,
+            updatedAt: Double(capsule.updatedAtMs) / 1000.0,
+            items: SupervisorProjectCapsuleCanonicalSync.items(capsule: capsule).map { item in
+                ProjectCanonicalMemoryItemPayload(key: item.key, value: item.value)
+            }
+        )
+        guard !payload.projectId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard !payload.items.isEmpty else { return }
+
+        let wroteLocal = writeProjectCanonicalMemoryViaLocalIPC(payload)
+        let mode = HubAIClient.transportMode()
+        switch mode {
+        case .grpc:
+            Task {
+                let synced = await syncProjectCanonicalMemoryViaPreferredRoute(payload: payload, allowFileFallback: false)
+                if synced || wroteLocal {
+                    await remoteMemorySnapshotCache.invalidate(projectId: payload.projectId)
+                }
+            }
+        case .auto:
+            Task {
+                let synced = await syncProjectCanonicalMemoryViaPreferredRoute(payload: payload, allowFileFallback: false)
+                if synced || wroteLocal {
+                    await remoteMemorySnapshotCache.invalidate(projectId: payload.projectId)
+                }
+            }
+        case .fileIPC:
+            if wroteLocal {
+                Task {
+                    await remoteMemorySnapshotCache.invalidate(projectId: payload.projectId)
+                }
+            }
+        }
+    }
+
+    static func syncSupervisorProjectWorkflow(_ snapshot: SupervisorProjectWorkflowSnapshot) {
+        let payload = ProjectCanonicalMemoryPayload(
+            projectId: snapshot.projectId,
+            projectRoot: nil,
+            displayName: snapshot.projectName,
+            updatedAt: Double(snapshot.updatedAtMs) / 1000.0,
+            items: SupervisorProjectWorkflowCanonicalSync.items(snapshot: snapshot).map { item in
+                ProjectCanonicalMemoryItemPayload(key: item.key, value: item.value)
+            }
+        )
+        guard !payload.projectId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard !payload.items.isEmpty else { return }
+
+        let wroteLocal = writeProjectCanonicalMemoryViaLocalIPC(payload)
+        let mode = HubAIClient.transportMode()
+        switch mode {
+        case .grpc:
+            Task {
+                let synced = await syncProjectCanonicalMemoryViaPreferredRoute(payload: payload, allowFileFallback: false)
+                if synced || wroteLocal {
+                    await remoteMemorySnapshotCache.invalidate(projectId: payload.projectId)
+                }
+            }
+        case .auto:
+            Task {
+                let synced = await syncProjectCanonicalMemoryViaPreferredRoute(payload: payload, allowFileFallback: false)
+                if synced || wroteLocal {
+                    await remoteMemorySnapshotCache.invalidate(projectId: payload.projectId)
+                }
+            }
+        case .fileIPC:
+            if wroteLocal {
+                Task {
+                    await remoteMemorySnapshotCache.invalidate(projectId: payload.projectId)
+                }
+            }
+        }
+    }
+
+    static func syncSupervisorPortfolioSnapshot(
+        _ snapshot: SupervisorPortfolioSnapshot,
+        supervisorId: String = defaultSupervisorCanonicalID(),
+        displayName: String? = nil
+    ) {
+        let normalizedSupervisorId = supervisorId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedSupervisorId.isEmpty else { return }
+
+        let payload = DeviceCanonicalMemoryPayload(
+            supervisorId: normalizedSupervisorId,
+            displayName: displayName?.trimmingCharacters(in: .whitespacesAndNewlines),
+            updatedAt: snapshot.updatedAt,
+            items: SupervisorPortfolioSnapshotCanonicalSync.items(
+                snapshot: snapshot,
+                supervisorId: normalizedSupervisorId
+            ).map { item in
+                ProjectCanonicalMemoryItemPayload(key: item.key, value: item.value)
+            }
+        )
+        guard !payload.items.isEmpty else { return }
+
+        let wroteLocal = writeDeviceCanonicalMemoryViaLocalIPC(payload)
+        let mode = HubAIClient.transportMode()
+        switch mode {
+        case .grpc:
+            Task {
+                let synced = await syncDeviceCanonicalMemoryViaPreferredRoute(payload: payload, allowFileFallback: false)
+                if synced || wroteLocal {
+                    await invalidateSupervisorMemoryCache()
+                }
+            }
+        case .auto:
+            Task {
+                let synced = await syncDeviceCanonicalMemoryViaPreferredRoute(payload: payload, allowFileFallback: false)
+                if synced || wroteLocal {
+                    await invalidateSupervisorMemoryCache()
+                }
+            }
+        case .fileIPC:
+            if wroteLocal {
+                Task {
+                    await invalidateSupervisorMemoryCache()
+                }
+            }
         }
     }
 
@@ -497,24 +1279,33 @@ enum HubIPCClient {
             )
         }
 
-        guard let ticket = requestNetworkViaFileIPC(root: root, seconds: requestedSeconds, reason: reason) else {
+        guard let dispatch = requestNetworkViaLocalIPC(root: root, seconds: requestedSeconds, reason: reason) else {
             return NetworkAccessResult(
                 state: .failed,
-                source: "file",
+                source: "local_ipc",
                 reasonCode: "hub_not_connected",
                 remainingSeconds: nil,
                 grantRequestId: nil
             )
         }
 
-        let ack = await pollNetworkResponse(baseDir: ticket.baseDir, reqId: ticket.reqId, timeoutSec: 2.6)
+        let ack: NetworkIPCResponse?
+        if let existingAck = dispatch.ack {
+            ack = existingAck
+        } else {
+            ack = await pollNetworkResponse(
+                baseDir: dispatch.ticket.baseDir,
+                reqId: dispatch.ticket.reqId,
+                timeoutSec: 2.6
+            )
+        }
         if let ack {
-            let grantId = normalized(ack.id) ?? ticket.reqId
+            let grantId = normalized(ack.id) ?? dispatch.ticket.reqId
             if !ack.ok {
                 let reasonCode = normalizedReasonCode(ack.error, fallback: "denied") ?? "denied"
                 return NetworkAccessResult(
                     state: networkFailureState(reasonCode: reasonCode),
-                    source: "file",
+                    source: dispatch.source,
                     reasonCode: reasonCode,
                     remainingSeconds: nil,
                     grantRequestId: grantId
@@ -528,7 +1319,7 @@ enum HubIPCClient {
                     let remaining = Int(max(0, bridgeAfterGrant.enabledUntil - Date().timeIntervalSince1970))
                     return NetworkAccessResult(
                         state: .autoApproved,
-                        source: "file",
+                        source: dispatch.source,
                         reasonCode: "auto_approved",
                         remainingSeconds: remaining,
                         grantRequestId: grantId
@@ -536,7 +1327,7 @@ enum HubIPCClient {
                 }
                 return NetworkAccessResult(
                     state: .autoApproved,
-                    source: "file",
+                    source: dispatch.source,
                     reasonCode: "bridge_starting",
                     remainingSeconds: nil,
                     grantRequestId: grantId
@@ -546,7 +1337,7 @@ enum HubIPCClient {
             if reasonCode == "denied" || reasonCode == "forbidden" {
                 return NetworkAccessResult(
                     state: .denied,
-                    source: "file",
+                    source: dispatch.source,
                     reasonCode: reasonCode,
                     remainingSeconds: nil,
                     grantRequestId: grantId
@@ -555,42 +1346,38 @@ enum HubIPCClient {
 
             return NetworkAccessResult(
                 state: .queued,
-                source: "file",
+                source: dispatch.source,
                 reasonCode: reasonCode ?? "queued",
                 remainingSeconds: nil,
                 grantRequestId: grantId
             )
         }
 
-        let bridgeAfterFileRequest = HubBridgeClient.status()
-        if bridgeAfterFileRequest.enabled {
-            let remaining = Int(max(0, bridgeAfterFileRequest.enabledUntil - Date().timeIntervalSince1970))
-            return NetworkAccessResult(
-                state: .enabled,
-                source: "bridge",
-                reasonCode: nil,
-                remainingSeconds: remaining,
-                grantRequestId: ticket.reqId
-            )
+        if dispatch.source == "file_ipc" {
+            let bridgeAfterFileRequest = HubBridgeClient.status()
+            if bridgeAfterFileRequest.enabled {
+                let remaining = Int(max(0, bridgeAfterFileRequest.enabledUntil - Date().timeIntervalSince1970))
+                return NetworkAccessResult(
+                    state: .enabled,
+                    source: "bridge",
+                    reasonCode: nil,
+                    remainingSeconds: remaining,
+                    grantRequestId: dispatch.ticket.reqId
+                )
+            }
         }
 
         return NetworkAccessResult(
             state: .queued,
-            source: "file",
+            source: dispatch.source,
             reasonCode: "ack_timeout",
             remainingSeconds: nil,
-            grantRequestId: ticket.reqId
+            grantRequestId: dispatch.ticket.reqId
         )
     }
 
-    private static func requestNetworkViaFileIPC(root: URL, seconds: Int, reason: String?) -> NetworkRequestTicket? {
-        guard let st = HubConnector.readHubStatusIfAny(ttl: 3.0) else { return nil }
-        guard let mode = st.ipcMode, mode == "file" else { return nil }
-        guard let ipcPath = st.ipcPath, !ipcPath.isEmpty else { return nil }
-
-        let dir = URL(fileURLWithPath: ipcPath, isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-
+    private static func requestNetworkViaLocalIPC(root: URL, seconds: Int, reason: String?) -> NetworkIPCDispatchResult? {
+        guard let transport = localIPCTransport(ttl: 3.0) else { return nil }
         let reqId = UUID().uuidString
         let rootPath = AXProjectRegistryStore.normalizedRootPath(root)
         let projectId = AXProjectRegistryStore.projectId(forRoot: root)
@@ -608,13 +1395,31 @@ enum HubIPCClient {
             createdAt: Date().timeIntervalSince1970
         )
         let req = NetworkIPCRequest(type: "need_network", reqId: reqId, network: payload)
+        let ticket = NetworkRequestTicket(reqId: reqId, baseDir: transport.baseDir)
 
-        let encoder = JSONEncoder()
-        guard let data = try? encoder.encode(req) else { return nil }
-
-        if writeEvent(data: data, reqId: reqId, filePrefix: "xterminal_net", tmpPrefix: ".xterminal_net", in: dir) {
-            return NetworkRequestTicket(reqId: reqId, baseDir: URL(fileURLWithPath: st.baseDir))
+        switch transport.mode {
+        case "file":
+            try? FileManager.default.createDirectory(at: transport.ipcURL, withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            guard let data = try? encoder.encode(req) else { return nil }
+            if writeEvent(
+                data: data,
+                reqId: reqId,
+                filePrefix: "xterminal_net",
+                tmpPrefix: ".xterminal_net",
+                in: transport.ipcURL
+            ) {
+                return NetworkIPCDispatchResult(ticket: ticket, ack: nil, source: "file_ipc")
+            }
+        case "socket":
+            guard let ack: NetworkIPCResponse = sendSocketRequest(req, socketURL: transport.ipcURL, timeoutSec: 2.0) else {
+                return nil
+            }
+            return NetworkIPCDispatchResult(ticket: ticket, ack: ack, source: "socket_ipc")
+        default:
+            return nil
         }
+
         return nil
     }
 
@@ -650,6 +1455,39 @@ enum HubIPCClient {
         return writeProjectSyncViaFileIPC(payload)
     }
 
+    @discardableResult
+    private static func syncProjectCanonicalMemoryViaPreferredRoute(
+        payload: ProjectCanonicalMemoryPayload,
+        allowFileFallback: Bool
+    ) async -> Bool {
+        let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
+        if hasRemote {
+            let remote = await HubPairingCoordinator.shared.upsertRemoteProjectCanonicalMemory(
+                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                payload: HubRemoteProjectCanonicalMemoryPayload(
+                    projectId: payload.projectId,
+                    items: payload.items.map { item in
+                        HubRemoteCanonicalMemoryItem(key: item.key, value: item.value)
+                    }
+                )
+            )
+            if remote.ok {
+                await remoteMemorySnapshotCache.invalidate(projectId: payload.projectId)
+                return true
+            }
+            if !allowFileFallback {
+                return false
+            }
+        } else if !allowFileFallback {
+            return false
+        }
+        let didWriteLocal = writeProjectCanonicalMemoryViaLocalIPC(payload)
+        if didWriteLocal {
+            await remoteMemorySnapshotCache.invalidate(projectId: payload.projectId)
+        }
+        return didWriteLocal
+    }
+
     private static func writeProjectSyncViaFileIPC(_ payload: ProjectSyncPayload) -> Bool {
         guard let dir = fileIPCEventsDir() else { return false }
         let reqId = UUID().uuidString
@@ -657,6 +1495,119 @@ enum HubIPCClient {
         let encoder = JSONEncoder()
         guard let data = try? encoder.encode(req) else { return false }
         return writeEvent(data: data, reqId: reqId, filePrefix: "xterminal", tmpPrefix: ".xterminal", in: dir)
+    }
+
+    private static func writeProjectCanonicalMemoryViaLocalIPC(_ payload: ProjectCanonicalMemoryPayload) -> Bool {
+        guard let transport = localIPCTransport(ttl: 3.0) else { return false }
+
+        let reqId = UUID().uuidString
+        let req = ProjectCanonicalMemoryIPCRequest(
+            type: "project_canonical_memory",
+            reqId: reqId,
+            projectCanonicalMemory: payload
+        )
+
+        switch transport.mode {
+        case "file":
+            try? FileManager.default.createDirectory(at: transport.ipcURL, withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            guard let data = try? encoder.encode(req) else { return false }
+            return writeEvent(
+                data: data,
+                reqId: reqId,
+                filePrefix: "xterminal_project_memory",
+                tmpPrefix: ".xterminal_project_memory",
+                in: transport.ipcURL
+            )
+        case "socket":
+            guard let ack: AckIPCResponse = sendSocketRequest(req, socketURL: transport.ipcURL, timeoutSec: 2.0) else {
+                return false
+            }
+            return ack.ok
+        default:
+            return false
+        }
+    }
+
+    @discardableResult
+    private static func syncDeviceCanonicalMemoryViaPreferredRoute(
+        payload: DeviceCanonicalMemoryPayload,
+        allowFileFallback: Bool
+    ) async -> Bool {
+        let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
+        if hasRemote {
+            let remote = await HubPairingCoordinator.shared.upsertRemoteDeviceCanonicalMemory(
+                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                payload: HubRemoteDeviceCanonicalMemoryPayload(
+                    items: payload.items.map { item in
+                        HubRemoteCanonicalMemoryItem(key: item.key, value: item.value)
+                    }
+                )
+            )
+            if remote.ok {
+                await invalidateSupervisorMemoryCache()
+                return true
+            }
+            if !allowFileFallback {
+                return false
+            }
+        } else if !allowFileFallback {
+            return false
+        }
+
+        let didWriteLocal = writeDeviceCanonicalMemoryViaLocalIPC(payload)
+        if didWriteLocal {
+            await invalidateSupervisorMemoryCache()
+        }
+        return didWriteLocal
+    }
+
+    private static func writeDeviceCanonicalMemoryViaLocalIPC(_ payload: DeviceCanonicalMemoryPayload) -> Bool {
+        guard let transport = localIPCTransport(ttl: 3.0) else { return false }
+
+        let reqId = UUID().uuidString
+        let req = DeviceCanonicalMemoryIPCRequest(
+            type: "device_canonical_memory",
+            reqId: reqId,
+            deviceCanonicalMemory: payload
+        )
+
+        switch transport.mode {
+        case "file":
+            try? FileManager.default.createDirectory(at: transport.ipcURL, withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            guard let data = try? encoder.encode(req) else { return false }
+            return writeEvent(
+                data: data,
+                reqId: reqId,
+                filePrefix: "xterminal_device_memory",
+                tmpPrefix: ".xterminal_device_memory",
+                in: transport.ipcURL
+            )
+        case "socket":
+            guard let ack: AckIPCResponse = sendSocketRequest(req, socketURL: transport.ipcURL, timeoutSec: 2.0) else {
+                return false
+            }
+            return ack.ok
+        default:
+            return false
+        }
+    }
+
+    private static func invalidateSupervisorMemoryCache() async {
+        await remoteMemorySnapshotCache.invalidate(
+            key: HubRemoteMemorySnapshotCache.Key(
+                mode: XTMemoryUseMode.supervisorOrchestration.rawValue,
+                projectId: nil
+            )
+        )
+    }
+
+    static func defaultSupervisorCanonicalID() -> String {
+        let raw = Host.current().localizedName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let scalars = raw.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }
+        let token = String(String.UnicodeScalarView(scalars))
+        return token.isEmpty ? "supervisor-main" : "supervisor-\(token)"
     }
 
     @discardableResult
@@ -700,7 +1651,8 @@ enum HubIPCClient {
     }
 
     static func requestMemoryContext(
-        mode: String,
+        useMode: XTMemoryUseMode,
+        requesterRole: XTMemoryRequesterRole,
         projectId: String?,
         projectRoot: String?,
         displayName: String?,
@@ -713,8 +1665,41 @@ enum HubIPCClient {
         budgets: MemoryContextBudgets? = nil,
         timeoutSec: Double = 1.2
     ) async -> MemoryContextResponsePayload? {
-        let payload = MemoryContextPayload(
-            mode: mode,
+        let result = await requestMemoryContextDetailed(
+            useMode: useMode,
+            requesterRole: requesterRole,
+            projectId: projectId,
+            projectRoot: projectRoot,
+            displayName: displayName,
+            latestUser: latestUser,
+            constitutionHint: constitutionHint,
+            canonicalText: canonicalText,
+            observationsText: observationsText,
+            workingSetText: workingSetText,
+            rawEvidenceText: rawEvidenceText,
+            budgets: budgets,
+            timeoutSec: timeoutSec
+        )
+        return result.response
+    }
+
+    static func requestMemoryContextDetailed(
+        useMode: XTMemoryUseMode,
+        requesterRole: XTMemoryRequesterRole,
+        projectId: String?,
+        projectRoot: String?,
+        displayName: String?,
+        latestUser: String,
+        constitutionHint: String?,
+        canonicalText: String?,
+        observationsText: String?,
+        workingSetText: String?,
+        rawEvidenceText: String?,
+        budgets: MemoryContextBudgets? = nil,
+        timeoutSec: Double = 1.2
+    ) async -> MemoryContextResolutionResult {
+        let rawPayload = MemoryContextPayload(
+            mode: useMode.rawValue,
             projectId: normalized(projectId),
             projectRoot: normalized(projectRoot),
             displayName: normalized(displayName),
@@ -726,27 +1711,116 @@ enum HubIPCClient {
             rawEvidenceText: normalized(rawEvidenceText),
             budgets: budgets
         )
+        let route = XTMemoryRoleScopedRouter.route(
+            role: requesterRole,
+            mode: useMode,
+            payload: rawPayload
+        )
+        if let denyCode = route.denyCode?.rawValue {
+            return MemoryContextResolutionResult(
+                response: nil,
+                source: "memory_router",
+                resolvedMode: useMode,
+                freshness: "unavailable",
+                cacheHit: false,
+                denyCode: denyCode,
+                downgradeCode: route.downgradeCode?.rawValue,
+                reasonCode: denyCode
+            )
+        }
+
+        let payload = route.payload
         let routeDecision = await currentRouteDecision()
 
         if routeDecision.preferRemote {
-            let remote = await HubPairingCoordinator.shared.fetchRemoteMemorySnapshot(
-                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
-                mode: mode,
-                projectId: payload.projectId
+            let remote = await fetchRemoteMemorySnapshot(
+                mode: useMode,
+                projectId: payload.projectId,
+                bypassCache: route.bypassRemoteCache
             )
-            if remote.ok {
-                return buildMemoryContextFromRemoteSnapshot(snapshot: remote, payload: payload)
+            if remote.snapshot.ok {
+                var response = buildMemoryContextFromRemoteSnapshot(snapshot: remote.snapshot, payload: payload)
+                response.resolvedMode = useMode.rawValue
+                response.freshness = remote.cacheHit ? "ttl_cache" : "fresh_remote"
+                response.cacheHit = remote.cacheHit
+                response.denyCode = nil
+                response.downgradeCode = route.downgradeCode?.rawValue
+                return MemoryContextResolutionResult(
+                    response: response,
+                    source: response.source,
+                    resolvedMode: useMode,
+                    freshness: response.freshness ?? "fresh_remote",
+                    cacheHit: remote.cacheHit,
+                    denyCode: nil,
+                    downgradeCode: route.downgradeCode?.rawValue,
+                    reasonCode: nil
+                )
             }
             if !routeDecision.allowFileFallback {
-                return nil
+                return MemoryContextResolutionResult(
+                    response: nil,
+                    source: remote.snapshot.source,
+                    resolvedMode: useMode,
+                    freshness: route.bypassRemoteCache ? "fresh_remote_required" : "remote_failed",
+                    cacheHit: remote.cacheHit,
+                    denyCode: route.bypassRemoteCache
+                        ? XTMemoryUseDenyCode.memorySnapshotStaleForHighRiskAct.rawValue
+                        : nil,
+                    downgradeCode: nil,
+                    reasonCode: normalizedReasonCode(remote.snapshot.reasonCode, fallback: "remote_memory_snapshot_failed")
+                )
             }
         }
 
         if routeDecision.requiresRemote {
-            return nil
+            return MemoryContextResolutionResult(
+                response: nil,
+                source: "hub_memory_v1_grpc",
+                resolvedMode: useMode,
+                freshness: "unavailable",
+                cacheHit: false,
+                denyCode: route.bypassRemoteCache
+                    ? XTMemoryUseDenyCode.memorySnapshotStaleForHighRiskAct.rawValue
+                    : nil,
+                downgradeCode: nil,
+                reasonCode: normalizedReasonCode(
+                    routeDecision.remoteUnavailableReasonCode,
+                    fallback: "hub_env_missing"
+                )
+            )
         }
 
-        return await requestMemoryContextViaFileIPC(payload: payload, timeoutSec: timeoutSec)
+        guard let local = await requestMemoryContextViaLocalIPC(payload: payload, timeoutSec: timeoutSec) else {
+            return MemoryContextResolutionResult(
+                response: nil,
+                source: "local_ipc",
+                resolvedMode: useMode,
+                freshness: "unavailable",
+                cacheHit: false,
+                denyCode: route.bypassRemoteCache
+                    ? XTMemoryUseDenyCode.memorySnapshotStaleForHighRiskAct.rawValue
+                    : nil,
+                downgradeCode: nil,
+                reasonCode: "memory_context_unavailable"
+            )
+        }
+
+        var response = local
+        response.resolvedMode = useMode.rawValue
+        response.freshness = "fresh_local_ipc"
+        response.cacheHit = false
+        response.denyCode = nil
+        response.downgradeCode = route.downgradeCode?.rawValue
+        return MemoryContextResolutionResult(
+            response: response,
+            source: response.source,
+            resolvedMode: useMode,
+            freshness: "fresh_local_ipc",
+            cacheHit: false,
+            denyCode: nil,
+            downgradeCode: route.downgradeCode?.rawValue,
+            reasonCode: nil
+        )
     }
 
     static func pushNotification(
@@ -846,6 +1920,151 @@ enum HubIPCClient {
             reqId: reqId,
             filePrefix: "xterminal_incident_audit",
             tmpPrefix: ".xterminal_incident_audit",
+            in: dir
+        )
+    }
+
+    static func appendSupervisorProjectActionAudit(
+        eventID: String,
+        projectID: String,
+        projectName: String,
+        eventType: String,
+        severity: String,
+        actionTitle: String,
+        actionSummary: String,
+        whyItMatters: String,
+        nextAction: String,
+        occurredAtMs: Int64,
+        deliveryChannel: String,
+        deliveryStatus: String,
+        jurisdictionRole: String?,
+        grantedScope: String?,
+        auditRef: String
+    ) {
+        let normalizedEventID = normalized(eventID) ?? ""
+        let normalizedProjectID = normalized(projectID) ?? ""
+        let normalizedProjectName = normalized(projectName) ?? ""
+        let normalizedEventType = normalized(eventType) ?? ""
+        let normalizedSeverity = normalized(severity) ?? ""
+        let normalizedActionTitle = normalized(actionTitle) ?? ""
+        let normalizedActionSummary = normalized(actionSummary) ?? ""
+        let normalizedWhy = normalized(whyItMatters) ?? ""
+        let normalizedNextAction = normalized(nextAction) ?? ""
+        let normalizedDeliveryChannel = normalized(deliveryChannel) ?? ""
+        let normalizedDeliveryStatus = normalized(deliveryStatus) ?? ""
+        let normalizedAuditRef = normalized(auditRef) ?? ""
+        guard !normalizedEventID.isEmpty,
+              !normalizedProjectID.isEmpty,
+              !normalizedProjectName.isEmpty,
+              !normalizedEventType.isEmpty,
+              !normalizedSeverity.isEmpty,
+              !normalizedActionTitle.isEmpty,
+              !normalizedActionSummary.isEmpty,
+              !normalizedWhy.isEmpty,
+              !normalizedNextAction.isEmpty,
+              !normalizedDeliveryChannel.isEmpty,
+              !normalizedDeliveryStatus.isEmpty,
+              !normalizedAuditRef.isEmpty else {
+            return
+        }
+
+        let payload = SupervisorProjectActionAuditPayload(
+            eventId: normalizedEventID,
+            projectId: normalizedProjectID,
+            projectName: normalizedProjectName,
+            eventType: normalizedEventType,
+            severity: normalizedSeverity,
+            actionTitle: normalizedActionTitle,
+            actionSummary: normalizedActionSummary,
+            whyItMatters: normalizedWhy,
+            nextAction: normalizedNextAction,
+            occurredAtMs: max(0, occurredAtMs),
+            deliveryChannel: normalizedDeliveryChannel,
+            deliveryStatus: normalizedDeliveryStatus,
+            jurisdictionRole: normalized(jurisdictionRole),
+            grantedScope: normalized(grantedScope),
+            auditRef: normalizedAuditRef,
+            source: "x_terminal_supervisor"
+        )
+        let wroteLocalAudit = writeSupervisorProjectActionAuditViaLocalIPC(payload)
+        let mode = HubAIClient.transportMode()
+        switch mode {
+        case .grpc:
+            Task {
+                _ = await appendSupervisorProjectActionAuditViaPreferredRoute(payload: payload, allowFileFallback: false)
+            }
+        case .auto:
+            Task {
+                _ = await appendSupervisorProjectActionAuditViaPreferredRoute(payload: payload, allowFileFallback: false)
+            }
+        case .fileIPC:
+            _ = wroteLocalAudit
+        }
+    }
+
+    @discardableResult
+    private static func appendSupervisorProjectActionAuditViaPreferredRoute(
+        payload: SupervisorProjectActionAuditPayload,
+        allowFileFallback: Bool
+    ) async -> Bool {
+        let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
+        if hasRemote {
+            let record = SupervisorProjectActionCanonicalRecord(
+                schemaVersion: SupervisorProjectActionCanonicalSync.schemaVersion,
+                eventId: payload.eventId,
+                projectId: payload.projectId,
+                projectName: payload.projectName,
+                eventType: payload.eventType,
+                severity: payload.severity,
+                actionTitle: payload.actionTitle,
+                actionSummary: payload.actionSummary,
+                whyItMatters: payload.whyItMatters,
+                nextAction: payload.nextAction,
+                occurredAtMs: payload.occurredAtMs,
+                deliveryChannel: payload.deliveryChannel,
+                deliveryStatus: payload.deliveryStatus,
+                jurisdictionRole: payload.jurisdictionRole,
+                grantedScope: payload.grantedScope,
+                auditRef: payload.auditRef
+            )
+            let remote = await HubPairingCoordinator.shared.upsertRemoteProjectCanonicalMemory(
+                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                payload: HubRemoteProjectCanonicalMemoryPayload(
+                    projectId: payload.projectId,
+                    items: SupervisorProjectActionCanonicalSync.items(record: record).map { item in
+                        HubRemoteCanonicalMemoryItem(key: item.key, value: item.value)
+                    }
+                )
+            )
+            if remote.ok {
+                await remoteMemorySnapshotCache.invalidate(projectId: payload.projectId)
+                return true
+            }
+            if !allowFileFallback {
+                return false
+            }
+        } else if !allowFileFallback {
+            return false
+        }
+
+        return writeSupervisorProjectActionAuditViaLocalIPC(payload)
+    }
+
+    private static func writeSupervisorProjectActionAuditViaLocalIPC(_ payload: SupervisorProjectActionAuditPayload) -> Bool {
+        guard let dir = supervisorIncidentAuditEventsDir() else { return false }
+
+        let reqId = UUID().uuidString
+        let req = SupervisorProjectActionAuditIPCRequest(
+            type: "supervisor_project_action_audit",
+            reqId: reqId,
+            supervisorProjectAction: payload
+        )
+        guard let data = try? JSONEncoder().encode(req) else { return false }
+        return writeEvent(
+            data: data,
+            reqId: reqId,
+            filePrefix: "xterminal_project_action_audit",
+            tmpPrefix: ".xterminal_project_action_audit",
             in: dir
         )
     }
@@ -961,6 +2180,155 @@ enum HubIPCClient {
         )
     }
 
+    static func requestSupervisorSkillRegistrySnapshot(
+        projectId: String?,
+        projectName: String?
+    ) async -> SupervisorSkillRegistrySnapshot? {
+        guard let normalizedProjectId = normalized(projectId) else { return nil }
+        return AXSkillsLibrary.supervisorSkillRegistrySnapshot(
+            projectId: normalizedProjectId,
+            projectName: normalized(projectName),
+            hubBaseDir: HubPaths.baseDir()
+        )
+    }
+
+    static func requestConnectorIngressReceipts(
+        projectId: String? = nil,
+        limit: Int = 200
+    ) async -> ConnectorIngressSnapshot? {
+        let routeDecision = await currentRouteDecision()
+        let boundedLimit = max(1, min(500, limit))
+        let normalizedProjectId = normalized(projectId)
+
+        if routeDecision.preferRemote {
+            let remote = await HubPairingCoordinator.shared.fetchRemoteConnectorIngressReceipts(
+                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                projectId: normalizedProjectId,
+                limit: boundedLimit
+            )
+            if remote.ok {
+                let items = remote.items.map { row in
+                    ConnectorIngressReceipt(
+                        receiptId: row.receiptId.trimmingCharacters(in: .whitespacesAndNewlines),
+                        requestId: row.requestId.trimmingCharacters(in: .whitespacesAndNewlines),
+                        projectId: row.projectId.trimmingCharacters(in: .whitespacesAndNewlines),
+                        connector: row.connector.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                        targetId: row.targetId.trimmingCharacters(in: .whitespacesAndNewlines),
+                        ingressType: row.ingressType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                        channelScope: row.channelScope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                        sourceId: row.sourceId.trimmingCharacters(in: .whitespacesAndNewlines),
+                        messageId: row.messageId.trimmingCharacters(in: .whitespacesAndNewlines),
+                        dedupeKey: row.dedupeKey.trimmingCharacters(in: .whitespacesAndNewlines),
+                        receivedAtMs: max(0, row.receivedAtMs),
+                        eventSequence: Swift.max(0, row.eventSequence),
+                        deliveryState: row.deliveryState.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                        runtimeState: row.runtimeState.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    )
+                }
+                return ConnectorIngressSnapshot(
+                    source: remote.source.trimmingCharacters(in: .whitespacesAndNewlines),
+                    updatedAtMs: max(0, remote.updatedAtMs),
+                    items: items
+                )
+            }
+            if !routeDecision.allowFileFallback {
+                return nil
+            }
+        }
+
+        if routeDecision.requiresRemote {
+            return nil
+        }
+
+        return readLocalConnectorIngressReceipts(
+            projectId: normalizedProjectId,
+            limit: boundedLimit
+        )
+    }
+
+    static func requestAutonomyPolicyOverrides(
+        projectId: String? = nil,
+        limit: Int = 200,
+        bypassCache: Bool = false
+    ) async -> AutonomyPolicyOverridesSnapshot? {
+        let routeDecision = await currentRouteDecision()
+        let boundedLimit = max(1, min(500, limit))
+        let normalizedProjectId = normalized(projectId)
+
+        if routeDecision.preferRemote {
+            let cacheKey = HubRemoteAutonomyPolicyOverrideCache.Key(
+                projectId: normalizedProjectId,
+                limit: boundedLimit
+            )
+            if !bypassCache, let cached = await remoteAutonomyPolicyOverrideCache.snapshot(for: cacheKey) {
+                return cached
+            }
+
+            let remote = await HubPairingCoordinator.shared.fetchRemoteAutonomyPolicyOverrides(
+                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                projectId: normalizedProjectId,
+                limit: boundedLimit
+            )
+            if remote.ok {
+                let snapshot = AutonomyPolicyOverridesSnapshot(
+                    source: remote.source.trimmingCharacters(in: .whitespacesAndNewlines),
+                    updatedAtMs: max(0, Int64(remote.updatedAtMs.rounded())),
+                    items: remote.items.map { row in
+                        AutonomyPolicyOverrideItem(
+                            projectId: row.projectId.trimmingCharacters(in: .whitespacesAndNewlines),
+                            overrideMode: row.overrideMode,
+                            updatedAtMs: max(0, Int64(row.updatedAtMs.rounded())),
+                            reason: row.reason.trimmingCharacters(in: .whitespacesAndNewlines),
+                            auditRef: row.auditRef.trimmingCharacters(in: .whitespacesAndNewlines)
+                        )
+                    }
+                )
+                await remoteAutonomyPolicyOverrideCache.store(snapshot, for: cacheKey)
+                return snapshot
+            }
+
+            await remoteAutonomyPolicyOverrideCache.invalidate(key: cacheKey)
+            if !routeDecision.allowFileFallback {
+                return nil
+            }
+        }
+
+        if routeDecision.requiresRemote {
+            return nil
+        }
+
+        return readLocalAutonomyPolicyOverrides(
+            projectId: normalizedProjectId,
+            limit: boundedLimit
+        )
+    }
+
+    static func requestProjectAutonomyPolicyOverride(
+        projectId: String,
+        bypassCache: Bool = false
+    ) async -> AXProjectAutonomyRemoteOverrideSnapshot? {
+        let normalizedProjectId = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedProjectId.isEmpty else { return nil }
+        guard let snapshot = await requestAutonomyPolicyOverrides(
+            projectId: normalizedProjectId,
+            limit: 1,
+            bypassCache: bypassCache
+        ) else {
+            return nil
+        }
+        guard let row = snapshot.items.first(where: { $0.projectId == normalizedProjectId }) else {
+            return nil
+        }
+        return AXProjectAutonomyRemoteOverrideSnapshot(
+            projectId: row.projectId,
+            overrideMode: row.overrideMode,
+            updatedAtMs: row.updatedAtMs,
+            source: snapshot.source,
+            reason: row.reason.isEmpty ? nil : row.reason,
+            auditRef: row.auditRef.isEmpty ? nil : row.auditRef
+        )
+    }
+
     static func approvePendingGrantRequest(
         grantRequestId: String,
         projectId: String? = nil,
@@ -1055,56 +2423,432 @@ enum HubIPCClient {
         )
     }
 
-    private static func requestMemoryContextViaFileIPC(
+    static func issueVoiceGrantChallenge(
+        _ payload: VoiceGrantChallengeRequestPayload
+    ) async -> VoiceGrantChallengeResult {
+        let normalizedRequestId = normalized(payload.requestId)
+        guard let normalizedRequestId else {
+            return VoiceGrantChallengeResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                challenge: nil,
+                reasonCode: "request_id_empty"
+            )
+        }
+
+        let normalizedTemplateId = normalized(payload.templateId)
+        let normalizedActionDigest = normalized(payload.actionDigest)
+        let normalizedScopeDigest = normalized(payload.scopeDigest)
+        guard normalizedTemplateId != nil, normalizedActionDigest != nil, normalizedScopeDigest != nil else {
+            return VoiceGrantChallengeResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                challenge: nil,
+                reasonCode: "invalid_request"
+            )
+        }
+
+        let routeDecision = await currentRouteDecision()
+        if routeDecision.preferRemote {
+            let remote = await HubPairingCoordinator.shared.issueRemoteVoiceGrantChallenge(
+                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                requestId: normalizedRequestId,
+                projectId: normalized(payload.projectId),
+                templateId: normalizedTemplateId ?? "",
+                actionDigest: normalizedActionDigest ?? "",
+                scopeDigest: normalizedScopeDigest ?? "",
+                amountDigest: normalized(payload.amountDigest),
+                challengeCode: normalized(payload.challengeCode),
+                riskLevel: normalized(payload.riskLevel) ?? "high",
+                boundDeviceId: normalized(payload.boundDeviceId),
+                mobileTerminalId: normalized(payload.mobileTerminalId),
+                allowVoiceOnly: payload.allowVoiceOnly,
+                requiresMobileConfirm: payload.requiresMobileConfirm,
+                ttlMs: max(10_000, min(600_000, payload.ttlMs))
+            )
+            return mapVoiceGrantChallengeResult(remote)
+        }
+
+        if routeDecision.requiresRemote {
+            return VoiceGrantChallengeResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                challenge: nil,
+                reasonCode: normalizedReasonCode(
+                    routeDecision.remoteUnavailableReasonCode,
+                    fallback: "hub_env_missing"
+                )
+            )
+        }
+
+        return VoiceGrantChallengeResult(
+            ok: false,
+            source: "file_ipc",
+            challenge: nil,
+            reasonCode: "voice_grant_file_ipc_not_supported"
+        )
+    }
+
+    static func verifyVoiceGrantResponse(
+        _ payload: VoiceGrantVerificationPayload
+    ) async -> VoiceGrantVerificationResult {
+        let normalizedRequestId = normalized(payload.requestId)
+        guard let normalizedRequestId else {
+            return VoiceGrantVerificationResult(
+                ok: false,
+                verified: false,
+                decision: .failed,
+                source: "hub_memory_v1_grpc",
+                denyCode: nil,
+                challengeId: nil,
+                transcriptHash: nil,
+                semanticMatchScore: 0,
+                challengeMatch: false,
+                deviceBindingOK: false,
+                mobileConfirmed: payload.mobileConfirmed,
+                reasonCode: "request_id_empty"
+            )
+        }
+
+        let normalizedChallengeId = normalized(payload.challengeId)
+        guard let normalizedChallengeId else {
+            return VoiceGrantVerificationResult(
+                ok: false,
+                verified: false,
+                decision: .failed,
+                source: "hub_memory_v1_grpc",
+                denyCode: nil,
+                challengeId: nil,
+                transcriptHash: nil,
+                semanticMatchScore: 0,
+                challengeMatch: false,
+                deviceBindingOK: false,
+                mobileConfirmed: payload.mobileConfirmed,
+                reasonCode: "challenge_id_empty"
+            )
+        }
+
+        let normalizedVerifyNonce = normalized(payload.verifyNonce)
+        guard let normalizedVerifyNonce else {
+            return VoiceGrantVerificationResult(
+                ok: false,
+                verified: false,
+                decision: .failed,
+                source: "hub_memory_v1_grpc",
+                denyCode: nil,
+                challengeId: normalizedChallengeId,
+                transcriptHash: nil,
+                semanticMatchScore: 0,
+                challengeMatch: false,
+                deviceBindingOK: false,
+                mobileConfirmed: payload.mobileConfirmed,
+                reasonCode: "verify_nonce_empty"
+            )
+        }
+
+        let routeDecision = await currentRouteDecision()
+        if routeDecision.preferRemote {
+            let remote = await HubPairingCoordinator.shared.verifyRemoteVoiceGrantResponse(
+                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                requestId: normalizedRequestId,
+                projectId: normalized(payload.projectId),
+                challengeId: normalizedChallengeId,
+                challengeCode: normalized(payload.challengeCode),
+                transcript: payload.transcript,
+                transcriptHash: normalized(payload.transcriptHash),
+                semanticMatchScore: payload.semanticMatchScore,
+                parsedActionDigest: normalized(payload.parsedActionDigest),
+                parsedScopeDigest: normalized(payload.parsedScopeDigest),
+                parsedAmountDigest: normalized(payload.parsedAmountDigest),
+                verifyNonce: normalizedVerifyNonce,
+                boundDeviceId: normalized(payload.boundDeviceId),
+                mobileConfirmed: payload.mobileConfirmed
+            )
+            return mapVoiceGrantVerificationResult(remote)
+        }
+
+        if routeDecision.requiresRemote {
+            return VoiceGrantVerificationResult(
+                ok: false,
+                verified: false,
+                decision: .failed,
+                source: "hub_memory_v1_grpc",
+                denyCode: nil,
+                challengeId: normalizedChallengeId,
+                transcriptHash: nil,
+                semanticMatchScore: payload.semanticMatchScore ?? 0,
+                challengeMatch: false,
+                deviceBindingOK: false,
+                mobileConfirmed: payload.mobileConfirmed,
+                reasonCode: normalizedReasonCode(
+                    routeDecision.remoteUnavailableReasonCode,
+                    fallback: "hub_env_missing"
+                )
+            )
+        }
+
+        return VoiceGrantVerificationResult(
+            ok: false,
+            verified: false,
+            decision: .failed,
+            source: "file_ipc",
+            denyCode: nil,
+            challengeId: normalizedChallengeId,
+            transcriptHash: nil,
+            semanticMatchScore: payload.semanticMatchScore ?? 0,
+            challengeMatch: false,
+            deviceBindingOK: false,
+            mobileConfirmed: payload.mobileConfirmed,
+            reasonCode: "voice_grant_file_ipc_not_supported"
+        )
+    }
+
+    private static func requestMemoryContextViaLocalIPC(
         payload: MemoryContextPayload,
         timeoutSec: Double
     ) async -> MemoryContextResponsePayload? {
-        guard let st = HubConnector.readHubStatusIfAny(ttl: 3.0) else { return nil }
-        guard let ipcMode = st.ipcMode, ipcMode == "file" else { return nil }
-        guard let ipcPath = st.ipcPath, !ipcPath.isEmpty else { return nil }
-
-        let eventsDir = URL(fileURLWithPath: ipcPath, isDirectory: true)
-        try? FileManager.default.createDirectory(at: eventsDir, withIntermediateDirectories: true)
+        guard let transport = localIPCTransport(ttl: 3.0) else { return nil }
 
         let reqId = UUID().uuidString
         let req = MemoryContextIPCRequest(type: "memory_context", reqId: reqId, memoryContext: payload)
-        let encoder = JSONEncoder()
-        guard let data = try? encoder.encode(req) else { return nil }
-        guard writeEvent(
-            data: data,
-            reqId: reqId,
-            filePrefix: "xterminal_mem",
-            tmpPrefix: ".xterminal_mem",
-            in: eventsDir
-        ) else {
+
+        switch transport.mode {
+        case "file":
+            try? FileManager.default.createDirectory(at: transport.ipcURL, withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            guard let data = try? encoder.encode(req) else { return nil }
+            guard writeEvent(
+                data: data,
+                reqId: reqId,
+                filePrefix: "xterminal_mem",
+                tmpPrefix: ".xterminal_mem",
+                in: transport.ipcURL
+            ) else {
+                return nil
+            }
+
+            guard let ack = await pollMemoryContextResponse(
+                baseDir: transport.baseDir,
+                reqId: reqId,
+                timeoutSec: timeoutSec
+            ) else {
+                return nil
+            }
+            guard ack.ok else { return nil }
+            return ack.memoryContext
+        case "socket":
+            guard let ack: MemoryContextIPCResponse = sendSocketRequest(req, socketURL: transport.ipcURL, timeoutSec: timeoutSec) else {
+                return nil
+            }
+            guard ack.ok else { return nil }
+            return ack.memoryContext
+        default:
             return nil
+        }
+    }
+
+    private static func fetchVoiceWakeProfileViaLocalIPC(
+        desiredWakeMode: VoiceWakeMode
+    ) async -> VoiceWakeProfileSyncResult {
+        guard let transport = localIPCTransport(ttl: 3.0) else {
+            return VoiceWakeProfileSyncResult(
+                ok: false,
+                source: "local_ipc",
+                profile: nil,
+                reasonCode: "hub_not_connected",
+                logLines: ["voice wake profile fetch local IPC unavailable"],
+                syncedAtMs: nil
+            )
         }
 
-        let baseDir = URL(fileURLWithPath: st.baseDir, isDirectory: true)
-        guard let ack = await pollMemoryContextResponse(
-            baseDir: baseDir,
+        let reqId = UUID().uuidString
+        let req = VoiceWakeProfileGetIPCRequest(
+            type: "voice_wake_profile_get",
             reqId: reqId,
-            timeoutSec: timeoutSec
-        ) else {
-            return nil
+            voiceWakeProfileRequest: VoiceWakeProfileRequestPayload(desiredWakeMode: desiredWakeMode.rawValue)
+        )
+
+        switch transport.mode {
+        case "file":
+            try? FileManager.default.createDirectory(at: transport.ipcURL, withIntermediateDirectories: true)
+            guard let data = try? JSONEncoder().encode(req),
+                  writeEvent(
+                    data: data,
+                    reqId: reqId,
+                    filePrefix: "xterminal_voicewake_get",
+                    tmpPrefix: ".xterminal_voicewake_get",
+                    in: transport.ipcURL
+                  ) else {
+                return VoiceWakeProfileSyncResult(
+                    ok: false,
+                    source: "file_ipc",
+                    profile: nil,
+                    reasonCode: "voice_wake_profile_write_failed",
+                    logLines: ["voice wake profile get request write failed"],
+                    syncedAtMs: nil
+                )
+            }
+
+            guard let ack = await pollVoiceWakeProfileResponse(baseDir: transport.baseDir, reqId: reqId, timeoutSec: 2.0) else {
+                return VoiceWakeProfileSyncResult(
+                    ok: false,
+                    source: "file_ipc",
+                    profile: nil,
+                    reasonCode: "ack_timeout",
+                    logLines: ["voice wake profile get ack timeout"],
+                    syncedAtMs: nil
+                )
+            }
+            return mapVoiceWakeProfileAck(ack, source: "file_ipc", verb: "get")
+        case "socket":
+            guard let ack: VoiceWakeProfileIPCResponse = sendSocketRequest(req, socketURL: transport.ipcURL, timeoutSec: 2.0) else {
+                return VoiceWakeProfileSyncResult(
+                    ok: false,
+                    source: "socket_ipc",
+                    profile: nil,
+                    reasonCode: "socket_request_failed",
+                    logLines: ["voice wake profile get socket request failed"],
+                    syncedAtMs: nil
+                )
+            }
+            return mapVoiceWakeProfileAck(ack, source: "socket_ipc", verb: "get")
+        default:
+            return VoiceWakeProfileSyncResult(
+                ok: false,
+                source: "local_ipc",
+                profile: nil,
+                reasonCode: "unsupported_ipc_mode",
+                logLines: ["voice wake profile fetch local IPC mode unsupported"],
+                syncedAtMs: nil
+            )
         }
-        guard ack.ok else { return nil }
-        return ack.memoryContext
+    }
+
+    private static func setVoiceWakeProfileViaLocalIPC(
+        _ profile: VoiceWakeProfile
+    ) async -> VoiceWakeProfileSyncResult {
+        guard let transport = localIPCTransport(ttl: 3.0) else {
+            return VoiceWakeProfileSyncResult(
+                ok: false,
+                source: "local_ipc",
+                profile: nil,
+                reasonCode: "hub_not_connected",
+                logLines: ["voice wake profile set local IPC unavailable"],
+                syncedAtMs: nil
+            )
+        }
+
+        let reqId = UUID().uuidString
+        let req = VoiceWakeProfileSetIPCRequest(
+            type: "voice_wake_profile_set",
+            reqId: reqId,
+            voiceWakeProfile: profile.sanitized()
+        )
+
+        switch transport.mode {
+        case "file":
+            try? FileManager.default.createDirectory(at: transport.ipcURL, withIntermediateDirectories: true)
+            guard let data = try? JSONEncoder().encode(req),
+                  writeEvent(
+                    data: data,
+                    reqId: reqId,
+                    filePrefix: "xterminal_voicewake_set",
+                    tmpPrefix: ".xterminal_voicewake_set",
+                    in: transport.ipcURL
+                  ) else {
+                return VoiceWakeProfileSyncResult(
+                    ok: false,
+                    source: "file_ipc",
+                    profile: nil,
+                    reasonCode: "voice_wake_profile_write_failed",
+                    logLines: ["voice wake profile set request write failed"],
+                    syncedAtMs: nil
+                )
+            }
+
+            guard let ack = await pollVoiceWakeProfileResponse(baseDir: transport.baseDir, reqId: reqId, timeoutSec: 2.0) else {
+                return VoiceWakeProfileSyncResult(
+                    ok: false,
+                    source: "file_ipc",
+                    profile: nil,
+                    reasonCode: "ack_timeout",
+                    logLines: ["voice wake profile set ack timeout"],
+                    syncedAtMs: nil
+                )
+            }
+            return mapVoiceWakeProfileAck(ack, source: "file_ipc", verb: "set")
+        case "socket":
+            guard let ack: VoiceWakeProfileIPCResponse = sendSocketRequest(req, socketURL: transport.ipcURL, timeoutSec: 2.0) else {
+                return VoiceWakeProfileSyncResult(
+                    ok: false,
+                    source: "socket_ipc",
+                    profile: nil,
+                    reasonCode: "socket_request_failed",
+                    logLines: ["voice wake profile set socket request failed"],
+                    syncedAtMs: nil
+                )
+            }
+            return mapVoiceWakeProfileAck(ack, source: "socket_ipc", verb: "set")
+        default:
+            return VoiceWakeProfileSyncResult(
+                ok: false,
+                source: "local_ipc",
+                profile: nil,
+                reasonCode: "unsupported_ipc_mode",
+                logLines: ["voice wake profile set local IPC mode unsupported"],
+                syncedAtMs: nil
+            )
+        }
+    }
+
+    private static func mapVoiceWakeProfileAck(
+        _ ack: VoiceWakeProfileIPCResponse,
+        source: String,
+        verb: String
+    ) -> VoiceWakeProfileSyncResult {
+        guard ack.ok else {
+            return VoiceWakeProfileSyncResult(
+                ok: false,
+                source: source,
+                profile: nil,
+                reasonCode: normalizedReasonCode(ack.error, fallback: "voice_wake_profile_\(verb)_failed"),
+                logLines: ["voice wake profile \(verb) failed: \(ack.error ?? "unknown_error")"],
+                syncedAtMs: nil
+            )
+        }
+        guard let profile = ack.voiceWakeProfile else {
+            return VoiceWakeProfileSyncResult(
+                ok: false,
+                source: source,
+                profile: nil,
+                reasonCode: "voice_wake_profile_missing",
+                logLines: ["voice wake profile \(verb) missing payload"],
+                syncedAtMs: nil
+            )
+        }
+        return VoiceWakeProfileSyncResult(
+            ok: true,
+            source: source,
+            profile: profile,
+            reasonCode: nil,
+            logLines: ["voice wake profile \(verb) succeeded via \(source)"],
+            syncedAtMs: profile.updatedAtMs
+        )
     }
 
     private static func buildMemoryContextFromRemoteSnapshot(
         snapshot: HubRemoteMemorySnapshotResult,
         payload: MemoryContextPayload
     ) -> MemoryContextResponsePayload {
-        let localCanonical = payload.canonicalText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let localObservations = payload.observationsText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let localWorking = payload.workingSetText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let rawEvidence = payload.rawEvidenceText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let constitution = payload.constitutionHint?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let localCanonical = XTMemorySanitizer.sanitizeText(payload.canonicalText, maxChars: 3_200, lineCap: 36) ?? ""
+        let localObservations = XTMemorySanitizer.sanitizeText(payload.observationsText, maxChars: 1_800, lineCap: 24) ?? ""
+        let localWorking = XTMemorySanitizer.sanitizeText(payload.workingSetText, maxChars: 2_600, lineCap: 28) ?? ""
+        let rawEvidence = XTMemorySanitizer.sanitizeRawEvidenceSummary(payload.rawEvidenceText, maxChars: 1_100, lineCap: 18) ?? ""
+        let constitution = XTMemorySanitizer.sanitizeText(payload.constitutionHint, maxChars: 320, lineCap: 6)
             ?? "真实透明、最小化外发；仅在高风险或不可逆动作时先解释后执行；普通编程/创作请求直接给出可执行答案。"
 
-        let remoteCanonical = snapshot.canonicalEntries.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        let remoteWorking = snapshot.workingEntries.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        let remoteCanonical = XTMemorySanitizer.sanitizeText(snapshot.canonicalEntries.joined(separator: "\n"), maxChars: 3_200, lineCap: 36) ?? ""
+        let remoteWorking = XTMemorySanitizer.sanitizeText(snapshot.workingEntries.joined(separator: "\n"), maxChars: 2_400, lineCap: 24) ?? ""
 
         let mergedCanonical = mergedMemoryLayer(localPrimary: localCanonical, remoteSecondary: remoteCanonical)
         let mergedWorking = mergedMemoryLayer(localPrimary: localWorking, remoteSecondary: remoteWorking)
@@ -1172,6 +2916,11 @@ latest_user:
         return MemoryContextResponsePayload(
             text: finalText,
             source: snapshot.source,
+            resolvedMode: payload.mode,
+            freshness: nil,
+            cacheHit: nil,
+            denyCode: nil,
+            downgradeCode: nil,
             budgetTotalTokens: budgetTotal,
             usedTotalTokens: usedTotal,
             layerUsage: layerUsage,
@@ -1192,6 +2941,37 @@ latest_user:
 [hub_remote]
 \(remote)
 """
+    }
+
+    private struct RemoteMemorySnapshotFetchResult {
+        var snapshot: HubRemoteMemorySnapshotResult
+        var cacheHit: Bool
+    }
+
+    private static func fetchRemoteMemorySnapshot(
+        mode: XTMemoryUseMode,
+        projectId: String?,
+        bypassCache: Bool
+    ) async -> RemoteMemorySnapshotFetchResult {
+        let cacheKey = HubRemoteMemorySnapshotCache.Key(
+            mode: mode.rawValue,
+            projectId: normalized(projectId)
+        )
+        if !bypassCache, let cached = await remoteMemorySnapshotCache.snapshot(for: cacheKey) {
+            return RemoteMemorySnapshotFetchResult(snapshot: cached, cacheHit: true)
+        }
+
+        let remote = await HubPairingCoordinator.shared.fetchRemoteMemorySnapshot(
+            options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+            mode: mode.rawValue,
+            projectId: normalized(projectId)
+        )
+        if remote.ok {
+            await remoteMemorySnapshotCache.store(remote, for: cacheKey)
+        } else {
+            await remoteMemorySnapshotCache.invalidate(key: cacheKey)
+        }
+        return RemoteMemorySnapshotFetchResult(snapshot: remote, cacheHit: false)
     }
 
     private struct LocalPaidSchedulerConfig: Codable {
@@ -1428,6 +3208,175 @@ latest_user:
         )
     }
 
+    private struct LocalConnectorIngressReceipt: Codable {
+        var receiptId: String
+        var requestId: String?
+        var projectId: String?
+        var connector: String?
+        var targetId: String?
+        var ingressType: String?
+        var channelScope: String?
+        var sourceId: String?
+        var messageId: String?
+        var dedupeKey: String?
+        var receivedAtMs: Double?
+        var eventSequence: Int64?
+        var deliveryState: String?
+        var runtimeState: String?
+
+        enum CodingKeys: String, CodingKey {
+            case receiptId = "receipt_id"
+            case requestId = "request_id"
+            case projectId = "project_id"
+            case connector
+            case targetId = "target_id"
+            case ingressType = "ingress_type"
+            case channelScope = "channel_scope"
+            case sourceId = "source_id"
+            case messageId = "message_id"
+            case dedupeKey = "dedupe_key"
+            case receivedAtMs = "received_at_ms"
+            case eventSequence = "event_sequence"
+            case deliveryState = "delivery_state"
+            case runtimeState = "runtime_state"
+        }
+    }
+
+    private struct LocalConnectorIngressSnapshotFile: Codable {
+        var schemaVersion: String?
+        var updatedAtMs: Double?
+        var items: [LocalConnectorIngressReceipt]?
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+            case updatedAtMs = "updated_at_ms"
+            case items
+        }
+    }
+
+    private static func readLocalConnectorIngressReceipts(
+        projectId: String?,
+        limit: Int
+    ) -> ConnectorIngressSnapshot? {
+        let url = HubPaths.baseDir().appendingPathComponent("connector_ingress_receipts_status.json")
+        guard let data = try? Data(contentsOf: url),
+              let decoded = try? JSONDecoder().decode(LocalConnectorIngressSnapshotFile.self, from: data) else {
+            return nil
+        }
+
+        let normalizedProjectId = normalized(projectId)
+        let boundedLimit = max(1, min(500, limit))
+
+        let mapped = (decoded.items ?? []).compactMap { row -> ConnectorIngressReceipt? in
+            let receiptId = row.receiptId.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !receiptId.isEmpty else { return nil }
+
+            let project = row.projectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if let normalizedProjectId, !normalizedProjectId.isEmpty, project != normalizedProjectId {
+                return nil
+            }
+
+            return ConnectorIngressReceipt(
+                receiptId: receiptId,
+                requestId: row.requestId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                projectId: project,
+                connector: row.connector?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "",
+                targetId: row.targetId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                ingressType: row.ingressType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "",
+                channelScope: row.channelScope?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "",
+                sourceId: row.sourceId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                messageId: row.messageId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                dedupeKey: row.dedupeKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                receivedAtMs: max(0, row.receivedAtMs ?? 0),
+                eventSequence: Swift.max(0, row.eventSequence ?? 0),
+                deliveryState: row.deliveryState?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "",
+                runtimeState: row.runtimeState?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.receivedAtMs != rhs.receivedAtMs { return lhs.receivedAtMs > rhs.receivedAtMs }
+            return lhs.receiptId.localizedCaseInsensitiveCompare(rhs.receiptId) == .orderedAscending
+        }
+
+        return ConnectorIngressSnapshot(
+            source: "hub_connector_ingress_file",
+            updatedAtMs: max(0, decoded.updatedAtMs ?? 0),
+            items: Array(mapped.prefix(boundedLimit))
+        )
+    }
+
+    private struct LocalAutonomyPolicyOverrideItem: Codable {
+        var projectId: String
+        var overrideMode: String
+        var updatedAtMs: Double?
+        var reason: String?
+        var auditRef: String?
+
+        enum CodingKeys: String, CodingKey {
+            case projectId = "project_id"
+            case overrideMode = "override_mode"
+            case updatedAtMs = "updated_at_ms"
+            case reason
+            case auditRef = "audit_ref"
+        }
+    }
+
+    private struct LocalAutonomyPolicyOverridesSnapshotFile: Codable {
+        var schemaVersion: String?
+        var updatedAtMs: Double?
+        var items: [LocalAutonomyPolicyOverrideItem]?
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+            case updatedAtMs = "updated_at_ms"
+            case items
+        }
+    }
+
+    private static func readLocalAutonomyPolicyOverrides(
+        projectId: String?,
+        limit: Int
+    ) -> AutonomyPolicyOverridesSnapshot? {
+        let url = HubPaths.baseDir().appendingPathComponent("autonomy_policy_overrides_status.json")
+        guard let data = try? Data(contentsOf: url),
+              let decoded = try? JSONDecoder().decode(LocalAutonomyPolicyOverridesSnapshotFile.self, from: data) else {
+            return nil
+        }
+
+        let normalizedProjectId = normalized(projectId)
+        let boundedLimit = max(1, min(500, limit))
+
+        let mapped = (decoded.items ?? []).compactMap { row -> AutonomyPolicyOverrideItem? in
+            let projectId = row.projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+            let overrideModeRaw = row.overrideMode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !projectId.isEmpty,
+                  let overrideMode = AXProjectAutonomyHubOverrideMode(rawValue: overrideModeRaw) else {
+                return nil
+            }
+            if let normalizedProjectId, !normalizedProjectId.isEmpty, projectId != normalizedProjectId {
+                return nil
+            }
+
+            return AutonomyPolicyOverrideItem(
+                projectId: projectId,
+                overrideMode: overrideMode,
+                updatedAtMs: max(0, Int64((row.updatedAtMs ?? 0).rounded())),
+                reason: row.reason?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                auditRef: row.auditRef?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.updatedAtMs != rhs.updatedAtMs { return lhs.updatedAtMs > rhs.updatedAtMs }
+            return lhs.projectId.localizedCaseInsensitiveCompare(rhs.projectId) == .orderedAscending
+        }
+
+        return AutonomyPolicyOverridesSnapshot(
+            source: "hub_autonomy_policy_overrides_file",
+            updatedAtMs: max(0, Int64((decoded.updatedAtMs ?? 0).rounded())),
+            items: Array(mapped.prefix(boundedLimit))
+        )
+    }
+
     private static func fileIPCEventsDir() -> URL? {
         guard let st = HubConnector.readHubStatusIfAny(ttl: 3.0) else { return nil }
         guard let mode = st.ipcMode, mode == "file" else { return nil }
@@ -1466,6 +3415,29 @@ latest_user:
         while Date() < deadline {
             if let data = try? Data(contentsOf: url),
                let resp = try? JSONDecoder().decode(MemoryContextIPCResponse.self, from: data) {
+                try? FileManager.default.removeItem(at: url)
+                return resp
+            }
+            try? await Task.sleep(nanoseconds: 90_000_000)
+        }
+        return nil
+    }
+
+    private static func pollVoiceWakeProfileResponse(
+        baseDir: URL,
+        reqId: String,
+        timeoutSec: Double
+    ) async -> VoiceWakeProfileIPCResponse? {
+        let rid = reqId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rid.isEmpty else { return nil }
+
+        let dir = baseDir.appendingPathComponent("ipc_responses", isDirectory: true)
+        let url = dir.appendingPathComponent("resp_\(rid).json")
+        let deadline = Date().addingTimeInterval(max(0.2, min(4.0, timeoutSec)))
+
+        while Date() < deadline {
+            if let data = try? Data(contentsOf: url),
+               let resp = try? JSONDecoder().decode(VoiceWakeProfileIPCResponse.self, from: data) {
                 try? FileManager.default.removeItem(at: url)
                 return resp
             }
@@ -1532,6 +3504,70 @@ latest_user:
             grantId: normalized(remote.grantId),
             expiresAtMs: remote.expiresAtMs,
             reasonCode: reason
+        )
+    }
+
+    private static func mapVoiceGrantChallengeResult(
+        _ remote: HubRemoteVoiceGrantChallengeResult
+    ) -> VoiceGrantChallengeResult {
+        let mappedChallenge: VoiceGrantChallengeSnapshot? = {
+            guard let challenge = remote.challenge else { return nil }
+            return VoiceGrantChallengeSnapshot(
+                challengeId: challenge.challengeId,
+                templateId: challenge.templateId,
+                actionDigest: challenge.actionDigest,
+                scopeDigest: challenge.scopeDigest,
+                amountDigest: challenge.amountDigest,
+                challengeCode: challenge.challengeCode,
+                riskLevel: challenge.riskLevel,
+                requiresMobileConfirm: challenge.requiresMobileConfirm,
+                allowVoiceOnly: challenge.allowVoiceOnly,
+                boundDeviceId: challenge.boundDeviceId,
+                mobileTerminalId: challenge.mobileTerminalId,
+                issuedAtMs: challenge.issuedAtMs,
+                expiresAtMs: challenge.expiresAtMs
+            )
+        }()
+        return VoiceGrantChallengeResult(
+            ok: remote.ok,
+            source: remote.source,
+            challenge: mappedChallenge,
+            reasonCode: normalizedReasonCode(
+                remote.reasonCode,
+                fallback: remote.ok ? nil : "remote_voice_grant_challenge_failed"
+            )
+        )
+    }
+
+    private static func mapVoiceGrantVerificationResult(
+        _ remote: HubRemoteVoiceGrantVerificationResult
+    ) -> VoiceGrantVerificationResult {
+        let mappedDecision: VoiceGrantVerificationDecision = {
+            switch remote.decision {
+            case .allow:
+                return .allow
+            case .deny:
+                return .deny
+            case .failed:
+                return .failed
+            }
+        }()
+        return VoiceGrantVerificationResult(
+            ok: remote.ok,
+            verified: remote.verified,
+            decision: mappedDecision,
+            source: remote.source,
+            denyCode: normalized(remote.denyCode),
+            challengeId: normalized(remote.challengeId),
+            transcriptHash: normalized(remote.transcriptHash),
+            semanticMatchScore: remote.semanticMatchScore,
+            challengeMatch: remote.challengeMatch,
+            deviceBindingOK: remote.deviceBindingOK,
+            mobileConfirmed: remote.mobileConfirmed,
+            reasonCode: normalizedReasonCode(
+                remote.reasonCode,
+                fallback: remote.ok ? nil : "remote_voice_grant_verify_failed"
+            )
         )
     }
 

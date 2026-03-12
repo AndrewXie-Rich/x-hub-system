@@ -14,6 +14,8 @@
   - `docs/WORKING_INDEX.md`
   - `X_MEMORY.md`
 
+This checklist is release-operations facing. It defines release gates and evidence expectations; it is not the product narrative.
+
 ## 0) Goal
 
 Ship a public open-source release that is:
@@ -24,6 +26,15 @@ Ship a public open-source release that is:
 - rollback-ready
 
 This checklist is fail-closed: if required evidence is missing, release is `NO-GO`.
+
+## 0.1 Validated Public Slice
+
+For the current public GitHub package, validated external wording is limited to:
+
+- `XT-W3-23 -> XT-W3-24 -> XT-W3-25`
+- `XT memory UX adapter backed by Hub truth-source`
+- `Hub-governed multi-channel gateway`
+- `Hub-first governed automations`
 
 ## 1) Release Profile
 

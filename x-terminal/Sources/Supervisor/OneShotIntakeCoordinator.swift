@@ -341,7 +341,14 @@ final class OneShotIntakeCoordinator {
         documents: [SupervisorIntakeSourceDocument],
         workflow: ProjectIntakeWorkflowResult
     ) -> [OneShotHumanAuthorizationType] {
-        let joined = ([userGoal] + documents.map(\ .contents) + workflow.manifest.constraints + workflow.manifest.outOfScope)
+        // Use semantic manifest values instead of raw document text so field names such as
+        // `token_budget_tier` do not incorrectly trigger secret/token authorization.
+        let joined = (
+            [userGoal, workflow.manifest.projectGoal]
+            + workflow.manifest.inScope
+            + workflow.manifest.outOfScope
+            + workflow.manifest.constraints
+        )
             .joined(separator: "\n")
             .lowercased()
         var inferred = explicit

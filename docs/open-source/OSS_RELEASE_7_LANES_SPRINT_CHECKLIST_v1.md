@@ -10,6 +10,8 @@
   - `docs/open-source/OSS_MINIMAL_RUNNABLE_PACKAGE_CHECKLIST_v1.md`
   - `docs/open-source/GITHUB_OSS_PUBLIC_FILE_PATHS_v1.md`
 
+说明：这是一份内部发布冲刺执行清单，用于协同泳道推进，不是对外产品说明或能力声明。
+
 ## 0) 全泳道统一规则（必须）
 
 - [ ] `critical_path_mode` 开启：`SKC-W1-04 -> SKC-W2-05 -> SKC-W2-06 -> SKC-W2-07 -> SKC-W3-08`

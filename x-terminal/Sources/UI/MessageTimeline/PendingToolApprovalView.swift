@@ -174,6 +174,20 @@ struct PendingToolCallChip: View {
             return "memorychip"
         case .project_snapshot:
             return "folder.badge.gearshape"
+        case .deviceUIObserve:
+            return "eye"
+        case .deviceUIAct:
+            return "hand.tap"
+        case .deviceUIStep:
+            return "point.3.connected.trianglepath.dotted"
+        case .deviceClipboardRead, .deviceClipboardWrite:
+            return "list.clipboard"
+        case .deviceScreenCapture:
+            return "camera.viewfinder"
+        case .deviceBrowserControl:
+            return "safari"
+        case .deviceAppleScript:
+            return "apple.logo"
         case .need_network, .bridge_status, .web_fetch, .web_search, .browser_read:
             return "network"
 
@@ -286,6 +300,20 @@ struct ToolCallDetailsPopover: View {
             return "memorychip"
         case .project_snapshot:
             return "folder.badge.gearshape"
+        case .deviceUIObserve:
+            return "eye"
+        case .deviceUIAct:
+            return "hand.tap"
+        case .deviceUIStep:
+            return "point.3.connected.trianglepath.dotted"
+        case .deviceClipboardRead, .deviceClipboardWrite:
+            return "list.clipboard"
+        case .deviceScreenCapture:
+            return "camera.viewfinder"
+        case .deviceBrowserControl:
+            return "safari"
+        case .deviceAppleScript:
+            return "apple.logo"
         case .need_network, .bridge_status, .web_fetch, .web_search, .browser_read:
             return "network"
 

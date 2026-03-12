@@ -12,7 +12,8 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "XTerminal",
-            path: "Sources"
+            path: "Sources",
+            exclude: ["README.md"]
         ),
         .testTarget(
             name: "XTerminalTests",

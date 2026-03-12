@@ -26,6 +26,10 @@ build/
 # Project-local state that may include user content or secrets
 .axcoder/
 data/
+auth.json
+*.env
+.env
+.env.*
 
 # Python caches
 __pycache__/
@@ -44,14 +48,13 @@ yarn-error.log*
 .clang-module-cache/
 .swift-module-cache/
 
-# Temporary status files and archived legacy directories
-in_progress）
+# Local notes, whitepaper drafts, and archived runtime surfaces
 White paper/
-archive/x-terminal-legacy/
+archive/
+docs/_TEMP_STASH*.md
 
-# Temporary status markers
-=
-conservative
-evaluateSkillExecutionGate
-first_run
-only
+# Temporary status markers or scratch files
+in_progress*/
+*.tmp
+*.temp
+GITHUB_RELEASE_BOUNDARY.local.md

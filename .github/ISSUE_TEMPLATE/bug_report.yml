@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a reproducible defect
+description: Report a reproducible defect in X-Hub or X-Terminal
 title: "[Bug] "
 labels:
   - bug
@@ -7,13 +7,15 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting. Please provide enough detail for reproduction.
+        Thanks for reporting.
+
+        Please provide enough detail for reproduction. If this might be security-sensitive, stop here and use the process in `SECURITY.md` instead of posting exploit details publicly.
 
   - type: textarea
     id: summary
     attributes:
       label: Summary
-      description: What happened and what did you expect?
+      description: What happened, and what did you expect instead?
       placeholder: A clear and concise description
     validations:
       required: true
@@ -22,10 +24,11 @@ body:
     id: environment
     attributes:
       label: Environment
-      description: OS, version, runtime/toolchain details
+      description: OS, version, and runtime/toolchain details
       placeholder: |
         - OS:
         - X-Hub version/tag:
+        - X-Terminal version/tag:
         - Node/Python/Swift versions:
     validations:
       required: true
@@ -46,7 +49,7 @@ body:
     id: logs
     attributes:
       label: Logs and evidence
-      description: Paste relevant logs, errors, or evidence refs
+      description: Paste relevant logs, errors, screenshots, or evidence references with secrets removed
       render: shell
     validations:
       required: false
@@ -60,4 +63,5 @@ body:
           required: true
         - label: I removed secrets and private credentials from logs.
           required: true
-
+        - label: This report does not include a private security vulnerability disclosure.
+          required: true

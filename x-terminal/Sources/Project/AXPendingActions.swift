@@ -18,6 +18,54 @@ struct AXPendingToolFlowState: Codable, Equatable {
     var deferredFinal: String?
     var finalizeOnly: Bool
     var formatRetryUsed: Bool
+    var executionRetryUsed: Bool = false
+
+    enum CodingKeys: String, CodingKey {
+        case step
+        case toolResults
+        case dirtySinceVerify
+        case verifyRunIndex
+        case repairAttemptsUsed
+        case deferredFinal
+        case finalizeOnly
+        case formatRetryUsed
+        case executionRetryUsed
+    }
+
+    init(
+        step: Int,
+        toolResults: [ToolResult],
+        dirtySinceVerify: Bool,
+        verifyRunIndex: Int,
+        repairAttemptsUsed: Int,
+        deferredFinal: String?,
+        finalizeOnly: Bool,
+        formatRetryUsed: Bool,
+        executionRetryUsed: Bool = false
+    ) {
+        self.step = step
+        self.toolResults = toolResults
+        self.dirtySinceVerify = dirtySinceVerify
+        self.verifyRunIndex = verifyRunIndex
+        self.repairAttemptsUsed = repairAttemptsUsed
+        self.deferredFinal = deferredFinal
+        self.finalizeOnly = finalizeOnly
+        self.formatRetryUsed = formatRetryUsed
+        self.executionRetryUsed = executionRetryUsed
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        step = try container.decode(Int.self, forKey: .step)
+        toolResults = try container.decode([ToolResult].self, forKey: .toolResults)
+        dirtySinceVerify = try container.decode(Bool.self, forKey: .dirtySinceVerify)
+        verifyRunIndex = try container.decode(Int.self, forKey: .verifyRunIndex)
+        repairAttemptsUsed = try container.decode(Int.self, forKey: .repairAttemptsUsed)
+        deferredFinal = try container.decodeIfPresent(String.self, forKey: .deferredFinal)
+        finalizeOnly = try container.decode(Bool.self, forKey: .finalizeOnly)
+        formatRetryUsed = try container.decode(Bool.self, forKey: .formatRetryUsed)
+        executionRetryUsed = try container.decodeIfPresent(Bool.self, forKey: .executionRetryUsed) ?? false
+    }
 }
 
 struct AXPendingAction: Identifiable, Codable, Equatable {
@@ -122,4 +170,3 @@ enum AXPendingActionsStore {
         try? data.write(to: url(for: ctx), options: .atomic)
     }
 }
-

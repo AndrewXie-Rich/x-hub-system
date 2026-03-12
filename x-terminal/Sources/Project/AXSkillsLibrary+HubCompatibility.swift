@@ -46,7 +46,7 @@ struct AXSkillsDoctorSnapshot: Codable, Equatable, Sendable {
     static let empty = AXSkillsDoctorSnapshot(
         hubIndexAvailable: false,
         installedSkillCount: 0,
-        openClawCompatibleCount: 0,
+        compatibleSkillCount: 0,
         partialCompatibilityCount: 0,
         revokedMatchCount: 0,
         trustEnabledPublisherCount: 0,
@@ -61,7 +61,7 @@ struct AXSkillsDoctorSnapshot: Codable, Equatable, Sendable {
 
     var hubIndexAvailable: Bool
     var installedSkillCount: Int
-    var openClawCompatibleCount: Int
+    var compatibleSkillCount: Int
     var partialCompatibilityCount: Int
     var revokedMatchCount: Int
     var trustEnabledPublisherCount: Int
@@ -132,7 +132,7 @@ extension AXSkillsLibrary {
             return lhs.packageSHA256 < rhs.packageSHA256
         }
 
-        let openClawCompatibleCount = installedSkills.filter { !$0.abiCompatVersion.isEmpty }.count
+        let compatibleSkillCount = installedSkills.filter { !$0.abiCompatVersion.isEmpty }.count
         let partialCompatibilityCount = installedSkills.filter { $0.compatibilityState == .partial }.count
         let revokedMatchCount = installedSkills.filter(\.revoked).count
         let projectIndexEntries = loadProjectIndexEntries(skillsDir: resolvedSkillsDir, projectId: projectId, projectName: projectName)
@@ -154,11 +154,11 @@ extension AXSkillsLibrary {
         case .unavailable:
             statusLine = "skills?"
         case .blocked:
-            statusLine = "skills! \(openClawCompatibleCount)/\(installedSkills.count)"
+            statusLine = "skills! \(compatibleSkillCount)/\(installedSkills.count)"
         case .partial:
-            statusLine = "skills~ \(openClawCompatibleCount)/\(installedSkills.count)"
+            statusLine = "skills~ \(compatibleSkillCount)/\(installedSkills.count)"
         case .supported:
-            statusLine = "skills \(openClawCompatibleCount)/\(installedSkills.count)"
+            statusLine = "skills \(compatibleSkillCount)/\(installedSkills.count)"
         }
 
         let explain = renderCompatibilityExplainability(
@@ -173,7 +173,7 @@ extension AXSkillsLibrary {
         return AXSkillsDoctorSnapshot(
             hubIndexAvailable: hubIndex.available,
             installedSkillCount: installedSkills.count,
-            openClawCompatibleCount: openClawCompatibleCount,
+            compatibleSkillCount: compatibleSkillCount,
             partialCompatibilityCount: partialCompatibilityCount,
             revokedMatchCount: revokedMatchCount,
             trustEnabledPublisherCount: trusted.publishers.filter(\.enabled).count,
@@ -192,6 +192,7 @@ extension AXSkillsLibrary {
             var skillID: String
             var name: String
             var version: String
+            var description: String
             var publisherID: String
             var sourceID: String
             var packageSHA256: String
@@ -199,6 +200,8 @@ extension AXSkillsLibrary {
             var compatibilityState: AXSkillCompatibilityState
             var canonicalManifestSHA256: String
             var installHint: String
+            var capabilitiesRequired: [String]
+            var manifestJSON: String
             var mappingAliasesUsed: [String]
             var defaultsApplied: [String]
 
@@ -206,6 +209,7 @@ extension AXSkillsLibrary {
                 case skillID = "skill_id"
                 case name
                 case version
+                case description
                 case publisherID = "publisher_id"
                 case sourceID = "source_id"
                 case packageSHA256 = "package_sha256"
@@ -213,6 +217,8 @@ extension AXSkillsLibrary {
                 case compatibilityState = "compatibility_state"
                 case canonicalManifestSHA256 = "canonical_manifest_sha256"
                 case installHint = "install_hint"
+                case capabilitiesRequired = "capabilities_required"
+                case manifestJSON = "manifest_json"
                 case mappingAliasesUsed = "mapping_aliases_used"
                 case defaultsApplied = "defaults_applied"
             }
@@ -222,6 +228,7 @@ extension AXSkillsLibrary {
                 skillID = (try? container.decode(String.self, forKey: .skillID)) ?? ""
                 name = (try? container.decode(String.self, forKey: .name)) ?? skillID
                 version = (try? container.decode(String.self, forKey: .version)) ?? ""
+                description = (try? container.decode(String.self, forKey: .description)) ?? ""
                 publisherID = (try? container.decode(String.self, forKey: .publisherID)) ?? ""
                 sourceID = (try? container.decode(String.self, forKey: .sourceID)) ?? ""
                 packageSHA256 = ((try? container.decode(String.self, forKey: .packageSHA256)) ?? "").lowercased()
@@ -229,6 +236,8 @@ extension AXSkillsLibrary {
                 compatibilityState = (try? container.decode(AXSkillCompatibilityState.self, forKey: .compatibilityState)) ?? .unknown
                 canonicalManifestSHA256 = ((try? container.decode(String.self, forKey: .canonicalManifestSHA256)) ?? "").lowercased()
                 installHint = (try? container.decode(String.self, forKey: .installHint)) ?? ""
+                capabilitiesRequired = (try? container.decode([String].self, forKey: .capabilitiesRequired)) ?? []
+                manifestJSON = (try? container.decode(String.self, forKey: .manifestJSON)) ?? ""
                 mappingAliasesUsed = (try? container.decode([String].self, forKey: .mappingAliasesUsed)) ?? []
                 defaultsApplied = (try? container.decode([String].self, forKey: .defaultsApplied)) ?? []
             }
@@ -501,11 +510,11 @@ extension AXSkillsLibrary {
         case .unavailable:
             lines.append("skills compatibility unavailable: hub skills_store_index.json not found")
         case .blocked:
-            lines.append("OpenClaw compatible skill installed, but revocation or trust blockers remain visible")
+            lines.append("compatible skill installed, but revocation or trust blockers remain visible")
         case .partial:
-            lines.append("OpenClaw compatible skill installed with alias/default compatibility mapping")
+            lines.append("compatible skill installed with alias/default compatibility mapping")
         case .supported:
-            lines.append("OpenClaw compatible skill installed under Hub canonical manifest gates")
+            lines.append("compatible skill installed under Hub canonical manifest gates")
         }
         lines.append("installed=\(installedSkills.count) trusted_publishers=\(trustedPublisherCount) project_index=\(projectIndexEntries.count) global_index=\(globalIndexEntries.count)")
 
@@ -525,5 +534,316 @@ extension AXSkillsLibrary {
         }
 
         return lines.joined(separator: "\n")
+    }
+
+    static func supervisorSkillRegistrySnapshot(
+        projectId: String,
+        projectName: String? = nil,
+        hubBaseDir: URL? = nil
+    ) -> SupervisorSkillRegistrySnapshot? {
+        let normalizedProjectId = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedProjectId.isEmpty else { return nil }
+
+        let resolvedHubBaseDir = hubBaseDir ?? HubPaths.baseDir()
+        let storeDir = resolvedHubBaseDir.appendingPathComponent("skills_store", isDirectory: true)
+        let indexURL = storeDir.appendingPathComponent("skills_store_index.json")
+        let pinsURL = storeDir.appendingPathComponent("skills_pins.json")
+        let revocationsURL = storeDir.appendingPathComponent("skill_revocations.json")
+
+        let hubIndex = loadHubSkillsIndex(url: indexURL)
+        let pins = loadHubSkillsPins(url: pinsURL)
+        let revocations = loadSkillRevocations(url: revocationsURL)
+        let relevantPins = relevantPinScopes(pins: pins, projectId: normalizedProjectId)
+        let selectedPins = selectedResolvedPinsForSupervisorRegistry(relevantPins)
+        let skillPairs: [(String, HubSkillsIndexSnapshot.Skill)] = hubIndex.skills.compactMap { skill in
+            let sha = skill.packageSHA256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !sha.isEmpty else { return nil }
+            return (sha, skill)
+        }
+        let skillBySHA = Dictionary(uniqueKeysWithValues: skillPairs)
+
+        let items = selectedPins.compactMap { pin -> SupervisorSkillRegistryItem? in
+            let sha = pin.packageSHA256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard let skill = skillBySHA[sha] else { return nil }
+            let revoked = revocations.revokedSHA256.contains(sha)
+                || revocations.revokedSkillIDs.contains(skill.skillID)
+                || revocations.revokedPublisherIDs.contains(skill.publisherID)
+            guard !revoked else { return nil }
+            guard !skill.abiCompatVersion.isEmpty else { return nil }
+            guard skill.compatibilityState != .unsupported else { return nil }
+            return supervisorSkillRegistryItem(skill: skill, scope: pin.scope)
+        }
+        .sorted { lhs, rhs in
+            let leftScope = skillPinnedScopePriority(lhs.policyScope)
+            let rightScope = skillPinnedScopePriority(rhs.policyScope)
+            if leftScope != rightScope {
+                return leftScope > rightScope
+            }
+            return lhs.skillId.localizedCaseInsensitiveCompare(rhs.skillId) == .orderedAscending
+        }
+
+        let updatedAtMs = max(0, hubIndex.skills.map(\.version).isEmpty ? 0 : loadHubSkillsIndexUpdatedAtMs(url: indexURL))
+        let source = hubIndex.available ? "hub_skill_registry" : "hub_skill_registry_unavailable"
+        return SupervisorSkillRegistrySnapshot(
+            schemaVersion: SupervisorSkillRegistrySnapshot.currentSchemaVersion,
+            projectId: normalizedProjectId,
+            projectName: projectName,
+            updatedAtMs: updatedAtMs,
+            memorySource: source,
+            items: items,
+            auditRef: "audit-xt-w3-32-skill-registry-\(String(normalizedProjectId.suffix(8)))"
+        )
+    }
+
+    private struct SupervisorSkillManifestHints {
+        var description: String
+        var inputSchemaRef: String
+        var outputSchemaRef: String
+        var sideEffectClass: String
+        var riskLevel: SupervisorSkillRiskLevel
+        var requiresGrant: Bool
+        var timeoutMs: Int
+        var maxRetries: Int
+    }
+
+    private static func selectedResolvedPinsForSupervisorRegistry(
+        _ pins: [HubSkillsPinsSnapshot.Pin]
+    ) -> [HubSkillsPinsSnapshot.Pin] {
+        let grouped = Dictionary(grouping: pins, by: \.skillID)
+        return grouped.compactMap { _, scopedPins in
+            scopedPins
+                .sorted { lhs, rhs in
+                    let leftScope = skillPinnedScopePriority(lhs.scope)
+                    let rightScope = skillPinnedScopePriority(rhs.scope)
+                    if leftScope != rightScope {
+                        return leftScope > rightScope
+                    }
+                    return lhs.packageSHA256 < rhs.packageSHA256
+                }
+                .first
+        }
+    }
+
+    private static func supervisorSkillRegistryItem(
+        skill: HubSkillsIndexSnapshot.Skill,
+        scope: String
+    ) -> SupervisorSkillRegistryItem {
+        let manifestHints = parseSupervisorSkillManifestHints(
+            skill.manifestJSON,
+            fallbackDescription: firstNonEmptySkillText(skill.description, skill.installHint, skill.name),
+            capabilityFallback: skill.capabilitiesRequired
+        )
+        return SupervisorSkillRegistryItem(
+            skillId: skill.skillID,
+            displayName: firstNonEmptySkillText(skill.name, skill.skillID),
+            description: manifestHints.description,
+            inputSchemaRef: manifestHints.inputSchemaRef.isEmpty ? "schema://\(skill.skillID).input" : manifestHints.inputSchemaRef,
+            outputSchemaRef: manifestHints.outputSchemaRef.isEmpty ? "schema://\(skill.skillID).output" : manifestHints.outputSchemaRef,
+            sideEffectClass: manifestHints.sideEffectClass,
+            riskLevel: manifestHints.riskLevel,
+            requiresGrant: manifestHints.requiresGrant,
+            policyScope: scope,
+            timeoutMs: max(1_000, manifestHints.timeoutMs),
+            maxRetries: max(0, manifestHints.maxRetries),
+            available: true
+        )
+    }
+
+    private static func parseSupervisorSkillManifestHints(
+        _ rawManifest: String,
+        fallbackDescription: String,
+        capabilityFallback: [String]
+    ) -> SupervisorSkillManifestHints {
+        let manifest = jsonObject(from: rawManifest)
+        let capabilities = stringArrayValue(
+            manifest["capabilities_required"],
+            fallback: capabilityFallback
+        )
+        let explicitRisk = stringValue(manifest["risk_level"])
+        let inferredRisk = normalizedRiskLevel(explicitRisk) ?? inferredRiskLevel(capabilities: capabilities)
+        let explicitGrant = boolValue(manifest["requires_grant"])
+        let sideEffectClass = inferredSideEffectClass(
+            explicit: stringValue(manifest["side_effect_class"]),
+            capabilities: capabilities,
+            riskLevel: inferredRisk
+        )
+        return SupervisorSkillManifestHints(
+            description: firstNonEmptySkillText(
+                stringValue(manifest["description"]),
+                fallbackDescription
+            ),
+            inputSchemaRef: stringValue(manifest["input_schema_ref"]),
+            outputSchemaRef: stringValue(manifest["output_schema_ref"]),
+            sideEffectClass: sideEffectClass,
+            riskLevel: inferredRisk,
+            requiresGrant: explicitGrant ?? (inferredRisk == .high || inferredRisk == .critical),
+            timeoutMs: intValue(manifest["timeout_ms"], fallback: 30_000),
+            maxRetries: intValue(manifest["max_retries"], fallback: 1)
+        )
+    }
+
+    private static func jsonObject(from raw: String) -> [String: Any] {
+        guard let data = raw.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let dictionary = object as? [String: Any] else {
+            return [:]
+        }
+        return dictionary
+    }
+
+    private static func stringValue(_ raw: Any?) -> String {
+        guard let raw else { return "" }
+        if let string = raw as? String {
+            return string.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return String(describing: raw).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func stringArrayValue(_ raw: Any?, fallback: [String]) -> [String] {
+        if let array = raw as? [String] {
+            let cleaned = array
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            if !cleaned.isEmpty {
+                return cleaned
+            }
+        }
+        return fallback
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private static func boolValue(_ raw: Any?) -> Bool? {
+        switch raw {
+        case let value as Bool:
+            return value
+        case let value as NSNumber:
+            return value.boolValue
+        case let value as String:
+            let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if ["1", "true", "yes", "y", "on"].contains(normalized) {
+                return true
+            }
+            if ["0", "false", "no", "n", "off"].contains(normalized) {
+                return false
+            }
+            return nil
+        default:
+            return nil
+        }
+    }
+
+    private static func intValue(_ raw: Any?, fallback: Int) -> Int {
+        switch raw {
+        case let value as Int:
+            return value
+        case let value as NSNumber:
+            return value.intValue
+        case let value as String:
+            return Int(value.trimmingCharacters(in: .whitespacesAndNewlines)) ?? fallback
+        default:
+            return fallback
+        }
+    }
+
+    private static func normalizedRiskLevel(_ raw: String) -> SupervisorSkillRiskLevel? {
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "low":
+            return .low
+        case "medium", "moderate":
+            return .medium
+        case "high":
+            return .high
+        case "critical":
+            return .critical
+        default:
+            return nil
+        }
+    }
+
+    private static func inferredRiskLevel(capabilities: [String]) -> SupervisorSkillRiskLevel {
+        let normalized = capabilities.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        if normalized.contains(where: isHighRiskCapability) {
+            return .high
+        }
+        if normalized.contains(where: { cap in
+            cap.hasPrefix("browser.") || cap.hasPrefix("email.") || cap.hasPrefix("repo.")
+        }) {
+            return .medium
+        }
+        return .low
+    }
+
+    private static func inferredSideEffectClass(
+        explicit: String,
+        capabilities: [String],
+        riskLevel: SupervisorSkillRiskLevel
+    ) -> String {
+        let explicitValue = explicit.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !explicitValue.isEmpty {
+            return explicitValue
+        }
+        let normalized = capabilities.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        if normalized.isEmpty {
+            return riskLevel == .low ? "read_only" : "external_side_effect"
+        }
+        if normalized.allSatisfy({
+            $0.contains("status") || $0.contains("read") || $0.contains("list") || $0.contains("search")
+        }) {
+            return "read_only"
+        }
+        if normalized.contains(where: isHighRiskCapability) {
+            return "external_side_effect"
+        }
+        if normalized.contains(where: { $0.hasPrefix("repo.") || $0.hasPrefix("filesystem.") || $0.hasPrefix("fs.") }) {
+            return "project_write"
+        }
+        return riskLevel == .low ? "read_only" : "project_write"
+    }
+
+    private static func isHighRiskCapability(_ capability: String) -> Bool {
+        let cap = capability.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return cap.hasPrefix("connector.")
+            || cap.hasPrefix("connectors.")
+            || cap.hasPrefix("web.")
+            || cap.hasPrefix("network.")
+            || cap == "ai.generate.paid"
+            || cap == "ai.generate.remote"
+            || cap.hasPrefix("payment.")
+            || cap.hasPrefix("payments.")
+            || cap.hasPrefix("shell.")
+            || cap.hasPrefix("filesystem.")
+            || cap.hasPrefix("fs.")
+    }
+
+    private static func skillPinnedScopePriority(_ scope: String) -> Int {
+        switch scope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "memory_core":
+            return 3
+        case "global":
+            return 2
+        case "project":
+            return 1
+        default:
+            return 0
+        }
+    }
+
+    private static func firstNonEmptySkillText(_ candidates: String...) -> String {
+        for candidate in candidates {
+            let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return trimmed
+            }
+        }
+        return ""
+    }
+
+    private static func loadHubSkillsIndexUpdatedAtMs(url: URL) -> Int64 {
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return 0
+        }
+        return Int64((object["updated_at_ms"] as? NSNumber)?.int64Value ?? 0)
     }
 }

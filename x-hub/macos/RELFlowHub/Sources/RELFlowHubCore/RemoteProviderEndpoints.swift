@@ -1,19 +1,46 @@
 import Foundation
 
 public enum RemoteProviderEndpoints {
+    public static let remoteCatalogBaseURLString = "https://opencode.ai/zen/v1"
+    private static let remoteCatalogLegacyBackends: Set<String> = ["opencode", "opencode_zen"]
+    private static let remoteCatalogLegacyModelPrefixes: Set<String> = ["opencode/"]
+    private static let remoteCatalogLegacyAPIKeyRefPrefixes: [String] = ["opencode:"]
+
     public static func normalizedBackend(_ backend: String) -> String {
         backend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
-    public static func openAIChatCompletionsURL(baseURL: String?, backend: String) -> URL? {
+    public static func isRemoteCatalogBackend(_ backend: String) -> Bool {
         let b = normalizedBackend(backend)
+        return b == "remote_catalog" || remoteCatalogLegacyBackends.contains(b)
+    }
+
+    public static func isRemoteCatalogModelPrefix(_ prefix: String) -> Bool {
+        let normalized = prefix.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized == "remote_catalog/" || remoteCatalogLegacyModelPrefixes.contains(normalized)
+    }
+
+    public static func isRemoteCatalogAPIKeyRefPrefix(_ ref: String) -> Bool {
+        let normalized = ref.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized.hasPrefix("remote_catalog:") {
+            return true
+        }
+        return remoteCatalogLegacyAPIKeyRefPrefixes.contains { normalized.hasPrefix($0) }
+    }
+
+    public static func canonicalBackend(_ backend: String) -> String {
+        isRemoteCatalogBackend(backend) ? "remote_catalog" : normalizedBackend(backend)
+    }
+
+    public static func openAIChatCompletionsURL(baseURL: String?, backend: String) -> URL? {
+        let b = canonicalBackend(backend)
         let base = normalizedBase(baseURL)
         if base.isEmpty {
             if b == "openai" {
                 return URL(string: "https://api.openai.com/v1/chat/completions")
             }
-            if b == "opencode" || b == "opencode_zen" {
-                return URL(string: "https://opencode.ai/zen/v1/chat/completions")
+            if b == "remote_catalog" {
+                return URL(string: remoteCatalogBaseURLString + "/chat/completions")
             }
             return nil
         }
@@ -27,14 +54,14 @@ public enum RemoteProviderEndpoints {
     }
 
     public static func openAIModelsURL(baseURL: String?, backend: String) -> URL? {
-        let b = normalizedBackend(backend)
+        let b = canonicalBackend(backend)
         let base = normalizedBase(baseURL)
         if base.isEmpty {
             if b == "openai" {
                 return URL(string: "https://api.openai.com/v1/models")
             }
-            if b == "opencode" || b == "opencode_zen" {
-                return URL(string: "https://opencode.ai/zen/v1/models")
+            if b == "remote_catalog" {
+                return URL(string: remoteCatalogBaseURLString + "/models")
             }
             return nil
         }

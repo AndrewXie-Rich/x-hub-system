@@ -10,36 +10,47 @@ struct ModernChatView: View {
     @EnvironmentObject private var appModel: AppModel
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            // 背景
-            Color(nsColor: .windowBackgroundColor)
-                .ignoresSafeArea()
+        VStack(spacing: 0) {
+            projectRuntimeSection
 
-            // 消息时间线
-            MessageTimelineView(ctx: ctx, session: session)
+            Divider()
 
-            // 待审批工具浮动卡片
-            if !session.pendingToolCalls.isEmpty {
-                VStack {
-                    Spacer()
-                    PendingToolApprovalView(
-                        session: session,
-                        hubConnected: hubConnected,
-                        onApprove: {
-                            session.approvePendingTools(router: appModel.llmRouter)
-                        },
-                        onReject: {
-                            session.rejectPendingTools()
-                        }
-                    )
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                    .padding(.bottom, 140) // 为输入框留空间
+            ZStack(alignment: .bottom) {
+                // 背景
+                Color(nsColor: .windowBackgroundColor)
+                    .ignoresSafeArea()
+
+                // 消息时间线
+                MessageTimelineView(
+                    ctx: ctx,
+                    session: session,
+                    bottomPadding: session.pendingToolCalls.isEmpty ? 24 : 160
+                )
+
+                // 待审批工具浮动卡片
+                if !session.pendingToolCalls.isEmpty {
+                    VStack {
+                        Spacer()
+                        PendingToolApprovalView(
+                            session: session,
+                            hubConnected: hubConnected,
+                            onApprove: {
+                                session.approvePendingTools(router: appModel.llmRouter)
+                            },
+                            onReject: {
+                                session.rejectPendingTools()
+                            }
+                        )
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 20)
+                    }
                 }
             }
-
-            // 底部 Dock 输入框
-            VStack {
-                Spacer()
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                Divider()
                 DockInputView(
                     ctx: ctx,
                     memory: memory,
@@ -57,6 +68,176 @@ struct ModernChatView: View {
         .onChange(of: ctx.root.path) { _ in
             session.ensureLoaded(ctx: ctx, limit: 200)
         }
+    }
+
+    private var projectRuntimeSection: some View {
+        let snapshots = AXRoleExecutionSnapshots.latestSnapshots(for: ctx)
+        let coderSnapshot = snapshots[.coder] ?? .empty(role: .coder)
+        let configuredModelId = AXRoleExecutionSnapshots.configuredModelId(
+            for: .coder,
+            projectConfig: config,
+            settings: appModel.settingsStore.settings
+        )
+        return HStack(spacing: 8) {
+            Image(systemName: "hammer.circle.fill")
+                .foregroundColor(.blue)
+                .font(.system(size: 14))
+
+            Text(ctx.projectName())
+                .font(.system(size: 13, weight: .medium))
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
+
+            Text("Coder")
+                .font(.system(size: 13, weight: .medium))
+
+            Text(projectConfiguredChipText(configuredModelId: configuredModelId))
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.secondary.opacity(0.12))
+                .clipShape(Capsule())
+
+            if let actualChip = projectActualChipText(configuredModelId: configuredModelId, snapshot: coderSnapshot) {
+                Text(actualChip)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(projectRouteColor(snapshot: coderSnapshot))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(projectRouteColor(snapshot: coderSnapshot).opacity(0.12))
+                    .clipShape(Capsule())
+            }
+
+            Text(projectRouteStatusText(snapshot: coderSnapshot))
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(projectRouteColor(snapshot: coderSnapshot))
+                .lineLimit(1)
+                .help(projectRouteTooltip(configuredModelId: configuredModelId, snapshot: coderSnapshot))
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .overlay(
+            Rectangle()
+                .frame(height: 1)
+                .foregroundColor(Color.secondary.opacity(0.2)),
+            alignment: .bottom
+        )
+    }
+
+    private func displayModel(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "default hub route" : trimmed
+    }
+
+    private func preferredDisplayValue(_ primary: String, fallback: String) -> String {
+        let first = primary.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !first.isEmpty {
+            return first
+        }
+        return fallback.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func projectConfiguredChipText(configuredModelId: String) -> String {
+        "cfg \(shortModelLabel(configuredModelId))"
+    }
+
+    private func projectActualChipText(
+        configuredModelId: String,
+        snapshot: AXRoleExecutionSnapshot
+    ) -> String? {
+        let configured = configuredModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let actual = preferredDisplayValue(snapshot.actualModelId, fallback: snapshot.requestedModelId)
+        guard !actual.isEmpty || snapshot.hasRecord else { return nil }
+
+        if !actual.isEmpty,
+           !configured.isEmpty,
+           normalizedModelIdentity(actual) == normalizedModelIdentity(configured),
+           snapshot.executionPath == "remote_model" {
+            return "actual \(shortModelLabel(actual))"
+        }
+
+        if !actual.isEmpty {
+            return "actual \(shortModelLabel(actual))"
+        }
+        return "actual pending"
+    }
+
+    private func projectRouteStatusText(snapshot: AXRoleExecutionSnapshot) -> String {
+        switch snapshot.executionPath {
+        case "remote_model", "direct_provider":
+            return "remote verified"
+        case "hub_downgraded_to_local":
+            return "local downgrade"
+        case "local_fallback_after_remote_error":
+            return "local fallback"
+        case "local_runtime":
+            return "local only"
+        case "remote_error":
+            return "remote failed"
+        default:
+            return "no record"
+        }
+    }
+
+    private func projectRouteTooltip(
+        configuredModelId: String,
+        snapshot: AXRoleExecutionSnapshot
+    ) -> String {
+        var lines: [String] = []
+        lines.append("configured=\(displayModel(configuredModelId))")
+        if !snapshot.requestedModelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.append("requested=\(snapshot.requestedModelId)")
+        }
+        if !snapshot.actualModelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.append("last_actual=\(snapshot.actualModelId)")
+        }
+        if !snapshot.executionPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           snapshot.executionPath != "no_record" {
+            lines.append("last_path=\(snapshot.executionPath)")
+        }
+        if !snapshot.fallbackReasonCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.append("reason=\(snapshot.fallbackReasonCode)")
+        }
+        lines.append("transport=\(HubAIClient.transportMode().rawValue)")
+        return lines.joined(separator: "\n")
+    }
+
+    private func projectRouteColor(snapshot: AXRoleExecutionSnapshot) -> Color {
+        switch snapshot.executionPath {
+        case "remote_model", "direct_provider":
+            return .green
+        case "hub_downgraded_to_local", "local_fallback_after_remote_error":
+            return .orange
+        case "local_runtime":
+            return .yellow
+        case "remote_error":
+            return .red
+        default:
+            return .secondary
+        }
+    }
+
+    private func shortModelLabel(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "default hub route" }
+        if trimmed.count <= 30 {
+            return trimmed
+        }
+        if let slash = trimmed.lastIndex(of: "/") {
+            let suffix = trimmed[trimmed.index(after: slash)...]
+            if suffix.count <= 30 {
+                return String(suffix)
+            }
+        }
+        let end = trimmed.index(trimmed.startIndex, offsetBy: 30)
+        return String(trimmed[..<end]) + "..."
+    }
+
+    private func normalizedModelIdentity(_ raw: String) -> String {
+        raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 }
 

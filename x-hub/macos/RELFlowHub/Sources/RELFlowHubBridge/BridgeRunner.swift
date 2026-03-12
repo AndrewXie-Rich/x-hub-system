@@ -412,7 +412,7 @@ final class BridgeRunner {
             return
         }
 
-        let allEnabled = RemoteModelStorage.load().models.filter { $0.enabled }
+        let allEnabled = RemoteModelStorage.exportableEnabledModels()
         let remote = allEnabled.first { $0.id == modelId }
         guard let rm = remote else {
             writeResp(ok: false, status: 0, text: "", error: "remote_model_not_found")
@@ -464,17 +464,17 @@ final class BridgeRunner {
         }
 
         func callProvider(_ remote: RemoteModelEntry) async -> (ok: Bool, status: Int, text: String, error: String, usage: [String: Any]) {
-            switch backend {
+            switch RemoteProviderEndpoints.canonicalBackend(backend) {
             case "anthropic":
                 return await performAnthropic(remote: remote, prompt: prompt, maxTokens: maxTokens, temperature: temperature, topP: topP, timeoutSec: timeoutSec)
             case "gemini":
                 return await performGemini(remote: remote, prompt: prompt, maxTokens: maxTokens, temperature: temperature, topP: topP, timeoutSec: timeoutSec)
-            case "opencode_zen", "opencode":
+            case "remote_catalog":
                 let upstreamModelId = providerModelId(for: remote)
                 var remote2 = remote
                 let base = (remote2.baseURL ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 if base.isEmpty {
-                    remote2.baseURL = "https://opencode.ai/zen/v1"
+                    remote2.baseURL = RemoteProviderEndpoints.remoteCatalogBaseURLString
                 }
                 return await performOpenAICompatible(remote: remote2, modelId: upstreamModelId, prompt: prompt, maxTokens: maxTokens, temperature: temperature, topP: topP, timeoutSec: timeoutSec)
             default:
@@ -511,8 +511,8 @@ final class BridgeRunner {
     private func providerModelId(for remote: RemoteModelEntry) -> String {
         let raw = (remote.upstreamModelId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let model = raw.isEmpty ? remote.id.trimmingCharacters(in: .whitespacesAndNewlines) : raw
-        let backend = RemoteProviderEndpoints.normalizedBackend(remote.backend)
-        if backend == "gemini" || backend == "opencode_zen" || backend == "opencode" {
+        let backend = RemoteProviderEndpoints.canonicalBackend(remote.backend)
+        if backend == "gemini" || backend == "remote_catalog" {
             return RemoteProviderEndpoints.stripModelRef(model)
         }
         if model.hasPrefix("models/") {

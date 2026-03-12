@@ -1,4 +1,4 @@
-# X-Hub Memory System Spec v1（Openclaw + Claude‑Mem 优势整合版 / 可执行规范）
+# X-Hub Memory System Spec v1（skills ecosystem + progressive-disclosure reference architecture 优势整合版 / 可执行规范）
 
 - Status: Draft（按本文可直接实现 v1；后续迭代出 v2/v3）
 - Updated: 2026-02-12
@@ -19,8 +19,8 @@
 相关分部 spec（本文件为“总装配可实现版本”）：
 - Memory-Core Policy：`docs/xhub-memory-core-policy-v1.md`
 - PD + Hooks：`docs/xhub-memory-progressive-disclosure-hooks-v1.md`
-- Hybrid Index（Openclaw Port）：`docs/xhub-memory-hybrid-index-openclaw-port-v1.md`
-- Fusion（概览）：`docs/xhub-memory-fusion-openclaw-claudemem-v1.md`
+- Hybrid Index（skills ecosystem Port）：`docs/xhub-memory-hybrid-index-v1.md`
+- Fusion（概览）：`docs/xhub-memory-fusion-v1.md`
 - v2（local vector + hybrid）：`docs/xhub-memory-system-spec-v2.md`
 - Storage Encryption & Key Mgmt：`docs/xhub-storage-encryption-and-keymgmt-v1.md`
 
@@ -119,7 +119,7 @@ v1 最小可实现策略（二选一，推荐 A）：
 
 v1 决策：FTS-only（trigram），不启用 sqlite-vec。
 
-实现见：`docs/xhub-memory-hybrid-index-openclaw-port-v1.md`
+实现见：`docs/xhub-memory-hybrid-index-v1.md`
 
 落地要点（必须）：
 - Index DB 独立文件（崩溃可删可重建）

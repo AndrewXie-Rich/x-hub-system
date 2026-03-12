@@ -10,7 +10,7 @@
   - Email “撤销窗口 / Undo Send”：默认 **30s**
   - Paid models：**首次人工一次性授权**后，后续 **自动续签/自动放行**（在配额与策略内）
 
-> 本文把“普通终端配合 X-Hub”时的安全承诺讲清楚：X-Hub 能控制什么、不能控制什么；以及如何在“不牺牲终端体验（Openclaw 风格）”的前提下，做到 Secrets/付费/联网审计/Kill-Switch 尽可能都在 Hub。
+> 本文把“普通终端配合 X-Hub”时的安全承诺讲清楚：X-Hub 能控制什么、不能控制什么；以及如何在“不牺牲终端体验（skills ecosystem 风格）”的前提下，做到 Secrets/付费/联网审计/Kill-Switch 尽可能都在 Hub。
 
 ---
 
@@ -64,7 +64,7 @@ Hub 仍然不负责（必须讲清楚边界）
   - 解决方案（可选，不强制）：提供“Network Shim / Proxy 配置指南”，让客户端把联网都走 Hub（或至少走 Hub Web/Connectors）。
 
 适用场景
-- 希望获得 Openclaw 风格“AI 读/写/发/归档邮件、订票、下单”的完整体验，同时要可控/可审计/可冻结
+- 希望获得 skills ecosystem 风格“AI 读/写/发/归档邮件、订票、下单”的完整体验，同时要可控/可审计/可冻结
 
 ---
 
@@ -163,7 +163,7 @@ X-Terminal（深度客户端）
 ## 4) 授权与执行：不牺牲体验的前提下如何更安全
 
 ### 4.1 总原则：把“不可逆动作”做成 Hub 侧的 Commit
-为了让 AI 像 Openclaw 一样自动完成任务，同时把风险拦在 Hub：
+为了让 AI 像 skills ecosystem 一样自动完成任务，同时把风险拦在 Hub：
 - **Prepare（可逆）**：生成草稿/计划/待发送内容（draft）
 - **Commit（不可逆）**：真正发送/下单/出票/转账/删除等（commit）
 
@@ -282,7 +282,7 @@ approve_grant(ttl, cap)  // auto
 
 ---
 
-## 5) Email 场景（Openclaw 体验对齐）最小可行闭环
+## 5) Email 场景（skills ecosystem 体验对齐）最小可行闭环
 
 ### 5.1 目标体验
 - AI 可以读邮件内容 -> 生成回复 -> 存草稿 -> 发送 -> 归档

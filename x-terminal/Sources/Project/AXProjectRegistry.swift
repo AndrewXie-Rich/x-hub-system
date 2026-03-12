@@ -65,6 +65,20 @@ enum AXProjectRegistryStore {
 
     static func baseDir() -> URL {
         let fm = FileManager.default
+        let env = ProcessInfo.processInfo.environment
+        if let override = env["XTERMINAL_PROJECT_REGISTRY_BASE_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !override.isEmpty {
+            let base = URL(fileURLWithPath: override, isDirectory: true)
+            try? fm.createDirectory(at: base, withIntermediateDirectories: true)
+            return base
+        }
+        if isRunningUnderUnitTests() {
+            let base = fm.temporaryDirectory
+                .appendingPathComponent("xterminal-tests-support", isDirectory: true)
+                .appendingPathComponent("ProjectRegistry", isDirectory: true)
+            try? fm.createDirectory(at: base, withIntermediateDirectories: true)
+            return base
+        }
         let supportBase = fm.homeDirectoryForCurrentUser
             .appendingPathComponent("Library", isDirectory: true)
             .appendingPathComponent("Application Support", isDirectory: true)
@@ -93,11 +107,11 @@ enum AXProjectRegistryStore {
         guard let decoded = try? JSONDecoder().decode(AXProjectRegistry.self, from: data) else {
             return .empty()
         }
-        let normalized = normalizeManualOrderIndices(decoded)
-        if normalized.changed {
-            save(normalized.registry)
+        let sanitized = sanitizeLoadedRegistry(decoded)
+        if sanitized.changed {
+            save(sanitized.registry)
         }
-        return normalized.registry
+        return sanitized.registry
     }
 
     static func save(_ reg: AXProjectRegistry) {
@@ -353,6 +367,84 @@ enum AXProjectRegistryStore {
         }
 
         return (out, changed)
+    }
+
+    static func sanitizeLoadedRegistry(_ reg: AXProjectRegistry) -> (registry: AXProjectRegistry, changed: Bool) {
+        let normalized = normalizeManualOrderIndices(reg)
+        let pruned = pruneTemporaryOrEphemeralTestProjects(normalized.registry)
+
+        var out = pruned.registry
+        var changed = normalized.changed || pruned.changed
+
+        if let selected = out.lastSelectedProjectId,
+           !out.projects.contains(where: { $0.projectId == selected }) {
+            out.lastSelectedProjectId = out.projects.first?.projectId
+            changed = true
+        }
+
+        return (out, changed)
+    }
+
+    private static func pruneTemporaryOrEphemeralTestProjects(_ reg: AXProjectRegistry) -> (registry: AXProjectRegistry, changed: Bool) {
+        let fm = FileManager.default
+        var out = reg
+        let originalCount = out.projects.count
+        out.projects.removeAll { entry in
+            let rootPath = entry.rootPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !rootPath.isEmpty else { return true }
+            guard isTemporaryPath(rootPath) else { return false }
+            if isEphemeralTestProjectPath(rootPath) {
+                return true
+            }
+            return !fm.fileExists(atPath: rootPath)
+        }
+        return (out, out.projects.count != originalCount)
+    }
+
+    private static func isTemporaryPath(_ path: String) -> Bool {
+        let normalizedPath = URL(fileURLWithPath: path).standardizedFileURL.path
+        let tempRoot = FileManager.default.temporaryDirectory.standardizedFileURL.path
+
+        if normalizedPath.hasPrefix(tempRoot) {
+            return true
+        }
+
+        let normalizedWithoutPrivate = normalizedPath.replacingOccurrences(
+            of: "/private",
+            with: "",
+            options: [.anchored]
+        )
+        let tempWithoutPrivate = tempRoot.replacingOccurrences(
+            of: "/private",
+            with: "",
+            options: [.anchored]
+        )
+        return normalizedWithoutPrivate.hasPrefix(tempWithoutPrivate)
+    }
+
+    private static func isRunningUnderUnitTests() -> Bool {
+        let env = ProcessInfo.processInfo.environment
+        return env["XCTestConfigurationFilePath"] != nil || env["XCTestBundlePath"] != nil
+    }
+
+    private static func isEphemeralTestProjectPath(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        let basename = url.lastPathComponent.lowercased()
+        let components = Set(url.pathComponents.map { $0.lowercased() })
+        if components.contains("xterminal-tests") || components.contains("xterminal-tests-support") {
+            return true
+        }
+
+        let prefixes = [
+            "xterminal-supervisor-manager-automation-",
+            "xt-supervisor-last-actual-model-",
+            "xt_chat_direct_reply_",
+            "xterminal-skills-compat-",
+            "voice-heartbeat-",
+            "xt_w3_",
+            "xt_w331_"
+        ]
+        return prefixes.contains(where: { basename.hasPrefix($0) })
     }
 
     private static func nextManualOrderIndex(in projects: [AXProjectEntry]) -> Int {

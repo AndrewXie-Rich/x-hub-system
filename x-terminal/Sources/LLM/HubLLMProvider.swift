@@ -31,7 +31,15 @@ final class HubLLMProvider: LLMProvider {
                         }
                         if ev.type == "done" {
                             if let pt = ev.promptTokens, let gt = ev.generationTokens {
-                                usage = LLMUsage(promptTokens: pt, completionTokens: gt)
+                                usage = LLMUsage(
+                                    promptTokens: pt,
+                                    completionTokens: gt,
+                                    requestedModelId: ev.requestedModelIdFromMetadata,
+                                    actualModelId: ev.actualModelIdFromMetadata,
+                                    runtimeProvider: ev.runtimeProviderFromMetadata,
+                                    executionPath: ev.executionPathFromMetadata,
+                                    fallbackReasonCode: ev.fallbackReasonCodeFromMetadata
+                                )
                             }
                         }
                     }

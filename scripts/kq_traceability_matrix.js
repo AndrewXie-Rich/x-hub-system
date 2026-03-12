@@ -289,7 +289,7 @@ function ensureMatrixUpToDate({ outputPath, nextContent }) {
 
 function runCli(argv = process.argv) {
   const args = parseArgs(argv);
-  const specDir = path.resolve(args["spec-dir"] || path.join(process.cwd(), ".kiro/specs/xhub-memory-quality-v1"));
+  const specDir = path.resolve(args["spec-dir"] || path.join(process.cwd(), "specs/xhub-memory-quality-v1"));
   const requirementsPath = path.resolve(args.requirements || path.join(specDir, "requirements.md"));
   const tasksPath = path.resolve(args.tasks || path.join(specDir, "tasks.md"));
   const outputPath = path.resolve(args["out-json"] || path.join(specDir, "traceability_matrix_v1.json"));

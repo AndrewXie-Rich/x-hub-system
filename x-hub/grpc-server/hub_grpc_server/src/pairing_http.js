@@ -209,6 +209,63 @@ function writeJsonAtomic(dirPath, fileName, obj) {
   }
 }
 
+function connectorIngressReceiptsFileName() {
+  return 'connector_ingress_receipts_status.json';
+}
+
+function normalizeConnectorIngressReceiptRow(row = {}) {
+  const receipt_id = safeString(row.receipt_id);
+  if (!receipt_id) return null;
+  return {
+    receipt_id,
+    request_id: safeString(row.request_id),
+    project_id: safeString(row.project_id),
+    connector: safeString(row.connector).toLowerCase(),
+    target_id: safeString(row.target_id),
+    ingress_type: safeString(row.ingress_type).toLowerCase(),
+    channel_scope: safeString(row.channel_scope).toLowerCase(),
+    source_id: safeString(row.source_id),
+    message_id: safeString(row.message_id),
+    dedupe_key: safeString(row.dedupe_key),
+    received_at_ms: Math.max(0, Number(row.received_at_ms || 0)),
+    event_sequence: Math.max(0, Number(row.event_sequence || 0)),
+    delivery_state: safeString(row.delivery_state).toLowerCase(),
+    runtime_state: safeString(row.runtime_state).toLowerCase(),
+  };
+}
+
+function appendConnectorIngressReceiptSnapshot(runtimeBaseDir, row = {}) {
+  const base = safeString(runtimeBaseDir || resolveRuntimeBaseDir());
+  if (!base) return false;
+
+  const normalized = normalizeConnectorIngressReceiptRow(row);
+  if (!normalized) return false;
+
+  const existing = readJsonSafe(path.join(base, connectorIngressReceiptsFileName()));
+  const items = Array.isArray(existing?.items)
+    ? existing.items.map(normalizeConnectorIngressReceiptRow).filter(Boolean)
+    : [];
+  const deduped = new Map(items.map((item) => [item.receipt_id, item]));
+  deduped.set(normalized.receipt_id, normalized);
+
+  const limitRaw = Number.parseInt(safeString(process.env.HUB_CONNECTOR_INGRESS_RECEIPTS_MAX || '240'), 10);
+  const maxItems = Math.max(16, Math.min(2000, Number.isFinite(limitRaw) ? limitRaw : 240));
+  const merged = Array.from(deduped.values())
+    .sort((left, right) => {
+      const lts = Math.max(0, Number(left?.received_at_ms || 0));
+      const rts = Math.max(0, Number(right?.received_at_ms || 0));
+      if (lts !== rts) return rts - lts;
+      return safeString(left?.receipt_id).localeCompare(safeString(right?.receipt_id));
+    })
+    .slice(0, maxItems);
+
+  return writeJsonAtomic(base, connectorIngressReceiptsFileName(), {
+    schema_version: 'connector_ingress_receipts_status.v1',
+    updated_at_ms: Math.max(normalized.received_at_ms, Date.now()),
+    items: merged,
+  });
+}
+
 function clientsConfigPath(runtimeBaseDir) {
   const base = safeString(runtimeBaseDir);
   if (!base) return '';
@@ -2688,6 +2745,29 @@ export function startPairingHTTPServer({
           body_size_hint_bytes: Buffer.byteLength(JSON.stringify(obj || {}), 'utf8'),
           peer_ip: peerIp || '',
         },
+      });
+      appendConnectorIngressReceiptSnapshot(resolveRuntimeBaseDir(), {
+        receipt_id: `connector_ingress_${crypto.createHash('sha256')
+          .update([
+            safeString(target_id),
+            safeString(connector),
+            safeString(replayClaim.replay_key_hash || deliveryIdempotencyKey || ingressRequestId),
+          ].join('|'))
+          .digest('hex')
+          .slice(0, 24)}`,
+        request_id: ingressRequestId,
+        project_id: safeString(authzClient.project_id || target_id),
+        connector,
+        target_id,
+        ingress_type: safeString(ingressEvent.ingress_type || 'webhook'),
+        channel_scope: safeString(ingressEvent.channel_scope || ''),
+        source_id: safeString(ingressEvent.source_id || webhookSourceId),
+        message_id: safeString(ingressEvent.message_id || replay_key || ingressRequestId),
+        dedupe_key: safeString(replayClaim.replay_key_hash || deliveryIdempotencyKey || ingressRequestId),
+        received_at_ms: nowMs(),
+        event_sequence: Math.max(0, Number(ingressEvent.event_sequence || 0)),
+        delivery_state: safeString(receiptCommit.delivery_state || ''),
+        runtime_state: safeString(runtimeSignal.state || ''),
       });
 
       jsonResponse(res, 202, {

@@ -21,7 +21,7 @@ Goal: **runnable, secure, evidence-backed**, not full historical exposure.
 - [ ] Release tag is `v0.1.0-alpha`
 - [ ] Release branch is frozen (for example `release/v0.1`)
 - [ ] Allowlist policy is enforced via `docs/open-source/GITHUB_OSS_PUBLIC_FILE_PATHS_v1.md`
-- [ ] Explicit first-release deferrals are documented (`x-terminal- legacy/**`, heavy artifacts, private runtime state)
+- [ ] Explicit first-release deferrals are documented (`archive/x-terminal-legacy/**`, heavy artifacts, private runtime state)
 
 DoD:
 - [ ] One machine-readable manifest is produced (recommended: `build/reports/oss_public_manifest_v1.json`)

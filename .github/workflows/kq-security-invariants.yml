@@ -13,7 +13,7 @@ on:
       - "x-hub/grpc-server/hub_grpc_server/src/memory_remote_export_gate.js"
       - "x-hub/grpc-server/hub_grpc_server/src/at_rest_crypto.js"
       - ".github/workflows/kq-security-invariants.yml"
-      - "docs/memory-new/xhub-kiro-spec-gates-work-orders-v1.md"
+      - "docs/memory-new/xhub-spec-gates-work-orders-v1.md"
       - "X_MEMORY.md"
   push:
     branches:
@@ -29,7 +29,7 @@ on:
       - "x-hub/grpc-server/hub_grpc_server/src/memory_remote_export_gate.js"
       - "x-hub/grpc-server/hub_grpc_server/src/at_rest_crypto.js"
       - ".github/workflows/kq-security-invariants.yml"
-      - "docs/memory-new/xhub-kiro-spec-gates-work-orders-v1.md"
+      - "docs/memory-new/xhub-spec-gates-work-orders-v1.md"
       - "X_MEMORY.md"
 
 jobs:

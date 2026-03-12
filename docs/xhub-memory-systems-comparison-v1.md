@@ -1,10 +1,10 @@
-# Memory Systems Comparison (Openclaw vs Claude-Mem vs X-Hub) v1
+# Memory Systems Comparison (skills ecosystem vs progressive-disclosure reference architecture vs X-Hub) v1
 
 - Status: Draft（用于对齐“上下文记忆方法论”，并指导 X-Hub 5-layer 落地优先级）
 - Updated: 2026-02-12
 - Sources reviewed (local):
-  - Openclaw: `refer open source/openclaw-cn-2026.1.31/docs/concepts/memory.md` + `refer open source/openclaw-cn-2026.1.31/src/memory/*`
-  - Claude-Mem: `refer open source/claude-mem/claude-mem-main/README.md` + `refer open source/claude-mem/claude-mem-main/docs/public/progressive-disclosure.mdx` + `refer open source/claude-mem/claude-mem-main/src/services/sqlite/migrations.ts`
+  - skills ecosystem: `refer open source/skill-cn-2026.1.31/docs/concepts/memory.md` + `refer open source/skill-cn-2026.1.31/src/memory/*`
+  - progressive-disclosure reference architecture: `refer open source/external-progressive-disclosure/external-progressive-disclosure-main/README.md` + `refer open source/external-progressive-disclosure/external-progressive-disclosure-main/docs/public/progressive-disclosure.mdx` + `refer open source/external-progressive-disclosure/external-progressive-disclosure-main/src/services/sqlite/migrations.ts`
   - X-Hub v2 scope (local vector + hybrid): `docs/xhub-memory-system-spec-v2.md`
 
 > 目标：回答三个问题：
@@ -16,14 +16,14 @@
 
 ## 1) 三套系统的“记忆”到底在解决什么
 
-### 1.1 Openclaw 的记忆（以“Workspace 文件”为真相）
+### 1.1 skills ecosystem 的记忆（以“Workspace 文件”为真相）
 - 记忆载体：workspace 下的 Markdown（`memory/YYYY-MM-DD.md` 日志 + `MEMORY.md` 长期摘要）
 - 记忆检索：对 Markdown chunk 做向量/混合检索（SQLite + sqlite-vec/FTS），返回 snippet + 文件行号；必要时再 `memory_get` 读文件
 - 记忆写入：主要靠 agent 在合适时机把内容写回 Markdown；并有“接近 compaction 时的 silent memory flush”提醒写入
 
 核心哲学：**“模型不会真正记住，只有写到磁盘的才算记住”**。结构简单，偏“知识库/日志 + 检索”。
 
-### 1.2 Claude-Mem 的记忆（以“Session 事件 -> Observations/Summaries”为核心）
+### 1.2 progressive-disclosure reference architecture 的记忆（以“Session 事件 -> Observations/Summaries”为核心）
 - 记忆载体：SQLite（sessions / transcript_events / observations / session_summaries 等）+ 向量库（Chroma）
 - 记忆生成：通过生命周期 hooks 自动抓取 tool use / 会话信息，生成 observations + summaries
 - 记忆检索：Progressive Disclosure（先给 index，展示 token cost；再按需 timeline/get）
@@ -43,7 +43,7 @@
 
 ## 2) 核心优势对比（简表）
 
-| 维度 | Openclaw | Claude-Mem | X-Hub（当前拍板 v1 路线） |
+| 维度 | skills ecosystem | progressive-disclosure reference architecture | X-Hub（当前拍板 v1 路线） |
 |---|---|---|---|
 | 载体可读性/可编辑性 | 强（Markdown 即真相） | 中（DB 为主，需工具/UI） | 可选（DB 为主；Longterm 可导出 Markdown） |
 | 自动化程度 | 中（有 flush 提醒，但写入常需显式） | 强（hooks 自动捕获 + 生成） | 强（Hub 事件驱动抽取/聚合/晋升） |
@@ -61,7 +61,7 @@
 > 说明：以下以“可落地可测”的指标口径来对比；具体指标定义与 benchmark 方案见：
 > - `docs/xhub-memory-metrics-benchmarks-v1.md`
 
-| 指标维度 | Openclaw | Claude‑Mem | X‑Hub（v1 已拍板） |
+| 指标维度 | skills ecosystem | progressive-disclosure reference architecture | X‑Hub（v1 已拍板） |
 |---|---|---|---|
 | Ingest latency（事件入库） | 中：主要靠 agent 写 Markdown；flush 触发需要一次 silent turn | 快：hooks 只入库/入队，worker 异步 | 快：hooks 入 vault + 入队，worker 异步（目标 p95<50ms） |
 | Search latency（检索） | 快：SQLite（FTS + vec0）；索引时 embeddings 可能成为瓶颈 | 中：SQLite + 向量库（Chroma），取决于部署与向量库性能 | 快（v1）：SQLite FTS（trigram）/Index DB FTS；v2 再上 vec |
@@ -75,11 +75,11 @@
 | Human‑editable（人工纠错） | 强：Markdown 即真相 | 中：DB 为真相，需工具 | 中~强：DB 真相 + Markdown 视图（导出/编辑/回写） |
 
 结论（v1 现实取舍）：
-- X‑Hub v1 的速度与 token 经济学会非常接近 Claude‑Mem（PD），keyword 精度接近/超过 Openclaw（trigram FTS），但语义 recall 会弱于两者（直到 v2 引入 local vector）。
+- X‑Hub v1 的速度与 token 经济学会非常接近 progressive-disclosure reference architecture（PD），keyword 精度接近/超过 skills ecosystem（trigram FTS），但语义 recall 会弱于两者（直到 v2 引入 local vector）。
 
 ## 3) 借鉴点（我们应该直接抄“思想/模式”）
 
-### 3.1 从 Openclaw 借鉴
+### 3.1 从 skills ecosystem 借鉴
 1) **“磁盘为真相”的人类可编辑记忆**：
    - 我们的 Longterm Docs 可以提供“导出/编辑/回写”的 Markdown 视图（可选），提高可控性与信任。
 2) **混合检索（Vector + BM25）**：
@@ -89,7 +89,7 @@
 4) **Compaction 前的 memory flush**：
    - 我们可以把它改成“Working Set 即将被裁剪/压缩时，触发一次 Memory-Core extract/canonicalize job”。
 
-### 3.2 从 Claude-Mem 借鉴
+### 3.2 从 progressive-disclosure reference architecture 借鉴
 1) **Progressive Disclosure 的“可见成本”**（index 里显示 token cost）：
    - 我们的 `Search/Timeline/Get` 应该默认返回 token_cost_est，并提供“类型图例/优先级”。
 2) **Observation 类型图例（gotcha/decision/trade-off 等）**：
@@ -143,12 +143,12 @@
 
 ## 6) 对 X-Hub 的具体建议（可执行）
 
-1) **先落地 3 步检索工具**（Search/Timeline/Get），并让 index 带 token_cost_est + obs_type 图例（借鉴 Claude-Mem）。
-2) **对 Observations 做 hybrid search**（借鉴 Openclaw），优先实现 FTS5，再加向量（sqlite-vec/自研）。
+1) **先落地 3 步检索工具**（Search/Timeline/Get），并让 index 带 token_cost_est + obs_type 图例（借鉴 progressive-disclosure reference architecture）。
+2) **对 Observations 做 hybrid search**（借鉴 skills ecosystem），优先实现 FTS5，再加向量（sqlite-vec/自研）。
 3) **实现“Working Set 裁剪前的 memory flush”**：
    - 裁剪前跑 extractor，把关键 decision/gotcha 写入 observations/canonical candidate 队列。
 4) **把敏感分级与远程外发 gate 变成硬策略**：
    - secret 默认禁止远程；internal 需脱敏；public 才可自由。
    - 必须补齐：paid/remote 模型生成路径的 prompt 外发 gate（否则会绕过策略），见 `docs/xhub-memory-remote-export-and-prompt-gate-v1.md`。
 5) **Longterm Docs 做成“可选 Markdown 视图”**：
-   - 让用户能编辑与纠错（借鉴 Openclaw 的可编辑性），同时保留 provenance。
+   - 让用户能编辑与纠错（借鉴 skills ecosystem 的可编辑性），同时保留 provenance。

@@ -2,7 +2,6 @@
 //  ProjectModel.swift
 //  XTerminal
 //
-//  Created by Claude on 2026-02-27.
 //
 
 import Foundation

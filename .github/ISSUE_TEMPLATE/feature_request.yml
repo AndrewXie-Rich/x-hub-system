@@ -1,5 +1,5 @@
 name: Feature request
-description: Suggest an improvement or new capability
+description: Suggest an improvement or new capability for X-Hub or X-Terminal
 title: "[Feature] "
 labels:
   - enhancement
@@ -9,11 +9,13 @@ body:
       value: |
         Please describe the user value and expected outcome.
 
+        For product-facing requests, keep the difference between `x-hub/` and `x-terminal/` in mind: trust, grants, and final policy authority belong in the Hub.
+
   - type: textarea
     id: problem
     attributes:
       label: Problem statement
-      description: What problem are you trying to solve?
+      description: What problem are you trying to solve, and for whom?
       placeholder: Current pain point
     validations:
       required: true
@@ -40,11 +42,12 @@ body:
     id: scope
     attributes:
       label: Scope and impact
-      description: Affected modules, risks, and migration impact
+      description: Affected modules, risks, migration impact, and whether the change touches Hub trust boundaries
       placeholder: |
         - Modules:
         - Risk level:
         - Breaking changes:
+        - Trust/policy impact:
     validations:
       required: false
 
@@ -57,4 +60,5 @@ body:
           required: true
         - label: This request does not include private or secret information.
           required: true
-
+        - label: I understand that public claims and release scope are narrower than the full internal document set.
+          required: false

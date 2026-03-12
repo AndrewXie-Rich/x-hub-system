@@ -361,31 +361,244 @@ public struct IPCSupervisorIncidentAuditPayload: Codable, Sendable, Equatable {
     }
 }
 
+public struct IPCSupervisorProjectActionAuditPayload: Codable, Sendable, Equatable {
+    public var eventId: String
+    public var projectId: String
+    public var projectName: String
+    public var eventType: String
+    public var severity: String
+    public var actionTitle: String
+    public var actionSummary: String
+    public var whyItMatters: String
+    public var nextAction: String
+    public var occurredAtMs: Int64
+    public var deliveryChannel: String
+    public var deliveryStatus: String
+    public var jurisdictionRole: String?
+    public var grantedScope: String?
+    public var auditRef: String
+    public var source: String?
+
+    public init(
+        eventId: String,
+        projectId: String,
+        projectName: String,
+        eventType: String,
+        severity: String,
+        actionTitle: String,
+        actionSummary: String,
+        whyItMatters: String,
+        nextAction: String,
+        occurredAtMs: Int64,
+        deliveryChannel: String,
+        deliveryStatus: String,
+        jurisdictionRole: String? = nil,
+        grantedScope: String? = nil,
+        auditRef: String,
+        source: String? = nil
+    ) {
+        self.eventId = eventId
+        self.projectId = projectId
+        self.projectName = projectName
+        self.eventType = eventType
+        self.severity = severity
+        self.actionTitle = actionTitle
+        self.actionSummary = actionSummary
+        self.whyItMatters = whyItMatters
+        self.nextAction = nextAction
+        self.occurredAtMs = occurredAtMs
+        self.deliveryChannel = deliveryChannel
+        self.deliveryStatus = deliveryStatus
+        self.jurisdictionRole = jurisdictionRole
+        self.grantedScope = grantedScope
+        self.auditRef = auditRef
+        self.source = source
+    }
+
+    public enum CodingKeys: String, CodingKey {
+        case eventId = "event_id"
+        case projectId = "project_id"
+        case projectName = "project_name"
+        case eventType = "event_type"
+        case severity
+        case actionTitle = "action_title"
+        case actionSummary = "action_summary"
+        case whyItMatters = "why_it_matters"
+        case nextAction = "next_action"
+        case occurredAtMs = "occurred_at_ms"
+        case deliveryChannel = "delivery_channel"
+        case deliveryStatus = "delivery_status"
+        case jurisdictionRole = "jurisdiction_role"
+        case grantedScope = "granted_scope"
+        case auditRef = "audit_ref"
+        case source
+    }
+}
+
+public struct IPCVoiceWakeProfileRequestPayload: Codable, Sendable, Equatable {
+    public var desiredWakeMode: String
+
+    public init(desiredWakeMode: String) {
+        self.desiredWakeMode = desiredWakeMode
+    }
+
+    public enum CodingKeys: String, CodingKey {
+        case desiredWakeMode = "desired_wake_mode"
+    }
+}
+
+public struct IPCVoiceWakeProfile: Codable, Sendable, Equatable {
+    public var schemaVersion: String
+    public var profileID: String
+    public var triggerWords: [String]
+    public var updatedAtMs: Int64
+    public var scope: String
+    public var source: String
+    public var wakeMode: String
+    public var requiresPairingReady: Bool
+    public var auditRef: String?
+
+    public init(
+        schemaVersion: String,
+        profileID: String,
+        triggerWords: [String],
+        updatedAtMs: Int64,
+        scope: String,
+        source: String,
+        wakeMode: String,
+        requiresPairingReady: Bool,
+        auditRef: String? = nil
+    ) {
+        self.schemaVersion = schemaVersion
+        self.profileID = profileID
+        self.triggerWords = triggerWords
+        self.updatedAtMs = updatedAtMs
+        self.scope = scope
+        self.source = source
+        self.wakeMode = wakeMode
+        self.requiresPairingReady = requiresPairingReady
+        self.auditRef = auditRef
+    }
+
+    public enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case profileID = "profile_id"
+        case triggerWords = "trigger_words"
+        case updatedAtMs = "updated_at_ms"
+        case scope
+        case source
+        case wakeMode = "wake_mode"
+        case requiresPairingReady = "requires_pairing_ready"
+        case auditRef = "audit_ref"
+    }
+}
+
+public struct IPCProjectCanonicalMemoryItem: Codable, Sendable, Equatable {
+    public var key: String
+    public var value: String
+
+    public init(key: String, value: String) {
+        self.key = key
+        self.value = value
+    }
+}
+
+public struct IPCProjectCanonicalMemoryPayload: Codable, Sendable, Equatable {
+    public var projectId: String
+    public var projectRoot: String?
+    public var displayName: String?
+    public var updatedAt: Double?
+    public var items: [IPCProjectCanonicalMemoryItem]
+
+    public init(
+        projectId: String,
+        projectRoot: String? = nil,
+        displayName: String? = nil,
+        updatedAt: Double? = nil,
+        items: [IPCProjectCanonicalMemoryItem]
+    ) {
+        self.projectId = projectId
+        self.projectRoot = projectRoot
+        self.displayName = displayName
+        self.updatedAt = updatedAt
+        self.items = items
+    }
+
+    public enum CodingKeys: String, CodingKey {
+        case projectId = "project_id"
+        case projectRoot = "project_root"
+        case displayName = "display_name"
+        case updatedAt = "updated_at"
+        case items
+    }
+}
+
+public struct IPCDeviceCanonicalMemoryPayload: Codable, Sendable, Equatable {
+    public var supervisorId: String
+    public var displayName: String?
+    public var updatedAt: Double?
+    public var items: [IPCProjectCanonicalMemoryItem]
+
+    public init(
+        supervisorId: String,
+        displayName: String? = nil,
+        updatedAt: Double? = nil,
+        items: [IPCProjectCanonicalMemoryItem]
+    ) {
+        self.supervisorId = supervisorId
+        self.displayName = displayName
+        self.updatedAt = updatedAt
+        self.items = items
+    }
+
+    public enum CodingKeys: String, CodingKey {
+        case supervisorId = "supervisor_id"
+        case displayName = "display_name"
+        case updatedAt = "updated_at"
+        case items
+    }
+}
+
 public struct IPCRequest: Codable, Sendable {
     public var type: String
     public var reqId: String?
     public var notification: HubNotification?
     public var project: HubProjectSnapshot?
+    public var projectCanonicalMemory: IPCProjectCanonicalMemoryPayload?
+    public var deviceCanonicalMemory: IPCDeviceCanonicalMemoryPayload?
     public var network: HubNetworkRequest?
     public var memoryContext: IPCMemoryContextRequestPayload?
     public var supervisorIncident: IPCSupervisorIncidentAuditPayload?
+    public var supervisorProjectAction: IPCSupervisorProjectActionAuditPayload?
+    public var voiceWakeProfileRequest: IPCVoiceWakeProfileRequestPayload?
+    public var voiceWakeProfile: IPCVoiceWakeProfile?
 
     public init(
         type: String,
         reqId: String? = nil,
         notification: HubNotification? = nil,
         project: HubProjectSnapshot? = nil,
+        projectCanonicalMemory: IPCProjectCanonicalMemoryPayload? = nil,
+        deviceCanonicalMemory: IPCDeviceCanonicalMemoryPayload? = nil,
         network: HubNetworkRequest? = nil,
         memoryContext: IPCMemoryContextRequestPayload? = nil,
-        supervisorIncident: IPCSupervisorIncidentAuditPayload? = nil
+        supervisorIncident: IPCSupervisorIncidentAuditPayload? = nil,
+        supervisorProjectAction: IPCSupervisorProjectActionAuditPayload? = nil,
+        voiceWakeProfileRequest: IPCVoiceWakeProfileRequestPayload? = nil,
+        voiceWakeProfile: IPCVoiceWakeProfile? = nil
     ) {
         self.type = type
         self.reqId = reqId
         self.notification = notification
         self.project = project
+        self.projectCanonicalMemory = projectCanonicalMemory
+        self.deviceCanonicalMemory = deviceCanonicalMemory
         self.network = network
         self.memoryContext = memoryContext
         self.supervisorIncident = supervisorIncident
+        self.supervisorProjectAction = supervisorProjectAction
+        self.voiceWakeProfileRequest = voiceWakeProfileRequest
+        self.voiceWakeProfile = voiceWakeProfile
     }
 
     public enum CodingKeys: String, CodingKey {
@@ -393,9 +606,14 @@ public struct IPCRequest: Codable, Sendable {
         case reqId = "req_id"
         case notification
         case project
+        case projectCanonicalMemory = "project_canonical_memory"
+        case deviceCanonicalMemory = "device_canonical_memory"
         case network
         case memoryContext = "memory_context"
         case supervisorIncident = "supervisor_incident"
+        case supervisorProjectAction = "supervisor_project_action"
+        case voiceWakeProfileRequest = "voice_wake_profile_request"
+        case voiceWakeProfile = "voice_wake_profile"
     }
 }
 
@@ -406,6 +624,7 @@ public struct IPCResponse: Codable, Sendable {
     public var id: String?
     public var error: String?
     public var memoryContext: IPCMemoryContextResponsePayload?
+    public var voiceWakeProfile: IPCVoiceWakeProfile?
 
     public init(
         type: String,
@@ -413,7 +632,8 @@ public struct IPCResponse: Codable, Sendable {
         ok: Bool,
         id: String? = nil,
         error: String? = nil,
-        memoryContext: IPCMemoryContextResponsePayload? = nil
+        memoryContext: IPCMemoryContextResponsePayload? = nil,
+        voiceWakeProfile: IPCVoiceWakeProfile? = nil
     ) {
         self.type = type
         self.reqId = reqId
@@ -421,6 +641,7 @@ public struct IPCResponse: Codable, Sendable {
         self.id = id
         self.error = error
         self.memoryContext = memoryContext
+        self.voiceWakeProfile = voiceWakeProfile
     }
 
     public enum CodingKeys: String, CodingKey {
@@ -430,5 +651,6 @@ public struct IPCResponse: Codable, Sendable {
         case id
         case error
         case memoryContext = "memory_context"
+        case voiceWakeProfile = "voice_wake_profile"
     }
 }

@@ -101,4 +101,23 @@ export class HubEventBus {
       },
     };
   }
+
+  voiceWakeProfileChanged(payload) {
+    return {
+      event_id: `evt_${uuid()}`,
+      created_at_ms: nowMs(),
+      voice_wake_profile_changed: {
+        schema_version: String(payload?.schema_version || 'hub.voice_wake_profile_changed.v1'),
+        profile_id: String(payload?.profile_id || 'default'),
+        trigger_words: Array.isArray(payload?.trigger_words) ? payload.trigger_words : [],
+        updated_at_ms: Number(payload?.updated_at_ms || nowMs()),
+        scope: String(payload?.scope || 'paired_device_group'),
+        source: String(payload?.source || 'hub_pairing_sync'),
+        requires_pairing_ready: !!payload?.requires_pairing_ready,
+        audit_ref: String(payload?.audit_ref || ''),
+        changed_by_device_id: String(payload?.changed_by_device_id || ''),
+        changed_by_app_id: String(payload?.changed_by_app_id || ''),
+      },
+    };
+  }
 }

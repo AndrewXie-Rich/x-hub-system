@@ -5,13 +5,13 @@
 - Applies to: X‑Hub（hub_grpc_server + Memory Worker + Index DB + local embeddings runtime）+ X‑Terminal（hooks 上报 + PD UI）
 
 > v2 目标：在保持 v1 的 **Progressive Disclosure（Index→Timeline→Get）** 与 **安全治理（DLP/远程外发 gate/审计/回滚）** 不变的前提下，
-> 把检索能力补齐到“语义 recall 不弱于 Openclaw/Claude‑Mem”，同时仍然保持 **可丢弃可重建的派生索引层**。
+> 把检索能力补齐到“语义 recall 不弱于 skills ecosystem/progressive-disclosure reference architecture”，同时仍然保持 **可丢弃可重建的派生索引层**。
 
 依赖（v2 基于 v1 增量实现）：
 - v1 总装配：`docs/xhub-memory-system-spec-v1.md`
 - 记忆治理/晋升/远程门禁：`docs/xhub-memory-core-policy-v1.md`
 - PD + Hooks：`docs/xhub-memory-progressive-disclosure-hooks-v1.md`
-- Openclaw 可复用实现（MIT）：`docs/xhub-memory-hybrid-index-openclaw-port-v1.md`
+- skills ecosystem 可复用实现（MIT）：`docs/xhub-memory-hybrid-index-v1.md`
 - 指标与 benchmark：`docs/xhub-memory-metrics-benchmarks-v1.md`
 - paid/remote prompt gate（补洞必做）：`docs/xhub-memory-remote-export-and-prompt-gate-v1.md`
 
@@ -23,11 +23,11 @@
 1) **Local embeddings**：默认离线生成向量（不把文本发到远程 embeddings provider）。
 2) **sqlite-vec 向量索引**：Index DB 启用 `vec0` 并支持近邻搜索。
 3) **Hybrid merge**：FTS（BM25）+ vector（cosine/dot）混合排序，并且可配置/可基准测试。
-4) **原子/增量索引**：derived index DB 允许增量同步与“tmp swap 原子重建”（继承 Openclaw 工程经验）。
+4) **原子/增量索引**：derived index DB 允许增量同步与“tmp swap 原子重建”（继承 skills ecosystem 工程经验）。
 5) **语义 recall 指标达标**：用离线 benchmark 证明 v2 recall@k 提升（见 9）。
 
 ### 0.2 v2 明确不做（保持边界）
-- 不引入 Claude‑Mem（AGPL）任何代码（只借方法论）。
+- 不引入 progressive-disclosure reference architecture（AGPL）任何代码（只借方法论）。
 - 不默认启用 remote embeddings（可以作为可选项，但必须走 remote gate，且默认关闭）。
 - 不改变 v1 的 PD API（Search/Timeline/Get）语义：Search/Timeline 仍返回“索引项”，Get 才返回全文。
 
@@ -83,7 +83,7 @@ type EmbeddingsProvider = {
 - key：`sha256(text)` + `provider_id` + `model_id`
 - value：vector + dims + created_at
 
-实现提示：Index DB 内可复用 Openclaw 的 `embedding_cache` 表结构（见 openclaw port spec）。
+实现提示：Index DB 内可复用 skills ecosystem 的 `embedding_cache` 表结构（见 skill port spec）。
 
 ---
 
@@ -102,7 +102,7 @@ type EmbeddingsProvider = {
 - `embedding_cache`（缓存）
 - `meta`（记录 tokenizer、dims、provider、policy_fingerprint）
 
-详细表建议沿用：`docs/xhub-memory-hybrid-index-openclaw-port-v1.md`（3.x）。
+详细表建议沿用：`docs/xhub-memory-hybrid-index-v1.md`（3.x）。
 
 ---
 
@@ -236,10 +236,10 @@ Index 的 `chunks.text` 必须满足：
 
 ---
 
-## 10) 与 Openclaw/Claude‑Mem 的对齐与超越点（v2 版本的结论）
+## 10) 与 skills ecosystem/progressive-disclosure reference architecture 的对齐与超越点（v2 版本的结论）
 
 当 v2 完成：
-- 检索能力（语义 recall）对齐/接近 Openclaw/Claude‑Mem（本地向量 + hybrid）
-- Token 经济学仍保持 Claude‑Mem 级别（PD：index→get）
-- 工程可靠性继承 Openclaw（原子重建/增量索引/缓存）
+- 检索能力（语义 recall）对齐/接近 skills ecosystem/progressive-disclosure reference architecture（本地向量 + hybrid）
+- Token 经济学仍保持 progressive-disclosure reference architecture 级别（PD：index→get）
+- 工程可靠性继承 skills ecosystem（原子重建/增量索引/缓存）
 - 系统层优势仍然是 X‑Hub 独有：**远程外发 gate + paid 成本控制 + connectors commit + kill‑switch + 审计 + 多终端共享 + 晋升为 skill 闭环**

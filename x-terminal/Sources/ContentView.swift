@@ -269,6 +269,9 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .xterminalOpenHubSetupWizard)) { _ in
             openWindow(id: "hub_setup")
         }
+        .onReceive(NotificationCenter.default.publisher(for: .xterminalOpenSupervisorWindow)) { _ in
+            openWindow(id: "supervisor")
+        }
     }
 
     private func handleDeepLink(_ url: URL) {

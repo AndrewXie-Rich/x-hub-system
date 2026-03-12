@@ -26,6 +26,21 @@ run('W4-08/analyze detects credential and secret findings', () => {
   assert.ok(out.findings.length >= 2);
 });
 
+run('W4-08/analyze keeps project and digest hex ids non-secret', () => {
+  const digest = '44a5c1a3eea646597383d386305e85c17de235c5a4a832dc212765fba8ba7c59';
+  const text = `project_id=${digest}\nrequest_id=${digest}\nsha256:${digest}`;
+  const out = analyzeLongtermMarkdownFindings(text);
+  assert.equal(out.has_secret, false);
+  assert.ok(out.findings.some((item) => item.kind === 'hex.long' && item.severity === 'internal'));
+});
+
+run('W4-08/analyze treats long hex near secret labels as secret', () => {
+  const text = 'client_secret=44a5c1a3eea646597383d386305e85c17de235c5a4a832dc212765fba8ba7c59';
+  const out = analyzeLongtermMarkdownFindings(text);
+  assert.equal(out.has_secret, true);
+  assert.ok(out.findings.some((item) => item.kind === 'hex.long' && item.severity === 'secret'));
+});
+
 run('W4-08/sanitize redacts sensitive content', () => {
   const text = 'Bearer abcdefghijklmnopqrstuvwxyz and [private] + sk-abcDEF123456789';
   const out = sanitizeLongtermMarkdown(text);
@@ -40,4 +55,3 @@ run('W4-08/normalizers fail closed', () => {
   assert.equal(normalizeSecretHandling('sanitize'), 'sanitize');
   assert.equal(normalizeSecretHandling('unknown'), '');
 });
-

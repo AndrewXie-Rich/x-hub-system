@@ -110,6 +110,22 @@ run('W5-03/allow_sanitized mode can sanitize and continue remote export', () => 
   assert.equal(result.prompt_text.includes('[REDACTED_PRIVATE_BLOCK]'), true);
 });
 
+run('W5-03/hex ids in project metadata no longer force secret downgrade', () => {
+  const digest = '44a5c1a3eea646597383d386305e85c17de235c5a4a832dc212765fba8ba7c59';
+  const result = evaluatePromptRemoteExportGate({
+    prompt_text: `project_id=${digest}\nrequest_id=${digest}\nsha256:${digest}`,
+    policy: {
+      secret_mode: 'deny',
+      allow_classes: ['prompt_bundle'],
+      on_block: 'downgrade_to_local',
+    },
+  });
+
+  assert.equal(result.blocked, false);
+  assert.equal(result.findings_summary.secret_count, 0);
+  assert.equal(result.gate_reason, 'allow');
+});
+
 run('W5-03/policy env overrides are respected', () => {
   withEnv(
     {

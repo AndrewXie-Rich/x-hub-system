@@ -203,7 +203,6 @@ class DependencyGraph {
         // 计算最早开始时间
         for taskId in sorted {
             guard nodes[taskId] != nil else { continue }
-            let task = nodes[taskId]!
 
             var maxDependencyTime: TimeInterval = 0
             for dependencyId in getDependencies(taskId) {

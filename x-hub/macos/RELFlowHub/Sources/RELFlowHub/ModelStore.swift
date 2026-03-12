@@ -55,7 +55,7 @@ final class ModelStore: ObservableObject {
     }
 
     private func mergeRemoteModels(_ base: ModelStateSnapshot) -> ModelStateSnapshot {
-        let remote = RemoteModelStorage.load().models.filter { $0.enabled }
+        let remote = RemoteModelStorage.exportableEnabledModels()
 
         // Keep local models (with a modelPath). Remove stale remote entries before re-adding.
         let localOnly = base.models.filter { !(isRemoteModel($0)) }

@@ -35,6 +35,18 @@ enum HubPaidModelSelectionMode: String, Codable, CaseIterable, Equatable, Sendab
     }
 }
 
+enum HubTrustedAutomationMode: String, Codable, CaseIterable, Equatable, Sendable {
+    case standard = "standard"
+    case trustedAutomation = "trusted_automation"
+}
+
+enum HubTrustedAutomationState: String, Codable, CaseIterable, Equatable, Sendable {
+    case off = "off"
+    case armed = "armed"
+    case active = "active"
+    case blocked = "blocked"
+}
+
 enum HubTrustProfileDefaults {
     static let trustMode = "trusted_daily"
     static let dailyTokenLimit = 500_000
@@ -84,7 +96,14 @@ struct HubPairedTerminalTrustProfile: Codable, Equatable, Sendable {
     var deviceId: String
     var deviceName: String
     var trustMode: String
+    var mode: HubTrustedAutomationMode
+    var state: HubTrustedAutomationState
     var capabilities: [String]
+    var allowedProjectIds: [String]
+    var allowedWorkspaceRoots: [String]
+    var xtBindingRequired: Bool
+    var autoGrantProfile: String
+    var devicePermissionOwnerRef: String
     var paidModelPolicy: HubPairedTerminalPaidModelPolicy
     var networkPolicy: HubPairedTerminalNetworkPolicy
     var budgetPolicy: HubPairedTerminalBudgetPolicy
@@ -95,7 +114,14 @@ struct HubPairedTerminalTrustProfile: Codable, Equatable, Sendable {
         case deviceId = "device_id"
         case deviceName = "device_name"
         case trustMode = "trust_mode"
+        case mode
+        case state
         case capabilities
+        case allowedProjectIds = "allowed_project_ids"
+        case allowedWorkspaceRoots = "allowed_workspace_roots"
+        case xtBindingRequired = "xt_binding_required"
+        case autoGrantProfile = "auto_grant_profile"
+        case devicePermissionOwnerRef = "device_permission_owner_ref"
         case paidModelPolicy = "paid_model_policy"
         case networkPolicy = "network_policy"
         case budgetPolicy = "budget_policy"
@@ -237,7 +263,14 @@ struct HubGRPCClientEntry: Identifiable, Codable, Equatable, Sendable {
         allowedPaidModels: [String],
         defaultWebFetchEnabled: Bool,
         dailyTokenLimit: Int,
-        auditRef: String
+        auditRef: String,
+        mode: HubTrustedAutomationMode = .standard,
+        state: HubTrustedAutomationState = .off,
+        allowedProjectIds: [String] = [],
+        allowedWorkspaceRoots: [String] = [],
+        xtBindingRequired: Bool = false,
+        autoGrantProfile: String = "",
+        devicePermissionOwnerRef: String = ""
     ) -> HubPairedTerminalTrustProfile {
         let paidPolicy = HubPairedTerminalPaidModelPolicy(
             mode: paidModelSelectionMode,
@@ -253,7 +286,14 @@ struct HubGRPCClientEntry: Identifiable, Codable, Equatable, Sendable {
             deviceId: deviceId,
             deviceName: deviceName,
             trustMode: HubTrustProfileDefaults.trustMode,
+            mode: mode,
+            state: state,
             capabilities: capabilities,
+            allowedProjectIds: normalizedStrings(allowedProjectIds),
+            allowedWorkspaceRoots: normalizedStrings(allowedWorkspaceRoots),
+            xtBindingRequired: xtBindingRequired,
+            autoGrantProfile: normalizedStrings([autoGrantProfile]).first ?? "",
+            devicePermissionOwnerRef: normalizedStrings([devicePermissionOwnerRef]).first ?? "",
             paidModelPolicy: paidPolicy,
             networkPolicy: HubPairedTerminalNetworkPolicy(defaultWebFetchEnabled: defaultWebFetchEnabled),
             budgetPolicy: HubPairedTerminalBudgetPolicy(
@@ -505,6 +545,11 @@ final class HubGRPCServerSupport: ObservableObject {
         // not be writable). EmbeddedBridgeRunner uses the same base dir choice.
         env["HUB_BRIDGE_BASE_DIR"] = base.path
         env["HUB_AI_AUTO_LOAD"] = "1"
+        // X-Terminal/Supervisor should not silently downgrade paid remote requests to a local model.
+        // If the remote export gate blocks egress, fail closed and surface the deny code instead.
+        if (env["HUB_REMOTE_EXPORT_ON_BLOCK"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            env["HUB_REMOTE_EXPORT_ON_BLOCK"] = "error"
+        }
         // LAN source-IP allowlist (defense-in-depth).
         //
         // IMPORTANT: some corporate LANs use globally routable IPv4 ranges (non-RFC1918),

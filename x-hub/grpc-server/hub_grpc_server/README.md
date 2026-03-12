@@ -1,6 +1,10 @@
-# hub_grpc_server (X-Hub gRPC server skeleton)
+# hub_grpc_server
 
-This is the first cut of the **Hub-as-an-independent-device** server for **X-Hub**:
+This is the active Node-based gRPC service runtime for X-Hub.
+
+It provides the service-side control surface behind pairing, grants, AI routing, web/runtime helpers, audit, memory, skills, and admin operations.
+
+Current service families:
 - gRPC services: Models / Grants / AI / Web / Events / Runtime / Audit / Memory / Skills / Admin
 - storage: SQLite (via Node's built-in `node:sqlite`, synchronous + WAL)
 
@@ -10,6 +14,12 @@ Protocol contract:
 
 Repo path:
 - `x-hub/grpc-server/hub_grpc_server/`
+
+This README is implementation-facing. For repository entrypoints and product framing, start with:
+
+- `README.md`
+- `x-hub/README.md`
+- `x-hub/grpc-server/README.md`
 
 ## Run (Hub machine)
 
@@ -66,12 +76,12 @@ npm run drill-memory-index
 
 One click (run from anywhere):
 ```bash
-bash /Users/andrew.xie/Documents/AX/x-hub-system/x-hub/grpc-server/hub_grpc_server/scripts/stress_paid_ai_queue.sh --projects 8
+bash x-hub/grpc-server/hub_grpc_server/scripts/stress_paid_ai_queue.sh --projects 8
 ```
 
 Local one-click (auto start Hub on `:50061` if not running, then run stress):
 ```bash
-npm run stress-paid-local --prefix /Users/andrew.xie/Documents/AX/x-hub-system/x-hub/grpc-server/hub_grpc_server -- --projects 8
+npm run stress-paid-local --prefix x-hub/grpc-server/hub_grpc_server -- --projects 8
 ```
 
 Or run via npm in this folder:
@@ -81,7 +91,7 @@ npm run stress-paid -- --projects 8
 
 Recommended 3-case benchmark matrix (baseline + 2 tuning cases):
 ```bash
-npm run bench-paid-matrix --prefix /Users/andrew.xie/Documents/AX/x-hub-system/x-hub/grpc-server/hub_grpc_server
+npm run bench-paid-matrix --prefix x-hub/grpc-server/hub_grpc_server
 ```
 
 If the last case reports `quota_exceeded`, increase `hub_quotas.json` (`devices.terminal_device.daily_token_cap`) or wait for the next UTC day.

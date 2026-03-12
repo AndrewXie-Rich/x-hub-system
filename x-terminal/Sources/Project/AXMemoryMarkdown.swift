@@ -108,7 +108,8 @@ enum AXMemoryMarkdown {
             "pyproject.toml",
             "requirements.txt",
             "tools/build_hub_app.command",
-            "x-terminal/x-terminal-legacy/X-Terminal/tools/build_x_terminal_app.command",
+            "x-terminal/Package.swift",
+            "x-terminal/scripts/ci/xt_release_gate.sh",
         ]
         for rel in candidates {
             let url = projectRoot.appendingPathComponent(rel)

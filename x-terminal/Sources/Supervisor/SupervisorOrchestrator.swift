@@ -2,7 +2,6 @@
 //  SupervisorOrchestrator.swift
 //  XTerminal
 //
-//  Created by Claude on 2026-02-27.
 //
 
 import Foundation
@@ -61,6 +60,43 @@ class SupervisorOrchestrator: ObservableObject {
     }
 
     // MARK: - Public Methods
+
+    /// 采纳外部已准备好的 split proposal，并复用现有 confirm/execute 主链。
+    @discardableResult
+    func adoptPreparedSplitProposal(
+        _ buildResult: SplitProposalBuildResult,
+        auditDetail: String = "prepared split proposal adopted"
+    ) -> SplitProposalBuildResult {
+        promptCompilationResult = nil
+        activeSplitProposal = buildResult.proposal
+        splitProposalValidation = buildResult.validation
+        splitProposalBaseSnapshot = buildResult.proposal
+        splitOverrideHistory = []
+        splitOverrideReplayConsistent = true
+        lastSplitDecomposition = buildResult.decomposition
+
+        if buildResult.validation.hasBlockingIssues {
+            splitProposalState = .blocked
+            splitFlowErrorMessage = "Prepared split proposal blocked: \(summarizeBlockingIssues(buildResult.validation))"
+        } else {
+            splitProposalState = .proposed
+            splitFlowErrorMessage = nil
+        }
+
+        appendSplitAudit(
+            .splitProposed,
+            splitPlanId: buildResult.proposal.splitPlanId,
+            detail: auditDetail,
+            payload: [
+                SplitAuditPayloadKeys.SplitProposed.laneCount: "\(buildResult.proposal.lanes.count)",
+                SplitAuditPayloadKeys.SplitProposed.recommendedConcurrency: "\(buildResult.proposal.recommendedConcurrency)",
+                SplitAuditPayloadKeys.SplitProposed.blockingIssueCount: "\(buildResult.validation.blockingIssues.count)",
+                SplitAuditPayloadKeys.SplitProposed.blockingIssueCodes: buildResult.validation.blockingIssues.map { $0.code }.joined(separator: ","),
+                SplitAuditPayloadKeys.Common.state: splitProposalState.rawValue
+            ]
+        )
+        return buildResult
+    }
 
     /// 智能调度项目
     func scheduleProjects(_ projects: [ProjectModel]) async {

@@ -14,6 +14,10 @@ struct SupervisorAutomationProductGapClosureTests {
         #expect(vertical.recipeManifest.recipeManifest.deliveryTargets == ["channel://telegram/project-a"])
         #expect(vertical.recipeManifest.recipeManifest.acceptancePackRef == "build/reports/xt_w3_22_acceptance_pack.v1.json")
         #expect(vertical.recipeManifest.recipeManifest.triggerRefs.count == 4)
+        #expect(vertical.recipeManifest.externalTriggerIngressEnvelopes.count == 4)
+        #expect(vertical.recipeManifest.externalTriggerIngressEnvelopes.allSatisfy { $0.schemaVersion == XTAutomationExternalTriggerIngressEnvelope.currentSchemaVersion })
+        #expect(vertical.recipeManifest.externalTriggerIngressEnvelopes.contains { $0.triggerType == .webhook && $0.connectorID == "github" && $0.cooldownSec == 30 })
+        #expect(vertical.recipeManifest.externalTriggerIngressEnvelopes.contains { $0.triggerType == .connectorEvent && $0.connectorID == "slack" && $0.cooldownSec == 45 })
         #expect(vertical.recipeManifest.recipeManifestSchemaCoverage == 1.0)
         #expect(vertical.recipeManifest.ambiguousTriggerFieldCount == 0)
         #expect(vertical.recipeManifest.triggerEnvelopes.contains { $0.triggerType == .webhook && !$0.dedupeKey.isEmpty })
@@ -26,10 +30,15 @@ struct SupervisorAutomationProductGapClosureTests {
         let states = vertical.eventRunner.statePath
 
         #expect(vertical.eventRunner.runTimeline.runID == "run-20260306-001")
+        #expect(vertical.eventRunner.recipeBindingRef == "xt-auto-pr-review@v1")
         #expect(vertical.eventRunner.runIdentityStable)
         #expect(vertical.eventRunner.triggerDedupeFalseNegative == 0)
         #expect(vertical.eventRunner.replayGuardPass)
         #expect(vertical.eventRunner.grantBindingPass)
+        #expect(vertical.eventRunner.triggerRouteDecisions.count == 4)
+        #expect(vertical.eventRunner.externalTriggerIngressEnvelopes.count == 4)
+        #expect(vertical.eventRunner.triggerRouteDecisions.allSatisfy { $0.decision == .allow && $0.route == .run && $0.runID == "run-20260306-001" })
+        #expect(vertical.eventRunner.launchDecision.decision == .run)
         #expect(states.contains(.queued))
         #expect(states.contains(.running))
         #expect(states.contains(.blocked))
@@ -38,6 +47,23 @@ struct SupervisorAutomationProductGapClosureTests {
         #expect(states.contains(.delivered))
         #expect(Set(vertical.eventRunner.downgradePaths) == Set(XTAutomationDegradeMode.allCases))
         #expect(vertical.overall.gateVector.contains("XT-AUTO-G2:candidate_pass"))
+    }
+
+    @Test
+    func checkpointRecoveryRebuildsStatePathAndGuardsRestartEdges() {
+        let vertical = XTAutomationProductGapClosureEngine().buildVerticalSlice(verticalSliceInput())
+
+        #expect(vertical.checkpointRecovery.checkpoints.count == vertical.eventRunner.stateTransitions.count)
+        #expect(vertical.checkpointRecovery.statePathRebuilt == vertical.eventRunner.statePath)
+        #expect(vertical.checkpointRecovery.recoveredRunID == "run-20260306-001")
+        #expect(vertical.checkpointRecovery.recoveredState == .downgraded)
+        #expect(vertical.checkpointRecovery.checkpointPathRebuildPass)
+        #expect(vertical.checkpointRecovery.stableIdentityPass)
+        #expect(vertical.checkpointRecovery.manualCancelBlocksRestart)
+        #expect(vertical.checkpointRecovery.boundedRetryPass)
+        #expect(vertical.checkpointRecovery.staleRunScavenged)
+        #expect(!vertical.checkpointRecovery.latestResumeToken.isEmpty)
+        #expect(vertical.overall.gateVector.contains("XT-AUTO-G2R:candidate_pass"))
     }
 
     @Test
@@ -82,6 +108,19 @@ struct SupervisorAutomationProductGapClosureTests {
     }
 
     @Test
+    func launchGateFailsClosedWhenGRPCRemoteProfileIsMissing() {
+        let vertical = XTAutomationProductGapClosureEngine().buildVerticalSlice(
+            verticalSliceInput(hubTransportMode: .grpc, hasRemoteProfile: false)
+        )
+
+        #expect(vertical.eventRunner.launchDecision.decision == .hold)
+        #expect(vertical.eventRunner.launchDecision.holdReason == "hub_env_missing")
+        #expect(vertical.eventRunner.runTimeline.state == .blocked)
+        #expect(vertical.overall.gateVector.contains("XT-AUTO-G2:pending"))
+        #expect(!vertical.overall.gateVector.contains("XT-AUTO-G2:candidate_pass"))
+    }
+
+    @Test
     func runtimeCaptureWritesXTW325EvidenceFilesWhenRequested() throws {
         guard let captureDir = ProcessInfo.processInfo.environment["XT_W3_25_CAPTURE_DIR"], !captureDir.isEmpty else {
             return
@@ -91,6 +130,7 @@ struct SupervisorAutomationProductGapClosureTests {
 
         try writeJSON(vertical.recipeManifest, to: base.appendingPathComponent("xt_w3_25_a_recipe_manifest_evidence.v1.json"))
         try writeJSON(vertical.eventRunner, to: base.appendingPathComponent("xt_w3_25_b_event_runner_evidence.v1.json"))
+        try writeJSON(vertical.checkpointRecovery, to: base.appendingPathComponent("xt_w3_25_k_run_checkpoint_recovery_evidence.v1.json"))
         try writeJSON(vertical.directedTakeover, to: base.appendingPathComponent("xt_w3_25_c_directed_takeover_evidence.v1.json"))
         try writeJSON(vertical.runTimeline, to: base.appendingPathComponent("xt_w3_25_d_run_timeline_evidence.v1.json"))
         try writeJSON(vertical.bootstrapTemplates, to: base.appendingPathComponent("xt_w3_25_e_bootstrap_templates_evidence.v1.json"))
@@ -100,7 +140,17 @@ struct SupervisorAutomationProductGapClosureTests {
         #expect(FileManager.default.fileExists(atPath: base.appendingPathComponent("xt_w3_25_automation_gap_closure_evidence.v1.json").path))
     }
 
-    private func verticalSliceInput() -> XTAutomationVerticalSliceInput {
+    private func verticalSliceInput(
+        hubTransportMode: HubTransportMode = .auto,
+        hasRemoteProfile: Bool = true,
+        budgetOK: Bool = true,
+        requiresTrustedAutomation: Bool = true,
+        trustedAutomationReady: Bool = true,
+        permissionOwnerReady: Bool = true,
+        workspaceBindingHash: String = "sha256:workspace-binding-project-a",
+        grantPolicyRef: String = "policy://automation-trigger/project-a",
+        trustedDeviceID: String = "device://trusted/project-a"
+    ) -> XTAutomationVerticalSliceInput {
         let intakeWorkflow = SupervisorIntakeAcceptanceEngine().buildProjectIntakeWorkflow(
             projectID: projectID,
             documents: intakeDocuments(),
@@ -153,6 +203,16 @@ struct SupervisorAutomationProductGapClosureTests {
             deliveryRef: "build/reports/xt_w3_25_delivery_card.v1.json",
             firstRunChecklistRef: "docs/open-source/OSS_MINIMAL_RUNNABLE_PACKAGE_CHECKLIST_v1.md",
             triggerSeeds: triggerSeeds(),
+            hubTransportMode: hubTransportMode,
+            hasRemoteProfile: hasRemoteProfile,
+            budgetOK: budgetOK,
+            requiresTrustedAutomation: requiresTrustedAutomation,
+            trustedAutomationReady: trustedAutomationReady,
+            permissionOwnerReady: permissionOwnerReady,
+            workspaceBindingHash: workspaceBindingHash,
+            grantPolicyRef: grantPolicyRef,
+            trustedDeviceID: trustedDeviceID,
+            requiredDeviceToolGroups: ["device.ui.step"],
             intakeWorkflow: intakeWorkflow,
             acceptanceWorkflow: acceptanceWorkflow,
             additionalEvidenceRefs: [

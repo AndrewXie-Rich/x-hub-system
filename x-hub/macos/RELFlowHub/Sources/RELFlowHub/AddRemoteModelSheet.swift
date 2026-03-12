@@ -1,4 +1,6 @@
+import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 import RELFlowHubCore
 
 struct AddRemoteModelSheet: View {
@@ -38,7 +40,7 @@ struct AddRemoteModelSheet: View {
                 Text("OpenAI").tag("openai")
                 Text("Anthropic").tag("anthropic")
                 Text("Gemini").tag("gemini")
-                Text("OpenCode Zen").tag("opencode_zen")
+                Text("Remote Catalog").tag("remote_catalog")
                 Text("OpenAI-compatible").tag("openai_compatible")
                 Text("Other").tag("remote")
             }
@@ -54,6 +56,16 @@ struct AddRemoteModelSheet: View {
                 .textFieldStyle(.roundedBorder)
 
             HStack(spacing: 10) {
+                Button("Import auth.json…") {
+                    importAuthJSON()
+                }
+                .disabled(isFetchingModels)
+
+                Button("Import provider config…") {
+                    importProviderConfig()
+                }
+                .disabled(isFetchingModels)
+
                 Button(isFetchingModels ? "Fetching…" : "Fetch Models") {
                     fetchModels()
                 }
@@ -122,13 +134,12 @@ struct AddRemoteModelSheet: View {
         }
         .onChange(of: backend) { newValue in
             let current = normalizedPrefix(idPrefix)
-            let knownDefaults: Set<String> = ["", "openai/", "anthropic/", "gemini/", "opencode/"]
-            if knownDefaults.contains(current) {
+            if current.isEmpty || current == "openai/" || current == "anthropic/" || current == "gemini/" || RemoteProviderEndpoints.isRemoteCatalogModelPrefix(current) {
                 idPrefix = defaultPrefix(for: newValue)
             }
             // Only auto-update apiKeyRef when it still matches the previous default-ish value.
             let curRef = apiKeyRef.trimmingCharacters(in: .whitespacesAndNewlines)
-            if curRef.isEmpty || curRef.hasPrefix("openai:") || curRef.hasPrefix("anthropic:") || curRef.hasPrefix("gemini:") || curRef.hasPrefix("opencode:") {
+            if curRef.isEmpty || curRef.hasPrefix("openai:") || curRef.hasPrefix("anthropic:") || curRef.hasPrefix("gemini:") || RemoteProviderEndpoints.isRemoteCatalogAPIKeyRefPrefix(curRef) {
                 apiKeyRef = defaultAPIKeyRef(backend: newValue, baseURL: baseURL)
             }
         }
@@ -176,6 +187,73 @@ struct AddRemoteModelSheet: View {
                     isFetchingModels = false
                 }
             }
+        }
+    }
+
+    private func importAuthJSON() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.json]
+        panel.prompt = "Import"
+        panel.title = "Import Provider Auth"
+
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return
+        }
+
+        do {
+            let imported = try ProviderAuthImport.load(from: url)
+            apiKey = imported.apiKey
+            let importedBase = imported.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            let existingBase = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            let effectiveBase = importedBase.isEmpty ? existingBase : importedBase
+            let effectiveBackend: String
+            if importedBase.isEmpty, !existingBase.isEmpty {
+                effectiveBackend = backend
+            } else {
+                effectiveBackend = imported.backend
+            }
+            backend = effectiveBackend
+            baseURL = effectiveBase
+            apiKeyRef = defaultAPIKeyRef(backend: effectiveBackend, baseURL: effectiveBase)
+            idPrefix = defaultPrefix(for: effectiveBackend)
+            if importedBase.isEmpty, effectiveBase.isEmpty {
+                errorText = "API key imported. This file does not include a base URL. Import provider config (.toml) or fill Base URL manually before Fetch Models."
+            } else {
+                errorText = ""
+            }
+        } catch {
+            errorText = error.localizedDescription
+        }
+    }
+
+    private func importProviderConfig() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [UTType(filenameExtension: "toml") ?? .plainText, .plainText]
+        panel.prompt = "Import"
+        panel.title = "Import Provider Config"
+
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return
+        }
+
+        do {
+            let imported = try ProviderConfigImport.load(from: url)
+            backend = imported.backend
+            baseURL = imported.baseURL
+            apiKeyRef = imported.apiKeyRef
+            idPrefix = defaultPrefix(for: imported.backend)
+            if !imported.preferredModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                modelId = imported.preferredModelID
+            }
+            errorText = ""
+        } catch {
+            errorText = error.localizedDescription
         }
     }
 
@@ -246,8 +324,8 @@ struct AddRemoteModelSheet: View {
     private func normalizeUpstreamModelId(_ raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return "" }
-        let b = backend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if b == "gemini" || b == "opencode" || b == "opencode_zen" {
+        let b = RemoteProviderEndpoints.canonicalBackend(backend)
+        if b == "gemini" || b == "remote_catalog" {
             return RemoteProviderEndpoints.stripModelRef(trimmed)
         }
         if b == "openai", trimmed.lowercased().hasPrefix("openai/") {
@@ -291,27 +369,30 @@ struct AddRemoteModelSheet: View {
     }
 
     private func defaultPrefix(for backend: String) -> String {
-        switch backend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        switch RemoteProviderEndpoints.canonicalBackend(backend) {
         case "openai":
             return "openai/"
         case "anthropic":
             return "anthropic/"
         case "gemini":
             return "gemini/"
-        case "opencode", "opencode_zen":
-            return "opencode/"
+        case "remote_catalog":
+            return "remote_catalog/"
         default:
             return ""
         }
     }
 
     private func defaultAPIKeyRef(backend: String, baseURL: String) -> String {
-        let b = backend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let b = RemoteProviderEndpoints.canonicalBackend(backend)
         if let u = URL(string: baseURL), let host = u.host?.trimmingCharacters(in: .whitespacesAndNewlines), !host.isEmpty {
             return "\(b):\(host)"
         }
         if b == "openai" {
             return "openai:api.openai.com"
+        }
+        if b == "openai_compatible" {
+            return "openai_compatible:default"
         }
         if b == "anthropic" {
             return "anthropic:api.anthropic.com"
@@ -319,8 +400,8 @@ struct AddRemoteModelSheet: View {
         if b == "gemini" {
             return "gemini:generativelanguage.googleapis.com"
         }
-        if b == "opencode" || b == "opencode_zen" {
-            return "opencode:default"
+        if b == "remote_catalog" {
+            return "remote_catalog:default"
         }
         return b.isEmpty ? UUID().uuidString : b
     }

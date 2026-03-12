@@ -2,7 +2,6 @@
 //  AppModel+MultiProject.swift
 //  XTerminal
 //
-//  Created by Claude on 2026-02-27.
 //  多项目管理扩展
 //
 

@@ -65,7 +65,7 @@
       "risk_tier": "medium",
       "scenario": {
         "title": "搜索 -> 导入 -> Project pin -> 首次执行成功",
-        "description": "用户在 Skills 页面搜索 openclaw skill，选择 project scope 导入并完成首次运行。"
+        "description": "用户在 Skills 页面搜索 skill skill，选择 project scope 导入并完成首次运行。"
       },
       "ui_assertions": [
         {

@@ -2,8 +2,8 @@
 
 - owner: XT-L2（Primary）/ Hub-L5 / XT-L1 / QA
 - status: planned
-- last_updated: 2026-03-06
-- purpose: 针对 `Cursor Automations` 公开能力暴露出的产品短板，补齐 X-Terminal 在“自动化产品面、事件驱动、主动解阻、操作台可见、一键启用、竞争性验证”上的最后一公里，使 X-Hub-System 不是只具备架构优势，而是具备可直接使用的自动化交付能力。
+- last_updated: 2026-03-10
+- purpose: 针对 `external automation products` 公开能力暴露出的产品短板，补齐 X-Terminal 在“自动化产品面、事件驱动、主动解阻、操作台可见、一键启用、竞争性验证”上的最后一公里，使 X-Hub-System 不是只具备架构优势，而是具备可直接使用的自动化交付能力。
 - depends_on:
   - `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`
   - `x-terminal/work-orders/xt-w2-23-w2-26-autocontinue-autonomy-implementation-pack-v1.md`
@@ -18,10 +18,19 @@
   - `docs/memory-new/xhub-security-innovation-work-orders-v1.md`
   - `docs/memory-new/xhub-lane-command-board-v2.md`
 
+## Direct-Execution Child Packs
+
+- `docs/memory-new/xhub-trusted-automation-device-execution-plane-implementation-pack-v1.md`
+  - Purpose: 把 `device.*`、permission owner、runner IPC、Hub grant / audit bridge 收口为真实设备执行面。
+- `x-terminal/work-orders/xt-w3-25-governed-automation-recipe-runtime-implementation-pack-v1.md`
+  - Purpose: 把当前 `AutomationProductGapClosure.swift` 的 contract vertical slice 扩成真实的 goal -> recipe -> trigger -> run runtime 主链。
+
+这两份子包一起收口“自动运行 + 设备动作”两大缺口；本包继续作为父级产品目标与 Gate 主文档。
+
 ## 0) Why This Pack Exists
 
 - 当前 X-Hub-System 的中枢能力已经覆盖 `Hub-first memory/auth/audit/grants + supervisor multipool/lane orchestration + token-optimal context + anti-block`。
-- 但和 `Cursor Automations` 这类现成自动化产品对比，短板不在“底层能力”，而在“用户能否快速创建自动化、让系统事件驱动跑起来、看到实时状态、在阻塞时自动解卡、以最少步骤达成首个成品”。
+- 但和 `external automation products` 这类现成自动化产品对比，短板不在“底层能力”，而在“用户能否快速创建自动化、让系统事件驱动跑起来、看到实时状态、在阻塞时自动解卡、以最少步骤达成首个成品”。
 - 本包不追求复制对方的 hosted agent 形态；目标是用你们已有的 Hub-first 优势，补齐 `automation surface + event runtime + directed unblock + operator explainability + one-click bootstrap + comparative graduation` 六条链路。
 
 ## 1) Product Goal
@@ -315,4 +324,4 @@
   - Hub-first 记忆、授权、secret、支付、审计真相源
   - 本地/付费混编与降级路径
   - session continuity + multi-channel + operator console 的一体化产品面
-- 该包完成后，才有资格说 X-Hub-System 在自动化产品体验上开始进入可直接对标 `Cursor Automations` 的阶段。
+- 该包完成后，才有资格说 X-Hub-System 在自动化产品体验上开始进入可直接对标 `external automation products` 的阶段。

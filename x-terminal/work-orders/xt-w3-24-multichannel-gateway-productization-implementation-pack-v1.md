@@ -18,7 +18,7 @@
 
 ## 0) 目标与硬边界
 
-- 目标：吸收 `iflow-bot` 在“多渠道入口、快速上手、流式可见输出、会话运维”上的产品化优势，但底层继续坚持 Hub-first 的安全、记忆、授权与审计架构。
+- 目标：吸收 `external workflow baseline` 在“多渠道入口、快速上手、流式可见输出、会话运维”上的产品化优势，但底层继续坚持 Hub-first 的安全、记忆、授权与审计架构。
 - 目标：让 X-Terminal 对外具备“像 bot 一样好上手”的入口产品体验，包括 `install/onboard/start/status`、首版多渠道接入、streaming UX、session/status/restart/logs 面板，以及 heartbeat/cron 运营入口。
 - 目标：让渠道层成为“产品入口壳”，而不是第二个 AI/记忆/权限后端；所有高风险能力、长期记忆、支付、授权与外部动作仍收敛到 Hub。
 - 目标：把多渠道入口与 `XT-W3-21 Project Intake Manifest`、`XT-W3-22 Acceptance Pack`、`XT-W3-23 Memory UX Adapter` 接通，形成完整的“接案 -> 执行 -> 交付 -> 通知”产品面。

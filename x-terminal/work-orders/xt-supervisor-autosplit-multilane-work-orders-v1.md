@@ -164,7 +164,7 @@ Token：
 8. `XT-W3-12` 自适应重排（Replan）与负载均衡
 9. `XT-W3-13` 跨泳道 Token 优化器（上下文去重 + 预算再分配）
 10. `XT-W3-14` 队列重启排空与反饥饿恢复（drain + backoff）
-11. `XT-W3-15` OpenClaw 稳定性三件套对齐（overflow + origin-safe fallback + cleanup）
+11. `XT-W3-15` skills ecosystem 稳定性三件套对齐（overflow + origin-safe fallback + cleanup）
 12. `XT-W4-15` Supervisor 失效模式学习（故障模板/恢复策略）
 13. `XT-W4-16` Supervisor Doctor + Secrets 发布前预检（防配置漂移）
 
@@ -337,7 +337,7 @@ Token：
   - Supervisor 重启期间新 lane 入队 -> 显式拒绝，恢复后可重提
   - 头部 lane 连续失败重试 -> 后续 ready lane 不被饿死
 
-### XT-W3-15（P1）OpenClaw 稳定性三件套对齐（overflow + origin-safe fallback + cleanup）
+### XT-W3-15（P1）skills ecosystem 稳定性三件套对齐（overflow + origin-safe fallback + cleanup）
 
 - 目标：把 `XT-W2-17/18/19` 的关键行为并入 Supervisor 事件主链，避免多泳道并发下出现“静默失败/错误回退/状态残留”。
 - 依赖：`XT-W2-13`, `XT-W2-14`, `XT-W2-17`, `XT-W2-18`, `XT-W2-19`。
@@ -419,6 +419,6 @@ Token：
 
 - 与 Hub `M3-W1-03` 对齐：lineage 字段和 deny_code 语义完全一致。
 - 与 `xterminal-parallel-work-orders-v1.md` 对齐：本文件是 Supervisor 自动拆分专项细化，不替代全局工单。
-- 与 Kiro gate 方法对齐：每个子工单必须具备 DoD/Gate/KPI/回归样例。
+- 与 Spec Gate gate 方法对齐：每个子工单必须具备 DoD/Gate/KPI/回归样例。
 - 与 `XT-Ready Gate` 对齐：本文件 `P0` 工单（`XT-W2-09..XT-W3-11`）是 `XT-Ready-G0..G5` 的主要落地来源。
-- 与 OpenClaw 回灌工单对齐：`XT-W2-17/18/19` 的边界语义在本文件通过 `blocked_reason + XT-W3-15 + XT-SUP-G2/G3` 固化。
+- 与 skills ecosystem 回灌工单对齐：`XT-W2-17/18/19` 的边界语义在本文件通过 `blocked_reason + XT-W3-15 + XT-SUP-G2/G3` 固化。

@@ -115,6 +115,13 @@ struct XTUnifiedDoctorInput: Sendable {
     var sessionID: String?
     var sessionTitle: String?
     var sessionRuntime: AXSessionRuntimeSnapshot?
+    var voiceRouteDecision: VoiceRouteDecision
+    var voiceRuntimeState: SupervisorVoiceRuntimeState
+    var voiceAuthorizationStatus: VoiceTranscriberAuthorizationStatus
+    var voiceActiveHealthReasonCode: String
+    var voiceSidecarHealth: VoiceSidecarHealthSnapshot?
+    var wakeProfileSnapshot: VoiceWakeProfileSnapshot
+    var conversationSession: SupervisorConversationSessionSnapshot
     var skillsSnapshot: AXSkillsDoctorSnapshot
     var reportPath: String
 
@@ -138,6 +145,17 @@ struct XTUnifiedDoctorInput: Sendable {
         sessionID: String?,
         sessionTitle: String?,
         sessionRuntime: AXSessionRuntimeSnapshot?,
+        voiceRouteDecision: VoiceRouteDecision = .unavailable,
+        voiceRuntimeState: SupervisorVoiceRuntimeState = .idle,
+        voiceAuthorizationStatus: VoiceTranscriberAuthorizationStatus = .undetermined,
+        voiceActiveHealthReasonCode: String = "",
+        voiceSidecarHealth: VoiceSidecarHealthSnapshot? = nil,
+        wakeProfileSnapshot: VoiceWakeProfileSnapshot = .empty,
+        conversationSession: SupervisorConversationSessionSnapshot = .idle(
+            policy: .default(),
+            wakeMode: .pushToTalk,
+            route: .manualText
+        ),
         skillsSnapshot: AXSkillsDoctorSnapshot,
         reportPath: String = XTUnifiedDoctorStore.defaultReportURL().path
     ) {
@@ -160,6 +178,13 @@ struct XTUnifiedDoctorInput: Sendable {
         self.sessionID = sessionID
         self.sessionTitle = sessionTitle
         self.sessionRuntime = sessionRuntime
+        self.voiceRouteDecision = voiceRouteDecision
+        self.voiceRuntimeState = voiceRuntimeState
+        self.voiceAuthorizationStatus = voiceAuthorizationStatus
+        self.voiceActiveHealthReasonCode = voiceActiveHealthReasonCode
+        self.voiceSidecarHealth = voiceSidecarHealth
+        self.wakeProfileSnapshot = wakeProfileSnapshot
+        self.conversationSession = conversationSession
         self.skillsSnapshot = skillsSnapshot
         self.reportPath = reportPath
     }
@@ -181,8 +206,9 @@ enum XTUnifiedDoctorBuilder {
         let runtimeAlive = input.runtimeStatus?.isAlive(ttl: 3.0) == true
         let toolRouteExecutable = hubInteractive && input.bridgeAlive && input.bridgeEnabled
         let trimmedHost = input.internetHost.trimmingCharacters(in: .whitespacesAndNewlines)
-        let pairingLooksValid = portLooksValid(input.pairingPort) && portLooksValid(input.grpcPort) && input.pairingPort != input.grpcPort
-        let pairingMatchesConvention = input.pairingPort == max(1, min(65_535, input.grpcPort + 1))
+        let voiceReadiness = VoiceReadinessAggregator.build(
+            input: VoiceReadinessAggregatorInput.fromDoctorInput(input)
+        )
 
         let hubReachability = buildHubReachabilitySection(
             hubInteractive: hubInteractive,
@@ -191,40 +217,42 @@ enum XTUnifiedDoctorBuilder {
             route: route,
             input: input
         )
-        let pairingValidity = buildPairingValiditySection(
-            localConnected: input.localConnected,
-            remoteConnected: input.remoteConnected,
-            linking: input.linking,
-            pairingLooksValid: pairingLooksValid,
-            pairingMatchesConvention: pairingMatchesConvention,
-            pairingPort: input.pairingPort,
-            grpcPort: input.grpcPort,
-            internetHost: trimmedHost,
-            route: route
-        )
-        let modelRoute = buildModelRouteSection(
-            hubInteractive: hubInteractive,
-            runtimeAlive: runtimeAlive,
-            availableModelCount: availableModelCount,
-            loadedModelCount: loadedModelCount,
-            configuredModelCount: configuredModelCount,
-            totalModelRoles: input.totalModelRoles,
-            missingAssignedModels: missingAssignedModels,
-            configuredModelIDs: configuredModelIDs
-        )
-        let bridgeTool = buildBridgeToolSection(
-            hubInteractive: hubInteractive,
-            modelRouteReady: modelRoute.state == .ready,
-            bridgeAlive: input.bridgeAlive,
-            bridgeEnabled: input.bridgeEnabled,
-            route: route
-        )
-        let sessionRuntime = buildSessionRuntimeSection(
-            toolRouteExecutable: toolRouteExecutable,
-            sessionID: input.sessionID,
-            sessionTitle: input.sessionTitle,
-            runtime: input.sessionRuntime
-        )
+        let pairingValidity = voiceReadiness.check(.pairingValidity)?.asDoctorSection()
+            ?? buildPairingValidityFallback(
+                localConnected: input.localConnected,
+                remoteConnected: input.remoteConnected,
+                linking: input.linking,
+                pairingPort: input.pairingPort,
+                grpcPort: input.grpcPort,
+                internetHost: trimmedHost,
+                route: route
+            )
+        let modelRoute = voiceReadiness.check(.modelRouteReadiness)?.asDoctorSection()
+            ?? buildModelRouteFallback(
+                hubInteractive: hubInteractive,
+                runtimeAlive: runtimeAlive,
+                availableModelCount: availableModelCount,
+                loadedModelCount: loadedModelCount,
+                configuredModelCount: configuredModelCount,
+                totalModelRoles: input.totalModelRoles,
+                missingAssignedModels: missingAssignedModels,
+                configuredModelIDs: configuredModelIDs
+            )
+        let bridgeTool = voiceReadiness.check(.bridgeToolReadiness)?.asDoctorSection()
+            ?? buildBridgeToolFallback(
+                hubInteractive: hubInteractive,
+                modelRouteReady: modelRoute.state == .ready,
+                bridgeAlive: input.bridgeAlive,
+                bridgeEnabled: input.bridgeEnabled,
+                route: route
+            )
+        let sessionRuntime = voiceReadiness.check(.sessionRuntimeReadiness)?.asDoctorSection()
+            ?? buildSessionRuntimeFallback(
+                toolRouteExecutable: toolRouteExecutable,
+                sessionID: input.sessionID,
+                sessionTitle: input.sessionTitle,
+                runtime: input.sessionRuntime
+            )
         let skillsCompatibility = buildSkillsCompatibilitySection(
             hubInteractive: hubInteractive,
             snapshot: input.skillsSnapshot
@@ -254,6 +282,7 @@ enum XTUnifiedDoctorBuilder {
                 XTUISurfaceStateContract.frozen.schemaVersion,
                 XTUIDesignTokenBundleContract.frozen.schemaVersion,
                 XTUIReleaseScopeBadgeContract.frozen.schemaVersion,
+                VoiceReadinessSnapshot.currentSchemaVersion,
                 XTUnifiedDoctorReport.currentSchemaVersion
             ]
         )
@@ -351,17 +380,17 @@ enum XTUnifiedDoctorBuilder {
         )
     }
 
-    private static func buildPairingValiditySection(
+    private static func buildPairingValidityFallback(
         localConnected: Bool,
         remoteConnected: Bool,
         linking: Bool,
-        pairingLooksValid: Bool,
-        pairingMatchesConvention: Bool,
         pairingPort: Int,
         grpcPort: Int,
         internetHost: String,
         route: XTUnifiedDoctorRouteSnapshot
     ) -> XTUnifiedDoctorSection {
+        let pairingLooksValid = portLooksValid(pairingPort) && portLooksValid(grpcPort) && pairingPort != grpcPort
+        let pairingMatchesConvention = pairingPort == max(1, min(65_535, grpcPort + 1))
         let hostLabel = internetHost.isEmpty ? "missing" : internetHost
         let details = [
             "pairing_port=\(pairingPort)",
@@ -430,7 +459,7 @@ enum XTUnifiedDoctorBuilder {
         )
     }
 
-    private static func buildModelRouteSection(
+    private static func buildModelRouteFallback(
         hubInteractive: Bool,
         runtimeAlive: Bool,
         availableModelCount: Int,
@@ -511,7 +540,7 @@ enum XTUnifiedDoctorBuilder {
         )
     }
 
-    private static func buildBridgeToolSection(
+    private static func buildBridgeToolFallback(
         hubInteractive: Bool,
         modelRouteReady: Bool,
         bridgeAlive: Bool,
@@ -573,7 +602,7 @@ enum XTUnifiedDoctorBuilder {
         )
     }
 
-    private static func buildSessionRuntimeSection(
+    private static func buildSessionRuntimeFallback(
         toolRouteExecutable: Bool,
         sessionID: String?,
         sessionTitle: String?,
@@ -670,7 +699,7 @@ enum XTUnifiedDoctorBuilder {
         let details = [
             "hub_index_available=\(snapshot.hubIndexAvailable)",
             "installed_skills=\(snapshot.installedSkillCount)",
-            "compatible_skills=\(snapshot.openClawCompatibleCount)",
+            "compatible_skills=\(snapshot.compatibleSkillCount)",
             "partial_skills=\(snapshot.partialCompatibilityCount)",
             "revoked_matches=\(snapshot.revokedMatchCount)",
             "trusted_publishers=\(snapshot.trustEnabledPublisherCount)",

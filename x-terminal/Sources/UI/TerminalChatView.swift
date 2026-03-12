@@ -114,6 +114,9 @@ struct TerminalChatView: View {
                 .keyboardShortcut(.return, modifiers: [.command])
             }
 
+            memoryRouteRail
+            projectExecutionRail
+
             TextEditor(text: $session.draft)
                 .font(.system(.body, design: .monospaced))
                 .frame(minHeight: 78, maxHeight: 140)
@@ -142,6 +145,67 @@ struct TerminalChatView: View {
         }
         .padding(10)
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var memoryRouteRail: some View {
+        let preferHubMemory = XTProjectMemoryGovernance.prefersHubMemory(config)
+        let mode = XTProjectMemoryGovernance.modeLabel(config)
+        let sourceLabel = preferHubMemory ? "Hub preferred" : "Local only"
+
+        return HStack(spacing: 8) {
+            Label {
+                Text("Memory")
+            } icon: {
+                Image(systemName: preferHubMemory ? "externaldrive.connected.to.line.below.fill" : "internaldrive")
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(preferHubMemory ? Color.accentColor : Color.secondary)
+
+            Text("mode=\(mode)")
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+
+            Text(sourceLabel)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            if preferHubMemory {
+                Text(hubConnected ? "hub=reachable" : "hub=unreachable_fallback_local")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(hubConnected ? Color.secondary : Color.orange)
+            }
+
+            Spacer(minLength: 0)
+
+            Button(preferHubMemory ? "Use Local" : "Use Hub") {
+                appModel.setProjectHubMemoryPreference(enabled: !preferHubMemory)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(session.isSending || !session.pendingToolCalls.isEmpty)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private var projectExecutionRail: some View {
+        let roles: [AXRole] = [.coder, .coarse, .refine, .reviewer, .advisor]
+        let snapshots = AXRoleExecutionSnapshots.latestSnapshots(for: ctx)
+
+        return RoleExecutionStatusRail(
+            title: "Recent Actual Model Usage",
+            subtitle: "Current project roles",
+            roles: roles,
+            snapshots: snapshots
+        ) { role in
+            AXRoleExecutionSnapshots.configuredModelId(
+                for: role,
+                projectConfig: config,
+                settings: appModel.settingsStore.settings
+            )
+        }
     }
 
     private var showSlashSuggestions: Bool {
@@ -233,10 +297,25 @@ struct TerminalChatView: View {
                 SlashSuggestion(title: "/tools profile coding", subtitle: "coding-focused tools", insertion: "/tools profile coding"),
                 SlashSuggestion(title: "/tools profile minimal", subtitle: "safe read-only + status", insertion: "/tools profile minimal"),
                 SlashSuggestion(title: "/tools allow group:network", subtitle: "allow need_network/web_fetch", insertion: "/tools allow group:network"),
+                SlashSuggestion(title: "/tools allow group:device_automation", subtitle: "arm trusted automation surface for this project", insertion: "/tools allow group:device_automation"),
                 SlashSuggestion(title: "/tools deny run_command", subtitle: "block local command execution", insertion: "/tools deny run_command"),
                 SlashSuggestion(title: "/tools reset", subtitle: "reset to defaults", insertion: "/tools reset"),
             ]
             let q = String(lower.dropFirst("/tools".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            if q.isEmpty {
+                return items
+            }
+            return items.filter { $0.insertion.lowercased().contains(q) || $0.title.lowercased().contains(q) }
+        }
+
+        if lower == "/memory" || lower.hasPrefix("/memory ") {
+            let items: [SlashSuggestion] = [
+                SlashSuggestion(title: "/memory", subtitle: "show project memory routing mode", insertion: "/memory"),
+                SlashSuggestion(title: "/memory on", subtitle: "prefer Hub memory for this project", insertion: "/memory on"),
+                SlashSuggestion(title: "/memory off", subtitle: "use local-only project memory", insertion: "/memory off"),
+                SlashSuggestion(title: "/memory default", subtitle: "reset to default Hub-preferred mode", insertion: "/memory default"),
+            ]
+            let q = String(lower.dropFirst("/memory".count)).trimmingCharacters(in: .whitespacesAndNewlines)
             if q.isEmpty {
                 return items
             }
@@ -257,8 +336,28 @@ struct TerminalChatView: View {
             return items.filter { $0.insertion.lowercased().contains(q) || $0.title.lowercased().contains(q) }
         }
 
+        if lower == "/trusted-automation" || lower.hasPrefix("/trusted-automation ") || lower == "/ta" || lower.hasPrefix("/ta ") {
+            let items: [SlashSuggestion] = [
+                SlashSuggestion(title: "/trusted-automation", subtitle: "show trusted automation status", insertion: "/trusted-automation"),
+                SlashSuggestion(title: "/trusted-automation doctor", subtitle: "show permission owner readiness details", insertion: "/trusted-automation doctor"),
+                SlashSuggestion(title: "/trusted-automation arm <device_id>", subtitle: "arm this project against a paired device", insertion: "/trusted-automation arm "),
+                SlashSuggestion(title: "/trusted-automation open accessibility", subtitle: "open Accessibility settings", insertion: "/trusted-automation open accessibility"),
+                SlashSuggestion(title: "/trusted-automation off", subtitle: "turn off project trusted automation", insertion: "/trusted-automation off"),
+            ]
+            let q = lower
+                .replacingOccurrences(of: "/trusted-automation", with: "")
+                .replacingOccurrences(of: "/ta", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if q.isEmpty {
+                return items
+            }
+            return items.filter { $0.insertion.lowercased().contains(q) || $0.title.lowercased().contains(q) }
+        }
+
         let base: [SlashSuggestion] = [
+            SlashSuggestion(title: "/memory", subtitle: "project Hub memory preference", insertion: "/memory"),
             SlashSuggestion(title: "/tools", subtitle: "tool policy profile/allow/deny", insertion: "/tools"),
+            SlashSuggestion(title: "/trusted-automation", subtitle: "project trusted automation binding", insertion: "/trusted-automation"),
             SlashSuggestion(title: "/hub route", subtitle: "set Hub transport auto/grpc/file", insertion: "/hub route"),
             SlashSuggestion(title: "/models", subtitle: "show Hub loaded models", insertion: "/models"),
             SlashSuggestion(title: "/model <id>", subtitle: "set project coder model", insertion: "/model "),

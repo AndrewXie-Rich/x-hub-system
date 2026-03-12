@@ -208,29 +208,51 @@ Merge rules:
             )
             coarseText = res.text
             if let u = res.usage {
-                coarseUsage = LLMUsage(promptTokens: u.promptTokens, completionTokens: u.generationTokens)
+                coarseUsage = LLMUsage(
+                    promptTokens: u.promptTokens,
+                    completionTokens: u.generationTokens,
+                    requestedModelId: u.requestedModelId,
+                    actualModelId: u.actualModelId,
+                    runtimeProvider: u.runtimeProvider,
+                    executionPath: u.executionPath,
+                    fallbackReasonCode: u.fallbackReasonCode
+                )
             } else {
                 coarseUsage = nil
             }
         }
 
         // usage log (prefer real tokens).
-        AXProjectStore.appendUsage(
-            [
-                "type": "ai_usage",
-                "created_at": Date().timeIntervalSince1970,
-                "stage": "x_terminal_coarse",
-                "task_type": "x_terminal_coarse",
-                "prompt_chars": coarsePromptText.count,
-                "output_chars": coarseText.count,
-                "prompt_tokens": coarseUsage?.promptTokens as Any,
-                "output_tokens": coarseUsage?.completionTokens as Any,
-                "token_source": (coarseUsage != nil) ? "provider" : "estimate",
-                "prompt_tokens_est": TokenEstimator.estimateTokens(coarsePromptText),
-                "output_tokens_est": TokenEstimator.estimateTokens(coarseText),
-            ],
-            for: ctx
-        )
+        var coarseUsageEntry: [String: Any] = [
+            "type": "ai_usage",
+            "created_at": Date().timeIntervalSince1970,
+            "stage": "x_terminal_coarse",
+            "role": AXRole.coarse.rawValue,
+            "task_type": "x_terminal_coarse",
+            "prompt_chars": coarsePromptText.count,
+            "output_chars": coarseText.count,
+            "prompt_tokens": coarseUsage?.promptTokens as Any,
+            "output_tokens": coarseUsage?.completionTokens as Any,
+            "token_source": (coarseUsage != nil) ? "provider" : "estimate",
+            "prompt_tokens_est": TokenEstimator.estimateTokens(coarsePromptText),
+            "output_tokens_est": TokenEstimator.estimateTokens(coarseText),
+        ]
+        if let requested = coarseUsage?.requestedModelId, !requested.isEmpty {
+            coarseUsageEntry["requested_model_id"] = requested
+        }
+        if let actual = coarseUsage?.actualModelId, !actual.isEmpty {
+            coarseUsageEntry["actual_model_id"] = actual
+        }
+        if let provider = coarseUsage?.runtimeProvider, !provider.isEmpty {
+            coarseUsageEntry["runtime_provider"] = provider
+        }
+        if let path = coarseUsage?.executionPath, !path.isEmpty {
+            coarseUsageEntry["execution_path"] = path
+        }
+        if let reason = coarseUsage?.fallbackReasonCode, !reason.isEmpty {
+            coarseUsageEntry["fallback_reason_code"] = reason
+        }
+        AXProjectStore.appendUsage(coarseUsageEntry, for: ctx)
 
         // If coarse doesn't return JSON, fall back to a minimal delta.
         let deltaJSONString: String
@@ -349,28 +371,50 @@ Merge rules:
             )
             refineText = res.text
             if let u = res.usage {
-                refineUsage = LLMUsage(promptTokens: u.promptTokens, completionTokens: u.generationTokens)
+                refineUsage = LLMUsage(
+                    promptTokens: u.promptTokens,
+                    completionTokens: u.generationTokens,
+                    requestedModelId: u.requestedModelId,
+                    actualModelId: u.actualModelId,
+                    runtimeProvider: u.runtimeProvider,
+                    executionPath: u.executionPath,
+                    fallbackReasonCode: u.fallbackReasonCode
+                )
             } else {
                 refineUsage = nil
             }
         }
 
-        AXProjectStore.appendUsage(
-            [
-                "type": "ai_usage",
-                "created_at": Date().timeIntervalSince1970,
-                "stage": "x_terminal_refine",
-                "task_type": "x_terminal_refine",
-                "prompt_chars": refinePromptText.count,
-                "output_chars": refineText.count,
-                "prompt_tokens": refineUsage?.promptTokens as Any,
-                "output_tokens": refineUsage?.completionTokens as Any,
-                "token_source": (refineUsage != nil) ? "provider" : "estimate",
-                "prompt_tokens_est": TokenEstimator.estimateTokens(refinePromptText),
-                "output_tokens_est": TokenEstimator.estimateTokens(refineText),
-            ],
-            for: ctx
-        )
+        var refineUsageEntry: [String: Any] = [
+            "type": "ai_usage",
+            "created_at": Date().timeIntervalSince1970,
+            "stage": "x_terminal_refine",
+            "role": AXRole.refine.rawValue,
+            "task_type": "x_terminal_refine",
+            "prompt_chars": refinePromptText.count,
+            "output_chars": refineText.count,
+            "prompt_tokens": refineUsage?.promptTokens as Any,
+            "output_tokens": refineUsage?.completionTokens as Any,
+            "token_source": (refineUsage != nil) ? "provider" : "estimate",
+            "prompt_tokens_est": TokenEstimator.estimateTokens(refinePromptText),
+            "output_tokens_est": TokenEstimator.estimateTokens(refineText),
+        ]
+        if let requested = refineUsage?.requestedModelId, !requested.isEmpty {
+            refineUsageEntry["requested_model_id"] = requested
+        }
+        if let actual = refineUsage?.actualModelId, !actual.isEmpty {
+            refineUsageEntry["actual_model_id"] = actual
+        }
+        if let provider = refineUsage?.runtimeProvider, !provider.isEmpty {
+            refineUsageEntry["runtime_provider"] = provider
+        }
+        if let path = refineUsage?.executionPath, !path.isEmpty {
+            refineUsageEntry["execution_path"] = path
+        }
+        if let reason = refineUsage?.fallbackReasonCode, !reason.isEmpty {
+            refineUsageEntry["fallback_reason_code"] = reason
+        }
+        AXProjectStore.appendUsage(refineUsageEntry, for: ctx)
 
         guard let memJSON = extractFirstJSONObject(from: refineText) else {
             // Fallback: apply a conservative local merge.

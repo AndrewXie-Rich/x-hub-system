@@ -337,11 +337,11 @@ function collectSkcG3RealSampling(opts = {}) {
     const importToFirstRunP95 = percentile(latencies, 0.95);
 
     const threshold = {
-      openclaw_skill_import_success_rate_gte: 0.98,
+      skill_import_success_rate_gte: 0.98,
       import_to_first_run_p95_ms_lte: 12000,
     };
     const importMetricPass =
-      importSuccessRate != null && Number(importSuccessRate) >= threshold.openclaw_skill_import_success_rate_gte;
+      importSuccessRate != null && Number(importSuccessRate) >= threshold.skill_import_success_rate_gte;
     const firstRunMetricPass =
       importToFirstRunP95 != null && Number(importToFirstRunP95) <= threshold.import_to_first_run_p95_ms_lte;
 
@@ -361,7 +361,7 @@ function collectSkcG3RealSampling(opts = {}) {
       );
     }
     if (sampleReady && !importMetricPass) {
-      reasons.push(`import_success_below_threshold(${importSuccessRate} < ${threshold.openclaw_skill_import_success_rate_gte})`);
+      reasons.push(`import_success_below_threshold(${importSuccessRate} < ${threshold.skill_import_success_rate_gte})`);
     }
     if (sampleReady && !firstRunMetricPass) {
       reasons.push(`import_to_first_run_p95_exceeded(${importToFirstRunP95} > ${threshold.import_to_first_run_p95_ms_lte})`);
@@ -388,7 +388,7 @@ function collectSkcG3RealSampling(opts = {}) {
         run_accept_breakdown: runAcceptBreakdown,
       },
       kpi_snapshot: {
-        openclaw_skill_import_success_rate: importSuccessRate,
+        skill_import_success_rate: importSuccessRate,
         import_to_first_run_p95_ms: importToFirstRunP95,
       },
       gate: {

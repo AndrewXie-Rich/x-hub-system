@@ -92,7 +92,7 @@ struct XTUnifiedDoctorReportTests {
         let model = sampleModel(id: "hub.model.coder")
         var skills = readySkillsSnapshot()
         skills.installedSkillCount = 1
-        skills.openClawCompatibleCount = 1
+        skills.compatibleSkillCount = 1
         skills.statusLine = "skills 1/1"
 
         let report = XTUnifiedDoctorBuilder.build(
@@ -187,7 +187,7 @@ private func readySkillsSnapshot() -> AXSkillsDoctorSnapshot {
     AXSkillsDoctorSnapshot(
         hubIndexAvailable: true,
         installedSkillCount: 0,
-        openClawCompatibleCount: 0,
+        compatibleSkillCount: 0,
         partialCompatibilityCount: 0,
         revokedMatchCount: 0,
         trustEnabledPublisherCount: 1,

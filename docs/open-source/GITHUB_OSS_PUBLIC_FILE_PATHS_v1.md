@@ -17,6 +17,10 @@
 2. 再按黑名单做强制剔除；
 3. 证据不全则 `NO-GO`（fail-closed）。
 
+当前已验证的公开发布范围仅限：
+
+- `XT-W3-23 -> XT-W3-24 -> XT-W3-25`
+
 ---
 
 ## 1) 公开白名单（目录级全量路径）
@@ -24,7 +28,7 @@
 > 说明：以下路径为“递归公开”；即目录下文件默认都可发布，但仍受第 3 节黑名单约束。
 
 - `.github/**`
-- `.kiro/specs/**`
+- `specs/**`
 - `docs/**`
 - `protocol/**`
 - `scripts/**`
@@ -115,7 +119,7 @@
 
 ### 3.4 首版建议暂不公开（降低噪音/风险）
 
-- `x-terminal- legacy/**`（历史实现，建议后续独立归档）
+- `archive/x-terminal-legacy/**`（归档历史终端实现，不属于当前主树）
 - `docs/legacy/**`（若含历史临时材料，可后续筛选再公开）
 - 根目录状态标记临时文件（例如 `conservative`、`in_progress）`）
 
@@ -149,7 +153,7 @@ find . -type f \
   -not -path "*/.sandbox_home/*" \
   -not -path "*/.sandbox_tmp/*" \
   -not -path "*/node_modules/*" \
-  -not -path "./x-terminal- legacy/*" \
+  -not -path "./archive/x-terminal-legacy/*" \
   | sort
 ```
 
@@ -158,12 +162,12 @@ find . -type f \
 ## 6) 开源建议（执行优先级）
 
 1. **先做最小可运行包**：首版只保证 1 条 Quick Start + 1 条 smoke 流程可复现，避免“大而全”导致首发失焦。  
-2. **许可边界写死**：OpenClaw 仅保留 MIT 可复用子集与归因；AGPL 项目只做链接，不进主仓代码。  
+2. **许可边界写死**：skills ecosystem 仅保留 MIT 可复用子集与归因；AGPL 项目只做链接，不进主仓代码。  
 3. **证据先于结论**：每次发版都输出 `GO|NO-GO|INSUFFICIENT_EVIDENCE` 决策记录。  
 4. **安全默认 fail-closed**：高风险能力（远程调用、支付、授权）无 grant 一律拒绝，并附可执行修复建议。  
-5. **文档入口单一化**：外部贡献者只需看 `README.md -> docs/WORKING_INDEX.md -> 目标工单` 即可入场。  
+5. **文档入口清晰化**：外部贡献者应从 `README.md -> docs/REPO_LAYOUT.md -> 模块 README -> docs/WORKING_INDEX.md` 入场。  
 6. **社区面优先补齐**：Issue Template / PR Template / CODEOWNERS / SECURITY 联系通道必须真实可用。  
-7. **首版不携带历史包袱**：`x-terminal- legacy/` 与临时调试资产分仓或延后公开，减少许可与维护成本。  
+7. **首版不携带历史包袱**：`archive/x-terminal-legacy/` 与临时调试资产分仓或延后公开，减少许可与维护成本。  
 8. **标签策略清晰**：建议 `v0.1.0-alpha`（功能探索）、`v0.2.0-beta`（接口稳定）、`v1.0.0`（兼容承诺）。  
 
 ---

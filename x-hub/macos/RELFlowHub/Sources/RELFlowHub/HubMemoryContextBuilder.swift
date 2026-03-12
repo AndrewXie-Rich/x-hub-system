@@ -31,6 +31,7 @@ enum HubMemoryContextBuilder {
     private struct ProjectFallback {
         var canonical: String
         var observations: String
+        var hasStoredCanonical: Bool
     }
 
     static func build(from req: IPCMemoryContextRequestPayload) -> IPCMemoryContextResponsePayload {
@@ -43,8 +44,14 @@ enum HubMemoryContextBuilder {
         let latestUser = latestUserSeed.isEmpty ? "(none)" : latestUserSeed
 
         let fallback = projectFallback(req: req)
-        let canonicalSeed = firstNonEmpty(req.canonicalText, fallback.canonical)
-        let observationsSeed = firstNonEmpty(req.observationsText, fallback.observations)
+        let canonicalSeed = mergedProjectText(
+            primary: fallback.hasStoredCanonical ? fallback.canonical : normalized(req.canonicalText),
+            secondary: fallback.hasStoredCanonical ? normalized(req.canonicalText) : fallback.canonical
+        )
+        let observationsSeed = mergedProjectText(
+            primary: normalized(req.observationsText),
+            secondary: fallback.observations
+        )
         let workingSeed = normalized(req.workingSetText)
         let rawSeed = firstNonEmpty(req.rawEvidenceText, rawEvidenceFallback(mode: mode))
 
@@ -513,14 +520,28 @@ latest_user:
 
     private static func projectFallback(req: IPCMemoryContextRequestPayload) -> ProjectFallback {
         let reg = HubProjectRegistryStorage.load()
-        guard !reg.projects.isEmpty else {
-            return ProjectFallback(canonical: "", observations: "")
-        }
         let pid = normalized(req.projectId)
         let root = normalized(req.projectRoot)
         let display = normalized(req.displayName)
 
+        let stored = HubProjectCanonicalMemoryStorage.lookup(
+            projectId: pid,
+            projectRoot: root,
+            displayName: display
+        )
+        let storedCanonical = storedCanonicalText(snapshot: stored)
+        var observationLines: [String] = []
+        if let stored {
+            observationLines.append(
+                """
+hub_project_memory_updated_at: \(Int(stored.updatedAt))
+hub_project_memory_items: \(stored.items.count)
+"""
+            )
+        }
+
         let matched: HubProjectSnapshot? = {
+            guard !reg.projects.isEmpty else { return nil }
             if !pid.isEmpty, let p = reg.projects.first(where: { $0.projectId == pid }) {
                 return p
             }
@@ -536,23 +557,63 @@ latest_user:
             return nil
         }()
 
-        guard let p = matched else {
-            return ProjectFallback(canonical: "", observations: "")
-        }
-        let status = normalized(p.statusDigest)
-        let canonical = """
-project: \(p.displayName)
-project_id: \(p.projectId)
-root_path: \(p.rootPath)
-status: \(status.isEmpty ? "(none)" : status)
-"""
-        let obs = """
+        if let p = matched {
+            let obs = """
 hub_registry_updated_at: \(Int(reg.updatedAt))
 project_updated_at: \(Int(p.updatedAt ?? 0))
 last_summary_at: \(Int(p.lastSummaryAt ?? 0))
 last_event_at: \(Int(p.lastEventAt ?? 0))
 """
-        return ProjectFallback(canonical: canonical, observations: obs)
+            if !obs.isEmpty {
+                observationLines.append(obs)
+            }
+        }
+
+        let registryCanonical: String = {
+            guard let p = matched else { return "" }
+            let status = normalized(p.statusDigest)
+            return """
+project: \(p.displayName)
+project_id: \(p.projectId)
+root_path: \(p.rootPath)
+status: \(status.isEmpty ? "(none)" : status)
+"""
+        }()
+
+        return ProjectFallback(
+            canonical: firstNonEmpty(storedCanonical, registryCanonical),
+            observations: observationLines
+                .map(normalized)
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n"),
+            hasStoredCanonical: !storedCanonical.isEmpty
+        )
+    }
+
+    private static func storedCanonicalText(snapshot: HubProjectCanonicalMemorySnapshot?) -> String {
+        guard let snapshot else { return "" }
+        return snapshot.items
+            .map { item in
+                let key = normalized(item.key)
+                let value = normalized(item.value)
+                guard !key.isEmpty, !value.isEmpty else { return "" }
+                return "\(key) = \(value)"
+            }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+    }
+
+    private static func mergedProjectText(primary: String, secondary: String) -> String {
+        let first = normalized(primary)
+        let second = normalized(secondary)
+        if first.isEmpty { return second }
+        if second.isEmpty { return first }
+        if first == second { return first }
+        return """
+\(first)
+
+\(second)
+"""
     }
 
     private static func rawEvidenceFallback(mode: String) -> String {

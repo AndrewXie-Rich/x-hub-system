@@ -677,3 +677,91 @@ await runAsync('W5-03/remote export gate downgrade path keeps final completed au
     }
   );
 });
+
+await runAsync('W5-03/grpc-only fail-closed request denies instead of downgrading locally', async () => {
+  const runtimeBaseDir = makeTmp('runtime_w5_03_fail_closed');
+  const dbPath = makeTmp('db_w5_03_fail_closed', '.db');
+  fs.mkdirSync(runtimeBaseDir, { recursive: true });
+
+  await withEnvAsync(
+    {
+      ...baseEnv(runtimeBaseDir),
+      HUB_REMOTE_EXPORT_ON_BLOCK: 'downgrade_to_local',
+      HUB_REMOTE_EXPORT_SECRET_MODE: 'deny',
+      HUB_MLX_RESPONSE_TIMEOUT_NO_RUNTIME_MS: '1500',
+    },
+    async () => {
+      const db = new HubDB({ dbPath });
+      try {
+        seedPaidGrant(db, {
+          device_id: 'dev1',
+          user_id: 'user1',
+          app_id: 'app1',
+          project_id: 'proj1',
+          model_id: 'openai/gpt-4.1',
+        });
+
+        const impl = makeServices({ db, bus: new HubEventBus() });
+        const request_id = `rid_w5_03_fail_closed_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+        const writes = [];
+        const call = {
+          request: {
+            request_id,
+            model_id: 'openai/gpt-4.1',
+            fail_closed_on_downgrade: true,
+            messages: [{ role: 'user', content: 'Please export [private]secret note[/private]' }],
+            client: {
+              device_id: 'dev1',
+              user_id: 'user1',
+              app_id: 'app1',
+              project_id: 'proj1',
+            },
+          },
+          metadata: {
+            get() {
+              return [];
+            },
+          },
+          write(ev) {
+            writes.push(ev);
+          },
+          end() {
+            // ignored
+          },
+          on() {
+            // ignored
+          },
+        };
+
+        await impl.HubAI.Generate(call);
+
+        assert.equal(writes.length > 0, true);
+        assert.equal(String(writes[0]?.error?.error?.code || ''), 'secret_mode_deny');
+
+        const rows = db.listAuditEvents({ device_id: 'dev1' }) || [];
+        const denied = rows.find((r) =>
+          String(r.event_type || '') === 'ai.generate.denied'
+          && String(r.request_id || '') === request_id
+        );
+        assert.ok(denied);
+        assert.equal(String(denied.error_code || ''), 'secret_mode_deny');
+        const deniedExt = JSON.parse(String(denied.ext_json || '{}'));
+        assert.equal(deniedExt.blocked, true);
+        assert.equal(deniedExt.downgraded, false);
+        assert.equal(deniedExt.policy_gate_action, 'downgrade_to_local');
+        assert.equal(deniedExt.gate_action, 'error');
+        assert.equal(deniedExt.requested_fail_closed_on_downgrade, true);
+
+        const downgraded = rows.find((r) =>
+          String(r.event_type || '') === 'ai.generate.downgraded_to_local'
+          && String(r.request_id || '') === request_id
+        );
+        assert.equal(!!downgraded, false);
+      } finally {
+        db.close();
+        cleanupDbArtifacts(dbPath);
+        try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      }
+    }
+  );
+});

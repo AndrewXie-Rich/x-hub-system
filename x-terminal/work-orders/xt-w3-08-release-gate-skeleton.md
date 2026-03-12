@@ -30,7 +30,7 @@
   - XT-G2/XT-G4/XT-G5 增补安全项与证据检查。
   - strict 模式缺 doctor/secrets 直接 fail。
   - 报告新增“新增工单ID覆盖区块”。
-  - 接入 OpenClaw 回灌扩展检查（`XT-W2-17/18/19`）的留口：上下文溢出、origin-safe fallback、dispatch cleanup。
+  - 接入 skills ecosystem 回灌扩展检查（`XT-W2-17/18/19`）的留口：上下文溢出、origin-safe fallback、dispatch cleanup。
 - 回滚脚本：`scripts/ci/xt_release_rollback_stub.sh`
   - 升级为可执行最小流程（verify-only / apply + report 落盘）。
 
@@ -73,11 +73,11 @@
   - `secrets apply --dry-run` 报告（dry-run/target-path/missing-vars/permission-boundary）
 - strict 模式：任一报告缺失即失败。
 - 调用回滚脚本 `--verify-only`，要求可执行且能产出验证报告。
-- OpenClaw 扩展证据（新增）：
+- skills ecosystem 扩展证据（新增）：
   - `.axcoder/reports/xt-overflow-fairness-report.json`
   - `.axcoder/reports/xt-origin-fallback-report.json`
   - `.axcoder/reports/xt-dispatch-cleanup-report.json`
-  - strict 模式下三者缺失任一项均失败（可通过 `XT_GATE_SKIP_OPENCLAW_EXT=1` 临时降级，仅限独立演示环境）。
+  - strict 模式下三者缺失任一项均失败（可通过 `XT_GATE_SKIP_SKILL_EXT=1` 临时降级，仅限独立演示环境）。
 
 ## 4) 报告与追溯
 

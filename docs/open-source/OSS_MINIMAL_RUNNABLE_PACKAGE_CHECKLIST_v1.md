@@ -21,7 +21,7 @@
 - [ ] 发布 tag 设为：`v0.1.0-alpha`
 - [ ] 发布分支已冻结（例如 `release/v0.1`）
 - [ ] 发布范围采用白名单：`docs/open-source/GITHUB_OSS_PUBLIC_FILE_PATHS_v1.md`
-- [ ] 明确首版不公开项：`x-terminal- legacy/**`、重资产构建产物、私有运行态数据
+- [ ] 明确首版不公开项：`archive/x-terminal-legacy/**`、重资产构建产物、私有运行态数据
 
 DoD:
 - [ ] 形成一份 machine-readable 清单（推荐：`build/reports/oss_public_manifest_v1.json`）

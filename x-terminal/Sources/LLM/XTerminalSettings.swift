@@ -40,7 +40,7 @@ struct GeminiConfig: Codable, Equatable {
 }
 
 struct XTerminalSettings: Codable, Equatable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 4
 
     var schemaVersion: Int
 
@@ -51,19 +51,25 @@ struct XTerminalSettings: Codable, Equatable {
     var openAICompatible: OpenAICompatibleConfig
     var anthropic: AnthropicConfig
     var gemini: GeminiConfig
+    var voice: VoiceRuntimePreferences
+    var supervisorPrompt: SupervisorPromptPreferences
 
     init(
         schemaVersion: Int,
         assignments: [RoleProviderAssignment],
         openAICompatible: OpenAICompatibleConfig,
         anthropic: AnthropicConfig,
-        gemini: GeminiConfig
+        gemini: GeminiConfig,
+        voice: VoiceRuntimePreferences,
+        supervisorPrompt: SupervisorPromptPreferences
     ) {
         self.schemaVersion = schemaVersion
         self.assignments = assignments
         self.openAICompatible = openAICompatible
         self.anthropic = anthropic
         self.gemini = gemini
+        self.voice = voice
+        self.supervisorPrompt = supervisorPrompt
     }
 
     init(from decoder: Decoder) throws {
@@ -73,6 +79,8 @@ struct XTerminalSettings: Codable, Equatable {
         openAICompatible = (try? c.decode(OpenAICompatibleConfig.self, forKey: .openAICompatible)) ?? OpenAICompatibleConfig(baseURL: "https://api.openai.com/", model: "gpt-4o-mini")
         anthropic = (try? c.decode(AnthropicConfig.self, forKey: .anthropic)) ?? AnthropicConfig(baseURL: "https://api.anthropic.com/", model: "claude-3-5-sonnet-latest")
         gemini = (try? c.decode(GeminiConfig.self, forKey: .gemini)) ?? GeminiConfig(baseURL: "https://generativelanguage.googleapis.com/", model: "gemini-1.5-pro")
+        voice = (try? c.decode(VoiceRuntimePreferences.self, forKey: .voice)) ?? .default()
+        supervisorPrompt = ((try? c.decode(SupervisorPromptPreferences.self, forKey: .supervisorPrompt)) ?? .default()).normalized()
 
         // Ensure all roles have an assignment.
         for r in AXRole.allCases {
@@ -88,6 +96,8 @@ struct XTerminalSettings: Codable, Equatable {
         case openAICompatible
         case anthropic
         case gemini
+        case voice
+        case supervisorPrompt
     }
 
     static func `default`() -> XTerminalSettings {
@@ -103,7 +113,9 @@ struct XTerminalSettings: Codable, Equatable {
             ],
             openAICompatible: OpenAICompatibleConfig(baseURL: "https://api.openai.com/", model: "gpt-4o-mini"),
             anthropic: AnthropicConfig(baseURL: "https://api.anthropic.com/", model: "claude-3-5-sonnet-latest"),
-            gemini: GeminiConfig(baseURL: "https://generativelanguage.googleapis.com/", model: "gemini-1.5-pro")
+            gemini: GeminiConfig(baseURL: "https://generativelanguage.googleapis.com/", model: "gemini-1.5-pro"),
+            voice: .default(),
+            supervisorPrompt: .default()
         )
     }
 
@@ -121,6 +133,20 @@ struct XTerminalSettings: Codable, Equatable {
             arr.append(RoleProviderAssignment(role: role, providerKind: providerKind, model: model))
         }
         s.assignments = arr
+        return s
+    }
+
+    func setting(voice: VoiceRuntimePreferences) -> XTerminalSettings {
+        var s = self
+        s.schemaVersion = Self.currentSchemaVersion
+        s.voice = voice
+        return s
+    }
+
+    func setting(supervisorPrompt: SupervisorPromptPreferences) -> XTerminalSettings {
+        var s = self
+        s.schemaVersion = Self.currentSchemaVersion
+        s.supervisorPrompt = supervisorPrompt.normalized()
         return s
     }
 }

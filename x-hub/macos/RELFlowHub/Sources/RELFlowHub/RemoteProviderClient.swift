@@ -8,6 +8,7 @@ enum RemoteProviderClient {
         case invalidBaseURL
         case httpError(status: Int, body: String)
         case badResponse
+        case emptyResponse
         case bridgeFailure(reason: String)
 
         var errorDescription: String? {
@@ -23,6 +24,8 @@ enum RemoteProviderClient {
                 return "Provider request failed (status=\(status)): \(body)"
             case .badResponse:
                 return "Provider returned an unsupported response format."
+            case .emptyResponse:
+                return "Provider returned HTTP 200 with an empty body for /models. This gateway does not expose a model list. Enter the model ID manually or import it from provider config."
             case .bridgeFailure(let reason):
                 let r = reason.trimmingCharacters(in: .whitespacesAndNewlines)
                 return r.isEmpty ? "Bridge request failed." : "Bridge request failed: \(r)"
@@ -47,7 +50,7 @@ enum RemoteProviderClient {
             guard let url = RemoteProviderEndpoints.anthropicModelsURL(baseURL: baseURL) else {
                 throw ProviderError.invalidBaseURL
             }
-            let obj = try await requestJSON(
+            let payload = try await requestJSON(
                 url: url,
                 headers: [
                     "x-api-key": key,
@@ -55,7 +58,7 @@ enum RemoteProviderClient {
                 ],
                 timeoutSec: timeoutSec
             )
-            let ids = idsFromDataArray(obj)
+            let ids = modelIds(from: payload, backend: backend)
             guard !ids.isEmpty else {
                 throw ProviderError.badResponse
             }
@@ -65,8 +68,8 @@ enum RemoteProviderClient {
             guard let url = RemoteProviderEndpoints.geminiModelsURL(baseURL: baseURL, apiKey: key) else {
                 throw ProviderError.invalidBaseURL
             }
-            let obj = try await requestJSON(url: url, headers: [:], timeoutSec: timeoutSec)
-            let ids = geminiModelIds(from: obj)
+            let payload = try await requestJSON(url: url, headers: [:], timeoutSec: timeoutSec)
+            let ids = modelIds(from: payload, backend: backend)
             guard !ids.isEmpty else {
                 throw ProviderError.badResponse
             }
@@ -76,12 +79,12 @@ enum RemoteProviderClient {
             guard let url = RemoteProviderEndpoints.openAIModelsURL(baseURL: baseURL, backend: backend) else {
                 throw ProviderError.invalidBaseURL
             }
-            let obj = try await requestJSON(
+            let payload = try await requestJSON(
                 url: url,
                 headers: ["Authorization": "Bearer \(key)"],
                 timeoutSec: timeoutSec
             )
-            let ids = idsFromDataArray(obj)
+            let ids = modelIds(from: payload, backend: backend)
             guard !ids.isEmpty else {
                 throw ProviderError.badResponse
             }
@@ -89,7 +92,16 @@ enum RemoteProviderClient {
         }
     }
 
-    private static func requestJSON(url: URL, headers: [String: String], timeoutSec: Double) async throws -> [String: Any] {
+    static func modelIds(from payload: Any, backend: String) -> [String] {
+        switch RemoteProviderEndpoints.canonicalBackend(backend) {
+        case "gemini":
+            return geminiModelIds(from: payload)
+        default:
+            return genericModelIds(from: payload)
+        }
+    }
+
+    private static func requestJSON(url: URL, headers: [String: String], timeoutSec: Double) async throws -> Any {
         do {
             let (data, status) = try await requestDataDirect(url: url, headers: headers, timeoutSec: timeoutSec)
             return try parseJSONResponse(data: data, status: status)
@@ -129,12 +141,16 @@ enum RemoteProviderClient {
         return (data, status)
     }
 
-    private static func parseJSONResponse(data: Data, status: Int) throws -> [String: Any] {
+    private static func parseJSONResponse(data: Data, status: Int) throws -> Any {
         guard status >= 200 && status < 300 else {
             let body = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             throw ProviderError.httpError(status: status, body: body)
         }
-        guard let obj = (try? JSONSerialization.jsonObject(with: data, options: [])) as? [String: Any] else {
+        let trimmed = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmed.isEmpty {
+            throw ProviderError.emptyResponse
+        }
+        guard let obj = try? JSONSerialization.jsonObject(with: data, options: []) else {
             throw ProviderError.badResponse
         }
         return obj
@@ -167,11 +183,23 @@ enum RemoteProviderClient {
         return false
     }
 
-    private static func idsFromDataArray(_ obj: [String: Any]) -> [String] {
-        guard let list = obj["data"] as? [[String: Any]] else { return [] }
+    private static func idsFromEntries(_ list: [Any]) -> [String] {
         var out: [String] = []
         for item in list {
-            let id = (item["id"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if let text = item as? String {
+                let direct = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !direct.isEmpty {
+                    out.append(direct)
+                }
+                continue
+            }
+
+            guard let row = item as? [String: Any] else { continue }
+            let id = firstNonEmptyString(
+                row["id"],
+                row["model_id"],
+                row["name"]
+            )
             if !id.isEmpty {
                 out.append(id)
             }
@@ -179,8 +207,37 @@ enum RemoteProviderClient {
         return out
     }
 
-    private static func geminiModelIds(from obj: [String: Any]) -> [String] {
-        guard let models = obj["models"] as? [[String: Any]] else { return [] }
+    private static func genericModelIds(from payload: Any) -> [String] {
+        if let list = payload as? [Any] {
+            return idsFromEntries(list)
+        }
+
+        guard let obj = payload as? [String: Any] else { return [] }
+
+        for key in ["data", "models", "items", "results"] {
+            if let list = obj[key] as? [Any] {
+                let ids = idsFromEntries(list)
+                if !ids.isEmpty {
+                    return ids
+                }
+            }
+        }
+
+        for key in ["result", "response", "payload"] {
+            if let nested = obj[key] {
+                let ids = genericModelIds(from: nested)
+                if !ids.isEmpty {
+                    return ids
+                }
+            }
+        }
+
+        return []
+    }
+
+    private static func geminiModelIds(from payload: Any) -> [String] {
+        guard let obj = payload as? [String: Any],
+              let models = obj["models"] as? [[String: Any]] else { return [] }
         var out: [String] = []
         for item in models {
             if let methods = item["supportedGenerationMethods"] as? [String], !methods.isEmpty {
@@ -196,6 +253,21 @@ enum RemoteProviderClient {
             out.append(id)
         }
         return out
+    }
+
+    private static func firstNonEmptyString(_ values: Any?...) -> String {
+        for value in values {
+            let normalized: String
+            if let string = value as? String {
+                normalized = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                normalized = ""
+            }
+            if !normalized.isEmpty {
+                return normalized
+            }
+        }
+        return ""
     }
 
     private static func uniqSorted(_ values: [String]) -> [String] {

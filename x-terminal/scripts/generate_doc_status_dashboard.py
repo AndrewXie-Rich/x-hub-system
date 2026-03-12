@@ -204,7 +204,7 @@ def apply_cross_doc_rules(docs: List[DocMeta]) -> None:
     for doc in docs:
         if doc.path.name == "PROJECT_STATUS.md":
             text = read_text(doc.path)
-            if "/x-terminal-legacy/" in text:
+            if "/x-terminal-legacy/" in text or "/archive/x-terminal-legacy/" in text:
                 doc.notes.append("启动路径仍指向 legacy 目录，建议改为当前 x-hub-system/x-terminal")
 
 

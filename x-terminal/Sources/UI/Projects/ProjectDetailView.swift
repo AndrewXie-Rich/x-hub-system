@@ -2,7 +2,6 @@
 //  ProjectDetailView.swift
 //  XTerminal
 //
-//  Created by Claude on 2026-02-27.
 //  项目详情视图
 //
 

@@ -15,7 +15,7 @@ REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
 ALLOWLIST_DIRS = [
     ".github",
-    ".kiro/specs",
+    "specs",
     "docs",
     "protocol",
     "scripts",
@@ -126,7 +126,7 @@ def has_blacklist_component(rel_path: str) -> bool:
     parts = rel_path.split("/")
     if any(part in BLACKLIST_DIR_NAMES for part in parts):
         return True
-    if rel_path.startswith("x-terminal- legacy/"):
+    if rel_path.startswith("archive/x-terminal-legacy/"):
         return True
     lower = rel_path.lower()
     if any(lower.endswith(suffix) for suffix in BLACKLIST_SUFFIXES):

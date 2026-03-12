@@ -26,12 +26,16 @@ enum AXSkillsLibrary {
             }
         }
 
-        // Dev layout: .../x-terminal-legacy/build/X-Terminal.app -> repo root -> X-Terminal/skills
+        // Dev builds may place the app bundle under `x-terminal/build` or repo-level `build`.
         let bundleDir = Bundle.main.bundleURL.deletingLastPathComponent()
         let repoRoot = bundleDir.deletingLastPathComponent()
-        let dev = repoRoot.appendingPathComponent("X-Terminal/skills", isDirectory: true)
-        if FileManager.default.fileExists(atPath: dev.path) {
-            return dev
+        let devCandidates = [
+            repoRoot.appendingPathComponent("skills", isDirectory: true),
+            repoRoot.appendingPathComponent("x-terminal", isDirectory: true)
+                .appendingPathComponent("skills", isDirectory: true),
+        ]
+        for candidate in devCandidates where FileManager.default.fileExists(atPath: candidate.path) {
+            return candidate
         }
 
         let supportBase = FileManager.default.homeDirectoryForCurrentUser

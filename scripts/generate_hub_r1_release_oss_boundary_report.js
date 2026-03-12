@@ -47,7 +47,7 @@ function walk(dirPath, acc = []) {
         entry.name === '.axcoder' ||
         entry.name === '.sandbox_home' ||
         entry.name === '.sandbox_tmp' ||
-        rel === 'x-terminal- legacy'
+        rel === 'archive/x-terminal-legacy'
       ) {
         continue;
       }

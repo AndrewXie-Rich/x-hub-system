@@ -24,7 +24,7 @@
    - 签名（publisher 签名，Hub/Client 双重验证）
    - pinning（默认锁定到 hash/版本）
 
-另见（Discovery/Import/Openclaw 兼容讨论）：`docs/xhub-skills-discovery-and-import-v1.md`
+另见（Discovery/Import/skills ecosystem 兼容讨论）：`docs/xhub-skills-discovery-and-import-v1.md`
 
 ---
 

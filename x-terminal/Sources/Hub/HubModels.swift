@@ -114,6 +114,9 @@ struct HubAIResponseEvent: Codable {
         seq = try? c.decodeIfPresent(Int.self, forKey: .seq)
         model_id = try? c.decodeIfPresent(String.self, forKey: .model_id)
         task_type = try? c.decodeIfPresent(String.self, forKey: .task_type)
+        promptTokens = try? c.decodeIfPresent(Int.self, forKey: .promptTokens)
+        generationTokens = try? c.decodeIfPresent(Int.self, forKey: .generationTokens)
+        generationTPS = try? c.decodeIfPresent(Double.self, forKey: .generationTPS)
 
         // Decode full payload as a dictionary of JSONValue.
         let any = try decoder.singleValueContainer()
@@ -133,12 +136,48 @@ struct HubAIResponseEvent: Codable {
         case generationTokens
         case generationTPS
     }
+
+    var requestedModelIdFromMetadata: String? {
+        metadataString("requested_model_id")
+            ?? metadataString("preferred_model_id")
+            ?? metadataString("requestedModelId")
+    }
+
+    var actualModelIdFromMetadata: String? {
+        metadataString("actual_model_id")
+            ?? metadataString("resolved_model_id")
+            ?? metadataString("actualModelId")
+            ?? model_id
+    }
+
+    var runtimeProviderFromMetadata: String? {
+        metadataString("runtime_provider")
+            ?? metadataString("provider")
+    }
+
+    var executionPathFromMetadata: String? {
+        metadataString("execution_path")
+    }
+
+    var fallbackReasonCodeFromMetadata: String? {
+        metadataString("fallback_reason_code")
+            ?? metadataString("failure_reason_code")
+    }
+
+    private func metadataString(_ key: String) -> String? {
+        raw?[key]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }
 
 struct HubAIUsage: Equatable {
     var promptTokens: Int
     var generationTokens: Int
     var generationTPS: Double
+    var requestedModelId: String?
+    var actualModelId: String?
+    var runtimeProvider: String?
+    var executionPath: String?
+    var fallbackReasonCode: String?
 }
 
 // Minimal JSON representation to preserve unknown fields.
@@ -202,5 +241,23 @@ enum JSONValue: Codable, Equatable, Sendable {
         init(_ s: String) { self.stringValue = s }
         init?(stringValue: String) { self.stringValue = stringValue }
         init?(intValue: Int) { return nil }
+    }
+}
+
+extension JSONValue {
+    var stringValue: String? {
+        switch self {
+        case .string(let value):
+            return value
+        case .number(let value):
+            if value.rounded() == value {
+                return String(Int(value))
+            }
+            return String(value)
+        case .bool(let value):
+            return value ? "true" : "false"
+        default:
+            return nil
+        }
     }
 }

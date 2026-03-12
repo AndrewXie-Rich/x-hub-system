@@ -38,7 +38,7 @@
 - `自举可用线`：`XT-W3-18 + XT-W3-19 + XT-W3-20` 作为 Supervisor 自己接案、自拆、自派、自督导、自交付的最小闭环。
 - `记忆产品化`：`XT-W3-23` 作为 XT 侧即插即用记忆 UX 适配层，补齐 `session continuity + user/project 双通道 + memory ops console + least-exposure injection + supervisor memory bus`，但 Hub 仍是唯一记忆真相源。
 - `渠道产品化`：`XT-W3-24` 作为多渠道入口与流式体验产品化包，吸收 bot 产品外壳优势（多渠道、streaming、onboard、session/status 运维），但所有高风险能力仍收敛到 Hub。
-- `生态兼容线`：`xt-openclaw-skills-compat-reliability-work-orders-v1.md` 作为外部 skill 兼容层，保持兼容但不让生态扩张破坏主线治理。
+- `生态兼容线`：`xt-skill-skills-compat-reliability-work-orders-v1.md` 作为外部 skill 兼容层，保持兼容但不让生态扩张破坏主线治理。
 
 ## 1) 阶段切分（强顺序，避免乱序并发）
 

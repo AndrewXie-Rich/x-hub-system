@@ -17,7 +17,7 @@ const EXCLUDED_DIR_PATTERNS = [
   /(^|\/)\.sandbox_tmp\//,
   /(^|\/)node_modules\//,
   /(^|\/)DerivedData\//,
-  /(^|\/)x-terminal- legacy\//,
+  /(^|\/)archive\/x-terminal-legacy\//,
 ];
 
 function toRel(absPath) {

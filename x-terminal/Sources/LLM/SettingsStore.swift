@@ -2,11 +2,26 @@ import Foundation
 
 @MainActor
 final class SettingsStore: ObservableObject {
-    @Published var settings: XTerminalSettings
+    let voiceWakeProfileStore: VoiceWakeProfileStore
+
+    @Published var settings: XTerminalSettings {
+        didSet {
+            VoiceSessionCoordinator.shared.setPreferences(settings.voice)
+            voiceWakeProfileStore.applyPreferences(settings.voice)
+            Task { @MainActor in
+                await VoiceSessionCoordinator.shared.refreshRouteAvailability()
+            }
+        }
+    }
 
     private let url: URL
 
-    init() {
+    convenience init() {
+        self.init(voiceWakeProfileStore: VoiceWakeProfileStore.shared)
+    }
+
+    init(voiceWakeProfileStore: VoiceWakeProfileStore) {
+        self.voiceWakeProfileStore = voiceWakeProfileStore
         let fm = FileManager.default
         let supportBase = fm.homeDirectoryForCurrentUser
             .appendingPathComponent("Library", isDirectory: true)
@@ -20,6 +35,12 @@ final class SettingsStore: ObservableObject {
             settings = SettingsStore.enforceHubOnly(s)
         } else {
             settings = SettingsStore.enforceHubOnly(.default())
+        }
+
+        voiceWakeProfileStore.applyPreferences(settings.voice)
+        VoiceSessionCoordinator.shared.setPreferences(settings.voice)
+        Task { @MainActor in
+            await VoiceSessionCoordinator.shared.refreshRouteAvailability()
         }
 
     }

@@ -34,6 +34,7 @@ final class AppModel: ObservableObject {
     @Published var memory: AXMemory? = nil
     @Published var usageSummary: AXUsageSummary = .empty()
     @Published var projectConfig: AXProjectConfig? = nil
+    @Published var projectRemoteAutonomyOverride: AXProjectAutonomyRemoteOverrideSnapshot? = nil
     @Published var skillsCompatibilitySnapshot: AXSkillsDoctorSnapshot = .empty
     @Published var unifiedDoctorReport: XTUnifiedDoctorReport = .empty
 
@@ -109,6 +110,7 @@ final class AppModel: ObservableObject {
     private var bridgeEnsureInFlight: Bool = false
     private var bridgeEnsureLastAttemptAt: Date = .distantPast
     private var nextProjectSnapshotRefreshAt: Date = .distantPast
+    private var nextProjectAutonomyOverrideRefreshAt: Date = .distantPast
     private var nextSkillsCompatibilityRefreshAt: Date = .distantPast
     private var nextUnifiedDoctorRefreshAt: Date = .distantPast
 
@@ -951,12 +953,16 @@ final class AppModel: ObservableObject {
             }
         }
 
-        // Dev layout: .../x-terminal-legacy/build/X-Terminal.app -> repo root -> X-Terminal/skills
+        // Dev builds may place the app bundle under `x-terminal/build` or repo-level `build`.
         let bundleDir = Bundle.main.bundleURL.deletingLastPathComponent()
         let repoRoot = bundleDir.deletingLastPathComponent()
-        let dev = repoRoot.appendingPathComponent("X-Terminal/skills", isDirectory: true)
-        if FileManager.default.fileExists(atPath: dev.path) {
-            return dev
+        let devCandidates = [
+            repoRoot.appendingPathComponent("skills", isDirectory: true),
+            repoRoot.appendingPathComponent("x-terminal", isDirectory: true)
+                .appendingPathComponent("skills", isDirectory: true),
+        ]
+        for candidate in devCandidates where FileManager.default.fileExists(atPath: candidate.path) {
+            return candidate
         }
 
         let supportBase = FileManager.default.homeDirectoryForCurrentUser
@@ -1072,6 +1078,141 @@ final class AppModel: ObservableObject {
         try? AXProjectStore.saveConfig(cfg, for: ctx)
     }
 
+    func setProjectTrustedAutomationBinding(
+        mode: AXProjectAutomationMode,
+        deviceId: String,
+        deviceToolGroups: [String]? = nil,
+        workspaceBindingHash: String? = nil
+    ) {
+        guard let ctx = projectContext else { return }
+        guard var cfg = projectConfig else { return }
+        let resolvedHash = workspaceBindingHash ?? xtTrustedAutomationWorkspaceHash(forProjectRoot: ctx.root)
+        cfg = cfg.settingTrustedAutomationBinding(
+            mode: mode,
+            deviceId: deviceId,
+            deviceToolGroups: deviceToolGroups,
+            workspaceBindingHash: resolvedHash
+        )
+        projectConfig = cfg
+        try? AXProjectStore.saveConfig(cfg, for: ctx)
+    }
+
+    func setProjectHubMemoryPreference(enabled: Bool) {
+        guard let ctx = projectContext else { return }
+        guard var cfg = projectConfig else { return }
+        cfg = cfg.settingHubMemoryPreference(enabled: enabled)
+        projectConfig = cfg
+        try? AXProjectStore.saveConfig(cfg, for: ctx)
+    }
+
+    func setProjectAutomationSelfIteration(
+        enabled: Bool? = nil,
+        maxAutoRetryDepth: Int? = nil
+    ) {
+        guard let ctx = projectContext else { return }
+        guard var cfg = projectConfig else { return }
+        cfg = cfg.settingAutomationSelfIteration(
+            enabled: enabled,
+            maxAutoRetryDepth: maxAutoRetryDepth
+        )
+        projectConfig = cfg
+        try? AXProjectStore.saveConfig(cfg, for: ctx)
+    }
+
+    func setProjectAutonomyPolicy(
+        mode: AXProjectAutonomyMode? = nil,
+        allowDeviceTools: Bool? = nil,
+        allowBrowserRuntime: Bool? = nil,
+        allowConnectorActions: Bool? = nil,
+        allowExtensions: Bool? = nil,
+        ttlSeconds: Int? = nil,
+        hubOverrideMode: AXProjectAutonomyHubOverrideMode? = nil
+    ) {
+        guard let ctx = projectContext else { return }
+        guard var cfg = projectConfig else { return }
+
+        let now = Date()
+        let previous = cfg.effectiveAutonomyPolicy(
+            now: now,
+            remoteOverride: projectRemoteAutonomyOverride
+        )
+        cfg = cfg.settingAutonomyPolicy(
+            mode: mode,
+            allowDeviceTools: allowDeviceTools,
+            allowBrowserRuntime: allowBrowserRuntime,
+            allowConnectorActions: allowConnectorActions,
+            allowExtensions: allowExtensions,
+            ttlSeconds: ttlSeconds,
+            hubOverrideMode: hubOverrideMode,
+            updatedAt: now
+        )
+        let effective = cfg.effectiveAutonomyPolicy(
+            now: now,
+            remoteOverride: projectRemoteAutonomyOverride
+        )
+
+        projectConfig = cfg
+        try? AXProjectStore.saveConfig(cfg, for: ctx)
+        AXProjectStore.appendRawLog(
+            [
+                "type": "project_autonomy_policy",
+                "action": "update",
+                "created_at": now.timeIntervalSince1970,
+                "project_id": AXProjectRegistryStore.projectId(forRoot: ctx.root),
+                "mode": cfg.autonomyMode.rawValue,
+                "effective_mode": effective.effectiveMode.rawValue,
+                "previous_effective_mode": previous.effectiveMode.rawValue,
+                "allow_device_tools": cfg.autonomyAllowDeviceTools,
+                "allow_browser_runtime": cfg.autonomyAllowBrowserRuntime,
+                "allow_connector_actions": cfg.autonomyAllowConnectorActions,
+                "allow_extensions": cfg.autonomyAllowExtensions,
+                "ttl_sec": cfg.autonomyTTLSeconds,
+                "remaining_sec": effective.remainingSeconds,
+                "hub_override_mode": cfg.autonomyHubOverrideMode.rawValue,
+                "effective_hub_override_mode": effective.hubOverrideMode.rawValue,
+                "remote_override_mode": effective.remoteOverrideMode.rawValue,
+                "remote_override_source": effective.remoteOverrideSource,
+                "audit_ref": "audit-xt-autonomy-policy-\(Int(now.timeIntervalSince1970))"
+            ],
+            for: ctx
+        )
+    }
+
+    func resolvedProjectAutonomyPolicy(
+        config: AXProjectConfig? = nil,
+        now: Date = Date()
+    ) -> AXProjectAutonomyEffectivePolicy {
+        let resolvedConfig = config ?? projectConfig ?? .default(forProjectRoot: projectContext?.root ?? URL(fileURLWithPath: "/"))
+        return resolvedConfig.effectiveAutonomyPolicy(
+            now: now,
+            remoteOverride: projectRemoteAutonomyOverride
+        )
+    }
+
+    private func refreshProjectRemoteAutonomyOverride(force: Bool) async {
+        guard let ctx = projectContext else {
+            projectRemoteAutonomyOverride = nil
+            nextProjectAutonomyOverrideRefreshAt = .distantPast
+            return
+        }
+
+        let now = Date()
+        if !force, now < nextProjectAutonomyOverrideRefreshAt {
+            return
+        }
+
+        let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+        let remoteOverride = await HubIPCClient.requestProjectAutonomyPolicyOverride(
+            projectId: projectId,
+            bypassCache: force
+        )
+        guard projectContext?.root.standardizedFileURL == ctx.root.standardizedFileURL else {
+            return
+        }
+        projectRemoteAutonomyOverride = remoteOverride
+        nextProjectAutonomyOverrideRefreshAt = now.addingTimeInterval(force ? 1.0 : 2.0)
+    }
+
     func moveProjects(from offsets: IndexSet, to destination: Int) {
         var ordered = registry.sortedProjects()
         ordered.move(fromOffsets: offsets, toOffset: destination)
@@ -1103,13 +1244,16 @@ final class AppModel: ObservableObject {
             memory = nil
             usageSummary = .empty()
             projectConfig = nil
+            projectRemoteAutonomyOverride = nil
             nextProjectSnapshotRefreshAt = .distantPast
+            nextProjectAutonomyOverrideRefreshAt = .distantPast
             refreshSkillsCompatibilitySnapshot(force: true)
             return
         }
         let ctx = AXProjectContext(root: root)
         projectContext = ctx
         nextProjectSnapshotRefreshAt = .distantPast
+        nextProjectAutonomyOverrideRefreshAt = .distantPast
         do {
             memory = try AXProjectStore.loadOrCreateMemory(for: ctx)
             usageSummary = AXProjectStore.usageSummary(for: ctx)
@@ -1119,6 +1263,7 @@ final class AppModel: ObservableObject {
             usageSummary = .empty()
             projectConfig = nil
         }
+        await refreshProjectRemoteAutonomyOverride(force: true)
         refreshSkillsCompatibilitySnapshot(force: true)
     }
 
@@ -1132,7 +1277,8 @@ final class AppModel: ObservableObject {
 
     private func bootstrapSelection() {
         if let last = registry.lastSelectedProjectId,
-           registry.projects.contains(where: { $0.projectId == last }) {
+           let entry = registry.project(for: last),
+           resolvedProjectRootURL(for: entry) != nil {
             selectedProjectId = last
             return
         }
@@ -1140,7 +1286,7 @@ final class AppModel: ObservableObject {
             selectedProjectId = AXProjectRegistry.globalHomeId
             return
         }
-        if let newest = registry.sortedProjects().last {
+        if let newest = registry.sortedProjects().last(where: { resolvedProjectRootURL(for: $0) != nil }) {
             selectedProjectId = newest.projectId
         }
     }
@@ -1165,7 +1311,16 @@ final class AppModel: ObservableObject {
         registry = reg
         AXProjectRegistryStore.save(reg)
 
-        projectRoot = URL(fileURLWithPath: entry.rootPath)
+        guard let resolvedRoot = resolvedProjectRootURL(for: entry) else {
+            if reg.globalHomeVisible {
+                selectedProjectId = AXProjectRegistry.globalHomeId
+            } else {
+                selectedProjectId = nil
+            }
+            return
+        }
+
+        projectRoot = resolvedRoot
     }
 
     private func addProject(_ url: URL) {
@@ -1183,6 +1338,24 @@ final class AppModel: ObservableObject {
             eventBus.publish(.projectUpdated(res.1))
         }
         selectedProjectId = res.1.projectId
+    }
+
+    private func resolvedProjectRootURL(for entry: AXProjectEntry) -> URL? {
+        let rootPath = entry.rootPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rootPath.isEmpty else { return nil }
+
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: rootPath),
+              fm.isReadableFile(atPath: rootPath) else {
+            return nil
+        }
+
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: rootPath, isDirectory: &isDirectory), isDirectory.boolValue else {
+            return nil
+        }
+
+        return URL(fileURLWithPath: rootPath, isDirectory: true)
     }
 
     private func loadHubRemotePrefs() {
@@ -1405,6 +1578,7 @@ final class AppModel: ObservableObject {
 
         let session = currentDoctorSession()
         let reportURL = XTUnifiedDoctorStore.defaultReportURL()
+        let supervisor = SupervisorManager.shared
         let input = XTUnifiedDoctorInput(
             generatedAt: now,
             localConnected: hubConnected,
@@ -1425,6 +1599,13 @@ final class AppModel: ObservableObject {
             sessionID: session?.id,
             sessionTitle: session?.title,
             sessionRuntime: session?.runtime,
+            voiceRouteDecision: supervisor.voiceRouteDecision,
+            voiceRuntimeState: supervisor.voiceRuntimeState,
+            voiceAuthorizationStatus: supervisor.voiceAuthorizationStatus,
+            voiceActiveHealthReasonCode: supervisor.voiceActiveHealthReasonCode,
+            voiceSidecarHealth: supervisor.voiceFunASRSidecarHealth,
+            wakeProfileSnapshot: supervisor.voiceWakeProfileSnapshot,
+            conversationSession: supervisor.conversationSessionSnapshot,
             skillsSnapshot: skillsCompatibilitySnapshot,
             reportPath: reportURL.path
         )
@@ -1507,6 +1688,9 @@ final class AppModel: ObservableObject {
                 }
                 // Throttle heavy local disk snapshots to keep text-input responsiveness stable.
                 nextProjectSnapshotRefreshAt = now.addingTimeInterval(3.0)
+            }
+            if projectContext != nil {
+                await refreshProjectRemoteAutonomyOverride(force: false)
             }
             refreshUnifiedDoctorReport()
             try? await Task.sleep(nanoseconds: 800_000_000)

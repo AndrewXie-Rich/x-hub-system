@@ -30,5 +30,13 @@ let package = Package(
             name: "RELFlowHubDockAgent",
             dependencies: ["RELFlowHubCore"]
         ),
+        .testTarget(
+            name: "RELFlowHubCoreTests",
+            dependencies: ["RELFlowHubCore"]
+        ),
+        .testTarget(
+            name: "RELFlowHubAppTests",
+            dependencies: ["RELFlowHub", "RELFlowHubCore"]
+        ),
     ]
 )

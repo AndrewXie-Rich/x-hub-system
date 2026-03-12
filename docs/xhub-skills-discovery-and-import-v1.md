@@ -1,13 +1,13 @@
-# X-Hub Skills Discovery & Import v1（Openclaw 兼容设计 / Discussion）
+# X-Hub Skills Discovery & Import v1（skills ecosystem 兼容设计 / Discussion）
 
 - Status: Discussion（用于记录设计讨论与决策依据；落地后可升格为可执行规范）
 - Updated: 2026-02-13
 - Applies to:
-  - Generic Terminal（含 Openclaw）：本机 skill runner + 可选 Hub 托管
+  - Generic Terminal（含 skills ecosystem）：本机 skill runner + 可选 Hub 托管
   - X-Terminal：Hub 托管 skills + Terminal Runner 执行
   - X-Hub：Skill Store / Pinning / Trust / Audit（不执行第三方代码）
 
-> 背景：Openclaw 生态里常见工作流是通过命令安装/启用技能，例如：
+> 背景：skills ecosystem 生态里常见工作流是通过命令安装/启用技能，例如：
 > `npx skills add vercel-labs/skills --skill find-skills`
 >
 > 目标：在 X-Hub 架构中保留类似“找 skill / 一键安装”的体验，同时满足：
@@ -39,8 +39,8 @@
   - X-Terminal UI（搜索/导入/分层 pin 管理）与 Runner 沙箱
 
 - Hub-L1 冻结件（2026-03-01）：
-  - ABI 兼容契约：`docs/openclaw_skill_abi_compat.v1.md`（机读：`docs/openclaw_skill_abi_compat.v1.json`）
-  - 导入桥接契约：`docs/openclaw_skill_import_bridge_contract.v1.md`
+  - ABI 兼容契约：`docs/skills_abi_compat.v1.md`（机读：`docs/skills_abi_compat.v1.json`）
+  - 导入桥接契约：`docs/skills_import_bridge_contract.v1.md`
 
 ---
 
@@ -122,14 +122,14 @@
 - [ ] **SKL-V1-033** 执行前能力预检（capabilities_required）
   - 验收：缺失 capability 时给出可理解提示，并引导申请 grants
 
-### E) Generic Terminal / Openclaw 兼容（v1）
+### E) Generic Terminal / skills ecosystem 兼容（v1）
 
 - [ ] **SKL-V1-040** 保持本机 `npx skills add ...` 兼容路径
   - 验收：不接 Hub 时行为不变
 
 - [ ] **SKL-V1-041** 提供“上传到 Hub”桥接命令（CLI 或 UI）
   - 示例：`axhubctl skills import --file <skill.tgz> --scope global|project ...`
-  - 验收：Openclaw 用户可无缝把本机 skill 纳入 Hub 治理
+  - 验收：skills ecosystem 用户可无缝把本机 skill 纳入 Hub 治理
 
 ### F) 安全与策略（v1）
 
@@ -153,7 +153,7 @@
 
 v1 完成定义（Definition of Done）
 - X-Terminal 能内置搜索 skill（`skills.search`）；
-- X-Terminal / Openclaw 都可走 Client Pull + Upload 导入到 Hub；
+- X-Terminal / skills ecosystem 都可走 Client Pull + Upload 导入到 Hub；
 - Global scope 明确按 `user_id` 生效；
 - 分层 pin 与冲突解析可验证；
 - 关键动作均有审计与可撤销路径。
@@ -180,8 +180,8 @@ v1 完成定义（Definition of Done）
 
 ## 1) 两类终端的“找 skill / 安装 skill”体验应该如何一致
 
-### 1.1 Generic Terminal（Openclaw）
-默认（保持 Openclaw 体验）：
+### 1.1 Generic Terminal（skills ecosystem）
+默认（保持 skills ecosystem 体验）：
 - 继续允许在终端本机执行 `npx skills add ...`（本机拉取/安装/运行）。
 
 可选增强（接入 Hub 治理，但不强制）：
@@ -205,7 +205,7 @@ v1 完成定义（Definition of Done）
 
 ## 2) “find-skills” 在 X-Hub 架构里的等价物
 
-Openclaw 的 `find-skills` 通常承担两件事：
+skills ecosystem 的 `find-skills` 通常承担两件事：
 1) 搜索/发现：从一个 catalog/仓库找到可用技能
 2) 引导安装：给出安装命令（或自动安装）
 
@@ -248,9 +248,9 @@ Openclaw 的 `find-skills` 通常承担两件事：
 
 ## 4) Import 的两种实现方式（都支持，默认更安全的优先）
 
-### 4.1 Client Pull + Upload（v1 默认；最容易兼容 Openclaw）
+### 4.1 Client Pull + Upload（v1 默认；最容易兼容 skills ecosystem）
 流程：
-1) 终端（Openclaw/X-Terminal/CLI）从来源拉取 skill 包（tgz/zip）
+1) 终端（skills ecosystem/X-Terminal/CLI）从来源拉取 skill 包（tgz/zip）
 2) 上传到 Hub：`UploadSkillPackage(bytes)`（Hub 只做校验与入库）
 3) Hub 验签/算 hash/存储；写 audit
 4) `SetSkillPin(scope=global|project, skill_id, sha256)`；写 audit
