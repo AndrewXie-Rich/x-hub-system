@@ -12,13 +12,16 @@ This document explains where the live build, run, pairing, and documentation ent
 
 ## Start Here
 
-If you are new to the repository, read in this order:
+Global onboarding order:
 
 1. `README.md`
-2. `X_MEMORY.md`
-3. `x-hub/README.md`
-4. `x-terminal/README.md`
-5. `docs/WORKING_INDEX.md`
+2. `docs/REPO_LAYOUT.md`
+3. `X_MEMORY.md`
+4. `x-hub/README.md`
+5. `x-terminal/README.md`
+6. `docs/WORKING_INDEX.md`
+
+If you are already here, continue with the module-level follow-ups below:
 
 Module-level follow-ups:
 
@@ -72,18 +75,26 @@ Use these as the current live entrypoints:
 x-hub/tools/build_hub_app.command
 ```
 
-### Hub Run
+### Hub App Launch
+
+```bash
+open build/X-Hub.app
+```
+
+### Hub Developer Source Run
 
 ```bash
 cd x-hub/macos/RELFlowHub
-swift run RELFlowHub
+swift run XHub
 ```
+
+Note: `RELFlowHub` is still the current internal Swift target name under the hood. The preferred source-run alias is `XHub`, and the public product name is `X-Hub`.
 
 ### Hub Bridge Run
 
 ```bash
 cd x-hub/macos/RELFlowHub
-swift run RELFlowHubBridge
+swift run XHubBridge
 ```
 
 ### Terminal Run
@@ -110,6 +121,15 @@ bash x-terminal/scripts/ci/xt_release_gate.sh
 
 - `docs/WORKING_INDEX.md`
 
+### Release Drafting
+
+- `RELEASE.md`
+- `CHANGELOG.md`
+- `docs/open-source/GITHUB_RELEASE_NOTES_TEMPLATE_v1.md`
+- `docs/open-source/GITHUB_RELEASE_NOTES_TEMPLATE_v1.en.md`
+
+Use these files for GitHub-facing wording and release packaging notes. They must stay inside the validated public mainline and must not be treated as a license to copy internal work-order progress into external messaging.
+
 ## Directory Intent
 
 ### `x-hub/`
@@ -126,7 +146,7 @@ Owns shared interfaces and contracts between Hub and terminal surfaces.
 
 ### `docs/`
 
-Owns the written operating model: release constraints, work orders, security notes, and architectural references.
+Owns the written operating model: release constraints, work orders, security notes, architectural references, and open-source release templates under `docs/open-source/`.
 
 ### `scripts/`
 
@@ -154,3 +174,7 @@ Do not treat generated files as durable architecture entrypoints unless a specif
 No root-level marker file is part of the active repo architecture.
 
 If stray temporary files appear at the repository root, remove or relocate them instead of treating them as entrypoints, source directories, or durable runtime state.
+
+## Scope Note
+
+Internal work-order packs and operator docs may describe implementation progress beyond the validated public mainline. Use `README.md`, `RELEASE.md`, and the release-note templates to control public claims; use `docs/WORKING_INDEX.md` and work-order docs to navigate internal execution state.

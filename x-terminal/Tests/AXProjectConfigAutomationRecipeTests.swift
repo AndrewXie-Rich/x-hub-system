@@ -27,6 +27,7 @@ struct AXProjectConfigAutomationRecipeTests {
         #expect(config.trustedAutomationDeviceId.isEmpty)
         #expect(config.deviceToolGroups.isEmpty)
         #expect(config.workspaceBindingHash.isEmpty)
+        #expect(config.governedReadableRoots.isEmpty)
         #expect(config.automationSelfIterateEnabled == false)
         #expect(config.automationMaxAutoRetryDepth == 2)
         #expect(config.preferHubMemory == true)
@@ -106,6 +107,27 @@ struct AXProjectConfigAutomationRecipeTests {
         #expect(effective.allowConnectorActions == false)
         #expect(effective.allowExtensions == false)
         #expect(effective.remainingSeconds == 480)
+    }
+
+    @Test
+    func governedReadableRootsNormalizeRelativePathsAndDeduplicate() {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xterminal-governed-roots-\(UUID().uuidString)", isDirectory: true)
+        var config = AXProjectConfig.default(forProjectRoot: root)
+
+        config = config.settingGovernedReadableRoots(
+            paths: [
+                "../shared",
+                root.appendingPathComponent("nested").path,
+                "../shared",
+                "   ",
+            ],
+            projectRoot: root
+        )
+
+        #expect(config.governedReadableRoots.count == 2)
+        #expect(config.governedReadableRoots.contains(PathGuard.resolve(root.deletingLastPathComponent().appendingPathComponent("shared")).path))
+        #expect(config.governedReadableRoots.contains(PathGuard.resolve(root.appendingPathComponent("nested")).path))
     }
 
     @Test

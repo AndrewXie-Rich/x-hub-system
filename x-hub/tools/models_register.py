@@ -28,8 +28,12 @@ def _candidate_hub_status_paths() -> list[str]:
     home = os.path.expanduser('~')
     return [
         os.path.join(home, 'Library/Group Containers/group.rel.flowhub', 'hub_status.json'),
+        os.path.join(home, 'Library/Containers/com.rel.flowhub/Data/XHub', 'hub_status.json'),
         os.path.join(home, 'Library/Containers/com.rel.flowhub/Data/RELFlowHub', 'hub_status.json'),
+        os.path.join(home, 'XHub', 'hub_status.json'),
         os.path.join(home, 'RELFlowHub', 'hub_status.json'),
+        '/private/tmp/XHub/hub_status.json',
+        '/tmp/XHub/hub_status.json',
         '/private/tmp/RELFlowHub/hub_status.json',
         '/tmp/RELFlowHub/hub_status.json',
     ]

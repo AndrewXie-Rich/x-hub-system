@@ -52,11 +52,11 @@ def build_docx(out_path: Path, *, version: str) -> None:
 
     paras.append(_p("0. 摘要 (Executive Summary)", bold=True))
     paras.append(_p(
-        "AX REL Flow Hub (以下简称“Hub”) 是一个 macOS 本地应用，用于为内部自研应用提供离线 AI 资源调度能力，并充当本机信息提醒中心。\n"
+        "X-Hub（以下简称“Hub”）是一个 macOS 本地应用，用于为内部自研应用提供离线 AI 资源调度能力，并充当本机信息提醒中心。\n"
         "Hub 的安全设计采用 Offline-First + Least-Privilege（最小权限）原则：\n"
-        "- Hub Core（RELFlowHub.app）不具备出网能力（无 network client entitlement）。\n"
+        "- Hub Core（X-Hub.app）不具备出网能力（无 network client entitlement）。\n"
         "- 所有敏感能力通过 macOS 原生权限体系（TCC/App Sandbox/Code Signing）进行显式授权与隔离。\n"
-        "- 需要联网时，使用独立可审计的 Bridge（RELFlowHubBridge.app）作为网络边界，默认关闭，可限时启用。\n"
+        "- 需要联网时，使用独立可审计的 Bridge（X-Hub Bridge.app）作为网络边界，默认关闭，可限时启用。\n"
         "- 与卫星应用（FA Tracker 等）的交互默认采用可审计的本地 IPC（文件投递/心跳），避免隐式网络依赖。"
     ))
     paras.append(_blank())
@@ -81,16 +81,16 @@ def build_docx(out_path: Path, *, version: str) -> None:
 
     paras.append(_p("2. 系统架构与组件边界", bold=True))
     paras.append(_p("2.1 组件", bold=True))
-    paras.append(_p("- Hub Core: RELFlowHub.app（App Sandbox + Offline, 不具备 network client entitlement）"))
-    paras.append(_p("- Bridge: RELFlowHubBridge.app（可选，具备 network client entitlement，默认关闭，可限时启用）"))
-    paras.append(_p("- Dock Agent: RELFlowHubDockAgent.app（可选，用于读取 Dock badge 计数，需 Accessibility）"))
+    paras.append(_p("- Hub Core: X-Hub.app（App Sandbox + Offline, 不具备 network client entitlement）"))
+    paras.append(_p("- Bridge: X-Hub Bridge.app（可选，具备 network client entitlement，默认关闭，可限时启用）"))
+    paras.append(_p("- Dock Agent: X-Hub Dock Agent.app（可选，用于读取 Dock badge 计数，需 Accessibility）"))
     paras.append(_p("- Satellites: 由你控制的自研应用（如 FA Tracker、未来 AX Coder），通过本地 IPC 接入 Hub。"))
     paras.append(_blank())
 
     paras.append(_p("2.2 高层数据流 (ASCII)", bold=True))
     paras.append(_p(
         "+---------------------+                 +-----------------------+\n"
-        "|  Satellite Apps     |  file IPC push  |  AX RELFlowHub.app     |\n"
+        "|  Satellite Apps     |  file IPC push  |  AX X-Hub.app          |\n"
         "| (FA Tracker, etc.)  +---------------->+ (Sandbox, no egress)   |\n"
         "+---------+-----------+                 +-----------+-----------+\n"
         "          |                                         |\n"
@@ -103,7 +103,7 @@ def build_docx(out_path: Path, *, version: str) -> None:
         "\n"
         "Optional networking path (isolated):\n"
         "+---------------------+                 +-----------------------+\n"
-        "| RELFlowHubBridge.app| <--- local IPC  | AX RELFlowHub.app     |\n"
+        "| X-Hub Bridge.app    | <--- local IPC  | AX X-Hub.app          |\n"
         "| (network client)    |                 | (no network client)   |\n"
         "+---------------------+                 +-----------------------+\n",
         monospace=True,
@@ -130,9 +130,9 @@ def build_docx(out_path: Path, *, version: str) -> None:
     paras.append(_p("3.3 审计方法（Entitlements / 运行时）", bold=True))
     paras.append(_p(
         "(A) 审计 entitlements：\n"
-        "- codesign -d --entitlements :- /Applications/RELFlowHub.app\n"
-        "- codesign -d --entitlements :- /Applications/RELFlowHubBridge.app\n"
-        "期望结果：RELFlowHub.app 不存在 network.client；Bridge 可能存在。\n\n"
+        "- codesign -d --entitlements :- /Applications/X-Hub.app\n"
+        "- codesign -d --entitlements :- /Applications/X-Hub\\ Bridge.app\n"
+        "期望结果：X-Hub.app 不存在 network.client；Bridge 可能存在。\n\n"
         "(B) 运行时观测（可选）：\n"
         "- nettop / lsof -i / pfctl 规则（按企业安全策略选择）\n"
         "目标：确认 Hub Core 进程无外向连接，仅 Bridge 进程可见网络活动。\n",

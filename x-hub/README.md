@@ -4,6 +4,12 @@
 
 If the repository root README explains the product, this directory explains where the Hub trust surface actually lives.
 
+Public product name: `X-Hub`
+
+Developer note: the macOS Swift package under `macos/RELFlowHub/` still uses the historical internal codename `RELFlowHub` for package / target names. Treat that as implementation debt, not public branding. The preferred source-run executable alias is now `XHub`.
+
+Release scope note: this module README explains the active Hub trust surface and operator entrypoints. Public release claims still follow the validated-mainline-only scope defined in the repository root `README.md`, `RELEASE.md`, and the open-source release templates.
+
 ## What This Module Owns
 
 - Pairing and trust-profile authority
@@ -34,7 +40,7 @@ This repository is a macOS-native Hub surface, and the Hub runtime also includes
 
 | Path | Role |
 |---|---|
-| `macos/` | RELFlowHub app, bridge app, dock agent, and native Hub UI/runtime surfaces |
+| `macos/` | X-Hub app, bridge app, dock agent, and native Hub UI/runtime surfaces |
 | `grpc-server/` | Node-based Hub service layer for pairing, grants, audit, and runtime RPCs |
 | `python-runtime/` | Python-side runtime integration surface |
 | `tools/` | Build and support scripts for Hub packaging and local operations |
@@ -47,18 +53,24 @@ Build the Hub app bundle:
 x-hub/tools/build_hub_app.command
 ```
 
-Run the Hub app from source:
+Launch the built Hub app:
+
+```bash
+open build/X-Hub.app
+```
+
+Developer source run:
 
 ```bash
 cd x-hub/macos/RELFlowHub
-swift run RELFlowHub
+swift run XHub
 ```
 
 Bridge runtime from source:
 
 ```bash
 cd x-hub/macos/RELFlowHub
-swift run RELFlowHubBridge
+swift run XHubBridge
 ```
 
 ## Operational Boundaries
@@ -70,8 +82,9 @@ swift run RELFlowHubBridge
 
 ## Read Next
 
-- `../X_MEMORY.md`
+- `X_MEMORY.md`
 - `x-hub/macos/README.md`
 - `x-hub/grpc-server/README.md`
 - `x-hub/python-runtime/README.md`
 - `docs/REPO_LAYOUT.md`
+- `docs/WORKING_INDEX.md`

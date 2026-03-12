@@ -30,10 +30,14 @@ def _candidate_hub_status_paths() -> list[str]:
     return [
         # Signed builds: App Group base dir.
         os.path.join(home, 'Library/Group Containers/group.rel.flowhub', 'hub_status.json'),
+        os.path.join(home, 'Library/Containers/com.rel.flowhub/Data/XHub', 'hub_status.json'),
         # Sandboxed Hub default bundle id.
         os.path.join(home, 'Library/Containers/com.rel.flowhub/Data/RELFlowHub', 'hub_status.json'),
+        os.path.join(home, 'XHub', 'hub_status.json'),
         # Legacy/dev location.
         os.path.join(home, 'RELFlowHub', 'hub_status.json'),
+        '/private/tmp/XHub/hub_status.json',
+        '/tmp/XHub/hub_status.json',
         # Shared tmp fallbacks.
         '/private/tmp/RELFlowHub/hub_status.json',
         '/tmp/RELFlowHub/hub_status.json',

@@ -1,7 +1,7 @@
-# REL Flow Hub Bridge Fetch IPC (MVP)
+# X-Hub Bridge Fetch IPC (MVP)
 
 Goal
-- Allow local apps (e.g. AX Coder) to request *networked* HTTP GET via RELFlowHubBridge.
+- Allow local apps (e.g. AX Coder) to request *networked* HTTP GET via X-Hub Bridge.
 - Keep the core Hub offline-auditable; only the Bridge performs networking.
 
 Transport (file IPC under Hub baseDir)
@@ -40,4 +40,3 @@ Response schema
   "error": ""
 }
 ```
-

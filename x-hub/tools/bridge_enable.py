@@ -1,4 +1,4 @@
-"""Enable RELFlowHubBridge for a limited time.
+"""Enable X-Hub Bridge for a limited time.
 
 This is a deterministic alternative to clicking the UI button.
 
@@ -59,4 +59,3 @@ def main(argv: list[str]) -> int:
 
 if __name__ == '__main__':
     raise SystemExit(main(sys.argv))
-

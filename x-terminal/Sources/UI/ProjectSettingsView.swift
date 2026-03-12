@@ -7,6 +7,7 @@ struct ProjectSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var modelManager = HubModelManager.shared
     @State private var trustedAutomationDeviceIdDraft: String = ""
+    @State private var governedReadableRootsDraft: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -82,6 +83,7 @@ struct ProjectSettingsView: View {
         .onAppear {
             modelManager.setAppModel(appModel)
             trustedAutomationDeviceIdDraft = appModel.projectConfig?.trustedAutomationDeviceId ?? ""
+            governedReadableRootsDraft = governedReadableRootsText(appModel.projectConfig?.governedReadableRoots ?? [])
             Task {
                 await modelManager.fetchModels()
             }
@@ -95,6 +97,9 @@ struct ProjectSettingsView: View {
         }
         .onChange(of: appModel.projectConfig?.trustedAutomationDeviceId ?? "") { value in
             trustedAutomationDeviceIdDraft = value
+        }
+        .onChange(of: governedReadableRootsText(appModel.projectConfig?.governedReadableRoots ?? [])) { value in
+            governedReadableRootsDraft = value
         }
     }
 
@@ -283,6 +288,14 @@ struct ProjectSettingsView: View {
         let config = appModel.projectConfig ?? .default(forProjectRoot: ctx.root)
         let effective = appModel.resolvedProjectAutonomyPolicy(config: config)
         let selectedMode = config.autonomyMode
+        let configuredDeviceAuthority = config.automationMode == .trustedAutomation
+            && config.autonomyMode == .trustedOpenClawMode
+            && config.autonomyAllowDeviceTools
+        let effectiveDeviceAuthority = effective.effectiveMode == .trustedOpenClawMode
+            && effective.allowDeviceTools
+            && config.automationMode == .trustedAutomation
+            && !config.trustedAutomationDeviceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && config.workspaceBindingHash == xtTrustedAutomationWorkspaceHash(forProjectRoot: ctx.root)
         let configuredSurfaceText = configuredAutonomySurfaceText(config)
         let effectiveSurfaceText = effective.allowedSurfaceLabels.isEmpty ? "(none)" : effective.allowedSurfaceLabels.joined(separator: ", ")
         let updatedAtText = config.autonomyUpdatedAtDate.map { autonomyTimestampFormatter.string(from: $0) } ?? "(never armed)"
@@ -294,6 +307,26 @@ struct ProjectSettingsView: View {
 
         return GroupBox("Autonomy Policy") {
             VStack(alignment: .leading, spacing: 10) {
+                Toggle(
+                    "Enable governed device authority for this project",
+                    isOn: Binding(
+                        get: { configuredDeviceAuthority },
+                        set: { setGovernedDeviceAuthority(enabled: $0) }
+                    )
+                )
+                .toggleStyle(.switch)
+
+                Text(configuredDeviceAuthority
+                     ? "开启后：当前 project 会进入 trusted_openclaw_mode，并尝试 arm trusted automation。Supervisor 会继承同一个 project 的 governed device authority。"
+                     : "关闭后：当前 project 会回到 manual，并停用 trusted automation 绑定；浏览器/device/connector/extension 四类自治面全部回收。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Text("device_authority: configured=\(configuredDeviceAuthority ? "on" : "off") · effective=\(effectiveDeviceAuthority ? "on" : "off") · paired_device=\(trustedAutomationDeviceIdDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "(missing)" : trustedAutomationDeviceIdDraft)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
                     Text("Preset")
                         .font(.system(.body, design: .monospaced))
@@ -430,6 +463,49 @@ struct ProjectSettingsView: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
 
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Governed Extra Read Roots")
+                        .font(.caption.weight(.semibold))
+
+                    TextEditor(text: $governedReadableRootsDraft)
+                        .font(.system(.caption, design: .monospaced))
+                        .frame(minHeight: 72)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.secondary.opacity(0.2))
+                        )
+
+                    HStack(spacing: 8) {
+                        Button("Save Read Roots") {
+                            saveGovernedReadableRoots()
+                        }
+
+                        Button("Add Parent Folder") {
+                            appendGovernedReadableRootSuggestion(ctx.root.deletingLastPathComponent())
+                        }
+
+                        Button("Add Grandparent Folder") {
+                            appendGovernedReadableRootSuggestion(ctx.root.deletingLastPathComponent().deletingLastPathComponent())
+                        }
+
+                        Button("Clear") {
+                            governedReadableRootsDraft = ""
+                            saveGovernedReadableRoots()
+                        }
+
+                        Spacer()
+                    }
+
+                    Text("每行一个路径；支持绝对路径，也支持相对当前 project root 的路径。这里只扩展 `read_file` / `list_dir` / `search(path=...)`，不会放开 project 外的 `write_file` / `run_command`。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+
+                    Text("effective_read_roots: \(effectiveGovernedReadableRootsText(config: config, effective: effective))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+
                 Text("Terminal Clamp 和 Hub Clamp 会按更严格的一侧合并，最终执行面始终 fail-closed。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -551,6 +627,60 @@ struct ProjectSettingsView: View {
         )
     }
 
+    private func setGovernedDeviceAuthority(enabled: Bool) {
+        if enabled {
+            if (appModel.projectConfig?.governedReadableRoots ?? []).isEmpty {
+                let bootstrapRoots = bootstrapGovernedReadableRoots()
+                if !bootstrapRoots.isEmpty {
+                    appModel.setProjectGovernedReadableRoots(paths: bootstrapRoots)
+                    governedReadableRootsDraft = governedReadableRootsText(bootstrapRoots)
+                }
+            }
+            appModel.setProjectAutonomyPolicy(mode: .trustedOpenClawMode)
+            saveTrustedAutomationBinding(armed: true)
+        } else {
+            appModel.setProjectAutonomyPolicy(mode: .manual)
+            saveTrustedAutomationBinding(armed: false)
+        }
+    }
+
+    private func saveGovernedReadableRoots() {
+        let roots = governedReadableRootsDraft
+            .split(whereSeparator: { $0.isNewline })
+            .map { String($0) }
+        appModel.setProjectGovernedReadableRoots(paths: roots)
+    }
+
+    private func appendGovernedReadableRootSuggestion(_ url: URL) {
+        let path = PathGuard.resolve(url).path
+        guard path != PathGuard.resolve(ctx.root).path else { return }
+        guard path != "/" else { return }
+
+        var lines = governedReadableRootsDraft
+            .split(whereSeparator: { $0.isNewline })
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        if !lines.contains(path) {
+            lines.append(path)
+            governedReadableRootsDraft = governedReadableRootsText(lines)
+        }
+    }
+
+    private func bootstrapGovernedReadableRoots() -> [String] {
+        var roots: [String] = []
+        appendBootstrapRoot(ctx.root.deletingLastPathComponent(), into: &roots)
+        appendBootstrapRoot(ctx.root.deletingLastPathComponent().deletingLastPathComponent(), into: &roots)
+        return roots
+    }
+
+    private func appendBootstrapRoot(_ url: URL, into roots: inout [String]) {
+        let path = PathGuard.resolve(url).path
+        guard path != PathGuard.resolve(ctx.root).path else { return }
+        guard path != "/" else { return }
+        guard !roots.contains(path) else { return }
+        roots.append(path)
+    }
+
     private func trustedAutomationIcon(_ state: AXTrustedAutomationProjectState) -> String {
         switch state {
         case .off:
@@ -593,6 +723,26 @@ struct ProjectSettingsView: View {
     private func configuredAutonomySurfaceText(_ config: AXProjectConfig) -> String {
         let labels = config.configuredAutonomySurfaceLabels
         return labels.isEmpty ? "(none)" : labels.joined(separator: ", ")
+    }
+
+    private func governedReadableRootsText(_ roots: [String]) -> String {
+        roots.joined(separator: "\n")
+    }
+
+    private func effectiveGovernedReadableRootsText(
+        config: AXProjectConfig,
+        effective: AXProjectAutonomyEffectivePolicy
+    ) -> String {
+        let authorityOn = effective.effectiveMode == .trustedOpenClawMode
+            && effective.allowDeviceTools
+            && config.automationMode == .trustedAutomation
+            && !config.trustedAutomationDeviceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && config.workspaceBindingHash == xtTrustedAutomationWorkspaceHash(forProjectRoot: ctx.root)
+        var roots = [PathGuard.resolve(ctx.root).path]
+        if authorityOn {
+            roots.append(contentsOf: config.governedReadableRoots)
+        }
+        return roots.joined(separator: ", ")
     }
 
     private func autonomyRemainingText(

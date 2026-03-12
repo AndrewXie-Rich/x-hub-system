@@ -1,7 +1,7 @@
 import Foundation
 
 struct AXProjectConfig: Codable, Equatable {
-    static let currentSchemaVersion = 7
+    static let currentSchemaVersion = 8
 
     var schemaVersion: Int
 
@@ -40,6 +40,10 @@ struct AXProjectConfig: Codable, Equatable {
     var deviceToolGroups: [String]
     var workspaceBindingHash: String
 
+    // Extra read-only roots that Supervisor/tools may inspect when governed device authority is enabled.
+    // Project root is always implicitly included and does not need to be repeated here.
+    var governedReadableRoots: [String]
+
     // User-visible autonomy policy preset + hub clamp slot for OpenClaw-style execution.
     var autonomyMode: AXProjectAutonomyMode
     var autonomyAllowDeviceTools: Bool
@@ -74,6 +78,7 @@ struct AXProjectConfig: Codable, Equatable {
             trustedAutomationDeviceId: "",
             deviceToolGroups: [],
             workspaceBindingHash: "",
+            governedReadableRoots: [],
             autonomyMode: .manual,
             autonomyAllowDeviceTools: false,
             autonomyAllowBrowserRuntime: false,
@@ -185,6 +190,46 @@ struct AXProjectConfig: Codable, Equatable {
         return out.normalizedAutomationState()
     }
 
+    func settingGovernedReadableRoots(
+        paths: [String],
+        projectRoot: URL
+    ) -> AXProjectConfig {
+        var out = self
+        out.governedReadableRoots = AXProjectConfig.normalizedGovernedReadableRoots(
+            paths,
+            projectRoot: projectRoot
+        )
+        return out.normalizedAutomationState()
+    }
+
+    static func normalizedGovernedReadableRoots(
+        _ paths: [String],
+        projectRoot: URL
+    ) -> [String] {
+        let resolvedProjectRoot = PathGuard.resolve(projectRoot).path
+        var seen = Set<String>()
+        var ordered: [String] = []
+
+        for raw in paths {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+
+            let url: URL
+            if trimmed.hasPrefix("/") {
+                url = URL(fileURLWithPath: trimmed)
+            } else {
+                url = projectRoot.appendingPathComponent(trimmed)
+            }
+
+            let normalized = PathGuard.resolve(url).path
+            guard normalized != resolvedProjectRoot else { continue }
+            guard seen.insert(normalized).inserted else { continue }
+            ordered.append(normalized)
+        }
+
+        return ordered
+    }
+
     func trustedAutomationStatus(
         forProjectRoot root: URL,
         permissionReadiness: AXTrustedAutomationPermissionOwnerReadiness = .current(),
@@ -269,6 +314,7 @@ struct AXProjectConfig: Codable, Equatable {
         case trustedAutomationDeviceId
         case deviceToolGroups
         case workspaceBindingHash
+        case governedReadableRoots
         case autonomyMode
         case autonomyAllowDeviceTools
         case autonomyAllowBrowserRuntime
@@ -297,6 +343,7 @@ struct AXProjectConfig: Codable, Equatable {
         trustedAutomationDeviceId: String,
         deviceToolGroups: [String],
         workspaceBindingHash: String,
+        governedReadableRoots: [String],
         autonomyMode: AXProjectAutonomyMode,
         autonomyAllowDeviceTools: Bool,
         autonomyAllowBrowserRuntime: Bool,
@@ -323,6 +370,7 @@ struct AXProjectConfig: Codable, Equatable {
         self.trustedAutomationDeviceId = trustedAutomationDeviceId
         self.deviceToolGroups = deviceToolGroups
         self.workspaceBindingHash = workspaceBindingHash
+        self.governedReadableRoots = governedReadableRoots
         self.autonomyMode = autonomyMode
         self.autonomyAllowDeviceTools = autonomyAllowDeviceTools
         self.autonomyAllowBrowserRuntime = autonomyAllowBrowserRuntime
@@ -355,6 +403,7 @@ struct AXProjectConfig: Codable, Equatable {
         trustedAutomationDeviceId = (try? c.decode(String.self, forKey: .trustedAutomationDeviceId)) ?? ""
         deviceToolGroups = (try? c.decode([String].self, forKey: .deviceToolGroups)) ?? []
         workspaceBindingHash = (try? c.decode(String.self, forKey: .workspaceBindingHash)) ?? ""
+        governedReadableRoots = (try? c.decode([String].self, forKey: .governedReadableRoots)) ?? []
         autonomyMode = (try? c.decode(AXProjectAutonomyMode.self, forKey: .autonomyMode)) ?? .manual
         autonomyAllowDeviceTools = (try? c.decode(Bool.self, forKey: .autonomyAllowDeviceTools)) ?? false
         autonomyAllowBrowserRuntime = (try? c.decode(Bool.self, forKey: .autonomyAllowBrowserRuntime)) ?? false

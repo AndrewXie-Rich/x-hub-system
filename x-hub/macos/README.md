@@ -4,9 +4,15 @@
 
 This is where the Hub becomes a desktop control plane instead of just a service boundary.
 
+Public product name: `X-Hub`
+
+Developer note: the source package directory is still named `RELFlowHub/` because the internal Swift package / target rename has not been fully finished yet. The preferred source-run executable alias is `XHub`.
+
+Release scope note: this directory is an implementation surface for the active Hub desktop app. It does not expand the validated public release scope on its own; external wording still follows the repository root `README.md` and release docs.
+
 ## What Lives Here
 
-- `RELFlowHub/`: primary macOS app source
+- `RELFlowHub/`: primary macOS app source for the public X-Hub desktop app
 - `app_template*`: packaging and template app surfaces
 - `assets/`: app assets and packaging resources
 
@@ -18,13 +24,34 @@ This is where the Hub becomes a desktop control plane instead of just a service 
 - Dock agent behavior
 - Local app packaging surfaces
 
-## Active Entry Point
+## Active Entry Points
+
+Build the app bundle from the repository root:
+
+```bash
+x-hub/tools/build_hub_app.command
+```
+
+Launch the built app:
+
+```bash
+open build/X-Hub.app
+```
+
+Developer source run:
 
 ```bash
 cd x-hub/macos/RELFlowHub
-swift run RELFlowHub
+swift run XHub
 ```
 
 ## Boundary
 
 Keep native Hub UI, app lifecycle, bridge app wiring, and desktop-specific runtime behavior here. Shared protocol or terminal UX concerns belong elsewhere.
+
+## Read Next
+
+- `x-hub/README.md`
+- `docs/REPO_LAYOUT.md`
+- `docs/WORKING_INDEX.md`
+- `README.md`

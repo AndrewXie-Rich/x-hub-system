@@ -179,7 +179,7 @@ npm run smoke
 - `HUB_SKILLS_DEVELOPER_MODE` (default: `0`; only low-risk unsigned/untrusted skills can bypass signer trust when set to `1`; high-risk skills stay fail-closed)
 - `HUB_REQUIRE_SKILLS_CAP` (default: `0`; when `1`, clients must explicitly include `skills` in `capabilities`)
 
-When `HUB_RUNTIME_BASE_DIR` is not set, server now auto-detects the most active base directory among:
+When `HUB_RUNTIME_BASE_DIR` is not set, server now auto-detects the most active base directory among the current legacy runtime locations:
 - `~/Library/Containers/com.rel.flowhub/Data/RELFlowHub`
 - `/private/tmp/RELFlowHub`
 - `~/Library/Group Containers/group.rel.flowhub`
@@ -232,7 +232,7 @@ Notes:
 ## Notes
 
 - HubAI.Generate is backed by the existing MLX runtime file IPC (`python_service/relflowhub_mlx_runtime.py`).
-- `web_fetch` is executed via **RELFlowHubBridge** file IPC (`bridge_requests/` -> `bridge_responses/`) so the core Hub process stays offline.
+- `web_fetch` is executed via **X-Hub Bridge** file IPC (`bridge_requests/` -> `bridge_responses/`). The current internal bundle name is still `RELFlowHubBridge`.
 - All decisions and executions emit `audit.v1` events into SQLite.
 
 ## Pairing (MVP)

@@ -30,11 +30,11 @@ echo "[DMG] Staging apps + docs..."
 cp -R "$APP_PATH" "$STAGE/X-Hub.app"
 
 if [ -d "$BRIDGE_APP_PATH" ]; then
-  cp -R "$BRIDGE_APP_PATH" "$STAGE/RELFlowHubBridge.app"
+  cp -R "$BRIDGE_APP_PATH" "$STAGE/X-Hub Bridge.app"
 fi
 
 if [ -d "$DOCK_AGENT_APP_PATH" ]; then
-  cp -R "$DOCK_AGENT_APP_PATH" "$STAGE/RELFlowHubDockAgent.app"
+  cp -R "$DOCK_AGENT_APP_PATH" "$STAGE/X-Hub Dock Agent.app"
 fi
 
 cat > "$STAGE/README.txt" <<'TXT'
@@ -42,8 +42,8 @@ X-Hub (macOS)
 
 Install:
 1) Drag X-Hub.app to Applications
-2) (Recommended) Drag RELFlowHubDockAgent.app to Applications
-3) (Optional) Drag RELFlowHubBridge.app to Applications
+2) (Recommended) Drag X-Hub Dock Agent.app to Applications
+3) (Optional) Drag X-Hub Bridge.app to Applications
 
 First run / Permissions:
 - Open X-Hub.app -> Settings -> Doctor
@@ -51,11 +51,11 @@ First run / Permissions:
 - Accessibility: click Request and enable X-Hub (and Dock Agent if you use it)
 
 Optional:
-- In Doctor, you can enable RELFlowHubDockAgent "Start at login" for Slack/Messages counts.
+- In Doctor, you can enable X-Hub Dock Agent "Start at login" for Slack/Messages counts.
 
 Notes:
-- Slack/Messages unread counts may require RELFlowHubDockAgent on newer macOS versions.
-- RELFlowHubBridge enables optional networking features; the main Hub stays offline.
+- Slack/Messages unread counts may require X-Hub Dock Agent on newer macOS versions.
+- X-Hub Bridge enables optional networking features; the main Hub stays offline.
 TXT
 
 # Optional docs (user guide + security statement)

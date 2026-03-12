@@ -53,9 +53,12 @@ function freshnessPoints(epochMs, nowMs, maxAgeMs, maxPoints) {
 function runtimeBaseCandidates() {
   const home = os.homedir();
   return [
+    path.join(home, 'Library', 'Containers', 'com.rel.flowhub', 'Data', 'XHub'),
     path.join(home, 'Library', 'Containers', 'com.rel.flowhub', 'Data', 'RELFlowHub'),
+    path.join('/private/tmp', 'XHub'),
     path.join('/private/tmp', 'RELFlowHub'),
     path.join(home, 'Library', 'Group Containers', 'group.rel.flowhub'),
+    path.join(home, 'XHub'),
     path.join(home, 'RELFlowHub'),
   ];
 }

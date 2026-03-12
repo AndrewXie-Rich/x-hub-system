@@ -399,7 +399,7 @@ final class SupervisorManager: ObservableObject {
             case .grantResolution:
                 return .grantResolution
             case .approvalResolution:
-                return .grantResolution
+                return .approvalResolution
             }
         }
     }
@@ -1109,7 +1109,6 @@ final class SupervisorManager: ObservableObject {
             triggerSource: triggerSource,
             dedupeKey: normalizedKey
         )
-
         if isProcessing || supervisorEventLoopTask != nil {
             pendingSupervisorEventLoopTrigger = trigger
             return
@@ -1165,6 +1164,32 @@ final class SupervisorManager: ObservableObject {
         }
     }
 
+    private func buildSupervisorEventLoopMessage(
+        trigger: SupervisorCommandTriggerSource,
+        project: AXProjectEntry,
+        record: SupervisorSkillCallRecord,
+        extraLines: [String]
+    ) -> String {
+        let workflowContext = supervisorEventLoopWorkflowContext(project: project, record: record)
+        let baseLines = [
+            "自动继续当前 governed workflow。",
+            "trigger=\(trigger.rawValue)",
+            "project_ref=\(project.displayName)",
+            "project_id=\(project.projectId)",
+            "job_id=\(record.jobId)",
+            "plan_id=\(record.planId)",
+            "step_id=\(record.stepId)",
+            "request_id=\(record.requestId)",
+            "skill_id=\(record.skillId)"
+        ] + extraLines
+
+        var lines = baseLines
+        if !workflowContext.isEmpty {
+            lines.append(workflowContext.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return lines.joined(separator: "\n")
+    }
+
     private func scheduleSupervisorSkillCallbackFollowUp(
         record: SupervisorSkillCallRecord,
         project: AXProjectEntry,
@@ -1175,20 +1200,16 @@ final class SupervisorManager: ObservableObject {
             reason.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " "),
             maxChars: 220
         )
-        let message = """
-自动继续当前 governed workflow。
-trigger=skill_callback
-project_ref=\(project.displayName)
-project_id=\(project.projectId)
-job_id=\(record.jobId)
-plan_id=\(record.planId)
-step_id=\(record.stepId)
-request_id=\(record.requestId)
-skill_id=\(record.skillId)
-tool_name=\(record.toolName.isEmpty ? "(none)" : record.toolName)
-status=\(status.rawValue)
-summary=\(normalizedReason.isEmpty ? "(none)" : normalizedReason)
-"""
+        let message = buildSupervisorEventLoopMessage(
+            trigger: .skillCallback,
+            project: project,
+            record: record,
+            extraLines: [
+                "tool_name=\(record.toolName.isEmpty ? "(none)" : record.toolName)",
+                "status=\(status.rawValue)",
+                "summary=\(normalizedReason.isEmpty ? "(none)" : normalizedReason)"
+            ]
+        )
         queueSupervisorEventLoopTurn(
             userMessage: message,
             triggerSource: .skillCallback,
@@ -1206,20 +1227,17 @@ summary=\(normalizedReason.isEmpty ? "(none)" : normalizedReason)
             summary.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " "),
             maxChars: 220
         )
-        let message = """
-自动继续当前 governed workflow。
-trigger=grant_resolution
-project_ref=\(project.displayName)
-project_id=\(project.projectId)
-job_id=\(record.jobId)
-plan_id=\(record.planId)
-step_id=\(record.stepId)
-request_id=\(record.requestId)
-skill_id=\(record.skillId)
-status=\(record.status.rawValue)
-reason_code=\(reasonCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "(none)" : reasonCode.trimmingCharacters(in: .whitespacesAndNewlines))
-summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
-"""
+        let normalizedReasonCode = reasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let message = buildSupervisorEventLoopMessage(
+            trigger: .grantResolution,
+            project: project,
+            record: record,
+            extraLines: [
+                "status=\(record.status.rawValue)",
+                "reason_code=\(normalizedReasonCode.isEmpty ? "(none)" : normalizedReasonCode)",
+                "summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)"
+            ]
+        )
         queueSupervisorEventLoopTurn(
             userMessage: message,
             triggerSource: .grantResolution,
@@ -1237,20 +1255,17 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
             summary.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " "),
             maxChars: 220
         )
-        let message = """
-自动继续当前 governed workflow。
-trigger=approval_resolution
-project_ref=\(project.displayName)
-project_id=\(project.projectId)
-job_id=\(record.jobId)
-plan_id=\(record.planId)
-step_id=\(record.stepId)
-request_id=\(record.requestId)
-skill_id=\(record.skillId)
-status=\(record.status.rawValue)
-reason_code=\(reasonCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "(none)" : reasonCode.trimmingCharacters(in: .whitespacesAndNewlines))
-summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
-"""
+        let normalizedReasonCode = reasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let message = buildSupervisorEventLoopMessage(
+            trigger: .approvalResolution,
+            project: project,
+            record: record,
+            extraLines: [
+                "status=\(record.status.rawValue)",
+                "reason_code=\(normalizedReasonCode.isEmpty ? "(none)" : normalizedReasonCode)",
+                "summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)"
+            ]
+        )
         queueSupervisorEventLoopTurn(
             userMessage: message,
             triggerSource: .approvalResolution,
@@ -1716,18 +1731,22 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
 
         processedResponse = processCreateJobCommand(
             in: processedResponse,
+            userMessage: userMessage,
             triggerSource: triggerSource
         )
         processedResponse = processUpsertPlanCommand(
             in: processedResponse,
+            userMessage: userMessage,
             triggerSource: triggerSource
         )
         processedResponse = processCallSkillCommand(
             in: processedResponse,
+            userMessage: userMessage,
             triggerSource: triggerSource
         )
         processedResponse = processCancelSkillCommand(
             in: processedResponse,
+            userMessage: userMessage,
             triggerSource: triggerSource
         )
 
@@ -2106,6 +2125,87 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
             break
         }
         return out
+    }
+
+    private func supervisorTriggerContextValue(_ key: String, userMessage: String?) -> String? {
+        guard let userMessage else { return nil }
+        let normalizedKey = key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalizedKey.isEmpty else { return nil }
+
+        for rawLine in userMessage.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+            let prefix = "\(normalizedKey)="
+            guard line.lowercased().hasPrefix(prefix) else { continue }
+            let value = String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.isEmpty ? nil : value
+        }
+        return nil
+    }
+
+    private func supervisorFallbackProjectReference(
+        userMessage: String?,
+        triggerSource: SupervisorCommandTriggerSource
+    ) -> String? {
+        guard triggerSource != .userTurn else { return nil }
+        if let projectId = supervisorTriggerContextValue("project_id", userMessage: userMessage) {
+            let sanitized = sanitizeProjectReference(projectId)
+            if !sanitized.isEmpty {
+                return sanitized
+            }
+        }
+        if let projectRef = supervisorTriggerContextValue("project_ref", userMessage: userMessage) {
+            let sanitized = sanitizeProjectReference(projectRef)
+            if !sanitized.isEmpty {
+                return sanitized
+            }
+        }
+        return nil
+    }
+
+    private func resolvedSupervisorProjectLookup(
+        projectRef: String?,
+        projects: [AXProjectEntry],
+        userMessage: String?,
+        triggerSource: SupervisorCommandTriggerSource
+    ) -> (requestedRef: String, resolution: ProjectReferenceResolution?, projectScopeMissing: Bool) {
+        let rawProjectRef = sanitizeProjectReference(projectRef ?? "")
+        let fallbackRef = supervisorFallbackProjectReference(
+            userMessage: userMessage,
+            triggerSource: triggerSource
+        )
+
+        let primaryRef: String = {
+            if !rawProjectRef.isEmpty {
+                return rawProjectRef
+            }
+            if let defaultRef = defaultProjectReferenceForDirectAssignment(projects: projects) {
+                return defaultRef
+            }
+            return ""
+        }()
+
+        if !primaryRef.isEmpty {
+            let primaryResolution = resolveProjectReference(primaryRef)
+            if case .matched = primaryResolution {
+                return (primaryRef, primaryResolution, false)
+            }
+            if let fallbackRef,
+               !fallbackRef.isEmpty,
+               fallbackRef.compare(primaryRef, options: .caseInsensitive) != .orderedSame {
+                let fallbackResolution = resolveProjectReference(fallbackRef)
+                if case .matched = fallbackResolution {
+                    return (fallbackRef, fallbackResolution, false)
+                }
+            }
+            return (primaryRef, primaryResolution, false)
+        }
+
+        if let fallbackRef, !fallbackRef.isEmpty {
+            return (fallbackRef, resolveProjectReference(fallbackRef), false)
+        }
+
+        return ("", nil, true)
     }
 
     private func resolveProjectReference(_ projectRef: String) -> ProjectReferenceResolution {
@@ -3138,6 +3238,7 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
 
     private func processCreateJobCommand(
         in text: String,
+        userMessage: String,
         triggerSource: SupervisorCommandTriggerSource
     ) -> String {
         guard let payload = firstTagContent(in: text, tag: "CREATE_JOB"), !payload.isEmpty else {
@@ -3146,7 +3247,11 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
 
         switch decodeSupervisorJSONPayload(payload, as: SupervisorCreateJobPayload.self) {
         case .success(let command):
-            let result = createSupervisorJob(from: command, triggerSource: triggerSource)
+            let result = createSupervisorJob(
+                from: command,
+                userMessage: userMessage,
+                triggerSource: triggerSource
+            )
             _ = appendActionLedger(
                 action: "create_job",
                 targetRef: (command.projectRef ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
@@ -3190,6 +3295,7 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
 
     private func processUpsertPlanCommand(
         in text: String,
+        userMessage: String,
         triggerSource: SupervisorCommandTriggerSource
     ) -> String {
         guard let payload = firstTagContent(in: text, tag: "UPSERT_PLAN"), !payload.isEmpty else {
@@ -3198,7 +3304,11 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
 
         switch decodeSupervisorJSONPayload(payload, as: SupervisorUpsertPlanPayload.self) {
         case .success(let command):
-            let result = upsertSupervisorPlan(from: command, triggerSource: triggerSource)
+            let result = upsertSupervisorPlan(
+                from: command,
+                userMessage: userMessage,
+                triggerSource: triggerSource
+            )
             _ = appendActionLedger(
                 action: "upsert_plan",
                 targetRef: (command.projectRef ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
@@ -3242,6 +3352,7 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
 
     private func processCallSkillCommand(
         in text: String,
+        userMessage: String,
         triggerSource: SupervisorCommandTriggerSource
     ) -> String {
         guard let payload = firstTagContent(in: text, tag: "CALL_SKILL"), !payload.isEmpty else {
@@ -3250,7 +3361,11 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
 
         switch decodeSupervisorJSONPayload(payload, as: SupervisorCallSkillPayload.self) {
         case .success(let command):
-            let result = callSupervisorSkill(from: command, triggerSource: triggerSource)
+            let result = callSupervisorSkill(
+                from: command,
+                userMessage: userMessage,
+                triggerSource: triggerSource
+            )
             _ = appendActionLedger(
                 action: "call_skill",
                 targetRef: (command.projectRef ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
@@ -3294,6 +3409,7 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
 
     private func processCancelSkillCommand(
         in text: String,
+        userMessage: String,
         triggerSource: SupervisorCommandTriggerSource
     ) -> String {
         guard let payload = firstTagContent(in: text, tag: "CANCEL_SKILL"), !payload.isEmpty else {
@@ -3302,7 +3418,11 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
 
         switch decodeSupervisorJSONPayload(payload, as: SupervisorCancelSkillPayload.self) {
         case .success(let command):
-            let result = cancelSupervisorSkill(from: command, triggerSource: triggerSource)
+            let result = cancelSupervisorSkill(
+                from: command,
+                userMessage: userMessage,
+                triggerSource: triggerSource
+            )
             _ = appendActionLedger(
                 action: "cancel_skill",
                 targetRef: (command.projectRef ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
@@ -3386,14 +3506,9 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
 
     private func createSupervisorJob(
         from payload: SupervisorCreateJobPayload,
+        userMessage: String,
         triggerSource: SupervisorCommandTriggerSource
     ) -> (ok: Bool, reasonCode: String, message: String, projectId: String?, projectName: String?) {
-        guard let appModel else {
-            let message = "❌ CREATE_JOB 失败：Supervisor 未初始化（app_model_unavailable）"
-            addSystemMessage(message)
-            return (false, "app_model_unavailable", message, nil, nil)
-        }
-
         let goal = payload.goal.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !goal.isEmpty else {
             let message = "❌ CREATE_JOB 失败：goal 不能为空（goal_missing）"
@@ -3401,41 +3516,18 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
             return (false, "goal_missing", message, nil, nil)
         }
 
-        let projects = allProjects()
-        let resolvedProject: AXProjectEntry
-        let rawProjectRef = sanitizeProjectReference(payload.projectRef ?? "")
-        let resolution: ProjectReferenceResolution
-        if rawProjectRef.isEmpty {
-            guard let defaultRef = defaultProjectReferenceForDirectAssignment(projects: projects) else {
-                let message = "❌ CREATE_JOB 失败：当前项目范围不唯一，请补 project_ref（project_scope_missing）"
-                addSystemMessage(message)
-                return (false, "project_scope_missing", message, nil, nil)
-            }
-            resolution = resolveProjectReference(defaultRef)
-        } else {
-            resolution = resolveProjectReference(rawProjectRef)
-        }
-
-        switch resolution {
-        case .matched(let project):
-            resolvedProject = project
-        case .notFound:
-            let hints = projects.prefix(4).map { $0.displayName }.joined(separator: "、")
-            let suffix = hints.isEmpty ? "" : "。可用项目：\(hints)"
-            let message = "❌ CREATE_JOB 失败：找不到项目引用 \(rawProjectRef.isEmpty ? "(empty)" : rawProjectRef) (project_not_found)\(suffix)"
-            addSystemMessage(message)
-            return (false, "project_not_found", message, nil, nil)
-        case .ambiguous(let candidates):
-            let list = candidates.prefix(4).map { "\($0.displayName)(\($0.projectId))" }.joined(separator: "、")
-            let message = "❌ CREATE_JOB 失败：项目引用不唯一 (project_ambiguous)。候选：\(list)"
-            addSystemMessage(message)
-            return (false, "project_ambiguous", message, nil, nil)
-        }
-
-        guard let ctx = appModel.projectContext(for: resolvedProject.projectId) else {
-            let message = "❌ CREATE_JOB 失败：项目上下文不可用（project_context_missing）"
-            addSystemMessage(message)
-            return (false, "project_context_missing", message, resolvedProject.projectId, resolvedProject.displayName)
+        let scope: SupervisorProjectScopeResolution
+        switch resolveSupervisorProjectScope(
+            projectRef: payload.projectRef,
+            commandName: "CREATE_JOB",
+            userMessage: userMessage,
+            triggerSource: triggerSource
+        ) {
+        case .failure(let failure):
+            addSystemMessage(failure.message)
+            return (false, failure.reasonCode, failure.message, failure.projectId, failure.projectName)
+        case .success(let resolved):
+            scope = resolved
         }
 
         let now = Date()
@@ -3448,7 +3540,7 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
         let record = SupervisorJobRecord(
             schemaVersion: SupervisorJobRecord.currentSchemaVersion,
             jobId: jobId,
-            projectId: resolvedProject.projectId,
+            projectId: scope.project.projectId,
             goal: goal,
             priority: SupervisorJobPriority.parse(payload.priority),
             status: .queued,
@@ -3461,11 +3553,11 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
         )
 
         do {
-            try SupervisorProjectJobStore.append(record, for: ctx)
+            try SupervisorProjectJobStore.append(record, for: scope.ctx)
         } catch {
             let message = "❌ CREATE_JOB 失败：任务落盘失败（job_store_write_failed: \(error.localizedDescription))"
             addSystemMessage(message)
-            return (false, "job_store_write_failed", message, resolvedProject.projectId, resolvedProject.displayName)
+            return (false, "job_store_write_failed", message, scope.project.projectId, scope.project.displayName)
         }
 
         AXProjectStore.appendRawLog(
@@ -3484,7 +3576,7 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
                 "audit_ref": record.auditRef,
                 "timestamp_ms": record.updatedAtMs
             ],
-            for: ctx
+            for: scope.ctx
         )
         currentTask = SupervisorTask(
             id: record.jobId,
@@ -3494,25 +3586,20 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
             createdAt: now.timeIntervalSince1970
         )
         syncSupervisorProjectWorkflowCanonical(
-            ctx: ctx,
-            project: resolvedProject
+            ctx: scope.ctx,
+            project: scope.project
         )
 
-        let message = "✅ 已为项目 \(resolvedProject.displayName) 创建任务：\(record.goal)（priority=\(record.priority.rawValue)）"
+        let message = "✅ 已为项目 \(scope.project.displayName) 创建任务：\(record.goal)（priority=\(record.priority.rawValue)）"
         addSystemMessage(message)
-        return (true, "ok", message, resolvedProject.projectId, resolvedProject.displayName)
+        return (true, "ok", message, scope.project.projectId, scope.project.displayName)
     }
 
     private func upsertSupervisorPlan(
         from payload: SupervisorUpsertPlanPayload,
+        userMessage: String,
         triggerSource: SupervisorCommandTriggerSource
     ) -> (ok: Bool, reasonCode: String, message: String, projectId: String?, projectName: String?) {
-        guard let appModel else {
-            let message = "❌ UPSERT_PLAN 失败：Supervisor 未初始化（app_model_unavailable）"
-            addSystemMessage(message)
-            return (false, "app_model_unavailable", message, nil, nil)
-        }
-
         let planId = payload.planId.trimmingCharacters(in: .whitespacesAndNewlines)
         let jobId = payload.jobId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !planId.isEmpty else {
@@ -3531,59 +3618,36 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
             return (false, "steps_missing", message, nil, nil)
         }
 
-        let projects = allProjects()
-        let rawProjectRef = sanitizeProjectReference(payload.projectRef ?? "")
-        let resolution: ProjectReferenceResolution
-        if rawProjectRef.isEmpty {
-            guard let defaultRef = defaultProjectReferenceForDirectAssignment(projects: projects) else {
-                let message = "❌ UPSERT_PLAN 失败：当前项目范围不唯一，请补 project_ref（project_scope_missing）"
-                addSystemMessage(message)
-                return (false, "project_scope_missing", message, nil, nil)
-            }
-            resolution = resolveProjectReference(defaultRef)
-        } else {
-            resolution = resolveProjectReference(rawProjectRef)
+        let scope: SupervisorProjectScopeResolution
+        switch resolveSupervisorProjectScope(
+            projectRef: payload.projectRef,
+            commandName: "UPSERT_PLAN",
+            userMessage: userMessage,
+            triggerSource: triggerSource
+        ) {
+        case .failure(let failure):
+            addSystemMessage(failure.message)
+            return (false, failure.reasonCode, failure.message, failure.projectId, failure.projectName)
+        case .success(let resolved):
+            scope = resolved
         }
 
-        let resolvedProject: AXProjectEntry
-        switch resolution {
-        case .matched(let project):
-            resolvedProject = project
-        case .notFound:
-            let hints = projects.prefix(4).map { $0.displayName }.joined(separator: "、")
-            let suffix = hints.isEmpty ? "" : "。可用项目：\(hints)"
-            let message = "❌ UPSERT_PLAN 失败：找不到项目引用 \(rawProjectRef.isEmpty ? "(empty)" : rawProjectRef) (project_not_found)\(suffix)"
-            addSystemMessage(message)
-            return (false, "project_not_found", message, nil, nil)
-        case .ambiguous(let candidates):
-            let list = candidates.prefix(4).map { "\($0.displayName)(\($0.projectId))" }.joined(separator: "、")
-            let message = "❌ UPSERT_PLAN 失败：项目引用不唯一 (project_ambiguous)。候选：\(list)"
-            addSystemMessage(message)
-            return (false, "project_ambiguous", message, nil, nil)
-        }
-
-        guard let ctx = appModel.projectContext(for: resolvedProject.projectId) else {
-            let message = "❌ UPSERT_PLAN 失败：项目上下文不可用（project_context_missing）"
-            addSystemMessage(message)
-            return (false, "project_context_missing", message, resolvedProject.projectId, resolvedProject.displayName)
-        }
-
-        let jobSnapshot = SupervisorProjectJobStore.load(for: ctx)
+        let jobSnapshot = SupervisorProjectJobStore.load(for: scope.ctx)
         guard var job = jobSnapshot.jobs.first(where: { $0.jobId == jobId }) else {
             let message = "❌ UPSERT_PLAN 失败：找不到 job_id \(jobId)（job_not_found）"
             addSystemMessage(message)
-            return (false, "job_not_found", message, resolvedProject.projectId, resolvedProject.displayName)
+            return (false, "job_not_found", message, scope.project.projectId, scope.project.displayName)
         }
 
-        guard job.projectId == resolvedProject.projectId else {
+        guard job.projectId == scope.project.projectId else {
             let message = "❌ UPSERT_PLAN 失败：job 与当前 project scope 不一致（job_project_scope_mismatch）"
             addSystemMessage(message)
-            return (false, "job_project_scope_mismatch", message, resolvedProject.projectId, resolvedProject.displayName)
+            return (false, "job_project_scope_mismatch", message, scope.project.projectId, scope.project.displayName)
         }
 
         let now = Date()
         let nowMs = Int64((now.timeIntervalSince1970 * 1000.0).rounded())
-        let previousPlanSnapshot = SupervisorProjectPlanStore.load(for: ctx)
+        let previousPlanSnapshot = SupervisorProjectPlanStore.load(for: scope.ctx)
         let existingPlan = previousPlanSnapshot.plans.first(where: { $0.planId == planId })
         let owner = (payload.currentOwner ?? job.currentOwner)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3607,7 +3671,7 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
         guard steps.allSatisfy({ !$0.stepId.isEmpty }) else {
             let message = "❌ UPSERT_PLAN 失败：steps.step_id 不能为空（step_id_missing）"
             addSystemMessage(message)
-            return (false, "step_id_missing", message, resolvedProject.projectId, resolvedProject.displayName)
+            return (false, "step_id_missing", message, scope.project.projectId, scope.project.displayName)
         }
 
         let planStatus = derivedPlanStatus(from: steps)
@@ -3615,7 +3679,7 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
             schemaVersion: SupervisorPlanRecord.currentSchemaVersion,
             planId: planId,
             jobId: jobId,
-            projectId: resolvedProject.projectId,
+            projectId: scope.project.projectId,
             status: planStatus,
             currentOwner: owner.isEmpty ? "supervisor" : owner,
             steps: steps,
@@ -3625,11 +3689,11 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
         )
 
         do {
-            try SupervisorProjectPlanStore.upsert(plan, for: ctx)
+            try SupervisorProjectPlanStore.upsert(plan, for: scope.ctx)
         } catch {
             let message = "❌ UPSERT_PLAN 失败：计划落盘失败（plan_store_write_failed: \(error.localizedDescription))"
             addSystemMessage(message)
-            return (false, "plan_store_write_failed", message, resolvedProject.projectId, resolvedProject.displayName)
+            return (false, "plan_store_write_failed", message, scope.project.projectId, scope.project.displayName)
         }
 
         job.activePlanId = plan.planId
@@ -3637,11 +3701,11 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
         job.currentOwner = plan.currentOwner
         job.updatedAtMs = nowMs
         do {
-            try SupervisorProjectJobStore.upsert(job, for: ctx)
+            try SupervisorProjectJobStore.upsert(job, for: scope.ctx)
         } catch {
             let message = "❌ UPSERT_PLAN 失败：任务状态更新失败（job_store_write_failed: \(error.localizedDescription))"
             addSystemMessage(message)
-            return (false, "job_store_write_failed", message, resolvedProject.projectId, resolvedProject.displayName)
+            return (false, "job_store_write_failed", message, scope.project.projectId, scope.project.displayName)
         }
 
         AXProjectStore.appendRawLog(
@@ -3658,7 +3722,7 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
                 "audit_ref": plan.auditRef,
                 "timestamp_ms": plan.updatedAtMs
             ],
-            for: ctx
+            for: scope.ctx
         )
         currentTask = SupervisorTask(
             id: job.jobId,
@@ -3668,13 +3732,13 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
             createdAt: Double(job.createdAtMs) / 1000.0
         )
         syncSupervisorProjectWorkflowCanonical(
-            ctx: ctx,
-            project: resolvedProject
+            ctx: scope.ctx,
+            project: scope.project
         )
 
-        let message = "✅ 已为项目 \(resolvedProject.displayName) 写入计划：\(plan.planId)（job=\(plan.jobId), steps=\(plan.steps.count)）"
+        let message = "✅ 已为项目 \(scope.project.displayName) 写入计划：\(plan.planId)（job=\(plan.jobId), steps=\(plan.steps.count)）"
         addSystemMessage(message)
-        return (true, "ok", message, resolvedProject.projectId, resolvedProject.displayName)
+        return (true, "ok", message, scope.project.projectId, scope.project.displayName)
     }
 
     private struct SupervisorProjectScopeResolution {
@@ -3715,7 +3779,9 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
 
     private func resolveSupervisorProjectScope(
         projectRef: String?,
-        commandName: String
+        commandName: String,
+        userMessage: String? = nil,
+        triggerSource: SupervisorCommandTriggerSource = .userTurn
     ) -> Result<SupervisorProjectScopeResolution, SupervisorCommandResolutionFailure> {
         guard let appModel else {
             return .failure(
@@ -3729,26 +3795,25 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
         }
 
         let projects = allProjects()
-        let rawProjectRef = sanitizeProjectReference(projectRef ?? "")
-        let resolution: ProjectReferenceResolution
-        if rawProjectRef.isEmpty {
-            guard let defaultRef = defaultProjectReferenceForDirectAssignment(projects: projects) else {
-                return .failure(
-                    SupervisorCommandResolutionFailure(
-                        reasonCode: "project_scope_missing",
-                        message: "❌ \(commandName) 失败：当前项目范围不唯一，请补 project_ref（project_scope_missing）",
-                        projectId: nil,
-                        projectName: nil
-                    )
+        let lookup = resolvedSupervisorProjectLookup(
+            projectRef: projectRef,
+            projects: projects,
+            userMessage: userMessage,
+            triggerSource: triggerSource
+        )
+        if lookup.projectScopeMissing {
+            return .failure(
+                SupervisorCommandResolutionFailure(
+                    reasonCode: "project_scope_missing",
+                    message: "❌ \(commandName) 失败：当前项目范围不唯一，请补 project_ref（project_scope_missing）",
+                    projectId: nil,
+                    projectName: nil
                 )
-            }
-            resolution = resolveProjectReference(defaultRef)
-        } else {
-            resolution = resolveProjectReference(rawProjectRef)
+            )
         }
 
         let project: AXProjectEntry
-        switch resolution {
+        switch lookup.resolution ?? .notFound {
         case .matched(let matched):
             project = matched
         case .notFound:
@@ -3757,7 +3822,7 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
             return .failure(
                 SupervisorCommandResolutionFailure(
                     reasonCode: "project_not_found",
-                    message: "❌ \(commandName) 失败：找不到项目引用 \(rawProjectRef.isEmpty ? "(empty)" : rawProjectRef)（project_not_found）\(suffix)",
+                    message: "❌ \(commandName) 失败：找不到项目引用 \(lookup.requestedRef.isEmpty ? "(empty)" : lookup.requestedRef)（project_not_found）\(suffix)",
                     projectId: nil,
                     projectName: nil
                 )
@@ -3792,9 +3857,16 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
         jobId: String,
         stepId: String,
         skillId: String,
-        commandName: String
+        commandName: String,
+        userMessage: String? = nil,
+        triggerSource: SupervisorCommandTriggerSource = .userTurn
     ) -> Result<SupervisorWorkflowStepResolution, SupervisorCommandResolutionFailure> {
-        switch resolveSupervisorProjectScope(projectRef: projectRef, commandName: commandName) {
+        switch resolveSupervisorProjectScope(
+            projectRef: projectRef,
+            commandName: commandName,
+            userMessage: userMessage,
+            triggerSource: triggerSource
+        ) {
         case .failure(let failure):
             return .failure(failure)
         case .success(let scope):
@@ -3872,7 +3944,9 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
     private func locateSupervisorSkillCall(
         requestId: String,
         projectRef: String?,
-        commandName: String
+        commandName: String,
+        userMessage: String? = nil,
+        triggerSource: SupervisorCommandTriggerSource = .userTurn
     ) -> Result<SupervisorSkillCallResolution, SupervisorCommandResolutionFailure> {
         guard let appModel else {
             return .failure(
@@ -3897,8 +3971,18 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
             )
         }
 
-        if let projectRef, !projectRef.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            switch resolveSupervisorProjectScope(projectRef: projectRef, commandName: commandName) {
+        let hasExplicitScope = !(projectRef?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        let hasFallbackScope = supervisorFallbackProjectReference(
+            userMessage: userMessage,
+            triggerSource: triggerSource
+        ) != nil
+        if hasExplicitScope || hasFallbackScope {
+            switch resolveSupervisorProjectScope(
+                projectRef: projectRef,
+                commandName: commandName,
+                userMessage: userMessage,
+                triggerSource: triggerSource
+            ) {
             case .failure(let failure):
                 return .failure(failure)
             case .success(let scope):
@@ -3937,6 +4021,7 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
 
     private func callSupervisorSkill(
         from payload: SupervisorCallSkillPayload,
+        userMessage: String,
         triggerSource: SupervisorCommandTriggerSource
     ) -> (ok: Bool, reasonCode: String, message: String, projectId: String?, projectName: String?) {
         let jobId = payload.jobId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3964,7 +4049,9 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
             jobId: jobId,
             stepId: stepId,
             skillId: skillId,
-            commandName: "CALL_SKILL"
+            commandName: "CALL_SKILL",
+            userMessage: userMessage,
+            triggerSource: triggerSource
         ) {
         case .failure(let failure):
             addSystemMessage(failure.message)
@@ -4168,6 +4255,7 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
 
     private func cancelSupervisorSkill(
         from payload: SupervisorCancelSkillPayload,
+        userMessage: String,
         triggerSource: SupervisorCommandTriggerSource
     ) -> (ok: Bool, reasonCode: String, message: String, projectId: String?, projectName: String?) {
         let requestId = payload.requestId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -4181,7 +4269,9 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
         switch locateSupervisorSkillCall(
             requestId: requestId,
             projectRef: payload.projectRef,
-            commandName: "CANCEL_SKILL"
+            commandName: "CANCEL_SKILL",
+            userMessage: userMessage,
+            triggerSource: triggerSource
         ) {
         case .failure(let failure):
             addSystemMessage(failure.message)
@@ -4906,6 +4996,10 @@ summary=\(normalizedSummary.isEmpty ? "(none)" : normalizedSummary)
                 return .failure(SupervisorSkillMappingFailure(reasonCode: "payload.pattern_missing"))
             }
             var args: [String: JSONValue] = ["pattern": .string(pattern)]
+            if let path = payload["path"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !path.isEmpty {
+                args["path"] = .string(path)
+            }
             if let glob = payload["glob"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
                !glob.isEmpty {
                 args["glob"] = .string(glob)
@@ -5737,13 +5831,61 @@ latest_user:
               let ctx = appModel?.projectContext(for: project.projectId) else {
             return nil
         }
+        return supervisorWorkflowMemorySlice(
+            project: project,
+            ctx: ctx,
+            preferredJobId: currentTask?.projectId == project.projectId ? currentTask?.id : nil,
+            preferredPlanId: nil,
+            preferredRequestId: nil
+        )
+    }
+
+    private func supervisorWorkflowState(
+        project: AXProjectEntry,
+        ctx: AXProjectContext,
+        preferredJobId: String?,
+        preferredPlanId: String?,
+        preferredRequestId: String?
+    ) -> (job: SupervisorJobRecord, plan: SupervisorPlanRecord?, skillCall: SupervisorSkillCallRecord?)? {
         let jobSnapshot = SupervisorProjectJobStore.load(for: ctx)
-        guard let activeJob = jobSnapshot.jobs.first else { return nil }
+        let normalizedJobId = preferredJobId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let activeJob = jobSnapshot.jobs.first(where: { !$0.jobId.isEmpty && $0.jobId == normalizedJobId })
+            ?? jobSnapshot.jobs.first
+        guard let activeJob else { return nil }
+
         let planSnapshot = SupervisorProjectPlanStore.load(for: ctx)
-        let activePlan = planSnapshot.plans.first(where: { $0.planId == activeJob.activePlanId && !$0.planId.isEmpty })
+        let normalizedPlanId = preferredPlanId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let activePlan = planSnapshot.plans.first(where: { !$0.planId.isEmpty && $0.planId == normalizedPlanId && $0.jobId == activeJob.jobId })
+            ?? planSnapshot.plans.first(where: { $0.planId == activeJob.activePlanId && !$0.planId.isEmpty })
             ?? planSnapshot.plans.first(where: { $0.jobId == activeJob.jobId })
+
         let skillCallSnapshot = SupervisorProjectSkillCallStore.load(for: ctx)
-        let activeSkillCall = skillCallSnapshot.calls.first(where: { $0.jobId == activeJob.jobId })
+        let normalizedRequestId = preferredRequestId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let activeSkillCall = skillCallSnapshot.calls.first(where: { !$0.requestId.isEmpty && $0.requestId == normalizedRequestId })
+            ?? skillCallSnapshot.calls.first(where: { $0.jobId == activeJob.jobId })
+            ?? skillCallSnapshot.calls.first(where: { $0.projectId == project.projectId })
+        return (activeJob, activePlan, activeSkillCall)
+    }
+
+    private func supervisorWorkflowMemorySlice(
+        project: AXProjectEntry,
+        ctx: AXProjectContext,
+        preferredJobId: String?,
+        preferredPlanId: String?,
+        preferredRequestId: String?
+    ) -> SupervisorWorkflowMemorySlice? {
+        guard let state = supervisorWorkflowState(
+            project: project,
+            ctx: ctx,
+            preferredJobId: preferredJobId,
+            preferredPlanId: preferredPlanId,
+            preferredRequestId: preferredRequestId
+        ) else {
+            return nil
+        }
+        let activeJob = state.job
+        let activePlan = state.plan
+        let activeSkillCall = state.skillCall
         let activePlanId = (activePlan?.planId ?? activeJob.activePlanId).trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedActivePlanId = activePlanId.isEmpty ? "(none)" : activePlanId
         let activeSkillSummary = activeSkillCall.map { call in
@@ -5801,6 +5943,81 @@ active_skill:
             observation: observation,
             workingSet: workingSet
         )
+    }
+
+    private func workflowPlanFilteredStepsDigest(
+        _ plan: SupervisorPlanRecord,
+        statuses: Set<SupervisorPlanStepStatus>,
+        excludingStepId: String? = nil,
+        limit: Int = 4
+    ) -> String {
+        let excluded = excludingStepId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let rows = plan.steps
+            .sorted { lhs, rhs in
+                if lhs.orderIndex != rhs.orderIndex {
+                    return lhs.orderIndex < rhs.orderIndex
+                }
+                return lhs.stepId < rhs.stepId
+            }
+            .filter { step in
+                statuses.contains(step.status) &&
+                    (excluded.isEmpty || step.stepId != excluded)
+            }
+            .prefix(limit)
+            .map { step in
+                let skill = step.skillId.trimmingCharacters(in: .whitespacesAndNewlines)
+                let suffix = skill.isEmpty ? "" : " skill=\(skill)"
+                return "\(step.orderIndex + 1). \(step.stepId) | \(step.status.rawValue) | \(step.kind.rawValue) | \(capped(step.title, maxChars: 120))\(suffix)"
+            }
+        return rows.isEmpty ? "(none)" : rows.joined(separator: "\n")
+    }
+
+    private func supervisorEventLoopWorkflowContext(
+        project: AXProjectEntry,
+        record: SupervisorSkillCallRecord
+    ) -> String {
+        guard let ctx = appModel?.projectContext(for: project.projectId),
+              let state = supervisorWorkflowState(
+                project: project,
+                ctx: ctx,
+                preferredJobId: record.jobId,
+                preferredPlanId: record.planId,
+                preferredRequestId: record.requestId
+              ) else {
+            return ""
+        }
+
+        let nextPendingSteps = state.plan.map {
+            workflowPlanFilteredStepsDigest(
+                $0,
+                statuses: [.pending],
+                excludingStepId: record.stepId
+            )
+        } ?? "(none)"
+        let attentionSteps = state.plan.map {
+            workflowPlanFilteredStepsDigest(
+                $0,
+                statuses: [.running, .blocked, .awaitingAuthorization],
+                excludingStepId: nil
+            )
+        } ?? "(none)"
+        let planSteps = state.plan.map(workflowPlanStepsDigest) ?? "(none)"
+        let planStatus = state.plan?.status.rawValue ?? "(none)"
+        let jobGoal = capped(state.job.goal, maxChars: 220)
+
+        return """
+workflow_focus:
+active_job_goal=\(jobGoal.isEmpty ? "(none)" : jobGoal)
+active_job_status=\(state.job.status.rawValue)
+active_plan_id=\(state.plan?.planId ?? "(none)")
+active_plan_status=\(planStatus)
+active_plan_steps:
+\(planSteps)
+next_pending_steps:
+\(nextPendingSteps)
+attention_steps:
+\(attentionSteps)
+"""
     }
 
     private func workflowPlanStepsDigest(_ plan: SupervisorPlanRecord) -> String {

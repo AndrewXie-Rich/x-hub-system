@@ -762,6 +762,8 @@ struct SupervisorCommandGuardTests {
             #expect(triggerSource == "skill_callback")
             #expect(userMessage.contains("trigger=skill_callback"))
             #expect(userMessage.contains("status=completed"))
+            #expect(userMessage.contains("next_pending_steps:"))
+            #expect(userMessage.contains("step-002"))
             return #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"处理 skill callback 后的下一步","priority":"normal","source":"skill_callback","current_owner":"supervisor"}[/CREATE_JOB]"#
         }
 
@@ -779,7 +781,7 @@ struct SupervisorCommandGuardTests {
         let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
         _ = manager.processSupervisorResponseForTesting(
             #"""
-            [UPSERT_PLAN]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","plan_id":"plan-project-snapshot-event-loop-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"读取当前 project snapshot","kind":"call_skill","status":"pending","skill_id":"project.snapshot"}]}[/UPSERT_PLAN]
+            [UPSERT_PLAN]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","plan_id":"plan-project-snapshot-event-loop-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"读取当前 project snapshot","kind":"call_skill","status":"pending","skill_id":"project.snapshot"},{"step_id":"step-002","title":"写入 follow-up 摘要","kind":"write_memory","status":"pending"}]}[/UPSERT_PLAN]
             """#,
             userMessage: "请更新计划"
         )
@@ -831,6 +833,8 @@ struct SupervisorCommandGuardTests {
             #expect(triggerSource == "grant_resolution")
             #expect(userMessage.contains("trigger=grant_resolution"))
             #expect(userMessage.contains("reason_code=grant_denied"))
+            #expect(userMessage.contains("attention_steps:"))
+            #expect(userMessage.contains("step-001"))
             return #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"处理 grant resolution 后的下一步","priority":"high","source":"grant_resolution","current_owner":"supervisor"}[/CREATE_JOB]"#
         }
 
@@ -900,6 +904,66 @@ struct SupervisorCommandGuardTests {
         #expect(jobs.count == 2)
         let followUp = try #require(jobs.first(where: { $0.goal == "处理 grant resolution 后的下一步" }))
         #expect(followUp.source == .grantResolution)
+        #expect(followUp.priority == .high)
+    }
+
+    @Test
+    func approvalResolutionAutoFollowUpRunsSupervisorTurn() async throws {
+        let manager = SupervisorManager.makeForTesting(enableSupervisorEventLoopAutoFollowUp: true)
+        let fixture = SupervisorSkillRegistryFixture()
+        defer { fixture.cleanup() }
+
+        let root = try makeProjectRoot(named: "supervisor-approval-resolution-event-loop")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "我的世界还原项目")
+        try fixture.writeHubSkillsStore(projectID: project.projectId)
+        HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+
+        manager.setSupervisorEventLoopResponseOverrideForTesting { userMessage, triggerSource in
+            #expect(triggerSource == "approval_resolution")
+            #expect(userMessage.contains("trigger=approval_resolution"))
+            #expect(userMessage.contains("reason_code=local_approval_denied"))
+            #expect(userMessage.contains("attention_steps:"))
+            #expect(userMessage.contains("step-001"))
+            return #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"处理 approval resolution 后的下一步","priority":"high","source":"approval_resolution","current_owner":"supervisor"}[/CREATE_JOB]"#
+        }
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"运行 browser smoke","priority":"high"}[/CREATE_JOB]"#,
+            userMessage: "请创建任务"
+        )
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [UPSERT_PLAN]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","plan_id":"plan-browser-smoke-approval-event-loop-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"运行 browser runtime smoke","kind":"call_skill","status":"pending","skill_id":"browser.runtime.smoke"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划"
+        )
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [CALL_SKILL]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","step_id":"step-001","skill_id":"browser.runtime.smoke","payload":{"url":"https://example.com"}}[/CALL_SKILL]
+            """#,
+            userMessage: "请执行 browser smoke 技能"
+        )
+
+        let approval = try #require(manager.pendingSupervisorSkillApprovals.first)
+        manager.denyPendingSupervisorSkillApproval(approval)
+        await manager.waitForSupervisorEventLoopForTesting()
+
+        let jobs = SupervisorProjectJobStore.load(for: ctx).jobs
+        #expect(jobs.count == 2)
+        let followUp = try #require(jobs.first(where: { $0.goal == "处理 approval resolution 后的下一步" }))
+        #expect(followUp.source == .approvalResolution)
         #expect(followUp.priority == .high)
     }
 

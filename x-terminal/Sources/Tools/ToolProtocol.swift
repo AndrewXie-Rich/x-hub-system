@@ -216,7 +216,7 @@ enum ToolPolicy {
         case .list_dir:
             return "- list_dir {path, sandbox?}"
         case .search:
-            return "- search {pattern, glob?, sandbox?}"
+            return "- search {pattern, path?, glob?, sandbox?}"
         case .run_command:
             return "- run_command {command, timeout_sec?, sandbox?}"
         case .git_status:

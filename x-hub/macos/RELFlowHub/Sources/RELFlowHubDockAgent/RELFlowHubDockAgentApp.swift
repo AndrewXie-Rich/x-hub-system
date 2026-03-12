@@ -98,13 +98,13 @@ final class RELFlowHubDockAgentApp: NSObject, NSApplicationDelegate {
         // Ensure Accessibility permission. Prompt only once; avoid spamming prompts.
         if !DockAX.ensureTrusted(prompt: !promptedAX) {
             promptedAX = true
-            log("AXTrusted=false (grant Accessibility to RELFlowHubDockAgent.app)")
+            log("AXTrusted=false (grant Accessibility to X-Hub Dock Agent.app)")
             return
         }
         promptedAX = true
 
         guard let paths = HubIPC.findHubPaths() else {
-            log("Hub IPC not found (hub_status.json missing). Is REL Flow Hub running?")
+            log("Hub IPC not found (hub_status.json missing). Is X-Hub running?")
             return
         }
 

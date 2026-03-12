@@ -36,7 +36,7 @@ enum AppInstallDoctor {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Install X-Hub in Applications"
-        alert.informativeText = "X-Hub is running from:\n\n\(p)\n\nFor stable Calendar/Accessibility permissions (avoid repeated prompts), drag X-Hub.app (and RELFlowHubDockAgent.app / RELFlowHubBridge.app) into /Applications, then relaunch from there."
+        alert.informativeText = "X-Hub is running from:\n\n\(p)\n\nFor stable Calendar/Accessibility permissions (avoid repeated prompts), drag X-Hub.app (and X-Hub Dock Agent.app / X-Hub Bridge.app) into /Applications, then relaunch from there."
 
         // Prefer offering to open the installed copy if it exists.
         let installedURL = installedCopyURL(bundleId: Bundle.main.bundleIdentifier ?? "")

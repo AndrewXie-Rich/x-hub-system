@@ -11,8 +11,11 @@ let package = Package(
     products: [
         .library(name: "RELFlowHubCore", targets: ["RELFlowHubCore"]),
         .executable(name: "RELFlowHub", targets: ["RELFlowHub"]),
+        .executable(name: "XHub", targets: ["RELFlowHub"]),
         .executable(name: "RELFlowHubBridge", targets: ["RELFlowHubBridge"]),
+        .executable(name: "XHubBridge", targets: ["RELFlowHubBridge"]),
         .executable(name: "RELFlowHubDockAgent", targets: ["RELFlowHubDockAgent"]),
+        .executable(name: "XHubDockAgent", targets: ["RELFlowHubDockAgent"]),
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.

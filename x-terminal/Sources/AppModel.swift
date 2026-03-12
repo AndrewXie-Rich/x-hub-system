@@ -1105,6 +1105,25 @@ final class AppModel: ObservableObject {
         try? AXProjectStore.saveConfig(cfg, for: ctx)
     }
 
+    func setProjectGovernedReadableRoots(paths: [String]) {
+        guard let ctx = projectContext else { return }
+        guard var cfg = projectConfig else { return }
+        cfg = cfg.settingGovernedReadableRoots(paths: paths, projectRoot: ctx.root)
+        projectConfig = cfg
+        try? AXProjectStore.saveConfig(cfg, for: ctx)
+        AXProjectStore.appendRawLog(
+            [
+                "type": "project_governed_read_roots",
+                "action": "update",
+                "created_at": Date().timeIntervalSince1970,
+                "project_id": AXProjectRegistryStore.projectId(forRoot: ctx.root),
+                "root_count": cfg.governedReadableRoots.count,
+                "roots": cfg.governedReadableRoots,
+            ],
+            for: ctx
+        )
+    }
+
     func setProjectAutomationSelfIteration(
         enabled: Bool? = nil,
         maxAutoRetryDepth: Int? = nil

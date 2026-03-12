@@ -34,9 +34,13 @@ function bridgeBaseCandidates() {
 
   // Common locations used by different build/signing modes.
   out.push(path.join(home, 'Library', 'Group Containers', 'group.rel.flowhub'));
+  out.push(path.join(home, 'Library', 'Containers', 'com.rel.flowhub', 'Data', 'XHub'));
   out.push(path.join(home, 'Library', 'Containers', 'com.rel.flowhub', 'Data', 'RELFlowHub'));
+  out.push(path.join(home, 'Library', 'Containers', 'com.rel.flowhub.bridge', 'Data', 'XHub'));
   out.push(path.join(home, 'Library', 'Containers', 'com.rel.flowhub.bridge', 'Data', 'RELFlowHub'));
+  out.push(path.join('/private/tmp', 'XHub'));
   out.push(path.join('/private/tmp', 'RELFlowHub'));
+  out.push(path.join(home, 'XHub'));
   out.push(path.join(home, 'RELFlowHub'));
 
   // De-dup.

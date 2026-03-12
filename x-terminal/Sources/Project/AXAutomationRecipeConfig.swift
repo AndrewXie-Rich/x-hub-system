@@ -343,6 +343,18 @@ extension AXProjectConfig {
         out.automationMaxAutoRetryDepth = max(1, out.automationMaxAutoRetryDepth)
         out.trustedAutomationDeviceId = out.trustedAutomationDeviceId.trimmingCharacters(in: .whitespacesAndNewlines)
         out.workspaceBindingHash = out.workspaceBindingHash.trimmingCharacters(in: .whitespacesAndNewlines)
+        var normalizedRoots: [String] = []
+        var seenRoots = Set<String>()
+        for raw in out.governedReadableRoots {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let normalized = trimmed.hasPrefix("/")
+                ? PathGuard.resolve(URL(fileURLWithPath: trimmed)).path
+                : trimmed
+            guard seenRoots.insert(normalized).inserted else { continue }
+            normalizedRoots.append(normalized)
+        }
+        out.governedReadableRoots = normalizedRoots
         out.deviceToolGroups = xtNormalizedTrustedAutomationDeviceToolGroups(out.deviceToolGroups)
         out.autonomyTTLSeconds = max(60, out.autonomyTTLSeconds)
         out.autonomyUpdatedAtMs = max(0, out.autonomyUpdatedAtMs)

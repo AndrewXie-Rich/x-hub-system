@@ -27,7 +27,7 @@ enum HubConnector {
         let env = (ProcessInfo.processInfo.environment["REL_FLOW_HUB_BASE_DIR"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if !env.isEmpty {
             let u = URL(fileURLWithPath: NSString(string: env).expandingTildeInPath)
-            if let st = readHubStatus(in: u), st.isAlive(ttl: ttl) {
+            if let st = HubPaths.readHubStatus(in: u), st.isAlive(ttl: ttl) {
                 HubPaths.setBaseDirOverride(URL(fileURLWithPath: st.baseDir))
                 UserDefaults.standard.set(st.baseDir, forKey: defaultsKey)
                 UserDefaults.standard.set(st.baseDir, forKey: legacyDefaultsKey)
@@ -39,16 +39,16 @@ enum HubConnector {
         let prev = UserDefaults.standard.string(forKey: defaultsKey) ?? UserDefaults.standard.string(forKey: legacyDefaultsKey)
         if let prev, !prev.isEmpty {
             let u = URL(fileURLWithPath: NSString(string: prev).expandingTildeInPath)
-            if let st = readHubStatus(in: u), st.isAlive(ttl: ttl) {
+            if let st = HubPaths.readHubStatus(in: u), st.isAlive(ttl: ttl) {
                 HubPaths.setBaseDirOverride(URL(fileURLWithPath: st.baseDir))
                 UserDefaults.standard.set(st.baseDir, forKey: defaultsKey)
                 return (true, URL(fileURLWithPath: st.baseDir), st, nil)
             }
         }
 
-        // 3) Scan candidates (matches FA Tracker's vendored relflowhub_ipc.py behavior).
+        // 3) Scan candidates (supports both legacy RELFlowHub and new XHub runtime dirs).
         for cand in baseDirCandidates() {
-            if let st = readHubStatus(in: cand), st.isAlive(ttl: ttl) {
+            if let st = HubPaths.readHubStatus(in: cand), st.isAlive(ttl: ttl) {
                 let base = URL(fileURLWithPath: st.baseDir)
                 HubPaths.setBaseDirOverride(base)
                 UserDefaults.standard.set(st.baseDir, forKey: defaultsKey)
@@ -62,29 +62,7 @@ enum HubConnector {
 
     static func baseDirCandidates() -> [URL] {
         let fm = FileManager.default
-        let home = fm.homeDirectoryForCurrentUser
-
-        // Prefer sandboxed Hub container dir when present.
-        let cont = home
-            .appendingPathComponent("Library", isDirectory: true)
-            .appendingPathComponent("Containers", isDirectory: true)
-            .appendingPathComponent("com.rel.flowhub", isDirectory: true)
-            .appendingPathComponent("Data", isDirectory: true)
-            .appendingPathComponent("RELFlowHub", isDirectory: true)
-
-        // Prefer /private/tmp contract when present (dev fallback).
-        let tmp = URL(fileURLWithPath: "/private/tmp/RELFlowHub", isDirectory: true)
-
-        // Prefer legacy home directory contract when present.
-        let legacy = home.appendingPathComponent("RELFlowHub", isDirectory: true)
-
-        // App Group contract when present.
-        let group = home
-            .appendingPathComponent("Library", isDirectory: true)
-            .appendingPathComponent("Group Containers", isDirectory: true)
-            .appendingPathComponent("group.rel.flowhub", isDirectory: true)
-
-        let ordered = [cont, tmp, legacy, group]
+        let ordered = HubPaths.candidateBaseDirs()
         var out: [URL] = []
         for u in ordered {
             if fm.fileExists(atPath: u.path) {
@@ -101,7 +79,7 @@ enum HubConnector {
     static func readHubStatusIfAny(ttl: Double = 3.0) -> HubStatus? {
         // If connected override is set, read from it.
         if let base = HubPaths.baseDirOverride() {
-            if let st = readHubStatus(in: base), st.isAlive(ttl: ttl) {
+            if let st = HubPaths.readHubStatus(in: base), st.isAlive(ttl: ttl) {
                 return st
             }
         }
@@ -109,11 +87,5 @@ enum HubConnector {
         // Otherwise, probe quickly.
         let res = connect(ttl: ttl)
         return res.status
-    }
-
-    private static func readHubStatus(in baseDir: URL) -> HubStatus? {
-        let url = baseDir.appendingPathComponent("hub_status.json")
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(HubStatus.self, from: data)
     }
 }

@@ -58,7 +58,7 @@ Hub 对每条“可被 AI 处理/外发”的内容必须打标签：
 ### 1.1 进程/模块
 - Hub gRPC Server：`x-hub/grpc-server/hub_grpc_server/`（Node + SQLite）
 - Hub AI Runtime：`x-hub/python-runtime/python_service/relflowhub_mlx_runtime.py`（本地 MLX + 远程转发到 Bridge）
-- Bridge：`RELFlowHubBridge.app`（唯一联网进程）
+- Bridge：`X-Hub Bridge.app`（当前内部 bundle 名仍为 `RELFlowHubBridge.app`；唯一联网进程）
 - Memory Worker（新增）：`hub_memory_worker`（推荐独立进程；也可作为 gRPC server 的后台线程/interval 先做 MVP）
 
 ### 1.2 审计身份（Actor）

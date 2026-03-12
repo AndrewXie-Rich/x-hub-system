@@ -42,6 +42,7 @@ enum SupervisorJobSource: String, Codable, Sendable {
     case incident
     case skillCallback = "skill_callback"
     case grantResolution = "grant_resolution"
+    case approvalResolution = "approval_resolution"
 
     static func parse(_ raw: String?, fallback: SupervisorJobSource) -> SupervisorJobSource {
         let token = (raw ?? "")
@@ -62,6 +63,8 @@ enum SupervisorJobSource: String, Codable, Sendable {
             return .skillCallback
         case "grant_resolution", "grantresolution", "grant-resolution":
             return .grantResolution
+        case "approval_resolution", "approvalresolution", "approval-resolution":
+            return .approvalResolution
         default:
             return fallback
         }

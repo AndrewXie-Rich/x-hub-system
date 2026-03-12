@@ -4,6 +4,22 @@
 
 It is where interaction, session runtime, supervisor workflows, readiness checks, and tool execution UX live. It is not the trust anchor.
 
+Release scope note: this module README explains the active terminal implementation surface and operator entrypoints. Public release claims still follow the validated-mainline-only scope defined in the repository root `README.md`, `RELEASE.md`, and the open-source release templates.
+
+## Validated Scope Reminder
+
+For GitHub-facing claims, the current validated public mainline is limited to:
+
+- `XT-W3-23 -> XT-W3-24 -> XT-W3-25`
+
+Validated public statements stay limited to:
+
+- `XT memory UX adapter backed by Hub truth-source`
+- `Hub-governed multi-channel gateway`
+- `Hub-first governed automations`
+
+Anything else in `x-terminal/` should be read as active implementation context, internal operator material, or in-progress delivery surface unless it is explicitly included in the validated release slice above.
+
 ## What This Module Owns
 
 - Hub pairing UX and terminal-side diagnostics
@@ -65,6 +81,9 @@ XT_GATE_MODE=strict bash scripts/ci/xt_release_gate.sh
 
 ## Read Next
 
+- `README.md`
+- `RELEASE.md`
+- `docs/WORKING_INDEX.md`
 - `x-terminal/Sources/README.md`
 - `x-terminal/scripts/README.md`
 - `docs/REPO_LAYOUT.md`

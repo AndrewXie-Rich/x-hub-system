@@ -16,7 +16,7 @@ if [ ! -d "$SRC_APP" ]; then
   exit 1
 fi
 
-echo "Using Dock Agent app bundle: $SRC_APP"
+echo "Using X-Hub Dock Agent app bundle: $SRC_APP"
 echo "(Tip: for a cleaner install you can copy it to /Applications manually, but it's not required.)"
 
 PLIST_ID="com.rel.flowhub.dock-agent"
@@ -60,6 +60,6 @@ launchctl enable "gui/$UID_NOW/$PLIST_ID" 2>/dev/null || true
 launchctl kickstart -k "gui/$UID_NOW/$PLIST_ID" 2>/dev/null || true
 
 echo
-echo "Installed and started: $PLIST_ID"
+echo "Installed and started: X-Hub Dock Agent ($PLIST_ID)"
 echo "Next: System Settings → Privacy & Security → Accessibility → enable 'X-Hub Dock Agent'."
 echo "Logs: $HOME/RELFlowHub/dock_agent.*.log"

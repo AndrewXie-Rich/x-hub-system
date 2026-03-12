@@ -55,10 +55,15 @@ def _candidate_hub_status_paths() -> list[str]:
     return [
         # Signed builds: App Group base dir.
         os.path.join(home, 'Library/Group Containers/group.rel.flowhub', 'hub_status.json'),
+        # Future/preferred runtime dir name.
+        os.path.join(home, 'Library/Containers/com.rel.flowhub/Data/XHub', 'hub_status.json'),
         # Sandboxed Hub default bundle id.
         os.path.join(home, 'Library/Containers/com.rel.flowhub/Data/RELFlowHub', 'hub_status.json'),
+        os.path.join(home, 'XHub', 'hub_status.json'),
         # Legacy/dev location.
         os.path.join(home, 'RELFlowHub', 'hub_status.json'),
+        '/private/tmp/XHub/hub_status.json',
+        '/tmp/XHub/hub_status.json',
         # Shared tmp fallbacks.
         '/private/tmp/RELFlowHub/hub_status.json',
         '/tmp/RELFlowHub/hub_status.json',
@@ -103,11 +108,15 @@ def sock_path_candidates(sock_path: str | None = None) -> list[str]:
     # Prefer the stable contract path first.
     paths = [
         DEFAULT_SOCK_PATH,
+        os.path.expanduser('~/XHub/.rel_flow_hub.sock'),
+        '/private/tmp/XHub/.rel_flow_hub.sock',
+        '/tmp/XHub/.rel_flow_hub.sock',
         '/private/tmp/RELFlowHub/.rel_flow_hub.sock',
         '/tmp/RELFlowHub/.rel_flow_hub.sock',
     ]
 
     # Sandbox fallback for the default bundle id (ad-hoc builds often end up here).
+    paths.append(os.path.expanduser('~/Library/Containers/com.rel.flowhub/Data/XHub/.rel_flow_hub.sock'))
     paths.append(os.path.expanduser('~/Library/Containers/com.rel.flowhub/Data/RELFlowHub/.rel_flow_hub.sock'))
 
     # Future: App Group path (if you switch IPC to group containers).

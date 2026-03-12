@@ -1,11 +1,11 @@
-# REL Flow Hub IPC (JSONL over Unix Domain Socket)
+# X-Hub IPC (JSONL over Unix Domain Socket)
 
 Transport
 
 Two IPC modes exist:
 
 1) JSONL over AF_UNIX socket (non-sandbox builds)
-- path: `~/RELFlowHub/.rel_flow_hub.sock` (dev default) or `~/Library/Group Containers/group.rel.flowhub/.rel_flow_hub.sock` (signed builds)
+- path: `~/RELFlowHub/.rel_flow_hub.sock` (current legacy dev default) or `~/Library/Group Containers/group.rel.flowhub/.rel_flow_hub.sock` (signed builds)
 - framing: JSON Lines (one JSON object per line; UTF-8)
 
 2) File dropbox (App Sandbox builds)

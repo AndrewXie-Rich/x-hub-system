@@ -1,4 +1,4 @@
-"""Disable/stop RELFlowHubBridge.
+"""Disable/stop X-Hub Bridge.
 
 Usage:
   python3 tools/bridge_disable.py
@@ -40,4 +40,3 @@ def main() -> int:
 
 if __name__ == '__main__':
     raise SystemExit(main())
-

@@ -125,14 +125,23 @@ enum ToolExecutor {
     static func execute(call: ToolCall, projectRoot: URL, stream: (@MainActor @Sendable (String) -> Void)? = nil) async throws -> ToolResult {
         let ctx = AXProjectContext(root: projectRoot)
         let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: projectRoot)
+        let autonomyState = await xtResolveProjectAutonomyPolicy(
+            projectRoot: projectRoot,
+            config: config
+        )
         if !isDeviceAutomationTool(call.tool) {
-            let runtimePolicyDecision = xtToolRuntimePolicyDecision(call: call, config: config)
+            let runtimePolicyDecision = xtToolRuntimePolicyDecision(
+                call: call,
+                config: config,
+                effectiveAutonomy: autonomyState.effectivePolicy
+            )
             if !runtimePolicyDecision.allowed {
                 return deniedRuntimePolicyResult(
                     call: call,
                     projectRoot: projectRoot,
                     config: config,
-                    decision: runtimePolicyDecision
+                    decision: runtimePolicyDecision,
+                    effectiveAutonomy: autonomyState.effectivePolicy
                 )
             }
         }
@@ -154,8 +163,25 @@ enum ToolExecutor {
                 let s = try await sandbox.readFile(path: path)
                 return ToolResult(id: call.id, tool: call.tool, ok: true, output: "sandbox: true\n" + s)
             }
-            let s = try FileTool.readText(path: path, projectRoot: projectRoot)
-            return ToolResult(id: call.id, tool: call.tool, ok: true, output: s)
+            let allowedRoots = governedReadableRoots(
+                projectRoot: projectRoot,
+                config: config,
+                effectiveAutonomy: autonomyState.effectivePolicy
+            )
+            do {
+                let s = try FileTool.readText(
+                    path: path,
+                    projectRoot: projectRoot,
+                    allowedRoots: allowedRoots
+                )
+                return ToolResult(id: call.id, tool: call.tool, ok: true, output: s)
+            } catch let violation as XTPathScopeViolation {
+                return deniedPathScopeResult(
+                    call: call,
+                    projectRoot: projectRoot,
+                    violation: violation
+                )
+            }
 
         case .write_file:
             let path = strArg(call, "path")
@@ -167,8 +193,16 @@ enum ToolExecutor {
                 try await sandbox.writeFile(path: path, content: content)
                 return ToolResult(id: call.id, tool: call.tool, ok: true, output: "sandbox: true\nok")
             }
-            try FileTool.writeText(path: path, content: content, projectRoot: projectRoot)
-            return ToolResult(id: call.id, tool: call.tool, ok: true, output: "ok")
+            do {
+                try FileTool.writeText(path: path, content: content, projectRoot: projectRoot)
+                return ToolResult(id: call.id, tool: call.tool, ok: true, output: "ok")
+            } catch let violation as XTPathScopeViolation {
+                return deniedPathScopeResult(
+                    call: call,
+                    projectRoot: projectRoot,
+                    violation: violation
+                )
+            }
 
         case .list_dir:
             let path = strArg(call, "path")
@@ -185,11 +219,29 @@ enum ToolExecutor {
                     output: "sandbox: true\n" + (output.isEmpty ? "(empty)" : output)
                 )
             }
-            let items = try FileTool.listDir(path: path, projectRoot: projectRoot)
-            return ToolResult(id: call.id, tool: call.tool, ok: true, output: items.joined(separator: "\n"))
+            let allowedRoots = governedReadableRoots(
+                projectRoot: projectRoot,
+                config: config,
+                effectiveAutonomy: autonomyState.effectivePolicy
+            )
+            do {
+                let items = try FileTool.listDir(
+                    path: path,
+                    projectRoot: projectRoot,
+                    allowedRoots: allowedRoots
+                )
+                return ToolResult(id: call.id, tool: call.tool, ok: true, output: items.joined(separator: "\n"))
+            } catch let violation as XTPathScopeViolation {
+                return deniedPathScopeResult(
+                    call: call,
+                    projectRoot: projectRoot,
+                    violation: violation
+                )
+            }
 
         case .search:
             let pattern = strArg(call, "pattern")
+            let path = optStrArg(call, "path") ?? "."
             let glob = optStrArg(call, "glob")
             let useSandbox = shouldUseSandbox(call)
             if useSandbox {
@@ -209,9 +261,28 @@ enum ToolExecutor {
                     output: "sandbox: true\n" + out
                 )
             }
-            let lines = try FileTool.search(pattern: pattern, projectRoot: projectRoot, glob: glob)
-            let out = lines.isEmpty ? "(no matches)" : lines.joined(separator: "\n")
-            return ToolResult(id: call.id, tool: call.tool, ok: true, output: out)
+            let allowedRoots = governedReadableRoots(
+                projectRoot: projectRoot,
+                config: config,
+                effectiveAutonomy: autonomyState.effectivePolicy
+            )
+            do {
+                let lines = try FileTool.search(
+                    pattern: pattern,
+                    path: path,
+                    projectRoot: projectRoot,
+                    allowedRoots: allowedRoots,
+                    glob: glob
+                )
+                let out = lines.isEmpty ? "(no matches)" : lines.joined(separator: "\n")
+                return ToolResult(id: call.id, tool: call.tool, ok: true, output: out)
+            } catch let violation as XTPathScopeViolation {
+                return deniedPathScopeResult(
+                    call: call,
+                    projectRoot: projectRoot,
+                    violation: violation
+                )
+            }
 
         case .run_command:
             let cmd = strArg(call, "command")
@@ -2907,6 +2978,75 @@ url=\(url.absoluteString)
             return Double(s.trimmingCharacters(in: .whitespacesAndNewlines))
         }
         return nil
+    }
+
+    private static func hasGovernedDeviceAuthority(
+        projectRoot: URL,
+        config: AXProjectConfig,
+        effectiveAutonomy: AXProjectAutonomyEffectivePolicy
+    ) -> Bool {
+        guard effectiveAutonomy.effectiveMode == .trustedOpenClawMode else { return false }
+        guard effectiveAutonomy.allowDeviceTools else { return false }
+        guard config.automationMode == .trustedAutomation else { return false }
+        guard !config.trustedAutomationDeviceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+
+        let expectedWorkspaceBindingHash = xtTrustedAutomationWorkspaceHash(forProjectRoot: projectRoot)
+        let configuredWorkspaceBindingHash = config.workspaceBindingHash.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !configuredWorkspaceBindingHash.isEmpty else { return false }
+        return configuredWorkspaceBindingHash == expectedWorkspaceBindingHash
+    }
+
+    private static func governedReadableRoots(
+        projectRoot: URL,
+        config: AXProjectConfig,
+        effectiveAutonomy: AXProjectAutonomyEffectivePolicy
+    ) -> [URL] {
+        var roots: [URL] = [projectRoot]
+        guard hasGovernedDeviceAuthority(
+            projectRoot: projectRoot,
+            config: config,
+            effectiveAutonomy: effectiveAutonomy
+        ) else {
+            return roots
+        }
+
+        for raw in config.governedReadableRoots {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            roots.append(URL(fileURLWithPath: trimmed))
+        }
+
+        var ordered: [URL] = []
+        var seen = Set<String>()
+        for root in roots {
+            let resolved = PathGuard.resolve(root).path
+            guard seen.insert(resolved).inserted else { continue }
+            ordered.append(URL(fileURLWithPath: resolved, isDirectory: true))
+        }
+        return ordered
+    }
+
+    private static func deniedPathScopeResult(
+        call: ToolCall,
+        projectRoot: URL,
+        violation: XTPathScopeViolation
+    ) -> ToolResult {
+        let summary: [String: JSONValue] = [
+            "tool": .string(call.tool.rawValue),
+            "ok": .bool(false),
+            "project_id": .string(AXProjectRegistryStore.projectId(forRoot: projectRoot)),
+            "deny_code": .string(violation.denyCode),
+            "policy_source": .string("governed_path_scope"),
+            "policy_reason": .string(violation.policyReason),
+            "target_path": .string(violation.targetPath),
+            "allowed_roots": .array(violation.allowedRoots.map(JSONValue.string)),
+        ]
+        return ToolResult(
+            id: call.id,
+            tool: call.tool,
+            ok: false,
+            output: structuredOutput(summary: summary, body: violation.detail)
+        )
     }
 
     private static func normalizedToolTextArg(_ call: ToolCall, _ key: String) -> String {

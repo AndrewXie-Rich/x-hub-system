@@ -3,6 +3,10 @@ import Darwin
 import Security
 
 public enum SharedPaths {
+    public static let preferredRuntimeDirectoryName = "XHub"
+    public static let legacyRuntimeDirectoryName = "RELFlowHub"
+    public static let runtimeDirectoryAliases = [preferredRuntimeDirectoryName, legacyRuntimeDirectoryName]
+
     // Dev builds are often ad-hoc signed (no TeamIdentifier). On recent macOS versions,
     // touching App Group containers from such builds can trigger repeated
     // “would like to access data from other apps” prompts. Cache team id once.
@@ -84,32 +88,40 @@ public enum SharedPaths {
         return FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupId)
     }
 
+    private static func runtimeDirectories(in base: URL) -> [URL] {
+        runtimeDirectoryAliases.map { base.appendingPathComponent($0, isDirectory: true) }
+    }
+
+    private static func legacyRuntimeDirectory(in base: URL) -> URL {
+        base.appendingPathComponent(legacyRuntimeDirectoryName, isDirectory: true)
+    }
 
     public static func hubDirectoryCandidates() -> [URL] {
         var out: [URL] = []
 
-        if let g = appGroupDirectory() {
+        let groupDir = appGroupDirectory()
+        if let g = groupDir {
             out.append(g)
         }
 
-        let useAppGroup = (appGroupDirectory() != nil)
+        let useAppGroup = (groupDir != nil)
 
         // Dev sandbox builds: prefer the app container directory (stable, no TCC spam).
         // NOTE: Some builds do not expose a container home via FileManager.homeDirectoryForCurrentUser,
         // so we also probe the canonical container path by bundle id.
         if !useAppGroup {
             if let cd = containerDataDirectory() {
-                out.append(cd.appendingPathComponent("RELFlowHub", isDirectory: true))
+                out.append(contentsOf: runtimeDirectories(in: cd))
             }
         }
 
         if isSandboxedProcess() && !useAppGroup {
-            out.append(sandboxHomeDirectory().appendingPathComponent("RELFlowHub", isDirectory: true))
-            out.append(URL(fileURLWithPath: "/private/tmp", isDirectory: true).appendingPathComponent("RELFlowHub", isDirectory: true))
-            out.append(realHomeDirectory().appendingPathComponent("RELFlowHub", isDirectory: true))
+            out.append(contentsOf: runtimeDirectories(in: sandboxHomeDirectory()))
+            out.append(contentsOf: runtimeDirectories(in: URL(fileURLWithPath: "/private/tmp", isDirectory: true)))
+            out.append(contentsOf: runtimeDirectories(in: realHomeDirectory()))
         } else {
-            out.append(realHomeDirectory().appendingPathComponent("RELFlowHub", isDirectory: true))
-            out.append(sandboxHomeDirectory().appendingPathComponent("RELFlowHub", isDirectory: true))
+            out.append(contentsOf: runtimeDirectories(in: realHomeDirectory()))
+            out.append(contentsOf: runtimeDirectories(in: sandboxHomeDirectory()))
         }
 
         // De-dup by path.
@@ -124,7 +136,26 @@ public enum SharedPaths {
 
     @discardableResult
     public static func ensureHubDirectory() -> URL {
-        for dir in hubDirectoryCandidates() {
+        let groupDir = appGroupDirectory()
+        let useAppGroup = (groupDir != nil)
+        var writeCandidates: [URL] = []
+        if let groupDir {
+            writeCandidates.append(groupDir)
+        }
+        if !useAppGroup, let cd = containerDataDirectory() {
+            writeCandidates.append(legacyRuntimeDirectory(in: cd))
+        }
+        if isSandboxedProcess() && !useAppGroup {
+            writeCandidates.append(legacyRuntimeDirectory(in: sandboxHomeDirectory()))
+            writeCandidates.append(legacyRuntimeDirectory(in: URL(fileURLWithPath: "/private/tmp", isDirectory: true)))
+            writeCandidates.append(legacyRuntimeDirectory(in: realHomeDirectory()))
+        } else {
+            writeCandidates.append(legacyRuntimeDirectory(in: realHomeDirectory()))
+            writeCandidates.append(legacyRuntimeDirectory(in: sandboxHomeDirectory()))
+        }
+
+        var seen: Set<String> = []
+        for dir in writeCandidates where seen.insert(dir.path).inserted {
             do {
                 try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
                 return dir
@@ -133,7 +164,7 @@ public enum SharedPaths {
             }
         }
         // Fall back to real home even if not writable; callers will surface bind/write errors.
-        return realHomeDirectory().appendingPathComponent("RELFlowHub", isDirectory: true)
+        return legacyRuntimeDirectory(in: realHomeDirectory())
     }
 
     public static func ipcSocketPath() -> String {
@@ -143,14 +174,13 @@ public enum SharedPaths {
         }
 
         // Prefer real user home for compatibility with existing tools.
-        let homeDir = realHomeDirectory().appendingPathComponent("RELFlowHub", isDirectory: true)
+        let homeDir = legacyRuntimeDirectory(in: realHomeDirectory())
         do {
             try FileManager.default.createDirectory(at: homeDir, withIntermediateDirectories: true)
             return homeDir.appendingPathComponent(".rel_flow_hub.sock").path
         } catch {
             // Fall back to /private/tmp. (Note: /tmp is a symlink to /private/tmp.)
-            let tmpDir = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
-                .appendingPathComponent("RELFlowHub", isDirectory: true)
+            let tmpDir = legacyRuntimeDirectory(in: URL(fileURLWithPath: "/private/tmp", isDirectory: true))
             try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
             return tmpDir.appendingPathComponent(".rel_flow_hub.sock").path
         }
@@ -172,13 +202,12 @@ public enum SharedPaths {
         // Sandboxed Hub builds cannot write to the real home directory reliably.
         // Use a shared tmp directory for cross-process communication.
         if isSandboxedProcess() {
-            let tmp = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
-                .appendingPathComponent("RELFlowHub", isDirectory: true)
+            let tmp = legacyRuntimeDirectory(in: URL(fileURLWithPath: "/private/tmp", isDirectory: true))
             try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
             return tmp
         }
 
-        let dir = realHomeDirectory().appendingPathComponent("RELFlowHub", isDirectory: true)
+        let dir = legacyRuntimeDirectory(in: realHomeDirectory())
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }

@@ -4,6 +4,7 @@ enum HubPaths {
     private static let lock = DispatchQueue(label: "xterminal.hubpaths")
     private static var _baseDirOverride: URL? = nil
     private static var _baseDirOverridePinned: Bool = false
+    private static let runtimeDirectoryAliases = ["XHub", "RELFlowHub"]
 
     static func setBaseDirOverride(_ url: URL?) {
         lock.sync {
@@ -38,30 +39,58 @@ enum HubPaths {
         if !env.isEmpty {
             return URL(fileURLWithPath: NSString(string: env).expandingTildeInPath)
         }
-        let home = FileManager.default.homeDirectoryForCurrentUser
+        if let live = liveBaseDirCandidate() {
+            return live
+        }
+        for cand in candidateBaseDirs() where FileManager.default.fileExists(atPath: cand.path) {
+            return cand
+        }
+        return defaultGroupBaseDir()
+    }
 
-        // Match FA Tracker's vendored relflowhub_ipc.py default selection.
-        let cont = home
+    static func candidateBaseDirs() -> [URL] {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let containerBase = home
             .appendingPathComponent("Library", isDirectory: true)
             .appendingPathComponent("Containers", isDirectory: true)
             .appendingPathComponent("com.rel.flowhub", isDirectory: true)
             .appendingPathComponent("Data", isDirectory: true)
-            .appendingPathComponent("RELFlowHub", isDirectory: true)
-        if FileManager.default.fileExists(atPath: cont.path) {
-            return cont
-        }
+        let group = defaultGroupBaseDir()
+        let tmpBase = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
 
-        let tmp = URL(fileURLWithPath: "/private/tmp/RELFlowHub", isDirectory: true)
-        if FileManager.default.fileExists(atPath: tmp.path) {
-            return tmp
-        }
+        var ordered: [URL] = [group]
+        ordered.append(contentsOf: runtimeNamedDirs(in: containerBase))
+        ordered.append(contentsOf: runtimeNamedDirs(in: tmpBase))
+        ordered.append(contentsOf: runtimeNamedDirs(in: home))
 
-        let legacy = home.appendingPathComponent("RELFlowHub", isDirectory: true)
-        if FileManager.default.fileExists(atPath: legacy.path) {
-            return legacy
-        }
+        var seen: Set<String> = []
+        return ordered.filter { seen.insert($0.path).inserted }
+    }
 
-        return home.appendingPathComponent("Library/Group Containers/group.rel.flowhub")
+    static func readHubStatus(in baseDir: URL) -> HubStatus? {
+        let url = baseDir.appendingPathComponent("hub_status.json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(HubStatus.self, from: data)
+    }
+
+    private static func runtimeNamedDirs(in base: URL) -> [URL] {
+        runtimeDirectoryAliases.map { base.appendingPathComponent($0, isDirectory: true) }
+    }
+
+    private static func defaultGroupBaseDir() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Group Containers", isDirectory: true)
+            .appendingPathComponent("group.rel.flowhub", isDirectory: true)
+    }
+
+    private static func liveBaseDirCandidate(ttl: Double = 5.0) -> URL? {
+        for cand in candidateBaseDirs() {
+            guard let status = readHubStatus(in: cand), status.isAlive(ttl: ttl) else { continue }
+            let base = URL(fileURLWithPath: NSString(string: status.baseDir).expandingTildeInPath)
+            return base
+        }
+        return nil
     }
 
     static func reqDir() -> URL {

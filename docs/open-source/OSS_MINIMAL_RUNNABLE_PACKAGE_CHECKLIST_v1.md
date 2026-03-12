@@ -5,14 +5,47 @@
 - owner: `Core Maintainers / Security / QA / Release`
 - release_profile: `minimal-runnable-package`
 - companion:
+  - `README.md`
+  - `RELEASE.md`
+  - `docs/WORKING_INDEX.md`
   - `docs/open-source/OSS_RELEASE_CHECKLIST_v1.md`
   - `docs/open-source/GITHUB_OSS_PUBLIC_FILE_PATHS_v1.md`
   - `docs/open-source/GITHUB_OSS_PUBLIC_FILE_PATHS_v1.en.md`
+  - `docs/open-source/GITHUB_RELEASE_NOTES_TEMPLATE_v1.md`
+  - `docs/open-source/GITHUB_RELEASE_NOTES_TEMPLATE_v1.en.md`
 
 ## 0) 适用范围
 
 用于首版“先小后全”的公开发布：  
 目标是**快速可跑 + 安全可控 + 证据闭环**，不是一次性公开全部历史资产。
+
+本检查单是打包与发布操作文档，不是产品叙事文档，也不能单独扩大发布 claim。
+
+## 0.1) 当前公开口径冻结
+
+当前 GitHub 对外口径仍限定在 validated mainline：
+
+- `XT-W3-23 -> XT-W3-24 -> XT-W3-25`
+
+当前可对外表述仅限：
+
+- `XT memory UX adapter backed by Hub truth-source`
+- `Hub-governed multi-channel gateway`
+- `Hub-first governed automations`
+
+仓内工单、看板、evidence、operator 导航文档可以覆盖更宽的内部执行面，但都不能直接外推成公开发布能力声明。
+
+## 0.2) 发布操作者阅读顺序
+
+建议按以下顺序联读：
+
+1. `README.md`
+2. `RELEASE.md`
+3. `CHANGELOG.md`
+4. `docs/open-source/GITHUB_RELEASE_NOTES_TEMPLATE_v1.md`
+5. `docs/open-source/GITHUB_RELEASE_NOTES_TEMPLATE_v1.en.md`
+6. `docs/WORKING_INDEX.md`
+7. `docs/open-source/OSS_RELEASE_CHECKLIST_v1.md`
 
 ---
 
@@ -55,6 +88,10 @@ DoD:
 - [ ] `docs/open-source/OSS_RELEASE_CHECKLIST_v1.md`
 - [ ] `docs/open-source/GITHUB_OSS_PUBLIC_FILE_PATHS_v1.md`
 - [ ] 本检查单（中/英）
+
+说明：
+- `docs/WORKING_INDEX.md` 用于操作导航，不用于扩大公开发布口径。
+- 内部 work-order / board 文档若未被 `README.md`、`RELEASE.md`、release notes 模板明确纳入，不应直接写入 GitHub Release claim。
 
 ---
 
@@ -105,6 +142,7 @@ rg --files | rg -n "(^|/)(build|data|\\.axcoder|\\.build|\\.sandbox_home|\\.sand
 - [ ] 明确标注 alpha 非稳定承诺（API 可能变更）
 - [ ] 回滚路径已验证（回退到上一个 tag 可执行）
 - [ ] 发布裁决已留痕：`GO|NO-GO|INSUFFICIENT_EVIDENCE`
+- [ ] 对外文案未把内部工单进度、operator 导航、或未验证实现面误写成公开已验证能力
 
 建议留痕文件：
 - `build/reports/oss_release_readiness_v1.json`

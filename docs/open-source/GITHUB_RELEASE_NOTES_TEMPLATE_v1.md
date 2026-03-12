@@ -10,6 +10,7 @@
 
 - `README.md`
 - `RELEASE.md`
+- `docs/WORKING_INDEX.md`
 - `docs/open-source/OSS_RELEASE_CHECKLIST_v1.md`
 
 ---
@@ -22,6 +23,8 @@
 X-Hub is a trusted control plane for AI execution.
 
 This release is intentionally narrow and only reflects the currently validated public release slice.
+
+Internal work-order packs, operator docs, and in-progress implementation slices in this repository may extend beyond this public release slice. Do not mirror that internal progress directly into external release messaging.
 
 ## What This Release Covers
 
@@ -76,11 +79,10 @@ Build the Hub app:
 x-hub/tools/build_hub_app.command
 ```
 
-Run X-Hub from source:
+Launch the built X-Hub app:
 
 ```bash
-cd x-hub/macos/RELFlowHub
-swift run RELFlowHub
+open build/X-Hub.app
 ```
 
 Run X-Terminal from source:
@@ -95,6 +97,8 @@ Run the XT release gate:
 ```bash
 bash x-terminal/scripts/ci/xt_release_gate.sh
 ```
+
+Developer note: the Hub-side Swift package still uses the internal target name `RELFlowHub` under the hood, but the preferred source-run alias is `XHub` and the public product name is `X-Hub`.
 
 ## Security Posture
 
@@ -115,6 +119,7 @@ If a capability is not explicitly covered by the validated release slice above, 
 
 - `README.md`
 - `RELEASE.md`
+- `docs/WORKING_INDEX.md`
 - `docs/REPO_LAYOUT.md`
 - `docs/open-source/OSS_RELEASE_CHECKLIST_v1.md`
 
@@ -135,3 +140,4 @@ If rollback is required, use the last known good tag and the rollback procedure 
 4. 如需写硬件建议，保持：
    - `Mac mini` 默认推荐
    - `Mac Studio` 高容量推荐
+5. 不要把内部工单名、内部 slice 进度、或 operator 导航内容直接写成公开 release claim

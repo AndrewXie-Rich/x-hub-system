@@ -36,6 +36,21 @@ For the current public GitHub package, validated external wording is limited to:
 - `Hub-governed multi-channel gateway`
 - `Hub-first governed automations`
 
+Internal work-order packs, operator docs, and implementation-progress evidence may describe broader repo activity. They do not expand public release claims by themselves.
+
+## 0.2 Release Operator Read Order
+
+Use these documents together when preparing or reviewing a public release:
+
+1. `README.md`
+2. `RELEASE.md`
+3. `CHANGELOG.md`
+4. `docs/open-source/GITHUB_RELEASE_NOTES_TEMPLATE_v1.md`
+5. `docs/open-source/GITHUB_RELEASE_NOTES_TEMPLATE_v1.en.md`
+6. `docs/WORKING_INDEX.md`
+
+`docs/WORKING_INDEX.md` is a navigation companion for operators. It is not a source for expanding GitHub-facing product claims.
+
 ## 1) Release Profile
 
 - recommended first public tag: `v0.1.0-alpha`
@@ -98,6 +113,7 @@ Evidence:
 
 DoD:
 - independent maintainer can reproduce quick start on clean machine.
+- reproduced quick start stays inside the validated public mainline and does not rely on undocumented private operator steps.
 
 ### OSS-G3 / Security Baseline
 

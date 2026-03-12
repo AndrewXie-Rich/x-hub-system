@@ -150,14 +150,14 @@ x-hub/tools/build_hub_app.command
 
 ```bash
 cd x-hub/macos/RELFlowHub
-swift run RELFlowHub
+swift run XHub
 ```
 
 ### Run X-Hub Bridge
 
 ```bash
 cd x-hub/macos/RELFlowHub
-swift run RELFlowHubBridge
+swift run XHubBridge
 ```
 
 ### Run X-Terminal
