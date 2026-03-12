@@ -1,6 +1,6 @@
 # X-Terminal Work Orders Index
 
-- updatedAt: 2026-03-11
+- updatedAt: 2026-03-12
 - scope: `x-terminal/` module only
 
 This page is an internal execution index for X-Terminal delivery packs.
@@ -61,6 +61,14 @@ Use the repository root `README.md` and module READMEs for product overview and 
   - Purpose: 多渠道入口与流式体验产品化包（吸收 bot 外壳优势，但安全/记忆/授权真相源仍在 Hub）
   - Includes: `XT-W3-24/XT-W3-24-A/B/C/D/E/F`、首版三渠道、streaming UX、operator console、onboard/bootstrap、channel-hub boundary
   - Release condition: must satisfy `xt-supervisor-multipool-lane-execution-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md`, and `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
+- `xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`
+  - Purpose: 多渠道 Supervisor Operator Channel 直执行包（IM 指令自动化、主动推送、审批卡片、project-first route、preferred-device route、WhatsApp hybrid 边界）
+  - Includes: `XT-W3-24-G/H/I/J/K/L/M/N`、OpenClaw channel/plugin reuse map、IM identity binding、structured actions、Slack/Telegram/Feishu adapters、delivery outbox、grant/audit 主链
+  - Release condition: must satisfy `xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `docs/xhub-connectors-isolation-and-runtime-v1.md`, and `docs/memory-new/xhub-trusted-automation-device-execution-plane-implementation-pack-v1.md`
+- `xt-w3-24-supervisor-operator-channels-hub-security-impact-gate-v1.md`
+  - Purpose: 多渠道 Supervisor Operator Channel 的 Hub 安全冲击门禁（默认不暴露 Hub 原始 IP、ingress topology isolation、signature/replay/allowlist、secret residency、availability bulkhead、incident kill-switch）
+  - Includes: `XH-CHAN-SI-G0..G7`、provider/domain/relay 暴露面规则、No-Go 列表、对 `XT-W3-24-G..N` 的安全映射与证据清单
+  - Release condition: must satisfy `xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`, `docs/xhub-connectors-isolation-and-runtime-v1.md`, and `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
 - `xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`
   - Purpose: 自动化产品面补短板执行包（补齐事件驱动、主动解阻、run timeline、一键启用与竞争性毕业线）
   - Includes: `XT-W3-25/XT-W3-25-A/B/C/D/E/F`、automation recipe、event runner、directed takeover、operator explainability、starter templates、comparative graduation
@@ -117,6 +125,10 @@ Use the repository root `README.md` and module READMEs for product overview and 
   - Purpose: 补齐 Supervisor 的正式决策轨、角色化模型路由、动作优先 dashboard、低风险默认建议与可解释记忆压缩
   - Includes: `XT-W3-33/A/B/C/D/E/F/G/H`、project spec capsule、decision/background tracks、role-based model routing、actionability snapshot、rhythm v2、decision-blocker assist、memory compaction、require-real governance regression
   - Release condition: must satisfy `xt-w3-31-supervisor-portfolio-awareness-and-project-action-feed-implementation-pack-v1.md`, `xt-w3-32-supervisor-skill-orchestration-and-governed-event-loop-implementation-pack-v1.md`, `docs/memory-new/xhub-terminal-hub-memory-governance-work-orders-v1.md`, and `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
+- `xt-w3-34-openclaw-skill-reuse-and-execution-surface-implementation-pack-v1.md`
+  - Purpose: 吸收 OpenClaw 可复用 skills/plugins/执行面，但继续保持 Hub-first grant、memory、audit、kill-switch 主链不变
+  - Includes: `XT-W3-34/A/B/C/D/E/F/G/H`、OpenClaw skill import normalization、repo.write.file、repo.test.run、repo.build.run、repo.git.apply、structured skill result writeback、plan graph richer semantics、connector/external action reuse
+  - Release condition: must satisfy `xt-w3-30-openclaw-mode-capability-gap-closure-implementation-pack-v1.md`, `xt-w3-32-supervisor-skill-orchestration-and-governed-event-loop-implementation-pack-v1.md`, and `docs/memory-new/xhub-trusted-automation-device-execution-plane-implementation-pack-v1.md`
 - `xt-w1-02-route-state-machine.md`
   - Purpose: XT-W1-02 delivery doc for route-state convergence (`auto|grpc|file`)
   - Includes: state machine matrix, fallback/error mapping, regression samples, manual verification commands

@@ -1,4 +1,4 @@
-# X-Hub Distributed Secure Interaction System - Product White Paper (MIT License/GitHub Release Version)
+# X-Hub Distributed Secure Interaction System - Product White Paper (GitHub Release Version)
 
 # Preface
 
@@ -6,7 +6,7 @@ With the popularization of AI interaction scenarios and the increasing demand fo
 
 This white paper details the product positioning, core architecture, operation modes, security system, and application scenarios of the X-Hub Distributed Secure Interaction System (hereinafter referred to as the "X-Hub System"). It fully presents the core design concept of the system: "X-Hub as the only trusted core, lightweight terminal interaction, security and controllability, and multi-scenario adaptability", providing users, technical partners, and security audit institutions with a complete product understanding and technical reference.
 
-The content of this white paper is based on the current core design of the system and will be continuously updated with product iterations. All technical details and security specifications are real and implementable engineering designs without idealized assumptions. This white paper, along with relevant technical documents and codes of X-Hub, will be released on the GitHub platform under the MIT License for developers' reference, use, and secondary development.
+The content of this white paper is based on the current core design of the system and will be continuously updated with product iterations. All technical details and security specifications are real and implementable engineering designs without idealized assumptions. This white paper and the repository materials it accompanies are currently published as source-available materials under the repository's `FSL-1.1-MIT` licensing model. That means the current repository state is not an OSI open-source release; see `LICENSE`, `LICENSE_POLICY.md`, `GOVERNANCE.md`, and `TRADEMARKS.md` for the exact current terms.
 
 # Executive Summary
 
@@ -512,12 +512,19 @@ Rollout target: ETH first. Core objective: Hub is the only trusted source; termi
 
 - Residual risk + mitigation: with single-sign hot wallet C, residual compromise risk is reduced via limits/rate controls, address allowlists, mandatory B confirmation for new recipients or large amounts, and kill-switch; roadmap includes hardware wallet/multisig/threshold signing.
 
-# Appendix: MIT License Statement (For GitHub Release)
+# Appendix: Repository License Note (GitHub Release Version)
 
-**Copyright (c) ** **2026** ** Andrew.Xie**
+This white paper is distributed as part of the repository's current
+source-available release model.
 
-is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+Current repository-state summary:
 
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+1. The repository is currently published under `FSL-1.1-MIT`.
+2. The exact current terms live in `LICENSE`, `LICENSE_POLICY.md`,
+   `GOVERNANCE.md`, and `TRADEMARKS.md`.
+3. Each version converts to MIT on the second anniversary of the date that
+   version was made available, as stated in `LICENSE`.
+4. Trademark rights are not granted by the source license.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+If this white paper is copied or redistributed with a future repository version,
+follow the license and notice files that ship with that version.

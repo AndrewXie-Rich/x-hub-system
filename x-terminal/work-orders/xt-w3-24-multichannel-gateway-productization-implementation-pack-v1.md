@@ -16,6 +16,11 @@
   - `docs/memory-new/xhub-security-innovation-work-orders-v1.md`
   - `X_MEMORY.md`
 
+## Direct-Execution Child Pack
+
+- `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`
+  - Purpose: 把 `Slack / Telegram / Feishu / WhatsApp` 的多渠道入口细化成真正可执行的 `Supervisor Operator Channel` 工单包，冻结 OpenClaw 可复用面、project-first route、structured actions、grant/audit 主链与 WhatsApp hybrid 边界。
+
 ## 0) 目标与硬边界
 
 - 目标：吸收 `external workflow baseline` 在“多渠道入口、快速上手、流式可见输出、会话运维”上的产品化优势，但底层继续坚持 Hub-first 的安全、记忆、授权与审计架构。
@@ -189,6 +194,11 @@
 
 - 目标：把渠道入口的 webhook、token、session、side effect、prompt export 全部收敛到 Hub 安全主链并形成 fail-closed 边界。
 - 交付物：`build/reports/xt_w3_24_f_channel_hub_boundary_evidence.v1.json`
+
+### 3.7 `XT-W3-24-G..N` Supervisor Operator Channels Direct Execution
+
+- 目标：将 `project room / operator chat / approval card / alert push / preferred-device route / WhatsApp hybrid` 细化到可直接 claim 的执行切片。
+- 交付物：`x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`
 
 ## 4) 任务级执行包
 

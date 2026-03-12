@@ -1,0 +1,253 @@
+import assert from 'node:assert/strict';
+
+import {
+  buildSlackResultSummary,
+  createSlackResultPublisher,
+  publishSlackCommandResult,
+} from './SlackResultPublisher.js';
+
+function run(name, fn) {
+  try {
+    fn();
+    process.stdout.write(`ok - ${name}\n`);
+  } catch (error) {
+    process.stderr.write(`not ok - ${name}\n`);
+    throw error;
+  }
+}
+
+async function runAsync(name, fn) {
+  try {
+    await fn();
+    process.stdout.write(`ok - ${name}\n`);
+  } catch (error) {
+    process.stderr.write(`not ok - ${name}\n`);
+    throw error;
+  }
+}
+
+function makeResult(overrides = {}) {
+  return {
+    request_id: 'slack:event_callback:Ev-1',
+    command: {
+      action_name: 'deploy.plan',
+      audit_ref: 'audit-1',
+      route_project_id: 'project_alpha',
+      channel: {
+        provider: 'slack',
+        account_id: 'ops_bot',
+        conversation_id: 'C123',
+        thread_key: '1710000000.0001',
+      },
+    },
+    gate: {
+      action_name: 'deploy.plan',
+      scope_type: 'project',
+      scope_id: 'project_alpha',
+      route_mode: 'hub_to_xt',
+      deny_code: '',
+    },
+    route: {
+      route_mode: 'hub_to_xt',
+      resolved_device_id: 'xt-alpha-1',
+      deny_code: '',
+    },
+    dispatch: {
+      kind: 'xt_command',
+    },
+    ...overrides,
+  };
+}
+
+run('SlackResultPublisher builds routed summary payload from orchestration result', () => {
+  const out = buildSlackResultSummary(makeResult());
+  assert.equal(!!out.ok, true);
+  assert.equal(String(out.payload?.channel || ''), 'C123');
+  assert.equal(String(out.payload?.thread_ts || ''), '1710000000.0001');
+  assert.equal(String(out.payload?.metadata?.event_payload?.status || ''), 'routed_to_xt');
+  assert.match(String(out.payload?.text || ''), /project=project_alpha/);
+  assert.match(String(out.payload?.text || ''), /Action: deploy.plan/);
+});
+
+run('SlackResultPublisher reflects deny and route blocked outcomes in summary copy', () => {
+  const denied = buildSlackResultSummary(makeResult({
+    gate: {
+      action_name: 'deploy.plan',
+      deny_code: 'role_not_allowed',
+      route_mode: 'hub_to_xt',
+    },
+    route: null,
+    dispatch: { kind: 'deny' },
+  }));
+  assert.equal(!!denied.ok, true);
+  assert.match(String(denied.payload?.text || ''), /status=denied/);
+  assert.match(String(denied.payload?.text || ''), /Reason: role_not_allowed/);
+
+  const blocked = buildSlackResultSummary(makeResult({
+    route: {
+      route_mode: 'xt_offline',
+      resolved_device_id: 'xt-alpha-1',
+      deny_code: 'preferred_device_offline',
+    },
+    dispatch: { kind: 'route_blocked' },
+  }));
+  assert.equal(!!blocked.ok, true);
+  assert.match(String(blocked.payload?.text || ''), /status=route_blocked/);
+  assert.match(String(blocked.payload?.text || ''), /Device: xt-alpha-1/);
+});
+
+run('SlackResultPublisher renders actual Hub query summaries when execution data is present', () => {
+  const out = buildSlackResultSummary(makeResult({
+    command: {
+      ...makeResult().command,
+      action_name: 'supervisor.status.get',
+    },
+    dispatch: {
+      kind: 'hub_query',
+    },
+    execution: {
+      ok: true,
+      route: {
+        route_mode: 'hub_only_status',
+        resolved_device_id: 'xt-alpha-1',
+        xt_online: true,
+      },
+      query: {
+        action_name: 'supervisor.status.get',
+        project_id: 'project_alpha',
+        root_project_id: 'project_root',
+        dispatch: {
+          assigned_agent_profile: 'release-agent',
+          queue_priority: 7,
+        },
+        heartbeat: {
+          queue_depth: 3,
+          oldest_wait_ms: 9000,
+          risk_tier: 'medium',
+        },
+        provider_status: {
+          runtime_state: 'ready',
+        },
+      },
+    },
+  }));
+  assert.equal(!!out.ok, true);
+  assert.match(String(out.payload?.text || ''), /status=supervisor_status/);
+  assert.match(String(out.payload?.text || ''), /Device: xt-alpha-1/);
+  assert.match(String(out.payload?.text || ''), /Dispatch: release-agent priority=7/);
+});
+
+run('SlackResultPublisher renders governed XT command execution summaries when execution data is present', () => {
+  const out = buildSlackResultSummary(makeResult({
+    execution: {
+      ok: true,
+      xt_command: {
+        action_name: 'deploy.plan',
+        command_id: 'xtcmd-1',
+        project_id: 'project_alpha',
+        resolved_device_id: 'xt-alpha-1',
+        status: 'prepared',
+        detail: 'automation prepared',
+        run_id: 'run-1',
+        audit_ref: 'audit-xt-1',
+      },
+    },
+  }));
+  assert.equal(!!out.ok, true);
+  assert.match(String(out.payload?.text || ''), /XT Command Prepared/);
+  assert.match(String(out.payload?.text || ''), /status=xt_command_prepared/);
+  assert.match(String(out.payload?.text || ''), /Run: run-1/);
+});
+
+run('SlackResultPublisher renders actual grant decision summaries when execution data is present', () => {
+  const out = buildSlackResultSummary(makeResult({
+    command: {
+      ...makeResult().command,
+      action_name: 'grant.approve',
+      pending_grant: {
+        grant_request_id: 'gr-1',
+        project_id: 'project_alpha',
+        status: 'pending',
+      },
+    },
+    dispatch: {
+      kind: 'hub_grant_action',
+    },
+    execution: {
+      ok: true,
+      grant_action: {
+        action_name: 'grant.approve',
+        grant_request_id: 'gr-1',
+        decision: 'approved',
+        note: 'approved after release review',
+        grant: {
+          grant_id: 'grant-1',
+          client: {
+            project_id: 'project_alpha',
+          },
+          status: 'active',
+          expires_at_ms: 1710009999000,
+        },
+      },
+    },
+  }));
+  assert.equal(!!out.ok, true);
+  assert.match(String(out.payload?.text || ''), /Grant Approved/);
+  assert.match(String(out.payload?.text || ''), /status=grant_approved/);
+  assert.match(String(out.payload?.text || ''), /Grant request: gr-1/);
+  assert.match(String(out.payload?.text || ''), /Note: approved after release review/);
+});
+
+run('SlackResultPublisher renders execution failures without dropping the Slack reply', () => {
+  const out = buildSlackResultSummary(makeResult({
+    command: {
+      ...makeResult().command,
+      action_name: 'supervisor.queue.get',
+    },
+    dispatch: {
+      kind: 'hub_query',
+    },
+    execution: {
+      ok: false,
+      deny_code: 'project_scope_missing',
+      detail: 'queue view requires project scope',
+      route: {
+        route_mode: 'hub_only_status',
+      },
+    },
+  }));
+  assert.equal(!!out.ok, true);
+  assert.match(String(out.payload?.text || ''), /Hub Command Failed/);
+  assert.match(String(out.payload?.text || ''), /status=hub_execution_failed/);
+  assert.match(String(out.payload?.text || ''), /Reason: project_scope_missing/);
+});
+
+await runAsync('SlackResultPublisher posts summary payload through SlackApiClient shape', async () => {
+  const calls = [];
+  const out = await publishSlackCommandResult({
+    result: makeResult(),
+    slack_client: {
+      async postMessage(payload) {
+        calls.push(payload);
+        return {
+          ok: true,
+          message_ts: '1710000000.0002',
+        };
+      },
+    },
+  });
+
+  assert.equal(!!out.ok, true);
+  assert.equal(calls.length, 1);
+  assert.equal(String(calls[0]?.channel || ''), 'C123');
+  assert.equal(String(out.delivered?.message_ts || ''), '1710000000.0002');
+});
+
+await runAsync('SlackResultPublisher factory fails closed when Slack client is invalid', async () => {
+  const publisher = createSlackResultPublisher({
+    slack_client: null,
+  });
+  const out = await publisher.publish(makeResult());
+  assert.equal(!!out.ok, false);
+  assert.equal(String(out.deny_code || ''), 'slack_client_invalid');
+});
