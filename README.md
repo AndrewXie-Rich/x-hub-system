@@ -137,7 +137,7 @@ Yes: for recommended X-Hub-System host hardware, **Mac mini** and **Mac Studio**
 
 Why:
 
-- X-Hub-System currently ships a native macOS Hub app and runtime surface.
+- X-Hub currently ships a native macOS Hub app and runtime surface.
 - The active Hub app package targets `macOS 13+`.
 - The Hub runtime also includes an MLX-based local runtime path, which aligns naturally with Apple silicon desktops.
 
@@ -174,7 +174,7 @@ Everything else in this repository should be read as implementation context, roa
 
 ## Supervisor Orchestration Core
 
-X-Hub-System is not only a route-and-policy layer.
+X-Hub is not only a route-and-policy layer.
 
 The paired X-Terminal Supervisor is designed as an execution orchestrator for complex work, especially when one chat window is not enough to manage delivery safely.
 
@@ -216,7 +216,7 @@ Execution baseline:
 
 ## Memory-Backed Constitutional Guardrails
 
-X-Hub-System does not treat safety as prompt text alone.
+X-Hub does not treat safety as prompt text alone.
 
 The broader system design includes an **X-Constitution** layer that is anchored to the Hub-side memory system and used to stabilize agent behavior around risk, privacy, authorization, audit integrity, and side effects.
 
@@ -273,11 +273,11 @@ That separation matters because it lets you improve UX, swap clients, and run ri
 
 Most systems bolt paid APIs onto a separate path.
 
-X-Hub-System treats local models and paid models as operational peers under the same governance surface: routing, readiness, grants, and audit.
+X-Hub treats local models and paid models as operational peers under the same governance surface: routing, readiness, grants, and audit.
 
 ### 3. Fail-Closed Instead Of Pretend-Recovery
 
-If pairing is incomplete, model inventory is stale, bridge heartbeat is missing, or runtime verification is blocked, X-Hub-System surfaces that state directly instead of pretending the system is safe to continue.
+If pairing is incomplete, model inventory is stale, bridge heartbeat is missing, or runtime verification is blocked, X-Hub surfaces that state directly instead of pretending the system is safe to continue.
 
 ### 4. Memory Stays Attached To The System Of Record
 
@@ -287,7 +287,7 @@ The memory story is that the Hub remains the durable truth-source and terminals 
 
 ### 5. Safety Is Backed By Memory And Policy, Not Prompt Tricks Alone
 
-X-Hub-System uses constitutional guidance as part of a broader Hub-side control system.
+X-Hub uses constitutional guidance as part of a broader Hub-side control system.
 
 The goal is to keep behavior bounded by persistent memory-backed rules and then reinforce those rules with policy-engine enforcement, grant checks, audit, and fail-closed execution.
 
