@@ -6270,6 +6270,66 @@ actor HubPairingCoordinator {
         }
     }
 
+    private struct RemoteSupervisorBriefProjectionRow: Codable {
+        var schemaVersion: String
+        var projectionId: String
+        var projectionKind: String
+        var projectId: String
+        var runId: String
+        var missionId: String
+        var trigger: String
+        var status: String
+        var criticalBlocker: String
+        var topline: String
+        var nextBestAction: String
+        var pendingGrantCount: Int?
+        var ttsScript: [String]?
+        var cardSummary: String
+        var evidenceRefs: [String]?
+        var generatedAtMs: Double?
+        var expiresAtMs: Double?
+        var auditRef: String
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+            case projectionId = "projection_id"
+            case projectionKind = "projection_kind"
+            case projectId = "project_id"
+            case runId = "run_id"
+            case missionId = "mission_id"
+            case trigger
+            case status
+            case criticalBlocker = "critical_blocker"
+            case topline
+            case nextBestAction = "next_best_action"
+            case pendingGrantCount = "pending_grant_count"
+            case ttsScript = "tts_script"
+            case cardSummary = "card_summary"
+            case evidenceRefs = "evidence_refs"
+            case generatedAtMs = "generated_at_ms"
+            case expiresAtMs = "expires_at_ms"
+            case auditRef = "audit_ref"
+        }
+    }
+
+    private struct RemoteSupervisorBriefProjectionScriptResult: Codable {
+        var ok: Bool?
+        var source: String?
+        var projection: RemoteSupervisorBriefProjectionRow?
+        var reason: String?
+        var errorCode: String?
+        var errorMessage: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case projection
+            case reason
+            case errorCode = "error_code"
+            case errorMessage = "error_message"
+        }
+    }
+
     private struct RemoteConnectorIngressReceiptRow: Codable {
         var receiptId: String
         var requestId: String
@@ -12034,6 +12094,214 @@ main().catch((err) => {
     in_flight_by_scope: [],
     queued_by_scope: [],
     queue_items: [],
+    reason: code,
+    error_code: code,
+    error_message: msg || code,
+  });
+  process.exit(1);
+});
+"""#
+    }
+
+    private func remoteSupervisorBriefProjectionScriptSource() -> String {
+        #"""
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
+
+const safe = (v) => String(v ?? '').trim();
+const out = (obj) => {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+};
+
+function reqClientFromEnv(projectOverride = '') {
+  const projectId = safe(projectOverride || process.env.HUB_PROJECT_ID || '');
+  return {
+    device_id: safe(process.env.HUB_DEVICE_ID || 'terminal_device'),
+    user_id: safe(process.env.HUB_USER_ID || ''),
+    app_id: safe(process.env.HUB_APP_ID || 'x_terminal'),
+    project_id: projectId,
+    session_id: safe(process.env.HUB_SESSION_ID || ''),
+  };
+}
+
+function metadataFromEnv() {
+  const tok = safe(process.env.HUB_CLIENT_TOKEN || '');
+  const md = new grpc.Metadata();
+  if (tok) md.set('authorization', `Bearer ${tok}`);
+  return md;
+}
+
+async function resolveProtoPath() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'proto_path.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.resolveHubProtoPath === 'function') {
+        const p = safe(mod.resolveHubProtoPath(process.env));
+        if (p) return p;
+      }
+    } catch {}
+  }
+
+  const candidates = [
+    path.resolve(process.cwd(), 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', '..', 'protocol', 'hub_protocol_v1.proto'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+function loadProto(protoPath) {
+  const packageDef = protoLoader.loadSync(protoPath, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+  });
+  const loaded = grpc.loadPackageDefinition(packageDef);
+  return loaded?.ax?.hub?.v1;
+}
+
+async function makeClientCreds() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'client_credentials.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.makeClientCredentials === 'function') {
+        const built = mod.makeClientCredentials(process.env);
+        if (built?.creds) {
+          return { creds: built.creds, options: built.options || {} };
+        }
+      }
+    } catch {}
+  }
+  return { creds: grpc.credentials.createInsecure(), options: {} };
+}
+
+function asInt(v, fallback = 0) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.floor(n));
+}
+
+function asMs(v, fallback = 0) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.floor(n));
+}
+
+function asBool(v, fallback = false) {
+  const token = safe(v).toLowerCase();
+  if (!token) return fallback;
+  if (token === '1' || token === 'true' || token === 'yes' || token === 'on') return true;
+  if (token === '0' || token === 'false' || token === 'no' || token === 'off') return false;
+  return fallback;
+}
+
+async function main() {
+  const requestId = safe(process.env.XTERMINAL_SUPERVISOR_BRIEF_REQUEST_ID || '');
+  const projectId = safe(process.env.XTERMINAL_SUPERVISOR_BRIEF_PROJECT_ID || '');
+  if (!requestId) throw new Error('request_id_empty');
+  if (!projectId) throw new Error('project_id_empty');
+
+  const protoPath = await resolveProtoPath();
+  const proto = loadProto(protoPath);
+  if (!proto?.HubSupervisor && !proto?.HubRuntime) throw new Error('hub_supervisor_missing');
+
+  const host = safe(process.env.HUB_HOST || '127.0.0.1');
+  const port = Number.parseInt(safe(process.env.HUB_PORT || '50051'), 10) || 50051;
+  const addr = `${host}:${port}`;
+  const client = reqClientFromEnv(projectId);
+  const md = metadataFromEnv();
+  const { creds, options } = await makeClientCreds();
+  const runtimeClient = proto?.HubRuntime ? new proto.HubRuntime(addr, creds, options) : null;
+  const supervisorClient = (() => {
+    if (runtimeClient && typeof runtimeClient.GetSupervisorBriefProjection === 'function') return runtimeClient;
+    if (proto?.HubSupervisor) return new proto.HubSupervisor(addr, creds, options);
+    throw new Error('hub_supervisor_missing');
+  })();
+
+  const request = {
+    request_id: requestId,
+    client,
+    project_id: projectId,
+    run_id: safe(process.env.XTERMINAL_SUPERVISOR_BRIEF_RUN_ID || ''),
+    mission_id: safe(process.env.XTERMINAL_SUPERVISOR_BRIEF_MISSION_ID || ''),
+    projection_kind: safe(process.env.XTERMINAL_SUPERVISOR_BRIEF_KIND || 'progress_brief') || 'progress_brief',
+    trigger: safe(process.env.XTERMINAL_SUPERVISOR_BRIEF_TRIGGER || 'daily_digest') || 'daily_digest',
+    include_tts_script: asBool(process.env.XTERMINAL_SUPERVISOR_BRIEF_INCLUDE_TTS || '1', true),
+    include_card_summary: asBool(process.env.XTERMINAL_SUPERVISOR_BRIEF_INCLUDE_CARD_SUMMARY || '0', false),
+    max_evidence_refs: Math.max(0, Math.min(12, Number.parseInt(safe(process.env.XTERMINAL_SUPERVISOR_BRIEF_MAX_EVIDENCE_REFS || '4'), 10) || 4)),
+  };
+
+  const resp = await new Promise((resolve, reject) => {
+    supervisorClient.GetSupervisorBriefProjection(
+      request,
+      md,
+      (err, out) => {
+        if (err) reject(err);
+        else resolve(out || {});
+      }
+    );
+  });
+
+  const projection = resp?.projection
+    ? {
+        schema_version: safe(resp.projection?.schema_version || 'xhub.supervisor_brief_projection.v1'),
+        projection_id: safe(resp.projection?.projection_id || ''),
+        projection_kind: safe(resp.projection?.projection_kind || ''),
+        project_id: safe(resp.projection?.project_id || ''),
+        run_id: safe(resp.projection?.run_id || ''),
+        mission_id: safe(resp.projection?.mission_id || ''),
+        trigger: safe(resp.projection?.trigger || ''),
+        status: safe(resp.projection?.status || ''),
+        critical_blocker: safe(resp.projection?.critical_blocker || ''),
+        topline: safe(resp.projection?.topline || ''),
+        next_best_action: safe(resp.projection?.next_best_action || ''),
+        pending_grant_count: asInt(resp.projection?.pending_grant_count || 0),
+        tts_script: Array.isArray(resp.projection?.tts_script)
+          ? resp.projection.tts_script.map((item) => safe(item)).filter(Boolean)
+          : [],
+        card_summary: safe(resp.projection?.card_summary || ''),
+        evidence_refs: Array.isArray(resp.projection?.evidence_refs)
+          ? resp.projection.evidence_refs.map((item) => safe(item)).filter(Boolean)
+          : [],
+        generated_at_ms: asMs(resp.projection?.generated_at_ms || 0),
+        expires_at_ms: asMs(resp.projection?.expires_at_ms || 0),
+        audit_ref: safe(resp.projection?.audit_ref || ''),
+      }
+    : null;
+
+  const denyCode = safe(resp?.deny_code || '');
+  out({
+    ok: resp?.ok === true,
+    source: 'hub_supervisor_grpc',
+    projection,
+    reason: denyCode || '',
+    error_code: denyCode || '',
+    error_message: denyCode || '',
+  });
+}
+
+main().catch((err) => {
+  const msg = safe(err?.message || err);
+  const lower = msg.toLowerCase();
+  const code = lower.includes('unimplemented')
+    ? 'hub_supervisor_unimplemented'
+    : (msg || 'remote_supervisor_brief_projection_failed');
+  out({
+    ok: false,
+    source: 'hub_supervisor_grpc',
+    projection: null,
     reason: code,
     error_code: code,
     error_message: msg || code,

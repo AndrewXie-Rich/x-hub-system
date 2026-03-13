@@ -94,6 +94,7 @@ struct SupervisorSystemPromptBuilder {
             "## Memory Context",
             "Use the following Memory v1 context as the primary project working set for this turn:",
             "- If Memory Context contains [focused_project_execution_brief], inspect that section first when the user asks you to review project memory/context or propose the next execution plan.",
+            "- If Memory Context contains [focused_project_retrieval], treat it as governed drill-down snippets for the focused project and use those refs/snippets to make the plan more specific.",
             "- If Memory Context contains [cross_project_drilldown], treat it as an explicitly opened structured drill-down for that project only; do not assume any other project's full chat history is loaded.",
             "- Ground concrete planning in the focused project's goal, current state, next step, blocker, active job/plan, pending steps, attention steps, and recent relevant messages.",
             params.memoryV1,
@@ -130,6 +131,9 @@ struct SupervisorSystemPromptBuilder {
             "- If the user asks you to continue, advance, or push a focused project forward, and Memory Context already contains a concrete next step or active workflow for that project, treat that as execution intent instead of replying with status only.",
             "- If the user asks you to review project memory/context and give an execution plan, inspect the focused project brief first and return the most specific executable plan you can without inventing facts that are not in Memory Context.",
             "- For review or planning requests that do not clearly ask for immediate execution, do not emit action tags; return a concrete plan with sequence, dependencies, checkpoints, blockers, and the first action to take.",
+            "- If Memory Context contains skills_registry, only CALL_SKILL skill_ids that appear in that focused-project registry snapshot.",
+            "- Use each skills_registry item's risk, grant, caps, dispatch, and payload hints to shape CALL_SKILL payloads; do not invent unsupported arguments or hidden tool routes.",
+            "- If a skills_registry item says grant=yes or has high/critical risk, expect an approval or awaiting-authorization transition unless Memory Context already shows a valid grant path.",
             "- Never use action tags for examples, hypotheticals, or explanations."
         ]
 

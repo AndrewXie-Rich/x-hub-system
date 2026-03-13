@@ -88,6 +88,7 @@ struct AXSkillsCompatibilityTests {
         #expect(git.policyScope == "global")
         #expect(git.timeoutMs == 15_000)
         #expect(git.maxRetries == 0)
+        #expect(git.governedDispatch?.tool == ToolName.git_status.rawValue)
 
         let browser = try #require(snapshot.items.first(where: { $0.skillId == "browser.runtime.smoke" }))
         #expect(browser.capabilitiesRequired == ["web.navigate"])
@@ -97,6 +98,7 @@ struct AXSkillsCompatibilityTests {
         #expect(browser.policyScope == "project")
         #expect(browser.timeoutMs == 45_000)
         #expect(browser.maxRetries == 2)
+        #expect(browser.governedDispatch?.tool == ToolName.deviceBrowserControl.rawValue)
     }
 
     @MainActor
@@ -144,6 +146,11 @@ struct AXSkillsCompatibilityTests {
         #expect(memory.contains("grant=yes"))
         #expect(memory.contains("caps: repo.read.status"))
         #expect(memory.contains("caps: web.navigate"))
+        #expect(memory.contains("dispatch=git_status"))
+        #expect(memory.contains("dispatch=device.browser.control"))
+        #expect(memory.contains("payload: fixed=action=open_url"))
+        #expect(memory.contains("required_any=url"))
+        #expect(memory.contains("args=url"))
         #expect(registrySnapshot?.items.count == 2)
         #expect(resolvedCache?.items.count == 2)
     }
@@ -439,7 +446,7 @@ private struct SkillsCompatibilityFixture {
               "compatibility_state": "supported",
               "canonical_manifest_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
               "install_hint": "",
-              "manifest_json": "{\"description\":\"Read git working tree status for the active project.\",\"capabilities_required\":[\"repo.read.status\"],\"risk_level\":\"low\",\"input_schema_ref\":\"schema://repo.git.status.input\",\"output_schema_ref\":\"schema://repo.git.status.output\",\"timeout_ms\":15000,\"max_retries\":0}",
+              "manifest_json": "{\"description\":\"Read git working tree status for the active project.\",\"capabilities_required\":[\"repo.read.status\"],\"governed_dispatch\":{\"tool\":\"git_status\"},\"risk_level\":\"low\",\"input_schema_ref\":\"schema://repo.git.status.input\",\"output_schema_ref\":\"schema://repo.git.status.output\",\"timeout_ms\":15000,\"max_retries\":0}",
               "mapping_aliases_used": [],
               "defaults_applied": []
             },
@@ -455,7 +462,7 @@ private struct SkillsCompatibilityFixture {
               "compatibility_state": "supported",
               "canonical_manifest_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
               "install_hint": "",
-              "manifest_json": "{\"description\":\"Open the governed browser runtime and capture smoke evidence.\",\"capabilities_required\":[\"web.navigate\"],\"risk_level\":\"high\",\"input_schema_ref\":\"schema://browser.runtime.smoke.input\",\"output_schema_ref\":\"schema://browser.runtime.smoke.output\",\"timeout_ms\":45000,\"max_retries\":2}",
+              "manifest_json": "{\"description\":\"Open the governed browser runtime and capture smoke evidence.\",\"capabilities_required\":[\"web.navigate\"],\"governed_dispatch\":{\"tool\":\"device.browser.control\",\"fixed_args\":{\"action\":\"open_url\"},\"passthrough_args\":[\"url\"],\"required_any\":[[\"url\"]]},\"risk_level\":\"high\",\"input_schema_ref\":\"schema://browser.runtime.smoke.input\",\"output_schema_ref\":\"schema://browser.runtime.smoke.output\",\"timeout_ms\":45000,\"max_retries\":2}",
               "mapping_aliases_used": [],
               "defaults_applied": []
             },

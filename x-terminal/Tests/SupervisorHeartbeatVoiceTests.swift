@@ -6,7 +6,7 @@ import Testing
 struct SupervisorHeartbeatVoiceTests {
 
     @Test
-    func appModelAttachSpeaksBlockedHeartbeatWhenSummaryReportingEnabled() throws {
+    func appModelAttachSpeaksBlockedHeartbeatWhenSummaryReportingEnabled() async throws {
         var spoken: [String] = []
         let synthesizer = SupervisorSpeechSynthesizer(
             deduper: SupervisorVoiceBriefDeduper(cooldown: 60),
@@ -15,7 +15,7 @@ struct SupervisorHeartbeatVoiceTests {
         let manager = SupervisorManager.makeForTesting(
             supervisorSpeechSynthesizer: synthesizer
         )
-        let root = try makeProjectRoot(named: "voice-heartbeat-blocked")
+        let root = try makeProjectRoot(named: "heartbeat-blocked")
         defer { try? FileManager.default.removeItem(at: root) }
 
         let project = makeProjectEntry(
@@ -32,7 +32,10 @@ struct SupervisorHeartbeatVoiceTests {
         )
 
         manager.setAppModel(appModel)
+        let emission = await manager.emitHeartbeatForTesting(reason: "blocked_test")
 
+        #expect(emission.path == "fallback")
+        #expect(emission.outcome == "spoken")
         #expect(spoken.count == 1)
         #expect(spoken[0].contains("1 个阻塞项目"))
         #expect(spoken[0].contains("Voice Runtime"))
@@ -40,7 +43,7 @@ struct SupervisorHeartbeatVoiceTests {
     }
 
     @Test
-    func appModelAttachSuppressesStableSummaryWhenBlockersOnlyModeIsEnabled() throws {
+    func appModelAttachSuppressesStableSummaryWhenBlockersOnlyModeIsEnabled() async throws {
         var spoken: [String] = []
         let synthesizer = SupervisorSpeechSynthesizer(
             deduper: SupervisorVoiceBriefDeduper(cooldown: 60),
@@ -49,7 +52,7 @@ struct SupervisorHeartbeatVoiceTests {
         let manager = SupervisorManager.makeForTesting(
             supervisorSpeechSynthesizer: synthesizer
         )
-        let root = try makeProjectRoot(named: "voice-heartbeat-stable")
+        let root = try makeProjectRoot(named: "heartbeat-stable")
         defer { try? FileManager.default.removeItem(at: root) }
 
         let project = makeProjectEntry(
@@ -66,7 +69,10 @@ struct SupervisorHeartbeatVoiceTests {
         )
 
         manager.setAppModel(appModel)
+        let emission = await manager.emitHeartbeatForTesting(reason: "stable_test")
 
+        #expect(emission.path == "fallback")
+        #expect(emission.outcome == "suppressed:auto_report_mode_suppressed")
         #expect(spoken.isEmpty)
     }
 
@@ -98,6 +104,74 @@ struct SupervisorHeartbeatVoiceTests {
         #expect(spoken.count == 1)
         #expect(spoken[0].contains("Automation Runtime 命令"))
         #expect(spoken[0].contains("/automation status"))
+    }
+
+    @Test
+    func heartbeatVoicePrefersHubBriefProjectionTtsWhenFetcherReturnsProjection() async throws {
+        var spoken: [String] = []
+        let synthesizer = SupervisorSpeechSynthesizer(
+            deduper: SupervisorVoiceBriefDeduper(cooldown: 60),
+            speakSink: { spoken.append($0) }
+        )
+        let manager = SupervisorManager.makeForTesting(
+            supervisorSpeechSynthesizer: synthesizer
+        )
+        manager.installSupervisorBriefProjectionFetcherForTesting { payload in
+            HubIPCClient.SupervisorBriefProjectionResult(
+                ok: true,
+                source: "hub_supervisor_grpc",
+                projection: HubIPCClient.SupervisorBriefProjectionSnapshot(
+                    schemaVersion: "xhub.supervisor_brief_projection.v1",
+                    projectionId: "brief-\(payload.projectId)",
+                    projectionKind: payload.projectionKind,
+                    projectId: payload.projectId,
+                    runId: "",
+                    missionId: "",
+                    trigger: "awaiting_authorization",
+                    status: "awaiting_authorization",
+                    criticalBlocker: "等待安全审批",
+                    topline: "发布主线暂停，等待一项授权。",
+                    nextBestAction: "处理 release grant。",
+                    pendingGrantCount: 1,
+                    ttsScript: [
+                        "Supervisor Hub 简报。发布主线暂停，等待一项授权。",
+                        "建议下一步：处理 release grant。"
+                    ],
+                    cardSummary: "One pending grant is blocking release.",
+                    evidenceRefs: ["grant:req-1"],
+                    generatedAtMs: 1_777_000_100_000,
+                    expiresAtMs: 1_777_000_160_000,
+                    auditRef: "audit-hub-brief-1"
+                ),
+                reasonCode: nil
+            )
+        }
+
+        let root = try makeProjectRoot(named: "heartbeat-hub-brief")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(
+            root: root,
+            displayName: "Release Runtime",
+            blockerSummary: "等待本地 blocker 文案",
+            nextStepSummary: "完成本地 heartbeat next step"
+        )
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.settingsStore.settings = configuredSettings(
+            from: appModel.settingsStore.settings,
+            autoReportMode: .summary
+        )
+
+        manager.setAppModel(appModel)
+        let emission = await manager.emitHeartbeatForTesting(reason: "hub_projection_test")
+
+        #expect(emission.path == "projection")
+        #expect(emission.outcome == "spoken")
+        #expect(spoken.count == 1)
+        #expect(spoken[0].contains("Supervisor Hub 简报"))
+        #expect(spoken[0].contains("处理 release grant"))
+        #expect(!spoken[0].contains("等待本地 blocker 文案"))
     }
 
     private func configuredSettings(
@@ -145,7 +219,7 @@ struct SupervisorHeartbeatVoiceTests {
 
     private func makeProjectRoot(named name: String) throws -> URL {
         let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("xterminal-tests", isDirectory: true)
+            .appendingPathComponent("xt-heartbeat-fixtures", isDirectory: true)
             .appendingPathComponent("\(name)-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root

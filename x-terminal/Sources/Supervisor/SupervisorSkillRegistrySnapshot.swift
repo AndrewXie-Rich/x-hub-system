@@ -102,6 +102,9 @@ extension SupervisorSkillRegistrySnapshot {
             if !item.capabilitiesRequired.isEmpty {
                 lines.append("   caps: \(item.capabilitiesRequired.joined(separator: ", "))")
             }
+            if let payloadContract = item.governedDispatch?.payloadContractSummary() {
+                lines.append("   payload: \(payloadContract)")
+            }
             let description = item.description.trimmingCharacters(in: .whitespacesAndNewlines)
             if !description.isEmpty {
                 lines.append("   \(description)")
@@ -112,5 +115,100 @@ extension SupervisorSkillRegistrySnapshot {
         guard joined.count > maxChars else { return joined }
         let end = joined.index(joined.startIndex, offsetBy: maxChars)
         return String(joined[..<end]) + "..."
+    }
+}
+
+private extension SupervisorGovernedSkillDispatch {
+    func payloadContractSummary(maxChars: Int = 180) -> String? {
+        var parts: [String] = []
+
+        let fixed = fixedArgs
+            .sorted { lhs, rhs in lhs.key < rhs.key }
+            .compactMap { key, value -> String? in
+                guard let rendered = renderScalar(value) else { return nil }
+                return "\(key)=\(rendered)"
+            }
+        if !fixed.isEmpty {
+            parts.append("fixed=\(fixed.joined(separator: ", "))")
+        }
+
+        let required = renderFieldGroups(requiredAny)
+        if !required.isEmpty {
+            parts.append("required_any=\(required)")
+        }
+
+        let exactlyOne = renderFieldGroups(exactlyOneOf)
+        if !exactlyOne.isEmpty {
+            parts.append("one_of=\(exactlyOne)")
+        }
+
+        let passthrough = orderedUnique(passthroughArgs)
+        if !passthrough.isEmpty {
+            parts.append("args=\(passthrough.joined(separator: ", "))")
+        }
+
+        let aliases = renderAliases(argAliases)
+        if !aliases.isEmpty {
+            parts.append("aliases=\(aliases)")
+        }
+
+        guard !parts.isEmpty else { return nil }
+        let summary = parts.joined(separator: " | ")
+        guard summary.count > maxChars else { return summary }
+        let end = summary.index(summary.startIndex, offsetBy: maxChars)
+        return String(summary[..<end]) + "..."
+    }
+
+    func renderScalar(_ value: JSONValue) -> String? {
+        switch value {
+        case .string(let string):
+            let cleaned = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            return cleaned.isEmpty ? nil : cleaned
+        case .number(let number):
+            if number.rounded() == number {
+                return String(Int(number))
+            }
+            return String(number)
+        case .bool(let flag):
+            return flag ? "true" : "false"
+        default:
+            return nil
+        }
+    }
+
+    func renderFieldGroups(_ groups: [[String]]) -> String {
+        orderedUnique(groups.compactMap { group -> String? in
+            let cleaned = orderedUnique(
+                group.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+            )
+            guard !cleaned.isEmpty else { return nil }
+            return cleaned.joined(separator: "/")
+        }).joined(separator: ", ")
+    }
+
+    func renderAliases(_ aliases: [String: [String]]) -> String {
+        aliases.keys.sorted().compactMap { key -> String? in
+            let canonical = key.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !canonical.isEmpty else { return nil }
+            let values = orderedUnique(
+                (aliases[key] ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+            )
+            guard !values.isEmpty else { return nil }
+            return "\(canonical)<=\(values.joined(separator: "/"))"
+        }
+        .joined(separator: ", ")
+    }
+
+    func orderedUnique(_ values: [String]) -> [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        for value in values {
+            let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleaned.isEmpty, seen.insert(cleaned).inserted else { continue }
+            result.append(cleaned)
+        }
+        return result
     }
 }

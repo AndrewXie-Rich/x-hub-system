@@ -57,6 +57,14 @@ enum AXMemoryPipeline {
                 ],
                 for: ctx
             )
+            _ = AXMemoryLifecycleStore.recordAfterTurn(
+                ctx: ctx,
+                turn: turn,
+                beforeMemory: existing,
+                observationDelta: delta,
+                afterMemory: merged,
+                pipelineSource: "runtime_fallback"
+            )
             return merged
         }
     }
@@ -162,6 +170,7 @@ Merge rules:
         async let localSnapshotTask = HubAIClient.shared.loadModelsState(transportOverride: .fileIPC)
         let routeSnapshot = await routeSnapshotTask
         let localSnapshot = await localSnapshotTask
+        var deltaSource = "coarse_model_json"
 
         // Coarse filter.
         let coarsePromptText = coarsePrompt(turn: turn)
@@ -298,6 +307,7 @@ Merge rules:
         if let s = extractFirstJSONObject(from: coarseText) {
             deltaJSONString = s
         } else {
+            deltaSource = "coarse_no_json_fallback"
             let user = turn.user.trimmingCharacters(in: .whitespacesAndNewlines)
             var d = AXMemoryDelta.empty()
             if !user.isEmpty {
@@ -496,6 +506,14 @@ Merge rules:
             seedIfEmpty(&merged, userText: turn.user)
             merged = AXMemoryModulePrefixer.normalizeIfNeeded(merged, projectRoot: ctx.root)
             try AXProjectStore.saveMemory(merged, for: ctx)
+            _ = AXMemoryLifecycleStore.recordAfterTurn(
+                ctx: ctx,
+                turn: turn,
+                beforeMemory: existing,
+                observationDelta: delta,
+                afterMemory: merged,
+                pipelineSource: "\(deltaSource)_refine_text_fallback"
+            )
             return merged
         }
 
@@ -527,6 +545,14 @@ Merge rules:
                 ],
                 for: ctx
             )
+            _ = AXMemoryLifecycleStore.recordAfterTurn(
+                ctx: ctx,
+                turn: turn,
+                beforeMemory: existing,
+                observationDelta: delta,
+                afterMemory: merged,
+                pipelineSource: "\(deltaSource)_refine_decode_fallback"
+            )
             return merged
         }
         // Ensure schema + timestamps are sane.
@@ -547,6 +573,14 @@ Merge rules:
                 "created_at": Date().timeIntervalSince1970,
             ],
             for: ctx
+        )
+        _ = AXMemoryLifecycleStore.recordAfterTurn(
+            ctx: ctx,
+            turn: turn,
+            beforeMemory: existing,
+            observationDelta: delta,
+            afterMemory: mem,
+            pipelineSource: "\(deltaSource)_refine_model_json"
         )
         return mem
     }

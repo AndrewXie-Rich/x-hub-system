@@ -19,8 +19,32 @@ struct AXProjectContext: Equatable {
         xterminalDir.appendingPathComponent("raw_log.jsonl")
     }
 
+    var memoryLifecycleDir: URL {
+        xterminalDir.appendingPathComponent("memory_lifecycle", isDirectory: true)
+    }
+
+    var latestMemoryLifecycleURL: URL {
+        memoryLifecycleDir.appendingPathComponent("latest_after_turn.json")
+    }
+
+    var sessionSummariesDir: URL {
+        xterminalDir.appendingPathComponent("session_summaries", isDirectory: true)
+    }
+
+    var latestSessionSummaryURL: URL {
+        sessionSummariesDir.appendingPathComponent("latest.json")
+    }
+
     var supervisorJobsURL: URL {
         xterminalDir.appendingPathComponent("supervisor_jobs.json")
+    }
+
+    var supervisorDecisionTrackURL: URL {
+        xterminalDir.appendingPathComponent("supervisor_decision_track.json")
+    }
+
+    var supervisorBackgroundPreferenceTrackURL: URL {
+        xterminalDir.appendingPathComponent("supervisor_background_preference_track.json")
     }
 
     var supervisorPlansURL: URL {

@@ -127,6 +127,14 @@ final class ChatSessionModel: ObservableObject {
     func ensureLoaded(ctx: AXProjectContext, limit: Int = 200) {
         let rootPath = ctx.root.standardizedFileURL.path
         if loadedRootPath == rootPath { return }
+        if let loadedRootPath, !loadedRootPath.isEmpty {
+            let previousRoot = URL(fileURLWithPath: loadedRootPath, isDirectory: true)
+            let previousContext = AXProjectContext(root: previousRoot)
+            _ = AXMemoryLifecycleStore.writeSessionSummaryCapsule(
+                ctx: previousContext,
+                reason: "project_switch"
+            )
+        }
         resetSessionState()
         _ = ensurePrimarySessionBound(ctx: ctx)
         expandRecentOnceAfterLoad = true

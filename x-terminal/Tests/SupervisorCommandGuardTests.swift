@@ -1644,7 +1644,7 @@ struct SupervisorCommandGuardTests {
 
     @Test
     func summarizeSkillWithURLWaitsForHubGrant() async throws {
-        let manager = SupervisorManager.makeForTesting()
+        let manager = SupervisorManager.makeForTesting(enableSupervisorHubGrantPreflight: true)
         let fixture = SupervisorSkillRegistryFixture()
         defer { fixture.cleanup() }
 

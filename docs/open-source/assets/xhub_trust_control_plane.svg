@@ -1,0 +1,155 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 860" role="img" aria-labelledby="title desc">
+  <title id="title">X-Hub Trust And Control Plane</title>
+  <desc id="desc">A static architecture diagram showing X-Terminal as a deep governed client, generic terminals as local-stack clients, X-Hub as the governed control plane, and execution or external surfaces on the right.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 12 6 L 0 12 z" fill="#6b7280" />
+    </marker>
+    <marker id="arrow-soft" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 12 6 L 0 12 z" fill="#94a3b8" />
+    </marker>
+    <style>
+      .bg { fill: #ffffff; }
+      .panel-title { font: 600 14px 'Segoe UI', Arial, sans-serif; letter-spacing: 0.12em; fill: #475569; }
+      .band-title { font: 700 30px 'Segoe UI', Arial, sans-serif; fill: #0f172a; }
+      .band-copy { font: 500 18px 'Segoe UI', Arial, sans-serif; fill: #334155; }
+      .card-title { font: 700 16px 'Segoe UI', Arial, sans-serif; fill: #1f2937; }
+      .card-copy { font: 500 13px 'Segoe UI', Arial, sans-serif; fill: #475569; }
+      .note { font: 500 14px 'Segoe UI', Arial, sans-serif; fill: #64748b; }
+      .panel { rx: 28; ry: 28; stroke-width: 1.5; }
+      .client-shell { fill: #f8fafc; stroke: #cbd5e1; }
+      .xt-band { fill: #ecfdf3; stroke: #2d6a4f; }
+      .gt-band { fill: #fff1f1; stroke: #b42318; }
+      .hub-panel { fill: #f6fbf7; stroke: #7aa58a; }
+      .exec-panel { fill: #fffaf2; stroke: #c9973f; }
+      .card { fill: #f5f3ff; stroke: #b7a7e6; stroke-width: 1.3; rx: 18; ry: 18; }
+      .card-danger { fill: #fff1f1; stroke: #d25b5b; stroke-width: 1.6; rx: 18; ry: 18; }
+      .flow { fill: none; stroke: #6b7280; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow); }
+      .flow-soft { fill: none; stroke: #94a3b8; stroke-width: 2; stroke-dasharray: 8 7; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow-soft); }
+      .divider { fill: none; stroke: #dbe3ea; stroke-width: 1.2; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1440" height="860" />
+
+  <rect class="panel client-shell panel" x="40" y="70" width="320" height="640" />
+  <text class="panel-title" x="64" y="106">CLIENT SURFACES</text>
+
+  <rect class="panel xt-band" x="60" y="126" width="280" height="240" />
+  <text class="band-title" x="84" y="176">X-Terminal</text>
+  <text class="band-copy" x="84" y="214">Deep governed client</text>
+  <text class="band-copy" x="84" y="248">Hub memory + project sync</text>
+  <text class="band-copy" x="84" y="282">Supervisor + runtime-truth UX</text>
+
+  <rect class="panel gt-band" x="60" y="400" width="280" height="280" />
+  <text class="band-title" x="84" y="450">Generic / 3rd-Party</text>
+  <text class="band-title" x="84" y="486">Terminal</text>
+  <text class="band-copy" x="84" y="528">Keeps local memory / skills / tools</text>
+  <text class="band-copy" x="84" y="562">terminal-side by default</text>
+  <text class="band-copy" x="84" y="606">Calls Hub AI / capability surfaces</text>
+  <text class="band-copy" x="84" y="640">as needed</text>
+
+  <rect class="panel hub-panel" x="410" y="70" width="540" height="640" />
+  <text class="panel-title" x="434" y="106">X-HUB GOVERNED CONTROL PLANE</text>
+
+  <rect class="card" x="600" y="130" width="170" height="60" />
+  <text class="card-title" x="635" y="166">Pairing + AI Gateway</text>
+
+  <rect class="card" x="450" y="232" width="180" height="72" />
+  <text class="card-title" x="474" y="266">Memory Truth +</text>
+  <text class="card-title" x="474" y="288">X-Constitution</text>
+
+  <rect class="card" x="450" y="332" width="180" height="72" />
+  <text class="card-title" x="470" y="366">Supervisor + Project</text>
+  <text class="card-title" x="470" y="388">Orchestration</text>
+
+  <rect class="card" x="450" y="432" width="180" height="72" />
+  <text class="card-title" x="474" y="466">Skills Store +</text>
+  <text class="card-title" x="474" y="488">Trust Roots</text>
+
+  <rect class="card" x="720" y="232" width="180" height="72" />
+  <text class="card-title" x="745" y="266">Policy + Grants +</text>
+  <text class="card-title" x="745" y="288">Quotas</text>
+
+  <rect class="card-danger" x="720" y="332" width="180" height="72" />
+  <text class="card-title" x="742" y="366">Fail-Closed Gates +</text>
+  <text class="card-title" x="742" y="388">Kill Switch</text>
+
+  <rect class="card" x="720" y="432" width="180" height="72" />
+  <text class="card-title" x="741" y="466">Model + Capability</text>
+  <text class="card-title" x="741" y="488">Router</text>
+
+  <rect class="card" x="450" y="548" width="220" height="72" />
+  <text class="card-title" x="475" y="582">Governed Automations +</text>
+  <text class="card-title" x="475" y="604">Connector Control</text>
+
+  <rect class="card" x="690" y="548" width="220" height="72" />
+  <text class="card-title" x="716" y="582">Audit + Evidence +</text>
+  <text class="card-title" x="716" y="604">Runtime Truth</text>
+
+  <rect class="panel exec-panel" x="1000" y="70" width="400" height="640" />
+  <text class="panel-title" x="1024" y="106">EXECUTION AND EXTERNAL SURFACES</text>
+
+  <rect class="card" x="1025" y="130" width="160" height="60" />
+  <text class="card-title" x="1055" y="166">Official Agent Skills</text>
+
+  <rect class="card" x="1215" y="130" width="160" height="60" />
+  <text class="card-title" x="1240" y="166">Operator Channels</text>
+  <text class="card-copy" x="1240" y="184">Slack / Telegram / Feishu</text>
+
+  <rect class="card" x="1215" y="228" width="160" height="60" />
+  <text class="card-title" x="1241" y="264">Channel Workers</text>
+
+  <rect class="card" x="1025" y="228" width="160" height="60" />
+  <text class="card-title" x="1047" y="264">X-Terminal Tools /</text>
+  <text class="card-title" x="1047" y="284">Device Execution</text>
+
+  <rect class="card" x="1025" y="350" width="160" height="60" />
+  <text class="card-title" x="1045" y="386">Local Provider Runtime</text>
+
+  <rect class="card" x="1215" y="350" width="160" height="60" />
+  <text class="card-title" x="1235" y="386">Paid Providers / APIs</text>
+
+  <rect class="card" x="1025" y="454" width="160" height="60" />
+  <text class="card-title" x="1057" y="490">Local Models</text>
+  <text class="card-copy" x="1053" y="508">MLX / Transformers</text>
+
+  <text class="note" x="1028" y="584">Remote providers and connector targets are</text>
+  <text class="note" x="1028" y="606">optional external surfaces, not the trusted control plane.</text>
+
+  <path class="flow" d="M 340 245 C 450 245, 500 160, 600 160" />
+  <path class="flow" d="M 340 540 C 440 540, 470 185, 600 160" />
+
+  <path class="flow" d="M 685 190 L 540 232" />
+  <path class="flow" d="M 685 190 C 650 240, 600 290, 540 332" />
+  <path class="flow" d="M 685 190 L 810 232" />
+
+  <path class="flow" d="M 630 368 L 720 268" />
+  <path class="flow" d="M 630 468 L 1025 160" />
+  <path class="flow" d="M 630 268 L 720 268" />
+
+  <path class="flow" d="M 810 304 L 810 332" />
+  <path class="flow" d="M 810 404 L 810 432" />
+  <path class="flow" d="M 810 404 C 760 470, 670 548, 670 584" />
+
+  <path class="flow" d="M 900 468 C 965 468, 980 380, 1025 380" />
+  <path class="flow" d="M 900 468 C 990 468, 1080 380, 1215 380" />
+
+  <path class="flow" d="M 1185 380 L 1185 454" />
+  <path class="flow" d="M 1375 160 L 1375 228" />
+  <path class="flow" d="M 670 584 C 860 584, 905 258, 1025 258" />
+  <path class="flow" d="M 670 584 C 900 584, 1045 258, 1215 258" />
+
+  <path class="flow" d="M 540 268 C 610 268, 655 584, 690 584" />
+  <path class="flow" d="M 810 268 C 820 268, 810 548, 800 548" />
+  <path class="flow" d="M 1185 258 C 1080 258, 1020 565, 910 584" />
+  <path class="flow" d="M 1215 258 C 1095 258, 1030 590, 910 596" />
+  <path class="flow" d="M 1185 380 C 1085 380, 1015 602, 910 608" />
+  <path class="flow" d="M 1215 380 C 1110 380, 1040 614, 910 620" />
+
+  <path class="flow-soft" d="M 690 602 C 530 700, 390 255, 340 255" />
+  <path class="flow-soft" d="M 690 614 C 520 760, 390 560, 340 560" />
+
+  <path class="divider" d="M 390 130 L 390 680" />
+  <path class="divider" d="M 980 130 L 980 680" />
+</svg>

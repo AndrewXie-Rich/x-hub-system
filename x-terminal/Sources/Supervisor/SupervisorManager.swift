@@ -59,12 +59,19 @@ final class SupervisorManager: ObservableObject {
     private var actionLedger: [SupervisorActionLedgerEntry] = []
     private let actionLedgerMaxEntries = 80
     private let supervisorWorkingSetRecentTurns = 8
+    private let supervisorPlanReviewRecentTurns = 12
+    private let supervisorDeepDiveRecentTurns = 16
+    private let supervisorReviewRetrievalMaxSnippets = 4
+    private let supervisorDeepDiveRetrievalMaxSnippets = 6
+    private let supervisorReviewRetrievalMaxSnippetChars = 420
+    private let supervisorDeepDiveRetrievalMaxSnippetChars = 620
     private var supervisorProjectCapsuleSyncAuditRefs: [String: String] = [:]
     private var supervisorPortfolioSnapshotSyncFingerprint: String = ""
     private var supervisorSkillExecutionTasks: [String: Task<Void, Never>] = [:]
     private let supervisorHubGrantPreflightEnabled: Bool
     private let supervisorEventLoopAutoFollowUpEnabled: Bool
     private var supervisorNetworkAccessRequestOverride: (@Sendable (URL, Int, String?) async -> HubIPCClient.NetworkAccessResult)?
+    private var supervisorBriefProjectionRequestOverride: (@Sendable (HubIPCClient.SupervisorBriefProjectionRequestPayload) async -> HubIPCClient.SupervisorBriefProjectionResult)?
     private var supervisorToolExecutorOverride: (@Sendable (ToolCall, URL) async throws -> ToolResult)?
     private var supervisorEventLoopResponseOverride: (@Sendable (String, String) async -> String)?
     private var supervisorEventLoopTask: Task<Void, Never>?
@@ -215,6 +222,14 @@ final class SupervisorManager: ObservableObject {
         var workingSet: String
     }
 
+    private struct SupervisorLocalWorkflowBootstrapSpec {
+        var project: AXProjectEntry
+        var digest: SupervisorMemoryProjectDigest
+        var jobGoal: String
+        var planId: String
+        var steps: [SupervisorUpsertPlanStepPayload]
+    }
+
     struct SupervisorMemoryProjectDigest: Identifiable, Equatable {
         var projectId: String
         var displayName: String
@@ -298,6 +313,12 @@ final class SupervisorManager: ObservableObject {
         var package: XTAutomationRetryPackage
         var planningArtifact: XTAutomationRetryPlanningArtifact?
         var recipeProposalArtifact: XTAutomationRecipeProposalArtifact?
+    }
+
+    struct HeartbeatVoiceTestEmission: Equatable {
+        var path: String
+        var outcome: String
+        var script: [String]
     }
 
     private enum HubConnectorIngressResolution {
@@ -3624,7 +3645,13 @@ final class SupervisorManager: ObservableObject {
         projects: [AXProjectEntry]
     ) -> String? {
         let normalized = normalizedSupervisorIntentText(userMessage)
-        guard isExplicitModelAssignmentRequest(normalized) else { return nil }
+        if !isExplicitModelAssignmentRequest(normalized) {
+            return localSupervisorWorkflowBootstrapIfApplicable(
+                userMessage,
+                normalized: normalized,
+                projects: projects
+            )
+        }
 
         let explicitRole = firstExplicitRoleMention(in: normalized)
         let role = explicitRole ?? .coder
@@ -3703,6 +3730,311 @@ final class SupervisorManager: ObservableObject {
         }
 
         return naturalizeModelAssignmentResponse(result: result, intent: intent)
+    }
+
+    private func localSupervisorWorkflowBootstrapIfApplicable(
+        _ userMessage: String,
+        normalized: String,
+        projects: [AXProjectEntry]
+    ) -> String? {
+        guard isExplicitSupervisorContinuationIntent(normalized) else { return nil }
+        guard let selection = focusedSupervisorProjectSelection(
+            projects: projects,
+            userMessage: userMessage
+        ) else {
+            return nil
+        }
+
+        let ctx = supervisorMemoryContext(for: selection.project)
+        guard !hasActiveSupervisorWorkflow(project: selection.project, ctx: ctx) else {
+            return nil
+        }
+
+        let digest = supervisorMemoryDigest(selection.project)
+        guard let spec = buildLocalSupervisorWorkflowBootstrapSpec(
+            selection: selection,
+            digest: digest
+        ) else {
+            return nil
+        }
+
+        let createPayload = SupervisorCreateJobPayload(
+            projectRef: spec.project.projectId,
+            goal: spec.jobGoal,
+            priority: SupervisorJobPriority.high.rawValue,
+            source: SupervisorJobSource.supervisor.rawValue,
+            currentOwner: "supervisor"
+        )
+        let createResult = createSupervisorJob(
+            from: createPayload,
+            userMessage: userMessage,
+            triggerSource: .userTurn,
+            emitSystemMessage: false
+        )
+        _ = appendActionLedger(
+            action: "create_job",
+            targetRef: spec.project.displayName,
+            projectId: createResult.projectId,
+            projectName: createResult.projectName,
+            role: nil,
+            modelId: nil,
+            status: createResult.ok ? "ok" : "failed",
+            reasonCode: createResult.reasonCode,
+            detail: createResult.message,
+            verifiedAt: createResult.ok ? Date().timeIntervalSince1970 : nil,
+            triggerSource: SupervisorCommandTriggerSource.userTurn.rawValue
+        )
+        guard createResult.ok, let jobId = createResult.jobId else {
+            return createResult.message
+        }
+
+        let planPayload = SupervisorUpsertPlanPayload(
+            projectRef: spec.project.projectId,
+            jobId: jobId,
+            planId: spec.planId,
+            currentOwner: "supervisor",
+            steps: spec.steps
+        )
+        let planResult = upsertSupervisorPlan(
+            from: planPayload,
+            userMessage: userMessage,
+            triggerSource: .userTurn,
+            emitSystemMessage: false
+        )
+        _ = appendActionLedger(
+            action: "upsert_plan",
+            targetRef: spec.project.displayName,
+            projectId: planResult.projectId,
+            projectName: planResult.projectName,
+            role: nil,
+            modelId: nil,
+            status: planResult.ok ? "ok" : "failed",
+            reasonCode: planResult.reasonCode,
+            detail: planResult.message,
+            verifiedAt: planResult.ok ? Date().timeIntervalSince1970 : nil,
+            triggerSource: SupervisorCommandTriggerSource.userTurn.rawValue
+        )
+        guard planResult.ok else {
+            return """
+我已经按《\(spec.project.displayName)》的当前记忆创建了受治理任务，但写入执行计划失败。
+
+\(createResult.message)
+\(planResult.message)
+"""
+        }
+
+        return renderLocalSupervisorWorkflowBootstrapResponse(
+            project: spec.project,
+            digest: spec.digest,
+            jobId: jobId,
+            planId: spec.planId,
+            steps: spec.steps
+        )
+    }
+
+    private func buildLocalSupervisorWorkflowBootstrapSpec(
+        selection: SupervisorFocusedProjectSelection,
+        digest: SupervisorMemoryProjectDigest
+    ) -> SupervisorLocalWorkflowBootstrapSpec? {
+        let goal = digest.goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let currentState = digest.currentState.trimmingCharacters(in: .whitespacesAndNewlines)
+        let nextStep = digest.nextStep.trimmingCharacters(in: .whitespacesAndNewlines)
+        let blocker = digest.blocker.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let hasConcreteGoal = !isDigestPlaceholder(goal)
+        let hasConcreteCurrentState = !isDigestPlaceholder(currentState)
+        let hasConcreteNextStep = !isDigestPlaceholder(
+            nextStep,
+            treatContinueCurrentTaskAsPlaceholder: true
+        )
+        let hasConcreteBlocker = !isDigestPlaceholder(blocker, treatNoValueAsPlaceholder: true)
+        guard hasConcreteNextStep || hasConcreteGoal else {
+            return nil
+        }
+
+        let jobGoal = hasConcreteNextStep ? nextStep : goal
+        let primaryAction = hasConcreteNextStep ? nextStep : jobGoal
+        let projectToken = normalizedLookupKey(selection.project.displayName).isEmpty
+            ? String(selection.project.projectId.prefix(8)).lowercased()
+            : String(normalizedLookupKey(selection.project.displayName).prefix(24))
+        let nowMs = Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
+        let planId = "plan-\(projectToken)-continue-\(nowMs)"
+        let primaryStepTitle = normalizedSupervisorBootstrapPrimaryStepTitle(primaryAction)
+        let followUpTitle: String = {
+            if hasConcreteBlocker {
+                return "处理阻塞并回写下一轮动作：\(capped(blocker, maxChars: 48))"
+            }
+            return "回写推进结果并确认下一轮动作"
+        }()
+
+        let reviewDetail = [
+            "bootstrap_source=local_direct_continue",
+            "focus_source=\(selection.source)",
+            "memory_source=\(digest.source)",
+            "goal=\(hasConcreteGoal ? goal : "(none)")",
+            "current_state=\(hasConcreteCurrentState ? currentState : "(none)")",
+            "next_step=\(hasConcreteNextStep ? nextStep : "(none)")",
+            "blocker=\(hasConcreteBlocker ? blocker : "(none)")"
+        ].joined(separator: "\n")
+        let executionDetail = [
+            "derived_from=\(hasConcreteNextStep ? "next_step" : "goal")",
+            "runtime_state=\(digest.runtimeState)",
+            "current_state=\(hasConcreteCurrentState ? currentState : "(none)")",
+            "blocker=\(hasConcreteBlocker ? blocker : "(none)")"
+        ].joined(separator: "\n")
+        let wrapUpDetail = [
+            "close_loop=write_back_execution_delta",
+            "next_goal=\(jobGoal)",
+            "blocker=\(hasConcreteBlocker ? blocker : "(none)")"
+        ].joined(separator: "\n")
+
+        let steps = [
+            SupervisorUpsertPlanStepPayload(
+                stepId: "step-001",
+                title: "审查项目上下文记忆并确认当前事实",
+                kind: SupervisorPlanStepKind.writeMemory.rawValue,
+                status: SupervisorPlanStepStatus.completed.rawValue,
+                skillId: nil,
+                currentOwner: "supervisor",
+                detail: reviewDetail
+            ),
+            SupervisorUpsertPlanStepPayload(
+                stepId: "step-002",
+                title: primaryStepTitle,
+                kind: suggestedSupervisorBootstrapPlanStepKind(primaryAction).rawValue,
+                status: SupervisorPlanStepStatus.pending.rawValue,
+                skillId: nil,
+                currentOwner: "supervisor",
+                detail: executionDetail
+            ),
+            SupervisorUpsertPlanStepPayload(
+                stepId: "step-003",
+                title: followUpTitle,
+                kind: SupervisorPlanStepKind.writeMemory.rawValue,
+                status: SupervisorPlanStepStatus.pending.rawValue,
+                skillId: nil,
+                currentOwner: "supervisor",
+                detail: wrapUpDetail
+            )
+        ]
+
+        return SupervisorLocalWorkflowBootstrapSpec(
+            project: selection.project,
+            digest: digest,
+            jobGoal: jobGoal,
+            planId: planId,
+            steps: steps
+        )
+    }
+
+    private func renderLocalSupervisorWorkflowBootstrapResponse(
+        project: AXProjectEntry,
+        digest: SupervisorMemoryProjectDigest,
+        jobId: String,
+        planId: String,
+        steps: [SupervisorUpsertPlanStepPayload]
+    ) -> String {
+        var lines = [
+            "我已经按《\(project.displayName)》的当前记忆，把下一步起成一个受治理 workflow。",
+            "",
+            "job_id: \(jobId)",
+            "plan_id: \(planId)",
+            "任务目标：\(digest.nextStep.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isDigestPlaceholder(digest.nextStep, treatContinueCurrentTaskAsPlaceholder: true) ? digest.goal : digest.nextStep)"
+        ]
+
+        let currentState = digest.currentState.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !isDigestPlaceholder(currentState) {
+            lines.append("当前状态：\(currentState)")
+        }
+        let blocker = digest.blocker.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !isDigestPlaceholder(blocker, treatNoValueAsPlaceholder: true) {
+            lines.append("当前阻塞：\(blocker)")
+        }
+
+        lines.append("计划步骤：")
+        lines.append(
+            steps.enumerated().map { index, step in
+                let status = SupervisorPlanStepStatus.parse(step.status).rawValue
+                return "\(index + 1). \(step.title)（\(status)）"
+            }.joined(separator: "\n")
+        )
+        lines.append("")
+        lines.append("这样 Supervisor 再收到“继续 / 自动继续”时，就会沿着这个 job / plan 往下执行，而不是只汇报 idle。")
+        return lines.joined(separator: "\n")
+    }
+
+    private func normalizedSupervisorBootstrapPrimaryStepTitle(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "推进当前最具体的执行动作" }
+        let lowered = trimmed.lowercased()
+        if containsAny(lowered, ["继续", "推进", "修复", "梳理", "实现", "重跑", "检查", "运行", "输出", "整理"]) {
+            return capped(trimmed, maxChars: 72)
+        }
+        return "推进：\(capped(trimmed, maxChars: 64))"
+    }
+
+    private func suggestedSupervisorBootstrapPlanStepKind(_ action: String) -> SupervisorPlanStepKind {
+        let lowered = action.lowercased()
+        if containsAny(lowered, ["调用技能", "调用skill", "call skill", "技能"]) {
+            return .callSkill
+        }
+        if containsAny(lowered, ["运行", "重跑", "测试", "构建", "build", "test", "run", "smoke", "验证"]) {
+            return .launchRun
+        }
+        if containsAny(lowered, ["确认", "澄清", "问用户", "ask user", "授权", "approve"]) {
+            return .askUser
+        }
+        return .writeMemory
+    }
+
+    private func hasActiveSupervisorWorkflow(
+        project: AXProjectEntry,
+        ctx: AXProjectContext
+    ) -> Bool {
+        let jobActive = SupervisorProjectJobStore.load(for: ctx).jobs.contains { record in
+            record.projectId == project.projectId && !isTerminalSupervisorJobStatus(record.status)
+        }
+        if jobActive {
+            return true
+        }
+
+        let planActive = SupervisorProjectPlanStore.load(for: ctx).plans.contains { record in
+            record.projectId == project.projectId && !isTerminalSupervisorPlanStatus(record.status)
+        }
+        if planActive {
+            return true
+        }
+
+        return SupervisorProjectSkillCallStore.load(for: ctx).calls.contains { record in
+            record.projectId == project.projectId && !isTerminalSupervisorSkillCallStatus(record.status)
+        }
+    }
+
+    private func isTerminalSupervisorJobStatus(_ status: SupervisorJobStatus) -> Bool {
+        switch status {
+        case .completed, .failed, .canceled:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func isTerminalSupervisorPlanStatus(_ status: SupervisorPlanStatus) -> Bool {
+        switch status {
+        case .completed, .failed, .canceled:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func isTerminalSupervisorSkillCallStatus(_ status: SupervisorSkillCallStatus) -> Bool {
+        switch status {
+        case .completed, .failed, .canceled:
+            return true
+        default:
+            return false
+        }
     }
 
     private func normalizedSupervisorIntentText(_ text: String) -> String {
@@ -3797,6 +4129,10 @@ final class SupervisorManager: ObservableObject {
             return true
         }
 
+        if isExplicitSupervisorContinuationIntent(normalized) {
+            return true
+        }
+
         let directTokens = [
             "创建任务",
             "新建任务",
@@ -3869,6 +4205,59 @@ final class SupervisorManager: ObservableObject {
         let hasNoun = orchestrationNouns.contains(where: { normalized.contains($0) })
         let hasVerb = executionVerbs.contains(where: { normalized.contains($0) })
         return hasNoun && hasVerb
+    }
+
+    private func isExplicitSupervisorContinuationIntent(_ normalized: String) -> Bool {
+        let trimmed = normalized.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+
+        let compact = trimmed.replacingOccurrences(of: " ", with: "")
+        let exact = compact.trimmingCharacters(
+            in: CharacterSet.punctuationCharacters.union(.symbols)
+        )
+        if ["继续", "推进", "下一步"].contains(exact) {
+            return true
+        }
+
+        let directTokens = [
+            "继续推进",
+            "继续执行",
+            "自动继续",
+            "自动推进",
+            "按当前记忆继续推进",
+            "按当前记忆继续",
+            "继续这个项目",
+            "继续当前项目",
+            "继续该项目",
+            "继续这个任务",
+            "继续当前任务",
+            "推进这个项目",
+            "推进当前项目",
+            "推进该项目",
+            "继续下一步",
+            "开始下一步"
+        ]
+        if directTokens.contains(where: { compact.contains($0) }) {
+            return true
+        }
+
+        let continuationVerbs = ["继续", "推进", "接着", "下一步", "followup", "continue"]
+        let scopeTokens = [
+            "项目",
+            "当前项目",
+            "这个项目",
+            "该项目",
+            "任务",
+            "当前任务",
+            "这个任务",
+            "workflow",
+            "plan",
+            "记忆",
+            "上下文"
+        ]
+        let hasVerb = continuationVerbs.contains(where: { compact.contains($0) })
+        let hasScope = scopeTokens.contains(where: { compact.contains($0) })
+        return hasVerb && hasScope
     }
 
     private func processCreateJobCommand(
@@ -7270,6 +7659,11 @@ final class SupervisorManager: ObservableObject {
             userMessage: userMessage,
             selection: focusedProjectSelection
         )
+        let focusedProjectRetrieval = await focusedSupervisorProjectRetrievalBlock(
+            selection: focusedProjectSelection,
+            userMessage: userMessage,
+            servingProfile: servingProfile
+        )
         let executionBrief = focusedProjectSelection.map {
             focusedSupervisorExecutionBrief(selection: $0, projectDigests: projectDigests)
         }
@@ -7294,7 +7688,7 @@ final class SupervisorManager: ObservableObject {
         )
         let chatWorkingSet = recentSupervisorConversationWorkingSet(
             from: messages,
-            maxTurns: supervisorWorkingSetRecentTurns
+            maxTurns: preferredSupervisorWorkingSetRecentTurns(servingProfile: servingProfile)
         )
         let actionWorkingSet = sanitizeSupervisorPromptIdentifiers(
             generateActionLedgerSummary(maxItems: 8)
@@ -7315,6 +7709,7 @@ final class SupervisorManager: ObservableObject {
 \(actionWorkingSet.isEmpty ? "" : "\n[action_ledger]\n\(actionWorkingSet)")
 \(workflowWorkingSet.isEmpty ? "" : "\n[workflow]\n\(workflowWorkingSet)")
 \(executionWorkingSet.isEmpty ? "" : "\n[focused_project_execution]\n\(executionWorkingSet)")
+\(focusedProjectRetrieval.isEmpty ? "" : "\n[focused_project_retrieval]\n\(focusedProjectRetrieval)")
 \(crossProjectDrillDownWorkingSet.isEmpty ? "" : "\n[cross_project_drilldown]\n\(crossProjectDrillDownWorkingSet)")
 """
         let modelEvidence = sanitizeSupervisorPromptIdentifiers(
@@ -7508,6 +7903,142 @@ latest_user:
                 return "\($0.role.rawValue): \(content)"
             }
             .joined(separator: "\n")
+    }
+
+    private func preferredSupervisorWorkingSetRecentTurns(
+        servingProfile: XTMemoryServingProfile?
+    ) -> Int {
+        switch servingProfile {
+        case .m3DeepDive, .m4FullScan:
+            return supervisorDeepDiveRecentTurns
+        case .m2PlanReview:
+            return supervisorPlanReviewRecentTurns
+        default:
+            return supervisorWorkingSetRecentTurns
+        }
+    }
+
+    private func focusedSupervisorProjectRetrievalBlock(
+        selection: SupervisorFocusedProjectSelection?,
+        userMessage: String,
+        servingProfile: XTMemoryServingProfile?
+    ) async -> String {
+        guard let selection,
+              shouldRequestSupervisorProjectMemoryRetrieval(
+                userMessage: userMessage,
+                servingProfile: servingProfile
+              ) else {
+            return ""
+        }
+
+        let project = selection.project
+        let ctx = supervisorMemoryContext(for: project)
+        let response = await HubIPCClient.requestProjectMemoryRetrieval(
+            requesterRole: .supervisor,
+            projectId: project.projectId,
+            projectRoot: ctx.root.path,
+            displayName: project.displayName,
+            latestUser: userMessage,
+            reason: "supervisor_focused_project_review",
+            requestedKinds: requestedSupervisorProjectMemoryRetrievalKinds(
+                userText: userMessage,
+                servingProfile: servingProfile
+            ),
+            explicitRefs: [],
+            maxSnippets: supervisorProjectMemoryRetrievalMaxSnippets(servingProfile: servingProfile),
+            maxSnippetChars: supervisorProjectMemoryRetrievalMaxSnippetChars(servingProfile: servingProfile),
+            timeoutSec: 1.0
+        )
+        guard let response, response.denyCode == nil, !response.snippets.isEmpty else {
+            return ""
+        }
+
+        let items = response.snippets
+            .prefix(supervisorProjectMemoryRetrievalMaxSnippets(servingProfile: servingProfile))
+            .map { snippet in
+                """
+                - [\(snippet.sourceKind)] \(sanitizeSupervisorPromptIdentifiers(capped(snippet.title, maxChars: 120)))
+                  ref: \(sanitizeSupervisorPromptIdentifiers(capped(snippet.ref, maxChars: 180)))
+                  \(sanitizeSupervisorPromptIdentifiers(capped(snippet.text, maxChars: 220)))
+                """
+            }
+            .joined(separator: "\n")
+        guard !items.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return ""
+        }
+
+        return """
+focus_project=\(project.displayName) (\(project.projectId))
+focus_source=\(selection.source)
+audit_ref=\(response.auditRef)
+retrieval_source=\(response.source)
+\(items)
+"""
+    }
+
+    private func shouldRequestSupervisorProjectMemoryRetrieval(
+        userMessage: String,
+        servingProfile: XTMemoryServingProfile?
+    ) -> Bool {
+        if let servingProfile, servingProfile.rank >= XTMemoryServingProfile.m2PlanReview.rank {
+            return true
+        }
+        let normalized = userMessage.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return false }
+        let keywords = [
+            "审查", "审阅", "review", "上下文", "记忆", "执行方案", "重构建议",
+            "项目结构", "架构", "技术栈", "历史决策", "blocker", "spec", "decision"
+        ]
+        return keywords.contains { normalized.contains($0) }
+    }
+
+    private func requestedSupervisorProjectMemoryRetrievalKinds(
+        userText: String,
+        servingProfile: XTMemoryServingProfile?
+    ) -> [String] {
+        let normalized = userText.lowercased()
+        var kinds = ["project_spec_capsule", "decision_track", "background_preferences"]
+        if normalized.contains("历史")
+            || normalized.contains("上下文")
+            || normalized.contains("记忆")
+            || normalized.contains("history")
+            || normalized.contains("context") {
+            kinds.append("recent_context")
+        }
+        if normalized.contains("技术栈")
+            || normalized.contains("tech")
+            || normalized.contains("stack")
+            || normalized.contains("spec")
+            || normalized.contains("架构") {
+            kinds.append("canonical_memory")
+        }
+        if let servingProfile, servingProfile.rank >= XTMemoryServingProfile.m3DeepDive.rank {
+            kinds.append("recent_context")
+            kinds.append("canonical_memory")
+        }
+        return Array(NSOrderedSet(array: kinds)) as? [String] ?? kinds
+    }
+
+    private func supervisorProjectMemoryRetrievalMaxSnippets(
+        servingProfile: XTMemoryServingProfile?
+    ) -> Int {
+        switch servingProfile {
+        case .m3DeepDive, .m4FullScan:
+            return supervisorDeepDiveRetrievalMaxSnippets
+        default:
+            return supervisorReviewRetrievalMaxSnippets
+        }
+    }
+
+    private func supervisorProjectMemoryRetrievalMaxSnippetChars(
+        servingProfile: XTMemoryServingProfile?
+    ) -> Int {
+        switch servingProfile {
+        case .m3DeepDive, .m4FullScan:
+            return supervisorDeepDiveRetrievalMaxSnippetChars
+        default:
+            return supervisorReviewRetrievalMaxSnippetChars
+        }
     }
 
     private func warmResolvedSkillsCacheIfPossible(for project: AXProjectEntry) {
@@ -9831,6 +10362,113 @@ Coder 下一步建议：
         ).map(\.summaryLine)
     }
 
+    func emitHeartbeatForTesting(
+        force: Bool = true,
+        reason: String = "test"
+    ) async -> HeartbeatVoiceTestEmission {
+        let projects = allProjects()
+        guard !projects.isEmpty else {
+            return HeartbeatVoiceTestEmission(
+                path: "none",
+                outcome: "suppressed:no_projects",
+                script: []
+            )
+        }
+        let now = Date()
+        let queueSignals = queuedProjectSignals(for: projects, now: now.timeIntervalSince1970)
+        let permissionSignals = collectPermissionSignals(for: projects)
+        let progressActions = heartbeatAutoProgressActions(
+            reason: reason,
+            now: now,
+            projects: projects,
+            queueSignals: queueSignals,
+            permissionSignals: permissionSignals
+        )
+        let blockerProjects: [(projectId: String, blocker: String)] = projects.compactMap { project in
+            let blocker = (project.blockerSummary ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !blocker.isEmpty else { return nil }
+            return (project.projectId, blocker)
+        }
+        let blockerFingerprint = blockerProjects
+            .map { "\($0.projectId)|\($0.blocker)" }
+            .joined(separator: "\n")
+        let blockerSignal = evaluateBlockerSignal(
+            now: now.timeIntervalSince1970,
+            blockerCount: blockerProjects.count,
+            blockerFingerprint: blockerFingerprint
+        )
+        let nextStepSummary = buildHeartbeatNextStepSummary(
+            projects: projects,
+            queueSignals: queueSignals,
+            permissionSignals: permissionSignals,
+            maxItems: 4
+        )
+        let fallbackJob = heartbeatVoiceJob(
+            reason: reason,
+            changed: force,
+            projects: projects,
+            blockerProjects: blockerProjects,
+            blockerSignal: blockerSignal,
+            permissionSignals: permissionSignals,
+            queueSignals: queueSignals,
+            progressActions: progressActions,
+            nextStepSummary: nextStepSummary
+        )
+        let request = heartbeatProjectionRequest(
+            reason: reason,
+            changed: force,
+            blockerProjects: blockerProjects,
+            blockerSignal: blockerSignal,
+            permissionSignals: permissionSignals,
+            queueSignals: queueSignals,
+            progressActions: progressActions,
+            nextStepSummary: nextStepSummary
+        )
+        if let request,
+           backgroundSupervisorServicesEnabled || supervisorBriefProjectionRequestOverride != nil,
+           let projectionJob = await heartbeatProjectionVoiceJob(
+               request: request,
+               blockerSignal: blockerSignal
+           ) {
+            let outcome = supervisorSpeechSynthesizer.speak(
+                job: projectionJob,
+                preferences: currentVoicePreferences()
+            )
+            return HeartbeatVoiceTestEmission(
+                path: "projection",
+                outcome: heartbeatVoiceTestOutcomeLabel(outcome),
+                script: projectionJob.script
+            )
+        }
+        guard let fallbackJob else {
+            return HeartbeatVoiceTestEmission(
+                path: "fallback",
+                outcome: "suppressed:empty_script",
+                script: []
+            )
+        }
+        let outcome = supervisorSpeechSynthesizer.speak(
+            job: fallbackJob,
+            preferences: currentVoicePreferences()
+        )
+        return HeartbeatVoiceTestEmission(
+            path: "fallback",
+            outcome: heartbeatVoiceTestOutcomeLabel(outcome),
+            script: fallbackJob.script
+        )
+    }
+
+    private func heartbeatVoiceTestOutcomeLabel(
+        _ outcome: SupervisorSpeechSynthesizer.Outcome
+    ) -> String {
+        switch outcome {
+        case .spoken:
+            return "spoken"
+        case .suppressed(let reason):
+            return "suppressed:\(reason)"
+        }
+    }
+
     func sanitizedSupervisorOutboundPromptForTesting(_ text: String) -> String {
         sanitizeSupervisorOutboundPrompt(text)
     }
@@ -12131,7 +12769,7 @@ Coder 下一步建议：
         progressActions: [HeartbeatAutoProgressAction],
         nextStepSummary: String
     ) {
-        guard let job = heartbeatVoiceJob(
+        let fallbackJob = heartbeatVoiceJob(
             reason: reason,
             changed: changed,
             projects: projects,
@@ -12141,14 +12779,54 @@ Coder 下一步建议：
             queueSignals: queueSignals,
             progressActions: progressActions,
             nextStepSummary: nextStepSummary
-        ) else {
+        )
+        let request = heartbeatProjectionRequest(
+            reason: reason,
+            changed: changed,
+            blockerProjects: blockerProjects,
+            blockerSignal: blockerSignal,
+            permissionSignals: permissionSignals,
+            queueSignals: queueSignals,
+            progressActions: progressActions,
+            nextStepSummary: nextStepSummary
+        )
+
+        guard backgroundSupervisorServicesEnabled || supervisorBriefProjectionRequestOverride != nil else {
+            guard let fallbackJob else { return }
+            _ = supervisorSpeechSynthesizer.speak(
+                job: fallbackJob,
+                preferences: currentVoicePreferences()
+            )
             return
         }
 
-        _ = supervisorSpeechSynthesizer.speak(
-            job: job,
-            preferences: currentVoicePreferences()
-        )
+        guard let request else {
+            guard let fallbackJob else { return }
+            _ = supervisorSpeechSynthesizer.speak(
+                job: fallbackJob,
+                preferences: currentVoicePreferences()
+            )
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if let projectionJob = await self.heartbeatProjectionVoiceJob(
+                request: request,
+                blockerSignal: blockerSignal
+            ) {
+                _ = self.supervisorSpeechSynthesizer.speak(
+                    job: projectionJob,
+                    preferences: self.currentVoicePreferences()
+                )
+                return
+            }
+            guard let fallbackJob else { return }
+            _ = self.supervisorSpeechSynthesizer.speak(
+                job: fallbackJob,
+                preferences: self.currentVoicePreferences()
+            )
+        }
     }
 
     @discardableResult
@@ -12268,6 +12946,164 @@ Coder 下一步建议：
         in projects: [AXProjectEntry]
     ) -> String? {
         projects.first(where: { $0.projectId == projectId })?.displayName
+    }
+
+    private func heartbeatProjectionRequest(
+        reason: String,
+        changed: Bool,
+        blockerProjects: [(projectId: String, blocker: String)],
+        blockerSignal: BlockerSignal,
+        permissionSignals: [ProjectPermissionSignal],
+        queueSignals: [ProjectQueueSignal],
+        progressActions: [HeartbeatAutoProgressAction],
+        nextStepSummary: String
+    ) -> HubIPCClient.SupervisorBriefProjectionRequestPayload? {
+        let focusProjectId = progressActions.first?.projectId
+            ?? blockerProjects.first?.projectId
+            ?? permissionSignals.first?.projectId
+            ?? queueSignals.first?.project.projectId
+        guard let focusProjectId,
+              !focusProjectId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return HubIPCClient.SupervisorBriefProjectionRequestPayload(
+            requestId: "heartbeat_brief_\(Int(Date().timeIntervalSince1970 * 1000))_\(UUID().uuidString.lowercased())",
+            projectId: focusProjectId,
+            runId: nil,
+            missionId: nil,
+            projectionKind: "progress_brief",
+            trigger: heartbeatProjectionTrigger(
+                reason: reason,
+                changed: changed,
+                blockerProjects: blockerProjects,
+                blockerSignal: blockerSignal,
+                permissionSignals: permissionSignals,
+                queueSignals: queueSignals,
+                nextStepSummary: nextStepSummary
+            ),
+            includeTtsScript: true,
+            includeCardSummary: false,
+            maxEvidenceRefs: 4
+        )
+    }
+
+    private func heartbeatProjectionTrigger(
+        reason: String,
+        changed: Bool,
+        blockerProjects: [(projectId: String, blocker: String)],
+        blockerSignal: BlockerSignal,
+        permissionSignals: [ProjectPermissionSignal],
+        queueSignals: [ProjectQueueSignal],
+        nextStepSummary: String
+    ) -> String {
+        if !permissionSignals.isEmpty {
+            return "awaiting_authorization"
+        }
+        if !blockerProjects.isEmpty {
+            return "blocked"
+        }
+        if changed || blockerSignal.escalated || !nextStepSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "critical_path_changed"
+        }
+        if reason == "timer" && !queueSignals.isEmpty {
+            return "daily_digest"
+        }
+        return "daily_digest"
+    }
+
+    private func heartbeatProjectionVoiceJob(
+        request: HubIPCClient.SupervisorBriefProjectionRequestPayload,
+        blockerSignal: BlockerSignal
+    ) async -> SupervisorVoiceTTSJob? {
+        let fetcher = supervisorBriefProjectionRequestOverride
+            ?? { payload in
+                await HubIPCClient.requestSupervisorBriefProjection(payload)
+            }
+        let result = await fetcher(request)
+        guard result.ok, let projection = result.projection else { return nil }
+        let script = projectionVoiceScript(from: projection)
+        guard !script.isEmpty else { return nil }
+        return SupervisorVoiceTTSJob(
+            trigger: projectionVoiceTrigger(from: projection),
+            priority: projectionVoicePriority(from: projection, blockerSignal: blockerSignal),
+            script: script,
+            dedupeKey: projectionVoiceDedupeKey(from: projection)
+        )
+    }
+
+    private func projectionVoiceScript(
+        from projection: HubIPCClient.SupervisorBriefProjectionSnapshot
+    ) -> [String] {
+        let ttsScript = projection.ttsScript
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        if !ttsScript.isEmpty {
+            return ttsScript
+        }
+
+        var script: [String] = []
+        let topline = projection.topline.trimmingCharacters(in: .whitespacesAndNewlines)
+        let blocker = projection.criticalBlocker.trimmingCharacters(in: .whitespacesAndNewlines)
+        let next = projection.nextBestAction.trimmingCharacters(in: .whitespacesAndNewlines)
+        let summary = projection.cardSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !topline.isEmpty {
+            script.append(topline)
+        } else if !summary.isEmpty {
+            script.append(summary)
+        }
+        if !blocker.isEmpty {
+            script.append("当前阻塞：\(capped(blocker, maxChars: 48))。")
+        }
+        if projection.pendingGrantCount > 0 {
+            script.append("当前有 \(projection.pendingGrantCount) 个待授权项。")
+        }
+        if !next.isEmpty {
+            script.append("建议下一步：\(capped(next, maxChars: 48))。")
+        }
+        return script
+    }
+
+    private func projectionVoiceTrigger(
+        from projection: HubIPCClient.SupervisorBriefProjectionSnapshot
+    ) -> SupervisorVoiceJobTrigger {
+        let trigger = projection.trigger.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trigger == "awaiting_authorization" || projection.pendingGrantCount > 0 {
+            return .authorization
+        }
+        if trigger == "blocked" || !projection.criticalBlocker.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return .blocked
+        }
+        return .completed
+    }
+
+    private func projectionVoicePriority(
+        from projection: HubIPCClient.SupervisorBriefProjectionSnapshot,
+        blockerSignal: BlockerSignal
+    ) -> SupervisorVoiceJobPriority {
+        let trigger = projectionVoiceTrigger(from: projection)
+        if trigger == .blocked && blockerSignal.escalated {
+            return .interrupt
+        }
+        switch trigger {
+        case .authorization, .blocked:
+            return .normal
+        case .completed, .userQueryReply:
+            return .quiet
+        }
+    }
+
+    private func projectionVoiceDedupeKey(
+        from projection: HubIPCClient.SupervisorBriefProjectionSnapshot
+    ) -> String {
+        let projectionId = projection.projectionId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !projectionId.isEmpty {
+            return "hub-brief:\(projectionId)"
+        }
+        let auditRef = projection.auditRef.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !auditRef.isEmpty {
+            return "hub-brief:\(auditRef)"
+        }
+        return "hub-brief:\(projection.projectId):\(projection.trigger):\(Int(projection.generatedAtMs))"
     }
 
     private func conciseHeartbeatNextStep(_ text: String) -> String? {
@@ -15897,6 +16733,12 @@ extension SupervisorManager {
 
     func installVoiceAuthorizationBridgeForTesting(_ bridge: SupervisorVoiceAuthorizationBridge) {
         voiceAuthorizationBridge = bridge
+    }
+
+    func installSupervisorBriefProjectionFetcherForTesting(
+        _ fetcher: @escaping @Sendable (HubIPCClient.SupervisorBriefProjectionRequestPayload) async -> HubIPCClient.SupervisorBriefProjectionResult
+    ) {
+        supervisorBriefProjectionRequestOverride = fetcher
     }
 
     func resetOneShotControlPlaneState() {

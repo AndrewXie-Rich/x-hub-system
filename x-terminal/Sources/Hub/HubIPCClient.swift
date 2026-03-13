@@ -8,6 +8,7 @@ enum HubIPCClient {
     private static var secretUseOverrideForTesting: (@Sendable (SecretUseRequestPayload) async -> SecretUseResult)?
     private static var secretRedeemOverrideForTesting: (@Sendable (SecretRedeemRequestPayload) async -> SecretRedeemResult)?
     private static var memoryContextResolutionOverrideForTesting: (@Sendable (XTMemoryRouteDecision, XTMemoryUseMode, Double) async -> MemoryContextResolutionResult)?
+    private static var memoryRetrievalOverrideForTesting: (@Sendable (MemoryRetrievalPayload, Double) async -> MemoryRetrievalResponsePayload?)?
 
     struct AutonomyPolicyOverrideItem: Equatable, Sendable {
         var projectId: String
@@ -2808,6 +2809,13 @@ fulltext_not_loaded=\(disclosure.fulltextNotLoaded ? "true" : "false")
         return override
     }
 
+    private static func memoryRetrievalOverride() -> (@Sendable (MemoryRetrievalPayload, Double) async -> MemoryRetrievalResponsePayload?)? {
+        testingOverrideLock.lock()
+        let override = memoryRetrievalOverrideForTesting
+        testingOverrideLock.unlock()
+        return override
+    }
+
     static func requestProjectMemoryRetrieval(
         requesterRole: XTMemoryRequesterRole,
         projectId: String?,
@@ -2836,6 +2844,9 @@ fulltext_not_loaded=\(disclosure.fulltextNotLoaded ? "true" : "false")
             maxSnippetChars: max(120, min(1_200, maxSnippetChars)),
             auditRef: "audit-xt-memory-retrieval-\(String(UUID().uuidString.lowercased().prefix(12)))"
         )
+        if let override = memoryRetrievalOverride() {
+            return await override(payload, timeoutSec)
+        }
         return await requestMemoryRetrievalViaLocalIPC(payload: payload, timeoutSec: timeoutSec)
     }
 
@@ -6411,6 +6422,14 @@ profile_id: \(normalizedProfile)
         testingOverrideLock.unlock()
     }
 
+    static func installMemoryRetrievalOverrideForTesting(
+        _ override: (@Sendable (MemoryRetrievalPayload, Double) async -> MemoryRetrievalResponsePayload?)?
+    ) {
+        testingOverrideLock.lock()
+        memoryRetrievalOverrideForTesting = override
+        testingOverrideLock.unlock()
+    }
+
     static func resetSecretVaultOverridesForTesting() {
         testingOverrideLock.lock()
         secretUseOverrideForTesting = nil
@@ -6421,6 +6440,7 @@ profile_id: \(normalizedProfile)
     static func resetMemoryContextResolutionOverrideForTesting() {
         testingOverrideLock.lock()
         memoryContextResolutionOverrideForTesting = nil
+        memoryRetrievalOverrideForTesting = nil
         testingOverrideLock.unlock()
     }
 }
