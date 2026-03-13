@@ -38,6 +38,7 @@ struct AXSkillsCompatibilityTests {
 
         #expect(decoded.skillId == "find-skills")
         #expect(decoded.governedDispatch?.tool == ToolName.skills_search.rawValue)
+        #expect(decoded.governedDispatchVariants.isEmpty)
         #expect(decoded.governedDispatchNotes.isEmpty)
     }
 
@@ -142,6 +143,10 @@ struct AXSkillsCompatibilityTests {
         #expect(agentBrowser.riskLevel == .high)
         #expect(agentBrowser.requiresGrant)
         #expect(agentBrowser.governedDispatch == nil)
+        #expect(agentBrowser.governedDispatchVariants.count == 6)
+        let readVariant = try #require(agentBrowser.governedDispatchVariants.first(where: { $0.actions.contains("read") }))
+        #expect(readVariant.dispatch.tool == ToolName.browser_read.rawValue)
+        #expect(readVariant.actionArg.isEmpty)
         #expect(agentBrowser.governedDispatchNotes.contains(where: { $0.contains("device.browser.control") }))
         #expect(agentBrowser.governedDispatchNotes.contains(where: { $0.contains("browser_read") }))
     }
@@ -197,8 +202,9 @@ struct AXSkillsCompatibilityTests {
         #expect(memory.contains("payload: fixed=action=open_url"))
         #expect(memory.contains("required_any=url"))
         #expect(memory.contains("args=url"))
-        #expect(memory.contains("dispatch_note: actions=open/navigate/snapshot/extract/click/type/upload -> device.browser.control"))
-        #expect(memory.contains("dispatch_note: actions=read/fetch -> browser_read"))
+        #expect(memory.contains("variant: actions=open/open_url/navigate/goto/visit -> device.browser.control"))
+        #expect(memory.contains("variant: actions=snapshot/inspect/extract -> device.browser.control"))
+        #expect(!memory.contains("dispatch_note: actions=open/navigate/snapshot/extract/click/type/upload -> device.browser.control"))
         #expect(registrySnapshot?.items.count == 3)
         #expect(resolvedCache?.items.count == 3)
     }

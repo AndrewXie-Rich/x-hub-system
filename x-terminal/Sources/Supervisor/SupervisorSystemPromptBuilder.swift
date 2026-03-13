@@ -132,7 +132,7 @@ struct SupervisorSystemPromptBuilder {
             "- If the user asks you to review project memory/context and give an execution plan, inspect the focused project brief first and return the most specific executable plan you can without inventing facts that are not in Memory Context.",
             "- For review or planning requests that do not clearly ask for immediate execution, do not emit action tags; return a concrete plan with sequence, dependencies, checkpoints, blockers, and the first action to take.",
             "- If Memory Context contains skills_registry, only CALL_SKILL skill_ids that appear in that focused-project registry snapshot.",
-            "- Use each skills_registry item's risk, grant, caps, dispatch, dispatch_note, and payload hints to shape CALL_SKILL payloads; do not invent unsupported arguments or hidden tool routes.",
+            "- Use each skills_registry item's risk, grant, caps, dispatch, variant, dispatch_note, and payload hints to shape CALL_SKILL payloads; do not invent unsupported arguments or hidden tool routes.",
             "- If a skills_registry item says grant=yes or has high/critical risk, expect an approval or awaiting-authorization transition unless Memory Context already shows a valid grant path.",
             "- Never use action tags for examples, hypotheticals, or explanations."
         ]

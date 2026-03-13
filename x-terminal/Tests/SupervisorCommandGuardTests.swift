@@ -1333,6 +1333,99 @@ struct SupervisorCommandGuardTests {
     }
 
     @Test
+    func manifestDrivenGovernedDispatchVariantRoutesUnknownWrapperSkillReadAction() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let fixture = SupervisorSkillRegistryFixture()
+        defer { fixture.cleanup() }
+
+        let root = try makeProjectRoot(named: "supervisor-call-generic-variant-wrapper-skill")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "我的世界还原项目")
+        try fixture.writeHubSkillsStore(projectID: project.projectId)
+        try appendManifestDrivenSkillFixture(
+            hubBaseDir: fixture.hubBaseDir,
+            projectID: project.projectId,
+            skillID: "browser.reader.wrapper",
+            packageSHA256: "3030303030303030303030303030303030303030303030303030303030303030",
+            canonicalManifestSHA256: "3131313131313131313131313131313131313131313131313131313131313131",
+            manifest: [
+                "skill_id": "browser.reader.wrapper",
+                "description": "Wrapper over governed browser read.",
+                "capabilities_required": ["browser.read", "web.fetch"],
+                "risk_level": "high",
+                "requires_grant": true,
+                "side_effect_class": "external_side_effect",
+                "timeout_ms": 15000,
+                "max_retries": 1,
+                "governed_dispatch_variants": [
+                    [
+                        "actions": ["read", "fetch"],
+                        "action_arg": "",
+                        "action_map": [:],
+                        "dispatch": [
+                            "tool": ToolName.browser_read.rawValue,
+                            "passthrough_args": ["url", "grant_id", "max_bytes"],
+                            "required_any": [["url"]],
+                        ],
+                    ],
+                ],
+            ]
+        )
+        HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+
+        manager.setSupervisorToolExecutorOverrideForTesting { call, _ in
+            #expect(call.tool == .browser_read)
+            #expect(call.args["url"]?.stringValue == "https://example.com/docs")
+            #expect(call.args["grant_id"]?.stringValue == "grant-read-1")
+            #expect(call.args["max_bytes"]?.stringValue == "8192")
+            #expect(call.args["action"] == nil)
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: true,
+                output: "browser reader wrapper completed"
+            )
+        }
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"读取文档页面","priority":"normal"}[/CREATE_JOB]"#,
+            userMessage: "请创建任务"
+        )
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [UPSERT_PLAN]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","plan_id":"plan-generic-variant-wrapper-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"读取 governed 页面","kind":"call_skill","status":"pending","skill_id":"browser.reader.wrapper"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划"
+        )
+
+        let rendered = manager.processSupervisorResponseForTesting(
+            #"""
+            [CALL_SKILL]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","step_id":"step-001","skill_id":"browser.reader.wrapper","payload":{"action":"read","url":"https://example.com/docs","grant_id":"grant-read-1","max_bytes":8192}}[/CALL_SKILL]
+            """#,
+            userMessage: "请执行 browser reader wrapper"
+        )
+
+        #expect(rendered.contains("✅ 已为项目 \(project.displayName) 排队技能调用：browser.reader.wrapper"))
+        await manager.waitForSupervisorSkillDispatchForTesting()
+
+        let call = try #require(SupervisorProjectSkillCallStore.load(for: ctx).calls.first)
+        #expect(call.skillId == "browser.reader.wrapper")
+        #expect(call.toolName == ToolName.browser_read.rawValue)
+        #expect(call.status == .completed)
+        #expect(call.resultSummary.contains("browser reader wrapper completed"))
+    }
+
+    @Test
     func selfImprovingAgentMapsToRetrospectiveMemorySnapshotAndCompletes() async throws {
         let manager = SupervisorManager.makeForTesting()
         let fixture = SupervisorSkillRegistryFixture()

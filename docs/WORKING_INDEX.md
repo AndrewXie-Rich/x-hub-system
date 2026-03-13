@@ -29,6 +29,7 @@ After that, choose the relevant track below.
 - `docs/xhub-scenario-map-v1.md`
 - `docs/xhub-runtime-stability-and-launch-recovery-v1.md`
 - `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md`
+- `docs/memory-new/xhub-project-autonomy-tier-and-supervisor-review-protocol-v1.md`
 - `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`
 - `docs/xhub-client-modes-and-connectors-v1.md`
 - `docs/xhub-hub-architecture-tradeoffs-v1.md`
@@ -64,6 +65,7 @@ If you are tracing behavior boundaries, risk controls, or fail-closed reasoning,
 
 ### Security, Gates, And Governance
 
+- `docs/memory-new/xhub-project-autonomy-tier-and-supervisor-review-protocol-v1.md`
 - `docs/memory-new/xhub-security-innovation-work-orders-v1.md`
 - `docs/memory-new/xhub-spec-gates-work-orders-v1.md`
 - `docs/memory-new/xhub-lane-command-board-v2.md`

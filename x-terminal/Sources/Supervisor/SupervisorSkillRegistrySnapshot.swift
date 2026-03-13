@@ -280,7 +280,10 @@ private extension SupervisorGovernedSkillDispatchVariant {
         let mapped = actionMap.first(where: {
             $0.key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalizedAction
         })?.value.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolved = (mapped?.isEmpty == false ? mapped : requestedAction)
+        let resolved = {
+            let token = mapped ?? ""
+            return token.isEmpty ? requestedAction : token
+        }()
         guard !resolved.isEmpty else { return nil }
         return (cleanedKey, resolved)
     }

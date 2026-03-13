@@ -73,8 +73,11 @@ final class SupervisorManager: ObservableObject {
     private let supervisorEventLoopAutoFollowUpEnabled: Bool
     private var supervisorNetworkAccessRequestOverride: (@Sendable (URL, Int, String?) async -> HubIPCClient.NetworkAccessResult)?
     private var supervisorBriefProjectionRequestOverride: (@Sendable (HubIPCClient.SupervisorBriefProjectionRequestPayload) async -> HubIPCClient.SupervisorBriefProjectionResult)?
+    private var approvePendingHubGrantRequestOverride: (@Sendable (String, String?, Int?, Int?, String) async -> HubIPCClient.PendingGrantActionResult)?
+    private var denyPendingHubGrantRequestOverride: (@Sendable (String, String?, String) async -> HubIPCClient.PendingGrantActionResult)?
     private var supervisorToolExecutorOverride: (@Sendable (ToolCall, URL) async throws -> ToolResult)?
     private var supervisorEventLoopResponseOverride: (@Sendable (String, String) async -> String)?
+    private var schedulerSnapshotRefreshOverride: (@Sendable (Bool) async -> Void)?
     private var supervisorEventLoopTask: Task<Void, Never>?
     private var pendingSupervisorEventLoopTrigger: SupervisorEventLoopTrigger?
     private var supervisorEventLoopRecentTriggerLedger: [String: TimeInterval] = [:]
@@ -163,6 +166,7 @@ final class SupervisorManager: ObservableObject {
     private var voiceAuthorizationBridge = SupervisorVoiceAuthorizationBridge()
     private var preparedOneShotLaunchExecutorForTesting: ((SupervisorOneShotIntakeRequest, AdaptivePoolPlanDecision, SplitProposalBuildResult) async -> GuardedOneShotLaunchResumeOutcome)?
     private var activeVoiceAuthorizationRequest: SupervisorVoiceAuthorizationRequest?
+    private var activeVoicePendingGrantAction: SupervisorVoicePendingGrantActionContext?
     private var voiceAuthorizationInFlight = false
 
     private static let defaultsThreshold = 3
@@ -226,6 +230,17 @@ final class SupervisorManager: ObservableObject {
     private struct SupervisorBriefProjectionVoiceReply {
         var text: String
         var spokenOutcome: SupervisorSpeechSynthesizer.Outcome
+    }
+
+    private struct SupervisorVoicePendingGrantReply {
+        var text: String
+        var spokenOutcome: SupervisorSpeechSynthesizer.Outcome
+    }
+
+    private struct SupervisorVoicePendingGrantActionContext {
+        var requestId: String
+        var grant: SupervisorPendingGrant
+        var approve: Bool
     }
 
     private struct SupervisorLocalWorkflowBootstrapSpec {
@@ -995,6 +1010,21 @@ final class SupervisorManager: ObservableObject {
             messages.append(assistantMessage)
             let spokenOutcome = fromVoice ? speakSupervisorVoiceReply(local) : .suppressed("not_voice_triggered")
             conversationSessionController.registerAssistantTurn(spoken: spokenOutcome == .spoken)
+            return
+        }
+
+        if fromVoice,
+           let pendingGrantReply = await supervisorPendingGrantVoiceReplyIfApplicable(text) {
+            recordSupervisorReplyExecution(mode: .localDirectAction, actualModelId: nil)
+            let assistantMessage = SupervisorMessage(
+                id: UUID().uuidString,
+                role: .assistant,
+                content: pendingGrantReply.text,
+                isVoice: false,
+                timestamp: Date().timeIntervalSince1970
+            )
+            messages.append(assistantMessage)
+            conversationSessionController.registerAssistantTurn(spoken: pendingGrantReply.spokenOutcome == .spoken)
             return
         }
 
@@ -6481,15 +6511,33 @@ final class SupervisorManager: ObservableObject {
         .lowercased() ?? ""
         guard !requestedAction.isEmpty else { return nil }
 
-        guard let variant = item.governedDispatchVariants.first(where: { $0.matches(action: requestedAction) }) else {
+        guard let variant = item.governedDispatchVariants.first(where: { variant in
+            variant.actions.contains {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == requestedAction
+            }
+        }) else {
             return .failure(SupervisorSkillMappingFailure(reasonCode: "payload.action_unsupported"))
         }
+
+        let actionOverride: (key: String, value: String)? = {
+            let cleanedKey = variant.actionArg.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleanedKey.isEmpty else { return nil }
+            let mapped = variant.actionMap.first(where: {
+                $0.key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == requestedAction
+            })?.value.trimmingCharacters(in: .whitespacesAndNewlines)
+            let resolved = {
+                let token = mapped ?? ""
+                return token.isEmpty ? requestedAction : token
+            }()
+            guard !resolved.isEmpty else { return nil }
+            return (cleanedKey, resolved)
+        }()
 
         return mappedSupervisorGovernedDispatch(
             dispatch: variant.dispatch,
             payload: payload,
             requestId: requestId,
-            actionOverride: variant.resolvedActionOverride(for: requestedAction)
+            actionOverride: actionOverride
         )
     }
 
@@ -9156,6 +9204,10 @@ why=\(event.whyItMatters)
     }
 
     private func refreshSchedulerSnapshot(force: Bool) async {
+        if let override = schedulerSnapshotRefreshOverride {
+            await override(force)
+            return
+        }
         if schedulerRefreshInFlight, !force {
             return
         }
@@ -11955,6 +12007,11 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
                 request: activeVoiceAuthorizationRequest ?? request,
                 preserveActiveChallengeOnFailClosed: activeVoiceChallenge != nil
             )
+            finalizeVoicePendingGrantActionContext(
+                resolution: resolution,
+                request: request,
+                forceCancel: false
+            )
             return resolution
         }
 
@@ -11966,6 +12023,11 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
             preserveActiveChallengeOnFailClosed: false
         )
         voiceAuthorizationInFlight = false
+        finalizeVoicePendingGrantActionContext(
+            resolution: resolution,
+            request: request,
+            forceCancel: false
+        )
         return resolution
     }
 
@@ -11986,6 +12048,11 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
                 request: activeVoiceAuthorizationRequest,
                 preserveActiveChallengeOnFailClosed: activeVoiceChallenge != nil
             )
+            finalizeVoicePendingGrantActionContext(
+                resolution: resolution,
+                request: activeVoiceAuthorizationRequest,
+                forceCancel: false
+            )
             return resolution
         }
 
@@ -12003,6 +12070,11 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
                 resolution,
                 request: nil,
                 preserveActiveChallengeOnFailClosed: false
+            )
+            finalizeVoicePendingGrantActionContext(
+                resolution: resolution,
+                request: nil,
+                forceCancel: false
             )
             return resolution
         }
@@ -12024,6 +12096,11 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
             forceCancel: false
         )
         voiceAuthorizationInFlight = false
+        finalizeVoicePendingGrantActionContext(
+            resolution: resolution,
+            request: request,
+            forceCancel: false
+        )
         return resolution
     }
 
@@ -12091,6 +12168,11 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
             preserveActiveChallengeOnFailClosed: false,
             forceCancel: true
         )
+        finalizeVoicePendingGrantActionContext(
+            resolution: resolution,
+            request: request,
+            forceCancel: true
+        )
     }
 
     func bestPendingHubGrant(for projectID: UUID?) -> SupervisorPendingGrant? {
@@ -12135,7 +12217,7 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
         let projectId = grant.projectId.trimmingCharacters(in: .whitespacesAndNewlines)
         let ttlOverride = grant.requestedTtlSec > 0 ? grant.requestedTtlSec : nil
         let tokenOverride = grant.requestedTokenCap > 0 ? grant.requestedTokenCap : nil
-        let result = await HubIPCClient.approvePendingGrantRequest(
+        let result = await approvePendingHubGrantRequest(
             grantRequestId: grantId,
             projectId: projectId.isEmpty ? nil : projectId,
             requestedTtlSec: ttlOverride,
@@ -12331,7 +12413,7 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
             if approve {
                 let ttlOverride = grant.requestedTtlSec > 0 ? grant.requestedTtlSec : nil
                 let tokenOverride = grant.requestedTokenCap > 0 ? grant.requestedTokenCap : nil
-                result = await HubIPCClient.approvePendingGrantRequest(
+                result = await self.approvePendingHubGrantRequest(
                     grantRequestId: grantId,
                     projectId: projectId.isEmpty ? nil : projectId,
                     requestedTtlSec: ttlOverride,
@@ -12339,7 +12421,7 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
                     note: "x_terminal_supervisor_quick_approve"
                 )
             } else {
-                result = await HubIPCClient.denyPendingGrantRequest(
+                result = await self.denyPendingHubGrantRequest(
                     grantRequestId: grantId,
                     projectId: projectId.isEmpty ? nil : projectId,
                     reason: "user_denied_from_supervisor"
@@ -12353,6 +12435,50 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
                 result: result
             )
         }
+    }
+
+    private func approvePendingHubGrantRequest(
+        grantRequestId: String,
+        projectId: String?,
+        requestedTtlSec: Int?,
+        requestedTokenCap: Int?,
+        note: String
+    ) async -> HubIPCClient.PendingGrantActionResult {
+        if let override = approvePendingHubGrantRequestOverride {
+            return await override(
+                grantRequestId,
+                projectId,
+                requestedTtlSec,
+                requestedTokenCap,
+                note
+            )
+        }
+        return await HubIPCClient.approvePendingGrantRequest(
+            grantRequestId: grantRequestId,
+            projectId: projectId,
+            requestedTtlSec: requestedTtlSec,
+            requestedTokenCap: requestedTokenCap,
+            note: note
+        )
+    }
+
+    private func denyPendingHubGrantRequest(
+        grantRequestId: String,
+        projectId: String?,
+        reason: String
+    ) async -> HubIPCClient.PendingGrantActionResult {
+        if let override = denyPendingHubGrantRequestOverride {
+            return await override(
+                grantRequestId,
+                projectId,
+                reason
+            )
+        }
+        return await HubIPCClient.denyPendingGrantRequest(
+            grantRequestId: grantRequestId,
+            projectId: projectId,
+            reason: reason
+        )
     }
 
     private func completePendingHubGrantAction(
@@ -12452,6 +12578,9 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
     ) async {
         guard !forceCancel else { return }
         guard resolution.state == .verified else { return }
+        if await applyVerifiedPendingGrantVoiceAuthorization(request: request) {
+            return
+        }
         guard isCurrentGuardedOneShotVoiceAuthorization(request) else { return }
         guard let intakeRequest = oneShotIntakeRequest,
               let planDecision = oneShotAdaptivePoolPlan,
@@ -12482,6 +12611,179 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
             outcome,
             request: intakeRequest,
             planDecision: planDecision
+        )
+    }
+
+    private func finalizeVoicePendingGrantActionContext(
+        resolution: SupervisorVoiceAuthorizationResolution,
+        request: SupervisorVoiceAuthorizationRequest?,
+        forceCancel: Bool
+    ) {
+        guard let context = activeVoicePendingGrantAction else { return }
+        let requestId = request?.requestId.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? resolution.requestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !requestId.isEmpty, context.requestId == requestId else { return }
+
+        switch resolution.state {
+        case .pending, .escalatedToMobile:
+            return
+        case .verified, .denied:
+            activeVoicePendingGrantAction = nil
+        case .failClosed:
+            if forceCancel || activeVoiceChallenge == nil || activeVoiceAuthorizationRequest == nil {
+                activeVoicePendingGrantAction = nil
+            }
+        }
+    }
+
+    private func applyVerifiedPendingGrantVoiceAuthorization(
+        request: SupervisorVoiceAuthorizationRequest?
+    ) async -> Bool {
+        guard let request,
+              let context = activeVoicePendingGrantAction,
+              context.requestId == request.requestId else {
+            return false
+        }
+
+        let grant = context.grant
+        let grantId = grant.grantRequestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !grantId.isEmpty else {
+            let replyText = "语音授权已验证，但 grant_request_id 为空，我没有执行对应的 Hub grant。"
+            let spokenOutcome = speakSupervisorVoiceReply(replyText)
+            appendSupervisorAssistantMessage(replyText)
+            conversationSessionController.registerAssistantTurn(spoken: spokenOutcome == .spoken)
+            return true
+        }
+
+        guard !pendingHubGrantActionsInFlight.contains(grantId) else {
+            let replyText = "语音授权已验证，但 \(grant.projectName) 的 Hub grant 动作仍在处理中（grant=\(grantId)）。"
+            let spokenOutcome = speakSupervisorVoiceReply(replyText)
+            appendSupervisorAssistantMessage(replyText)
+            conversationSessionController.registerAssistantTurn(spoken: spokenOutcome == .spoken)
+            return true
+        }
+
+        pendingHubGrantActionsInFlight.insert(grantId)
+        let projectId = grant.projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let result: HubIPCClient.PendingGrantActionResult
+        if context.approve {
+            let ttlOverride = grant.requestedTtlSec > 0 ? grant.requestedTtlSec : nil
+            let tokenOverride = grant.requestedTokenCap > 0 ? grant.requestedTokenCap : nil
+            result = await approvePendingHubGrantRequest(
+                grantRequestId: grantId,
+                projectId: projectId.isEmpty ? nil : projectId,
+                requestedTtlSec: ttlOverride,
+                requestedTokenCap: tokenOverride,
+                note: "x_terminal_supervisor_voice_grant_approve:\(request.requestId)"
+            )
+        } else {
+            result = await denyPendingHubGrantRequest(
+                grantRequestId: grantId,
+                projectId: projectId.isEmpty ? nil : projectId,
+                reason: "voice_authorized_supervisor_denial:\(request.requestId)"
+            )
+        }
+
+        await completePendingHubGrantAction(
+            grantId: grantId,
+            grant: grant,
+            approve: context.approve,
+            result: result
+        )
+
+        let followUp = await voicePendingGrantPostActionReply(
+            grant: grant,
+            approve: context.approve,
+            result: result
+        )
+        appendSupervisorAssistantMessage(followUp.text)
+        conversationSessionController.registerAssistantTurn(spoken: followUp.spokenOutcome == .spoken)
+        return true
+    }
+
+    private func voicePendingGrantPostActionReply(
+        grant: SupervisorPendingGrant,
+        approve: Bool,
+        result: HubIPCClient.PendingGrantActionResult
+    ) async -> SupervisorVoicePendingGrantReply {
+        let grantId = grant.grantRequestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !result.ok {
+            let actionText = approve ? "批准" : "拒绝"
+            let reason = result.reasonCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
+            let replyText = "语音授权已验证，但 Hub 授权\(actionText)失败：\(grant.projectName)（grant=\(grantId)，reason=\(reason)）。"
+            return SupervisorVoicePendingGrantReply(
+                text: replyText,
+                spokenOutcome: speakSupervisorVoiceReply(replyText)
+            )
+        }
+
+        let request = HubIPCClient.SupervisorBriefProjectionRequestPayload(
+            requestId: "voice_grant_follow_up_\(Int(Date().timeIntervalSince1970 * 1000))_\(UUID().uuidString.lowercased())",
+            projectId: grant.projectId,
+            runId: nil,
+            missionId: nil,
+            projectionKind: "progress_brief",
+            trigger: "critical_path_changed",
+            includeTtsScript: true,
+            includeCardSummary: true,
+            maxEvidenceRefs: 4
+        )
+        let fetcher = supervisorBriefProjectionRequestOverride
+            ?? { payload in
+                await HubIPCClient.requestSupervisorBriefProjection(payload)
+            }
+        let projectionResult = await fetcher(request)
+        if projectionResult.ok, let projection = projectionResult.projection {
+            let replyText = renderSupervisorBriefProjectionVoiceReply(
+                projection,
+                projectName: grant.projectName
+            )
+            let script = projectionVoiceScript(from: projection)
+            let spokenOutcome: SupervisorSpeechSynthesizer.Outcome
+            if script.isEmpty {
+                spokenOutcome = speakSupervisorVoiceReply(replyText)
+            } else {
+                let job = SupervisorVoiceTTSJob(
+                    trigger: .authorization,
+                    priority: .normal,
+                    script: script,
+                    dedupeKey: "voice-grant-followup:\(projectionVoiceDedupeKey(from: projection))"
+                )
+                spokenOutcome = supervisorSpeechSynthesizer.speak(
+                    job: job,
+                    preferences: currentVoicePreferences()
+                )
+            }
+            return SupervisorVoicePendingGrantReply(
+                text: replyText,
+                spokenOutcome: spokenOutcome
+            )
+        }
+
+        let capabilityText = grantCapabilityText(capability: grant.capability, modelId: grant.modelId)
+        let replyText: String
+        if approve {
+            replyText = "已批准 \(grant.projectName) 的 \(capabilityText) Hub grant。我会继续推进，并在路径变化时继续汇报。"
+        } else {
+            replyText = "已拒绝 \(grant.projectName) 的 \(capabilityText) Hub grant。我会继续保持阻断，并等待新的指示。"
+        }
+        return SupervisorVoicePendingGrantReply(
+            text: replyText,
+            spokenOutcome: speakSupervisorVoiceReply(replyText)
+        )
+    }
+
+    private func appendSupervisorAssistantMessage(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        messages.append(
+            SupervisorMessage(
+                id: UUID().uuidString,
+                role: .assistant,
+                content: trimmed,
+                isVoice: false,
+                timestamp: Date().timeIntervalSince1970
+            )
         )
     }
 
@@ -12974,6 +13276,414 @@ Coder 下一步建议：
             job: job,
             preferences: currentVoicePreferences()
         )
+    }
+
+    private func supervisorPendingGrantVoiceReplyIfApplicable(
+        _ text: String
+    ) async -> SupervisorVoicePendingGrantReply? {
+        guard let approve = pendingGrantVoiceDecision(in: text) else { return nil }
+        if pendingHubGrants.isEmpty {
+            await refreshSchedulerSnapshot(force: true)
+        }
+
+        let projects = allProjects()
+        let selection = resolvePendingHubGrantForVoiceAction(text, projects: projects)
+        if let replyText = selection.reply {
+            return SupervisorVoicePendingGrantReply(
+                text: replyText,
+                spokenOutcome: speakSupervisorVoiceReply(replyText)
+            )
+        }
+        guard let grant = selection.grant else { return nil }
+
+        let request = makeVoiceAuthorizationRequestForPendingHubGrantAction(
+            grant: grant,
+            approve: approve
+        )
+        if let activeRequest = activeVoiceAuthorizationRequest,
+           activeRequest.requestId == request.requestId,
+           let existingResolution = voiceAuthorizationResolution,
+           activeVoiceChallenge != nil {
+            let replyText = renderPendingGrantVoiceAuthorizationReply(
+                resolution: existingResolution,
+                grant: grant,
+                approve: approve,
+                challengeAlreadyActive: true
+            )
+            return SupervisorVoicePendingGrantReply(
+                text: replyText,
+                spokenOutcome: .spoken
+            )
+        }
+
+        activeVoicePendingGrantAction = SupervisorVoicePendingGrantActionContext(
+            requestId: request.requestId,
+            grant: grant,
+            approve: approve
+        )
+        let resolution = await startVoiceAuthorization(request)
+        let replyText = renderPendingGrantVoiceAuthorizationReply(
+            resolution: resolution,
+            grant: grant,
+            approve: approve,
+            challengeAlreadyActive: false
+        )
+        return SupervisorVoicePendingGrantReply(
+            text: replyText,
+            spokenOutcome: .spoken
+        )
+    }
+
+    private func pendingGrantVoiceDecision(in text: String) -> Bool? {
+        let normalized = normalizedLookupKey(text)
+        guard !normalized.isEmpty else { return nil }
+
+        let approveTokens = [
+            "批准",
+            "通过",
+            "准了",
+            "approve",
+            "allow",
+            "authorize"
+        ]
+        let denyTokens = [
+            "拒绝",
+            "驳回",
+            "否决",
+            "deny",
+            "reject",
+            "block"
+        ]
+        let subjectTokens = [
+            "grant",
+            "授权",
+            "权限",
+            "审批",
+            "release",
+            "deploy",
+            "上线",
+            "生产"
+        ]
+        let demonstratives = [
+            "this",
+            "这个",
+            "当前",
+            "这项",
+            "这笔"
+        ]
+
+        let hasApprove = approveTokens.contains { normalized.contains(normalizedLookupKey($0)) }
+        let hasDeny = denyTokens.contains { normalized.contains(normalizedLookupKey($0)) }
+        guard hasApprove != hasDeny else { return nil }
+
+        let hasSubject = subjectTokens.contains { normalized.contains(normalizedLookupKey($0)) }
+        let hasDemonstrative = demonstratives.contains { normalized.contains(normalizedLookupKey($0)) }
+        guard hasSubject || hasDemonstrative else { return nil }
+
+        return hasApprove
+    }
+
+    private func resolvePendingHubGrantForVoiceAction(
+        _ userMessage: String,
+        projects: [AXProjectEntry]
+    ) -> (grant: SupervisorPendingGrant?, reply: String?) {
+        let grants = pendingHubGrants
+        guard !grants.isEmpty else {
+            return (nil, "当前没有待处理的 Hub grant。")
+        }
+
+        var candidates = grants
+        let explicitGrantRequestId = explicitPendingGrantRequestId(in: userMessage)
+        if let explicitGrantRequestId {
+            let matches = candidates.filter { grant in
+                let grantId = grant.grantRequestId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                guard !grantId.isEmpty else { return false }
+                return grantId == explicitGrantRequestId.lowercased() ||
+                    grantId.contains(explicitGrantRequestId.lowercased()) ||
+                    explicitGrantRequestId.lowercased().contains(grantId)
+            }
+            guard !matches.isEmpty else {
+                return (nil, "我没找到 grant_request_id=\(explicitGrantRequestId) 对应的待处理 Hub grant。")
+            }
+            candidates = matches
+        }
+
+        let focus = focusedSupervisorProjectSelection(
+            projects: projects,
+            userMessage: userMessage
+        )
+        if let focus {
+            let projectMatches = candidates.filter { $0.projectId == focus.project.projectId }
+            if !projectMatches.isEmpty {
+                candidates = projectMatches
+            } else if explicitGrantRequestId == nil {
+                return (nil, "项目 \(focus.project.displayName) 当前没有待处理的 Hub grant。")
+            }
+        }
+
+        if candidates.count == 1, let grant = candidates.first {
+            return (grant, nil)
+        }
+
+        let refined = refinedVoicePendingGrantCandidates(candidates, userMessage: userMessage)
+        if refined.count == 1, let grant = refined.first {
+            return (grant, nil)
+        }
+
+        let ambiguous = refined.isEmpty ? candidates : refined
+        return (
+            nil,
+            renderPendingGrantVoiceAmbiguityReply(
+                candidates: ambiguous,
+                focusedProjectName: focus?.project.displayName
+            )
+        )
+    }
+
+    private func explicitPendingGrantRequestId(in userMessage: String) -> String? {
+        for key in ["grant_request_id", "grant_id"] {
+            let value = supervisorTriggerContextValue(key, userMessage: userMessage)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if let value, !value.isEmpty {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private func refinedVoicePendingGrantCandidates(
+        _ candidates: [SupervisorPendingGrant],
+        userMessage: String
+    ) -> [SupervisorPendingGrant] {
+        let foldedMessage = userMessage
+            .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
+            .lowercased()
+
+        return candidates.filter { grant in
+            let grantId = grant.grantRequestId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if !grantId.isEmpty, foldedMessage.contains(grantId) {
+                return true
+            }
+
+            let modelId = grant.modelId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if !modelId.isEmpty, foldedMessage.contains(modelId) {
+                return true
+            }
+
+            if messageContainsMeaningfulSearchTerm(userMessage, source: grant.reason) {
+                return true
+            }
+            if messageContainsMeaningfulSearchTerm(userMessage, source: grant.capability) {
+                return true
+            }
+
+            return pendingGrantVoiceAliasTerms(for: grant).contains { term in
+                foldedMessage.contains(term)
+            }
+        }
+    }
+
+    private func messageContainsMeaningfulSearchTerm(
+        _ userMessage: String,
+        source: String
+    ) -> Bool {
+        let foldedMessage = userMessage
+            .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
+            .lowercased()
+        let loweredSource = source
+            .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
+            .lowercased()
+
+        let tokens = loweredSource
+            .split { !$0.isLetter && !$0.isNumber }
+            .map(String.init)
+            .filter { token in
+                guard !token.isEmpty else { return false }
+                let isASCIIOnly = token.unicodeScalars.allSatisfy { $0.isASCII }
+                return isASCIIOnly ? token.count >= 4 : token.count >= 2
+            }
+
+        return tokens.contains { foldedMessage.contains($0) }
+    }
+
+    private func pendingGrantVoiceAliasTerms(
+        for grant: SupervisorPendingGrant
+    ) -> [String] {
+        let capability = grant.capability.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let reason = grant.reason.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let combined = "\(capability) \(reason)"
+        var aliases: [String] = []
+
+        if combined.contains("web_fetch") || combined.contains("web.fetch") || combined.contains("联网") {
+            aliases.append(contentsOf: ["web", "fetch", "browser", "联网"])
+        }
+        if combined.contains("ai_generate_paid") || combined.contains("ai.generate.paid") || combined.contains("付费") {
+            aliases.append(contentsOf: ["paid", "billing", "budget", "付费", "预算"])
+        }
+        if combined.contains("ai_generate_local") || combined.contains("ai.generate.local") || combined.contains("本地") {
+            aliases.append(contentsOf: ["local", "本地"])
+        }
+        if combined.contains("release") || combined.contains("deploy") || combined.contains("production") || combined.contains("上线") || combined.contains("发布") {
+            aliases.append(contentsOf: ["release", "deploy", "production", "上线", "发布", "生产"])
+        }
+        if combined.contains("connector") {
+            aliases.append("connector")
+        }
+        if combined.contains("secret") || combined.contains("credential") || combined.contains("token") {
+            aliases.append(contentsOf: ["secret", "credential", "token"])
+        }
+
+        return aliases
+            .map {
+                $0.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
+                    .lowercased()
+            }
+    }
+
+    private func makeVoiceAuthorizationRequestForPendingHubGrantAction(
+        grant: SupervisorPendingGrant,
+        approve: Bool
+    ) -> SupervisorVoiceAuthorizationRequest {
+        let stableGrantToken = {
+            let preferred = grant.grantRequestId.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !preferred.isEmpty {
+                return normalizedLookupKey(preferred)
+            }
+            return normalizedLookupKey(grant.id)
+        }()
+        let actionToken = approve ? "approve" : "deny"
+        let capabilityText = grantCapabilityText(capability: grant.capability, modelId: grant.modelId)
+        let reasonText = grant.reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        let scopeFields = [
+            "project=\(grant.projectName)",
+            "capability=\(capabilityText)",
+            reasonText.isEmpty ? "" : "reason=\(capped(reasonText, maxChars: 96))"
+        ]
+        .filter { !$0.isEmpty }
+        let amountText: String? = {
+            if grant.requestedTokenCap > 0 {
+                return "token_cap=\(grant.requestedTokenCap)"
+            }
+            if grant.requestedTtlSec > 0 {
+                return "ttl_sec=\(grant.requestedTtlSec)"
+            }
+            return nil
+        }()
+        let riskTier = pendingGrantVoiceAuthorizationRiskTier(
+            for: grant,
+            approve: approve
+        )
+
+        return SupervisorVoiceAuthorizationRequest(
+            requestId: "voice_pending_grant_\(actionToken)_\(stableGrantToken)",
+            projectId: grant.projectId,
+            templateId: approve
+                ? "voice.grant.pending_hub_grant_approve.v1"
+                : "voice.grant.pending_hub_grant_deny.v1",
+            actionText: approve
+                ? "Approve Hub grant for \(grant.projectName)"
+                : "Deny Hub grant for \(grant.projectName)",
+            scopeText: scopeFields.joined(separator: "; "),
+            amountText: amountText,
+            riskTier: riskTier,
+            boundDeviceId: preferredVoiceBoundDeviceId(for: grant.projectId),
+            mobileTerminalId: nil,
+            challengeCode: nil,
+            ttlMs: riskTier >= .high ? 180_000 : 120_000
+        )
+    }
+
+    private func pendingGrantVoiceAuthorizationRiskTier(
+        for grant: SupervisorPendingGrant,
+        approve: Bool
+    ) -> LaneRiskTier {
+        let capability = grant.capability.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let reason = grant.reason.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let combined = "\(capability) \(reason)"
+
+        if combined.contains("web_fetch") ||
+            combined.contains("web.fetch") ||
+            combined.contains("ai_generate_paid") ||
+            combined.contains("ai.generate.paid") ||
+            combined.contains("production") ||
+            combined.contains("prod") ||
+            combined.contains("release") ||
+            combined.contains("deploy") ||
+            combined.contains("connector") ||
+            combined.contains("secret") ||
+            combined.contains("token") ||
+            combined.contains("上线") ||
+            combined.contains("生产") ||
+            combined.contains("发布") ||
+            combined.contains("联网") {
+            return .high
+        }
+
+        if capability.contains("ai_generate_local") || capability.contains("ai.generate.local") {
+            return approve ? .medium : .low
+        }
+
+        return approve ? .high : .medium
+    }
+
+    private func renderPendingGrantVoiceAuthorizationReply(
+        resolution: SupervisorVoiceAuthorizationResolution,
+        grant: SupervisorPendingGrant,
+        approve: Bool,
+        challengeAlreadyActive: Bool
+    ) -> String {
+        let actionText = approve ? "批准" : "拒绝"
+        let capabilityText = grantCapabilityText(capability: grant.capability, modelId: grant.modelId)
+        let challengeToken = resolution.challengeId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "n/a"
+
+        switch resolution.state {
+        case .pending:
+            if challengeAlreadyActive {
+                return "项目 \(grant.projectName) 的 \(capabilityText) \(actionText)语音授权仍在等待口令校验（challenge=\(challengeToken)）。"
+            }
+            return "我已为 \(grant.projectName) 的 \(capabilityText) 发起\(actionText)语音授权（challenge=\(challengeToken)）。请继续说出授权短语。"
+
+        case .escalatedToMobile:
+            if challengeAlreadyActive {
+                return "项目 \(grant.projectName) 的 \(capabilityText) \(actionText)语音授权仍等待移动端确认（challenge=\(challengeToken)）。"
+            }
+            return "我已为 \(grant.projectName) 的 \(capabilityText) 发起\(actionText)语音授权（challenge=\(challengeToken)）。先在配对移动端确认，再继续口令校验。"
+
+        case .verified:
+            return "语音授权已通过，正在对 \(grant.projectName) 执行 Hub grant \(actionText)。"
+
+        case .denied:
+            let denyCode = resolution.denyCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "denied"
+            return "这次对 \(grant.projectName) 的 Hub grant \(actionText)语音授权未通过（deny=\(denyCode)）。"
+
+        case .failClosed:
+            let reason = resolution.reasonCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
+            return "我没有执行 \(grant.projectName) 的 Hub grant \(actionText)。语音授权已 fail-closed（reason=\(reason)）。"
+        }
+    }
+
+    private func renderPendingGrantVoiceAmbiguityReply(
+        candidates: [SupervisorPendingGrant],
+        focusedProjectName: String?
+    ) -> String {
+        let header: String
+        if let focusedProjectName {
+            header = "项目 \(focusedProjectName) 还有多个待处理 Hub grant，我不能替你盲选。"
+        } else {
+            header = "当前有多个待处理 Hub grant，我不能替你盲选。"
+        }
+
+        let lines = candidates.prefix(3).enumerated().map { offset, grant in
+            let capabilityText = grantCapabilityText(capability: grant.capability, modelId: grant.modelId)
+            let grantToken = grant.grantRequestId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? grant.id
+                : grant.grantRequestId
+            return "\(offset + 1). \(grant.projectName) / \(capabilityText) / grant=\(grantToken)"
+        }
+
+        return ([header] + lines + [
+            "请补一句 `grant_request_id=...`，或者明确项目名/能力后再说批准或拒绝。"
+        ]).joined(separator: "\n")
     }
 
     private func supervisorBriefProjectionVoiceReplyIfApplicable(
@@ -16974,6 +17684,7 @@ extension SupervisorManager {
         voiceAuthorizationResolution = nil
         activeVoiceChallenge = nil
         activeVoiceAuthorizationRequest = nil
+        activeVoicePendingGrantAction = nil
         voiceAuthorizationInFlight = false
         voiceAuthorizationBridge = SupervisorVoiceAuthorizationBridge()
         preparedOneShotLaunchExecutorForTesting = nil
@@ -16987,6 +17698,34 @@ extension SupervisorManager {
         _ fetcher: @escaping @Sendable (HubIPCClient.SupervisorBriefProjectionRequestPayload) async -> HubIPCClient.SupervisorBriefProjectionResult
     ) {
         supervisorBriefProjectionRequestOverride = fetcher
+    }
+
+    func installPendingHubGrantApproveOverrideForTesting(
+        _ override: (@Sendable (String, String?, Int?, Int?, String) async -> HubIPCClient.PendingGrantActionResult)?
+    ) {
+        approvePendingHubGrantRequestOverride = override
+    }
+
+    func installPendingHubGrantDenyOverrideForTesting(
+        _ override: (@Sendable (String, String?, String) async -> HubIPCClient.PendingGrantActionResult)?
+    ) {
+        denyPendingHubGrantRequestOverride = override
+    }
+
+    func installSchedulerSnapshotRefreshOverrideForTesting(
+        _ override: (@Sendable (Bool) async -> Void)?
+    ) {
+        schedulerSnapshotRefreshOverride = override
+    }
+
+    func setPendingHubGrantsForTesting(
+        _ grants: [SupervisorPendingGrant],
+        source: String = "test"
+    ) {
+        pendingHubGrants = grants
+        pendingHubGrantSource = source
+        pendingHubGrantUpdatedAt = Date().timeIntervalSince1970
+        hasFreshPendingHubGrantSnapshot = true
     }
 
     func resetOneShotControlPlaneState() {
