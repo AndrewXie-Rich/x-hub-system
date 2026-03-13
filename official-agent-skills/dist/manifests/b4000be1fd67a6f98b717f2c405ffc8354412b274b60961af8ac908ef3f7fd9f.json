@@ -1,0 +1,43 @@
+{
+  "schema_version": "xhub.skill_manifest.v1",
+  "skill_id": "agent-browser",
+  "name": "Agent Browser",
+  "version": "1.0.0",
+  "description": "Governed browser automation package for navigation, form fill, screenshot capture, and structured extraction.",
+  "entrypoint": {
+    "runtime": "text",
+    "command": "cat",
+    "args": [
+      "SKILL.md"
+    ]
+  },
+  "capabilities_required": [
+    "browser.read",
+    "device.browser.control",
+    "web.fetch"
+  ],
+  "network_policy": {
+    "direct_network_forbidden": true
+  },
+  "publisher": {
+    "publisher_id": "xhub.official",
+    "public_key_ed25519": "base64:TGNnemU+ehosOhLMGGIkxgryfeaKAg5HFgnvtr9l72w="
+  },
+  "install_hint": "Install through the governed Agent Baseline flow before browser-heavy tasks.",
+  "package_sha256": "b4000be1fd67a6f98b717f2c405ffc8354412b274b60961af8ac908ef3f7fd9f",
+  "files": [
+    {
+      "path": "skill.json",
+      "sha256": "5d87330a57f686d3e52b5292f2cabbf0eb5b5f82483b7f8943e3e47ce2d1f7ee"
+    },
+    {
+      "path": "SKILL.md",
+      "sha256": "d6300958f2967bf25c43b8a8eec8672817dc41494726d4cf04f9b684c17d8990"
+    }
+  ],
+  "signature": {
+    "alg": "ed25519",
+    "signed_at_ms": 1773327543255,
+    "sig": "base64:9zrLNUWq1/x3K5b2giGM8OJ0XE7SpcBA1kCJ6AovJHxg8g/QgVWmfC/wC4Ev9kyJSbbIHbaGbexCa9dmLsNRDQ=="
+  }
+}

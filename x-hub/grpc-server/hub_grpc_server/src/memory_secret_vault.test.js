@@ -273,3 +273,64 @@ run('secret vault redeem decrypts plaintext and consumes lease', () => {
     }
   });
 });
+
+run('secret vault redeem over service returns plaintext bytes without logging plaintext', () => {
+  const runtimeBaseDir = makeTmp('runtime');
+  const dbPath = makeTmp('vault', '.db');
+  fs.mkdirSync(runtimeBaseDir, { recursive: true });
+
+  withEnv(baseEnv(runtimeBaseDir), () => {
+    const db = new HubDB({ dbPath });
+    const bus = new HubEventBus();
+    const impl = makeServices({ db, bus });
+    try {
+      const client = makeClient('proj-minecraft');
+      const plaintext = 'CorrectHorseBatteryStaple!';
+
+      const created = invokeHubMemoryUnary(impl, 'CreateSecretVaultItem', {
+        client,
+        scope: 'project',
+        name: 'minecraft-login',
+        plaintext_bytes: Buffer.from(plaintext, 'utf8'),
+        sensitivity: 'credential',
+      });
+      assert.equal(created.err, null);
+      assert.ok(created.res?.item?.item_id);
+
+      const lease = invokeHubMemoryUnary(impl, 'BeginSecretVaultUse', {
+        client,
+        item_id: created.res.item.item_id,
+        purpose: 'browser_login',
+        target: 'https://example.com/login',
+        ttl_ms: 45_000,
+      });
+      assert.equal(lease.err, null);
+      assert.ok(String(lease.res?.use_token || '').startsWith('svtok_'));
+
+      const redeemed = invokeHubMemoryUnary(impl, 'RedeemSecretVaultUse', {
+        client,
+        use_token: lease.res.use_token,
+      });
+      assert.equal(redeemed.err, null);
+      assert.ok(Buffer.isBuffer(redeemed.res?.plaintext_bytes));
+      assert.equal(redeemed.res.plaintext_bytes.toString('utf8'), plaintext);
+      assert.equal(String(redeemed.res?.item_id || ''), String(created.res.item.item_id || ''));
+
+      const auditRows = db.db.prepare(
+        `SELECT ext_json
+         FROM audit_events
+         WHERE event_type = 'secret_vault.lease_redeemed'
+         ORDER BY created_at_ms DESC
+         LIMIT 1`
+      ).all();
+      assert.equal(auditRows.length > 0, true);
+      const auditText = String(auditRows[0]?.ext_json || '');
+      assert.equal(auditText.includes(plaintext), false);
+      assert.equal(auditText.includes('plaintext_bytes'), true);
+    } finally {
+      db.close();
+      cleanupDbArtifacts(dbPath);
+      try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+});

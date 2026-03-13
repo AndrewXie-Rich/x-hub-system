@@ -86,6 +86,64 @@ enum XTMemoryUseMode: String, CaseIterable, Sendable {
     }
 }
 
+enum XTMemoryServingProfile: String, CaseIterable, Sendable {
+    case m0Heartbeat = "m0_heartbeat"
+    case m1Execute = "m1_execute"
+    case m2PlanReview = "m2_plan_review"
+    case m3DeepDive = "m3_deep_dive"
+    case m4FullScan = "m4_full_scan"
+
+    var rank: Int {
+        switch self {
+        case .m0Heartbeat:
+            return 0
+        case .m1Execute:
+            return 1
+        case .m2PlanReview:
+            return 2
+        case .m3DeepDive:
+            return 3
+        case .m4FullScan:
+            return 4
+        }
+    }
+
+    static func parse(_ raw: String?) -> XTMemoryServingProfile? {
+        let token = (raw ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !token.isEmpty else { return nil }
+        if let profile = XTMemoryServingProfile(rawValue: token) {
+            return profile
+        }
+        switch token {
+        case "m0", "heartbeat":
+            return .m0Heartbeat
+        case "m1", "execute", "default":
+            return .m1Execute
+        case "m2", "plan_review", "planreview", "review":
+            return .m2PlanReview
+        case "m3", "deep_dive", "deepdive":
+            return .m3DeepDive
+        case "m4", "full_scan", "fullscan":
+            return .m4FullScan
+        default:
+            return nil
+        }
+    }
+}
+
+struct XTMemoryServingProfileContract: Sendable {
+    var budgetScale: Double
+    var maxTotalTokens: Int
+    var constitutionScale: Double
+    var canonicalScale: Double
+    var observationsScale: Double
+    var workingSetScale: Double
+    var rawEvidenceScale: Double
+    var lineScale: Double
+}
+
 struct XTMemoryUseContract: Sendable {
     var mode: XTMemoryUseMode
     var allowedRequesterRoles: Set<XTMemoryRequesterRole>
@@ -110,6 +168,7 @@ struct XTMemoryUseContract: Sendable {
 
 struct XTMemoryRouteDecision: Sendable {
     var contract: XTMemoryUseContract
+    var servingProfile: XTMemoryServingProfile
     var payload: HubIPCClient.MemoryContextPayload
     var denyCode: XTMemoryUseDenyCode?
     var downgradeCode: XTMemoryUseDenyCode?
@@ -123,11 +182,21 @@ enum XTMemoryRoleScopedRouter {
         payload: HubIPCClient.MemoryContextPayload,
         remoteExportRequested: Bool = false
     ) -> XTMemoryRouteDecision {
-        let contract = contract(for: mode)
+        let selectedProfile = resolveServingProfile(
+            role: role,
+            mode: mode,
+            payload: payload
+        )
+        let contract = adjustedContract(
+            contract(for: mode),
+            for: mode,
+            servingProfile: selectedProfile
+        )
 
         if let directUseDenyCode = contract.directUseDenyCode {
             return XTMemoryRouteDecision(
                 contract: contract,
+                servingProfile: selectedProfile,
                 payload: payload,
                 denyCode: directUseDenyCode,
                 downgradeCode: nil,
@@ -138,6 +207,7 @@ enum XTMemoryRoleScopedRouter {
         guard contract.allowedRequesterRoles.contains(role) else {
             return XTMemoryRouteDecision(
                 contract: contract,
+                servingProfile: selectedProfile,
                 payload: payload,
                 denyCode: .memoryRoutePolicyMismatch,
                 downgradeCode: nil,
@@ -148,6 +218,7 @@ enum XTMemoryRoleScopedRouter {
         if remoteExportRequested, contract.remoteExportPolicy == .localOnly {
             return XTMemoryRouteDecision(
                 contract: contract,
+                servingProfile: selectedProfile,
                 payload: payload,
                 denyCode: .rawEvidenceRemoteExportDenied,
                 downgradeCode: nil,
@@ -157,6 +228,7 @@ enum XTMemoryRoleScopedRouter {
 
         var sanitized = payload
         sanitized.mode = mode.rawValue
+        sanitized.servingProfile = selectedProfile.rawValue
         sanitized.constitutionHint = allowed(contract.allowedLayers, .l0Constitution)
             ? XTMemorySanitizer.sanitizeText(
                 payload.constitutionHint,
@@ -201,6 +273,7 @@ enum XTMemoryRoleScopedRouter {
 
         return XTMemoryRouteDecision(
             contract: contract,
+            servingProfile: selectedProfile,
             payload: sanitized,
             denyCode: nil,
             downgradeCode: nil,
@@ -401,6 +474,269 @@ enum XTMemoryRoleScopedRouter {
 
     private static func allowed(_ layers: Set<XTMemoryLayer>, _ layer: XTMemoryLayer) -> Bool {
         layers.contains(layer)
+    }
+
+    private static func resolveServingProfile(
+        role: XTMemoryRequesterRole,
+        mode: XTMemoryUseMode,
+        payload: HubIPCClient.MemoryContextPayload
+    ) -> XTMemoryServingProfile {
+        let explicit = XTMemoryServingProfile.parse(payload.servingProfile)
+        let inferred = explicit ?? defaultServingProfile(
+            role: role,
+            mode: mode,
+            latestUser: payload.latestUser
+        )
+        return clampedServingProfile(inferred, for: mode)
+    }
+
+    private static func defaultServingProfile(
+        role: XTMemoryRequesterRole,
+        mode: XTMemoryUseMode,
+        latestUser: String
+    ) -> XTMemoryServingProfile {
+        switch mode {
+        case .laneHandoff:
+            return .m0Heartbeat
+        case .remotePromptBundle:
+            return reviewPlanRequestSignals(latestUser) ? .m1Execute : .m0Heartbeat
+        case .supervisorOrchestration:
+            if fullScanRequestSignals(latestUser) {
+                return .m3DeepDive
+            }
+            if reviewPlanRequestSignals(latestUser) {
+                return .m2PlanReview
+            }
+            return .m1Execute
+        case .toolActHighRisk:
+            if reviewPlanRequestSignals(latestUser) {
+                return .m2PlanReview
+            }
+            return .m1Execute
+        default:
+            if fullScanRequestSignals(latestUser) && role != .remoteExport {
+                return .m3DeepDive
+            }
+            if reviewPlanRequestSignals(latestUser) {
+                return .m2PlanReview
+            }
+            return .m1Execute
+        }
+    }
+
+    private static func clampedServingProfile(
+        _ profile: XTMemoryServingProfile,
+        for mode: XTMemoryUseMode
+    ) -> XTMemoryServingProfile {
+        switch mode {
+        case .laneHandoff:
+            return .m0Heartbeat
+        case .remotePromptBundle:
+            return profile.rank > XTMemoryServingProfile.m1Execute.rank ? .m1Execute : profile
+        case .toolActHighRisk:
+            return profile.rank > XTMemoryServingProfile.m2PlanReview.rank ? .m2PlanReview : profile
+        default:
+            return profile
+        }
+    }
+
+    private static func adjustedContract(
+        _ contract: XTMemoryUseContract,
+        for mode: XTMemoryUseMode,
+        servingProfile: XTMemoryServingProfile
+    ) -> XTMemoryUseContract {
+        let profile = servingProfileContract(for: servingProfile)
+        var adjusted = contract
+        adjusted.constitutionMaxChars = scaledPositive(
+            contract.constitutionMaxChars,
+            scale: profile.constitutionScale,
+            floor: contract.constitutionMaxChars > 0 ? min(120, contract.constitutionMaxChars) : 0
+        )
+        adjusted.canonicalMaxChars = scaledPositive(
+            contract.canonicalMaxChars,
+            scale: profile.canonicalScale,
+            floor: contract.canonicalMaxChars > 0 ? min(400, contract.canonicalMaxChars) : 0
+        )
+        adjusted.observationsMaxChars = scaledPositive(
+            contract.observationsMaxChars,
+            scale: profile.observationsScale,
+            floor: contract.observationsMaxChars > 0 ? min(320, contract.observationsMaxChars) : 0
+        )
+        adjusted.workingSetMaxChars = scaledPositive(
+            contract.workingSetMaxChars,
+            scale: profile.workingSetScale,
+            floor: contract.workingSetMaxChars > 0 ? min(320, contract.workingSetMaxChars) : 0
+        )
+        adjusted.rawEvidenceMaxChars = scaledPositive(
+            contract.rawEvidenceMaxChars,
+            scale: profile.rawEvidenceScale,
+            floor: contract.rawEvidenceMaxChars > 0 ? min(180, contract.rawEvidenceMaxChars) : 0
+        )
+        adjusted.lineCap = scaledPositive(
+            contract.lineCap,
+            scale: profile.lineScale,
+            floor: contract.lineCap > 0 ? min(8, contract.lineCap) : 0
+        )
+        adjusted.budgetCap = scaledBudgetCap(
+            baseBudgetCap(for: mode, contract: contract),
+            scale: profile.budgetScale,
+            maxTotalTokens: profile.maxTotalTokens
+        )
+        return adjusted
+    }
+
+    private static func servingProfileContract(
+        for profile: XTMemoryServingProfile
+    ) -> XTMemoryServingProfileContract {
+        switch profile {
+        case .m0Heartbeat:
+            return XTMemoryServingProfileContract(
+                budgetScale: 0.6,
+                maxTotalTokens: 1_200,
+                constitutionScale: 0.8,
+                canonicalScale: 0.7,
+                observationsScale: 0.65,
+                workingSetScale: 0.7,
+                rawEvidenceScale: 0.5,
+                lineScale: 0.7
+            )
+        case .m1Execute:
+            return XTMemoryServingProfileContract(
+                budgetScale: 1.0,
+                maxTotalTokens: 1_800,
+                constitutionScale: 1.0,
+                canonicalScale: 1.0,
+                observationsScale: 1.0,
+                workingSetScale: 1.0,
+                rawEvidenceScale: 1.0,
+                lineScale: 1.0
+            )
+        case .m2PlanReview:
+            return XTMemoryServingProfileContract(
+                budgetScale: 1.8,
+                maxTotalTokens: 3_600,
+                constitutionScale: 1.1,
+                canonicalScale: 1.8,
+                observationsScale: 1.9,
+                workingSetScale: 1.7,
+                rawEvidenceScale: 1.5,
+                lineScale: 1.45
+            )
+        case .m3DeepDive:
+            return XTMemoryServingProfileContract(
+                budgetScale: 2.8,
+                maxTotalTokens: 6_400,
+                constitutionScale: 1.2,
+                canonicalScale: 2.7,
+                observationsScale: 3.0,
+                workingSetScale: 2.5,
+                rawEvidenceScale: 2.2,
+                lineScale: 1.9
+            )
+        case .m4FullScan:
+            return XTMemoryServingProfileContract(
+                budgetScale: 4.0,
+                maxTotalTokens: 12_000,
+                constitutionScale: 1.3,
+                canonicalScale: 3.4,
+                observationsScale: 3.8,
+                workingSetScale: 3.2,
+                rawEvidenceScale: 2.8,
+                lineScale: 2.4
+            )
+        }
+    }
+
+    private static func baseBudgetCap(
+        for mode: XTMemoryUseMode,
+        contract: XTMemoryUseContract
+    ) -> HubIPCClient.MemoryContextBudgets {
+        if let budget = contract.budgetCap {
+            return budget
+        }
+        switch mode {
+        case .projectChat:
+            return HubIPCClient.MemoryContextBudgets(
+                totalTokens: 1_600,
+                l0Tokens: 80,
+                l1Tokens: 480,
+                l2Tokens: 320,
+                l3Tokens: 520,
+                l4Tokens: 200
+            )
+        case .laneHandoff:
+            return HubIPCClient.MemoryContextBudgets(
+                totalTokens: 400,
+                l0Tokens: 40,
+                l1Tokens: 120,
+                l2Tokens: 80,
+                l3Tokens: 120,
+                l4Tokens: 40
+            )
+        default:
+            return HubIPCClient.MemoryContextBudgets(
+                totalTokens: 1_300,
+                l0Tokens: 70,
+                l1Tokens: 420,
+                l2Tokens: 240,
+                l3Tokens: 510,
+                l4Tokens: 60
+            )
+        }
+    }
+
+    private static func scaledBudgetCap(
+        _ base: HubIPCClient.MemoryContextBudgets,
+        scale: Double,
+        maxTotalTokens: Int
+    ) -> HubIPCClient.MemoryContextBudgets {
+        let l0 = scaledPositive(base.l0Tokens ?? 0, scale: scale, floor: 24)
+        let l1 = scaledPositive(base.l1Tokens ?? 0, scale: scale, floor: 40)
+        let l2 = scaledPositive(base.l2Tokens ?? 0, scale: scale, floor: 40)
+        let l3 = scaledPositive(base.l3Tokens ?? 0, scale: scale, floor: 80)
+        let l4 = scaledPositive(base.l4Tokens ?? 0, scale: scale, floor: 60)
+        let scaledTotal = scaledPositive(base.totalTokens ?? 0, scale: scale, floor: 400)
+        let sum = l0 + l1 + l2 + l3 + l4
+        let total = min(maxTotalTokens, max(scaledTotal, sum))
+        return HubIPCClient.MemoryContextBudgets(
+            totalTokens: total,
+            l0Tokens: l0,
+            l1Tokens: l1,
+            l2Tokens: l2,
+            l3Tokens: l3,
+            l4Tokens: l4
+        )
+    }
+
+    private static func scaledPositive(
+        _ value: Int,
+        scale: Double,
+        floor: Int
+    ) -> Int {
+        guard value > 0 else { return 0 }
+        return max(floor, Int((Double(value) * scale).rounded()))
+    }
+
+    private static func reviewPlanRequestSignals(_ text: String) -> Bool {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return false }
+        let keywords = [
+            "审查", "审阅", "review", "上下文记忆", "项目记忆", "执行方案",
+            "重构建议", "方案评审", "规划", "计划", "梳理", "全貌", "背景信息",
+            "设计建议", "refactor", "architecture review", "planning", "deep dive"
+        ]
+        return keywords.contains { normalized.contains($0) }
+    }
+
+    private static func fullScanRequestSignals(_ text: String) -> Bool {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return false }
+        let keywords = [
+            "全局", "全仓", "仓库级", "整个仓库", "完整上下文", "全部背景",
+            "全量背景", "portfolio", "repo-wide", "full scan", "system-wide",
+            "全面审查", "全面评审", "从全局看", "完整背景", "通读"
+        ]
+        return keywords.contains { normalized.contains($0) }
     }
 
     private static func cappedBudgets(

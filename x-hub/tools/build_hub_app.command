@@ -8,8 +8,8 @@ PKG_DIR="$XHUB_DIR/macos/RELFlowHub"
 TPL_DIR="$XHUB_DIR/macos/app_template"
 OUT_DIR="$ROOT_DIR/build"
 APP_DIR="$OUT_DIR/X-Hub.app"
-BRIDGE_APP_DIR="$OUT_DIR/RELFlowHubBridge.app"
-DOCK_AGENT_APP_DIR="$OUT_DIR/RELFlowHubDockAgent.app"
+BRIDGE_APP_DIR="$OUT_DIR/X-Hub Bridge.app"
+DOCK_AGENT_APP_DIR="$OUT_DIR/X-Hub Dock Agent.app"
 
 echo "[1/4] Building Swift package (release)…"
 mkdir -p "$PKG_DIR/.sandbox_home" "$PKG_DIR/.sandbox_tmp" "$PKG_DIR/.scratch" "$PKG_DIR/.clang-module-cache" "$PKG_DIR/.swift-module-cache"
@@ -55,10 +55,15 @@ chmod +x "$APP_DIR/Contents/MacOS/RELFlowHub"
 
 cp -f "$TPL_DIR/Info.plist" "$APP_DIR/Contents/Info.plist"
 
-# Bundle the MLX runtime script so DMG installs can start AI without referencing the repo.
-RUNTIME_SRC="$XHUB_DIR/python-runtime/python_service/relflowhub_mlx_runtime.py"
-if [ -f "$RUNTIME_SRC" ]; then
-  cp -f "$RUNTIME_SRC" "$APP_DIR/Contents/Resources/relflowhub_mlx_runtime.py"
+# Bundle the full python_service runtime tree so DMG installs can start the
+# canonical local runtime entrypoint and its provider registry without referencing the repo.
+RUNTIME_SRC_DIR="$XHUB_DIR/python-runtime/python_service"
+if [ -d "$RUNTIME_SRC_DIR" ]; then
+  rsync -a --delete \
+    --exclude '__pycache__' \
+    --exclude '.pytest_cache' \
+    "$RUNTIME_SRC_DIR/" \
+    "$APP_DIR/Contents/Resources/python_service/"
 fi
 
 # Bundle the Node gRPC server + proto so LAN clients can connect without running `npm start`.

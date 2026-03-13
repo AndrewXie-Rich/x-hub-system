@@ -378,12 +378,12 @@ final class HubLaunchStateMachine {
 
     private func runtimeReady() -> Bool {
         if let st = AIRuntimeStatusStorage.load() {
-            if st.isAlive(ttl: 3.0) && st.mlxOk {
+            if st.isAlive(ttl: 3.0) && st.hasReadyProvider(ttl: 3.0) {
                 return true
             }
         }
         let status = HubStore.shared.aiRuntimeStatusText.lowercased()
-        if status.contains("running") && !status.contains("mlx not available") {
+        if status.contains("running") && !status.contains("no providers ready") {
             return true
         }
         return false

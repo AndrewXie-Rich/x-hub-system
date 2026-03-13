@@ -346,7 +346,7 @@ SENSITIVE_PATTERNS = {
 
 ### 9.1 3 层工作流
 
-**目标**: 借鉴 Claude-Mem，实现 10x token 节省
+**目标**: 借鉴 progressive-disclosure reference architecture，实现 10x token 节省
 
 **工作流**:
 

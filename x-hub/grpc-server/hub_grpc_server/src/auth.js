@@ -1,4 +1,4 @@
-import { resolveRuntimeBaseDir } from './mlx_runtime_ipc.js';
+import { resolveRuntimeBaseDir } from './local_runtime_ipc.js';
 import { loadClients, findClientByToken } from './clients.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -418,29 +418,76 @@ export function requireClientAuth(call) {
   return { ok: true, device_id: '', client_name: '', capabilities: [], peer_ip: peerIp, peer_cert_sha256: peerCertSha256 };
 }
 
-export function requireAdminAuth(call) {
-  const expected = (process.env.HUB_ADMIN_TOKEN || '').trim();
-  if (!expected) return { ok: false, code: 'permission_denied', message: 'Admin token is not configured on this Hub' };
+function requireScopedStaticTokenAuth(call, {
+  token_env_key,
+  allow_remote_env_key,
+  allowed_cidrs_env_key,
+  token_not_configured_message,
+  invalid_token_message,
+  source_ip_denied_message,
+  local_only_message,
+} = {}) {
+  const expected = safeString(process.env[token_env_key] || '');
+  if (!expected) {
+    return {
+      ok: false,
+      code: 'permission_denied',
+      message: safeString(token_not_configured_message) || 'Token is not configured on this Hub',
+    };
+  }
   const tok = bearerTokenFromMetadata(call);
   if (tok !== expected) {
-    return { ok: false, code: 'permission_denied', message: 'Missing/invalid admin token' };
+    return {
+      ok: false,
+      code: 'permission_denied',
+      message: safeString(invalid_token_message) || 'Missing/invalid token',
+    };
   }
 
-  // Default: admin RPCs are local-only (Hub UI / local scripts). This reduces the blast radius
-  // if the gRPC port is accidentally exposed beyond the intended transport (LAN/VPN/tunnel).
   const peerIp = peerIpFromCall(call);
-  const allowRemote = String(process.env.HUB_ADMIN_ALLOW_REMOTE || '').trim() === '1';
-  const adminAllowed = parseAllowedCidrsEnv(process.env.HUB_ADMIN_ALLOWED_CIDRS || '');
+  const allowRemote = safeString(process.env[allow_remote_env_key] || '') === '1';
+  const allowed = parseAllowedCidrsEnv(process.env[allowed_cidrs_env_key] || '');
   if (!allowRemote) {
-    // Allow explicit CIDR allowlist as an alternative to "loopback only".
-    if (adminAllowed.length) {
-      if (!peerAllowedByRules(peerIp, adminAllowed)) {
-        return { ok: false, code: 'permission_denied', message: 'Admin source IP is not allowed' };
+    if (allowed.length) {
+      if (!peerAllowedByRules(peerIp, allowed)) {
+        return {
+          ok: false,
+          code: 'permission_denied',
+          message: safeString(source_ip_denied_message) || 'Source IP is not allowed',
+        };
       }
     } else if (!isLoopbackIp(peerIp)) {
-      return { ok: false, code: 'permission_denied', message: 'Admin RPCs are local-only (set HUB_ADMIN_ALLOW_REMOTE=1 to override)' };
+      return {
+        ok: false,
+        code: 'permission_denied',
+        message: safeString(local_only_message) || 'RPCs are local-only',
+      };
     }
   }
 
   return { ok: true };
+}
+
+export function requireAdminAuth(call) {
+  return requireScopedStaticTokenAuth(call, {
+    token_env_key: 'HUB_ADMIN_TOKEN',
+    allow_remote_env_key: 'HUB_ADMIN_ALLOW_REMOTE',
+    allowed_cidrs_env_key: 'HUB_ADMIN_ALLOWED_CIDRS',
+    token_not_configured_message: 'Admin token is not configured on this Hub',
+    invalid_token_message: 'Missing/invalid admin token',
+    source_ip_denied_message: 'Admin source IP is not allowed',
+    local_only_message: 'Admin RPCs are local-only (set HUB_ADMIN_ALLOW_REMOTE=1 to override)',
+  });
+}
+
+export function requireOperatorChannelConnectorAuth(call) {
+  return requireScopedStaticTokenAuth(call, {
+    token_env_key: 'HUB_OPERATOR_CHANNEL_CONNECTOR_TOKEN',
+    allow_remote_env_key: 'HUB_OPERATOR_CHANNEL_CONNECTOR_ALLOW_REMOTE',
+    allowed_cidrs_env_key: 'HUB_OPERATOR_CHANNEL_CONNECTOR_ALLOWED_CIDRS',
+    token_not_configured_message: 'Operator-channel connector token is not configured on this Hub',
+    invalid_token_message: 'Missing/invalid operator-channel connector token',
+    source_ip_denied_message: 'Operator-channel connector source IP is not allowed',
+    local_only_message: 'Operator-channel connector RPCs are local-only (set HUB_OPERATOR_CHANNEL_CONNECTOR_ALLOW_REMOTE=1 to override)',
+  });
 }

@@ -342,6 +342,15 @@ final class UnixSocketServer: @unchecked Sendable {
             writeResponse(fd, IPCResponse(type: "memory_context_ack", reqId: req.reqId, ok: true, id: nil, error: nil, memoryContext: built))
             return
         }
+        if typ == "memory_retrieval" {
+            guard let payload = req.memoryRetrieval else {
+                writeResponse(fd, IPCResponse(type: "memory_retrieval_ack", reqId: req.reqId, ok: false, id: nil, error: "missing_memory_retrieval"))
+                return
+            }
+            let built = HubMemoryRetrievalBuilder.build(from: payload)
+            writeResponse(fd, IPCResponse(type: "memory_retrieval_ack", reqId: req.reqId, ok: true, id: nil, error: nil, memoryRetrieval: built))
+            return
+        }
         if typ == "voice_wake_profile_get" {
             guard let payload = req.voiceWakeProfileRequest else {
                 writeResponse(fd, IPCResponse(type: "voice_wake_profile_ack", reqId: req.reqId, ok: false, id: nil, error: "missing_voice_wake_profile_request"))
@@ -358,6 +367,82 @@ final class UnixSocketServer: @unchecked Sendable {
             }
             let profile = HubVoiceWakeProfileStorage.update(profile: payload)
             writeResponse(fd, IPCResponse(type: "voice_wake_profile_ack", reqId: req.reqId, ok: true, id: profile.profileID, error: nil, voiceWakeProfile: profile))
+            return
+        }
+        if typ == "secret_vault_list" {
+            guard let payload = req.secretVaultList else {
+                writeResponse(fd, IPCResponse(type: "secret_vault_list_ack", reqId: req.reqId, ok: false, id: nil, error: "missing_secret_vault_list"))
+                return
+            }
+            let snapshot = HubSecretVaultStorage.list(payload: payload)
+            writeResponse(fd, IPCResponse(type: "secret_vault_list_ack", reqId: req.reqId, ok: true, id: nil, error: nil, secretVaultSnapshot: snapshot))
+            return
+        }
+        if typ == "secret_vault_create" {
+            guard let payload = req.secretVaultCreate else {
+                writeResponse(fd, IPCResponse(type: "secret_vault_create_ack", reqId: req.reqId, ok: false, id: nil, error: "missing_secret_vault_create"))
+                return
+            }
+            let result = HubSecretVaultStorage.create(payload: payload)
+            writeResponse(
+                fd,
+                IPCResponse(
+                    type: "secret_vault_create_ack",
+                    reqId: req.reqId,
+                    ok: result.ok,
+                    id: result.item?.itemID,
+                    error: result.ok ? nil : result.reasonCode,
+                    secretVaultItem: result.item
+                )
+            )
+            return
+        }
+        if typ == "secret_vault_begin_use" {
+            guard let payload = req.secretVaultUse else {
+                writeResponse(fd, IPCResponse(type: "secret_vault_use_ack", reqId: req.reqId, ok: false, id: nil, error: "missing_secret_vault_use"))
+                return
+            }
+            let result = HubSecretVaultStorage.beginUse(payload: payload)
+            writeResponse(
+                fd,
+                IPCResponse(
+                    type: "secret_vault_use_ack",
+                    reqId: req.reqId,
+                    ok: result.ok,
+                    id: result.leaseID ?? result.itemID,
+                    error: result.ok ? nil : result.reasonCode,
+                    secretVaultUse: result
+                )
+            )
+            return
+        }
+        if typ == "secret_vault_redeem_use" {
+            guard let payload = req.secretVaultRedeem else {
+                writeResponse(fd, IPCResponse(type: "secret_vault_redeem_ack", reqId: req.reqId, ok: false, id: nil, error: "missing_secret_vault_redeem"))
+                return
+            }
+            let result = HubSecretVaultStorage.redeemUseToken(
+                payload.useToken,
+                projectID: payload.projectID
+            )
+            writeResponse(
+                fd,
+                IPCResponse(
+                    type: "secret_vault_redeem_ack",
+                    reqId: req.reqId,
+                    ok: result.ok,
+                    id: result.leaseID ?? result.itemID,
+                    error: result.ok ? nil : result.reasonCode,
+                    secretVaultRedeem: IPCSecretVaultRedeemResult(
+                        ok: result.ok,
+                        source: result.source,
+                        leaseID: result.leaseID,
+                        itemID: result.itemID,
+                        plaintext: result.plaintext,
+                        reasonCode: result.reasonCode
+                    )
+                )
+            )
             return
         }
         if typ == "supervisor_incident_audit" {

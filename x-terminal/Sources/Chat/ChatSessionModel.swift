@@ -21,6 +21,7 @@ final class ChatSessionModel: ObservableObject {
     private var activeConfig: AXProjectConfig? = nil
     private var toolStreamStates: [String: ToolStreamState] = [:]
     private var assistantProgressLinesByMessageID: [String: [String]] = [:]
+    private var assistantVisibleStreamingMessageIDs: Set<String> = []
     private let sessionManager = AXSessionManager.shared
     private var boundSessionId: String? = nil
     private var currentRunId: String? = nil
@@ -33,6 +34,10 @@ final class ChatSessionModel: ObservableObject {
 
     private let toolStreamMaxChars: Int = 12000
     private let assistantProgressMaxLines: Int = 8
+    private let defaultRecentPromptTurns: Int = 8
+    private let expandedRecentPromptTurns: Int = 16
+    private let projectMemoryRetrievalMaxSnippets: Int = 3
+    private let projectMemoryRetrievalMaxSnippetChars: Int = 360
 
     private struct ToolFlowState {
         var ctx: AXProjectContext
@@ -73,6 +78,17 @@ final class ChatSessionModel: ObservableObject {
         case envelope(ToolActionEnvelope)
         case invalidJSONEnvelope
         case none
+    }
+
+    private enum VisibleLLMStreamMode {
+        case none
+        case finalOrPlainText
+    }
+
+    var shouldShowThinkingIndicator: Bool {
+        guard isSending else { return false }
+        guard let last = messages.last, last.role == .assistant else { return true }
+        return last.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     func cancel() {
@@ -397,15 +413,18 @@ final class ChatSessionModel: ObservableObject {
         lastCoderProviderTag = shortProviderTag(router.provider(for: .coder).displayName)
         let userText = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !userText.isEmpty else { return }
+        let protectedInput = XTSecretProtection.analyzeUserInput(userText)
+        let userDisplayText = protectedInput.shouldProtect ? protectedInput.sanitizedText : userText
+        let userTextForPersistence = protectedInput.shouldProtect ? protectedInput.sanitizedText : userText
 
         draft = ""
         lastError = nil
         isSending = true
 
         let userCreatedAt = Date().timeIntervalSince1970
-        messages.append(AXChatMessage(role: .user, content: userText, createdAt: userCreatedAt))
+        messages.append(AXChatMessage(role: .user, content: userDisplayText, createdAt: userCreatedAt))
         // Keep a crash-resilient short-term buffer so prompt assembly doesn't depend on UI state.
-        AXRecentContextStore.appendUserMessage(ctx: ctx, text: userText, createdAt: userCreatedAt)
+        AXRecentContextStore.appendUserMessage(ctx: ctx, text: userTextForPersistence, createdAt: userCreatedAt)
         touchProjectActivity(ctx: ctx, eventAt: userCreatedAt)
         let assistantIndex = messages.count
         messages.append(AXChatMessage(role: .assistant, tag: lastCoderProviderTag, content: ""))
@@ -413,12 +432,26 @@ final class ChatSessionModel: ObservableObject {
         pendingToolCalls = []
         pendingFlow = nil
         _ = ensurePrimarySessionBound(ctx: ctx)
-        recordRunStart(ctx: ctx, userText: userText)
+        recordRunStart(ctx: ctx, userText: userTextForPersistence)
+
+        if protectedInput.shouldProtect {
+            if assistantIndex < messages.count {
+                messages[assistantIndex].tag = nil
+            }
+            finalizeTurn(
+                ctx: ctx,
+                userText: userTextForPersistence,
+                assistantText: XTSecretProtection.blockedInputReply(for: protectedInput),
+                assistantIndex: assistantIndex
+            )
+            return
+        }
 
         if handleSlashCommand(
             text: userText,
             ctx: ctx,
             config: config,
+            router: router,
             assistantIndex: assistantIndex
         ) {
             return
@@ -538,7 +571,7 @@ final class ChatSessionModel: ObservableObject {
             let userText = flow.userText
             let assistantIndex = flow.assistantIndex
 
-            appendAssistantProgress(assistantIndex: assistantIndex, line: "Planning next action")
+            appendAssistantProgress(assistantIndex: assistantIndex, line: "我先梳理下一步。")
 
             while flow.step < 14 {
                 flow.step += 1
@@ -564,29 +597,31 @@ final class ChatSessionModel: ObservableObject {
                         toolResults: flow.toolResults
                     )
                     recordAwaitingModel(ctx: ctx, detail: "awaiting finalize_only response")
-                    let out = try await llmGenerate(role: .coder, prompt: prompt, router: router)
+                    let out = try await llmGenerate(
+                        role: .coder,
+                        prompt: prompt,
+                        router: router,
+                        assistantIndexForStreaming: assistantIndex,
+                        visibleStreamMode: .finalOrPlainText
+                    )
 
                     switch parseToolActionEnvelope(from: out) {
                     case .envelope(let env):
                         if let final = env.final, !final.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            finalizeTurn(ctx: ctx, userText: userText, assistantText: final, assistantIndex: assistantIndex)
+                            finalizeToolFlowTurn(flow: flow, assistantText: final)
                         } else {
-                            finalizeTurn(
-                                ctx: ctx,
-                                userText: userText,
-                                assistantText: planningContractFailureMessage(userText: userText, modelOutput: out),
-                                assistantIndex: assistantIndex
+                            finalizeToolFlowTurn(
+                                flow: flow,
+                                assistantText: planningContractFailureMessage(userText: userText, modelOutput: out)
                             )
                         }
                     case .invalidJSONEnvelope:
-                        finalizeTurn(
-                            ctx: ctx,
-                            userText: userText,
-                            assistantText: planningContractFailureMessage(userText: userText, modelOutput: out),
-                            assistantIndex: assistantIndex
+                        finalizeToolFlowTurn(
+                            flow: flow,
+                            assistantText: planningContractFailureMessage(userText: userText, modelOutput: out)
                         )
                     case .none:
-                        finalizeTurn(ctx: ctx, userText: userText, assistantText: out, assistantIndex: assistantIndex)
+                        finalizeToolFlowTurn(flow: flow, assistantText: out)
                     }
                     return
                 }
@@ -629,7 +664,7 @@ final class ChatSessionModel: ObservableObject {
                     }
 
                     if !toRun.isEmpty {
-                        appendAssistantProgress(assistantIndex: assistantIndex, line: "Running verification")
+                        appendAssistantProgress(assistantIndex: assistantIndex, line: "我在跑一遍验证。")
                         flow = await executeTools(flow: flow, toolCalls: toRun)
                     }
                     if !toConfirm.isEmpty {
@@ -651,7 +686,7 @@ final class ChatSessionModel: ObservableObject {
                     if ok {
                         flow.dirtySinceVerify = false
                         if let deferred = flow.deferredFinal, !deferred.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            finalizeTurn(ctx: ctx, userText: userText, assistantText: deferred, assistantIndex: assistantIndex)
+                            finalizeToolFlowTurn(flow: flow, assistantText: deferred)
                             return
                         }
                     } else {
@@ -677,8 +712,14 @@ final class ChatSessionModel: ObservableObject {
                     toolResults: flow.toolResults
                 )
                 let prompt = promptBuild.prompt
-                let (out, usage) = try await llmGenerateWithUsage(role: .coder, prompt: prompt, router: router)
-                appendAssistantProgress(assistantIndex: assistantIndex, line: "Reviewing model plan")
+                let (out, usage) = try await llmGenerateWithUsage(
+                    role: .coder,
+                    prompt: prompt,
+                    router: router,
+                    assistantIndexForStreaming: assistantIndex,
+                    visibleStreamMode: .finalOrPlainText
+                )
+                appendAssistantProgress(assistantIndex: assistantIndex, line: "我在整理这一步的执行方案。")
 
                 // Log usage for the planning step.
                 var usageEntry: [String: Any] = [
@@ -745,7 +786,7 @@ final class ChatSessionModel: ObservableObject {
                             )
                                 ? planningContractFailureMessage(userText: userText, modelOutput: repaired)
                                 : out
-                            finalizeTurn(ctx: ctx, userText: userText, assistantText: assistantText, assistantIndex: assistantIndex)
+                            finalizeToolFlowTurn(flow: flow, assistantText: assistantText)
                             return
                         }
                     } else {
@@ -756,7 +797,7 @@ final class ChatSessionModel: ObservableObject {
                         )
                             ? planningContractFailureMessage(userText: userText, modelOutput: out)
                             : out
-                        finalizeTurn(ctx: ctx, userText: userText, assistantText: assistantText, assistantIndex: assistantIndex)
+                        finalizeToolFlowTurn(flow: flow, assistantText: assistantText)
                         return
                     }
                 }
@@ -793,7 +834,7 @@ final class ChatSessionModel: ObservableObject {
                         flow.deferredFinal = final
                         continue
                     }
-                    finalizeTurn(ctx: ctx, userText: userText, assistantText: final, assistantIndex: assistantIndex)
+                    finalizeToolFlowTurn(flow: flow, assistantText: final)
                     return
                 }
 
@@ -812,7 +853,7 @@ final class ChatSessionModel: ObservableObject {
                         if case .envelope(let repairedEnv) = parseToolActionEnvelope(from: repaired),
                            immediateExecutionRepairProducedExecutableResult(repairedEnv) {
                             if let final = repairedEnv.final, !final.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                finalizeTurn(ctx: ctx, userText: userText, assistantText: final, assistantIndex: assistantIndex)
+                                finalizeToolFlowTurn(flow: flow, assistantText: final)
                                 return
                             }
                             let repairedCalls = repairedEnv.tool_calls ?? []
@@ -857,7 +898,7 @@ final class ChatSessionModel: ObservableObject {
                                     }
 
                                     if !repairedToRun.isEmpty {
-                                        appendAssistantProgress(assistantIndex: assistantIndex, line: "Executing repaired tool plan")
+                                        appendAssistantProgress(assistantIndex: assistantIndex, line: "我在执行修正后的工具方案。")
                                         flow = await executeTools(flow: flow, toolCalls: repairedToRun)
                                     }
                                     if !repairedToConfirm.isEmpty {
@@ -892,7 +933,7 @@ final class ChatSessionModel: ObservableObject {
                             return
                         }
                     }
-                    finalizeTurn(ctx: ctx, userText: userText, assistantText: "(no action)", assistantIndex: assistantIndex)
+                    finalizeToolFlowTurn(flow: flow, assistantText: "(no action)")
                     return
                 }
 
@@ -941,7 +982,7 @@ final class ChatSessionModel: ObservableObject {
                 }
 
                 if !toRun.isEmpty {
-                    appendAssistantProgress(assistantIndex: assistantIndex, line: "Executing tool plan")
+                    appendAssistantProgress(assistantIndex: assistantIndex, line: "我在执行当前工具步骤。")
                     flow = await executeTools(flow: flow, toolCalls: toRun)
                 }
 
@@ -976,7 +1017,7 @@ final class ChatSessionModel: ObservableObject {
                 // Continue loop with tool results.
             }
 
-            finalizeTurn(ctx: ctx, userText: userText, assistantText: "(stopped: too many tool steps)", assistantIndex: assistantIndex)
+            finalizeToolFlowTurn(flow: flow, assistantText: "(stopped: too many tool steps)")
         } catch {
             let msg: String
             if let e = error as? LocalizedError, let d = e.errorDescription, !d.isEmpty {
@@ -996,7 +1037,13 @@ final class ChatSessionModel: ObservableObject {
         }
     }
 
-    private func handleSlashCommand(text: String, ctx: AXProjectContext, config: AXProjectConfig?, assistantIndex: Int) -> Bool {
+    private func handleSlashCommand(
+        text: String,
+        ctx: AXProjectContext,
+        config: AXProjectConfig?,
+        router: LLMRouter,
+        assistantIndex: Int
+    ) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasPrefix("/") else { return false }
 
@@ -1047,6 +1094,21 @@ final class ChatSessionModel: ObservableObject {
             let args = Array(tokens.dropFirst())
             let reply = handleSlashHub(args: args)
             finalizeTurn(ctx: ctx, userText: text, assistantText: reply, assistantIndex: assistantIndex)
+            return true
+        case "route":
+            let args = Array(tokens.dropFirst())
+            guard args.isEmpty
+                    || ["diagnose", "status", "show", "list"].contains(args[0].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) else {
+                finalizeTurn(ctx: ctx, userText: text, assistantText: slashRouteUsageText(), assistantIndex: assistantIndex)
+                return true
+            }
+            performSlashRouteDiagnose(
+                ctx: ctx,
+                userText: text,
+                config: config,
+                router: router,
+                assistantIndex: assistantIndex
+            )
             return true
         case "sandbox":
             let args = Array(tokens.dropFirst())
@@ -1103,12 +1165,12 @@ final class ChatSessionModel: ObservableObject {
 
     private func handleSlashModel(args: [String], ctx: AXProjectContext, config: AXProjectConfig?) -> String {
         if args.isEmpty {
-            return slashModelsText(config: config)
+            return slashModelsText(ctx: ctx, config: config)
         }
 
         let mid = args.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
         if mid.isEmpty {
-            return slashModelsText(config: config)
+            return slashModelsText(ctx: ctx, config: config)
         }
 
         if ["auto", "default", "none", "clear"].contains(mid.lowercased()) {
@@ -1121,7 +1183,8 @@ final class ChatSessionModel: ObservableObject {
             return "已清除 coder 的项目级模型覆盖，回退到全局路由。"
         }
 
-        let known = loadedModelsForSlash().contains { $0.id == mid }
+        let snapshot = modelsSnapshotForSlash()
+        let assessment = HubModelSelectionAdvisor.assess(requestedId: mid, snapshot: snapshot)
         guard var cfg = (config ?? (try? AXProjectStore.loadOrCreateConfig(for: ctx))) else {
             return "无法读取 project config，未修改。"
         }
@@ -1129,10 +1192,10 @@ final class ChatSessionModel: ObservableObject {
         activeConfig = cfg
         try? AXProjectStore.saveConfig(cfg, for: ctx)
 
-        if known {
+        if assessment?.isExactMatchLoaded == true {
             return "已将 coder 模型设置为：\(mid)"
         }
-        return "已将 coder 模型设置为：\(mid)\n\n注意：Hub 当前 loaded 列表里暂未看到该模型 id，请确认 Hub 端模型已加载。"
+        return unavailableSlashModelSelectionText(modelId: mid, assessment: assessment, transportMode: HubAIClient.transportMode().rawValue)
     }
 
     private func handleSlashRoleModel(args: [String], ctx: AXProjectContext, config: AXProjectConfig?) -> String {
@@ -1169,10 +1232,45 @@ final class ChatSessionModel: ObservableObject {
         assistantIndex: Int
     ) {
         Task {
-            let snapshot = await HubAIClient.shared.loadModelsState()
-            let reply = slashModelsText(config: config, snapshot: snapshot)
+            async let routeSnapshot = HubAIClient.shared.loadModelsState()
+            async let localSnapshot = HubAIClient.shared.loadModelsState(transportOverride: .fileIPC)
+            let reply = slashModelsText(
+                ctx: ctx,
+                config: config,
+                snapshot: await routeSnapshot,
+                localSnapshot: await localSnapshot
+            )
             finalizeTurn(ctx: ctx, userText: userText, assistantText: reply, assistantIndex: assistantIndex)
         }
+    }
+
+    private func performSlashRouteDiagnose(
+        ctx: AXProjectContext,
+        userText: String,
+        config: AXProjectConfig?,
+        router: LLMRouter,
+        assistantIndex: Int
+    ) {
+        Task {
+            async let routeSnapshot = HubAIClient.shared.loadModelsState()
+            async let localSnapshot = HubAIClient.shared.loadModelsState(transportOverride: .fileIPC)
+            let reply = projectRouteDiagnosisText(
+                ctx: ctx,
+                config: config,
+                router: router,
+                routeSnapshot: await routeSnapshot,
+                localSnapshot: await localSnapshot
+            )
+            finalizeTurn(ctx: ctx, userText: userText, assistantText: reply, assistantIndex: assistantIndex)
+        }
+    }
+
+    private func slashRouteUsageText() -> String {
+        """
+用法：
+- /route
+- /route diagnose
+"""
     }
 
     private func handleSlashHub(args: [String]) -> String {
@@ -1673,7 +1771,6 @@ Memory routing:
         let blocked = ToolResult(id: call.id, tool: call.tool, ok: false, output: output)
         flow.toolResults.append(blocked)
         AXProjectStore.appendToolLog(action: call.tool.rawValue, input: jsonArgs(call.args), output: output, ok: false, for: ctx)
-        messages.append(AXChatMessage(role: .tool, content: "[tool:\(call.tool.rawValue)] ok=false\n\(output)"))
     }
 
     private func handleSlashTools(args: [String], ctx: AXProjectContext, config: AXProjectConfig?) -> String {
@@ -1844,42 +1941,384 @@ Tool policy:
         }
     }
 
-    private func loadedModelsForSlash(snapshot: ModelStateSnapshot? = nil) -> [HubModel] {
-        let baseSnapshot: ModelStateSnapshot
+    private func modelsSnapshotForSlash(snapshot: ModelStateSnapshot? = nil) -> ModelStateSnapshot {
         if let snapshot {
-            baseSnapshot = snapshot
-        } else {
-            let url = HubPaths.modelsStateURL()
-            guard let data = try? Data(contentsOf: url),
-                  let decoded = try? JSONDecoder().decode(ModelStateSnapshot.self, from: data) else {
-                return []
-            }
-            baseSnapshot = decoded
+            return snapshot
         }
-
-        return baseSnapshot.models.filter { $0.state == .loaded }
-            .sorted { a, b in
-                let an = (a.name.isEmpty ? a.id : a.name).lowercased()
-                let bn = (b.name.isEmpty ? b.id : b.name).lowercased()
-                if an != bn { return an < bn }
-                return a.id.lowercased() < b.id.lowercased()
-            }
+        let url = HubPaths.modelsStateURL()
+        guard let data = try? Data(contentsOf: url),
+              let decoded = try? JSONDecoder().decode(ModelStateSnapshot.self, from: data) else {
+            return .empty()
+        }
+        return decoded
     }
 
-    private func slashModelsText(config: AXProjectConfig?, snapshot: ModelStateSnapshot? = nil) -> String {
-        let current = config?.modelOverride(for: .coder) ?? "(auto route)"
-        let models = loadedModelsForSlash(snapshot: snapshot)
+    private func loadedModelsForSlash(snapshot: ModelStateSnapshot? = nil) -> [HubModel] {
+        HubModelSelectionAdvisor.loadedModels(in: modelsSnapshotForSlash(snapshot: snapshot))
+    }
+
+    private func slashModelsText(
+        ctx: AXProjectContext? = nil,
+        config: AXProjectConfig?,
+        snapshot: ModelStateSnapshot? = nil,
+        localSnapshot: ModelStateSnapshot? = nil
+    ) -> String {
+        let baseSnapshot = modelsSnapshotForSlash(snapshot: snapshot)
+        let resolvedLocalSnapshot = modelsSnapshotForSlash(snapshot: localSnapshot ?? snapshot)
+        let current = config?.modelOverride(for: .coder)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let models = HubModelSelectionAdvisor.loadedModels(in: baseSnapshot)
+        let inventory = HubModelSelectionAdvisor.allModels(in: baseSnapshot)
         let mode = HubAIClient.transportMode().rawValue
-        if models.isEmpty {
-            return "当前没有 loaded 模型（transport=\(mode)）。\n\n先去 Hub 端加载模型，再用 `/model <id>` 选择。"
+        var lines: [String] = []
+        let routeDecision = AXProjectModelRouteMemoryStore.resolvePreferredModel(
+            configuredModelId: current,
+            role: .coder,
+            ctx: ctx,
+            snapshot: baseSnapshot,
+            localSnapshot: resolvedLocalSnapshot
+        )
+        let routeMemory = ctx.flatMap { AXProjectModelRouteMemoryStore.load(for: $0, role: .coder) }
+
+        if current.isEmpty {
+            lines.append("当前 coder 模型：自动路由")
+            lines.append("状态：当前 project 没有固定 model id，会按全局/Hub 路由继续尝试。")
+        } else {
+            lines.append("当前 coder 模型：\(current)")
+            lines.append("状态：\(slashConfiguredModelStatusText(configuredModelId: current, snapshot: baseSnapshot))")
+        }
+        lines.append("当前 transport：\(mode)")
+        if routeDecision.forceLocalExecution,
+           let localModelId = (routeDecision.preferredLocalModelId ?? routeDecision.preferredModelId)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !localModelId.isEmpty {
+            lines.append("路由状态：当前 project 已锁到本地模式。")
+            lines.append("当前本地模型：\(localModelId)")
+            if let routeMemory {
+                let requested = routeMemory.lastRequestedModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+                let reason = routeMemory.lastFailureReasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !requested.isEmpty {
+                    let reasonSuffix = reason.isEmpty ? "" : "（原因：\(reason)）"
+                    lines.append("触发原因：`\(requested)` 最近连续 \(routeMemory.consecutiveRemoteFallbackCount) 次未稳定命中\(reasonSuffix)。")
+                }
+            }
+            lines.append("恢复建议：检查 Hub 的远端模型配置后，再运行 `/models` 或重新 `/model <id>`。")
+        }
+        if let routeMemory, !routeMemory.lastHealthyRemoteModelId.isEmpty {
+            lines.append("上次稳定远端模型：\(routeMemory.lastHealthyRemoteModelId)")
+        }
+        if !routeDecision.forceLocalExecution,
+           routeDecision.usedRememberedRemoteModel,
+           let remembered = routeDecision.preferredModelId,
+           let configured = routeDecision.configuredModelId,
+           remembered.caseInsensitiveCompare(configured) != .orderedSame {
+            lines.append("路由记忆：如果 `\(configured)` 现在不可执行，会先改试 `\(remembered)`。")
         }
 
-        let lines = models.map { m in
+        if models.isEmpty {
+            lines.append("")
+            lines.append("当前没有已加载模型。")
+            if !inventory.isEmpty {
+                lines.append("Hub inventory 里还能看到 \(inventory.count) 个候选，但它们目前还不能直接执行。")
+                let sleepingOrAvailable = inventory.prefix(5).map { model in
+                    "- \(HubModelSelectionAdvisor.compactSuggestionLabel(model)) · \(HubModelSelectionAdvisor.stateLabel(model.state))"
+                }
+                if !sleepingOrAvailable.isEmpty {
+                    lines.append("")
+                    lines.append("Hub inventory：")
+                    lines.append(contentsOf: sleepingOrAvailable)
+                }
+            }
+            lines.append("")
+            lines.append("建议动作：")
+            lines.append("1. 在 Hub -> Models 确认目标模型已经加载。")
+            lines.append("2. 运行 `/models` 刷新当前列表。")
+            lines.append("3. 如果暂时没有远端模型，可先接受本地模式回答。")
+            return lines.joined(separator: "\n")
+        }
+
+        let modelLines = models.map { m in
             let remote = isRemoteModelForSlash(m) ? "Remote" : "Local"
             let name = m.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? m.id : m.name
             return "- \(name) · \(m.id) · \(remote) · \(m.backend)"
         }
-        return "当前 coder 模型：\(current)\n当前 transport：\(mode)\n\nHub loaded 模型：\n" + lines.joined(separator: "\n")
+        lines.append("")
+        lines.append("Hub loaded 模型：")
+        lines.append(contentsOf: modelLines)
+
+        if !current.isEmpty {
+            let actionLines = slashConfiguredModelActionLines(configuredModelId: current, snapshot: baseSnapshot)
+            if !actionLines.isEmpty {
+                lines.append("")
+                lines.append("建议动作：")
+                lines.append(contentsOf: actionLines)
+            }
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    private func unavailableSlashModelSelectionText(
+        modelId: String,
+        assessment: HubModelAvailabilityAssessment?,
+        transportMode: String
+    ) -> String {
+        var lines: [String] = [
+            "已将 coder 模型设置为：\(modelId)",
+            ""
+        ]
+
+        if let assessment {
+            if let exact = assessment.exactMatch {
+                lines.append(
+                    "但 Hub 当前还没有把它放进可执行列表。现在记录里看到的是 `\(exact.id)`，状态是 \(HubModelSelectionAdvisor.stateLabel(exact.state))。"
+                )
+            } else {
+                lines.append("但 Hub 当前既没有已加载这个模型，也没有在 inventory 里看到精确匹配。")
+            }
+        } else {
+            lines.append("但当前拿不到 Hub 的模型快照，无法确认它是否真的可用。")
+        }
+
+        lines.append("如果现在直接发请求，这一轮很可能会回退到本地模式。")
+
+        let suggestedCandidates = slashSuggestedCandidates(from: assessment)
+        if !suggestedCandidates.isEmpty {
+            lines.append("")
+            lines.append("可先切到这些候选：\(suggestedCandidates.joined(separator: "、"))")
+        }
+
+        lines.append("")
+        lines.append("建议动作：")
+        lines.append("1. 在 Hub -> Models 确认 `\(modelId)` 已加载。")
+        lines.append("2. 运行 `/models` 刷新当前视图。")
+        if let first = suggestedCandidates.first {
+            lines.append("3. 如果你现在就要继续，可先执行 `/model \(first)`。")
+        } else {
+            lines.append("3. 如果你现在就要继续，可先接受本地模式回答，再检查 Hub 配置。")
+        }
+        lines.append("4. transport=\(transportMode)")
+
+        return lines.joined(separator: "\n")
+    }
+
+    private func slashConfiguredModelStatusText(
+        configuredModelId: String,
+        snapshot: ModelStateSnapshot
+    ) -> String {
+        guard let assessment = HubModelSelectionAdvisor.assess(
+            requestedId: configuredModelId,
+            snapshot: snapshot
+        ) else {
+            return "当前没有固定模型。"
+        }
+
+        if assessment.isExactMatchLoaded, let exact = assessment.exactMatch {
+            let locality = isRemoteModelForSlash(exact) ? "远端" : "本地"
+            return "已加载，可直接执行（\(locality)）。"
+        }
+        if let exact = assessment.exactMatch {
+            return "已配置，但当前只在 inventory 中可见，状态=\(HubModelSelectionAdvisor.stateLabel(exact.state))；本轮可能回退到本地。"
+        }
+        return "当前 inventory 里没有精确匹配；本轮可能回退到本地。"
+    }
+
+    private func slashConfiguredModelActionLines(
+        configuredModelId: String,
+        snapshot: ModelStateSnapshot
+    ) -> [String] {
+        guard let assessment = HubModelSelectionAdvisor.assess(
+            requestedId: configuredModelId,
+            snapshot: snapshot
+        ) else {
+            return []
+        }
+        guard !assessment.isExactMatchLoaded else { return [] }
+
+        var lines = [
+            "检查 Hub -> Models，确认 `\(configuredModelId)` 已加载。",
+            "执行 `/models` 刷新当前模型列表。"
+        ]
+        if let first = slashSuggestedCandidates(from: assessment).first {
+            lines.append("如果只是想先继续工作，可临时切到 `/model \(first)`。")
+        }
+        return lines
+    }
+
+    private func slashSuggestedCandidates(from assessment: HubModelAvailabilityAssessment?) -> [String] {
+        guard let assessment else { return [] }
+        let source = assessment.loadedCandidates.isEmpty ? assessment.inventoryCandidates : assessment.loadedCandidates
+        var seen = Set<String>()
+        var result: [String] = []
+        for model in source {
+            let id = model.id.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !id.isEmpty else { continue }
+            guard seen.insert(id).inserted else { continue }
+            result.append(id)
+            if result.count >= 3 { break }
+        }
+        return result
+    }
+
+    private func projectRouteDiagnosisText(
+        ctx: AXProjectContext,
+        config: AXProjectConfig?,
+        router: LLMRouter,
+        routeSnapshot: ModelStateSnapshot,
+        localSnapshot: ModelStateSnapshot
+    ) -> String {
+        let projectOverride = config?.modelOverride(for: .coder)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let globalAssignment = router.preferredModelIdForHub(for: .coder, projectConfig: nil)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let configuredModelId = configuredProjectModelID(for: .coder, config: config, router: router)
+        let routeDecision = AXProjectModelRouteMemoryStore.resolvePreferredModel(
+            configuredModelId: configuredModelId,
+            role: .coder,
+            ctx: ctx,
+            snapshot: routeSnapshot,
+            localSnapshot: localSnapshot
+        )
+        let routeMemory = AXProjectModelRouteMemoryStore.load(for: ctx, role: .coder)
+        let executionSnapshot = currentProjectExecutionSnapshot(ctx: ctx, role: .coder)
+        let transport = HubAIClient.transportMode()
+        let mismatch = projectModelMismatchSummary(
+            configuredModelId: configuredModelId,
+            snapshot: executionSnapshot
+        )
+
+        var lines: [String] = [
+            "Project route diagnose: coder",
+            "配置来源：\(projectConfiguredModelSourceText(projectOverride: projectOverride, globalAssignment: globalAssignment))",
+            "当前配置：\(configuredModelId.isEmpty ? "auto" : configuredModelId)",
+            "当前 transport：\(transport.rawValue)",
+        ]
+
+        if !configuredModelId.isEmpty {
+            lines.append("配置状态：\(slashConfiguredModelStatusText(configuredModelId: configuredModelId, snapshot: routeSnapshot))")
+        }
+
+        lines.append("当前决策：\(projectRouteDecisionSummary(routeDecision))")
+        lines.append("")
+        lines.append("route memory：")
+        lines.append(projectRouteMemoryDiagnosisSummary(routeMemory))
+        lines.append("")
+        lines.append("最近一次 coder 真实记录：")
+        lines.append(projectExecutionSnapshotDiagnosis(executionSnapshot))
+        lines.append("")
+        lines.append("判定：")
+        lines.append(projectRouteDiagnosisConclusion(
+            configuredModelId: configuredModelId,
+            routeDecision: routeDecision,
+            executionSnapshot: executionSnapshot,
+            transport: transport,
+            mismatchSummary: mismatch
+        ))
+        lines.append("")
+        lines.append("提示：project override 会优先于全局 assignment；如果你要排除项目级影响，可先执行 `/model auto`。")
+        return lines.joined(separator: "\n")
+    }
+
+    private func projectConfiguredModelSourceText(
+        projectOverride: String,
+        globalAssignment: String
+    ) -> String {
+        if !projectOverride.isEmpty {
+            return "project override（当前项目覆盖）"
+        }
+        if !globalAssignment.isEmpty {
+            return "global assignment（全局角色配置）"
+        }
+        return "default auto（没有固定 model id）"
+    }
+
+    private func projectRouteDecisionSummary(_ decision: AXProjectPreferredModelRouteDecision) -> String {
+        if decision.forceLocalExecution {
+            let localModel = (decision.preferredLocalModelId ?? decision.preferredModelId)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown_local_model"
+            let reason = decision.reasonCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let reasonSuffix = reason.isEmpty ? "" : "，reason=\(reason)"
+            return "XT 当前会先锁本地：\(localModel)\(reasonSuffix)"
+        }
+        if decision.usedRememberedRemoteModel,
+           let remembered = decision.preferredModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !remembered.isEmpty {
+            let reason = decision.reasonCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let reasonSuffix = reason.isEmpty ? "" : "，reason=\(reason)"
+            return "优先改试上次稳定远端：\(remembered)\(reasonSuffix)"
+        }
+        if let preferred = decision.preferredModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !preferred.isEmpty {
+            return "按当前配置继续尝试：\(preferred)"
+        }
+        return "没有固定模型，按默认 Hub 路由执行。"
+    }
+
+    private func projectRouteMemoryDiagnosisSummary(_ routeMemory: AXProjectModelRouteMemory?) -> String {
+        guard let routeMemory else {
+            return "无可用 route memory 记录。"
+        }
+
+        var lines: [String] = [
+            "- consecutive_remote_fallbacks=\(routeMemory.consecutiveRemoteFallbackCount)",
+            "- last_requested_model=\(displayRouteValue(routeMemory.lastRequestedModelId))",
+            "- last_actual_model=\(displayRouteValue(routeMemory.lastActualModelId))",
+            "- last_execution_path=\(displayRouteValue(routeMemory.lastExecutionPath))",
+            "- last_failure_reason=\(displayRouteValue(routeMemory.lastFailureReasonCode))",
+        ]
+        let lastHealthyRemote = routeMemory.lastHealthyRemoteModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !lastHealthyRemote.isEmpty {
+            lines.insert("- last_healthy_remote_model=\(lastHealthyRemote)", at: 1)
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func projectExecutionSnapshotDiagnosis(_ snapshot: AXRoleExecutionSnapshot) -> String {
+        guard snapshot.hasRecord else {
+            return "- no_record"
+        }
+
+        var lines: [String] = [
+            "- requested_model=\(displayRouteValue(snapshot.requestedModelId))",
+            "- actual_model=\(displayRouteValue(snapshot.actualModelId))",
+            "- execution_path=\(displayRouteValue(snapshot.executionPath))",
+            "- runtime_provider=\(displayRouteValue(snapshot.runtimeProvider))",
+        ]
+        if !snapshot.fallbackReasonCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.append("- fallback_reason=\(snapshot.fallbackReasonCode)")
+        }
+        if !snapshot.stage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.append("- stage=\(snapshot.stage)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func projectRouteDiagnosisConclusion(
+        configuredModelId: String,
+        routeDecision: AXProjectPreferredModelRouteDecision,
+        executionSnapshot: AXRoleExecutionSnapshot,
+        transport: HubTransportMode,
+        mismatchSummary: String?
+    ) -> String {
+        if routeDecision.forceLocalExecution {
+            return "XT 当前仍会优先走本地。这通常表示近期远端连续 fallback，且当前 configured/remembered remote 都还不可直接执行。先检查 Hub 远端模型状态，再用 `/models` 或重新 `/model <id>` 验证。"
+        }
+        if transport == .fileIPC {
+            return "XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端。先把 transport 切回 `/hub route auto` 或 `/hub route grpc` 再验证。"
+        }
+        if let mismatchSummary, !mismatchSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return mismatchSummary
+        }
+        if executionSnapshot.executionPath == "hub_downgraded_to_local" {
+            return "XT 当前没有再主动锁本地；如果下一轮仍被本地接管，更可能是 Hub 侧在执行时触发了 downgrade_to_local。"
+        }
+        if configuredModelId.isEmpty {
+            return "当前没有固定 model id，XT 只会按默认 Hub 路由尝试，不存在项目级强制锁本地。"
+        }
+        return "从 XT 这层看，当前 project 没有被历史 route memory 卡在本地；如果你仍看到本地接管，优先去查 Hub 审计或项目级 override 是否被重新写入。"
+    }
+
+    private func displayRouteValue(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "(none)" : trimmed
     }
 
     private func slashHelpText() -> String {
@@ -1897,6 +2336,7 @@ Tool policy:
 - /hub route              查看 Hub 会话通道（auto/grpc/file）
 - /hub route <mode>       设置 Hub 会话通道（mode: auto/grpc/file）
 - /hub route selftest     校验 Hub 路由状态机规则（XT-W1-02）
+- /route diagnose         诊断当前 project 的模型路由与真实落点
 - /sandbox                查看工具默认执行路径（host/sandbox）
 - /sandbox mode <mode>    设置工具默认执行路径（mode: host/sandbox）
 - /sandbox selftest       执行工具沙箱路径自检（search）
@@ -2435,6 +2875,58 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         }
     }
 
+    private func projectExecutionDisclosureNote(
+        configuredModelId: String,
+        snapshot: AXRoleExecutionSnapshot
+    ) -> String? {
+        let configured = configuredModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let actual = snapshot.actualModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let reason = snapshot.fallbackReasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let mismatch = projectModelMismatchSummary(configuredModelId: configuredModelId, snapshot: snapshot),
+           !actual.isEmpty {
+            _ = mismatch
+            if !configured.isEmpty {
+                if !reason.isEmpty {
+                    return "本轮未命中所选 \(configured)，实际由 \(actual) 接管，reason=\(reason)。"
+                }
+                return "本轮未命中所选 \(configured)，实际由 \(actual) 接管。"
+            }
+            if !reason.isEmpty {
+                return "本轮实际由 \(actual) 接管，reason=\(reason)。"
+            }
+            return "本轮实际由 \(actual) 接管。"
+        }
+
+        switch snapshot.executionPath {
+        case "hub_downgraded_to_local":
+            if !configured.isEmpty, !actual.isEmpty {
+                if !reason.isEmpty {
+                    return "本轮 \(configured) 被 Hub 改派到本地 \(actual)，reason=\(reason)。"
+                }
+                return "本轮 \(configured) 被 Hub 改派到本地 \(actual)。"
+            }
+            if !actual.isEmpty {
+                return !reason.isEmpty
+                    ? "本轮远端请求改由本地 \(actual) 接管，reason=\(reason)。"
+                    : "本轮远端请求改由本地 \(actual) 接管。"
+            }
+            return nil
+        case "local_fallback_after_remote_error":
+            if !actual.isEmpty {
+                return !reason.isEmpty
+                    ? "本轮远端失败后由本地 \(actual) 兜底，reason=\(reason)。"
+                    : "本轮远端失败后由本地 \(actual) 兜底。"
+            }
+            if !reason.isEmpty {
+                return "本轮远端失败后走了本地兜底，reason=\(reason)。"
+            }
+            return nil
+        default:
+            return nil
+        }
+    }
+
     private func directProjectReplyIfApplicable(
         userText: String,
         ctx: AXProjectContext,
@@ -2505,6 +2997,22 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         directProjectReplyIfApplicable(userText: userText, ctx: ctx, config: config, router: router)
     }
 
+    func projectRouteDiagnosisTextForTesting(
+        ctx: AXProjectContext,
+        config: AXProjectConfig?,
+        router: LLMRouter,
+        routeSnapshot: ModelStateSnapshot,
+        localSnapshot: ModelStateSnapshot
+    ) -> String {
+        projectRouteDiagnosisText(
+            ctx: ctx,
+            config: config,
+            router: router,
+            routeSnapshot: routeSnapshot,
+            localSnapshot: localSnapshot
+        )
+    }
+
     func immediateProjectExecutionIntentForTesting(_ userText: String) -> Bool {
         isImmediateProjectExecutionIntent(normalizedProjectDirectReplyQuestion(userText))
     }
@@ -2515,6 +3023,26 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
 
     func planningContractFailureMessageForTesting(userText: String, modelOutput: String) -> String {
         planningContractFailureMessage(userText: userText, modelOutput: modelOutput)
+    }
+
+    func recentPromptTurnLimitForTesting(
+        userText: String,
+        expandRecentOnceAfterLoad overrideExpandOnceAfterLoad: Bool = false
+    ) -> Int {
+        (overrideExpandOnceAfterLoad || shouldExpandRecent(userText))
+            ? expandedRecentPromptTurns
+            : defaultRecentPromptTurns
+    }
+
+    func recentConversationForTesting(userText: String, maxTurns: Int) -> String {
+        let history = messages
+            .filter { $0.role == .user || $0.role == .assistant }
+            .map { ($0.role == .user ? "user" : "assistant", $0.content) }
+        return renderRecentConversationForPrompt(history: history, maxTurns: maxTurns)
+    }
+
+    func shouldRequestProjectMemoryRetrievalForTesting(userText: String) -> Bool {
+        shouldRequestProjectMemoryRetrieval(userText: userText)
     }
 
     func shouldRepairImmediateExecutionForTesting(
@@ -2541,14 +3069,44 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         return shouldRepairImmediateExecution(flow: flow, assistantText: assistantText)
     }
 
-    private func llmGenerate(role: AXRole, prompt: String, router: LLMRouter) async throws -> String {
-        let (t, _) = try await llmGenerateWithUsage(role: role, prompt: prompt, router: router)
+    private func llmGenerate(
+        role: AXRole,
+        prompt: String,
+        router: LLMRouter,
+        assistantIndexForStreaming: Int? = nil,
+        visibleStreamMode: VisibleLLMStreamMode = .none
+    ) async throws -> String {
+        let (t, _) = try await llmGenerateWithUsage(
+            role: role,
+            prompt: prompt,
+            router: router,
+            assistantIndexForStreaming: assistantIndexForStreaming,
+            visibleStreamMode: visibleStreamMode
+        )
         return t
     }
 
-    private func llmGenerateWithUsage(role: AXRole, prompt: String, router: LLMRouter) async throws -> (String, LLMUsage?) {
+    private func llmGenerateWithUsage(
+        role: AXRole,
+        prompt: String,
+        router: LLMRouter,
+        assistantIndexForStreaming: Int? = nil,
+        visibleStreamMode: VisibleLLMStreamMode = .none
+    ) async throws -> (String, LLMUsage?) {
         let provider = router.provider(for: role)
-        let preferredHub = router.preferredModelIdForHub(for: role, projectConfig: activeConfig)
+        let configuredPreferredHub = router.preferredModelIdForHub(for: role, projectConfig: activeConfig)
+        let projectContext = currentProjectContextForLLM()
+        async let routeSnapshot = HubAIClient.shared.loadModelsState()
+        async let localSnapshot = HubAIClient.shared.loadModelsState(transportOverride: .fileIPC)
+        let modelsSnapshot = await routeSnapshot
+        let localModelsSnapshot = await localSnapshot
+        let routeDecision = AXProjectModelRouteMemoryStore.resolvePreferredModel(
+            configuredModelId: configuredPreferredHub,
+            role: role,
+            ctx: projectContext,
+            snapshot: modelsSnapshot,
+            localSnapshot: localModelsSnapshot
+        )
         let projectId = currentProjectIdForLLM()
         let req = LLMRequest(
             role: role,
@@ -2559,9 +3117,10 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
             temperature: 0.2,
             topP: 0.95,
             taskType: router.taskType(for: role),
-            preferredModelId: preferredHub,
+            preferredModelId: routeDecision.preferredModelId,
             projectId: projectId,
-            sessionId: currentSessionIdForLLM()
+            sessionId: currentSessionIdForLLM(),
+            transportOverride: routeDecision.forceLocalExecution ? .fileIPC : nil
         )
 
         var out = ""
@@ -2570,9 +3129,39 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
             switch ev {
             case .delta(let t):
                 out += t
+                if let assistantIndex = assistantIndexForStreaming,
+                   let visible = visibleAssistantTextCandidate(from: out, mode: visibleStreamMode) {
+                    streamVisibleAssistantText(assistantIndex: assistantIndex, content: visible)
+                }
             case .done(_, _, let u):
                 usage = u
             }
+        }
+        if let projectContext, (routeDecision.usedRememberedRemoteModel || routeDecision.forceLocalExecution) {
+            var routeLog: [String: Any] = [
+                "type": "model_route_memory",
+                "created_at": Date().timeIntervalSince1970,
+                "role": role.rawValue,
+            ]
+            if let configured = routeDecision.configuredModelId, !configured.isEmpty {
+                routeLog["configured_model_id"] = configured
+            }
+            if let preferred = routeDecision.preferredModelId, !preferred.isEmpty {
+                routeLog["preferred_model_id"] = preferred
+            }
+            if let remembered = routeDecision.rememberedRemoteModelId, !remembered.isEmpty {
+                routeLog["remembered_remote_model_id"] = remembered
+            }
+            if let local = routeDecision.preferredLocalModelId, !local.isEmpty {
+                routeLog["preferred_local_model_id"] = local
+            }
+            if routeDecision.forceLocalExecution {
+                routeLog["force_local_execution"] = true
+            }
+            if let reason = routeDecision.reasonCode, !reason.isEmpty {
+                routeLog["reason_code"] = reason
+            }
+            AXProjectStore.appendRawLog(routeLog, for: projectContext)
         }
         return (out, usage)
     }
@@ -2581,6 +3170,11 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         guard let root = loadedRootPath else { return nil }
         let url = URL(fileURLWithPath: root, isDirectory: true)
         return AXProjectRegistryStore.projectId(forRoot: url)
+    }
+
+    private func currentProjectContextForLLM() -> AXProjectContext? {
+        guard let root = loadedRootPath else { return nil }
+        return AXProjectContext(root: URL(fileURLWithPath: root, isDirectory: true))
     }
 
     private func currentSessionIdForLLM() -> String? {
@@ -2616,7 +3210,12 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
                 if call.tool == .run_command, let id = streamId {
                     finishToolStream(id: id, result: res)
                 } else if shouldSurfaceSuccessfulToolResult(call: call, result: res) {
-                    messages.append(AXChatMessage(role: .tool, content: "[tool:\(call.tool.rawValue)] ok=\(res.ok)\n\(res.output)"))
+                    messages.append(
+                        AXChatMessage(
+                            role: .tool,
+                            content: "[tool:\(res.tool.rawValue)] ok=\(res.ok)\n\(res.output)"
+                        )
+                    )
                 }
 
                 if call.tool == .write_file || call.tool == .git_apply {
@@ -2646,10 +3245,6 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
                 AXProjectStore.appendToolLog(action: call.tool.rawValue, input: jsonArgs(call.args), output: msg, ok: false, for: f.ctx)
                 if call.tool == .run_command, let id = streamId {
                     finishToolStreamWithError(id: id, error: msg)
-                } else if call.tool == .run_command {
-                    messages.append(AXChatMessage(role: .tool, content: "[tool:\(call.tool.rawValue)] ok=false\n\(msg)"))
-                } else {
-                    messages.append(AXChatMessage(role: .tool, content: "[tool:\(call.tool.rawValue)] ok=false\n\(msg)"))
                 }
             }
         }
@@ -2657,16 +3252,14 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
     }
 
     private func shouldSurfaceSuccessfulToolResult(call: ToolCall, result: ToolResult) -> Bool {
-        guard result.ok else { return true }
+        guard result.ok else { return false }
         if call.id.hasPrefix("bootstrap_") || call.id.hasPrefix("auto_diff_after_") {
             return false
         }
-        switch call.tool {
-        case .run_command:
-            return false
-        default:
+        if call.tool == .run_command {
             return false
         }
+        return ToolResultPresentation.shouldSurfaceSuccessfulTimelineCard(call: call, result: result)
     }
 
     private func autoReconcileVerifyCommandsIfNeeded(ctx: AXProjectContext, config: AXProjectConfig?) -> AXProjectConfig? {
@@ -2742,6 +3335,7 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         guard assistantIndex < messages.count else { return }
 
         let messageID = messages[assistantIndex].id
+        guard !assistantVisibleStreamingMessageIDs.contains(messageID) else { return }
         var lines = assistantProgressLinesByMessageID[messageID] ?? []
         if lines.last != trimmed {
             lines.append(trimmed)
@@ -2758,70 +3352,104 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         assistantProgressLinesByMessageID[messages[assistantIndex].id] = nil
     }
 
+    private func streamVisibleAssistantText(assistantIndex: Int, content: String) {
+        guard assistantIndex < messages.count else { return }
+        let messageID = messages[assistantIndex].id
+        let normalized = content.replacingOccurrences(of: "\r\n", with: "\n")
+        guard !normalized.isEmpty else { return }
+
+        assistantProgressLinesByMessageID[messageID] = nil
+        assistantVisibleStreamingMessageIDs.insert(messageID)
+        if messages[assistantIndex].content != normalized {
+            messages[assistantIndex].content = normalized
+        }
+    }
+
     private func assistantProgressContent(lines: [String]) -> String {
         guard !lines.isEmpty else {
-            return "Working..."
+            return "我先继续处理。"
         }
-        return (["Working..."] + lines.map { "- \($0)" }).joined(separator: "\n")
+        return lines.joined(separator: "\n")
     }
 
     private func assistantProgressLine(for call: ToolCall) -> String {
         switch call.tool {
         case .list_dir:
-            return "Inspecting the workspace"
+            return "我先看一下项目目录。"
         case .read_file:
             let path = strArgValue(call.args["path"])
-            return path.isEmpty ? "Reading project files" : "Reading \(path)"
+            return path.isEmpty ? "我在读取项目文件。" : "我在读取 \(path)。"
         case .write_file:
             let path = strArgValue(call.args["path"])
-            return path.isEmpty ? "Writing files" : "Writing \(path)"
+            return path.isEmpty ? "我在写入文件。" : "我在写入 \(path)。"
         case .search:
-            return "Searching the workspace"
+            return "我在搜索相关文件和内容。"
         case .run_command:
             let command = strArgValue(call.args["command"])
-            return command.isEmpty ? "Running a command" : "Running \(truncateProgressToken(command, max: 48))"
+            return command.isEmpty
+                ? "我在执行命令。"
+                : "我在执行 \(truncateProgressToken(command, max: 48))。"
         case .git_status:
-            return "Checking git status"
+            return "我在检查当前 Git 状态。"
         case .git_diff:
-            return "Reviewing the current diff"
+            return "我在查看当前改动差异。"
         case .git_apply, .git_apply_check:
-            return "Applying code changes"
+            return "我在应用代码改动。"
         case .session_list:
-            return "Inspecting active sessions"
+            return "我在查看当前会话状态。"
         case .session_resume:
-            return "Resuming the current session"
+            return "我在恢复当前会话。"
         case .session_compact:
-            return "Compacting session context"
+            return "我在压缩会话上下文。"
         case .memory_snapshot:
-            return "Collecting memory snapshot"
+            return "我在整理记忆快照。"
         case .project_snapshot:
-            return "Collecting project snapshot"
+            return "我在整理项目快照。"
         case .deviceUIObserve:
-            return "Inspecting the UI state"
+            return "我在查看界面状态。"
         case .deviceUIAct, .deviceUIStep:
-            return "Driving the UI flow"
+            return "我在推进界面操作流程。"
         case .deviceClipboardRead, .deviceClipboardWrite:
-            return "Accessing the clipboard"
+            return "我在处理剪贴板内容。"
         case .deviceScreenCapture:
-            return "Capturing the screen"
+            return "我在抓取当前屏幕。"
         case .deviceBrowserControl:
-            return "Driving the browser"
+            if browserControlUsesSecretVault(call) {
+                return "我在通过 Secret Vault 填充浏览器字段。"
+            }
+            return "我在操作浏览器。"
         case .deviceAppleScript:
-            return "Running AppleScript automation"
+            return "我在运行 AppleScript 自动化。"
         case .need_network:
-            return "Requesting network access"
+            return "我在申请联网能力。"
         case .bridge_status:
-            return "Checking bridge readiness"
+            return "我在检查 Bridge 状态。"
+        case .skills_search:
+            return "我在查询技能目录。"
+        case .summarize:
+            return "我在整理内容摘要。"
         case .web_fetch, .browser_read:
-            return "Fetching remote content"
+            return "我在读取远端内容。"
         case .web_search:
-            return "Searching the web"
+            return "我在搜索网络信息。"
         }
     }
 
     private func strArgValue(_ value: JSONValue?) -> String {
         guard case .string(let s)? = value else { return "" }
         return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func browserControlUsesSecretVault(_ call: ToolCall) -> Bool {
+        guard call.tool == .deviceBrowserControl else { return false }
+        let action = strArgValue(call.args["action"]).lowercased()
+        guard action == "type" else { return false }
+        let secretTokens = [
+            strArgValue(call.args["secret_item_id"]),
+            strArgValue(call.args["secret_scope"]),
+            strArgValue(call.args["secret_name"])
+        ]
+        return secretTokens.contains { !$0.isEmpty }
     }
 
     private func truncateProgressToken(_ text: String, max: Int) -> String {
@@ -2843,6 +3471,102 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         if s.count <= toolStreamMaxChars { return s }
         let suffix = String(s.suffix(toolStreamMaxChars))
         return "[output truncated]\n" + suffix
+    }
+
+    private func visibleAssistantTextCandidate(
+        from raw: String,
+        mode: VisibleLLMStreamMode
+    ) -> String? {
+        guard mode != .none else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        switch mode {
+        case .none:
+            return nil
+        case .finalOrPlainText:
+            if let first = firstNonWhitespaceCharacter(in: raw), first == "{" || first == "[" {
+                if let final = partialJSONStringValue(forKey: "final", in: raw) {
+                    return final
+                }
+                return nil
+            }
+            return raw
+        }
+    }
+
+    private func firstNonWhitespaceCharacter(in text: String) -> Character? {
+        text.first { !$0.isWhitespace }
+    }
+
+    private func partialJSONStringValue(forKey key: String, in raw: String) -> String? {
+        guard let keyRange = raw.range(of: "\"\(key)\"") else { return nil }
+        var index = keyRange.upperBound
+
+        while index < raw.endIndex, raw[index].isWhitespace {
+            index = raw.index(after: index)
+        }
+        guard index < raw.endIndex, raw[index] == ":" else { return nil }
+        index = raw.index(after: index)
+
+        while index < raw.endIndex, raw[index].isWhitespace {
+            index = raw.index(after: index)
+        }
+        guard index < raw.endIndex, raw[index] == "\"" else { return nil }
+        index = raw.index(after: index)
+
+        var output = ""
+        while index < raw.endIndex {
+            let ch = raw[index]
+            if ch == "\"" {
+                return output
+            }
+            if ch == "\\" {
+                let next = raw.index(after: index)
+                guard next < raw.endIndex else { break }
+                let escaped = raw[next]
+                var consumedIndex = next
+                switch escaped {
+                case "\"":
+                    output.append("\"")
+                case "\\":
+                    output.append("\\")
+                case "/":
+                    output.append("/")
+                case "b":
+                    output.append("\u{08}")
+                case "f":
+                    output.append("\u{0C}")
+                case "n":
+                    output.append("\n")
+                case "r":
+                    output.append("\r")
+                case "t":
+                    output.append("\t")
+                case "u":
+                    let hexStart = raw.index(after: next)
+                    guard let hexEnd = raw.index(hexStart, offsetBy: 4, limitedBy: raw.endIndex),
+                          raw.distance(from: hexStart, to: hexEnd) == 4 else {
+                        return output
+                    }
+                    let hex = String(raw[hexStart..<hexEnd])
+                    if let scalarValue = UInt32(hex, radix: 16),
+                       let scalar = UnicodeScalar(scalarValue) {
+                        output.unicodeScalars.append(scalar)
+                    }
+                    consumedIndex = raw.index(before: hexEnd)
+                default:
+                    output.append(escaped)
+                }
+                index = raw.index(after: consumedIndex)
+                continue
+            }
+
+            output.append(ch)
+            index = raw.index(after: index)
+        }
+
+        return output
     }
 
     private func requiresVerify(flow: ToolFlowState) -> Bool {
@@ -2927,8 +3651,18 @@ Original output:
 """
     }
 
-    private func finalizeTurn(ctx: AXProjectContext, userText: String, assistantText: String, assistantIndex: Int) {
+    private func finalizeTurn(
+        ctx: AXProjectContext,
+        userText: String,
+        assistantText: String,
+        assistantIndex: Int,
+        userTextForMirror: String? = nil
+    ) {
+        let messageID = assistantIndex < messages.count ? messages[assistantIndex].id : nil
         clearAssistantProgress(assistantIndex: assistantIndex)
+        if let messageID {
+            assistantVisibleStreamingMessageIDs.remove(messageID)
+        }
         if assistantIndex < messages.count {
             messages[assistantIndex].content = assistantText
         }
@@ -2949,10 +3683,11 @@ Original output:
 
         let router = activeRouter
         let config = activeConfig
+        let mirroredUserText = userTextForMirror ?? userText
         Task {
             async let mirroredToHub = HubIPCClient.appendProjectConversationTurn(
                 ctx: ctx,
-                userText: userText,
+                userText: mirroredUserText,
                 assistantText: assistantText,
                 createdAt: createdAt,
                 config: config
@@ -2966,6 +3701,202 @@ Original output:
             }
             _ = await mirroredToHub
         }
+    }
+
+    private func finalizeToolFlowTurn(flow: ToolFlowState, assistantText: String) {
+        let merged = mergedAssistantTextWithToolFailures(
+            assistantText,
+            toolResults: flow.toolResults,
+            ctx: flow.ctx,
+            config: flow.config
+        )
+        finalizeTurn(
+            ctx: flow.ctx,
+            userText: flow.userText,
+            assistantText: merged,
+            assistantIndex: flow.assistantIndex
+        )
+    }
+
+    private func mergedAssistantTextWithToolFailures(
+        _ assistantText: String,
+        toolResults: [ToolResult],
+        ctx: AXProjectContext,
+        config: AXProjectConfig?
+    ) -> String {
+        let trimmed = assistantText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let notes = assistantToolFailureLines(toolResults: toolResults)
+        let configuredModelId = activeRouter.map { configuredProjectModelID(for: .coder, config: config, router: $0) } ?? ""
+        let executionNote = projectExecutionDisclosureNote(
+            configuredModelId: configuredModelId,
+            snapshot: currentProjectExecutionSnapshot(ctx: ctx, role: .coder)
+        )
+        let allNotes = notes + (executionNote.map { [$0] } ?? [])
+        guard !allNotes.isEmpty else {
+            return trimmed.isEmpty ? assistantText : trimmed
+        }
+        let singleNote = allNotes.count == 1 ? allNotes[0] : nil
+        let groupedNotes = allNotes.map { "- \($0)" }.joined(separator: "\n")
+
+        if trimmed.isEmpty || trimmed == "(no action)" {
+            if let singleNote {
+                return singleNote
+            }
+            return "执行中遇到这些问题：\n\(groupedNotes)"
+        }
+
+        if trimmed == "(stopped: too many tool steps)" {
+            if let singleNote {
+                return "执行在多轮工具步骤后仍未收敛。另外，\(singleNote)"
+            }
+            return "执行在多轮工具步骤后仍未收敛。\n\n执行备注：\n\(groupedNotes)"
+        }
+
+        if trimmed.contains("执行备注：") {
+            return trimmed
+        }
+
+        if let singleNote {
+            return trimmed + "\n\n另外，" + singleNote
+        }
+
+        return trimmed + "\n\n执行备注：\n" + groupedNotes
+    }
+
+    private func assistantToolFailureLines(toolResults: [ToolResult]) -> [String] {
+        var seen: Set<String> = []
+        var lines: [String] = []
+
+        for result in toolResults {
+            guard shouldIncludeToolFailureInAssistant(result) else { continue }
+            let summary = assistantToolFailureSummary(for: result)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !summary.isEmpty else { continue }
+            if seen.insert(summary).inserted {
+                lines.append(summary)
+            }
+        }
+
+        return lines
+    }
+
+    private func shouldIncludeToolFailureInAssistant(_ result: ToolResult) -> Bool {
+        guard !result.ok else { return false }
+        if result.id.hasPrefix("bootstrap_") || result.id.hasPrefix("auto_diff_after_") {
+            return false
+        }
+        switch assistantToolFailureImpact(for: result) {
+        case .blocking:
+            return true
+        case .diagnostic:
+            return false
+        }
+    }
+
+    private enum AssistantToolFailureImpact {
+        case blocking
+        case diagnostic
+    }
+
+    private func assistantToolFailureImpact(for result: ToolResult) -> AssistantToolFailureImpact {
+        switch result.tool {
+        case .git_status,
+             .git_diff,
+             .session_list,
+             .session_resume,
+             .session_compact,
+             .memory_snapshot,
+             .project_snapshot,
+             .bridge_status:
+            return .diagnostic
+        case .read_file,
+             .write_file,
+             .list_dir,
+             .search,
+             .skills_search,
+             .summarize,
+             .run_command,
+             .git_apply,
+             .git_apply_check,
+             .need_network,
+             .web_fetch,
+             .web_search,
+             .browser_read,
+             .deviceUIObserve,
+             .deviceUIAct,
+             .deviceUIStep,
+             .deviceClipboardRead,
+             .deviceClipboardWrite,
+             .deviceScreenCapture,
+             .deviceBrowserControl,
+             .deviceAppleScript:
+            return .blocking
+        }
+    }
+
+    private func assistantToolFailureSummary(for result: ToolResult) -> String {
+        let detail = normalizedAssistantToolDiagnostic(result.output)
+        let lower = detail.lowercased()
+
+        switch result.tool {
+        case .git_status:
+            if lower.contains("not a git repository") {
+                return "当前目录不是 Git 仓库，无法执行 git status。"
+            }
+            return detail.isEmpty ? "git status 执行失败。" : "git status 执行失败：\(detail)"
+        case .git_diff:
+            if lower.contains("not a git repository") {
+                return "当前目录不是 Git 仓库，无法生成 git diff。"
+            }
+            return detail.isEmpty ? "git diff 执行失败。" : "git diff 执行失败：\(detail)"
+        case .run_command:
+            return detail.isEmpty ? "命令执行失败。" : "命令执行失败：\(detail)"
+        case .read_file:
+            if lower.contains("no such file") {
+                return "目标文件不存在，读取失败。"
+            }
+            return detail.isEmpty ? "文件读取失败。" : "文件读取失败：\(detail)"
+        case .write_file:
+            if lower.contains("permission denied") {
+                return "文件写入被拒绝，当前路径不可写。"
+            }
+            return detail.isEmpty ? "文件写入失败。" : "文件写入失败：\(detail)"
+        case .git_apply, .git_apply_check:
+            if lower.contains("permission denied") {
+                return "补丁应用被拒绝，当前路径不可写。"
+            }
+            return detail.isEmpty ? "补丁应用失败。" : "补丁应用失败：\(detail)"
+        case .need_network, .web_fetch, .web_search, .browser_read, .bridge_status:
+            if lower.contains("grant") || lower.contains("denied") || lower.contains("blocked") {
+                return "联网操作被当前策略或授权门控拦住了。"
+            }
+            return detail.isEmpty ? "联网操作失败。" : "联网操作失败：\(detail)"
+        default:
+            return detail.isEmpty ? "\(result.tool.rawValue) 执行失败。" : "\(result.tool.rawValue) 执行失败：\(detail)"
+        }
+    }
+
+    private func normalizedAssistantToolDiagnostic(_ raw: String) -> String {
+        let lines = raw
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        guard let firstLine = lines.first else { return "" }
+
+        var cleaned = firstLine
+        if cleaned.lowercased().hasPrefix("fatal:") {
+            cleaned = String(cleaned.dropFirst("fatal:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        } else if cleaned.lowercased().hasPrefix("error:") {
+            cleaned = String(cleaned.dropFirst("error:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        let collapsed = cleaned.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        if collapsed.count <= 140 {
+            return collapsed
+        }
+        let end = collapsed.index(collapsed.startIndex, offsetBy: 140)
+        return String(collapsed[..<end]) + "..."
     }
 
     private func touchProjectActivity(ctx: AXProjectContext, eventAt: Double? = nil) {
@@ -3095,7 +4026,7 @@ Instructions:
         if expandRecentOnceAfterLoad {
             expandRecentOnceAfterLoad = false
         }
-        let recentTurns = shouldExpand ? 12 : 4
+        let recentTurns = shouldExpand ? expandedRecentPromptTurns : defaultRecentPromptTurns
         let recentText = recentConversationForPrompt(ctx: ctx, userText: userText, maxTurns: recentTurns)
         let memoryInfo = await buildProjectMemoryV1ViaHub(
             ctx: ctx,
@@ -3142,13 +4073,13 @@ Networking:
             if toolResults.isEmpty { return "(none)" }
             return toolResults.map { r in
                 let head = "id=\(r.id) tool=\(r.tool.rawValue) ok=\(r.ok)"
-                var body = r.output
+                var body = sanitizedPromptContextText(r.output)
                 // Keep verify output compact to avoid drowning context.
                 if r.id.hasPrefix("verify") {
                     body = tailLines(body, maxLines: 120)
                 }
-                if body.count > 6000 {
-                    body = String(body.prefix(6000)) + "\n[truncated]"
+                if body.count > 1800 {
+                    body = String(body.prefix(1800)) + "\n[truncated]"
                 }
                 return head + "\n" + body
             }.joined(separator: "\n\n")
@@ -3249,8 +4180,15 @@ Response rules (STRICT):
             }
         }
 
+        return renderRecentConversationForPrompt(history: hist, maxTurns: maxTurns)
+    }
+
+    private func renderRecentConversationForPrompt(
+        history: [(String, String)],
+        maxTurns: Int
+    ) -> String {
         let maxMsgs = max(2, maxTurns * 2)
-        let slice = hist.suffix(maxMsgs)
+        let slice = history.suffix(maxMsgs)
         if slice.isEmpty { return "(none)" }
 
         func truncateBlock(_ s: String, maxChars: Int) -> String {
@@ -3261,7 +4199,7 @@ Response rules (STRICT):
         }
 
         return slice.map { (role, content) in
-            "\(role): \(truncateBlock(content, maxChars: 900))"
+            "\(role): \(truncateBlock(sanitizedPromptContextText(content), maxChars: 900))"
         }.joined(separator: "\n")
     }
 
@@ -3273,10 +4211,10 @@ Response rules (STRICT):
         userText: String
     ) -> String {
         let constitution = constitutionOneLinerForMemoryV1(userText: userText)
-        let canonical = cappedForMemoryV1(canonicalMemory, maxChars: 2800)
-        let observations = cappedForMemoryV1(projectObservationDigest(ctx: ctx), maxChars: 900)
-        let working = cappedForMemoryV1(recentText, maxChars: 1600)
-        let rawEvidence = cappedForMemoryV1(toolEvidenceForMemoryV1(toolResults), maxChars: 1400)
+        let canonical = cappedForMemoryV1(sanitizedPromptContextText(canonicalMemory), maxChars: 2800)
+        let observations = cappedForMemoryV1(sanitizedPromptContextText(projectObservationDigest(ctx: ctx)), maxChars: 900)
+        let working = cappedForMemoryV1(sanitizedPromptContextText(recentText), maxChars: 1600)
+        let rawEvidence = cappedForMemoryV1(sanitizedPromptContextText(toolEvidenceForMemoryV1(toolResults)), maxChars: 1400)
         let latestUser = cappedForMemoryV1(userText, maxChars: 350)
 
         return """
@@ -3315,15 +4253,36 @@ latest_user:
         toolResults: [ToolResult],
         userText: String
     ) async -> MemoryV1BuildInfo {
+        let preferHubMemory = XTProjectMemoryGovernance.prefersHubMemory(config)
+        let observationsText = projectObservationDigest(ctx: ctx)
+        let rawEvidence = sanitizedPromptContextText(toolEvidenceForMemoryV1(toolResults))
+        let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+        let reg = AXProjectRegistryStore.load()
+        let displayName = reg.projects.first(where: { $0.projectId == projectId })?.displayName ?? ctx.root.lastPathComponent
+        let constitutionHint = constitutionOneLinerForMemoryV1(userText: userText)
+        let retrievalBlock: String
+        if preferHubMemory {
+            retrievalBlock = await projectMemoryRetrievalPromptBlock(
+                ctx: ctx,
+                projectId: projectId,
+                displayName: displayName,
+                userText: userText
+            ) ?? ""
+        } else {
+            retrievalBlock = ""
+        }
+        let mergedRecentText = mergeProjectMemoryRetrieval(
+            recentText: recentText,
+            retrievalBlock: retrievalBlock
+        )
         let local = buildProjectMemoryV1Block(
             ctx: ctx,
             canonicalMemory: canonicalMemory,
-            recentText: recentText,
+            recentText: mergedRecentText,
             toolResults: toolResults,
             userText: userText
         )
 
-        let preferHubMemory = XTProjectMemoryGovernance.prefersHubMemory(config)
         if !preferHubMemory {
             return MemoryV1BuildInfo(
                 text: local,
@@ -3336,13 +4295,6 @@ latest_user:
             )
         }
 
-        let observationsText = projectObservationDigest(ctx: ctx)
-        let rawEvidence = toolEvidenceForMemoryV1(toolResults)
-        let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
-        let reg = AXProjectRegistryStore.load()
-        let displayName = reg.projects.first(where: { $0.projectId == projectId })?.displayName ?? ctx.root.lastPathComponent
-        let constitutionHint = constitutionOneLinerForMemoryV1(userText: userText)
-
         let hubMemory = await HubIPCClient.requestMemoryContext(
             useMode: .projectChat,
             requesterRole: .chat,
@@ -3351,9 +4303,9 @@ latest_user:
             displayName: displayName,
             latestUser: userText,
             constitutionHint: constitutionHint,
-            canonicalText: canonicalMemory,
-            observationsText: observationsText,
-            workingSetText: recentText,
+            canonicalText: sanitizedPromptContextText(canonicalMemory),
+            observationsText: sanitizedPromptContextText(observationsText),
+            workingSetText: sanitizedPromptContextText(mergedRecentText),
             rawEvidenceText: rawEvidence,
             budgets: nil,
             timeoutSec: 1.2
@@ -3380,6 +4332,82 @@ latest_user:
             redactedItems: nil,
             privateDrops: nil
         )
+    }
+
+    private func projectMemoryRetrievalPromptBlock(
+        ctx: AXProjectContext,
+        projectId: String,
+        displayName: String,
+        userText: String
+    ) async -> String? {
+        guard shouldRequestProjectMemoryRetrieval(userText: userText) else { return nil }
+        let response = await HubIPCClient.requestProjectMemoryRetrieval(
+            requesterRole: .chat,
+            projectId: projectId,
+            projectRoot: ctx.root.path,
+            displayName: displayName,
+            latestUser: userText,
+            reason: "project_chat_progressive_disclosure_seed",
+            requestedKinds: requestedProjectMemoryRetrievalKinds(userText: userText),
+            explicitRefs: [],
+            maxSnippets: projectMemoryRetrievalMaxSnippets,
+            maxSnippetChars: projectMemoryRetrievalMaxSnippetChars,
+            timeoutSec: 1.0
+        )
+        guard let response, response.denyCode == nil, !response.snippets.isEmpty else { return nil }
+
+        let items = response.snippets.prefix(projectMemoryRetrievalMaxSnippets).map { snippet in
+            """
+            - [\(snippet.sourceKind)] \(snippet.title)
+              ref: \(snippet.ref)
+              \(snippet.text)
+            """
+        }.joined(separator: "\n")
+        guard !items.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return """
+        [retrieved_memory]
+        audit_ref: \(response.auditRef)
+        source: \(response.source)
+        \(items)
+        [/retrieved_memory]
+        """
+    }
+
+    private func mergeProjectMemoryRetrieval(
+        recentText: String,
+        retrievalBlock: String
+    ) -> String {
+        let recent = recentText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let retrieval = retrievalBlock.trimmingCharacters(in: .whitespacesAndNewlines)
+        if retrieval.isEmpty { return recentText }
+        if recent.isEmpty || recent == "(none)" { return retrieval }
+        return "\(recent)\n\n\(retrieval)"
+    }
+
+    private func shouldRequestProjectMemoryRetrieval(userText: String) -> Bool {
+        let query = userText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return false }
+        let lower = query.lowercased()
+        let triggers = [
+            "之前", "上次", "刚才", "历史", "上下文", "记忆", "你说过", "我说过",
+            "decision", "history", "context", "remember", "previous", "earlier",
+            "spec", "goal", "mvp", "milestone", "blocker", "tech stack", "tech_stack"
+        ]
+        return triggers.contains { lower.contains($0.lowercased()) }
+    }
+
+    private func requestedProjectMemoryRetrievalKinds(userText: String) -> [String] {
+        let lower = userText.lowercased()
+        if lower.contains("之前") || lower.contains("上次") || lower.contains("history") || lower.contains("context") {
+            return ["recent_context", "decision_track", "project_spec_capsule", "background_preferences"]
+        }
+        if lower.contains("技术栈") || lower.contains("tech") || lower.contains("stack") || lower.contains("spec") {
+            return ["project_spec_capsule", "decision_track", "background_preferences"]
+        }
+        if lower.contains("偏好") || lower.contains("风格") || lower.contains("preference") || lower.contains("style") {
+            return ["background_preferences", "project_spec_capsule", "decision_track"]
+        }
+        return ["recent_context", "project_spec_capsule", "decision_track"]
     }
 
     private func constitutionOneLinerForMemoryV1(userText: String) -> String {
@@ -3505,9 +4533,31 @@ blocker: \(blocker.isEmpty ? "(none)" : blocker)
     private func toolEvidenceForMemoryV1(_ toolResults: [ToolResult]) -> String {
         guard !toolResults.isEmpty else { return "" }
         return toolResults.suffix(6).map { r in
-            let out = cappedForMemoryV1(r.output, maxChars: 260)
+            let out = cappedForMemoryV1(sanitizedPromptContextText(r.output), maxChars: 260)
             return "id=\(r.id) tool=\(r.tool.rawValue) ok=\(r.ok)\n\(out)"
         }.joined(separator: "\n\n")
+    }
+
+    private func sanitizedPromptContextText(_ text: String) -> String {
+        var out = text
+        let regexReplacements: [(pattern: String, template: String, options: NSRegularExpression.Options)] = [
+            (#"\bsk-[A-Za-z0-9_-]{10,}\b"#, "[REDACTED_OPENAI_TOKEN]", []),
+            (#"\bghp_[A-Za-z0-9]{20,}\b"#, "[REDACTED_GITHUB_TOKEN]", []),
+            (#"\bxox[abprs]-[A-Za-z0-9-]{10,}\b"#, "[REDACTED_SLACK_TOKEN]", []),
+            (#"\bBearer\s+[A-Za-z0-9._-]{16,}\b"#, "Bearer [REDACTED_TOKEN]", [.caseInsensitive]),
+            (#"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"#, "[REDACTED_PRIVATE_KEY_BLOCK]", []),
+            (#"\b(api[_\s-]*key|private[_\s-]*key|secret[_\s-]*token|access[_\s-]*token|jwt|otp|payment[_\s-]*(pin|code)|password|passcode|authorization[_\s-]*code|auth[_\s-]*code|client[_\s-]*secret|session[_\s-]*secret|cookie)\b"#, "[REDACTED_SECRET_KEYWORD]", [.caseInsensitive]),
+        ]
+
+        for replacement in regexReplacements {
+            guard let regex = try? NSRegularExpression(pattern: replacement.pattern, options: replacement.options) else {
+                continue
+            }
+            let range = NSRange(out.startIndex..<out.endIndex, in: out)
+            out = regex.stringByReplacingMatches(in: out, options: [], range: range, withTemplate: replacement.template)
+        }
+
+        return out
     }
 
     private func cappedForMemoryV1(_ text: String, maxChars: Int) -> String {

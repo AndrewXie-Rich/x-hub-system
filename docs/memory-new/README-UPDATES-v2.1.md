@@ -5,7 +5,7 @@
 
 **更新日期**: 2026-02-26
 **更新类型**: 架构升级 - Memory v3（5层逻辑 + 4层物理）
-**基于**: 与 OpenClaw 和 Claude-Mem 的对比分析，采用4层物理架构全面超越
+**基于**: 与 skills ecosystem 和 progressive-disclosure reference architecture 的对比分析，采用4层物理架构全面超越
 
 ---
 
@@ -62,7 +62,7 @@ vs 三层架构:
 - P95 延迟: 10ms → 5ms（50% 提升）
 - P99 延迟: 50ms → 8ms（84% 提升）
 
-vs Claude-Mem:
+vs progressive-disclosure reference architecture:
 - 平均延迟: 7.2ms → 4.9ms（31.5% 提升）
 - P95 延迟: 20ms → 5ms（4x 提升）
 - P99 延迟: 100ms → 8ms（12.5x 提升）
@@ -168,9 +168,9 @@ vs Claude-Mem:
 | P95 延迟 | 10ms | 5ms | 50% |
 | P99 延迟 | 50ms | 8ms | 84% |
 
-### vs Claude-Mem
+### vs progressive-disclosure reference architecture
 
-| 指标 | Claude-Mem | X-Hub v3.0 | 提升 |
+| 指标 | progressive-disclosure reference architecture | X-Hub v3.0 | 提升 |
 |------|-----------|-----------|------|
 | 平均延迟 | 7.2ms | 4.9ms | 31.5% |
 | P95 延迟 | 20ms | 5ms | 4x |
@@ -496,9 +496,9 @@ vs Claude-Mem:
 | P95 延迟 | 10ms | 5ms | 50% |
 | P99 延迟 | 50ms | 8ms | 84% |
 
-### vs Claude-Mem
+### vs progressive-disclosure reference architecture
 
-| 指标 | Claude-Mem | X-Hub v3.0 | 提升 |
+| 指标 | progressive-disclosure reference architecture | X-Hub v3.0 | 提升 |
 |------|-----------|-----------|------|
 | 平均延迟 | 7.2ms | 4.9ms | 31.5% |
 | P95 延迟 | 20ms | 5ms | 4x |
@@ -617,9 +617,9 @@ vs Claude-Mem:
 
 ## 🔍 与开源项目对比
 
-### 对比 OpenClaw
+### 对比 skills ecosystem
 
-| 特性 | X-Hub v3.0 | OpenClaw |
+| 特性 | X-Hub v3.0 | skills ecosystem |
 |------|-----------|----------|
 | 记忆架构 | 四层（L0/L1/L2/L3） | 三层 |
 | 平均延迟 | 4.9ms | ~10ms |
@@ -629,9 +629,9 @@ vs Claude-Mem:
 | 文件监听 | ✅ chokidar | ✅ chokidar |
 | 隐私控制 | ✅ `<private>` 标签 | ❌ 无 |
 
-### 对比 Claude-Mem
+### 对比 progressive-disclosure reference architecture
 
-| 特性 | X-Hub v3.0 | Claude-Mem |
+| 特性 | X-Hub v3.0 | progressive-disclosure reference architecture |
 |------|-----------|------------|
 | 记忆架构 | 四层（L0/L1/L2/L3） | 三层 |
 | 平均延迟 | 4.9ms | 7.2ms |
@@ -650,7 +650,7 @@ vs Claude-Mem:
 - L1: Hot Memory（<1ms，35% 命中率）
 - L2: Warm Memory（<5ms，20% 命中率）⭐ 核心层
 - L3: Cold Storage（<50ms，5% 命中率）
-- 平均延迟: 4.9ms（vs Claude-Mem 7.2ms）
+- 平均延迟: 4.9ms（vs progressive-disclosure reference architecture 7.2ms）
 
 ✅ **唯一集成完整道德约束框架**
 - X 宪章 v2.0（10 个核心条款）
@@ -670,9 +670,9 @@ vs Claude-Mem:
 - 边缘层处理（不存储敏感内容）
 
 ✅ **最强的性能优势**
-- 平均延迟提升 31.5%（vs Claude-Mem）
-- P95 延迟提升 4x（vs Claude-Mem）
-- 成本降低 92%（vs Claude-Mem）
+- 平均延迟提升 31.5%（vs progressive-disclosure reference architecture）
+- P95 延迟提升 4x（vs progressive-disclosure reference architecture）
+- 成本降低 92%（vs progressive-disclosure reference architecture）
 - Token 节省 78%（渐进式披露）
 
 ---
@@ -750,7 +750,7 @@ vs Claude-Mem:
 **架构升级**:
 - ✅ Memory v3 架构（5层逻辑 + 4层物理）（L0/L1/L2/L3）
 - ✅ 平均延迟提升 24%（vs 三层）
-- ✅ 平均延迟提升 31.5%（vs Claude-Mem）
+- ✅ 平均延迟提升 31.5%（vs progressive-disclosure reference architecture）
 - ✅ 成本降低 92%（Lite 模式）
 
 **新增**:

@@ -16,6 +16,10 @@ final class BridgeSupport: ObservableObject {
         var enabled: Bool {
             enabledUntil > Date().timeIntervalSince1970
         }
+
+        var looksPersistent: Bool {
+            enabledUntil - Date().timeIntervalSince1970 > 7 * 24 * 60 * 60
+        }
     }
 
     private var timer: Timer?
@@ -36,11 +40,15 @@ final class BridgeSupport: ObservableObject {
             return
         }
         if st.enabledUntil > Date().timeIntervalSince1970 {
+            if st.looksPersistent {
+                bridgeStatusText = "Bridge: on"
+                return
+            }
             let rem = Int(max(0, st.enabledUntil - Date().timeIntervalSince1970))
             bridgeStatusText = "Bridge: on (\(rem)s)"
             return
         }
-        bridgeStatusText = "Bridge: standby"
+        bridgeStatusText = "Bridge: disabled"
     }
 
     func statusSnapshot(ttl: Double = 3.0, now: Double = Date().timeIntervalSince1970) -> BridgeStatusSnapshot {
@@ -51,7 +59,11 @@ final class BridgeSupport: ObservableObject {
     }
 
     func enable(seconds: Int) {
-        let until = Date().timeIntervalSince1970 + Double(max(10, seconds))
+        let current = statusSnapshot()
+        let until = max(
+            current.enabledUntil,
+            Date().timeIntervalSince1970 + Double(max(10, seconds))
+        )
         let obj: [String: Any] = [
             "enabled_until": until,
             "updated_at": Date().timeIntervalSince1970,

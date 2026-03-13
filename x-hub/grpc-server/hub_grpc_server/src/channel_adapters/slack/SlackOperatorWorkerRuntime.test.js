@@ -110,6 +110,7 @@ await runAsync('SlackOperatorWorkerRuntime boots local worker and wires bridge h
   const bridgeCalls = [];
   const clientCalls = [];
   const publisherCalls = [];
+  const forwarderCalls = [];
   let closeCount = 0;
   let capturedOnEnvelope = null;
   let publishedResult = null;
@@ -151,6 +152,29 @@ await runAsync('SlackOperatorWorkerRuntime boots local worker and wires bridge h
             ok: true,
           };
         },
+        async publishGrantPending() {
+          return {
+            ok: true,
+          };
+        },
+        async publishGrantDecision() {
+          return {
+            ok: true,
+          };
+        },
+      };
+    },
+    createEventForwarderFactory: (opts) => {
+      forwarderCalls.push(opts);
+      return {
+        snapshot() {
+          return {
+            provider: 'slack',
+            subscribed: true,
+          };
+        },
+        suppressGrantDecision() {},
+        async close() {},
       };
     },
     createIngressBridge: (opts) => {
@@ -215,6 +239,10 @@ await runAsync('SlackOperatorWorkerRuntime boots local worker and wires bridge h
   assert.equal(bridgeCalls.length, 1);
   assert.ok(bridgeCalls[0]?.hub_client, 'expected hub_client injected into bridge');
   assert.equal(publisherCalls.length >= 2, true);
+  assert.equal(forwarderCalls.length, 1);
+  assert.equal(String(forwarderCalls[0]?.provider || ''), 'slack');
+  assert.equal(typeof forwarderCalls[0]?.publish_grant_pending, 'function');
+  assert.equal(typeof forwarderCalls[0]?.publish_grant_decision, 'function');
 
   const onEnvelopeOut = await serverCalls[0].onEnvelope({
     structured_action: { action_name: 'deploy.plan' },
@@ -223,13 +251,143 @@ await runAsync('SlackOperatorWorkerRuntime boots local worker and wires bridge h
   assert.equal(String(capturedOnEnvelope?.structured_action?.action_name || ''), 'deploy.plan');
   assert.ok(logs.some((line) => line.includes('listening on 127.0.0.1:50161')));
   assert.ok(logs.some((line) => line.includes('reply_delivery_ready=1')));
+  assert.ok(logs.some((line) => line.includes('proactive_grant_forwarding_ready=1')));
   const snap = runtime.snapshot();
   assert.equal(String(snap?.config?.bot_token || ''), '');
   assert.equal(String(snap?.config?.signing_secret || ''), '');
+  assert.equal(String(snap?.event_forwarder?.provider || ''), 'slack');
 
   await runtime.close();
   assert.equal(closeCount, 1);
   assert.ok(publishedResult, 'expected publisher to receive bridge result');
+});
+
+await runAsync('SlackOperatorWorkerRuntime pre-suppresses local grant actions before Hub execution', async () => {
+  const serverCalls = [];
+  const suppressed = [];
+
+  const runtime = await startSlackOperatorWorker({
+    env: {
+      HUB_SLACK_OPERATOR_ENABLE: '1',
+      HUB_SLACK_OPERATOR_SIGNING_SECRET: 'slack-secret-1',
+      HUB_SLACK_OPERATOR_BOT_TOKEN: 'xoxb-slack-1',
+      HUB_OPERATOR_CHANNEL_CONNECTOR_TOKEN: 'connector-token-1',
+    },
+    createHubClient: () => ({
+      close() {},
+    }),
+    createHubActionExecutorFactory: () => ({
+      async execute(result) {
+        return {
+          ...result,
+          execution: {
+            ok: true,
+            grant_action: {
+              action_name: 'grant.approve',
+              grant_request_id: 'grant-req-1',
+              decision: 'approved',
+              grant: {
+                grant_id: 'grant-1',
+                client: {
+                  project_id: 'project_alpha',
+                },
+              },
+            },
+          },
+        };
+      },
+    }),
+    createSlackApiClientFactory: () => ({
+      async postMessage() {
+        return {
+          ok: true,
+          message_ts: '1710000000.0002',
+        };
+      },
+    }),
+    createResultPublisherFactory: () => ({
+      async publish() {
+        return {
+          ok: true,
+        };
+      },
+      async publishGrantDecision() {
+        return {
+          ok: true,
+        };
+      },
+    }),
+    createEventForwarderFactory: () => ({
+      snapshot() {
+        return {
+          provider: 'slack',
+          subscribed: true,
+        };
+      },
+      suppressGrantDecision(payload) {
+        suppressed.push(payload);
+      },
+      async close() {},
+    }),
+    createIngressBridge: (opts) => ({
+      async handleEnvelope() {
+        await opts.on_result?.({
+          request_id: 'slack:event_callback:Ev-grant-1',
+          command: {
+            action_name: 'grant.approve',
+            pending_grant: {
+              grant_request_id: 'grant-req-1',
+              project_id: 'project_alpha',
+              status: 'pending',
+            },
+            channel: {
+              provider: 'slack',
+              account_id: 'ops_bot',
+              conversation_id: 'C123',
+              thread_key: '1710000000.0001',
+            },
+          },
+          gate: {
+            action_name: 'grant.approve',
+            scope_type: 'project',
+            scope_id: 'project_alpha',
+            route_mode: 'hub_only_status',
+          },
+          route: {
+            route_mode: 'hub_only_status',
+          },
+          dispatch: {
+            kind: 'hub_grant_action',
+          },
+        });
+        return {
+          ok: true,
+          handled: true,
+        };
+      },
+    }),
+    createIngressServerFactory: (opts) => {
+      serverCalls.push(opts);
+      return {
+        async listen() {
+          return { address: '127.0.0.1', port: 50161 };
+        },
+        async close() {},
+      };
+    },
+  });
+
+  await serverCalls[0].onEnvelope({
+    structured_action: { action_name: 'grant.approve' },
+  });
+
+  assert.deepEqual(suppressed, [
+    {
+      grant_request_id: 'grant-req-1',
+    },
+  ]);
+
+  await runtime.close();
 });
 
 await runAsync('SlackOperatorWorkerRuntime fails closed when enabled config is unsafe', async () => {

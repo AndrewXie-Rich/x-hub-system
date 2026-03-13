@@ -48,6 +48,8 @@ function utf8Bytes(text) {
 const DEFAULT_RISK_TUNING_PROFILE_ID = 'risk_default_v1';
 const RISK_LEVELS = new Set(['low', 'medium', 'high']);
 const VOICE_CHALLENGE_STATUSES = new Set(['issued', 'verified', 'denied', 'expired']);
+const SECRET_VAULT_SCOPES = new Set(['device', 'user', 'app', 'project']);
+const SECRET_VAULT_LEASE_STATUSES = new Set(['active', 'used', 'expired', 'revoked']);
 
 function defaultRiskTuningProfile(now = nowMs()) {
   return {
@@ -74,6 +76,48 @@ function defaultRiskTuningProfile(now = nowMs()) {
 
 const SENSITIVE_KEY_RE = /(?:^|_)(content|preview|prompt|response|body|text|snippet|note|reason|message|url|query|cookie|header|payload|authorization|token|secret|password|credential|private|email|phone|ssn|card|iban|otp|pin|address|key)(?:$|_)/i;
 const SAFE_KEY_RE = /(?:^|_)(id|scope|status|type|capability|model|backend|kind|host|port|code|ok|allowed|level|mode|state|count|tokens|ms|bytes|cost|decision|day|cursor|offset|limit|runtime_alive|queue_wait_ms)(?:$|_)/i;
+
+function normalizeKillSwitchList(values) {
+  if (values == null) return [];
+  const out = [];
+  const seen = new Set();
+  const items = Array.isArray(values) ? values : String(values || '').split(',');
+  for (const raw of items) {
+    const cleaned = String(raw ?? '').trim();
+    if (!cleaned || seen.has(cleaned)) continue;
+    seen.add(cleaned);
+    out.push(cleaned);
+  }
+  return out;
+}
+
+function parseKillSwitchList(rawValue) {
+  if (rawValue == null || rawValue === '') return [];
+  if (Array.isArray(rawValue)) return normalizeKillSwitchList(rawValue);
+  try {
+    const parsed = JSON.parse(String(rawValue));
+    return normalizeKillSwitchList(parsed);
+  } catch {
+    return normalizeKillSwitchList(String(rawValue));
+  }
+}
+
+function normalizeKillSwitchRow(row) {
+  if (!row || typeof row !== 'object') return null;
+  return {
+    scope: String(row.scope || ''),
+    models_disabled: Number(row.models_disabled || 0) > 0,
+    network_disabled: Number(row.network_disabled || 0) > 0,
+    reason: row.reason == null ? '' : String(row.reason || ''),
+    updated_at_ms: Number(row.updated_at_ms || 0),
+    disabled_local_capabilities: parseKillSwitchList(
+      row.disabled_local_capabilities_json ?? row.disabled_local_capabilities
+    ),
+    disabled_local_providers: parseKillSwitchList(
+      row.disabled_local_providers_json ?? row.disabled_local_providers
+    ),
+  };
+}
 
 function looksSimpleToken(s) {
   // Keep compact identifiers visible in metadata-only mode.
@@ -553,6 +597,8 @@ export class HubDB {
         scope TEXT PRIMARY KEY,
         models_disabled INTEGER NOT NULL,
         network_disabled INTEGER NOT NULL,
+        disabled_local_capabilities_json TEXT,
+        disabled_local_providers_json TEXT,
         reason TEXT,
         updated_at_ms INTEGER NOT NULL
       );
@@ -738,6 +784,58 @@ export class HubDB {
 
       CREATE INDEX IF NOT EXISTS idx_memory_voice_grant_nonces_challenge
         ON memory_voice_grant_nonces(challenge_id, created_at_ms DESC);
+
+      CREATE TABLE IF NOT EXISTS secret_vault_items (
+        item_id TEXT PRIMARY KEY,
+        scope TEXT NOT NULL,
+        name TEXT NOT NULL,
+        name_key TEXT NOT NULL,
+        sensitivity TEXT NOT NULL,
+        display_name TEXT,
+        reason TEXT,
+        ciphertext_text TEXT NOT NULL,
+        owner_device_id TEXT NOT NULL,
+        owner_user_id TEXT NOT NULL,
+        owner_app_id TEXT NOT NULL,
+        owner_project_id TEXT NOT NULL,
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_secret_vault_items_owner_name
+        ON secret_vault_items(scope, owner_device_id, owner_user_id, owner_app_id, owner_project_id, name_key);
+
+      CREATE INDEX IF NOT EXISTS idx_secret_vault_items_updated
+        ON secret_vault_items(updated_at_ms DESC, scope, name_key);
+
+      CREATE INDEX IF NOT EXISTS idx_secret_vault_items_owner_scope
+        ON secret_vault_items(scope, owner_device_id, owner_user_id, owner_app_id, owner_project_id, updated_at_ms DESC);
+
+      CREATE TABLE IF NOT EXISTS secret_vault_use_leases (
+        lease_id TEXT PRIMARY KEY,
+        use_token_hash TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        name TEXT NOT NULL,
+        purpose TEXT NOT NULL,
+        target TEXT,
+        device_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        app_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at_ms INTEGER NOT NULL,
+        expires_at_ms INTEGER NOT NULL,
+        used_at_ms INTEGER,
+        revoked_at_ms INTEGER,
+        updated_at_ms INTEGER NOT NULL
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_secret_vault_use_leases_token
+        ON secret_vault_use_leases(use_token_hash);
+
+      CREATE INDEX IF NOT EXISTS idx_secret_vault_use_leases_item_status
+        ON secret_vault_use_leases(item_id, status, expires_at_ms, updated_at_ms DESC);
 
       CREATE TABLE IF NOT EXISTS agent_capsules (
         capsule_id TEXT PRIMARY KEY,
@@ -1420,6 +1518,8 @@ export class HubDB {
     this._ensureColumn('agent_tool_requests', 'capability_token_consumed_at_ms', 'INTEGER');
     this._ensureColumn('agent_tool_requests', 'capability_token_revoked_at_ms', 'INTEGER');
     this._ensureColumn('agent_tool_requests', 'capability_token_revoke_reason', 'TEXT');
+    this._ensureColumn('kill_switches', 'disabled_local_capabilities_json', 'TEXT');
+    this._ensureColumn('kill_switches', 'disabled_local_providers_json', 'TEXT');
     this.db.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_tool_requests_capability_token
         ON agent_tool_requests(capability_token_id)
@@ -1657,6 +1757,33 @@ export class HubDB {
     };
   }
 
+  _buildSecretVaultPayloadAad({
+    item_id,
+    scope,
+    name_key,
+    sensitivity,
+    owner_device_id,
+    owner_user_id,
+    owner_app_id,
+    owner_project_id,
+    created_at_ms,
+  }) {
+    return {
+      schema: 'xhub.memory.at_rest.v1',
+      table: 'secret_vault_items',
+      field: 'ciphertext_text',
+      item_id: String(item_id || ''),
+      scope: String(scope || ''),
+      name_key: String(name_key || ''),
+      sensitivity: String(sensitivity || 'secret'),
+      owner_device_id: String(owner_device_id || ''),
+      owner_user_id: String(owner_user_id || ''),
+      owner_app_id: String(owner_app_id || ''),
+      owner_project_id: String(owner_project_id || ''),
+      created_at_ms: Math.max(0, Number(created_at_ms || 0)),
+    };
+  }
+
   _encryptMemoryField(valueText, aad) {
     const raw = String(valueText ?? '');
     if (!this.memoryAtRestEnabled) return raw;
@@ -1734,6 +1861,21 @@ export class HubDB {
       })
     );
     return out;
+  }
+
+  _encryptSecretVaultPlaintext(rowLike) {
+    return this._encryptMemoryField(
+      rowLike?.plaintext ?? '',
+      this._buildSecretVaultPayloadAad(rowLike)
+    );
+  }
+
+  _decryptSecretVaultPlaintextRow(row) {
+    if (!row) return '';
+    return this._decryptMemoryField(
+      row.ciphertext_text ?? '',
+      this._buildSecretVaultPayloadAad(row)
+    );
   }
 
   _initMemoryAtRestState() {
@@ -3825,7 +3967,7 @@ export class HubDB {
     const s = String(scope || '').trim();
     if (!s) return null;
     const r = this.db.prepare(`SELECT * FROM kill_switches WHERE scope = ? LIMIT 1`).get(s);
-    return r || null;
+    return normalizeKillSwitchRow(r);
   }
 
   upsertKillSwitch(k) {
@@ -3834,19 +3976,39 @@ export class HubDB {
     if (!scope) throw new Error('missing scope');
     const modelsDisabled = k?.models_disabled ? 1 : 0;
     const networkDisabled = k?.network_disabled ? 1 : 0;
+    const disabledLocalCapabilitiesJson = JSON.stringify(normalizeKillSwitchList(k?.disabled_local_capabilities));
+    const disabledLocalProvidersJson = JSON.stringify(normalizeKillSwitchList(k?.disabled_local_providers));
     const reason = k?.reason ? String(k.reason) : null;
 
     this.db
       .prepare(
-        `INSERT INTO kill_switches(scope, models_disabled, network_disabled, reason, updated_at_ms)
-         VALUES(?,?,?,?,?)
+        `INSERT INTO kill_switches(
+           scope,
+           models_disabled,
+           network_disabled,
+           disabled_local_capabilities_json,
+           disabled_local_providers_json,
+           reason,
+           updated_at_ms
+         )
+         VALUES(?,?,?,?,?,?,?)
          ON CONFLICT(scope) DO UPDATE SET
            models_disabled = excluded.models_disabled,
            network_disabled = excluded.network_disabled,
+           disabled_local_capabilities_json = excluded.disabled_local_capabilities_json,
+           disabled_local_providers_json = excluded.disabled_local_providers_json,
            reason = excluded.reason,
            updated_at_ms = excluded.updated_at_ms`
       )
-      .run(scope, modelsDisabled, networkDisabled, reason, now);
+      .run(
+        scope,
+        modelsDisabled,
+        networkDisabled,
+        disabledLocalCapabilitiesJson,
+        disabledLocalProvidersJson,
+        reason,
+        now
+      );
 
     return this.getKillSwitch(scope);
   }
@@ -3869,19 +4031,36 @@ export class HubDB {
     let updated_at_ms = 0;
     const reasons = [];
     const matched = [];
+    const disabledLocalCapabilities = new Set();
+    const disabledLocalProviders = new Set();
 
     for (const r of rows) {
-      if (!r) continue;
-      matched.push(String(r.scope || ''));
-      if (Number(r.models_disabled || 0)) models_disabled = true;
-      if (Number(r.network_disabled || 0)) network_disabled = true;
-      updated_at_ms = Math.max(updated_at_ms, Number(r.updated_at_ms || 0));
-      const rr = (r.reason ? String(r.reason) : '').trim();
+      const normalized = normalizeKillSwitchRow(r);
+      if (!normalized) continue;
+      matched.push(String(normalized.scope || ''));
+      if (normalized.models_disabled) models_disabled = true;
+      if (normalized.network_disabled) network_disabled = true;
+      updated_at_ms = Math.max(updated_at_ms, Number(normalized.updated_at_ms || 0));
+      for (const capability of normalizeKillSwitchList(normalized.disabled_local_capabilities)) {
+        disabledLocalCapabilities.add(capability);
+      }
+      for (const provider of normalizeKillSwitchList(normalized.disabled_local_providers)) {
+        disabledLocalProviders.add(provider);
+      }
+      const rr = (normalized.reason ? String(normalized.reason) : '').trim();
       if (rr) reasons.push(rr);
     }
 
     const reason = Array.from(new Set(reasons)).join(' | ');
-    return { models_disabled, network_disabled, reason, updated_at_ms, matched_scopes: matched };
+    return {
+      models_disabled,
+      network_disabled,
+      reason,
+      updated_at_ms,
+      matched_scopes: matched,
+      disabled_local_capabilities: Array.from(disabledLocalCapabilities),
+      disabled_local_providers: Array.from(disabledLocalProviders),
+    };
   }
 
   // -------------------- Memory (threads/turns/canonical) --------------------
@@ -9241,6 +9420,627 @@ export class HubDB {
       active_profile_id: profileId,
       previous_active_profile_id: activeProfileId,
       deny_code: '',
+    };
+  }
+
+  _normalizeSecretVaultScope(value) {
+    const raw = String(value || '').trim().toLowerCase();
+    if (SECRET_VAULT_SCOPES.has(raw)) return raw;
+    return '';
+  }
+
+  _normalizeSecretVaultLeaseStatus(value, fallback = 'active') {
+    const raw = String(value || '').trim().toLowerCase();
+    if (SECRET_VAULT_LEASE_STATUSES.has(raw)) return raw;
+    return String(fallback || 'active').trim().toLowerCase() || 'active';
+  }
+
+  _normalizeSecretVaultName(value) {
+    const raw = String(value || '').trim();
+    if (!raw || raw.length > 160) return '';
+    if (/[\u0000-\u001f]/.test(raw)) return '';
+    return raw;
+  }
+
+  _normalizeSecretVaultSensitivity(value, fallback = 'secret') {
+    const raw = String(value || '').trim().toLowerCase();
+    if (!raw) return String(fallback || 'secret').trim().toLowerCase() || 'secret';
+    if (!/^[a-z0-9._:-]{1,64}$/.test(raw)) return String(fallback || 'secret').trim().toLowerCase() || 'secret';
+    return raw;
+  }
+
+  _secretVaultOwnerFromClient(scope, fields = {}) {
+    const normalizedScope = this._normalizeSecretVaultScope(scope);
+    if (!normalizedScope) return null;
+
+    const deviceId = String(fields.device_id || '').trim();
+    const userId = String(fields.user_id || '').trim();
+    const appId = String(fields.app_id || '').trim();
+    const projectId = String(fields.project_id || '').trim();
+
+    if (!deviceId || !appId) return null;
+
+    switch (normalizedScope) {
+      case 'device':
+        return {
+          scope: normalizedScope,
+          owner_device_id: deviceId,
+          owner_user_id: '',
+          owner_app_id: '',
+          owner_project_id: '',
+        };
+      case 'user':
+        if (!userId) return null;
+        return {
+          scope: normalizedScope,
+          owner_device_id: '',
+          owner_user_id: userId,
+          owner_app_id: '',
+          owner_project_id: '',
+        };
+      case 'app':
+        return {
+          scope: normalizedScope,
+          owner_device_id: '',
+          owner_user_id: userId,
+          owner_app_id: appId,
+          owner_project_id: '',
+        };
+      case 'project':
+        if (!projectId) return null;
+        return {
+          scope: normalizedScope,
+          owner_device_id: '',
+          owner_user_id: userId,
+          owner_app_id: appId,
+          owner_project_id: projectId,
+        };
+      default:
+        return null;
+    }
+  }
+
+  _secretVaultOwnerMatchesClient(row, fields = {}) {
+    if (!row) return false;
+    const owner = this._secretVaultOwnerFromClient(row.scope, fields);
+    if (!owner) return false;
+    return (
+      String(row.scope || '') === owner.scope
+      && String(row.owner_device_id || '') === owner.owner_device_id
+      && String(row.owner_user_id || '') === owner.owner_user_id
+      && String(row.owner_app_id || '') === owner.owner_app_id
+      && String(row.owner_project_id || '') === owner.owner_project_id
+    );
+  }
+
+  _parseSecretVaultItemRow(row) {
+    if (!row) return null;
+    return {
+      item_id: String(row.item_id || ''),
+      scope: this._normalizeSecretVaultScope(row.scope),
+      name: String(row.name || ''),
+      sensitivity: this._normalizeSecretVaultSensitivity(row.sensitivity, 'secret'),
+      created_at_ms: Math.max(0, Number(row.created_at_ms || 0)),
+      updated_at_ms: Math.max(0, Number(row.updated_at_ms || 0)),
+      owner_device_id: String(row.owner_device_id || ''),
+      owner_user_id: String(row.owner_user_id || ''),
+      owner_app_id: String(row.owner_app_id || ''),
+      owner_project_id: String(row.owner_project_id || ''),
+      display_name: row.display_name == null ? '' : String(row.display_name || ''),
+      reason: row.reason == null ? '' : String(row.reason || ''),
+    };
+  }
+
+  _parseSecretVaultLeaseRow(row) {
+    if (!row) return null;
+    return {
+      lease_id: String(row.lease_id || ''),
+      use_token_hash: String(row.use_token_hash || ''),
+      item_id: String(row.item_id || ''),
+      scope: this._normalizeSecretVaultScope(row.scope),
+      name: String(row.name || ''),
+      purpose: String(row.purpose || ''),
+      target: row.target == null ? '' : String(row.target || ''),
+      device_id: String(row.device_id || ''),
+      user_id: String(row.user_id || ''),
+      app_id: String(row.app_id || ''),
+      project_id: String(row.project_id || ''),
+      status: this._normalizeSecretVaultLeaseStatus(row.status, 'active'),
+      created_at_ms: Math.max(0, Number(row.created_at_ms || 0)),
+      expires_at_ms: Math.max(0, Number(row.expires_at_ms || 0)),
+      used_at_ms: Math.max(0, Number(row.used_at_ms || 0)),
+      revoked_at_ms: Math.max(0, Number(row.revoked_at_ms || 0)),
+      updated_at_ms: Math.max(0, Number(row.updated_at_ms || 0)),
+    };
+  }
+
+  _getSecretVaultLeaseRowRawByTokenHash(useTokenHash) {
+    const normalizedTokenHash = String(useTokenHash || '').trim();
+    if (!normalizedTokenHash) return null;
+    return this.db
+      .prepare(
+        `SELECT *
+         FROM secret_vault_use_leases
+         WHERE use_token_hash = ?
+         LIMIT 1`
+      )
+      .get(normalizedTokenHash) || null;
+  }
+
+  _getSecretVaultItemRowRawById(itemId) {
+    const normalizedItemId = String(itemId || '').trim();
+    if (!normalizedItemId) return null;
+    return this.db
+      .prepare(
+        `SELECT *
+         FROM secret_vault_items
+         WHERE item_id = ?
+         LIMIT 1`
+      )
+      .get(normalizedItemId) || null;
+  }
+
+  _findSecretVaultItemRowRawByOwnerAndName({
+    scope,
+    name,
+    device_id,
+    user_id,
+    app_id,
+    project_id,
+  } = {}) {
+    const normalizedScope = this._normalizeSecretVaultScope(scope);
+    const normalizedName = this._normalizeSecretVaultName(name);
+    const owner = this._secretVaultOwnerFromClient(normalizedScope, {
+      device_id,
+      user_id,
+      app_id,
+      project_id,
+    });
+    if (!normalizedScope || !normalizedName || !owner) return null;
+    return this.db
+      .prepare(
+        `SELECT *
+         FROM secret_vault_items
+         WHERE scope = ?
+           AND owner_device_id = ?
+           AND owner_user_id = ?
+           AND owner_app_id = ?
+           AND owner_project_id = ?
+           AND name_key = ?
+         LIMIT 1`
+      )
+      .get(
+        normalizedScope,
+        owner.owner_device_id,
+        owner.owner_user_id,
+        owner.owner_app_id,
+        owner.owner_project_id,
+        normalizedName.toLowerCase()
+      ) || null;
+  }
+
+  createOrUpdateSecretVaultItem(fields = {}) {
+    const now = nowMs();
+    const scope = this._normalizeSecretVaultScope(fields.scope);
+    const name = this._normalizeSecretVaultName(fields.name);
+    const plaintext = String(fields.plaintext ?? '');
+    const sensitivity = this._normalizeSecretVaultSensitivity(fields.sensitivity, 'secret');
+    const displayName = fields.display_name == null ? null : String(fields.display_name || '').trim() || null;
+    const reason = fields.reason == null ? null : String(fields.reason || '').trim() || null;
+    const owner = this._secretVaultOwnerFromClient(scope, fields);
+
+    if (!scope || !name || !plaintext || !owner) {
+      return {
+        ok: false,
+        created: false,
+        deny_code: !owner && scope ? 'invalid_scope_context' : 'invalid_request',
+        item: null,
+      };
+    }
+
+    const existing = this._findSecretVaultItemRowRawByOwnerAndName({
+      scope,
+      name,
+      device_id: fields.device_id,
+      user_id: fields.user_id,
+      app_id: fields.app_id,
+      project_id: fields.project_id,
+    });
+
+    const itemId = existing ? String(existing.item_id || '') : `sv_${uuid()}`;
+    const createdAtMs = existing ? Math.max(0, Number(existing.created_at_ms || 0)) : now;
+    const rowPayload = {
+      item_id: itemId,
+      scope,
+      name_key: name.toLowerCase(),
+      sensitivity,
+      owner_device_id: owner.owner_device_id,
+      owner_user_id: owner.owner_user_id,
+      owner_app_id: owner.owner_app_id,
+      owner_project_id: owner.owner_project_id,
+      created_at_ms: createdAtMs,
+      plaintext,
+    };
+    const ciphertextText = this._encryptSecretVaultPlaintext(rowPayload);
+
+    this.db.exec('BEGIN;');
+    try {
+      if (existing) {
+        this.db
+          .prepare(
+            `UPDATE secret_vault_items
+             SET sensitivity = ?,
+                 display_name = ?,
+                 reason = ?,
+                 ciphertext_text = ?,
+                 updated_at_ms = ?
+             WHERE item_id = ?`
+          )
+          .run(
+            sensitivity,
+            displayName,
+            reason,
+            ciphertextText,
+            now,
+            itemId
+          );
+      } else {
+        this.db
+          .prepare(
+            `INSERT INTO secret_vault_items(
+               item_id, scope, name, name_key, sensitivity, display_name, reason,
+               ciphertext_text,
+               owner_device_id, owner_user_id, owner_app_id, owner_project_id,
+               created_at_ms, updated_at_ms
+             ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+          )
+          .run(
+            itemId,
+            scope,
+            name,
+            name.toLowerCase(),
+            sensitivity,
+            displayName,
+            reason,
+            ciphertextText,
+            owner.owner_device_id,
+            owner.owner_user_id,
+            owner.owner_app_id,
+            owner.owner_project_id,
+            createdAtMs,
+            now
+          );
+      }
+      this.db.exec('COMMIT;');
+    } catch (err) {
+      try {
+        this.db.exec('ROLLBACK;');
+      } catch {
+        // ignore
+      }
+      throw err;
+    }
+
+    return {
+      ok: true,
+      created: !existing,
+      deny_code: '',
+      item: this._parseSecretVaultItemRow(this._getSecretVaultItemRowRawById(itemId)),
+    };
+  }
+
+  _secretVaultAccessibleRowsForClient({
+    device_id,
+    user_id,
+    app_id,
+    project_id,
+    scope,
+    name_prefix,
+    limit,
+  } = {}) {
+    const normalizedScope = this._normalizeSecretVaultScope(scope);
+    const normalizedPrefix = String(name_prefix || '').trim().toLowerCase();
+    const boundedLimit = Math.max(1, Math.min(500, Number(limit || 200) || 200));
+    const rows = this.db
+      .prepare(
+        `SELECT *
+         FROM secret_vault_items
+         ORDER BY updated_at_ms DESC, item_id ASC
+         LIMIT ?`
+      )
+      .all(Math.max(50, boundedLimit * 8));
+
+    return rows
+      .filter((row) => this._secretVaultOwnerMatchesClient(row, {
+        device_id,
+        user_id,
+        app_id,
+        project_id,
+      }))
+      .filter((row) => !normalizedScope || String(row.scope || '') === normalizedScope)
+      .filter((row) => !normalizedPrefix || String(row.name_key || '').startsWith(normalizedPrefix))
+      .slice(0, boundedLimit);
+  }
+
+  listSecretVaultItems(fields = {}) {
+    const rows = this._secretVaultAccessibleRowsForClient(fields);
+    const items = rows.map((row) => this._parseSecretVaultItemRow(row)).filter(Boolean);
+    return {
+      updated_at_ms: items[0]?.updated_at_ms || 0,
+      items,
+    };
+  }
+
+  listSecretVaultItemsForSnapshot({ scope, name_prefix, limit } = {}) {
+    const normalizedScope = this._normalizeSecretVaultScope(scope);
+    const normalizedPrefix = String(name_prefix || '').trim().toLowerCase();
+    const boundedLimit = Math.max(1, Math.min(500, Number(limit || 200) || 200));
+    const rows = this.db
+      .prepare(
+        `SELECT *
+         FROM secret_vault_items
+         ORDER BY updated_at_ms DESC, item_id ASC
+         LIMIT ?`
+      )
+      .all(boundedLimit * 2);
+    const items = rows
+      .filter((row) => !normalizedScope || String(row.scope || '') === normalizedScope)
+      .filter((row) => !normalizedPrefix || String(row.name_key || '').startsWith(normalizedPrefix))
+      .slice(0, boundedLimit)
+      .map((row) => this._parseSecretVaultItemRow(row))
+      .filter(Boolean);
+    return {
+      updated_at_ms: items[0]?.updated_at_ms || 0,
+      items,
+    };
+  }
+
+  beginSecretVaultUse(fields = {}) {
+    const now = nowMs();
+    const itemId = String(fields.item_id || '').trim();
+    const scope = this._normalizeSecretVaultScope(fields.scope);
+    const name = this._normalizeSecretVaultName(fields.name);
+    const purpose = String(fields.purpose || '').trim();
+    const target = fields.target == null ? null : String(fields.target || '').trim() || null;
+    const ttlMs = Math.max(1000, Math.min(10 * 60 * 1000, Number(fields.ttl_ms || 60 * 1000) || (60 * 1000)));
+    const deviceId = String(fields.device_id || '').trim();
+    const userId = String(fields.user_id || '').trim();
+    const appId = String(fields.app_id || '').trim();
+    const projectId = String(fields.project_id || '').trim();
+
+    if (!deviceId || !appId || !purpose) {
+      return {
+        ok: false,
+        deny_code: 'invalid_request',
+        lease: null,
+      };
+    }
+
+    let row = null;
+    if (itemId) {
+      row = this._getSecretVaultItemRowRawById(itemId);
+      if (!row || !this._secretVaultOwnerMatchesClient(row, {
+        device_id: deviceId,
+        user_id: userId,
+        app_id: appId,
+        project_id: projectId,
+      })) {
+        return {
+          ok: false,
+          deny_code: 'secret_vault_item_not_found',
+          lease: null,
+        };
+      }
+    } else {
+      row = this._findSecretVaultItemRowRawByOwnerAndName({
+        scope,
+        name,
+        device_id: deviceId,
+        user_id: userId,
+        app_id: appId,
+        project_id: projectId,
+      });
+      if (!row) {
+        return {
+          ok: false,
+          deny_code: 'secret_vault_item_not_found',
+          lease: null,
+        };
+      }
+    }
+
+    const leaseId = `svl_${uuid()}`;
+    const useToken = `svtok_${uuid()}`;
+    const expiresAtMs = now + ttlMs;
+
+    this.db
+      .prepare(
+        `INSERT INTO secret_vault_use_leases(
+           lease_id, use_token_hash, item_id, scope, name, purpose, target,
+           device_id, user_id, app_id, project_id,
+           status, created_at_ms, expires_at_ms, used_at_ms, revoked_at_ms, updated_at_ms
+         ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        leaseId,
+        sha256Hex(useToken),
+        String(row.item_id || ''),
+        String(row.scope || ''),
+        String(row.name || ''),
+        purpose,
+        target,
+        deviceId,
+        userId,
+        appId,
+        projectId,
+        'active',
+        now,
+        expiresAtMs,
+        null,
+        null,
+        now
+      );
+
+    return {
+      ok: true,
+      deny_code: '',
+      lease: {
+        lease_id: leaseId,
+        use_token: useToken,
+        item_id: String(row.item_id || ''),
+        expires_at_ms: expiresAtMs,
+      },
+    };
+  }
+
+  redeemSecretVaultUse(fields = {}) {
+    const now = nowMs();
+    const useToken = String(fields.use_token || '').trim();
+    const deviceId = String(fields.device_id || '').trim();
+    const userId = String(fields.user_id || '').trim();
+    const appId = String(fields.app_id || '').trim();
+    const projectId = String(fields.project_id || '').trim();
+    const consume = fields.consume !== false;
+
+    if (!useToken || !deviceId || !appId) {
+      return {
+        ok: false,
+        deny_code: 'invalid_request',
+        plaintext: '',
+        item: null,
+        lease: null,
+      };
+    }
+
+    const tokenHash = sha256Hex(useToken);
+    const leaseRow = this._getSecretVaultLeaseRowRawByTokenHash(tokenHash);
+    if (!leaseRow) {
+      return {
+        ok: false,
+        deny_code: 'secret_vault_use_token_not_found',
+        plaintext: '',
+        item: null,
+        lease: null,
+      };
+    }
+
+    const lease = this._parseSecretVaultLeaseRow(leaseRow);
+    if (!lease) {
+      return {
+        ok: false,
+        deny_code: 'secret_vault_use_token_not_found',
+        plaintext: '',
+        item: null,
+        lease: null,
+      };
+    }
+
+    const identityMatches = (
+      lease.device_id === deviceId
+      && lease.user_id === userId
+      && lease.app_id === appId
+      && lease.project_id === projectId
+    );
+    if (!identityMatches) {
+      return {
+        ok: false,
+        deny_code: 'secret_vault_use_token_not_found',
+        plaintext: '',
+        item: null,
+        lease: null,
+      };
+    }
+
+    if (lease.status === 'revoked') {
+      return {
+        ok: false,
+        deny_code: 'secret_vault_use_token_revoked',
+        plaintext: '',
+        item: null,
+        lease: null,
+      };
+    }
+    if (lease.status === 'used') {
+      return {
+        ok: false,
+        deny_code: 'secret_vault_use_token_used',
+        plaintext: '',
+        item: null,
+        lease: null,
+      };
+    }
+    if (lease.expires_at_ms <= now || lease.status === 'expired') {
+      this.db
+        .prepare(
+          `UPDATE secret_vault_use_leases
+           SET status = 'expired',
+               updated_at_ms = ?
+           WHERE lease_id = ?`
+        )
+        .run(now, lease.lease_id);
+      return {
+        ok: false,
+        deny_code: 'secret_vault_use_token_expired',
+        plaintext: '',
+        item: null,
+        lease: null,
+      };
+    }
+
+    const itemRow = this._getSecretVaultItemRowRawById(lease.item_id);
+    if (!itemRow || !this._secretVaultOwnerMatchesClient(itemRow, {
+      device_id: deviceId,
+      user_id: userId,
+      app_id: appId,
+      project_id: projectId,
+    })) {
+      return {
+        ok: false,
+        deny_code: 'secret_vault_item_not_found',
+        plaintext: '',
+        item: null,
+        lease: null,
+      };
+    }
+
+    const plaintext = this._decryptSecretVaultPlaintextRow(itemRow);
+    if (!plaintext) {
+      return {
+        ok: false,
+        deny_code: 'secret_vault_decrypt_failed',
+        plaintext: '',
+        item: this._parseSecretVaultItemRow(itemRow),
+        lease: null,
+      };
+    }
+
+    if (consume) {
+      this.db
+        .prepare(
+          `UPDATE secret_vault_use_leases
+           SET status = 'used',
+               used_at_ms = ?,
+               updated_at_ms = ?
+           WHERE lease_id = ?`
+        )
+        .run(now, now, lease.lease_id);
+    }
+
+    return {
+      ok: true,
+      deny_code: '',
+      plaintext,
+      item: this._parseSecretVaultItemRow(itemRow),
+      lease: this._parseSecretVaultLeaseRow(
+        this.db
+          .prepare(
+            `SELECT *
+             FROM secret_vault_use_leases
+             WHERE lease_id = ?
+             LIMIT 1`
+          )
+          .get(lease.lease_id)
+      ),
     };
   }
 

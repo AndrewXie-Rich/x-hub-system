@@ -64,10 +64,10 @@ struct SupervisorPortfolioSnapshotTests {
         #expect(snapshot.counts.completed == 1)
         #expect(snapshot.counts.active == 1)
         #expect(snapshot.projects.count == 4)
-        #expect(snapshot.projects.first?.projectId == "p-auth")
-        #expect(snapshot.projects[1].projectId == "p-blocked")
+        #expect(snapshot.projects.first?.projectId == "p-blocked")
+        #expect(snapshot.projects[1].projectId == "p-auth")
         #expect(snapshot.criticalQueue.count == 2)
-        #expect(snapshot.criticalQueue.first?.projectId == "p-auth")
+        #expect(snapshot.criticalQueue.first?.projectId == "p-blocked")
     }
 
     @Test

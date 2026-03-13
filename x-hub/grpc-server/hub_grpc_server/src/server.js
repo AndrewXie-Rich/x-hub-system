@@ -68,6 +68,9 @@ function main() {
   if (proto.HubRuntime && impl.HubRuntime) {
     server.addService(proto.HubRuntime.service, impl.HubRuntime);
   }
+  if (proto.HubSupervisor && impl.HubSupervisor) {
+    server.addService(proto.HubSupervisor.service, impl.HubSupervisor);
+  }
   server.addService(proto.HubAudit.service, impl.HubAudit);
   server.addService(proto.HubMemory.service, impl.HubMemory);
   if (proto.HubSkills && impl.HubSkills) {

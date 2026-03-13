@@ -4,6 +4,7 @@ import importlib.util
 import time
 from typing import Any
 
+from local_provider_scheduler import build_provider_resource_policy, read_provider_scheduler_telemetry
 from .base import LocalProvider, ProviderHealth
 
 
@@ -34,8 +35,6 @@ class MLXProvider(LocalProvider):
         return ["text"]
 
     def healthcheck(self, *, base_dir: str, catalog_models: list[dict[str, Any]]) -> ProviderHealth:
-        del base_dir
-
         runtime = self._runtime
         import_error = ""
         ok = False
@@ -76,6 +75,15 @@ class MLXProvider(LocalProvider):
             for model in self.list_registered_models(catalog_models=catalog_models)
             if str(model.get("id") or "").strip()
         ]
+        resource_policy = build_provider_resource_policy(
+            self.provider_id(),
+            catalog_models=catalog_models,
+        )
+        scheduler_state = read_provider_scheduler_telemetry(
+            base_dir,
+            self.provider_id(),
+            policy=resource_policy,
+        )
 
         return ProviderHealth(
             provider=self.provider_id(),
@@ -91,6 +99,8 @@ class MLXProvider(LocalProvider):
             peak_memory_bytes=peak_memory_bytes,
             loaded_model_count=loaded_model_count,
             registered_models=registered_models,
+            resource_policy=resource_policy,
+            scheduler_state=scheduler_state,
         )
 
     def run_task(self, request: dict[str, Any]) -> dict[str, Any]:

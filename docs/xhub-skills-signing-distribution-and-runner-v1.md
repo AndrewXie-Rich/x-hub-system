@@ -1,8 +1,10 @@
 # X-Hub Skills: Signing, Distribution, Pinning & Runner v1（可执行规范 / Draft）
 
 - Status: Draft（用于直接落地；后续按版本迭代）
-- Updated: 2026-02-12
+- Updated: 2026-03-12
 - Applies to: X-Hub（Skill Store + Policy + Audit）+（未来）X-Terminal（Runner / UI）
+
+边界冻结参考：`docs/xhub-skills-placement-and-execution-boundary-v1.md`
 
 > 本规范解决：Skills 如何在“不牺牲终端体验”的前提下做到：
 > - skills 不被篡改（完整性/来源可信）
@@ -23,6 +25,7 @@
    - content-addressed（文件哈希可复现）
    - 签名（publisher 签名，Hub/Client 双重验证）
    - pinning（默认锁定到 hash/版本）
+5) `X-Terminal` 可以缓存 resolved skill snapshot 用于离线连续性，但缓存不是新的 authority，不得替代 Hub 的 trust/pin/revoke 主权。
 
 另见（Discovery/Import/skills ecosystem 兼容讨论）：`docs/xhub-skills-discovery-and-import-v1.md`
 
@@ -52,6 +55,56 @@ skill/
   lock/...
   dist/...
 ```
+
+当前仓库里的官方 Agent skills 已按“源目录 + 发布产物”拆分：
+
+```text
+official-agent-skills/
+  <skill_id>/
+    SKILL.md
+    skill.json
+  publisher/
+    trusted_publishers.json
+  dist/
+    index.json
+    packages/<package_sha256>.tgz
+    manifests/<package_sha256>.json
+    trusted_publishers.json
+```
+
+官方构建入口：
+
+```bash
+node scripts/build_official_agent_skills.js
+
+# signed build
+node scripts/build_official_agent_skills.js \
+  --sign-private-key-file /secure/path/xhub_official_ed25519.pem
+```
+
+官方签名 key 生成 / 轮换入口：
+
+```bash
+node scripts/generate_official_agent_signing_keypair.js \
+  --private-key-out /secure/path/xhub_official_ed25519.pem \
+  --trust-out official-agent-skills/publisher/trusted_publishers.json
+```
+
+本地 dev publisher 构建入口：
+
+```bash
+node scripts/build_local_dev_agent_skills_release.js \
+  --publisher-id xhub.local.dev
+```
+
+说明：
+
+- `official-agent-skills/<skill_id>/skill.json` 是源码级 manifest/descriptor。
+- `official-agent-skills/publisher/trusted_publishers.json` 是官方 publisher trust root 快照；Hub 默认会把它合并进 `skills_store/trusted_publishers.json` 的基线。
+- `official-agent-skills/dist/manifests/<sha>.json` 是发布时写出的 canonical distribution manifest。
+- `official-agent-skills/dist/trusted_publishers.json` 是随 dist 导出的 trust snapshot，便于发布物自描述。
+- Hub `skills_store` 会读取 `dist/index.json`，把这些官方包暴露为可搜索、可 pin、可下载的官方发布项。
+- `build_local_dev_agent_skills_release.js` 会先 staged 一份本地 source root，再生成 dev key / trust snapshot / dist，并输出可直接 `source` 的环境变量脚本，避免丢失正式私钥时阻塞开发。
 
 ### 2.2 Manifest：`skill.json`（必须）
 示例：
@@ -127,6 +180,34 @@ Hub 维护一份 `trusted_publishers.json`（可在 UI 管理）：
 默认策略：
 - 未签名 skill：仅允许本地开发模式（developer_mode=true）安装；生产默认拒绝
 - 未在 trusted_publishers 的签名：默认拒绝（可由用户在 Hub UI 手动信任）
+
+### 3.4 丢失正式私钥时的开发策略
+- 不要直接重用 `xhub.official` 并替换公钥。现有实现会对同一 `publisher_id` 执行 `publisher_key_mismatch` fail-close。
+- 优先使用新的本地 dev publisher，例如 `xhub.local.dev`。
+- 使用 `build_local_dev_agent_skills_release.js` 生成：
+  - staged source root
+  - staged `trusted_publishers.json`
+  - dev-signed dist
+  - `use_local_dev_agent_skills.env.sh`
+- 至少在 Hub 进程启动前先加载该 env 脚本，让 `XHUB_OFFICIAL_AGENT_SKILLS_DIR` 和 `XHUB_OFFICIAL_AGENT_SKILLS_DIST_DIR` 一起切到 staged root；这是必须的，因为 Hub 会优先读取 source root 的 `publisher/trusted_publishers.json`。如果你从同一终端窗口同时启动 Hub 和 X-Terminal，也可以统一先加载这份 env。
+- 仓库内已提供显式开发入口，避免手动 `source`：
+  - `bash x-hub/tools/run_xhub_from_source_with_local_dev_agent_skills.command`
+  - `bash x-hub/tools/run_xhub_bridge_from_source_with_local_dev_agent_skills.command`
+  - `bash x-hub/tools/run_xhub_app_with_local_dev_agent_skills.command`
+  - `bash x-hub/tools/run_local_dev_agent_skills_baseline_smoke.command`
+- 如果要把同一套 env 注入到其他命令，使用：
+
+```bash
+bash scripts/with_local_dev_agent_skills_env.sh -- <command> [args...]
+```
+
+baseline smoke 会在一个临时 runtime 目录里跑完整链路：
+- `searchSkills`
+- `evaluateSkillExecutionGate`
+- `setSkillPin`
+- `resolveSkillsWithTrace`
+
+因此它能在不污染正式 Hub runtime 的前提下验证 staged local dev publisher 是否真的可搜索、可验签、可 pin、可 resolved。
 
 ---
 

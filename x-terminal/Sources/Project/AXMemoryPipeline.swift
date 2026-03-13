@@ -158,6 +158,10 @@ Merge rules:
 
         let existing = try AXProjectStore.loadOrCreateMemory(for: ctx)
         let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+        async let routeSnapshotTask = HubAIClient.shared.loadModelsState()
+        async let localSnapshotTask = HubAIClient.shared.loadModelsState(transportOverride: .fileIPC)
+        let routeSnapshot = await routeSnapshotTask
+        let localSnapshot = await localSnapshotTask
 
         // Coarse filter.
         let coarsePromptText = coarsePrompt(turn: turn)
@@ -166,9 +170,17 @@ Merge rules:
 
         let coarseText: String
         let coarseUsage: LLMUsage?
+        let coarseRouteDecision: AXProjectPreferredModelRouteDecision
         if let router {
             let provider = await router.provider(for: .coarse)
             let preferredHub = await router.preferredModelIdForHub(for: .coarse, projectConfig: projectConfig)
+            coarseRouteDecision = AXProjectModelRouteMemoryStore.resolvePreferredModel(
+                configuredModelId: preferredHub ?? preferredModelId,
+                role: .coarse,
+                ctx: ctx,
+                snapshot: routeSnapshot,
+                localSnapshot: localSnapshot
+            )
             let taskType = router.taskType(for: .coarse)
             let req = LLMRequest(
                 role: .coarse,
@@ -177,9 +189,10 @@ Merge rules:
                 temperature: 0.1,
                 topP: 0.95,
                 taskType: taskType,
-                preferredModelId: preferredHub ?? preferredModelId,
+                preferredModelId: coarseRouteDecision.preferredModelId,
                 projectId: projectId,
-                sessionId: nil
+                sessionId: nil,
+                transportOverride: coarseRouteDecision.forceLocalExecution ? .fileIPC : nil
             )
             var out = ""
             var usage: LLMUsage? = nil
@@ -192,10 +205,17 @@ Merge rules:
             coarseText = out
             coarseUsage = usage
         } else {
+            coarseRouteDecision = AXProjectModelRouteMemoryStore.resolvePreferredModel(
+                configuredModelId: preferredModelId,
+                role: .coarse,
+                ctx: ctx,
+                snapshot: routeSnapshot,
+                localSnapshot: localSnapshot
+            )
             let res = try await HubAIClient.shared.generateTextWithReqId(
                 prompt: coarsePromptText,
                 taskType: "x_terminal_coarse",
-                preferredModelId: preferredModelId,
+                preferredModelId: coarseRouteDecision.preferredModelId,
                 explicitModelId: nil,
                 appId: "x_terminal",
                 projectId: projectId,
@@ -204,6 +224,7 @@ Merge rules:
                 temperature: 0.1,
                 topP: 0.95,
                 autoLoad: true,
+                transportOverride: coarseRouteDecision.forceLocalExecution ? .fileIPC : nil,
                 timeoutSec: 120
             )
             coarseText = res.text
@@ -251,6 +272,24 @@ Merge rules:
         }
         if let reason = coarseUsage?.fallbackReasonCode, !reason.isEmpty {
             coarseUsageEntry["fallback_reason_code"] = reason
+        }
+        if let configured = coarseRouteDecision.configuredModelId, !configured.isEmpty {
+            coarseUsageEntry["route_configured_model_id"] = configured
+        }
+        if let remembered = coarseRouteDecision.rememberedRemoteModelId, !remembered.isEmpty {
+            coarseUsageEntry["route_memory_remote_model_id"] = remembered
+        }
+        if let local = coarseRouteDecision.preferredLocalModelId, !local.isEmpty {
+            coarseUsageEntry["route_local_model_id"] = local
+        }
+        if let resolved = coarseRouteDecision.preferredModelId, !resolved.isEmpty {
+            coarseUsageEntry["route_resolved_preferred_model_id"] = resolved
+        }
+        if coarseRouteDecision.forceLocalExecution {
+            coarseUsageEntry["route_force_local_execution"] = true
+        }
+        if let reason = coarseRouteDecision.reasonCode, !reason.isEmpty {
+            coarseUsageEntry["route_decision_reason"] = reason
         }
         AXProjectStore.appendUsage(coarseUsageEntry, for: ctx)
 
@@ -329,9 +368,17 @@ Merge rules:
 
         let refineText: String
         let refineUsage: LLMUsage?
+        let refineRouteDecision: AXProjectPreferredModelRouteDecision
         if let router {
             let provider = await router.provider(for: .refine)
             let preferredHub = await router.preferredModelIdForHub(for: .refine, projectConfig: projectConfig)
+            refineRouteDecision = AXProjectModelRouteMemoryStore.resolvePreferredModel(
+                configuredModelId: preferredHub ?? preferredModelId,
+                role: .refine,
+                ctx: ctx,
+                snapshot: routeSnapshot,
+                localSnapshot: localSnapshot
+            )
             let taskType = router.taskType(for: .refine)
             let req = LLMRequest(
                 role: .refine,
@@ -340,9 +387,10 @@ Merge rules:
                 temperature: 0.1,
                 topP: 0.95,
                 taskType: taskType,
-                preferredModelId: preferredHub ?? preferredModelId,
+                preferredModelId: refineRouteDecision.preferredModelId,
                 projectId: projectId,
-                sessionId: nil
+                sessionId: nil,
+                transportOverride: refineRouteDecision.forceLocalExecution ? .fileIPC : nil
             )
             var out = ""
             var usage: LLMUsage? = nil
@@ -355,10 +403,17 @@ Merge rules:
             refineText = out
             refineUsage = usage
         } else {
+            refineRouteDecision = AXProjectModelRouteMemoryStore.resolvePreferredModel(
+                configuredModelId: preferredModelId,
+                role: .refine,
+                ctx: ctx,
+                snapshot: routeSnapshot,
+                localSnapshot: localSnapshot
+            )
             let res = try await HubAIClient.shared.generateTextWithReqId(
                 prompt: refinePromptText,
                 taskType: "x_terminal_refine",
-                preferredModelId: preferredModelId,
+                preferredModelId: refineRouteDecision.preferredModelId,
                 explicitModelId: nil,
                 appId: "x_terminal",
                 projectId: projectId,
@@ -367,6 +422,7 @@ Merge rules:
                 temperature: 0.1,
                 topP: 0.95,
                 autoLoad: true,
+                transportOverride: refineRouteDecision.forceLocalExecution ? .fileIPC : nil,
                 timeoutSec: 180
             )
             refineText = res.text
@@ -413,6 +469,24 @@ Merge rules:
         }
         if let reason = refineUsage?.fallbackReasonCode, !reason.isEmpty {
             refineUsageEntry["fallback_reason_code"] = reason
+        }
+        if let configured = refineRouteDecision.configuredModelId, !configured.isEmpty {
+            refineUsageEntry["route_configured_model_id"] = configured
+        }
+        if let remembered = refineRouteDecision.rememberedRemoteModelId, !remembered.isEmpty {
+            refineUsageEntry["route_memory_remote_model_id"] = remembered
+        }
+        if let local = refineRouteDecision.preferredLocalModelId, !local.isEmpty {
+            refineUsageEntry["route_local_model_id"] = local
+        }
+        if let resolved = refineRouteDecision.preferredModelId, !resolved.isEmpty {
+            refineUsageEntry["route_resolved_preferred_model_id"] = resolved
+        }
+        if refineRouteDecision.forceLocalExecution {
+            refineUsageEntry["route_force_local_execution"] = true
+        }
+        if let reason = refineRouteDecision.reasonCode, !reason.isEmpty {
+            refineUsageEntry["route_decision_reason"] = reason
         }
         AXProjectStore.appendUsage(refineUsageEntry, for: ctx)
 

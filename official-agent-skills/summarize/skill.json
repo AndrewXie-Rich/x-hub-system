@@ -1,0 +1,32 @@
+{
+  "schema_version": "xhub.skill_manifest.v1",
+  "skill_id": "summarize",
+  "name": "Summarize",
+  "version": "1.1.0",
+  "description": "Governed summarize wrapper for webpages, PDFs, and long documents using governed read surfaces and deterministic summarization.",
+  "input_schema_ref": "schema://summarize.input",
+  "output_schema_ref": "schema://summarize.output",
+  "side_effect_class": "read_only",
+  "risk_level": "medium",
+  "requires_grant": false,
+  "timeout_ms": 30000,
+  "max_retries": 1,
+  "entrypoint": {
+    "runtime": "text",
+    "command": "cat",
+    "args": [
+      "SKILL.md"
+    ]
+  },
+  "capabilities_required": [
+    "document.read",
+    "document.summarize"
+  ],
+  "network_policy": {
+    "direct_network_forbidden": true
+  },
+  "publisher": {
+    "publisher_id": "xhub.official"
+  },
+  "install_hint": "Install from the default Agent Baseline for governed document and webpage summarization."
+}

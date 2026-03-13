@@ -1,0 +1,31 @@
+{
+  "schema_version": "xhub.skill_manifest.v1",
+  "skill_id": "find-skills",
+  "name": "Find Skills",
+  "version": "1.1.0",
+  "description": "Official discovery wrapper over X-Hub skills.search for governed skill lookup and install guidance.",
+  "input_schema_ref": "schema://find-skills.input",
+  "output_schema_ref": "schema://find-skills.output",
+  "side_effect_class": "read_only",
+  "risk_level": "low",
+  "requires_grant": false,
+  "timeout_ms": 10000,
+  "max_retries": 1,
+  "entrypoint": {
+    "runtime": "text",
+    "command": "cat",
+    "args": [
+      "SKILL.md"
+    ]
+  },
+  "capabilities_required": [
+    "skills.search"
+  ],
+  "network_policy": {
+    "direct_network_forbidden": true
+  },
+  "publisher": {
+    "publisher_id": "xhub.official"
+  },
+  "install_hint": "Install from the Agent Baseline menu in X-Terminal or pin the official package from X-Hub."
+}

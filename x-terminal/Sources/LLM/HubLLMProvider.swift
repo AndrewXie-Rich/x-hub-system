@@ -21,7 +21,8 @@ final class HubLLMProvider: LLMProvider {
                         maxTokens: req.maxTokens,
                         temperature: req.temperature,
                         topP: req.topP,
-                        autoLoad: true
+                        autoLoad: true,
+                        transportOverride: req.transportOverride
                     )
 
                     var usage: LLMUsage? = nil

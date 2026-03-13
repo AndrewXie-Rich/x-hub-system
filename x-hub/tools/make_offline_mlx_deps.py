@@ -132,7 +132,7 @@ def main() -> int:
     readme.write_text(
         "\n".join(
             [
-                "REL Flow Hub - Offline MLX deps",
+                "X-Hub - Offline MLX deps",
                 "",
                 f"Built with python={sys.executable}",
                 f"py_version={pyver}",

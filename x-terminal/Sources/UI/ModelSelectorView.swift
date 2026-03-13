@@ -33,6 +33,18 @@ struct ModelSelectorView: View {
                 .padding(.horizontal, 12)
                 .padding(.top, 12)
 
+            if let selectedModelId, let warning = selectedModelWarningText(modelId: selectedModelId) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("当前配置提示")
+                        .font(.caption.weight(.semibold))
+                    Text(warning)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(12)
+            }
+
             Divider()
 
             if appModel.hubInteractive {
@@ -115,7 +127,13 @@ struct ModelSelectorView: View {
             if let model = loadedModels.first(where: { $0.id == selectedModelId }) {
                 return "Coder: \(modelDisplayName(model))"
             }
-            return "Coder: \(selectedModelId)"
+            if let assessment = selectedModelAssessment {
+                if let exact = assessment.exactMatch {
+                    return "Coder: \(exact.id) (\(HubModelSelectionAdvisor.stateLabel(exact.state)))"
+                }
+                return "Coder: \(selectedModelId) (未找到)"
+            }
+            return "Coder: \(selectedModelId) (待确认)"
         }
         return "Coder: Auto"
     }
@@ -135,6 +153,38 @@ struct ModelSelectorView: View {
             if an != bn { return an < bn }
             return a.id.lowercased() < b.id.lowercased()
         }
+    }
+
+    private var selectedModelAssessment: HubModelAvailabilityAssessment? {
+        guard let selectedModelId else { return nil }
+        return HubModelSelectionAdvisor.assess(
+            requestedId: selectedModelId,
+            snapshot: appModel.modelsState
+        )
+    }
+
+    private func selectedModelWarningText(modelId: String) -> String? {
+        guard let assessment = selectedModelAssessment else { return "当前无法确认 `\(modelId)` 是否可用。" }
+        guard !assessment.isExactMatchLoaded else { return nil }
+
+        if let exact = assessment.exactMatch {
+            let suggestions = suggestedCandidates(from: assessment)
+            if let first = suggestions.first {
+                return "`\(exact.id)` 当前状态是 \(HubModelSelectionAdvisor.stateLabel(exact.state))，这轮请求可能回退到本地。可先改用 `\(first)`。"
+            }
+            return "`\(exact.id)` 当前状态是 \(HubModelSelectionAdvisor.stateLabel(exact.state))，这轮请求可能回退到本地。"
+        }
+
+        let suggestions = suggestedCandidates(from: assessment)
+        if !suggestions.isEmpty {
+            return "`\(modelId)` 不在当前 inventory 里。可先改用 `\(suggestions.joined(separator: "`, `"))`。"
+        }
+        return "`\(modelId)` 不在当前 inventory 里，这轮请求可能直接走本地模式。"
+    }
+
+    private func suggestedCandidates(from assessment: HubModelAvailabilityAssessment) -> [String] {
+        let source = assessment.loadedCandidates.isEmpty ? assessment.inventoryCandidates : assessment.loadedCandidates
+        return source.prefix(3).map(\.id)
     }
 
     private func modelDisplayName(_ model: HubModel) -> String {

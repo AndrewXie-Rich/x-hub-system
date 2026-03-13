@@ -1,0 +1,41 @@
+{
+  "schema_version": "xhub.skill_manifest.v1",
+  "skill_id": "find-skills",
+  "name": "Find Skills",
+  "version": "1.0.0",
+  "description": "Official discovery wrapper over X-Hub skills.search for governed skill lookup and install guidance.",
+  "entrypoint": {
+    "runtime": "text",
+    "command": "cat",
+    "args": [
+      "SKILL.md"
+    ]
+  },
+  "capabilities_required": [
+    "skills.search"
+  ],
+  "network_policy": {
+    "direct_network_forbidden": true
+  },
+  "publisher": {
+    "publisher_id": "xhub.official",
+    "public_key_ed25519": "base64:TGNnemU+ehosOhLMGGIkxgryfeaKAg5HFgnvtr9l72w="
+  },
+  "install_hint": "Install from the Agent Baseline menu in X-Terminal or pin the official package from X-Hub.",
+  "package_sha256": "aa577e99a77b303792aa264d31af22d246a65b3c6abab6127797130302fae8d5",
+  "files": [
+    {
+      "path": "skill.json",
+      "sha256": "6c14c7bbefd40168f9fa2dd935b50f9afe23563d6c0af7ca38091847149d6938"
+    },
+    {
+      "path": "SKILL.md",
+      "sha256": "ab88eaa476cc09b83b627ad35a4cec7d396d869550a412013a1acb7fb42c5504"
+    }
+  ],
+  "signature": {
+    "alg": "ed25519",
+    "signed_at_ms": 1773327543255,
+    "sig": "base64:3no8wfhDpgdrKGZ00Feq2Qmj4HlgEw31IJIBz+Z/4N/qWyjPGpIMJ9vUyXyCGGKlNbNB5tzTM0kWdA8QDEeDCA=="
+  }
+}

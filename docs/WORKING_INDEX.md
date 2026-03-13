@@ -28,11 +28,17 @@ After that, choose the relevant track below.
 
 - `docs/xhub-scenario-map-v1.md`
 - `docs/xhub-runtime-stability-and-launch-recovery-v1.md`
+- `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md`
+- `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`
 - `docs/xhub-client-modes-and-connectors-v1.md`
 - `docs/xhub-hub-architecture-tradeoffs-v1.md`
+- `docs/memory-new/xhub-multimodal-supervisor-control-plane-architecture-memo-v1.md`
+- `docs/memory-new/xhub-multimodal-supervisor-control-plane-contract-freeze-v1.md`
+- `docs/memory-new/xhub-multimodal-supervisor-control-plane-work-orders-v1.md`
 
 ### Memory
 
+- `docs/memory-new/xhub-memory-serving-profiles-and-adaptive-context-v1.md`
 - `docs/xhub-memory-system-spec-v2.md`
 - `docs/xhub-memory-hybrid-index-v1.md`
 - `docs/xhub-memory-fusion-v1.md`
@@ -49,6 +55,8 @@ If you are tracing behavior boundaries, risk controls, or fail-closed reasoning,
 
 ### Skills
 
+- `official-agent-skills/`
+- `docs/xhub-skills-placement-and-execution-boundary-v1.md`
 - `docs/xhub-skills-discovery-and-import-v1.md`
 - `docs/xhub-skills-signing-distribution-and-runner-v1.md`
 - `docs/skills_abi_compat.v1.md`
@@ -72,6 +80,8 @@ If you are tracing behavior boundaries, risk controls, or fail-closed reasoning,
 - `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`
 - `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`
 - `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`
+- `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`
+- `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-hub-security-impact-gate-v1.md`
 - `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`
 - `x-terminal/work-orders/xt-w3-25-governed-automation-recipe-runtime-implementation-pack-v1.md`
 - `x-terminal/work-orders/xt-w3-29-supervisor-voice-progress-and-guided-authorization-implementation-pack-v1.md`
@@ -79,6 +89,7 @@ If you are tracing behavior boundaries, risk controls, or fail-closed reasoning,
 - `x-terminal/work-orders/xt-w3-31-supervisor-portfolio-awareness-and-project-action-feed-implementation-pack-v1.md`
 - `x-terminal/work-orders/xt-w3-32-supervisor-skill-orchestration-and-governed-event-loop-implementation-pack-v1.md`
 - `x-terminal/work-orders/xt-w3-33-supervisor-decision-kernel-routing-and-memory-governance-implementation-pack-v1.md`
+- `x-terminal/work-orders/xt-w3-34-openclaw-skill-reuse-and-execution-surface-implementation-pack-v1.md`
 
 ## Validated Public Mainline
 
@@ -117,9 +128,17 @@ Use the root `README.md` for the external product narrative. Use this page for w
 
 ### Hub Python Runtime
 
+- `x-hub/python-runtime/python_service/relflowhub_local_runtime.py`
 - `x-hub/python-runtime/python_service/relflowhub_mlx_runtime.py`
 - `x-hub/python-runtime/python_service/relflowhub_ai_worker.py`
 - `x-hub/python-runtime/python_service/relflowhub_model_worker.py`
+
+### Official Agent Skills
+
+- `official-agent-skills/`
+- `official-agent-skills/dist/index.json`
+- `official-agent-skills/dist/trusted_publishers.json`
+- `official-agent-skills/publisher/trusted_publishers.json`
 
 ### X-Terminal
 
@@ -138,6 +157,15 @@ Use the root `README.md` for the external product narrative. Use this page for w
 - `protocol/hub_protocol_v1.md`
 - `protocol/hub_protocol_v1.proto`
 
+### Active Specs And Work Orders
+
+- `docs/xhub-skills-placement-and-execution-boundary-v1.md`
+- `docs/xhub-skills-discovery-and-import-v1.md`
+- `docs/memory-new/xhub-agent-skill-vetter-gate-work-orders-v1.md`
+- `docs/memory-new/xhub-multimodal-supervisor-control-plane-contract-freeze-v1.md`
+- `docs/memory-new/xhub-multimodal-supervisor-control-plane-work-orders-v1.md`
+- `x-terminal/work-orders/xt-w3-34-openclaw-skill-reuse-and-execution-surface-implementation-pack-v1.md`
+
 ## Active Entry Points
 
 ### Build The Hub App
@@ -149,15 +177,13 @@ x-hub/tools/build_hub_app.command
 ### Run X-Hub
 
 ```bash
-cd x-hub/macos/RELFlowHub
-swift run XHub
+bash x-hub/tools/run_xhub_from_source.command
 ```
 
 ### Run X-Hub Bridge
 
 ```bash
-cd x-hub/macos/RELFlowHub
-swift run XHubBridge
+bash x-hub/tools/run_xhub_bridge_from_source.command
 ```
 
 ### Run X-Terminal
@@ -194,6 +220,19 @@ bash x-terminal/scripts/ci/xt_release_gate.sh
 - `x-hub/macos/RELFlowHub/Sources/RELFlowHub/SettingsSheetView.swift`
 - `x-hub/macos/RELFlowHub/Sources/RELFlowHubCore/RemoteProviderEndpoints.swift`
 - `x-hub/macos/RELFlowHub/Sources/RELFlowHubBridge/BridgeRunner.swift`
+
+### Local Models And Provider Runtime
+
+- `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md`
+- `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`
+- `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`
+- `x-hub/python-runtime/python_service/relflowhub_local_runtime.py`
+- `x-hub/macos/RELFlowHub/Sources/RELFlowHub/AddModelSheet.swift`
+- `x-hub/macos/RELFlowHub/Sources/RELFlowHub/HubStore.swift`
+- `x-hub/macos/RELFlowHub/Sources/RELFlowHubCore/ModelModels.swift`
+- `x-hub/python-runtime/python_service/relflowhub_mlx_runtime.py`
+- `x-hub/python-runtime/python_service/relflowhub_model_worker.py`
+- `x-hub/python-runtime/python_service/relflowhub_ai_worker.py`
 
 ### Launch Diagnostics And Recovery
 

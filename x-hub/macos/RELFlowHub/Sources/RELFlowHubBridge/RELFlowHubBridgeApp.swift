@@ -14,6 +14,7 @@ struct RELFlowHubBridgeApp: App {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
+    private var statusMenuItem: NSMenuItem?
     private var runner: BridgeRunner?
     private var toastPanel: NSPanel?
 
@@ -27,17 +28,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem = item
         if let btn = item.button {
-            let img = NSImage(systemSymbolName: "network", accessibilityDescription: "REL Flow Hub Bridge")
+            let img = NSImage(systemSymbolName: "network", accessibilityDescription: "X-Hub Bridge")
             img?.isTemplate = true
             btn.image = img
         }
 
         let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "REL Flow Hub Bridge", action: nil, keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "X-Hub Bridge", action: nil, keyEquivalent: ""))
         menu.addItem(.separator())
         let st = NSMenuItem(title: "Status: starting…", action: nil, keyEquivalent: "")
         st.isEnabled = false
         menu.addItem(st)
+        statusMenuItem = st
         menu.addItem(.separator())
         let stop = NSMenuItem(title: "Stop Bridge", action: #selector(stopBridge), keyEquivalent: "q")
         stop.target = self
@@ -49,9 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Update status text periodically.
         Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self else { return }
-                let txt = self.runner?.statusText() ?? "stopped"
-                st.title = "Status: \(txt)"
+                self?.refreshStatusMenuItem()
             }
         }
     }
@@ -59,6 +59,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func stopBridge() {
         runner?.stop()
         NSApp.terminate(nil)
+    }
+
+    private func refreshStatusMenuItem() {
+        let txt = runner?.statusText() ?? "stopped"
+        statusMenuItem?.title = "Status: \(txt)"
     }
 
     private func showLaunchToastOnce() {
@@ -83,7 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         p.hasShadow = true
         p.hidesOnDeactivate = false
 
-        let label = NSTextField(labelWithString: "REL Flow Hub Bridge is running\n(Menu bar icon added)")
+        let label = NSTextField(labelWithString: "X-Hub Bridge is running\n(Menu bar icon added)")
         label.alignment = .center
         label.textColor = .white
         label.font = NSFont.systemFont(ofSize: 13, weight: .semibold)

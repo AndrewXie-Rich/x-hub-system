@@ -8,12 +8,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-SRC_APP="$ROOT_DIR/build/RELFlowHubDockAgent.app"
+SRC_APP="$ROOT_DIR/build/X-Hub Dock Agent.app"
+LEGACY_SRC_APP="$ROOT_DIR/build/RELFlowHubDockAgent.app"
 
 if [ ! -d "$SRC_APP" ]; then
-  echo "Dock Agent app not found: $SRC_APP" >&2
-  echo "Run: \"$ROOT_DIR/x-hub/tools/build_hub_app.command\" first." >&2
-  exit 1
+  if [ -d "$LEGACY_SRC_APP" ]; then
+    SRC_APP="$LEGACY_SRC_APP"
+  else
+    echo "Dock Agent app not found: $SRC_APP" >&2
+    echo "Run: \"$ROOT_DIR/x-hub/tools/build_hub_app.command\" first." >&2
+    exit 1
+  fi
 fi
 
 echo "Using X-Hub Dock Agent app bundle: $SRC_APP"
@@ -62,4 +67,4 @@ launchctl kickstart -k "gui/$UID_NOW/$PLIST_ID" 2>/dev/null || true
 echo
 echo "Installed and started: X-Hub Dock Agent ($PLIST_ID)"
 echo "Next: System Settings → Privacy & Security → Accessibility → enable 'X-Hub Dock Agent'."
-echo "Logs: $HOME/RELFlowHub/dock_agent.*.log"
+echo "Logs (legacy runtime dir until migration): $HOME/RELFlowHub/dock_agent.*.log"

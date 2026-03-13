@@ -14,6 +14,7 @@ import sys
 import time
 from typing import Any
 
+from local_provider_scheduler import acquire_provider_slot, release_provider_slot
 from providers import LocalProviderRegistry, MLXProvider, TransformersProvider
 from providers.mlx_provider import run_legacy_runtime
 
@@ -21,7 +22,7 @@ from providers.mlx_provider import run_legacy_runtime
 # Keep this aligned with the legacy runtime version so Hub's runtime-version
 # watchdog does not trigger restart loops during the delegate phase.
 RUNTIME_VERSION = "2026-02-21-constitution-trigger-v2"
-LOCAL_RUNTIME_ENTRY_VERSION = "2026-03-12-lpr-skeleton-v1"
+LOCAL_RUNTIME_ENTRY_VERSION = "2026-03-13-lpr-scheduler-v1"
 LOCAL_RUNTIME_STATUS_SCHEMA_VERSION = "xhub.local_provider_runtime.entry.v1"
 
 
@@ -40,6 +41,43 @@ def _catalog_path(base_dir: str) -> str:
 
 def _now() -> float:
     return time.time()
+
+
+def _safe_string_list(values: Any) -> list[str]:
+    if values is None:
+        return []
+    items = values if isinstance(values, list) else str(values or "").split(",")
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in items:
+        cleaned = str(raw or "").strip().lower()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        out.append(cleaned)
+    return out
+
+
+def _normalize_model_task_kinds(model: dict[str, Any] | None) -> list[str]:
+    row = model if isinstance(model, dict) else {}
+    task_kinds = _safe_string_list(row.get("taskKinds") or row.get("task_kinds"))
+    if task_kinds:
+        return task_kinds
+    backend = str(row.get("backend") or "").strip().lower()
+    return ["text_generate"] if backend == "mlx" else []
+
+
+def _find_catalog_model(model_id: str, *, catalog_models: list[dict[str, Any]]) -> dict[str, Any] | None:
+    needle = str(model_id or "").strip()
+    if not needle:
+        return None
+    for model in catalog_models:
+        if not isinstance(model, dict):
+            continue
+        if str(model.get("id") or "").strip() != needle:
+            continue
+        return model
+    return None
 
 
 def apply_offline_env() -> None:
@@ -112,6 +150,8 @@ def run_local_task(request: dict[str, Any], *, base_dir: str | None = None) -> d
     catalog_models = read_catalog_models(base)
     provider_id = _resolve_provider_id(request, catalog_models=catalog_models)
     task_kind = str(request.get("task_kind") or request.get("taskKind") or "").strip().lower()
+    model_id = str(request.get("model_id") or request.get("modelId") or "").strip()
+    catalog_model = _find_catalog_model(model_id, catalog_models=catalog_models)
 
     if not provider_id:
         return {
@@ -141,10 +181,56 @@ def run_local_task(request: dict[str, Any], *, base_dir: str | None = None) -> d
             "request": dict(request or {}),
         }
 
-    out = provider.run_task(dict(request or {}))
+    if catalog_model is not None and task_kind:
+        task_kinds = _normalize_model_task_kinds(catalog_model)
+        if task_kinds and task_kind not in task_kinds:
+            return {
+                "ok": False,
+                "provider": provider_id,
+                "taskKind": task_kind,
+                "modelId": model_id,
+                "error": f"model_task_unsupported:{task_kind}",
+                "request": dict(request or {}),
+            }
+
+    provider_request = dict(request or {})
+    if catalog_model is not None:
+        provider_request.setdefault("_resolved_model", dict(catalog_model))
+    slot = acquire_provider_slot(
+        base,
+        provider_id,
+        request=provider_request,
+        catalog_models=catalog_models,
+    )
+    if not bool(slot.get("ok")):
+        out = {
+            "ok": False,
+            "provider": provider_id,
+            "taskKind": task_kind,
+            "modelId": model_id,
+            "error": str(slot.get("error") or "provider_busy"),
+            "scheduler": dict(slot.get("scheduler") or {}),
+            "request": dict(request or {}),
+        }
+        out.setdefault("runtimeVersion", RUNTIME_VERSION)
+        out.setdefault("localRuntimeEntryVersion", LOCAL_RUNTIME_ENTRY_VERSION)
+        out.setdefault("updatedAt", _now())
+        return out
+
+    lease_id = str(slot.get("lease_id") or "").strip()
+    try:
+        out = provider.run_task(provider_request)
+    finally:
+        release_provider_slot(base, provider_id, lease_id)
+
+    scheduler = dict(slot.get("scheduler") or {})
+    if scheduler:
+        out.setdefault("scheduler", scheduler)
     out.setdefault("provider", provider_id)
     if task_kind:
         out.setdefault("taskKind", task_kind)
+    if model_id:
+        out.setdefault("modelId", model_id)
     out.setdefault("runtimeVersion", RUNTIME_VERSION)
     out.setdefault("localRuntimeEntryVersion", LOCAL_RUNTIME_ENTRY_VERSION)
     out.setdefault("updatedAt", _now())

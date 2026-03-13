@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { nowMs, uuid } from './util.js';
-import { resolveRuntimeBaseDir } from './mlx_runtime_ipc.js';
+import { resolveRuntimeBaseDir } from './local_runtime_ipc.js';
 import { pushHubNotification } from './hub_ipc.js';
 import {
   ensureHubTlsMaterial,

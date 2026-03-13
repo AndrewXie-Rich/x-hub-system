@@ -251,7 +251,7 @@ final class HubStore: ObservableObject {
 
     private let dismissedMeetingsKey = "relflowhub_dismissed_meetings_v1"
 
-    // -------------------- AI runtime (MLX worker) --------------------
+    // -------------------- AI runtime (local provider worker) --------------------
     @Published var aiRuntimeAutoStart: Bool = UserDefaults.standard.bool(forKey: "relflowhub_ai_runtime_autostart") {
         didSet {
             UserDefaults.standard.set(aiRuntimeAutoStart, forKey: "relflowhub_ai_runtime_autostart")
@@ -265,6 +265,8 @@ final class HubStore: ObservableObject {
     @Published private(set) var aiRuntimeStatusText: String = "Runtime: unknown"
     @Published private(set) var aiRuntimeLastError: String = ""
     @Published private(set) var aiRuntimeLastTestText: String = ""
+    @Published private(set) var aiRuntimeProviderSummaryText: String = ""
+    @Published private(set) var aiRuntimeDoctorSummaryText: String = ""
 
     // Routing defaults persisted for the python runtime (task_type -> preferred model id).
     @Published private(set) var routingPreferredModelIdByTask: [String: String] = [:]
@@ -1434,8 +1436,63 @@ INSERT OR IGNORE INTO audit_events(
         }
     }
 
+    private func aiRuntimeScriptNamesInPreferenceOrder() -> [String] {
+        ["relflowhub_local_runtime.py", "relflowhub_mlx_runtime.py"]
+    }
+
+    private func isAIRuntimeCommandLine(_ commandLine: String) -> Bool {
+        let normalized = commandLine.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized.isEmpty {
+            return false
+        }
+        return aiRuntimeScriptNamesInPreferenceOrder().contains { normalized.contains($0.lowercased()) }
+    }
+
+    private func bundledAIRuntimeServiceRootURL() -> URL? {
+        guard let resourceURL = Bundle.main.resourceURL else {
+            return nil
+        }
+        let candidate = resourceURL.appendingPathComponent("python_service", isDirectory: true)
+        guard FileManager.default.directoryExists(atPath: candidate.path) else {
+            return nil
+        }
+        return candidate
+    }
+
+    private func preferredAIRuntimeScriptURL(in directory: URL) -> URL? {
+        for scriptName in aiRuntimeScriptNamesInPreferenceOrder() {
+            let candidate = directory.appendingPathComponent(scriptName)
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    private func runtimeVersionFromScript(at url: URL) -> String? {
+        guard let data = try? Data(contentsOf: url),
+              let source = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        let pat = "RUNTIME_VERSION\\s*=\\s*\"([^\"]+)\""
+        guard let re = try? NSRegularExpression(pattern: pat, options: []) else { return nil }
+        let range = NSRange(source.startIndex..<source.endIndex, in: source)
+        guard let m = re.firstMatch(in: source, options: [], range: range), m.numberOfRanges >= 2,
+              let r = Range(m.range(at: 1), in: source) else { return nil }
+        return String(source[r]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func resolveAIRuntimeScriptURL() -> URL? {
-        // Prefer the bundled runtime script for DMG installs.
+        // Prefer the bundled python_service tree for app builds.
+        if let root = bundledAIRuntimeServiceRootURL(),
+           let bundled = preferredAIRuntimeScriptURL(in: root) {
+            return bundled
+        }
+
+        // Backward-compatible fallback for older app bundles that shipped a flat script.
+        if let bundled = Bundle.main.url(forResource: "relflowhub_local_runtime", withExtension: "py") {
+            return bundled
+        }
         if let bundled = Bundle.main.url(forResource: "relflowhub_mlx_runtime", withExtension: "py") {
             return bundled
         }
@@ -1447,6 +1504,29 @@ INSERT OR IGNORE INTO audit_events(
         }
 
         return nil
+    }
+
+    private func resolveAIRuntimeServiceRootURL() -> URL? {
+        if let bundled = bundledAIRuntimeServiceRootURL() {
+            return bundled
+        }
+        let p = defaultRuntimePythonServicePath()
+        if !p.isEmpty, FileManager.default.directoryExists(atPath: p) {
+            return URL(fileURLWithPath: p, isDirectory: true)
+        }
+        guard let scriptURL = resolveAIRuntimeScriptURL() else {
+            return nil
+        }
+        let dir = scriptURL.deletingLastPathComponent()
+        return dir.lastPathComponent == "python_service" ? dir : nil
+    }
+
+    private func installAIRuntimeServiceRoot(from sourceRoot: URL, to destinationRoot: URL) throws {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: destinationRoot.path) {
+            try? fm.removeItem(at: destinationRoot)
+        }
+        try fm.copyItem(at: sourceRoot, to: destinationRoot)
     }
 
 
@@ -1548,7 +1628,7 @@ INSERT OR IGNORE INTO audit_events(
         return TopAlert(kind: .idle, count: 0, urgentSecondsToMeeting: nil, urgentWindowSeconds: nil)
     }
 
-    // -------------------- AI runtime (MLX worker) --------------------
+    // -------------------- AI runtime (local provider worker) --------------------
     func startAIRuntimeMonitoring() {
         aiRuntimeMonitorTimer?.invalidate()
         aiRuntimeMonitorTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
@@ -1565,9 +1645,23 @@ INSERT OR IGNORE INTO audit_events(
         let st = AIRuntimeStatusStorage.load()
         if let s = st {
             let alive = s.isAlive(ttl: 3.0) || (findRunningAIRuntimePid(status: st) != nil)
-            let ok = s.mlxOk
             let heartbeatAlive = s.isAlive(ttl: 3.0)
-            var v = alive ? (ok ? "running" : "running (mlx not available)") : "stale"
+            let readyProviders = s.readyProviderIDs(ttl: 3.0)
+            let mlxReady = s.isProviderReady("mlx", ttl: 3.0)
+            aiRuntimeProviderSummaryText = s.providerOperatorSummary(ttl: 3.0)
+            aiRuntimeDoctorSummaryText = s.providerDoctorText(ttl: 3.0)
+            var v = "stale"
+            if alive {
+                if readyProviders.isEmpty {
+                    v = "running (no providers ready)"
+                } else if readyProviders == ["mlx"] {
+                    v = "running (mlx ready)"
+                } else if mlxReady {
+                    v = "running (providers: \(readyProviders.joined(separator: ", ")))"
+                } else {
+                    v = "running (partial: \(readyProviders.joined(separator: ", ")); mlx unavailable)"
+                }
+            }
             if heartbeatAlive {
                 let expected = bundledRuntimeVersion()
                 // Treat missing runtimeVersion as mismatch (older scripts didn't write it).
@@ -1589,30 +1683,38 @@ INSERT OR IGNORE INTO audit_events(
             aiRuntimeStatusText = "Runtime: \(v) · pid \(s.pid)"
 
             // Only reset backoff when the runtime is truly alive.
-            if heartbeatAlive && ok {
+            if heartbeatAlive && !readyProviders.isEmpty {
                 aiRuntimeFailCount = 0
                 aiRuntimeNextStartAttemptAt = 0
             }
 
             // Surface actionable guidance when MLX is unavailable.
-            if alive && !ok {
+            if alive && !mlxReady {
                 let ie = (s.importError ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                let msg = mlxUnavailableHelp(importError: ie)
+                let base = mlxUnavailableHelp(importError: ie)
+                let doctorLead = s.providerDoctorText(ttl: 3.0).trimmingCharacters(in: .whitespacesAndNewlines)
+                let prefix = doctorLead.isEmpty ? "" : doctorLead + "\n\n"
+                let msg = prefix + base
                 if !msg.isEmpty {
                     // Don't overwrite unrelated errors (e.g. python path selection).
-                    if aiRuntimeLastError.isEmpty || aiRuntimeLastError.hasPrefix("MLX is unavailable") {
+                    if aiRuntimeLastError.isEmpty
+                        || aiRuntimeLastError.hasPrefix("MLX is unavailable")
+                        || aiRuntimeLastError.hasPrefix("Local runtime is partially ready") {
                         aiRuntimeLastError = msg
                     }
                 }
-            } else if ok {
+            } else if mlxReady {
                 // Clear stale MLX-unavailable hints once we recover.
-                if aiRuntimeLastError.hasPrefix("MLX is unavailable") {
+                if aiRuntimeLastError.hasPrefix("MLX is unavailable")
+                    || aiRuntimeLastError.hasPrefix("Local runtime is partially ready") {
                     aiRuntimeLastError = ""
                 }
             }
         } else {
             didForceRestartRuntimeForVersionMismatch = false
             aiRuntimeStatusText = "Runtime: not running"
+            aiRuntimeProviderSummaryText = "runtime_alive=0\nready_providers=none\nproviders:\ncapabilities:"
+            aiRuntimeDoctorSummaryText = "Local runtime is not running."
         }
     }
 
@@ -1665,7 +1767,7 @@ INSERT OR IGNORE INTO audit_events(
         if let st = status, st.pid > 1 {
             let ps = runCapture("/bin/ps", ["-p", String(st.pid), "-o", "command="], timeoutSec: 0.6)
             let txt = (ps.out.isEmpty ? ps.err : ps.out).lowercased()
-            if ps.code == 0, txt.contains("relflowhub_mlx_runtime.py") {
+            if ps.code == 0, isAIRuntimeCommandLine(txt) {
                 return Int32(st.pid)
             }
         }
@@ -1681,26 +1783,34 @@ INSERT OR IGNORE INTO audit_events(
             if parts.count < 2 { continue }
             guard let pidNum = Int32(parts[0]), pidNum > 1 else { continue }
             let cmd = String(parts[1]).lowercased()
-            if !cmd.contains("relflowhub_mlx_runtime.py") { continue }
+            if !isAIRuntimeCommandLine(cmd) { continue }
             return pidNum
         }
         return nil
     }
 
     private func bundledRuntimeVersion() -> String? {
-        // Best-effort: extract RUNTIME_VERSION from the bundled script.
-        guard let src = Bundle.main.url(forResource: "relflowhub_mlx_runtime", withExtension: "py") else {
-            return nil
+        // Keep version checks aligned with the legacy runtime loop that currently writes
+        // ai_runtime_status.json, even when the launch entrypoint is relflowhub_local_runtime.py.
+        if let root = bundledAIRuntimeServiceRootURL() {
+            let legacy = root.appendingPathComponent("relflowhub_mlx_runtime.py")
+            if FileManager.default.fileExists(atPath: legacy.path),
+               let version = runtimeVersionFromScript(at: legacy) {
+                return version
+            }
+            if let entry = preferredAIRuntimeScriptURL(in: root),
+               let version = runtimeVersionFromScript(at: entry) {
+                return version
+            }
         }
-        guard let data = try? Data(contentsOf: src), let s = String(data: data, encoding: .utf8) else {
-            return nil
+        if let flatLegacy = Bundle.main.url(forResource: "relflowhub_mlx_runtime", withExtension: "py"),
+           let version = runtimeVersionFromScript(at: flatLegacy) {
+            return version
         }
-        let pat = "RUNTIME_VERSION\\s*=\\s*\"([^\"]+)\""
-        guard let re = try? NSRegularExpression(pattern: pat, options: []) else { return nil }
-        let range = NSRange(s.startIndex..<s.endIndex, in: s)
-        guard let m = re.firstMatch(in: s, options: [], range: range), m.numberOfRanges >= 2,
-              let r = Range(m.range(at: 1), in: s) else { return nil }
-        return String(s[r]).trimmingCharacters(in: .whitespacesAndNewlines)
+        if let resolved = resolveAIRuntimeScriptURL() {
+            return runtimeVersionFromScript(at: resolved)
+        }
+        return nil
     }
 
     private func autoStartAIRuntimeIfNeeded() {
@@ -1785,27 +1895,48 @@ INSERT OR IGNORE INTO audit_events(
         }
 
         let resolved = resolveAIRuntimeScriptURL()
+        let serviceRoot = resolveAIRuntimeServiceRootURL()
         let scriptURL: URL? = resolved.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
         guard let scriptURL else {
-            aiRuntimeLastError = "AI runtime script is missing from this build. Please rebuild/reinstall Hub (it should bundle relflowhub_mlx_runtime.py)."
+            aiRuntimeLastError = "AI runtime script is missing from this build. Please rebuild/reinstall Hub (it should bundle python_service/relflowhub_local_runtime.py, with relflowhub_mlx_runtime.py kept as fallback)."
             aiRuntimeFailCount += 1
             return
         }
 
-        // Copy script into App Group so the sandboxed child process can read it.
+        // Copy the runtime into App Group so the sandboxed child process can read the full
+        // python_service tree (provider registry, legacy runtime fallback, etc).
         let rtDir = base.appendingPathComponent("ai_runtime", isDirectory: true)
         try? FileManager.default.createDirectory(at: rtDir, withIntermediateDirectories: true)
-        let rtScript = rtDir.appendingPathComponent("relflowhub_mlx_runtime.py")
+        let rtScript: URL
         do {
-            if scriptURL.path != rtScript.path {
-                if FileManager.default.fileExists(atPath: rtScript.path) {
-                    try? FileManager.default.removeItem(at: rtScript)
+            if let serviceRoot, FileManager.default.directoryExists(atPath: serviceRoot.path) {
+                let destinationRoot = rtDir.appendingPathComponent("python_service", isDirectory: true)
+                if serviceRoot.path != destinationRoot.path {
+                    try installAIRuntimeServiceRoot(from: serviceRoot, to: destinationRoot)
+                    appendAIRuntimeLogLine("Copied runtime service root to base: \(destinationRoot.path)")
                 }
-                try FileManager.default.copyItem(at: scriptURL, to: rtScript)
-                appendAIRuntimeLogLine("Copied runtime script to base: \(rtScript.path)")
+                guard let installed = preferredAIRuntimeScriptURL(in: destinationRoot) else {
+                    throw NSError(
+                        domain: "relflowhub",
+                        code: 1,
+                        userInfo: [
+                            NSLocalizedDescriptionKey: "Installed python_service is missing relflowhub_local_runtime.py and relflowhub_mlx_runtime.py."
+                        ]
+                    )
+                }
+                rtScript = installed
+            } else {
+                rtScript = rtDir.appendingPathComponent(scriptURL.lastPathComponent)
+                if scriptURL.path != rtScript.path {
+                    if FileManager.default.fileExists(atPath: rtScript.path) {
+                        try? FileManager.default.removeItem(at: rtScript)
+                    }
+                    try FileManager.default.copyItem(at: scriptURL, to: rtScript)
+                    appendAIRuntimeLogLine("Copied runtime script to base: \(rtScript.path)")
+                }
             }
         } catch {
-            aiRuntimeLastError = "Failed to install runtime script into base dir.\n\n\(error.localizedDescription)"
+            aiRuntimeLastError = "Failed to install runtime into base dir.\n\n\(error.localizedDescription)"
             aiRuntimeFailCount += 1
             return
         }
@@ -2056,7 +2187,7 @@ INSERT OR IGNORE INTO audit_events(
             let pidList = uniq.map(String.init).joined(separator: " ")
             return "kill -9 \(pidList)"
         }
-        return "pids=$(ps ax -o pid=,command= | awk '/relflowhub_mlx_runtime.py/ && $0 !~ /awk/ {print $1}'); [ -n \"$pids\" ] && kill -9 $pids"
+        return "pids=$(ps ax -o pid=,command= | awk '/relflowhub_(local|mlx)_runtime.py/ && $0 !~ /awk/ {print $1}'); [ -n \"$pids\" ] && kill -9 $pids"
     }
 
     private func parsePidList(_ text: String) -> [Int32] {
@@ -2089,7 +2220,7 @@ INSERT OR IGNORE INTO audit_events(
                     cmd.isEmpty ||
                     cmd.contains("operation not permitted") ||
                     cmd.contains("permission denied")
-                if cmd.contains("relflowhub_mlx_runtime.py") ||
+                if isAIRuntimeCommandLine(cmd) ||
                     (heartbeatRecent && psBlocked && alivePid(pid_t(pid))) {
                     seen.insert(pid)
                     out.append(pid)
@@ -2109,7 +2240,7 @@ INSERT OR IGNORE INTO audit_events(
             if parts.count < 2 { continue }
             guard let pid = Int32(parts[0]), pid > 1 else { continue }
             let cmd = String(parts[1]).lowercased()
-            if !cmd.contains("relflowhub_mlx_runtime.py") { continue }
+            if !isAIRuntimeCommandLine(cmd) { continue }
             if seen.contains(pid) { continue }
             seen.insert(pid)
             out.append(pid)
@@ -2218,7 +2349,7 @@ INSERT OR IGNORE INTO audit_events(
 
             let cmd = runtimeCommandLineForPid(pidNum).lowercased()
             // Safety by default: only auto-kill known Hub runtime holders.
-            if !allowNonRuntimeHolders && !cmd.contains("relflowhub_mlx_runtime.py") {
+            if !allowNonRuntimeHolders && !isAIRuntimeCommandLine(cmd) {
                 result.skippedPids.append(pidNum)
                 continue
             }
@@ -2330,7 +2461,7 @@ INSERT OR IGNORE INTO audit_events(
                 // Prefer verifying the command line contains our script name.
                 let ps = runCapture("/bin/ps", ["-p", String(pid), "-o", "command="], timeoutSec: 0.8)
                 let psText = (ps.out.isEmpty ? ps.err : ps.out).lowercased()
-                let looksLikeRuntime = ps.code == 0 && psText.contains("relflowhub_mlx_runtime.py")
+                let looksLikeRuntime = ps.code == 0 && isAIRuntimeCommandLine(psText)
                 let statusAgeSec = max(0.0, Date().timeIntervalSince1970 - st.updatedAt)
                 let statusRecent = statusAgeSec < 10 * 60 // 10 minutes
 
@@ -2355,7 +2486,7 @@ INSERT OR IGNORE INTO audit_events(
         }
 
         // If the heartbeat is stale (or missing), the lock can still be held by a lingering
-        // runtime process. As a safety net, kill any relflowhub_mlx_runtime.py processes we can find.
+        // runtime process. As a safety net, kill any known relflowhub runtime processes we can find.
         do {
             let ps = runCapture("/bin/ps", ["-ax", "-o", "pid=,command="], timeoutSec: 1.0)
             let raw = (ps.out.isEmpty ? ps.err : ps.out)
@@ -2367,7 +2498,7 @@ INSERT OR IGNORE INTO audit_events(
                     if parts.count < 2 { continue }
                     guard let pidNum = Int32(parts[0]), pidNum > 1 else { continue }
                     let cmd = String(parts[1]).lowercased()
-                    if !cmd.contains("relflowhub_mlx_runtime.py") { continue }
+                    if !isAIRuntimeCommandLine(cmd) { continue }
                     let pid = pid_t(pidNum)
                     kill(pid, SIGTERM)
                     var stillAlive = false
@@ -2566,7 +2697,7 @@ INSERT OR IGNORE INTO audit_events(
         return routingPreferredModelIdByTask[k] ?? ""
     }
 
-    /// Send a single generate request to the MLX runtime via file IPC.
+    /// Send a single text-generate request to the local runtime via file IPC.
     ///
     /// This is used by Hub-side features (Routing Preview, Today New summaries, etc).
     func aiGenerate(
@@ -2582,12 +2713,22 @@ INSERT OR IGNORE INTO audit_events(
         guard let st = AIRuntimeStatusStorage.load(), st.isAlive(ttl: 3.0) else {
             throw NSError(domain: "relflowhub", code: 1, userInfo: [NSLocalizedDescriptionKey: "AI runtime is not running. Open Settings → AI Runtime and click Start."])
         }
-        if !st.mlxOk {
-            let msg = (st.importError?.isEmpty == false) ? (st.importError ?? "") : "MLX import failed"
+        if !st.isProviderReady("mlx", ttl: 3.0) {
+            let doctor = st.providerDoctorText(ttl: 3.0).trimmingCharacters(in: .whitespacesAndNewlines)
+            let fallback = (st.providerStatus("mlx")?.importError?.isEmpty == false)
+                ? (st.providerStatus("mlx")?.importError ?? "")
+                : ((st.importError?.isEmpty == false) ? (st.importError ?? "") : "MLX provider unavailable")
+            let msg = doctor.isEmpty ? fallback : doctor
             throw NSError(domain: "relflowhub", code: 2, userInfo: [NSLocalizedDescriptionKey: "AI runtime is not ready: \(msg)"])
         }
-        if ModelStore.shared.snapshot.models.isEmpty {
-            throw NSError(domain: "relflowhub", code: 3, userInfo: [NSLocalizedDescriptionKey: "No models registered. Open Models → Add Model…"])
+        let localTextModels = ModelStore.shared.snapshot.models.filter { model in
+            let path = (model.modelPath ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return !path.isEmpty
+                && model.backend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "mlx"
+                && model.taskKinds.contains("text_generate")
+        }
+        if localTextModels.isEmpty {
+            throw NSError(domain: "relflowhub", code: 3, userInfo: [NSLocalizedDescriptionKey: "No local text-generate model is registered. Open Models → Add Model… and import an MLX text model."])
         }
 
         let base = SharedPaths.ensureHubDirectory()
@@ -2838,18 +2979,29 @@ INSERT OR IGNORE INTO audit_events(
         }
     }
 
-    private func defaultRuntimeScriptPath() -> String {
-        // Dev build heuristic: .../REL Flow Hub/build/RELFlowHub.app -> .../REL Flow Hub/python_service/relflowhub_mlx_runtime.py
+    private func defaultRuntimePythonServicePath() -> String {
+        // Dev build heuristic: .../REL Flow Hub/build/RELFlowHub.app -> .../REL Flow Hub/python_service/
         var dir = Bundle.main.bundleURL.deletingLastPathComponent()
         for _ in 0..<6 {
-            let cand = dir.appendingPathComponent("python_service", isDirectory: true)
-                .appendingPathComponent("relflowhub_mlx_runtime.py")
-            if FileManager.default.fileExists(atPath: cand.path) {
-                return cand.path
+            let candidate = dir.appendingPathComponent("python_service", isDirectory: true)
+            if FileManager.default.directoryExists(atPath: candidate.path),
+               preferredAIRuntimeScriptURL(in: candidate) != nil {
+                return candidate.path
             }
             dir.deleteLastPathComponent()
         }
         return ""
+    }
+
+    private func defaultRuntimeScriptPath() -> String {
+        let root = defaultRuntimePythonServicePath()
+        guard !root.isEmpty else {
+            return ""
+        }
+        guard let scriptURL = preferredAIRuntimeScriptURL(in: URL(fileURLWithPath: root, isDirectory: true)) else {
+            return ""
+        }
+        return scriptURL.path
     }
 
     private func defaultPythonPath() -> String {

@@ -26,7 +26,7 @@
   - L3: Cold Storage（<50ms，5% 命中率）
 - 新增第 10-11 章：性能对比和总结
   - vs 三层架构：平均延迟提升 24%
-  - vs Claude-Mem：平均延迟提升 31.5%，成本降低 92%
+  - vs progressive-disclosure reference architecture：平均延迟提升 31.5%，成本降低 92%
 - 包含 11 个 Phase 的详细实施方案
   - Phase 5: 向量搜索增强（sqlite-vec，集成到 L2）
   - Phase 6: 主动渐进式披露（3 层工作流）
@@ -112,7 +112,7 @@
 - 更新文件清单
 - 4层物理架构详解（L0/L1/L2/L3）
 - 核心改进内容（详细）
-- 性能对比（vs 三层 / vs Claude-Mem）
+- 性能对比（vs 三层 / vs progressive-disclosure reference architecture）
 - 实施时间表
 - 如何使用这些文档
 - 与开源项目对比
@@ -184,7 +184,7 @@ vs 三层架构:
 - P95 延迟: 10ms → 5ms（50% 提升）
 - P99 延迟: 50ms → 8ms（84% 提升）
 
-vs Claude-Mem:
+vs progressive-disclosure reference architecture:
 - 平均延迟: 7.2ms → 4.9ms（31.5% 提升）
 - P95 延迟: 20ms → 5ms（4x 提升）
 - P99 延迟: 100ms → 8ms（12.5x 提升）
@@ -277,9 +277,9 @@ Hybrid Mode（新增）:
 
 ## 🎯 核心优势对比
 
-### vs OpenClaw
+### vs skills ecosystem
 
-| 特性 | X-Hub v3.0 | OpenClaw | 优势 |
+| 特性 | X-Hub v3.0 | skills ecosystem | 优势 |
 |------|-----------|----------|------|
 | 记忆架构 | 四层（L0/L1/L2/L3） | 三层 | ✅ 更先进 |
 | 平均延迟 | 4.9ms | ~10ms | ✅ 2x 提升 |
@@ -289,9 +289,9 @@ Hybrid Mode（新增）:
 | 文件监听 | chokidar | chokidar | ⚖️ 相同 |
 | 隐私控制 | `<private>` 标签 | 无 | ✅ 更强 |
 
-### vs Claude-Mem
+### vs progressive-disclosure reference architecture
 
-| 特性 | X-Hub v3.0 | Claude-Mem | 优势 |
+| 特性 | X-Hub v3.0 | progressive-disclosure reference architecture | 优势 |
 |------|-----------|------------|------|
 | 记忆架构 | 四层（L0/L1/L2/L3） | 三层 | ✅ 更先进 |
 | 平均延迟 | 4.9ms | 7.2ms | ✅ 31.5% 提升 |
@@ -310,7 +310,7 @@ Hybrid Mode（新增）:
 - L1: Hot Memory（<1ms，35% 命中率）
 - L2: Warm Memory（<5ms，20% 命中率）⭐ 核心差异化层
 - L3: Cold Storage（<50ms，5% 命中率）
-- 平均延迟: 4.9ms（vs Claude-Mem 7.2ms，提升 31.5%）
+- 平均延迟: 4.9ms（vs progressive-disclosure reference architecture 7.2ms，提升 31.5%）
 - 智能预热机制（4-20x 提升）
 - 智能降级机制（自动容量管理）
 
@@ -332,10 +332,10 @@ Hybrid Mode（新增）:
 - 边缘层处理（不存储敏感内容）
 
 ✅ **最强的性能优势**
-- 平均延迟提升 31.5%（vs Claude-Mem）
-- P95 延迟提升 4x（vs Claude-Mem）
-- P99 延迟提升 12.5x（vs Claude-Mem）
-- 成本降低 92%（vs Claude-Mem）
+- 平均延迟提升 31.5%（vs progressive-disclosure reference architecture）
+- P95 延迟提升 4x（vs progressive-disclosure reference architecture）
+- P99 延迟提升 12.5x（vs progressive-disclosure reference architecture）
+- 成本降低 92%（vs progressive-disclosure reference architecture）
 - Token 节省 78%（渐进式披露）
 
 ---
@@ -448,9 +448,9 @@ Hybrid Mode（新增）:
 
 ## 🎯 核心优势对比
 
-### vs OpenClaw
+### vs skills ecosystem
 
-| 特性 | X-Hub v2.1 | OpenClaw | 优势 |
+| 特性 | X-Hub v2.1 | skills ecosystem | 优势 |
 |------|-----------|----------|------|
 | 向量搜索 | sqlite-vec / Chroma | sqlite-vec | ✅ 更灵活 |
 | 部署模式 | Lite/Pro/Hybrid | 单一 | ✅ 更灵活 |
@@ -458,9 +458,9 @@ Hybrid Mode（新增）:
 | 文件监听 | chokidar | chokidar | ⚖️ 相同 |
 | 隐私控制 | `<private>` 标签 | 无 | ✅ 更强 |
 
-### vs Claude-Mem
+### vs progressive-disclosure reference architecture
 
-| 特性 | X-Hub v2.1 | Claude-Mem | 优势 |
+| 特性 | X-Hub v2.1 | progressive-disclosure reference architecture | 优势 |
 |------|-----------|------------|------|
 | 渐进式披露 | 3 层工作流 | 3 层工作流 | ⚖️ 相同 |
 | Token 节省 | 74-78% | ~10x | ⚖️ 相似 |
@@ -702,7 +702,7 @@ Week 13-16: ⚠️ 性能优化和监控
 - P95 延迟提升 50%（10ms → 5ms）
 - P99 延迟提升 84%（50ms → 8ms）
 
-✅ **全面超越 Claude-Mem**
+✅ **全面超越 progressive-disclosure reference architecture**
 - 平均延迟提升 31.5%（7.2ms → 4.9ms）
 - P95 延迟提升 4x（20ms → 5ms）
 - P99 延迟提升 12.5x（100ms → 8ms）
@@ -723,8 +723,8 @@ Week 13-16: ⚠️ 性能优化和监控
 4. 完整的证据链追溯
 
 ✅ **超越了开源项目**:
-- vs OpenClaw: 更先进的架构 + 更灵活的部署 + 独有的道德约束
-- vs Claude-Mem: 更先进的架构 + 更强的性能 + 更低的成本 + 独有的道德约束
+- vs skills ecosystem: 更先进的架构 + 更灵活的部署 + 独有的道德约束
+- vs progressive-disclosure reference architecture: 更先进的架构 + 更强的性能 + 更低的成本 + 独有的道德约束
 
 ### 下一步行动
 

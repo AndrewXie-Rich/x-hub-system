@@ -13,7 +13,7 @@
 
 ### 我们做了什么？
 
-基于与 **OpenClaw** 和 **Claude-Mem** 两个开源项目的深入对比，我们识别出 X-Hub 的 **6 个核心劣势**，并制定了完整的改进方案。
+基于与 **skills ecosystem** 和 **progressive-disclosure reference architecture** 两个开源项目的深入对比，我们识别出 X-Hub 的 **6 个核心劣势**，并制定了完整的改进方案。
 
 **结果**: 
 - ✅ 更新了 **5 个核心文档**
@@ -401,12 +401,12 @@ Q3-Q4 2026 (7-12 月) - P2 实施
 
 ### 我们超越了谁？
 
-✅ **vs OpenClaw**:
+✅ **vs skills ecosystem**:
 - 更灵活的部署模式
 - 独有的道德约束框架
 - 更强的隐私控制
 
-✅ **vs Claude-Mem**:
+✅ **vs progressive-disclosure reference architecture**:
 - 更灵活的部署模式
 - 独有的道德约束框架
 - 更强的隐私控制

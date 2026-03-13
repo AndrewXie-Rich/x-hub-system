@@ -180,7 +180,7 @@ final class FileIPC: @unchecked Sendable {
 
         // Mark AI ready only when a real runtime is alive; avoids "loaded" UI lying.
         let rt = AIRuntimeStatusStorage.load()
-        let runtimeAlive = (rt?.isAlive(ttl: 3.0) ?? false) && (rt?.mlxOk ?? false)
+        let runtimeAlive = (rt?.isAlive(ttl: 3.0) ?? false) && (rt?.hasReadyProvider(ttl: 3.0) ?? false)
 
         let appVersion = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? ""
         let appBuild = (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) ?? ""
@@ -311,6 +311,17 @@ final class FileIPC: @unchecked Sendable {
             writeResponse(IPCResponse(type: "memory_context_ack", reqId: rid, ok: true, id: nil, error: nil, memoryContext: built))
             return
         }
+        if req.type == "memory_retrieval" {
+            let rid = (req.reqId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !rid.isEmpty else { return }
+            guard let payload = req.memoryRetrieval else {
+                writeResponse(IPCResponse(type: "memory_retrieval_ack", reqId: rid, ok: false, id: nil, error: "missing_memory_retrieval"))
+                return
+            }
+            let built = HubMemoryRetrievalBuilder.build(from: payload)
+            writeResponse(IPCResponse(type: "memory_retrieval_ack", reqId: rid, ok: true, id: nil, error: nil, memoryRetrieval: built))
+            return
+        }
         if req.type == "voice_wake_profile_get" {
             let rid = (req.reqId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             guard !rid.isEmpty else { return }
@@ -331,6 +342,57 @@ final class FileIPC: @unchecked Sendable {
             }
             let profile = HubVoiceWakeProfileStorage.update(profile: payload)
             writeResponse(IPCResponse(type: "voice_wake_profile_ack", reqId: rid, ok: true, id: profile.profileID, error: nil, voiceWakeProfile: profile))
+            return
+        }
+        if req.type == "secret_vault_list" {
+            let rid = (req.reqId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !rid.isEmpty else { return }
+            guard let payload = req.secretVaultList else {
+                writeResponse(IPCResponse(type: "secret_vault_list_ack", reqId: rid, ok: false, id: nil, error: "missing_secret_vault_list"))
+                return
+            }
+            let snapshot = HubSecretVaultStorage.list(payload: payload, baseDir: baseDir)
+            writeResponse(IPCResponse(type: "secret_vault_list_ack", reqId: rid, ok: true, id: nil, error: nil, secretVaultSnapshot: snapshot))
+            return
+        }
+        if req.type == "secret_vault_create" {
+            let rid = (req.reqId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !rid.isEmpty else { return }
+            writeResponse(IPCResponse(type: "secret_vault_create_ack", reqId: rid, ok: false, id: nil, error: "secret_vault_secure_capture_requires_socket_ipc"))
+            return
+        }
+        if req.type == "secret_vault_begin_use" {
+            let rid = (req.reqId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !rid.isEmpty else { return }
+            guard let payload = req.secretVaultUse else {
+                writeResponse(IPCResponse(type: "secret_vault_use_ack", reqId: rid, ok: false, id: nil, error: "missing_secret_vault_use"))
+                return
+            }
+            let result = HubSecretVaultStorage.beginUse(payload: payload, baseDir: baseDir)
+            writeResponse(
+                IPCResponse(
+                    type: "secret_vault_use_ack",
+                    reqId: rid,
+                    ok: result.ok,
+                    id: result.leaseID ?? result.itemID,
+                    error: result.ok ? nil : result.reasonCode,
+                    secretVaultUse: result
+                )
+            )
+            return
+        }
+        if req.type == "secret_vault_redeem_use" {
+            let rid = (req.reqId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !rid.isEmpty else { return }
+            writeResponse(
+                IPCResponse(
+                    type: "secret_vault_redeem_ack",
+                    reqId: rid,
+                    ok: false,
+                    id: nil,
+                    error: "secret_vault_redeem_requires_socket_ipc"
+                )
+            )
             return
         }
         if req.type == "supervisor_incident_audit" {

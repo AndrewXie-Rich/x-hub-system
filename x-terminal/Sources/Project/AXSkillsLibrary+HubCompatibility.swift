@@ -42,6 +42,20 @@ struct AXHubSkillCompatibilityEntry: Identifiable, Codable, Equatable, Sendable 
     var id: String { packageSHA256 }
 }
 
+struct AXDefaultAgentBaselineSkill: Identifiable, Codable, Equatable, Sendable {
+    var skillID: String
+    var displayName: String
+    var summary: String
+
+    var id: String { skillID }
+
+    enum CodingKeys: String, CodingKey {
+        case skillID = "skill_id"
+        case displayName = "display_name"
+        case summary
+    }
+}
+
 struct AXSkillsDoctorSnapshot: Codable, Equatable, Sendable {
     static let empty = AXSkillsDoctorSnapshot(
         hubIndexAvailable: false,
@@ -50,6 +64,8 @@ struct AXSkillsDoctorSnapshot: Codable, Equatable, Sendable {
         partialCompatibilityCount: 0,
         revokedMatchCount: 0,
         trustEnabledPublisherCount: 0,
+        baselineRecommendedSkills: [],
+        missingBaselineSkillIDs: [],
         projectIndexEntries: [],
         globalIndexEntries: [],
         conflictWarnings: [],
@@ -65,6 +81,8 @@ struct AXSkillsDoctorSnapshot: Codable, Equatable, Sendable {
     var partialCompatibilityCount: Int
     var revokedMatchCount: Int
     var trustEnabledPublisherCount: Int
+    var baselineRecommendedSkills: [AXDefaultAgentBaselineSkill] = []
+    var missingBaselineSkillIDs: [String] = []
     var projectIndexEntries: [AXSkillsIndexReference]
     var globalIndexEntries: [AXSkillsIndexReference]
     var conflictWarnings: [String]
@@ -72,9 +90,159 @@ struct AXSkillsDoctorSnapshot: Codable, Equatable, Sendable {
     var statusKind: AXSkillsCompatibilityStatusKind
     var statusLine: String
     var compatibilityExplain: String
+
+    static let localDevPublisherID = "xhub.local.dev"
+
+    var activePublisherIDs: [String] {
+        Array(
+            Set(
+                installedSkills
+                    .map(\.publisherID)
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+            )
+        ).sorted()
+    }
+
+    var activeSourceIDs: [String] {
+        Array(
+            Set(
+                installedSkills
+                    .map(\.sourceID)
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+            )
+        ).sorted()
+    }
+
+    var localDevPublisherActive: Bool {
+        activePublisherIDs.contains(Self.localDevPublisherID)
+    }
+
+    var baselineResolvedCount: Int {
+        max(0, baselineRecommendedSkills.count - missingBaselineSkillIDs.count)
+    }
+
+    var baselinePublisherIDs: [String] {
+        Array(
+            Set(
+                baselineInstalledSkillsForPublisherRollup
+                    .map(\.publisherID)
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+            )
+        ).sorted()
+    }
+
+    var baselineLocalDevSkillCount: Int {
+        let ids = Set(
+            baselineInstalledSkillsForPublisherRollup
+                .filter { $0.publisherID.trimmingCharacters(in: .whitespacesAndNewlines) == Self.localDevPublisherID }
+                .map(\.skillID)
+        )
+        return ids.count
+    }
+
+    private var baselineInstalledSkillsForPublisherRollup: [AXHubSkillCompatibilityEntry] {
+        let baselineSkillIDs = Set(baselineRecommendedSkills.map(\.skillID))
+        guard !baselineSkillIDs.isEmpty else { return [] }
+
+        let baselineInstalled = installedSkills.filter { baselineSkillIDs.contains($0.skillID) }
+        let pinnedBaselineInstalled = baselineInstalled.filter { !$0.pinnedScopes.isEmpty }
+        return pinnedBaselineInstalled.isEmpty ? baselineInstalled : pinnedBaselineInstalled
+    }
+}
+
+struct XTResolvedSkillCacheItem: Identifiable, Codable, Equatable, Sendable {
+    var skillId: String
+    var displayName: String
+    var description: String
+    var packageSHA256: String
+    var canonicalManifestSHA256: String
+    var sourceId: String
+    var pinScope: String
+    var riskLevel: String
+    var requiresGrant: Bool
+    var sideEffectClass: String
+    var inputSchemaRef: String
+    var outputSchemaRef: String
+    var timeoutMs: Int
+    var maxRetries: Int
+
+    var id: String { "\(skillId)::\(packageSHA256)" }
+
+    enum CodingKeys: String, CodingKey {
+        case skillId = "skill_id"
+        case displayName = "display_name"
+        case description
+        case packageSHA256 = "package_sha256"
+        case canonicalManifestSHA256 = "canonical_manifest_sha256"
+        case sourceId = "source_id"
+        case pinScope = "pin_scope"
+        case riskLevel = "risk_level"
+        case requiresGrant = "requires_grant"
+        case sideEffectClass = "side_effect_class"
+        case inputSchemaRef = "input_schema_ref"
+        case outputSchemaRef = "output_schema_ref"
+        case timeoutMs = "timeout_ms"
+        case maxRetries = "max_retries"
+    }
+}
+
+struct XTResolvedSkillsCacheSnapshot: Codable, Equatable, Sendable {
+    static let currentSchemaVersion = "xt.resolved_skills_cache.v1"
+
+    var schemaVersion: String
+    var projectId: String
+    var projectName: String?
+    var resolvedSnapshotId: String
+    var source: String
+    var grantSnapshotRef: String
+    var auditRef: String
+    var resolvedAtMs: Int64
+    var expiresAtMs: Int64
+    var hubIndexUpdatedAtMs: Int64
+    var items: [XTResolvedSkillCacheItem]
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case projectId = "project_id"
+        case projectName = "project_name"
+        case resolvedSnapshotId = "resolved_snapshot_id"
+        case source
+        case grantSnapshotRef = "grant_snapshot_ref"
+        case auditRef = "audit_ref"
+        case resolvedAtMs = "resolved_at_ms"
+        case expiresAtMs = "expires_at_ms"
+        case hubIndexUpdatedAtMs = "hub_index_updated_at_ms"
+        case items
+    }
 }
 
 extension AXSkillsLibrary {
+    static let defaultAgentBaselineSkills: [AXDefaultAgentBaselineSkill] = [
+        AXDefaultAgentBaselineSkill(
+            skillID: "find-skills",
+            displayName: "Find Skills",
+            summary: "Official discovery wrapper over Hub skills.search."
+        ),
+        AXDefaultAgentBaselineSkill(
+            skillID: "agent-browser",
+            displayName: "Agent Browser",
+            summary: "Governed browser automation for navigation, screenshots, extraction, and Secret Vault-aware credential handling."
+        ),
+        AXDefaultAgentBaselineSkill(
+            skillID: "self-improving-agent",
+            displayName: "Self Improving Agent",
+            summary: "Supervisor retrospective pack for learning from failures under governance."
+        ),
+        AXDefaultAgentBaselineSkill(
+            skillID: "summarize",
+            displayName: "Summarize",
+            summary: "Governed summarize wrapper for webpages, PDFs, and long documents."
+        ),
+    ]
+
     static func compatibilityDoctorSnapshot(
         projectId: String? = nil,
         projectName: String? = nil,
@@ -135,6 +303,10 @@ extension AXSkillsLibrary {
         let compatibleSkillCount = installedSkills.filter { !$0.abiCompatVersion.isEmpty }.count
         let partialCompatibilityCount = installedSkills.filter { $0.compatibilityState == .partial }.count
         let revokedMatchCount = installedSkills.filter(\.revoked).count
+        let installedSkillIDs = Set(installedSkills.map(\.skillID))
+        let missingBaselineSkillIDs = defaultAgentBaselineSkills
+            .map(\.skillID)
+            .filter { !installedSkillIDs.contains($0) }
         let projectIndexEntries = loadProjectIndexEntries(skillsDir: resolvedSkillsDir, projectId: projectId, projectName: projectName)
         let globalIndexEntries = loadGlobalIndexEntries(skillsDir: resolvedSkillsDir)
         let conflictWarnings = compatibilityConflicts(for: relevantPins)
@@ -143,31 +315,61 @@ extension AXSkillsLibrary {
             statusKind = .unavailable
         } else if revokedMatchCount > 0 {
             statusKind = .blocked
-        } else if partialCompatibilityCount > 0 {
+        } else if partialCompatibilityCount > 0 || !missingBaselineSkillIDs.isEmpty {
             statusKind = .partial
         } else {
             statusKind = .supported
         }
 
-        let statusLine: String
+        let baseStatusLine: String
+        let baselineInstalledCount = defaultAgentBaselineSkills.count - missingBaselineSkillIDs.count
+        let baselineSuffix = defaultAgentBaselineSkills.isEmpty
+            ? ""
+            : " b\(baselineInstalledCount)/\(defaultAgentBaselineSkills.count)"
         switch statusKind {
         case .unavailable:
-            statusLine = "skills?"
+            baseStatusLine = "skills?"
         case .blocked:
-            statusLine = "skills! \(compatibleSkillCount)/\(installedSkills.count)"
+            baseStatusLine = "skills! \(compatibleSkillCount)/\(installedSkills.count)\(baselineSuffix)"
         case .partial:
-            statusLine = "skills~ \(compatibleSkillCount)/\(installedSkills.count)"
+            baseStatusLine = "skills~ \(compatibleSkillCount)/\(installedSkills.count)\(baselineSuffix)"
         case .supported:
-            statusLine = "skills \(compatibleSkillCount)/\(installedSkills.count)"
+            baseStatusLine = "skills \(compatibleSkillCount)/\(installedSkills.count)\(baselineSuffix)"
         }
+
+        let draftSnapshot = AXSkillsDoctorSnapshot(
+            hubIndexAvailable: hubIndex.available,
+            installedSkillCount: installedSkills.count,
+            compatibleSkillCount: compatibleSkillCount,
+            partialCompatibilityCount: partialCompatibilityCount,
+            revokedMatchCount: revokedMatchCount,
+            trustEnabledPublisherCount: trusted.publishers.filter(\.enabled).count,
+            baselineRecommendedSkills: defaultAgentBaselineSkills,
+            missingBaselineSkillIDs: missingBaselineSkillIDs,
+            projectIndexEntries: projectIndexEntries,
+            globalIndexEntries: globalIndexEntries,
+            conflictWarnings: conflictWarnings,
+            installedSkills: installedSkills,
+            statusKind: statusKind,
+            statusLine: baseStatusLine,
+            compatibilityExplain: ""
+        )
+        let statusLine = draftSnapshot.localDevPublisherActive ? "\(baseStatusLine) dev" : baseStatusLine
 
         let explain = renderCompatibilityExplainability(
             statusKind: statusKind,
             installedSkills: installedSkills,
+            baselineRecommendedSkills: defaultAgentBaselineSkills,
+            missingBaselineSkillIDs: missingBaselineSkillIDs,
             trustedPublisherCount: trusted.publishers.filter(\.enabled).count,
             projectIndexEntries: projectIndexEntries,
             globalIndexEntries: globalIndexEntries,
-            conflictWarnings: conflictWarnings
+            conflictWarnings: conflictWarnings,
+            activePublisherIDs: draftSnapshot.activePublisherIDs,
+            activeSourceIDs: draftSnapshot.activeSourceIDs,
+            localDevPublisherActive: draftSnapshot.localDevPublisherActive,
+            baselinePublisherIDs: draftSnapshot.baselinePublisherIDs,
+            baselineLocalDevSkillCount: draftSnapshot.baselineLocalDevSkillCount
         )
 
         return AXSkillsDoctorSnapshot(
@@ -177,6 +379,8 @@ extension AXSkillsLibrary {
             partialCompatibilityCount: partialCompatibilityCount,
             revokedMatchCount: revokedMatchCount,
             trustEnabledPublisherCount: trusted.publishers.filter(\.enabled).count,
+            baselineRecommendedSkills: defaultAgentBaselineSkills,
+            missingBaselineSkillIDs: missingBaselineSkillIDs,
             projectIndexEntries: projectIndexEntries,
             globalIndexEntries: globalIndexEntries,
             conflictWarnings: conflictWarnings,
@@ -500,10 +704,17 @@ extension AXSkillsLibrary {
     private static func renderCompatibilityExplainability(
         statusKind: AXSkillsCompatibilityStatusKind,
         installedSkills: [AXHubSkillCompatibilityEntry],
+        baselineRecommendedSkills: [AXDefaultAgentBaselineSkill],
+        missingBaselineSkillIDs: [String],
         trustedPublisherCount: Int,
         projectIndexEntries: [AXSkillsIndexReference],
         globalIndexEntries: [AXSkillsIndexReference],
-        conflictWarnings: [String]
+        conflictWarnings: [String],
+        activePublisherIDs: [String],
+        activeSourceIDs: [String],
+        localDevPublisherActive: Bool,
+        baselinePublisherIDs: [String],
+        baselineLocalDevSkillCount: Int
     ) -> String {
         var lines: [String] = []
         switch statusKind {
@@ -517,6 +728,17 @@ extension AXSkillsLibrary {
             lines.append("compatible skill installed under Hub canonical manifest gates")
         }
         lines.append("installed=\(installedSkills.count) trusted_publishers=\(trustedPublisherCount) project_index=\(projectIndexEntries.count) global_index=\(globalIndexEntries.count)")
+        lines.append(activePublisherIDs.isEmpty ? "active_publishers=none" : "active_publishers=\(activePublisherIDs.joined(separator: ","))")
+        lines.append(activeSourceIDs.isEmpty ? "active_sources=none" : "active_sources=\(activeSourceIDs.joined(separator: ","))")
+        lines.append("local_dev_publisher_active=\(localDevPublisherActive ? "yes" : "no")")
+        if !baselineRecommendedSkills.isEmpty {
+            lines.append("baseline=\(baselineRecommendedSkills.count - missingBaselineSkillIDs.count)/\(baselineRecommendedSkills.count)")
+            lines.append(baselinePublisherIDs.isEmpty ? "baseline_publishers=none" : "baseline_publishers=\(baselinePublisherIDs.joined(separator: ","))")
+            lines.append("baseline_local_dev=\(baselineLocalDevSkillCount)/\(baselineRecommendedSkills.count)")
+            if !missingBaselineSkillIDs.isEmpty {
+                lines.append("baseline_missing=\(missingBaselineSkillIDs.joined(separator: ","))")
+            }
+        }
 
         if let first = installedSkills.first {
             let scopes = first.pinnedScopes.isEmpty ? "unpinned" : first.pinnedScopes.joined(separator: ",")
@@ -592,6 +814,98 @@ extension AXSkillsLibrary {
             memorySource: source,
             items: items,
             auditRef: "audit-xt-w3-32-skill-registry-\(String(normalizedProjectId.suffix(8)))"
+        )
+    }
+
+    static func resolvedSkillsCacheSnapshot(
+        projectId: String,
+        projectName: String? = nil,
+        hubBaseDir: URL? = nil,
+        ttlMs: Int64 = 15 * 60 * 1000,
+        nowMs: Int64? = nil
+    ) -> XTResolvedSkillsCacheSnapshot? {
+        let normalizedProjectId = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedProjectId.isEmpty else { return nil }
+
+        let resolvedHubBaseDir = hubBaseDir ?? HubPaths.baseDir()
+        let storeDir = resolvedHubBaseDir.appendingPathComponent("skills_store", isDirectory: true)
+        let indexURL = storeDir.appendingPathComponent("skills_store_index.json")
+        let pinsURL = storeDir.appendingPathComponent("skills_pins.json")
+        let revocationsURL = storeDir.appendingPathComponent("skill_revocations.json")
+
+        let hubIndex = loadHubSkillsIndex(url: indexURL)
+        guard hubIndex.available else { return nil }
+
+        let pins = loadHubSkillsPins(url: pinsURL)
+        let revocations = loadSkillRevocations(url: revocationsURL)
+        let relevantPins = relevantPinScopes(pins: pins, projectId: normalizedProjectId)
+        let selectedPins = selectedResolvedPinsForSupervisorRegistry(relevantPins)
+        let skillPairs: [(String, HubSkillsIndexSnapshot.Skill)] = hubIndex.skills.compactMap { skill in
+            let sha = skill.packageSHA256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !sha.isEmpty else { return nil }
+            return (sha, skill)
+        }
+        let skillBySHA = Dictionary(uniqueKeysWithValues: skillPairs)
+
+        let items = selectedPins.compactMap { pin -> XTResolvedSkillCacheItem? in
+            let sha = pin.packageSHA256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard let skill = skillBySHA[sha] else { return nil }
+            let revoked = revocations.revokedSHA256.contains(sha)
+                || revocations.revokedSkillIDs.contains(skill.skillID)
+                || revocations.revokedPublisherIDs.contains(skill.publisherID)
+            guard !revoked else { return nil }
+            guard !skill.abiCompatVersion.isEmpty else { return nil }
+            guard skill.compatibilityState != .unsupported else { return nil }
+            let hints = parseSupervisorSkillManifestHints(
+                skill.manifestJSON,
+                fallbackDescription: firstNonEmptySkillText(skill.description, skill.installHint, skill.name),
+                capabilityFallback: skill.capabilitiesRequired
+            )
+            return XTResolvedSkillCacheItem(
+                skillId: skill.skillID,
+                displayName: firstNonEmptySkillText(skill.name, skill.skillID),
+                description: hints.description,
+                packageSHA256: sha,
+                canonicalManifestSHA256: skill.canonicalManifestSHA256,
+                sourceId: skill.sourceID,
+                pinScope: pin.scope,
+                riskLevel: hints.riskLevel.rawValue,
+                requiresGrant: hints.requiresGrant,
+                sideEffectClass: hints.sideEffectClass,
+                inputSchemaRef: hints.inputSchemaRef.isEmpty ? "schema://\(skill.skillID).input" : hints.inputSchemaRef,
+                outputSchemaRef: hints.outputSchemaRef.isEmpty ? "schema://\(skill.skillID).output" : hints.outputSchemaRef,
+                timeoutMs: max(1_000, hints.timeoutMs),
+                maxRetries: max(0, hints.maxRetries)
+            )
+        }
+        .sorted { lhs, rhs in
+            let leftScope = skillPinnedScopePriority(lhs.pinScope)
+            let rightScope = skillPinnedScopePriority(rhs.pinScope)
+            if leftScope != rightScope {
+                return leftScope > rightScope
+            }
+            return lhs.skillId.localizedCaseInsensitiveCompare(rhs.skillId) == .orderedAscending
+        }
+
+        let resolvedAt = max(0, nowMs ?? Int64(Date().timeIntervalSince1970 * 1000.0))
+        let normalizedTTL = max(60_000, ttlMs)
+        let projectSuffix = String(normalizedProjectId.suffix(8))
+        let grantSnapshotRef = items.contains(where: { $0.requiresGrant })
+            ? "grant-chain:\(projectSuffix):refresh_required"
+            : "grant-chain:\(projectSuffix):not_required"
+
+        return XTResolvedSkillsCacheSnapshot(
+            schemaVersion: XTResolvedSkillsCacheSnapshot.currentSchemaVersion,
+            projectId: normalizedProjectId,
+            projectName: projectName,
+            resolvedSnapshotId: "xt-resolved-skills-\(projectSuffix)-\(resolvedAt)",
+            source: "hub_resolved_skills_snapshot",
+            grantSnapshotRef: grantSnapshotRef,
+            auditRef: "audit-xt-w3-34-i-resolved-skills-\(projectSuffix)",
+            resolvedAtMs: resolvedAt,
+            expiresAtMs: resolvedAt + normalizedTTL,
+            hubIndexUpdatedAtMs: max(0, loadHubSkillsIndexUpdatedAtMs(url: indexURL)),
+            items: items
         )
     }
 

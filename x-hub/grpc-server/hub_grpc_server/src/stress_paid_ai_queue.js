@@ -8,7 +8,7 @@ import grpc from '@grpc/grpc-js';
 import protoLoader from '@grpc/proto-loader';
 
 import { makeClientCredentials } from './client_credentials.js';
-import { resolveRuntimeBaseDir } from './mlx_runtime_ipc.js';
+import { resolveRuntimeBaseDir } from './local_runtime_ipc.js';
 import { resolveHubProtoPath } from './proto_path.js';
 
 const __filename = fileURLToPath(import.meta.url);

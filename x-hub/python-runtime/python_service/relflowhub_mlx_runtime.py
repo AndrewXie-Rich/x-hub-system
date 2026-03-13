@@ -31,6 +31,7 @@ import re
 
 # Bump this whenever IPC/gen behavior changes; also helpful to confirm which script is running.
 RUNTIME_VERSION = "2026-02-21-constitution-trigger-v2"
+RUNTIME_STATUS_SCHEMA_VERSION = "xhub.local_runtime_status.v2"
 
 
 def _now() -> float:
@@ -306,17 +307,49 @@ def _write_runtime_status(
     active_memory_bytes: int | None = None,
     peak_memory_bytes: int | None = None,
     loaded_model_count: int | None = None,
+    loaded_model_ids: list[str] | None = None,
+    provider_statuses: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     """Heartbeat so clients can gate AI UI on a real runtime.
 
     Hub UI may mark models as "loaded" based on local/demo state. For real AI requests,
     we also need to know the runtime process is alive.
     """
+    updated_at = float(_now())
+    provider_obj: dict[str, Any] = {
+        'provider': 'mlx',
+        'ok': bool(mlx_ok),
+        'reasonCode': 'ready' if mlx_ok else ('import_error' if str(import_error or '').strip() else 'unavailable'),
+        'runtimeVersion': str(RUNTIME_VERSION),
+        'availableTaskKinds': ['text_generate'] if mlx_ok else [],
+        'loadedModels': [str(x) for x in (loaded_model_ids or []) if str(x or '').strip()],
+        'deviceBackend': 'mps',
+        'updatedAt': updated_at,
+    }
+    if active_memory_bytes is not None:
+        provider_obj['activeMemoryBytes'] = int(max(0, active_memory_bytes))
+    if peak_memory_bytes is not None:
+        provider_obj['peakMemoryBytes'] = int(max(0, peak_memory_bytes))
+    if loaded_model_count is not None:
+        provider_obj['loadedModelCount'] = int(max(0, loaded_model_count))
+    if not mlx_ok and str(import_error or '').strip():
+        provider_obj['importError'] = str(import_error)
+
+    merged_providers: dict[str, dict[str, Any]] = {}
+    for provider_id, status_obj in (provider_statuses or {}).items():
+        if not isinstance(status_obj, dict):
+            continue
+        merged_providers[str(provider_id).strip().lower()] = dict(status_obj)
+    if "mlx" not in merged_providers:
+        merged_providers["mlx"] = dict(provider_obj)
+
     obj = {
+        'schema_version': str(RUNTIME_STATUS_SCHEMA_VERSION),
         'pid': int(os.getpid()),
-        'updatedAt': float(_now()),
+        'updatedAt': updated_at,
         'mlxOk': bool(mlx_ok),
         'runtimeVersion': str(RUNTIME_VERSION),
+        'providers': merged_providers,
     }
     if active_memory_bytes is not None:
         obj['activeMemoryBytes'] = int(max(0, active_memory_bytes))
@@ -330,6 +363,24 @@ def _write_runtime_status(
         _write_json_atomic(_runtime_status_path(base), obj)
     except Exception:
         pass
+
+
+def _provider_status_payloads(base: str, *, runtime: "MLXRuntime" | None = None) -> dict[str, dict[str, Any]]:
+    try:
+        from providers import LocalProviderRegistry, MLXProvider, TransformersProvider
+    except Exception as e:
+        _audit(base, 'local_provider_registry_import_failed', error=f'{type(e).__name__}:{e}')
+        return {}
+
+    try:
+        registry = LocalProviderRegistry()
+        registry.register(MLXProvider(runtime=runtime, runtime_version=str(RUNTIME_VERSION)))
+        registry.register(TransformersProvider())
+        snapshot = registry.health_snapshot(base_dir=base, catalog_models=_load_catalog(base))
+        return {provider_id: health.to_dict() for provider_id, health in snapshot.items()}
+    except Exception as e:
+        _audit(base, 'local_provider_snapshot_failed', error=f'{type(e).__name__}:{e}')
+        return {}
 
 
 def _read_json(path: str) -> Any:
@@ -1481,6 +1532,15 @@ def _load_catalog(base: str) -> list[dict[str, Any]]:
     p = _catalog_path(base)
     if not os.path.exists(p):
         return []
+    try:
+        obj = _read_json(p)
+        if isinstance(obj, dict) and isinstance(obj.get('models'), list):
+            return [m for m in obj.get('models') if isinstance(m, dict)]
+        if isinstance(obj, list):
+            return [m for m in obj if isinstance(m, dict)]
+    except Exception:
+        pass
+    return []
 
 
 def _load_bench(base: str) -> dict[str, Any]:
@@ -2259,6 +2319,7 @@ def main() -> int:
             pass
     _audit(base, 'mlx_runtime_start', mlx_ok=int(rt._mlx_ok), runtime_version=str(RUNTIME_VERSION), import_error=str(getattr(rt, '_import_error', '') or ''))
     am, pm = rt.memory_bytes()
+    provider_statuses = _provider_status_payloads(base, runtime=rt)
     _write_runtime_status(
         base,
         mlx_ok=rt._mlx_ok,
@@ -2266,6 +2327,8 @@ def main() -> int:
         active_memory_bytes=am,
         peak_memory_bytes=pm,
         loaded_model_count=len(getattr(rt, '_loaded', {}) or {}),
+        loaded_model_ids=sorted(str(k) for k in (getattr(rt, '_loaded', {}) or {}).keys()),
+        provider_statuses=provider_statuses,
     )
 
     state = _ensure_state_from_catalog(base)
@@ -2330,6 +2393,7 @@ def main() -> int:
 
         # Runtime heartbeat for clients (FA Tracker, etc).
         am, pm = rt.memory_bytes()
+        provider_statuses = _provider_status_payloads(base, runtime=rt)
         _write_runtime_status(
             base,
             mlx_ok=rt._mlx_ok,
@@ -2337,6 +2401,8 @@ def main() -> int:
             active_memory_bytes=am,
             peak_memory_bytes=pm,
             loaded_model_count=len(getattr(rt, '_loaded', {}) or {}),
+            loaded_model_ids=sorted(str(k) for k in (getattr(rt, '_loaded', {}) or {}).keys()),
+            provider_statuses=provider_statuses,
         )
 
         # Refresh state if catalog changed (cheap check by re-ensuring state only if empty).

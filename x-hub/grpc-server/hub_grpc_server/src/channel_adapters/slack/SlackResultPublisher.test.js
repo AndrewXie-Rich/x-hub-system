@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 
 import {
+  buildSlackGrantDecisionSummary,
+  buildSlackGrantPendingCard,
   buildSlackResultSummary,
   createSlackResultPublisher,
   publishSlackCommandResult,
+  publishSlackGrantDecision,
+  publishSlackGrantPending,
 } from './SlackResultPublisher.js';
 
 function run(name, fn) {
@@ -222,6 +226,79 @@ run('SlackResultPublisher renders execution failures without dropping the Slack 
   assert.match(String(out.payload?.text || ''), /Reason: project_scope_missing/);
 });
 
+run('SlackResultPublisher builds proactive grant decision summaries from Hub events', () => {
+  const out = buildSlackGrantDecisionSummary({
+    event: {
+      event_id: 'evt_grant_1',
+      grant_request_id: 'gr-evt-1',
+      decision: 'GRANT_DECISION_APPROVED',
+      project_id: 'project_alpha',
+      grant: {
+        grant_id: 'grant-evt-1',
+        capability: 'CAPABILITY_WEB_FETCH',
+        expires_at_ms: 1710009999000,
+        status: 'active',
+        client: {
+          device_id: 'xt-alpha-1',
+          project_id: 'project_alpha',
+        },
+      },
+      client: {
+        device_id: 'xt-alpha-1',
+        project_id: 'project_alpha',
+      },
+    },
+    binding: {
+      provider: 'slack',
+      account_id: 'ops_bot',
+      conversation_id: 'C123',
+      thread_key: '1710000000.0001',
+    },
+  });
+
+  assert.equal(!!out.ok, true);
+  assert.match(String(out.payload?.text || ''), /Grant Approved/);
+  assert.match(String(out.payload?.text || ''), /Capability: web.fetch/);
+  assert.match(String(out.payload?.text || ''), /Grant request: gr-evt-1/);
+});
+
+run('SlackResultPublisher builds proactive pending approval cards from queued Hub events', () => {
+  const out = buildSlackGrantPendingCard({
+    event: {
+      event_id: 'evt_grant_pending_1',
+      grant_request_id: 'gr-pending-1',
+      decision: 'GRANT_DECISION_QUEUED',
+      project_id: 'project_alpha',
+      grant: {
+        capability: 'CAPABILITY_WEB_FETCH',
+        token_cap: 5000,
+        client: {
+          device_id: 'xt-alpha-1',
+          project_id: 'project_alpha',
+        },
+      },
+      client: {
+        device_id: 'xt-alpha-1',
+        project_id: 'project_alpha',
+      },
+    },
+    binding: {
+      binding_id: 'binding-slack-approval',
+      provider: 'slack',
+      account_id: 'ops_bot',
+      conversation_id: 'C123',
+      thread_key: '1710000000.0001',
+      scope_type: 'project',
+      scope_id: 'project_alpha',
+    },
+  });
+
+  assert.equal(!!out.ok, true);
+  assert.match(String(out.payload?.text || ''), /Approval Required/);
+  assert.match(JSON.stringify(out.payload?.blocks || []), /xt\.grant\.approve/);
+  assert.match(JSON.stringify(out.payload?.blocks || []), /web\.fetch/);
+});
+
 await runAsync('SlackResultPublisher posts summary payload through SlackApiClient shape', async () => {
   const calls = [];
   const out = await publishSlackCommandResult({
@@ -241,6 +318,88 @@ await runAsync('SlackResultPublisher posts summary payload through SlackApiClien
   assert.equal(calls.length, 1);
   assert.equal(String(calls[0]?.channel || ''), 'C123');
   assert.equal(String(out.delivered?.message_ts || ''), '1710000000.0002');
+});
+
+await runAsync('SlackResultPublisher posts proactive grant decision summaries through SlackApiClient shape', async () => {
+  const calls = [];
+  const out = await publishSlackGrantDecision({
+    event: {
+      event_id: 'evt_grant_2',
+      grant_request_id: 'gr-evt-2',
+      decision: 'GRANT_DECISION_DENIED',
+      project_id: 'project_alpha',
+      deny_reason: 'policy_denied',
+      client: {
+        device_id: 'xt-alpha-1',
+        project_id: 'project_alpha',
+      },
+    },
+    binding: {
+      provider: 'slack',
+      account_id: 'ops_bot',
+      conversation_id: 'C123',
+      thread_key: '1710000000.0001',
+    },
+    slack_client: {
+      async postMessage(payload) {
+        calls.push(payload);
+        return {
+          ok: true,
+          message_ts: '1710000000.0003',
+        };
+      },
+    },
+  });
+
+  assert.equal(!!out.ok, true);
+  assert.equal(calls.length, 1);
+  assert.match(String(calls[0]?.text || ''), /Reason: policy_denied/);
+});
+
+await runAsync('SlackResultPublisher posts proactive pending approval cards through SlackApiClient shape', async () => {
+  const calls = [];
+  const out = await publishSlackGrantPending({
+    event: {
+      event_id: 'evt_grant_pending_2',
+      grant_request_id: 'gr-pending-2',
+      decision: 'GRANT_DECISION_QUEUED',
+      project_id: 'project_alpha',
+      grant: {
+        capability: 'CAPABILITY_WEB_FETCH',
+        token_cap: 2048,
+        client: {
+          device_id: 'xt-alpha-1',
+          project_id: 'project_alpha',
+        },
+      },
+      client: {
+        device_id: 'xt-alpha-1',
+        project_id: 'project_alpha',
+      },
+    },
+    binding: {
+      binding_id: 'binding-slack-approval',
+      provider: 'slack',
+      account_id: 'ops_bot',
+      conversation_id: 'C123',
+      thread_key: '1710000000.0001',
+      scope_type: 'project',
+      scope_id: 'project_alpha',
+    },
+    slack_client: {
+      async postMessage(payload) {
+        calls.push(payload);
+        return {
+          ok: true,
+          message_ts: '1710000000.0004',
+        };
+      },
+    },
+  });
+
+  assert.equal(!!out.ok, true);
+  assert.equal(calls.length, 1);
+  assert.match(JSON.stringify(calls[0]?.blocks || []), /xt\.grant\.approve/);
 });
 
 await runAsync('SlackResultPublisher factory fails closed when Slack client is invalid', async () => {

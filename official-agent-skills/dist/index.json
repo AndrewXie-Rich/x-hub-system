@@ -1,0 +1,106 @@
+{
+  "schema_version": "xhub.official_agent_skill_index.v1",
+  "generated_at_ms": 1773327543255,
+  "publisher_id": "xhub.official",
+  "source_root": "..",
+  "skills": [
+    {
+      "skill_id": "agent-browser",
+      "name": "Agent Browser",
+      "version": "1.0.0",
+      "description": "Governed browser automation package for navigation, form fill, screenshot capture, and structured extraction.",
+      "publisher_id": "xhub.official",
+      "capabilities_required": [
+        "browser.read",
+        "device.browser.control",
+        "web.fetch"
+      ],
+      "source_id": "builtin:catalog",
+      "install_hint": "Install through the governed Agent Baseline flow before browser-heavy tasks.",
+      "entrypoint_runtime": "text",
+      "entrypoint_command": "cat",
+      "entrypoint_args": [
+        "SKILL.md"
+      ],
+      "package_sha256": "b4000be1fd67a6f98b717f2c405ffc8354412b274b60961af8ac908ef3f7fd9f",
+      "manifest_sha256": "ae713942f5e7ccc9bfa35acec07a34fe5e9b5f0a28f2edfc4638cc81179bee6a",
+      "package_path": "packages/b4000be1fd67a6f98b717f2c405ffc8354412b274b60961af8ac908ef3f7fd9f.tgz",
+      "manifest_path": "manifests/b4000be1fd67a6f98b717f2c405ffc8354412b274b60961af8ac908ef3f7fd9f.json",
+      "source_dir": "agent-browser",
+      "updated_at_ms": 1773327543255
+    },
+    {
+      "skill_id": "find-skills",
+      "name": "Find Skills",
+      "version": "1.0.0",
+      "description": "Official discovery wrapper over X-Hub skills.search for governed skill lookup and install guidance.",
+      "publisher_id": "xhub.official",
+      "capabilities_required": [
+        "skills.search"
+      ],
+      "source_id": "builtin:catalog",
+      "install_hint": "Install from the Agent Baseline menu in X-Terminal or pin the official package from X-Hub.",
+      "entrypoint_runtime": "text",
+      "entrypoint_command": "cat",
+      "entrypoint_args": [
+        "SKILL.md"
+      ],
+      "package_sha256": "aa577e99a77b303792aa264d31af22d246a65b3c6abab6127797130302fae8d5",
+      "manifest_sha256": "cc1606d7e26c2d701c84603c13800cdd10214fd373b4299ddbafa094bb5ec318",
+      "package_path": "packages/aa577e99a77b303792aa264d31af22d246a65b3c6abab6127797130302fae8d5.tgz",
+      "manifest_path": "manifests/aa577e99a77b303792aa264d31af22d246a65b3c6abab6127797130302fae8d5.json",
+      "source_dir": "find-skills",
+      "updated_at_ms": 1773327543255
+    },
+    {
+      "skill_id": "self-improving-agent",
+      "name": "Self Improving Agent",
+      "version": "1.0.0",
+      "description": "Supervisor retrospective and self-improvement workflow pack for learning from failed runs without bypassing governance.",
+      "publisher_id": "xhub.official",
+      "capabilities_required": [
+        "memory.snapshot",
+        "project.snapshot",
+        "repo.read.file"
+      ],
+      "source_id": "builtin:catalog",
+      "install_hint": "Install for Supervisor retrospectives and governed workflow tuning.",
+      "entrypoint_runtime": "text",
+      "entrypoint_command": "cat",
+      "entrypoint_args": [
+        "SKILL.md"
+      ],
+      "package_sha256": "6edbe8d16ae8be26dcb1a534e9c058ceb9b2e07af759063e700762aeac559546",
+      "manifest_sha256": "94f0c1f03b24cd921bfb6a35a01de3ca670a4757ee46e8e02a7bc2d50bb43334",
+      "package_path": "packages/6edbe8d16ae8be26dcb1a534e9c058ceb9b2e07af759063e700762aeac559546.tgz",
+      "manifest_path": "manifests/6edbe8d16ae8be26dcb1a534e9c058ceb9b2e07af759063e700762aeac559546.json",
+      "source_dir": "self-improving-agent",
+      "updated_at_ms": 1773327543255
+    },
+    {
+      "skill_id": "summarize",
+      "name": "Summarize",
+      "version": "1.0.0",
+      "description": "Governed summarize wrapper for webpages, PDFs, and long documents using Hub-routed fetch and model generation.",
+      "publisher_id": "xhub.official",
+      "capabilities_required": [
+        "web.fetch",
+        "browser.read",
+        "ai.generate.local"
+      ],
+      "source_id": "builtin:catalog",
+      "install_hint": "Install from the default Agent Baseline for governed document and webpage summarization.",
+      "entrypoint_runtime": "text",
+      "entrypoint_command": "cat",
+      "entrypoint_args": [
+        "SKILL.md"
+      ],
+      "package_sha256": "78e77a203fcee7f751c25b9cad0fa72bc7a4954e222f53535ef52945d9549227",
+      "manifest_sha256": "831a6518bc730299d7e6dae7d0ba00d9966e714eacf6ee07e7421527430a1873",
+      "package_path": "packages/78e77a203fcee7f751c25b9cad0fa72bc7a4954e222f53535ef52945d9549227.tgz",
+      "manifest_path": "manifests/78e77a203fcee7f751c25b9cad0fa72bc7a4954e222f53535ef52945d9549227.json",
+      "source_dir": "summarize",
+      "updated_at_ms": 1773327543255
+    }
+  ]
+}

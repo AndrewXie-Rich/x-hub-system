@@ -45,29 +45,31 @@ struct SupervisorStatusBar: View {
     // MARK: - Subviews
 
     private var supervisorInfo: some View {
-        HStack(spacing: 8) {
+        let snapshot = supervisorExecutionSnapshot
+        let tooltip = ExecutionRoutePresentation.tooltip(
+            configuredModelId: configuredSupervisorModelId,
+            snapshot: snapshot
+        )
+        let statusColor = supervisorStatusColor(snapshot: snapshot)
+
+        return HStack(spacing: 8) {
             Image(systemName: "brain.head.profile")
                 .foregroundColor(.purple)
                 .font(.system(size: 14))
 
-            Text("Supervisor")
+            Text("Supervisor (\(ExecutionRoutePresentation.activeModelLabel(configuredModelId: configuredSupervisorModelId, snapshot: snapshot)))")
                 .font(.system(size: 13, weight: .medium))
-
-            Text("(\(supervisorRouteLabel))")
-                .font(.system(size: 11))
-                .foregroundColor(.secondary)
                 .lineLimit(1)
-                .help(supervisorRouteTooltip)
+                .help(tooltip)
 
-            HStack(spacing: 4) {
-                Circle()
-                    .fill(supervisorAvailability.color)
-                    .frame(width: 8, height: 8)
-
-                Text(supervisorAvailability.label)
-                    .font(.system(size: 11))
-                    .foregroundColor(supervisorAvailability.color)
-            }
+            Text(supervisorStatusText(snapshot: snapshot))
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(statusColor)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(statusColor.opacity(0.12))
+                .clipShape(Capsule())
+                .help(tooltip)
 
             if !supervisor.memorySize.isEmpty && supervisor.memorySize != "0GB" {
                 Label(supervisor.memorySize, systemImage: "internaldrive")
@@ -83,74 +85,22 @@ struct SupervisorStatusBar: View {
         return configured
     }
 
-    private var lastActualSupervisorModelId: String {
-        supervisorManager.lastSupervisorActualModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+    private var supervisorExecutionSnapshot: AXRoleExecutionSnapshot {
+        ExecutionRoutePresentation.supervisorSnapshot(from: supervisorManager)
     }
 
-    private var supervisorRouteLabel: String {
-        let configured = configuredSupervisorModelId
-        let actual = lastActualSupervisorModelId
-
-        if !actual.isEmpty, !configured.isEmpty, normalizedModelIdentity(actual) != normalizedModelIdentity(configured) {
-            return "cfg \(shortModelLabel(configured)) / actual \(shortModelLabel(actual))"
+    private func supervisorStatusText(snapshot: AXRoleExecutionSnapshot) -> String {
+        if snapshot.executionPath == "no_record" && !appModel.hubInteractive {
+            return "Hub Off"
         }
-        if !actual.isEmpty {
-            return shortModelLabel(actual)
-        }
-        if !configured.isEmpty {
-            return shortModelLabel(configured)
-        }
-        return "default hub route"
+        return ExecutionRoutePresentation.statusText(snapshot: snapshot)
     }
 
-    private var supervisorRouteTooltip: String {
-        let configured = configuredSupervisorModelId
-        let actual = lastActualSupervisorModelId
-        let mode = supervisorManager.lastSupervisorReplyExecutionMode.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        var lines: [String] = []
-        lines.append("configured=\(configured.isEmpty ? "default_hub_route" : configured)")
-        if !actual.isEmpty {
-            lines.append("last_actual=\(actual)")
+    private func supervisorStatusColor(snapshot: AXRoleExecutionSnapshot) -> Color {
+        if snapshot.executionPath == "no_record" && !appModel.hubInteractive {
+            return .red
         }
-        if !mode.isEmpty {
-            lines.append("last_mode=\(mode)")
-        }
-        lines.append("transport=\(HubAIClient.transportMode().rawValue)")
-        return lines.joined(separator: "\n")
-    }
-
-    private var supervisorAvailability: (label: String, color: Color) {
-        if appModel.hubInteractive {
-            return ("Hub 可达", .green)
-        }
-
-        switch supervisorManager.lastSupervisorReplyExecutionMode {
-        case "local_direct_reply", "local_direct_action", "local_preflight", "local_fallback_after_remote_error":
-            return ("本地可用", .orange)
-        default:
-            return ("Hub 未连通", .red)
-        }
-    }
-
-    private func shortModelLabel(_ raw: String) -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "default hub route" }
-        if trimmed.count <= 30 {
-            return trimmed
-        }
-        if let slash = trimmed.lastIndex(of: "/") {
-            let suffix = trimmed[trimmed.index(after: slash)...]
-            if suffix.count <= 30 {
-                return String(suffix)
-            }
-        }
-        let end = trimmed.index(trimmed.startIndex, offsetBy: 30)
-        return String(trimmed[..<end]) + "..."
-    }
-
-    private func normalizedModelIdentity(_ raw: String) -> String {
-        raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return ExecutionRoutePresentation.statusColor(snapshot: snapshot)
     }
 
     private var projectStatistics: some View {

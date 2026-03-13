@@ -6,13 +6,13 @@ This is where the Hub becomes a desktop control plane instead of just a service 
 
 Public product name: `X-Hub`
 
-Developer note: the source package directory is still named `RELFlowHub/` because the internal Swift package / target rename has not been fully finished yet. The preferred source-run executable alias is `XHub`.
+Developer note: the source package still lives under the historical internal directory `RELFlowHub/` for compatibility, but the preferred public source-run entrypoint is `bash x-hub/tools/run_xhub_from_source.command`.
 
 Release scope note: this directory is an implementation surface for the active Hub desktop app. It does not expand the validated public release scope on its own; external wording still follows the repository root `README.md` and release docs.
 
 ## What Lives Here
 
-- `RELFlowHub/`: primary macOS app source for the public X-Hub desktop app
+- `RELFlowHub/`: internal Swift package root for the public X-Hub desktop app
 - `app_template*`: packaging and template app surfaces
 - `assets/`: app assets and packaging resources
 
@@ -41,8 +41,7 @@ open build/X-Hub.app
 Developer source run:
 
 ```bash
-cd x-hub/macos/RELFlowHub
-swift run XHub
+bash x-hub/tools/run_xhub_from_source.command
 ```
 
 ## Boundary

@@ -1,4 +1,4 @@
-"""Write demo app heartbeats for REL Flow Hub satellites.
+"""Write demo app heartbeats for X-Hub satellites.
 
 By default the hub considers a client "connected" only if its heartbeat is refreshed
 within a short TTL. This script can either write once, or keep heartbeats alive for a
@@ -19,7 +19,7 @@ import time
 
 
 def _clients_dir() -> str:
-    # Matches RELFlowHubCore.ClientStorage.dir() default (App Group).
+    # Matches the Hub client storage default (App Group).
     return os.path.expanduser('~/Library/Group Containers/group.rel.flowhub/clients')
 
 

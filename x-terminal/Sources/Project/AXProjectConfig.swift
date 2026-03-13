@@ -1,7 +1,7 @@
 import Foundation
 
 struct AXProjectConfig: Codable, Equatable {
-    static let currentSchemaVersion = 8
+    static let currentSchemaVersion = 9
 
     var schemaVersion: Int
 
@@ -44,6 +44,10 @@ struct AXProjectConfig: Codable, Equatable {
     // Project root is always implicitly included and does not need to be repeated here.
     var governedReadableRoots: [String]
 
+    // If true, local needs-confirm tools may auto-run when governed device authority is active.
+    // Dangerous always-confirm commands still remain manual.
+    var governedAutoApproveLocalToolCalls: Bool
+
     // User-visible autonomy policy preset + hub clamp slot for OpenClaw-style execution.
     var autonomyMode: AXProjectAutonomyMode
     var autonomyAllowDeviceTools: Bool
@@ -79,6 +83,7 @@ struct AXProjectConfig: Codable, Equatable {
             deviceToolGroups: [],
             workspaceBindingHash: "",
             governedReadableRoots: [],
+            governedAutoApproveLocalToolCalls: false,
             autonomyMode: .manual,
             autonomyAllowDeviceTools: false,
             autonomyAllowBrowserRuntime: false,
@@ -202,6 +207,12 @@ struct AXProjectConfig: Codable, Equatable {
         return out.normalizedAutomationState()
     }
 
+    func settingGovernedAutoApproveLocalToolCalls(enabled: Bool) -> AXProjectConfig {
+        var out = self
+        out.governedAutoApproveLocalToolCalls = enabled
+        return out.normalizedAutomationState()
+    }
+
     static func normalizedGovernedReadableRoots(
         _ paths: [String],
         projectRoot: URL
@@ -315,6 +326,7 @@ struct AXProjectConfig: Codable, Equatable {
         case deviceToolGroups
         case workspaceBindingHash
         case governedReadableRoots
+        case governedAutoApproveLocalToolCalls
         case autonomyMode
         case autonomyAllowDeviceTools
         case autonomyAllowBrowserRuntime
@@ -344,6 +356,7 @@ struct AXProjectConfig: Codable, Equatable {
         deviceToolGroups: [String],
         workspaceBindingHash: String,
         governedReadableRoots: [String],
+        governedAutoApproveLocalToolCalls: Bool,
         autonomyMode: AXProjectAutonomyMode,
         autonomyAllowDeviceTools: Bool,
         autonomyAllowBrowserRuntime: Bool,
@@ -371,6 +384,7 @@ struct AXProjectConfig: Codable, Equatable {
         self.deviceToolGroups = deviceToolGroups
         self.workspaceBindingHash = workspaceBindingHash
         self.governedReadableRoots = governedReadableRoots
+        self.governedAutoApproveLocalToolCalls = governedAutoApproveLocalToolCalls
         self.autonomyMode = autonomyMode
         self.autonomyAllowDeviceTools = autonomyAllowDeviceTools
         self.autonomyAllowBrowserRuntime = autonomyAllowBrowserRuntime
@@ -404,6 +418,7 @@ struct AXProjectConfig: Codable, Equatable {
         deviceToolGroups = (try? c.decode([String].self, forKey: .deviceToolGroups)) ?? []
         workspaceBindingHash = (try? c.decode(String.self, forKey: .workspaceBindingHash)) ?? ""
         governedReadableRoots = (try? c.decode([String].self, forKey: .governedReadableRoots)) ?? []
+        governedAutoApproveLocalToolCalls = (try? c.decode(Bool.self, forKey: .governedAutoApproveLocalToolCalls)) ?? false
         autonomyMode = (try? c.decode(AXProjectAutonomyMode.self, forKey: .autonomyMode)) ?? .manual
         autonomyAllowDeviceTools = (try? c.decode(Bool.self, forKey: .autonomyAllowDeviceTools)) ?? false
         autonomyAllowBrowserRuntime = (try? c.decode(Bool.self, forKey: .autonomyAllowBrowserRuntime)) ?? false

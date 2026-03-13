@@ -100,6 +100,138 @@ struct XTAgentDirectLocalExecutionVerdict: Codable, Equatable, Sendable {
     }
 }
 
+enum XTAgentSkillImportReviewFormatter {
+    static func formatHubRecordReview(
+        recordJSON: String?,
+        fallbackStagingId: String,
+        fallbackSkillId: String
+    ) -> String {
+        let raw = (recordJSON ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty,
+              let data = raw.data(using: .utf8),
+              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return "staging_id: \(fallbackStagingId)\nskill_id: \(fallbackSkillId)\n\nHub did not return structured review JSON."
+        }
+
+        let manifest = root["import_manifest"] as? [String: Any]
+        let findings = root["findings"] as? [[String: Any]] ?? []
+
+        var lines: [String] = []
+        appendLine(into: &lines, label: "staging_id", value: stringValue(root["staging_id"]) ?? fallbackStagingId)
+        appendLine(into: &lines, label: "status", value: stringValue(root["status"]))
+        appendLine(into: &lines, label: "audit_ref", value: stringValue(root["audit_ref"]))
+        appendLine(into: &lines, label: "requested_by", value: stringValue(root["requested_by"]))
+        appendLine(into: &lines, label: "note", value: stringValue(root["note"]))
+        appendLine(into: &lines, label: "skill_id", value: stringValue(manifest?["skill_id"]) ?? fallbackSkillId)
+        appendLine(into: &lines, label: "display_name", value: stringValue(manifest?["display_name"]))
+        appendLine(into: &lines, label: "preflight", value: stringValue(manifest?["preflight_status"]))
+        appendLine(into: &lines, label: "vetter", value: stringValue(root["vetter_status"]))
+        appendCountLine(
+            into: &lines,
+            label: "vetter_counts",
+            critical: intValue(root["vetter_critical_count"]),
+            warning: intValue(root["vetter_warn_count"])
+        )
+        appendLine(into: &lines, label: "vetter_audit_ref", value: stringValue(root["vetter_audit_ref"]))
+        appendLine(into: &lines, label: "vetter_report_ref", value: stringValue(root["vetter_report_ref"]))
+        appendLine(into: &lines, label: "risk", value: stringValue(manifest?["risk_level"]))
+        appendLine(into: &lines, label: "scope", value: stringValue(manifest?["policy_scope"]))
+        appendLine(into: &lines, label: "requires_grant", value: boolStringValue(manifest?["requires_grant"]))
+        appendLine(into: &lines, label: "blocked_reason", value: stringValue(root["promotion_blocked_reason"]))
+        appendLine(into: &lines, label: "enabled_package", value: shortSHA(stringValue(root["enabled_package_sha256"])))
+        appendLine(into: &lines, label: "enabled_scope", value: stringValue(root["enabled_scope"]))
+
+        let capabilities = stringArrayValue(manifest?["normalized_capabilities"])
+        if !capabilities.isEmpty {
+            lines.append("capabilities: \(capabilities.joined(separator: ", "))")
+        }
+
+        if !findings.isEmpty {
+            lines.append("")
+            lines.append("findings (\(findings.count)):")
+            for finding in findings.prefix(6) {
+                let code = stringValue(finding["code"]) ?? "finding"
+                let detail = stringValue(finding["detail"]) ?? stringValue(finding["reason"]) ?? ""
+                lines.append("- \(code): \(detail)")
+            }
+        }
+
+        if lines.isEmpty {
+            return raw
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func appendLine(into lines: inout [String], label: String, value: String?) {
+        let normalized = nonEmptyString(value)
+        guard let normalized else { return }
+        lines.append("\(label): \(normalized)")
+    }
+
+    private static func appendCountLine(
+        into lines: inout [String],
+        label: String,
+        critical: Int?,
+        warning: Int?
+    ) {
+        guard critical != nil || warning != nil else { return }
+        let criticalCount = max(0, critical ?? 0)
+        let warnCount = max(0, warning ?? 0)
+        lines.append("\(label): critical=\(criticalCount) warn=\(warnCount)")
+    }
+
+    private static func stringValue(_ value: Any?) -> String? {
+        switch value {
+        case let string as String:
+            return string
+        case let number as NSNumber:
+            return number.stringValue
+        default:
+            return nil
+        }
+    }
+
+    private static func boolStringValue(_ value: Any?) -> String? {
+        switch value {
+        case let bool as Bool:
+            return bool ? "true" : "false"
+        case let number as NSNumber:
+            return number.boolValue ? "true" : "false"
+        default:
+            return nil
+        }
+    }
+
+    private static func intValue(_ value: Any?) -> Int? {
+        switch value {
+        case let number as NSNumber:
+            return number.intValue
+        case let string as String:
+            return Int(string.trimmingCharacters(in: .whitespacesAndNewlines))
+        default:
+            return nil
+        }
+    }
+
+    private static func stringArrayValue(_ value: Any?) -> [String] {
+        guard let raw = value as? [Any] else { return [] }
+        return raw.compactMap { item in
+            nonEmptyString(stringValue(item))
+        }
+    }
+
+    private static func nonEmptyString(_ value: String?) -> String? {
+        let trimmed = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func shortSHA(_ value: String?) -> String? {
+        let normalized = nonEmptyString(value)
+        guard let normalized else { return nil }
+        return String(normalized.prefix(12))
+    }
+}
+
 enum XTAgentSkillImportNormalizer {
     static func normalize(skillMarkdownURL: URL, repoRoot: URL) -> XTAgentSkillImportPreflightReport {
         let resolvedRepoRoot = repoRoot.standardizedFileURL.resolvingSymlinksInPath()

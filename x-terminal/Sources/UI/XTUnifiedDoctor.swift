@@ -696,6 +696,9 @@ enum XTUnifiedDoctorBuilder {
     ) -> XTUnifiedDoctorSection {
         let projectRefs = snapshot.projectIndexEntries.map(\.path)
         let globalRefs = snapshot.globalIndexEntries.map(\.path)
+        let activePublishers = snapshot.activePublisherIDs
+        let activeSources = snapshot.activeSourceIDs
+        let baselinePublishers = snapshot.baselinePublisherIDs
         let details = [
             "hub_index_available=\(snapshot.hubIndexAvailable)",
             "installed_skills=\(snapshot.installedSkillCount)",
@@ -703,6 +706,18 @@ enum XTUnifiedDoctorBuilder {
             "partial_skills=\(snapshot.partialCompatibilityCount)",
             "revoked_matches=\(snapshot.revokedMatchCount)",
             "trusted_publishers=\(snapshot.trustEnabledPublisherCount)",
+            activePublishers.isEmpty ? "active_publishers=none" : "active_publishers=\(activePublishers.joined(separator: ","))",
+            activeSources.isEmpty ? "active_sources=none" : "active_sources=\(activeSources.joined(separator: ","))",
+            "local_dev_publisher_active=\(snapshot.localDevPublisherActive ? "yes" : "no")",
+            snapshot.baselineRecommendedSkills.isEmpty
+                ? "baseline_publishers=none"
+                : (baselinePublishers.isEmpty ? "baseline_publishers=none" : "baseline_publishers=\(baselinePublishers.joined(separator: ","))"),
+            snapshot.baselineRecommendedSkills.isEmpty
+                ? "baseline_local_dev=0/0"
+                : "baseline_local_dev=\(snapshot.baselineLocalDevSkillCount)/\(snapshot.baselineRecommendedSkills.count)",
+            snapshot.missingBaselineSkillIDs.isEmpty
+                ? "baseline_missing=none"
+                : "baseline_missing=\(snapshot.missingBaselineSkillIDs.joined(separator: ","))",
             projectRefs.isEmpty ? "project_indexes=none" : "project_indexes=\(projectRefs.joined(separator: ","))",
             globalRefs.isEmpty ? "global_indexes=none" : "global_indexes=\(globalRefs.joined(separator: ","))"
         ]
@@ -733,6 +748,19 @@ enum XTUnifiedDoctorBuilder {
             )
         }
 
+        if !snapshot.missingBaselineSkillIDs.isEmpty {
+            let missing = snapshot.missingBaselineSkillIDs.joined(separator: ", ")
+            return XTUnifiedDoctorSection(
+                kind: .skillsCompatibilityReadiness,
+                state: .inProgress,
+                headline: "Default Agent baseline is incomplete",
+                summary: "XT is reachable and compatible enough to continue, but one or more default baseline skills are still missing from the managed skill set.",
+                nextStep: "Import and enable the missing baseline skills, then repin the project/global profile. Missing: \(missing).",
+                repairEntry: .xtDiagnostics,
+                detailLines: details
+            )
+        }
+
         if snapshot.partialCompatibilityCount > 0 || !snapshot.conflictWarnings.isEmpty {
             return XTUnifiedDoctorSection(
                 kind: .skillsCompatibilityReadiness,
@@ -748,13 +776,9 @@ enum XTUnifiedDoctorBuilder {
         return XTUnifiedDoctorSection(
             kind: .skillsCompatibilityReadiness,
             state: .ready,
-            headline: snapshot.installedSkillCount == 0 ? "Skills compatibility is clear (no managed skills installed)" : "Skills compatibility is ready",
-            summary: snapshot.installedSkillCount == 0
-                ? "No managed skills are installed, so compatibility does not block assistant runtime readiness."
-                : "Installed skills are compatible enough for XT consumption, with no revoked matches or pin conflicts.",
-            nextStep: snapshot.installedSkillCount == 0
-                ? "Continue with core runtime verification; managed skills are optional for the first task."
-                : "Use the current project / global skills index as the single compatibility reference.",
+            headline: "Skills compatibility is ready",
+            summary: "Installed skills are compatible enough for XT consumption, with the default Agent baseline available and no revoked matches or pin conflicts.",
+            nextStep: "Use the current project / global skills index as the single compatibility reference.",
             repairEntry: .xtDiagnostics,
             detailLines: details
         )

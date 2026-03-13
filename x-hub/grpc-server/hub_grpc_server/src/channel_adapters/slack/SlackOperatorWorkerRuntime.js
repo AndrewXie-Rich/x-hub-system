@@ -4,6 +4,7 @@ import { createSlackHubActionExecutor } from './SlackHubActionExecutor.js';
 import { createSlackHubConnectorClient } from './SlackHubConnectorClient.js';
 import { createSlackIngressServer } from './SlackIngressWorker.js';
 import { createSlackResultPublisher } from './SlackResultPublisher.js';
+import { startOperatorChannelEventForwarder } from '../../operator_channel_event_forwarder.js';
 
 function safeString(input) {
   return String(input ?? '').trim();
@@ -123,6 +124,7 @@ export async function startSlackOperatorWorker({
   createHubActionExecutorFactory = createSlackHubActionExecutor,
   createSlackApiClientFactory = createSlackApiClient,
   createResultPublisherFactory = createSlackResultPublisher,
+  createEventForwarderFactory = startOperatorChannelEventForwarder,
   createIngressBridge = createSlackCommandIngressBridge,
   createIngressServerFactory = createSlackIngressServer,
   now_fn = Date.now,
@@ -173,7 +175,18 @@ export async function startSlackOperatorWorker({
         slack_client,
       })
     : null;
+  let event_forwarder = null;
+  const maybeSuppressGrantDecision = (result) => {
+    const actionName = safeString(result?.command?.action_name).toLowerCase();
+    const grantRequestId = safeString(result?.command?.pending_grant?.grant_request_id);
+    if (!grantRequestId) return;
+    if (actionName !== 'grant.approve' && actionName !== 'grant.reject') return;
+    event_forwarder?.suppressGrantDecision?.({
+      grant_request_id: grantRequestId,
+    });
+  };
   const executeResult = async (result) => {
+    maybeSuppressGrantDecision(result);
     if (!hub_action_executor || typeof hub_action_executor.execute !== 'function') {
       return result;
     }
@@ -188,6 +201,36 @@ export async function startSlackOperatorWorker({
     : (typeof on_result === 'function'
       ? (async (result) => await on_result(await executeResult(result)))
       : (result_publisher ? (async (result) => await result_publisher.publish(await executeResult(result))) : null));
+  if (
+    result_publisher
+    && (
+      typeof result_publisher.publishGrantDecision === 'function'
+      || typeof result_publisher.publishGrantPending === 'function'
+    )
+    && createEventForwarderFactory
+  ) {
+    event_forwarder = createEventForwarderFactory({
+      provider: 'slack',
+      hub_client,
+      log,
+      publish_grant_pending: typeof result_publisher.publishGrantPending === 'function'
+        ? (async ({ event, binding }) => {
+            return await result_publisher.publishGrantPending({
+              event,
+              binding,
+            });
+          })
+        : null,
+      publish_grant_decision: typeof result_publisher.publishGrantDecision === 'function'
+        ? (async ({ event, binding }) => {
+            return await result_publisher.publishGrantDecision({
+              event,
+              binding,
+            });
+          })
+        : null,
+    });
+  }
   const bridge = createIngressBridge({
     hub_client,
     now_fn,
@@ -226,6 +269,9 @@ export async function startSlackOperatorWorker({
   log?.(
     `[hub_slack_operator] hub=${config.hub_address} app_id=${config.app_id} connector_token_present=${config.connector_token_present ? '1' : '0'} reply_delivery_ready=${slack_client ? '1' : '0'}`
   );
+  log?.(
+    `[hub_slack_operator] proactive_grant_forwarding_ready=${event_forwarder?.snapshot?.().subscribed ? '1' : '0'}`
+  );
 
   return {
     enabled: true,
@@ -237,10 +283,16 @@ export async function startSlackOperatorWorker({
     hub_action_executor,
     slack_client,
     result_publisher,
+    event_forwarder,
     async close() {
       try {
         await server.close();
       } finally {
+        try {
+          await event_forwarder?.close?.();
+        } catch {
+          // ignore
+        }
         try {
           hub_client?.close?.();
         } catch {
@@ -258,6 +310,7 @@ export async function startSlackOperatorWorker({
           bot_token: '',
         },
         address,
+        event_forwarder: event_forwarder?.snapshot?.() || null,
       };
     },
   };

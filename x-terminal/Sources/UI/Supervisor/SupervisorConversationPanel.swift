@@ -13,8 +13,6 @@ struct SupervisorConversationPanel: View {
         VStack(spacing: 0) {
             voiceStatusRail
 
-            executionStatusSection
-
             Divider()
 
             messageList
@@ -104,30 +102,6 @@ struct SupervisorConversationPanel: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(Color(NSColor.controlBackgroundColor).opacity(0.55))
-    }
-
-    private var executionStatusSection: some View {
-        VStack(spacing: 8) {
-            RoleExecutionStatusRail(
-                title: "Supervisor Recent Actual Model Usage",
-                subtitle: "Supervisor route only",
-                roles: [.supervisor],
-                snapshots: [.supervisor: supervisorExecutionSnapshot]
-            ) { _ in
-                AXRoleExecutionSnapshots.configuredModelId(
-                    for: .supervisor,
-                    projectConfig: nil,
-                    settings: appModel.settingsStore.settings
-                )
-            }
-
-            if let projectStatusRail {
-                projectStatusRail
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 10)
-        .padding(.bottom, 6)
     }
 
     private var messageList: some View {
@@ -232,72 +206,6 @@ struct SupervisorConversationPanel: View {
             .padding(.bottom, 8)
         }
         .background(Color(NSColor.windowBackgroundColor))
-    }
-
-    private var supervisorExecutionSnapshot: AXRoleExecutionSnapshot {
-        let mode = supervisor.lastSupervisorReplyExecutionMode.trimmingCharacters(in: .whitespacesAndNewlines)
-        let executionPath: String
-        switch mode {
-        case "remote_model":
-            executionPath = "remote_model"
-        case "local_fallback_after_remote_error":
-            executionPath = "local_fallback_after_remote_error"
-        case "local_preflight", "local_direct_reply", "local_direct_action":
-            executionPath = "local_runtime"
-        default:
-            executionPath = "no_record"
-        }
-
-        return AXRoleExecutionSnapshots.snapshot(
-            role: .supervisor,
-            updatedAt: Date().timeIntervalSince1970,
-            stage: "supervisor",
-            requestedModelId: supervisor.lastSupervisorRequestedModelId,
-            actualModelId: supervisor.lastSupervisorActualModelId,
-            runtimeProvider: runtimeProviderForSupervisorSnapshot(path: executionPath),
-            executionPath: executionPath,
-            fallbackReasonCode: supervisor.lastSupervisorRemoteFailureReasonCode,
-            source: "supervisor_live_state"
-        )
-    }
-
-    private var projectStatusRail: RoleExecutionStatusRail? {
-        guard let projectEntry = selectedProjectEntry else { return nil }
-        let ctx = AXProjectContext(root: URL(fileURLWithPath: projectEntry.rootPath, isDirectory: true))
-        let snapshots = AXRoleExecutionSnapshots.latestSnapshots(for: ctx)
-        let roles: [AXRole] = [.coder, .coarse, .refine, .reviewer, .advisor]
-
-        return RoleExecutionStatusRail(
-            title: "Selected Project Recent Actual Model Usage",
-            subtitle: projectEntry.displayName,
-            roles: roles,
-            snapshots: snapshots
-        ) { role in
-            AXRoleExecutionSnapshots.configuredModelId(
-                for: role,
-                projectConfig: appModel.projectConfig,
-                settings: appModel.settingsStore.settings
-            )
-        }
-    }
-
-    private var selectedProjectEntry: AXProjectEntry? {
-        guard let projectID = appModel.selectedProjectId,
-              projectID != AXProjectRegistry.globalHomeId else {
-            return nil
-        }
-        return appModel.registry.project(for: projectID)
-    }
-
-    private func runtimeProviderForSupervisorSnapshot(path: String) -> String {
-        switch path {
-        case "remote_model":
-            return "Hub (Remote)"
-        case "local_fallback_after_remote_error", "local_runtime":
-            return "Hub (Local)"
-        default:
-            return ""
-        }
     }
 
     private var voicePhaseLabel: String {

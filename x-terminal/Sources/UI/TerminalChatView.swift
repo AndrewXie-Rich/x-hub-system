@@ -336,6 +336,17 @@ struct TerminalChatView: View {
             return items.filter { $0.insertion.lowercased().contains(q) || $0.title.lowercased().contains(q) }
         }
 
+        if lower == "/route" || lower.hasPrefix("/route ") {
+            let items: [SlashSuggestion] = [
+                SlashSuggestion(title: "/route diagnose", subtitle: "diagnose current project model route", insertion: "/route diagnose"),
+            ]
+            let q = String(lower.dropFirst("/route".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            if q.isEmpty {
+                return items
+            }
+            return items.filter { $0.insertion.lowercased().contains(q) || $0.title.lowercased().contains(q) }
+        }
+
         if lower == "/trusted-automation" || lower.hasPrefix("/trusted-automation ") || lower == "/ta" || lower.hasPrefix("/ta ") {
             let items: [SlashSuggestion] = [
                 SlashSuggestion(title: "/trusted-automation", subtitle: "show trusted automation status", insertion: "/trusted-automation"),
@@ -359,6 +370,7 @@ struct TerminalChatView: View {
             SlashSuggestion(title: "/tools", subtitle: "tool policy profile/allow/deny", insertion: "/tools"),
             SlashSuggestion(title: "/trusted-automation", subtitle: "project trusted automation binding", insertion: "/trusted-automation"),
             SlashSuggestion(title: "/hub route", subtitle: "set Hub transport auto/grpc/file", insertion: "/hub route"),
+            SlashSuggestion(title: "/route diagnose", subtitle: "diagnose current project model route", insertion: "/route diagnose"),
             SlashSuggestion(title: "/models", subtitle: "show Hub loaded models", insertion: "/models"),
             SlashSuggestion(title: "/model <id>", subtitle: "set project coder model", insertion: "/model "),
             SlashSuggestion(title: "/network 30m", subtitle: "request network for paid models", insertion: "/network 30m"),

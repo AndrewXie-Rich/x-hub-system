@@ -6,9 +6,12 @@ import RELFlowHubCore
 
 @MainActor
 final class EmbeddedBridgeRunner {
+    private static let defaultAlwaysOnSeconds: Double = 10 * 365 * 24 * 60 * 60
+
     private var heartbeatTimer: Timer?
     private var commandTimer: Timer?
     private var enabledUntil: Double = 0
+    private var operatorDisabled: Bool = false
     private let startedAt = Date().timeIntervalSince1970
 
     // Shared container (App Group). This is the contract with the core Hub.
@@ -44,8 +47,7 @@ final class EmbeddedBridgeRunner {
         try? FileManager.default.createDirectory(at: commandsDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: requestsDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: responsesDir, withIntermediateDirectories: true)
-        // Default: enabled for 0 seconds until user turns it on from core Hub.
-        enabledUntil = 0
+        enabledUntil = Self.defaultEnabledUntil(now: Date().timeIntervalSince1970)
         writeAudit("bridge_start")
         writeAudit("bridge_scheduler total=\(maxConcurrentTotal) fetch=\(maxConcurrentWebFetch) ai=\(maxConcurrentAIGenerate)")
 
@@ -83,8 +85,15 @@ final class EmbeddedBridgeRunner {
         if enabledUntil <= 0 {
             return "off"
         }
+        if enabledUntil - Date().timeIntervalSince1970 > 7 * 24 * 60 * 60 {
+            return "on"
+        }
         let rem = Int(max(0, enabledUntil - Date().timeIntervalSince1970))
         return "on (\(rem)s left)"
+    }
+
+    private static func defaultEnabledUntil(now: Double) -> Double {
+        now + defaultAlwaysOnSeconds
     }
 
     private var activeRequestTotal: Int {
@@ -112,25 +121,25 @@ final class EmbeddedBridgeRunner {
     }
 
     private func tick() {
-        // Load settings (enabled_until).
+        let now = Date().timeIntervalSince1970
+        var loadedEnabledUntil: Double?
         if let data = try? Data(contentsOf: settingsFile),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             if let v = obj["enabled_until"] as? Double {
-                enabledUntil = v
+                loadedEnabledUntil = v
             } else if let v = obj["enabled_until"] as? Int {
-                enabledUntil = Double(v)
+                loadedEnabledUntil = Double(v)
             }
         }
 
-        // In embedded mode, expiration only disables networking for requests.
-        if enabledUntil > 0 && Date().timeIntervalSince1970 > enabledUntil {
-            writeAudit("bridge_auto_disable")
+        if operatorDisabled {
             enabledUntil = 0
-            if let data = try? JSONSerialization.data(withJSONObject: [
-                "enabled_until": 0,
-                "updated_at": Date().timeIntervalSince1970,
-            ], options: []) {
-                try? data.write(to: settingsFile, options: .atomic)
+        } else {
+            let defaultUntil = Self.defaultEnabledUntil(now: now)
+            if let loaded = loadedEnabledUntil, loaded > 0 {
+                enabledUntil = max(enabledUntil, loaded, defaultUntil)
+            } else if enabledUntil <= 0 || now > enabledUntil {
+                enabledUntil = defaultUntil
             }
         }
 
@@ -175,6 +184,7 @@ final class EmbeddedBridgeRunner {
             if typ == "stop" {
                 // Embedded mode: keep service alive, only disable networking window.
                 writeAudit("bridge_cmd_stop")
+                operatorDisabled = true
                 enabledUntil = 0
                 if let data = try? JSONSerialization.data(withJSONObject: [
                     "enabled_until": 0,
@@ -186,8 +196,13 @@ final class EmbeddedBridgeRunner {
                 continue
             }
             if typ == "enable_until" {
+                operatorDisabled = false
                 if let v = obj["enabled_until"] as? Double {
-                    enabledUntil = v
+                    enabledUntil = max(enabledUntil, v, Self.defaultEnabledUntil(now: Date().timeIntervalSince1970))
+                } else if let v = obj["enabled_until"] as? Int {
+                    enabledUntil = max(enabledUntil, Double(v), Self.defaultEnabledUntil(now: Date().timeIntervalSince1970))
+                } else {
+                    enabledUntil = max(enabledUntil, Self.defaultEnabledUntil(now: Date().timeIntervalSince1970))
                 }
                 writeAudit("bridge_cmd_enable_until")
                 tick()

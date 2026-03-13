@@ -102,6 +102,18 @@
     - `self-improving-agent`
     - `summarize`
   - XT skills doctor 会把这四项视为默认 baseline，而不是“永远可选”
+  - XT 已补真实 Hub skills control-plane bridge：
+    - `SearchSkills`
+    - `SetSkillPin`
+    - `ListResolvedSkills`
+  - XT toolbar 已补 `Baseline` 入口：
+    - `Install in Current Project`
+    - `Install Globally`
+  - baseline 安装固定走真实治理链：
+    - 先 `ListResolvedSkills` 判定目标 scope 当前是否已具备 baseline
+    - 再 `SearchSkills` 查找每个 baseline 项是否有可 pin 的真实包
+    - 最后只对带 `package_sha256` 的项执行 `SetSkillPin`
+  - builtin catalog 但没有上传包的项会明确显示为“缺 uploadable package”，不做假安装
 
 仍待继续推进的主线：
 
@@ -285,9 +297,20 @@
 - 当前实现（2026-03-12）：
   - Hub builtin catalog 已默认收录这四项
   - XT doctor 已对缺失 baseline 给出明确提示
+  - XT 已支持真实 baseline 安装入口：
+    - toolbar `Baseline -> Install in Current Project`
+    - toolbar `Baseline -> Install Globally`
+  - XT baseline 安装不是假状态切换，而是：
+    - `ListResolvedSkills` 先判断目标 scope 已解析出的 skills
+    - `SearchSkills` 查每个 baseline skill 是否存在真实上传包
+    - `SetSkillPin` 只 pin `package_sha256` 非空的候选项
+  - 若某 baseline skill 目前只有 builtin catalog 条目、还没有真实上传包：
+    - XT 只显示缺口和 install hint
+    - 不会把它标成“已安装”
 - 后续 DoD:
-  - XT skills 搜索 / pin UI 支持一键安装 baseline profile
-  - project/global scope 可分别 pin baseline 项
+  - XT 完整 skills 搜索页与 pin 管理页落地
+  - resolved cache 在 remote reconnect / Hub refresh 后自动 revalidate
+  - baseline 安装结果可回写到更稳定的 UI readiness surface，而不是只靠即时提示
 
 ### 4.3 `XT-W3-34-B` Repo Write Surface: `repo.write.file`
 

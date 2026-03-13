@@ -7,6 +7,7 @@ We avoid python-docx/lxml to keep this repo self-contained.
 from __future__ import annotations
 
 import os
+import shutil
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -41,7 +42,7 @@ def _blank() -> str:
 def build_docx(out_path: Path, *, version: str) -> None:
     now = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
-    title = f"AX REL Flow Hub Security Whitepaper (v{version})"
+    title = f"AX X-Hub Security Whitepaper (v{version})"
 
     # Use plain paragraphs + ASCII diagrams; Word will render this fine.
     paras: list[str] = []
@@ -56,7 +57,7 @@ def build_docx(out_path: Path, *, version: str) -> None:
         "Hub 的安全设计采用 Offline-First + Least-Privilege（最小权限）原则：\n"
         "- Hub Core（X-Hub.app）不具备出网能力（无 network client entitlement）。\n"
         "- 所有敏感能力通过 macOS 原生权限体系（TCC/App Sandbox/Code Signing）进行显式授权与隔离。\n"
-        "- 需要联网时，使用独立可审计的 Bridge（X-Hub Bridge.app）作为网络边界，默认关闭，可限时启用。\n"
+        "- 需要联网时，使用独立可审计的 Bridge（X-Hub Bridge.app）作为网络边界；Bridge 默认随 Hub 保持可用，具体 Terminal 的联网权限由 Hub 按设备能力位控制。\n"
         "- 与卫星应用（FA Tracker 等）的交互默认采用可审计的本地 IPC（文件投递/心跳），避免隐式网络依赖。"
     ))
     paras.append(_blank())
@@ -65,7 +66,7 @@ def build_docx(out_path: Path, *, version: str) -> None:
     paras.append(_p("- 0.1.1 零出网：Hub Core 不产生任何外向网络连接 (network egress)。"))
     paras.append(_p("- 0.1.2 最小数据：默认只读取“计数/状态信号”（counts-only），避免读取内容本体。"))
     paras.append(_p("- 0.1.3 可审计：关键交互面（IPC/状态文件/权限）可落地为可检查的本地证据。"))
-    paras.append(_p("- 0.1.4 可分离：需要联网能力时，在可控边界内显式启用 Bridge。"))
+    paras.append(_p("- 0.1.4 可分离：联网仍只允许发生在 Bridge 边界内，且可按 Terminal / 设备能力单独切断。"))
     paras.append(_blank())
 
     paras.append(_p("1. 威胁模型 (Threat Model)", bold=True))
@@ -82,7 +83,7 @@ def build_docx(out_path: Path, *, version: str) -> None:
     paras.append(_p("2. 系统架构与组件边界", bold=True))
     paras.append(_p("2.1 组件", bold=True))
     paras.append(_p("- Hub Core: X-Hub.app（App Sandbox + Offline, 不具备 network client entitlement）"))
-    paras.append(_p("- Bridge: X-Hub Bridge.app（可选，具备 network client entitlement，默认关闭，可限时启用）"))
+    paras.append(_p("- Bridge: X-Hub Bridge.app（具备 network client entitlement；默认随 Hub 运行，但是否允许某个 Terminal 联网仍由 Hub 的设备策略决定）"))
     paras.append(_p("- Dock Agent: X-Hub Dock Agent.app（可选，用于读取 Dock badge 计数，需 Accessibility）"))
     paras.append(_p("- Satellites: 由你控制的自研应用（如 FA Tracker、未来 AX Coder），通过本地 IPC 接入 Hub。"))
     paras.append(_blank())
@@ -120,9 +121,9 @@ def build_docx(out_path: Path, *, version: str) -> None:
     ))
     paras.append(_p("3.2 Bridge：显式网络边界", bold=True))
     paras.append(_p(
-        "当且仅当需要联网功能时，启用 Bridge：\n"
+        "所有联网功能都只能经由 Bridge 边界执行：\n"
         "- Bridge 是独立可执行体，具备 network client entitlement\n"
-        "- 默认关闭，且可以按时间窗口启用（例如 30 分钟）\n"
+        "- Bridge 默认随 Hub 运行，但是否允许某个 Terminal 触发联网，由 Hub 的设备级 capability / grant / policy 链决定\n"
         "- Hub Core 与 Bridge 之间仅通过本地 IPC 交换有限、可审计的数据"
     ))
     paras.append(_blank())
@@ -190,9 +191,10 @@ def build_docx(out_path: Path, *, version: str) -> None:
         "    -> (3) 缺失 entitlement => 系统拒绝 socket/HTTP 出网\n"
         "    -> (4) Hub Core 保持离线\n"
         "\n"
-        "(A) 若用户显式启用 Bridge\n"
+        "(A) Bridge 默认可用\n"
         "    -> Bridge 进程具备 network.client\n"
-        "    -> 网络调用仅发生在 Bridge 边界内\n",
+        "    -> 网络调用仅发生在 Bridge 边界内\n"
+        "    -> 是否允许某个 Terminal 发起联网，由 Hub 的设备策略决定\n",
         monospace=True,
     ))
     paras.append(_blank())
@@ -218,7 +220,7 @@ def build_docx(out_path: Path, *, version: str) -> None:
 
     paras.append(_p("8. 附录：运行与审计建议", bold=True))
     paras.append(_p("- 建议从 /Applications 运行，避免 App Translocation 导致权限绑定变化。"))
-    paras.append(_p("- 建议定期检查 Bridge 是否处于禁用状态（默认应为禁用）。"))
+    paras.append(_p("- 建议定期检查 Bridge 心跳与设备联网能力配置；默认应保持 Bridge 可用，但只给需要的 Terminal 开放联网能力。"))
     paras.append(_p("- 审计时优先检查 entitlements 与本地 IPC/状态文件。"))
 
     document_xml = (
@@ -287,8 +289,11 @@ def build_docx(out_path: Path, *, version: str) -> None:
 def main() -> int:
     ver = os.environ.get("AX_REL_FLOW_HUB_VERSION", "1.2.9")
     # Repo layout (GitHub-friendly): docs live at repo-root `docs/`.
-    out = Path("docs") / f"AX_RELFlowHub_Security_Whitepaper_v{ver}.docx"
+    out = Path("docs") / f"AX_X-Hub_Security_Whitepaper_v{ver}.docx"
     build_docx(out, version=ver)
+    legacy_out = Path("docs") / f"AX_RELFlowHub_Security_Whitepaper_v{ver}.docx"
+    if legacy_out != out:
+        shutil.copyfile(out, legacy_out)
     print(str(out))
     return 0
 

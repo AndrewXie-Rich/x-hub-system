@@ -110,4 +110,110 @@ struct SupervisorPortfolioActionabilitySnapshotTests {
         #expect(actionability.recommendedActions.first?.kind == .missingNextStep)
         #expect(actionability.recommendedActions.first?.recommendedNextAction.contains("Define one concrete next step") == true)
     }
+
+    @Test
+    func decisionProposalSurfacesWhileCompletedArchiveRollupStaysOutOfTodayQueue() {
+        let now = Date(timeIntervalSince1970: 1_776_101_000).timeIntervalSince1970
+        let snapshot = SupervisorPortfolioSnapshot(
+            updatedAt: now,
+            counts: SupervisorPortfolioProjectCounts(active: 0, blocked: 1, awaitingAuthorization: 0, completed: 1, idle: 0),
+            criticalQueue: [],
+            projects: [
+                SupervisorPortfolioProjectCard(
+                    projectId: "p-proposal",
+                    displayName: "Proposal Project",
+                    projectState: .blocked,
+                    runtimeState: "阻塞中",
+                    currentAction: "默认建议待确认：swift_testing_contract_default（proposal_pending）",
+                    topBlocker: "default_proposal_pending:test_stack=swift_testing_contract_default",
+                    nextStep: "审阅待定默认建议：swift_testing_contract_default，确认后再走 governed adoption",
+                    memoryFreshness: .fresh,
+                    updatedAt: now - 20 * 60,
+                    recentMessageCount: 2
+                ),
+                SupervisorPortfolioProjectCard(
+                    projectId: "p-archive",
+                    displayName: "Archive Candidate",
+                    projectState: .completed,
+                    runtimeState: "completed",
+                    currentAction: "记忆收口：rolled_up=4; archived=2; kept_decisions=1",
+                    topBlocker: "",
+                    nextStep: "审阅 archive rollup：关键 decision/milestone/gate refs 已保留，可按 archive 模式收口",
+                    memoryFreshness: .fresh,
+                    updatedAt: now - 10 * 60,
+                    recentMessageCount: 0
+                )
+            ]
+        )
+
+        let actionability = snapshot.actionabilitySnapshot(now: now)
+
+        #expect(actionability.projectsChangedLast24h == 2)
+        #expect(actionability.decisionBlockerProjectsCount == 1)
+        #expect(actionability.actionableToday == 1)
+        #expect(actionability.recommendedActions.count == 1)
+        #expect(actionability.recommendedActions.first?.projectId == "p-proposal")
+        #expect(actionability.recommendedActions.first?.kind == .decisionBlocker)
+        #expect(actionability.recommendedActions.first?.recommendedNextAction.contains("swift_testing_contract_default") == true)
+    }
+
+    @Test
+    func blockedDecisionItemsSortAheadOfAwaitingAuthorizationAndIdleWork() {
+        let now = Date(timeIntervalSince1970: 1_776_201_000).timeIntervalSince1970
+        let cards = [
+            SupervisorPortfolioProjectCard(
+                projectId: "p-blocked",
+                displayName: "Blocked First",
+                projectState: .blocked,
+                runtimeState: "阻塞中",
+                currentAction: "需要拍板：是否切换备用模型",
+                topBlocker: "decision pending: choose fallback model",
+                nextStep: "Pick the fallback model and resume execution",
+                memoryFreshness: .fresh,
+                updatedAt: now - 3_600,
+                recentMessageCount: 3
+            ),
+            SupervisorPortfolioProjectCard(
+                projectId: "p-auth",
+                displayName: "Auth Second",
+                projectState: .awaitingAuthorization,
+                runtimeState: "待授权",
+                currentAction: "等待 grant 批准",
+                topBlocker: "grant_required",
+                nextStep: "Approve paid route access",
+                memoryFreshness: .fresh,
+                updatedAt: now - 1_800,
+                recentMessageCount: 2
+            ),
+            SupervisorPortfolioProjectCard(
+                projectId: "p-active",
+                displayName: "Active Third",
+                projectState: .active,
+                runtimeState: "进行中",
+                currentAction: "继续整理 Portfolio UI",
+                topBlocker: "",
+                nextStep: "Ship the next UI polish patch",
+                memoryFreshness: .fresh,
+                updatedAt: now - 900,
+                recentMessageCount: 4
+            ),
+            SupervisorPortfolioProjectCard(
+                projectId: "p-idle",
+                displayName: "Idle Fourth",
+                projectState: .idle,
+                runtimeState: "待命",
+                currentAction: "等待重新激活",
+                topBlocker: "",
+                nextStep: "Decide archive vs resume",
+                memoryFreshness: .stale,
+                updatedAt: now - 9 * 24 * 3_600,
+                recentMessageCount: 0
+            )
+        ]
+
+        let actionability = SupervisorPortfolioActionabilitySnapshotBuilder.build(from: cards, now: now)
+        let orderedProjectIDs = actionability.recommendedActions.map(\.projectId)
+
+        #expect(orderedProjectIDs == ["p-blocked", "p-auth", "p-active", "p-idle"])
+    }
 }

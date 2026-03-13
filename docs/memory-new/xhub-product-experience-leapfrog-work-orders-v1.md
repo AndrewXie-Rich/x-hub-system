@@ -1,4 +1,4 @@
-# X-Hub + X-Terminal 竞品超越执行工单（OpenCode / iflow-bot）
+# X-Hub + X-Terminal 竞品超越执行工单（reference product baselines）
 
 - version: v1.0
 - updatedAt: 2026-02-27
@@ -12,7 +12,7 @@
 
 ## 0) 使用方式（先看）
 
-- 本文将“全面超过 OpenCode 与 iflow-bot”的目标拆成可执行工单，按 `P0 > P1 > P2` 排序。
+- 本文将“全面超过 external code-assistant baseline 与 external workflow baseline”的目标拆成可执行工单，按 `P0 > P1 > P2` 排序。
 - 每个工单都包含：目标、依赖、交付物、验收指标、回归用例、Gate、估时。
 - 所有涉及权限/联网/支付/外部动作的改造，必须走 `ingress -> risk classify -> policy -> grant -> execute -> audit` 主链，禁止旁路。
 - 质量要求：任何新能力在进入灰度前，必须通过 `Gate-L0..Gate-L5`；未通过不得上线。
@@ -22,8 +22,8 @@
 ### 1.1 北极星目标
 
 - 目标 A（可信执行）：把“不可逆动作可验证可撤销”做到行业领先。
-- 目标 B（编码效率）：在代码任务的一次通过率、回归稳定性上达到并超过 OpenCode 体验。
-- 目标 C（全渠道体验）：具备 iflow-bot 的多渠道覆盖能力，同时保持 Hub 统一安全治理。
+- 目标 B（编码效率）：在代码任务的一次通过率、回归稳定性上达到并超过 external code-assistant baseline 体验。
+- 目标 C（全渠道体验）：具备 external workflow baseline 的多渠道覆盖能力，同时保持 Hub 统一安全治理。
 
 ### 1.2 成功指标（必须量化）
 
@@ -84,7 +84,7 @@ Definition of Done (DoD)
 
 ### P1（关键收益，形成体验碾压）
 
-11. `LF-W5-11` 代码任务基准集（对标 OpenCode）
+11. `LF-W5-11` 代码任务基准集（对标 external code-assistant baseline）
 12. `LF-W5-12` Symbol Graph + LSP 深检索
 13. `LF-W6-13` MCP/Custom Tool 兼容层（签名 + 沙箱分级）
 14. `LF-W6-14` 插件运行时三层信任域
@@ -204,7 +204,7 @@ Definition of Done (DoD)
 - Gate：`L5`
 - 估时：1 天。
 
-### LF-W5-11（P1）代码任务基准集（对标 OpenCode）
+### LF-W5-11（P1）代码任务基准集（对标 external code-assistant baseline）
 
 - 目标：建立统一 coding benchmark，覆盖实现/重构/修复/审查。
 - 依赖：`LF-W4-10`。
@@ -226,7 +226,7 @@ Definition of Done (DoD)
 
 ### LF-W6-13（P1）MCP/Custom Tool 兼容层（签名 + 沙箱分级）
 
-- 目标：兼容 OpenCode 生态优势，同时加入签名与信任分层。
+- 目标：兼容 external code-assistant baseline 生态优势，同时加入签名与信任分层。
 - 依赖：`LF-W1-01`, `LF-W2-06`。
 - 交付物：工具适配层、签名校验器、信任域路由。
 - 验收指标：兼容通过率 `>= 90%`（目标工具集）；未签名高风险工具默认 deny。
@@ -246,7 +246,7 @@ Definition of Done (DoD)
 
 ### LF-W7-15（P1）多渠道 Connector（Telegram/Slack/Email）
 
-- 目标：具备 iflow-bot 的渠道覆盖，同时保留 Hub 统一授权与审计。
+- 目标：具备 external workflow baseline 的渠道覆盖，同时保留 Hub 统一授权与审计。
 - 依赖：`LF-W4-10`, `LF-W6-14`。
 - 交付物：3 个 connector 适配器、统一消息 envelope、渠道健康监控。
 - 验收指标：渠道可用性 `>= 99.5%`；消息重复投递率 `< 0.5%`。

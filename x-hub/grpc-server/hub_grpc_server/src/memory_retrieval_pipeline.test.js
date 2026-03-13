@@ -167,3 +167,42 @@ run("remote mode denies secret candidates", () => {
   assert.equal(out.results.length, 0);
   assert.equal(out.pipeline_stage_trace[4].reason, "remote_secret_denied");
 });
+
+run("hybrid retrieval can surface semantic candidates through vector scores", () => {
+  const out = runMemoryRetrievalPipeline({
+    documents: [
+      {
+        id: "d-semantic",
+        title: "water buying workflow",
+        text: "robot buys bottled water from store",
+        tags: ["grocery"],
+        sensitivity: "public",
+        trust_level: "trusted",
+        scope: { project_id: "p1", thread_id: "t1" },
+        created_at_ms: 5000,
+        embedding_vector: [1, 0, 0],
+      },
+      {
+        id: "d-other",
+        title: "calendar note",
+        text: "book meeting room",
+        tags: ["calendar"],
+        sensitivity: "public",
+        trust_level: "trusted",
+        scope: { project_id: "p1", thread_id: "t1" },
+        created_at_ms: 4000,
+        embedding_vector: [0, 1, 0],
+      },
+    ],
+    query: "beverage acquisition",
+    query_embedding: [1, 0, 0],
+    scope: { project_id: "p1", thread_id: "t1" },
+    top_k: 5,
+  });
+  assert.equal(out.blocked, false);
+  assert.equal(out.results.length, 1);
+  assert.equal(out.results[0].id, "d-semantic");
+  assert.ok(out.results[0].vector_score > 0.9);
+  assert.equal(out.weights.vector, 0.35);
+  assert.match(String(out.formula || ""), /0\.35\*vector/);
+});

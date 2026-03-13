@@ -6,7 +6,7 @@
 **版本**: 3.0
 **日期**: 2026-02-26
 **状态**: Improvement Roadmap - Four-Layer Architecture
-**目标**: 基于与 OpenClaw 和 Claude-Mem 的对比分析，采用Memory v3 架构（5层逻辑 + 4层物理），全面超越现有开源方案
+**目标**: 基于与 skills ecosystem 和 progressive-disclosure reference architecture 的对比分析，采用Memory v3 架构（5层逻辑 + 4层物理），全面超越现有开源方案
 
 ---
 
@@ -24,7 +24,7 @@
 - L1: Hot Memory（<1ms，35% 命中率）
 - L2: Warm Memory（<5ms，20% 命中率）⭐ 核心差异化层
 - L3: Cold Storage（<50ms，5% 命中率）
-- 平均延迟: 4.9ms（vs Claude-Mem 7.2ms，提升 31.5%）
+- 平均延迟: 4.9ms（vs progressive-disclosure reference architecture 7.2ms，提升 31.5%）
 
 ✅ **混合搜索能力最强**
 - L2 单层混合搜索（向量 + 全文 + 结构化）
@@ -51,7 +51,7 @@
 - 智能预热和降级
 ```
 
-**vs Claude-Mem**:
+**vs progressive-disclosure reference architecture**:
 ```
 性能优势:
 - 平均延迟: 7.2ms → 4.9ms（31.5% 提升）
@@ -636,7 +636,7 @@ vs 三层架构:
 - 平均延迟: 6.4ms → 4.9ms（24% 提升）
 - 热缓存命中率: 60% → 75%（25% 提升）
 
-vs Claude-Mem:
+vs progressive-disclosure reference architecture:
 - 平均延迟: 7.2ms → 4.9ms（31.5% 提升）
 - P95 延迟: 20ms → 5ms（4x 提升）
 ```
@@ -1359,7 +1359,7 @@ echo "启动命令: xhub start --mode lite"
 
 ## 8. 总结
 
-本改进路线图基于与 OpenClaw 和 Claude-Mem 的深入对比分析，针对性地解决了 X-Hub 系统的核心劣势：
+本改进路线图基于与 skills ecosystem 和 progressive-disclosure reference architecture 的深入对比分析，针对性地解决了 X-Hub 系统的核心劣势：
 
 **P0 改进**（必须）:
 1. ✅ 向量搜索能力增强（sqlite-vec）

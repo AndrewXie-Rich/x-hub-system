@@ -41,6 +41,20 @@ struct XTToolAuthorizationDecision: Equatable {
         )
     }
 
+    static func allowAutoApproved(policySource: String, policyReason: String) -> XTToolAuthorizationDecision {
+        XTToolAuthorizationDecision(
+            disposition: .allow,
+            risk: .safe,
+            denyCode: "",
+            detail: "",
+            policySource: policySource,
+            policyReason: policyReason,
+            runtimePolicyDecision: nil,
+            runtimeEffectiveAutonomy: nil,
+            deviceGateDecision: nil
+        )
+    }
+
     static func ask(risk: ToolRisk, policySource: String = "", policyReason: String = "") -> XTToolAuthorizationDecision {
         XTToolAuthorizationDecision(
             disposition: .ask,
@@ -177,6 +191,18 @@ func xtToolAuthorizationDecision(
         effectiveRisk = .alwaysConfirm
     } else {
         effectiveRisk = ToolPolicy.risk(for: call)
+    }
+
+    if effectiveRisk == .needsConfirm,
+       xtProjectGovernedAutoApprovalEnabled(
+        projectRoot: projectRoot,
+        config: config,
+        effectiveAutonomy: autonomyState.effectivePolicy
+       ) {
+        return .allowAutoApproved(
+            policySource: "project_governed_auto_approval",
+            policyReason: "governed_device_authority"
+        )
     }
 
     switch effectiveRisk {

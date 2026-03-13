@@ -37,6 +37,13 @@ final class AppModel: ObservableObject {
     @Published var projectRemoteAutonomyOverride: AXProjectAutonomyRemoteOverrideSnapshot? = nil
     @Published var skillsCompatibilitySnapshot: AXSkillsDoctorSnapshot = .empty
     @Published var unifiedDoctorReport: XTUnifiedDoctorReport = .empty
+    @Published var lastImportedAgentSkillDirectory: URL? = nil
+    @Published var lastImportedAgentSkillName: String = ""
+    @Published var lastImportedAgentSkillStage: HubIPCClient.AgentImportStageResult? = nil
+    @Published var lastImportedAgentSkillStatusLine: String = ""
+    @Published var agentSkillImportBusy: Bool = false
+    @Published var baselineInstallBusy: Bool = false
+    @Published var baselineInstallStatusLine: String = ""
 
     @Published var runtimeStatus: AIRuntimeStatus? = nil
     @Published var modelsState: ModelStateSnapshot = .empty()
@@ -63,6 +70,49 @@ final class AppModel: ObservableObject {
 
     var hubInteractive: Bool {
         hubConnected || hubRemoteConnected
+    }
+
+    var canReviewLastImportedAgentSkill: Bool {
+        guard !agentSkillImportBusy else { return false }
+        let stagingId = lastImportedAgentSkillStage?.stagingId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return !stagingId.isEmpty
+    }
+
+    var canEnableLastImportedAgentSkill: Bool {
+        guard !agentSkillImportBusy else { return false }
+        return lastImportedAgentSkillDirectory != nil
+    }
+
+    var canInstallDefaultAgentBaselineGlobally: Bool {
+        guard !baselineInstallBusy else { return false }
+        return hubInteractive
+    }
+
+    var canInstallDefaultAgentBaselineForCurrentProject: Bool {
+        guard !baselineInstallBusy else { return false }
+        guard hubInteractive else { return false }
+        guard let selectedProjectId else { return false }
+        return selectedProjectId != AXProjectRegistry.globalHomeId
+    }
+
+    var lastImportedAgentSkillToolbarStatusLine: String {
+        let line = lastImportedAgentSkillStatusLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !line.isEmpty else { return "" }
+        if line.count <= 72 {
+            return line
+        }
+        let idx = line.index(line.startIndex, offsetBy: 72)
+        return String(line[..<idx]) + "..."
+    }
+
+    var baselineInstallToolbarStatusLine: String {
+        let line = baselineInstallStatusLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !line.isEmpty else { return "" }
+        if line.count <= 72 {
+            return line
+        }
+        let idx = line.index(line.startIndex, offsetBy: 72)
+        return String(line[..<idx]) + "..."
     }
 
     @Published var memoryCoarseRunning: Bool = false
@@ -113,6 +163,7 @@ final class AppModel: ObservableObject {
     private var nextProjectAutonomyOverrideRefreshAt: Date = .distantPast
     private var nextSkillsCompatibilityRefreshAt: Date = .distantPast
     private var nextUnifiedDoctorRefreshAt: Date = .distantPast
+    private var remoteSkillsCompatibilityOverlayInFlight: Bool = false
 
     init() {
         let ss = SettingsStore()
@@ -326,22 +377,35 @@ final class AppModel: ObservableObject {
         if panel.runModal() == .OK {
             guard let base = ensureSkillsDirectory() else { return }
             rememberSkillsDirectory(for: base)
-            var imported = 0
-            var skipped = 0
-            for url in panel.urls {
-                if importSkill(from: url, to: base) {
-                    imported += 1
-                } else {
-                    skipped += 1
+            let selectedURLs = panel.urls
+            Task { @MainActor in
+                var imported = 0
+                var skipped = 0
+                var stageSummaries: [String] = []
+                for url in selectedURLs {
+                    let result = await importSkill(from: url, to: base)
+                    if result.imported {
+                        imported += 1
+                    } else {
+                        skipped += 1
+                    }
+                    if let stageSummary = result.stageSummary {
+                        stageSummaries.append(stageSummary)
+                    }
                 }
+                var lines = ["Imported \(imported), skipped \(skipped)."]
+                if !stageSummaries.isEmpty {
+                    lines.append("")
+                    lines.append(contentsOf: stageSummaries)
+                }
+                if imported > 0 || skipped > 0 {
+                    showAlert(
+                        title: "Import Skills",
+                        message: lines.joined(separator: "\n")
+                    )
+                }
+                refreshSkillsCompatibilitySnapshot(force: true)
             }
-            if skipped > 0 {
-                showAlert(
-                    title: "Import Skills",
-                    message: "Imported \(imported), skipped \(skipped)."
-                )
-            }
-            refreshSkillsCompatibilitySnapshot(force: true)
         }
     }
 
@@ -987,8 +1051,19 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.set(dir.path, forKey: skillsDirDefaultsKey)
     }
 
+    private struct SkillImportOperationResult {
+        var imported: Bool
+        var stageSummary: String?
+    }
+
+    private struct AgentSkillStageOutcome {
+        var summary: String
+        var stageResult: HubIPCClient.AgentImportStageResult?
+        var importReport: XTAgentSkillImportPreflightReport
+    }
+
     @discardableResult
-    private func importSkill(from url: URL, to base: URL) -> Bool {
+    private func importSkill(from url: URL, to base: URL) async -> SkillImportOperationResult {
         var source = url
         if !url.hasDirectoryPath {
             let lower = url.lastPathComponent.lowercased()
@@ -999,13 +1074,13 @@ final class AppModel: ObservableObject {
                     title: "Import Skills",
                     message: "Please unzip the skill package first, then select the skill folder."
                 )
-                return false
+                return SkillImportOperationResult(imported: false, stageSummary: nil)
             } else {
                 showAlert(
                     title: "Import Skills",
                     message: "Please select a skill folder or SKILL.md."
                 )
-                return false
+                return SkillImportOperationResult(imported: false, stageSummary: nil)
             }
         }
 
@@ -1015,7 +1090,7 @@ final class AppModel: ObservableObject {
                 title: "Import Skills",
                 message: "SKILL.md not found in the selected folder."
             )
-            return false
+            return SkillImportOperationResult(imported: false, stageSummary: nil)
         }
 
         let dest = base.appendingPathComponent(source.lastPathComponent, isDirectory: true)
@@ -1026,11 +1101,13 @@ final class AppModel: ObservableObject {
                 title: "Import Skills",
                 message: "This skill is already in the skills folder."
             )
-            return false
+            return SkillImportOperationResult(imported: false, stageSummary: nil)
         }
 
         if FileManager.default.fileExists(atPath: dest.path) {
-            guard confirmReplaceSkill(name: dest.lastPathComponent) else { return false }
+            guard confirmReplaceSkill(name: dest.lastPathComponent) else {
+                return SkillImportOperationResult(imported: false, stageSummary: nil)
+            }
             do {
                 try FileManager.default.removeItem(at: dest)
             } catch {
@@ -1038,20 +1115,420 @@ final class AppModel: ObservableObject {
                     title: "Import Skills",
                     message: "Failed to replace existing skill: \(error.localizedDescription)"
                 )
-                return false
+                return SkillImportOperationResult(imported: false, stageSummary: nil)
             }
         }
 
         do {
             try FileManager.default.copyItem(at: source, to: dest)
-            return true
+            let stageOutcome = await stageImportedSkill(skillDirectory: dest, repoRoot: base)
+            rememberLastImportedAgentSkill(skillDirectory: dest, outcome: stageOutcome)
+            return SkillImportOperationResult(imported: true, stageSummary: stageOutcome.summary)
         } catch {
             showAlert(
                 title: "Import Skills",
                 message: "Failed to import skill: \(error.localizedDescription)"
             )
-            return false
+            return SkillImportOperationResult(imported: false, stageSummary: nil)
         }
+    }
+
+    func reviewLastImportedSkill() {
+        Task { @MainActor in
+            await reviewLastImportedSkillNow()
+        }
+    }
+
+    func enableLastImportedSkill() {
+        Task { @MainActor in
+            await enableLastImportedSkillNow()
+        }
+    }
+
+    func installDefaultAgentBaselineGlobally() {
+        Task { @MainActor in
+            await installDefaultAgentBaselineNow(scope: .global)
+        }
+    }
+
+    func installDefaultAgentBaselineForCurrentProject() {
+        guard let scope = selectedProjectBaselineInstallScope() else { return }
+        Task { @MainActor in
+            await installDefaultAgentBaselineNow(scope: scope)
+        }
+    }
+
+    private func selectedProjectBaselineInstallScope() -> AXAgentBaselineInstallScope? {
+        guard let selectedProjectId,
+              selectedProjectId != AXProjectRegistry.globalHomeId else { return nil }
+        let projectName = registry.project(for: selectedProjectId)?.displayName
+        return .project(projectId: selectedProjectId, projectName: projectName)
+    }
+
+    private func installDefaultAgentBaselineNow(scope: AXAgentBaselineInstallScope) async {
+        guard !baselineInstallBusy else { return }
+        let hasRemoteSkillsControl = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
+        guard hasRemoteSkillsControl else {
+            baselineInstallStatusLine = "baseline: Hub pairing required"
+            showAlert(
+                title: "Install Default Agent Baseline",
+                message: "Hub skills control plane is unavailable. Pair X-Terminal to X-Hub first so baseline install can use the governed remote pin flow."
+            )
+            return
+        }
+
+        baselineInstallBusy = true
+        defer { baselineInstallBusy = false }
+
+        let baseline = AXSkillsLibrary.defaultAgentBaselineSkills
+        let targetProjectId = scope.projectId
+        let targetLabel = scope.displayLabel
+        let initialResolved = await HubIPCClient.listResolvedSkills(projectId: targetProjectId)
+        guard initialResolved.ok else {
+            baselineInstallStatusLine = "baseline: resolved lookup failed"
+            showAlert(
+                title: "Install Default Agent Baseline",
+                message: "Failed to load resolved Hub skills for \(targetLabel) (\(initialResolved.reasonCode ?? "unknown"))."
+            )
+            return
+        }
+
+        var searchResultsBySkillID: [String: [HubIPCClient.SkillCatalogEntry]] = [:]
+        var searchFailures: [String: String] = [:]
+        await withTaskGroup(of: (String, HubIPCClient.SkillsSearchResult).self) { group in
+            for baselineSkill in baseline {
+                let skillID = baselineSkill.skillID
+                group.addTask {
+                    let result = await HubIPCClient.searchSkills(
+                        query: skillID,
+                        projectId: targetProjectId,
+                        limit: 12
+                    )
+                    return (skillID, result)
+                }
+            }
+
+            for await (skillID, result) in group {
+                searchResultsBySkillID[skillID] = result.results
+                if !result.ok {
+                    searchFailures[skillID] = result.reasonCode ?? "search_failed"
+                }
+            }
+        }
+
+        let plan = AXDefaultAgentBaselineInstaller.makePlan(
+            scope: scope,
+            baseline: baseline,
+            resolvedSkills: initialResolved.skills,
+            searchResultsBySkillID: searchResultsBySkillID
+        )
+        let baselineIDs = Set(baseline.map(\.skillID))
+
+        var pinSuccesses: [HubIPCClient.SkillPinResult] = []
+        var pinFailures: [String] = []
+        for candidate in plan.installableCandidates {
+            let pin = await HubIPCClient.setSkillPin(
+                scope: scope.hubScope,
+                skillId: candidate.skillID,
+                packageSHA256: candidate.packageSHA256,
+                projectId: targetProjectId,
+                note: scope.noteTag,
+                requestId: "xt-default-agent-baseline-\(UUID().uuidString)"
+            )
+            if pin.ok {
+                pinSuccesses.append(pin)
+            } else {
+                pinFailures.append("\(candidate.skillID): \(pin.reasonCode ?? "pin_failed")")
+            }
+        }
+
+        if !pinSuccesses.isEmpty {
+            refreshSkillsCompatibilitySnapshot(force: true)
+            refreshUnifiedDoctorReport(force: true)
+            refreshResolvedSkillsCacheForCurrentSelection()
+        }
+
+        let finalResolved = await HubIPCClient.listResolvedSkills(projectId: targetProjectId)
+        let finalResolvedIDs = Set(
+            (finalResolved.ok ? finalResolved.skills : initialResolved.skills)
+                .map { $0.skill.skillID }
+        )
+        let readyBaselineCount = finalResolvedIDs.intersection(baselineIDs).count
+
+        var status = "baseline \(scope.hubScope) \(readyBaselineCount)/\(plan.totalBaselineCount)"
+        if !pinFailures.isEmpty {
+            status += " pin_fail=\(pinFailures.count)"
+        } else if !plan.missingPackageSkills.isEmpty {
+            status += " missing_pkg=\(plan.missingPackageSkills.count)"
+        } else if pinSuccesses.isEmpty {
+            status += " ready"
+        }
+        baselineInstallStatusLine = status
+
+        var lines: [String] = []
+        lines.append("Target: \(targetLabel)")
+        lines.append("Baseline ready: \(readyBaselineCount)/\(plan.totalBaselineCount)")
+
+        if !plan.alreadyResolvedSkillIDs.isEmpty {
+            lines.append("Already resolved: \(plan.alreadyResolvedSkillIDs.joined(separator: ", "))")
+        }
+        if !pinSuccesses.isEmpty {
+            let successLine = pinSuccesses.map { pin in
+                "\(pin.skillId)@\(shortSHA(pin.packageSHA256))"
+            }.joined(separator: ", ")
+            lines.append("Pinned: \(successLine)")
+        }
+        if !pinFailures.isEmpty {
+            lines.append("Pin failures: \(pinFailures.joined(separator: "; "))")
+        }
+        if !searchFailures.isEmpty {
+            let failureLine = searchFailures.keys.sorted().map { key in
+                "\(key): \(searchFailures[key] ?? "search_failed")"
+            }.joined(separator: "; ")
+            lines.append("Search failures: \(failureLine)")
+        }
+        if !plan.missingPackageSkills.isEmpty {
+            lines.append("Missing uploadable packages:")
+            for item in plan.missingPackageSkills {
+                lines.append("- \(item.skillID): \(item.installHint)")
+            }
+        } else if plan.installableCandidates.isEmpty && pinSuccesses.isEmpty {
+            lines.append("No pin work was needed. The default Agent baseline was already resolved for this target.")
+        }
+
+        if finalResolved.ok == false {
+            lines.append("Final resolved refresh failed: \(finalResolved.reasonCode ?? "unknown")")
+        }
+
+        showAlert(title: "Install Default Agent Baseline", message: lines.joined(separator: "\n"))
+    }
+
+    private func refreshResolvedSkillsCacheForCurrentSelection() {
+        guard let selectedProjectId,
+              selectedProjectId != AXProjectRegistry.globalHomeId,
+              let ctx = projectContext else { return }
+        let projectName = registry.project(for: selectedProjectId)?.displayName
+        _ = XTResolvedSkillsCacheStore.refreshFromHub(
+            projectId: selectedProjectId,
+            projectName: projectName,
+            context: ctx,
+            hubBaseDir: hubBaseDir ?? HubPaths.baseDir()
+        )
+    }
+
+    private func stageImportedSkill(skillDirectory: URL, repoRoot: URL) async -> AgentSkillStageOutcome {
+        let skillName = skillDirectory.lastPathComponent
+        let skillMarkdownURL = skillDirectory.appendingPathComponent("SKILL.md")
+        let preflight = XTAgentSkillImportNormalizer.normalize(
+            skillMarkdownURL: skillMarkdownURL,
+            repoRoot: repoRoot
+        )
+        let scanInput = XTAgentSkillImportNormalizer.buildScanInput(skillDirectoryURL: skillDirectory)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+
+        guard let manifestData = try? encoder.encode(preflight.manifest),
+              let findingsData = try? encoder.encode(preflight.findings),
+              let scanInputData = try? encoder.encode(scanInput),
+              let manifestJSON = String(data: manifestData, encoding: .utf8),
+              let findingsJSON = String(data: findingsData, encoding: .utf8),
+              let scanInputJSON = String(data: scanInputData, encoding: .utf8) else {
+            return AgentSkillStageOutcome(
+                summary: "\(skillName): imported locally; failed to encode Hub stage payload.",
+                stageResult: nil,
+                importReport: preflight
+            )
+        }
+
+        let stage = await HubIPCClient.stageAgentImport(
+            importManifestJSON: manifestJSON,
+            findingsJSON: findingsJSON,
+            scanInputJSON: scanInputJSON,
+            requestedBy: "xt-ui",
+            note: "ui_import:\(skillName)",
+            requestId: "xt-ui-agent-import-\(UUID().uuidString)"
+        )
+        if !stage.ok {
+            return AgentSkillStageOutcome(
+                summary: "\(skillName): imported locally; Hub stage failed (\(stage.reasonCode ?? "unknown")).",
+                stageResult: stage,
+                importReport: preflight
+            )
+        }
+
+        let preflightStatus = stage.preflightStatus ?? preflight.manifest.preflightStatus
+        let vetterStatus = stage.vetterStatus ?? "pending"
+        let counts = "c\(stage.vetterCriticalCount)/w\(stage.vetterWarnCount)"
+        let stageLabel = stage.stagingId ?? "n/a"
+        return AgentSkillStageOutcome(
+            summary: "\(skillName): Hub \(stage.status ?? "staged"), preflight=\(preflightStatus), vetter=\(vetterStatus), \(counts), id=\(stageLabel)",
+            stageResult: stage,
+            importReport: preflight
+        )
+    }
+
+    private func reviewLastImportedSkillNow() async {
+        guard !agentSkillImportBusy else { return }
+        let stagingId = lastImportedAgentSkillStage?.stagingId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !stagingId.isEmpty else {
+            showAlert(title: "Review Imported Skill", message: "No staged import is available yet.")
+            return
+        }
+
+        agentSkillImportBusy = true
+        defer { agentSkillImportBusy = false }
+
+        let record = await HubIPCClient.getAgentImportRecord(stagingId: stagingId)
+        guard record.ok else {
+            showAlert(
+                title: "Review Imported Skill",
+                message: "Failed to fetch Hub import record (\(record.reasonCode ?? "unknown"))."
+            )
+            return
+        }
+
+        let reviewText = formatAgentImportRecordReview(
+            recordJSON: record.recordJSON,
+            fallbackStagingId: record.stagingId ?? stagingId,
+            fallbackSkillId: record.skillId ?? lastImportedAgentSkillName
+        )
+        let reviewSkillName = nonEmptyString(record.skillId) ?? nonEmptyString(lastImportedAgentSkillName) ?? "skill"
+        lastImportedAgentSkillStatusLine = "\(reviewSkillName): reviewed"
+        showAlert(title: "Review Imported Skill", message: reviewText)
+    }
+
+    private func enableLastImportedSkillNow() async {
+        guard !agentSkillImportBusy else { return }
+        guard let skillDirectory = lastImportedAgentSkillDirectory else {
+            showAlert(title: "Enable Imported Skill", message: "No imported skill is available yet.")
+            return
+        }
+        guard FileManager.default.fileExists(atPath: skillDirectory.path) else {
+            showAlert(
+                title: "Enable Imported Skill",
+                message: "The last imported skill folder no longer exists: \(skillDirectory.path)"
+            )
+            return
+        }
+
+        agentSkillImportBusy = true
+        defer { agentSkillImportBusy = false }
+
+        let repoRoot = resolveSkillsDirectory() ?? skillDirectory.deletingLastPathComponent()
+        let stageOutcome = await stageImportedSkill(skillDirectory: skillDirectory, repoRoot: repoRoot)
+        rememberLastImportedAgentSkill(skillDirectory: skillDirectory, outcome: stageOutcome)
+
+        guard let stage = stageOutcome.stageResult,
+              stage.ok,
+              let stagingId = nonEmptyString(stage.stagingId) else {
+            showAlert(title: "Enable Imported Skill", message: stageOutcome.summary)
+            return
+        }
+
+        let stageStatus = nonEmptyString(stage.status) ?? "staged"
+        let vetterStatus = nonEmptyString(stage.vetterStatus) ?? "pending"
+        if stageStatus == "quarantined" || ["pending", "scan_error", "critical"].contains(vetterStatus) {
+            var lines = [stageOutcome.summary]
+            if let blocked = nonEmptyString(stage.reasonCode) {
+                lines.append("Hub blocked enable: \(blocked)")
+            } else {
+                lines.append("Hub blocked enable: vetter=\(vetterStatus)")
+            }
+            showAlert(title: "Enable Imported Skill", message: lines.joined(separator: "\n"))
+            return
+        }
+
+        let packageBuild: XTAgentSkillPackageBuildResult
+        do {
+            packageBuild = try XTAgentSkillPackageBuilder.build(
+                skillDirectoryURL: skillDirectory,
+                importReport: stageOutcome.importReport
+            )
+        } catch {
+            showAlert(
+                title: "Enable Imported Skill",
+                message: "Failed to build skill package: \(error.localizedDescription)"
+            )
+            return
+        }
+        defer { XTAgentSkillPackageBuilder.cleanup(packageBuild) }
+
+        let upload = await HubIPCClient.uploadSkillPackage(
+            packageFileURL: packageBuild.packageURL,
+            manifestJSON: packageBuild.manifestJSON,
+            sourceId: "local:xt-import",
+            requestId: "xt-ui-agent-upload-\(UUID().uuidString)"
+        )
+        guard upload.ok,
+              let packageSHA256 = nonEmptyString(upload.packageSHA256) else {
+            var lines = [stageOutcome.summary]
+            lines.append("Package build: \(packageBuild.includedRelativePaths.count) files")
+            lines.append("Upload failed: \(upload.reasonCode ?? "unknown")")
+            showAlert(title: "Enable Imported Skill", message: lines.joined(separator: "\n"))
+            return
+        }
+
+        let promote = await HubIPCClient.promoteAgentImport(
+            stagingId: stagingId,
+            packageSHA256: packageSHA256,
+            note: "ui_enable:\(skillDirectory.lastPathComponent)",
+            requestId: "xt-ui-agent-promote-\(UUID().uuidString)"
+        )
+
+        var lines = [stageOutcome.summary]
+        lines.append("Package: sha=\(shortSHA(packageSHA256)), files=\(packageBuild.includedRelativePaths.count)")
+        if !packageBuild.includedRelativePaths.isEmpty {
+            lines.append("Included: \(packageBuild.includedRelativePaths.prefix(6).joined(separator: ", "))")
+        }
+
+        guard promote.ok else {
+            lines.append("Promote failed: \(promote.reasonCode ?? "unknown")")
+            lastImportedAgentSkillStatusLine = "\(skillDirectory.lastPathComponent): upload ok, promote blocked"
+            showAlert(title: "Enable Imported Skill", message: lines.joined(separator: "\n"))
+            return
+        }
+
+        let enabledSkillId = nonEmptyString(promote.skillId) ?? nonEmptyString(stage.skillId) ?? skillDirectory.lastPathComponent
+        lastImportedAgentSkillStatusLine = "\(enabledSkillId): enabled @\(shortSHA(packageSHA256))"
+        refreshSkillsCompatibilitySnapshot(force: true)
+        refreshUnifiedDoctorReport(force: true)
+
+        lines.append("Enabled: \(enabledSkillId)")
+        lines.append("Scope: \(nonEmptyString(promote.scope) ?? "unknown")")
+        if let previous = nonEmptyString(promote.previousPackageSHA256) {
+            lines.append("Previous package: \(shortSHA(previous))")
+        }
+        showAlert(title: "Enable Imported Skill", message: lines.joined(separator: "\n"))
+    }
+
+    private func rememberLastImportedAgentSkill(skillDirectory: URL, outcome: AgentSkillStageOutcome) {
+        lastImportedAgentSkillDirectory = skillDirectory
+        lastImportedAgentSkillName = skillDirectory.lastPathComponent
+        lastImportedAgentSkillStage = outcome.stageResult
+        lastImportedAgentSkillStatusLine = outcome.summary
+    }
+
+    private func formatAgentImportRecordReview(
+        recordJSON: String?,
+        fallbackStagingId: String,
+        fallbackSkillId: String
+    ) -> String {
+        XTAgentSkillImportReviewFormatter.formatHubRecordReview(
+            recordJSON: recordJSON,
+            fallbackStagingId: fallbackStagingId,
+            fallbackSkillId: fallbackSkillId
+        )
+    }
+
+    private func nonEmptyString(_ value: String?) -> String? {
+        let trimmed = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func shortSHA(_ value: String?) -> String {
+        let normalized = nonEmptyString(value) ?? ""
+        guard !normalized.isEmpty else { return "n/a" }
+        return String(normalized.prefix(12))
     }
 
     private func confirmReplaceSkill(name: String) -> Bool {
@@ -1119,6 +1596,24 @@ final class AppModel: ObservableObject {
                 "project_id": AXProjectRegistryStore.projectId(forRoot: ctx.root),
                 "root_count": cfg.governedReadableRoots.count,
                 "roots": cfg.governedReadableRoots,
+            ],
+            for: ctx
+        )
+    }
+
+    func setProjectGovernedAutoApproveLocalToolCalls(enabled: Bool) {
+        guard let ctx = projectContext else { return }
+        guard var cfg = projectConfig else { return }
+        cfg = cfg.settingGovernedAutoApproveLocalToolCalls(enabled: enabled)
+        projectConfig = cfg
+        try? AXProjectStore.saveConfig(cfg, for: ctx)
+        AXProjectStore.appendRawLog(
+            [
+                "type": "project_governed_auto_approve",
+                "action": "update",
+                "created_at": Date().timeIntervalSince1970,
+                "project_id": AXProjectRegistryStore.projectId(forRoot: ctx.root),
+                "enabled": enabled,
             ],
             for: ctx
         )
@@ -1205,6 +1700,21 @@ final class AppModel: ObservableObject {
         return resolvedConfig.effectiveAutonomyPolicy(
             now: now,
             remoteOverride: projectRemoteAutonomyOverride
+        )
+    }
+
+    func governedAuthorityPresentation(for project: AXProjectEntry) -> AXProjectGovernedAuthorityPresentation {
+        let root = URL(fileURLWithPath: project.rootPath, isDirectory: true)
+        let config: AXProjectConfig
+        if selectedProjectId == project.projectId, let projectConfig {
+            config = projectConfig
+        } else {
+            let ctx = AXProjectContext(root: root)
+            config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: root)
+        }
+        return xtProjectGovernedAuthorityPresentation(
+            projectRoot: root,
+            config: config
         )
     }
 
@@ -1663,6 +2173,110 @@ final class AppModel: ObservableObject {
         )
         nextSkillsCompatibilityRefreshAt = now.addingTimeInterval(5.0)
         refreshUnifiedDoctorReport(force: force)
+        refreshRemoteSkillsCompatibilityOverlayIfNeeded(projectId: selectedProject)
+    }
+
+    private func refreshRemoteSkillsCompatibilityOverlayIfNeeded(projectId: String?) {
+        guard hubInteractive else { return }
+        guard !remoteSkillsCompatibilityOverlayInFlight else { return }
+
+        let baseline = skillsCompatibilitySnapshot.baselineRecommendedSkills.isEmpty
+            ? AXSkillsLibrary.defaultAgentBaselineSkills
+            : skillsCompatibilitySnapshot.baselineRecommendedSkills
+        guard !baseline.isEmpty else { return }
+
+        remoteSkillsCompatibilityOverlayInFlight = true
+        Task { @MainActor in
+            defer { remoteSkillsCompatibilityOverlayInFlight = false }
+            let resolved = await HubIPCClient.listResolvedSkills(projectId: projectId)
+            guard resolved.ok else { return }
+
+            let currentDisplayedProjectId = selectedProjectId == AXProjectRegistry.globalHomeId ? nil : selectedProjectId
+            guard currentDisplayedProjectId == projectId else { return }
+
+            let resolvedIDs = Set(
+                resolved.skills.map { $0.skill.skillID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            )
+            let missingBaselineSkillIDs = baseline
+                .map(\.skillID)
+                .filter { !resolvedIDs.contains($0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }
+
+            guard missingBaselineSkillIDs != skillsCompatibilitySnapshot.missingBaselineSkillIDs else { return }
+
+            skillsCompatibilitySnapshot.missingBaselineSkillIDs = missingBaselineSkillIDs
+            skillsCompatibilitySnapshot.statusKind = overlaySkillsStatusKind(
+                base: skillsCompatibilitySnapshot,
+                missingBaselineSkillIDs: missingBaselineSkillIDs
+            )
+            skillsCompatibilitySnapshot.statusLine = overlaySkillsStatusLine(
+                base: skillsCompatibilitySnapshot,
+                missingBaselineSkillIDs: missingBaselineSkillIDs,
+                totalBaselineCount: baseline.count
+            )
+            skillsCompatibilitySnapshot.compatibilityExplain = overlaySkillsCompatibilityExplain(
+                base: skillsCompatibilitySnapshot.compatibilityExplain,
+                missingBaselineSkillIDs: missingBaselineSkillIDs,
+                totalBaselineCount: baseline.count
+            )
+            refreshUnifiedDoctorReport(force: true)
+        }
+    }
+
+    private func overlaySkillsStatusKind(
+        base: AXSkillsDoctorSnapshot,
+        missingBaselineSkillIDs: [String]
+    ) -> AXSkillsCompatibilityStatusKind {
+        if !base.hubIndexAvailable {
+            return .unavailable
+        }
+        if base.revokedMatchCount > 0 {
+            return .blocked
+        }
+        if base.partialCompatibilityCount > 0 || !missingBaselineSkillIDs.isEmpty {
+            return .partial
+        }
+        return .supported
+    }
+
+    private func overlaySkillsStatusLine(
+        base: AXSkillsDoctorSnapshot,
+        missingBaselineSkillIDs: [String],
+        totalBaselineCount: Int
+    ) -> String {
+        let readyBaselineCount = max(0, totalBaselineCount - missingBaselineSkillIDs.count)
+        let baselineSuffix = totalBaselineCount > 0 ? " b\(readyBaselineCount)/\(totalBaselineCount)" : ""
+        let prefix: String
+        switch overlaySkillsStatusKind(base: base, missingBaselineSkillIDs: missingBaselineSkillIDs) {
+        case .unavailable:
+            prefix = "skills?"
+        case .blocked:
+            prefix = "skills! \(base.compatibleSkillCount)/\(base.installedSkillCount)"
+        case .partial:
+            prefix = "skills~ \(base.compatibleSkillCount)/\(base.installedSkillCount)"
+        case .supported:
+            prefix = "skills \(base.compatibleSkillCount)/\(base.installedSkillCount)"
+        }
+        let line = prefix + baselineSuffix
+        return base.localDevPublisherActive ? "\(line) dev" : line
+    }
+
+    private func overlaySkillsCompatibilityExplain(
+        base: String,
+        missingBaselineSkillIDs: [String],
+        totalBaselineCount: Int
+    ) -> String {
+        var lines = base
+            .split(separator: "\n")
+            .map(String.init)
+            .filter { line in
+                !line.hasPrefix("baseline=") && !line.hasPrefix("baseline_missing=")
+            }
+        let readyBaselineCount = max(0, totalBaselineCount - missingBaselineSkillIDs.count)
+        lines.append("baseline=\(readyBaselineCount)/\(totalBaselineCount)")
+        if !missingBaselineSkillIDs.isEmpty {
+            lines.append("baseline_missing=\(missingBaselineSkillIDs.joined(separator: ","))")
+        }
+        return lines.joined(separator: "\n")
     }
 
     private func pollHubStatusLoop() async {

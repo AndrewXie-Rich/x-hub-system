@@ -1,4 +1,7 @@
-import { buildSlackSummaryMessage } from './SlackEgress.js';
+import {
+  buildSlackApprovalCard,
+  buildSlackSummaryMessage,
+} from './SlackEgress.js';
 
 function safeString(input) {
   return String(input ?? '').trim();
@@ -15,6 +18,15 @@ function safeObject(input) {
 
 function safeArray(input) {
   return Array.isArray(input) ? input : [];
+}
+
+function normalizeCapabilityLabel(input) {
+  const raw = safeString(input).toUpperCase();
+  if (!raw) return '';
+  if (raw.startsWith('CAPABILITY_')) {
+    return raw.slice('CAPABILITY_'.length).toLowerCase().replaceAll('_', '.');
+  }
+  return raw.toLowerCase();
 }
 
 function deliveryContextFromResult(result = {}) {
@@ -69,6 +81,21 @@ function classifyStatus(result = {}) {
   if (dispatchKind === 'runner_command') return 'routed_to_runner';
   if (dispatchKind === 'hub_grant_action') return 'hub_action';
   return 'hub_query';
+}
+
+function bindingDeliveryContext(binding = {}) {
+  return {
+    provider: 'slack',
+    account_id: safeString(binding.account_id),
+    conversation_id: safeString(binding.conversation_id),
+    thread_key: safeString(binding.thread_key),
+  };
+}
+
+function grantEventAuditRef(event = {}) {
+  return safeString(
+    `hub_grant_event:${safeString(event.event_id || event.grant_request_id || 'unknown') || 'unknown'}`
+  );
 }
 
 function buildExecutionSummary(result = {}) {
@@ -298,6 +325,93 @@ export function buildSlackResultSummary(result = {}) {
   });
 }
 
+export function buildSlackGrantDecisionSummary({
+  event = {},
+  binding = {},
+} = {}) {
+  const grant = safeObject(event.grant);
+  const client = safeObject(event.client || grant.client);
+  const decision = safeString(event.decision).toUpperCase();
+  if (decision !== 'GRANT_DECISION_APPROVED' && decision !== 'GRANT_DECISION_DENIED') {
+    return {
+      ok: false,
+      deny_code: 'grant_decision_unsupported',
+    };
+  }
+
+  const projectId = safeString(event.project_id || grant.client?.project_id || client.project_id);
+  const capability = normalizeCapabilityLabel(grant.capability);
+  const resolvedDeviceId = safeString(grant.client?.device_id || client.device_id);
+  const denyReason = safeString(event.deny_reason);
+  const status = decision === 'GRANT_DECISION_APPROVED' ? 'grant_approved' : 'grant_denied';
+  const title = decision === 'GRANT_DECISION_APPROVED' ? 'Grant Approved' : 'Grant Rejected';
+
+  return buildSlackSummaryMessage({
+    delivery_context: bindingDeliveryContext(binding),
+    title,
+    status,
+    project_id: projectId,
+    lines: [
+      safeString(event.grant_request_id) ? `Grant request: ${safeString(event.grant_request_id)}` : '',
+      capability ? `Capability: ${capability}` : '',
+      resolvedDeviceId ? `Device: ${resolvedDeviceId}` : '',
+      safeString(grant.grant_id) ? `Grant: ${safeString(grant.grant_id)}` : '',
+      safeInt(grant.expires_at_ms) > 0 ? `Expires at ms: ${safeInt(grant.expires_at_ms)}` : '',
+      denyReason ? `Reason: ${denyReason}` : '',
+      safeString(event.event_id) ? `Event: ${safeString(event.event_id)}` : '',
+    ].filter(Boolean),
+    fields: [
+      safeString(event.grant_request_id) ? { label: 'Request', value: safeString(event.grant_request_id) } : null,
+      capability ? { label: 'Capability', value: capability } : null,
+      resolvedDeviceId ? { label: 'Device', value: resolvedDeviceId } : null,
+      safeString(grant.status) ? { label: 'Grant Status', value: safeString(grant.status) } : null,
+    ].filter(Boolean),
+    audit_ref: grantEventAuditRef(event),
+    reply_broadcast: false,
+  });
+}
+
+export function buildSlackGrantPendingCard({
+  event = {},
+  binding = {},
+} = {}) {
+  const decision = safeString(event.decision).toUpperCase();
+  if (decision !== 'GRANT_DECISION_QUEUED') {
+    return {
+      ok: false,
+      deny_code: 'grant_pending_unsupported',
+    };
+  }
+
+  const grant = safeObject(event.grant);
+  const client = safeObject(event.client || grant.client);
+  const projectId = safeString(event.project_id || grant.client?.project_id || client.project_id);
+  const capability = normalizeCapabilityLabel(grant.capability);
+  const resolvedDeviceId = safeString(grant.client?.device_id || client.device_id);
+  const modelId = safeString(grant.model_id);
+  const requestedTokenCap = safeInt(grant.token_cap, 0);
+
+  return buildSlackApprovalCard({
+    delivery_context: bindingDeliveryContext(binding),
+    title: 'Approval Required',
+    summary_lines: [
+      safeString(event.grant_request_id) ? `Grant request: ${safeString(event.grant_request_id)}` : '',
+      capability ? `Capability: ${capability}` : '',
+      modelId ? `Model: ${modelId}` : '',
+      resolvedDeviceId ? `Device: ${resolvedDeviceId}` : '',
+      requestedTokenCap > 0 ? `Requested token cap: ${requestedTokenCap}` : '',
+      safeString(event.event_id) ? `Event: ${safeString(event.event_id)}` : '',
+    ].filter(Boolean),
+    audit_ref: grantEventAuditRef(event),
+    binding_id: safeString(binding.binding_id),
+    scope_type: safeString(binding.scope_type || 'project') || 'project',
+    scope_id: safeString(binding.scope_id || projectId),
+    project_id: projectId,
+    grant_request_id: safeString(event.grant_request_id),
+    pending_grant_status: 'pending',
+  });
+}
+
 export async function publishSlackCommandResult({
   result = {},
   slack_client = null,
@@ -320,19 +434,101 @@ export async function publishSlackCommandResult({
   };
 }
 
+export async function publishSlackGrantDecision({
+  event = {},
+  binding = {},
+  slack_client = null,
+  summary_builder = buildSlackGrantDecisionSummary,
+} = {}) {
+  if (!slack_client || typeof slack_client.postMessage !== 'function') {
+    return {
+      ok: false,
+      deny_code: 'slack_client_invalid',
+    };
+  }
+  const summary = summary_builder({
+    event,
+    binding,
+  });
+  if (!summary.ok) return summary;
+  const delivered = await slack_client.postMessage(summary.payload);
+  return {
+    ok: true,
+    payload: summary.payload,
+    delivery_context: summary.delivery_context,
+    delivered,
+  };
+}
+
+export async function publishSlackGrantPending({
+  event = {},
+  binding = {},
+  slack_client = null,
+  summary_builder = buildSlackGrantPendingCard,
+} = {}) {
+  if (!slack_client || typeof slack_client.postMessage !== 'function') {
+    return {
+      ok: false,
+      deny_code: 'slack_client_invalid',
+    };
+  }
+  const summary = summary_builder({
+    event,
+    binding,
+  });
+  if (!summary.ok) return summary;
+  const delivered = await slack_client.postMessage(summary.payload);
+  return {
+    ok: true,
+    payload: summary.payload,
+    delivery_context: summary.delivery_context,
+    delivered,
+  };
+}
+
 export function createSlackResultPublisher({
   slack_client = null,
   summary_builder = buildSlackResultSummary,
+  grant_summary_builder = buildSlackGrantDecisionSummary,
+  grant_pending_builder = buildSlackGrantPendingCard,
 } = {}) {
   return {
     build(result) {
       return summary_builder(result);
+    },
+    buildGrantDecision({ event = {}, binding = {} } = {}) {
+      return grant_summary_builder({
+        event,
+        binding,
+      });
+    },
+    buildGrantPending({ event = {}, binding = {} } = {}) {
+      return grant_pending_builder({
+        event,
+        binding,
+      });
     },
     async publish(result) {
       return await publishSlackCommandResult({
         result,
         slack_client,
         summary_builder,
+      });
+    },
+    async publishGrantDecision({ event = {}, binding = {} } = {}) {
+      return await publishSlackGrantDecision({
+        event,
+        binding,
+        slack_client,
+        summary_builder: grant_summary_builder,
+      });
+    },
+    async publishGrantPending({ event = {}, binding = {} } = {}) {
+      return await publishSlackGrantPending({
+        event,
+        binding,
+        slack_client,
+        summary_builder: grant_pending_builder,
       });
     },
   };

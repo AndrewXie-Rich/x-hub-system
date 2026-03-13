@@ -1,4 +1,4 @@
-"""Ping REL Flow Hub.
+"""Ping X-Hub.
 
 Usage:
   python3 tools/ping_hub.py

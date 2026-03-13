@@ -119,6 +119,40 @@ function makeConnectorCall({ request = {}, token = 'hub-connector-test', peer = 
   };
 }
 
+function makeStreamingConnectorCall({ request = {}, token = 'hub-connector-test', peer = 'ipv4:127.0.0.1:55001' } = {}) {
+  const listeners = new Map();
+  const written = [];
+  let ended = false;
+  return {
+    request,
+    written,
+    get ended() {
+      return ended;
+    },
+    metadata: {
+      get(key) {
+        if (String(key || '').toLowerCase() === 'authorization') {
+          return token ? [`Bearer ${token}`] : [];
+        }
+        return [];
+      },
+    },
+    getPeer() {
+      return peer;
+    },
+    write(event) {
+      written.push(event);
+    },
+    end() {
+      ended = true;
+    },
+    on(eventName, handler) {
+      if (!listeners.has(eventName)) listeners.set(eventName, []);
+      listeners.get(eventName).push(handler);
+    },
+  };
+}
+
 function invokeUnary(fn, call) {
   let response;
   let error;
@@ -202,6 +236,67 @@ run('XT-W3-24/service api operator-channel runtime endpoints require dedicated c
         ),
         /Operator-channel connector RPCs are local-only/
       );
+    } finally {
+      db.close();
+    }
+  });
+
+  cleanupDbArtifacts(dbPath);
+  try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch { /* ignore */ }
+});
+
+run('XT-W3-24/service api connector grant event subscription is local-only and grants-only', () => {
+  const runtimeBaseDir = makeTmp('runtime');
+  const dbPath = makeTmp('db', '.db');
+  fs.mkdirSync(runtimeBaseDir, { recursive: true });
+
+  withEnv(baseEnv(runtimeBaseDir), () => {
+    const bus = new HubEventBus();
+    const db = new HubDB({ dbPath });
+    try {
+      const impl = makeServices({ db, bus });
+      const deniedCall = makeStreamingConnectorCall({
+        request: {
+          scopes: ['requests'],
+        },
+      });
+      impl.HubEvents.Subscribe(deniedCall);
+      assert.equal(deniedCall.ended, true);
+      assert.equal(deniedCall.written.length, 0);
+
+      const grantedCall = makeStreamingConnectorCall({
+        request: {
+          scopes: ['grants'],
+          client: {
+            app_id: 'slack_operator_adapter',
+          },
+        },
+      });
+      impl.HubEvents.Subscribe(grantedCall);
+      assert.equal(grantedCall.ended, false);
+
+      bus.emitHubEvent(
+        bus.grantDecision({
+          grant_request_id: 'grant_req_stream_1',
+          decision: 'GRANT_DECISION_APPROVED',
+          grant: {
+            grant_id: 'grant_1',
+            capability: 'CAPABILITY_WEB_FETCH',
+            client: {
+              device_id: 'xt-alpha-1',
+              project_id: 'project_alpha',
+            },
+          },
+          deny_reason: '',
+          client: {
+            device_id: 'xt-alpha-1',
+            project_id: 'project_alpha',
+          },
+        })
+      );
+
+      assert.equal(grantedCall.written.length, 1);
+      assert.equal(String(grantedCall.written[0]?.grant_decision?.grant_request_id || ''), 'grant_req_stream_1');
     } finally {
       db.close();
     }
@@ -1015,7 +1110,20 @@ await runAsync('XT-W3-24/service api returns XT prepare result when command resu
       const originalNow = Date.now;
       const originalRandomUUID = crypto.randomUUID;
       Date.now = () => 1_773_203_000_000;
-      crypto.randomUUID = () => 'static_uuid';
+      const deterministicUUIDs = [
+        'gate-audit-uuid',
+        'route-id-uuid',
+        'route-audit-uuid',
+        'static_uuid',
+        'queue-audit-uuid',
+        'completed-audit-uuid',
+      ];
+      let deterministicUUIDIndex = 0;
+      crypto.randomUUID = () => {
+        const next = deterministicUUIDs[deterministicUUIDIndex];
+        deterministicUUIDIndex += 1;
+        return next || `deterministic-extra-uuid-${deterministicUUIDIndex}`;
+      };
       try {
         const out = await invokeUnaryAsync(
           impl.HubRuntime.ExecuteOperatorChannelHubCommand,

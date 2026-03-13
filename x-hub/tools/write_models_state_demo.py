@@ -1,4 +1,4 @@
-"""Write a demo model state snapshot for REL Flow Hub.
+"""Write a demo model state snapshot for X-Hub.
 
 This is for local UI testing before the Python model service is wired.
 
@@ -68,4 +68,3 @@ def main() -> int:
 
 if __name__ == '__main__':
     raise SystemExit(main())
-

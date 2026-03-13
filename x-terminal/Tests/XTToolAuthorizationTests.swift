@@ -27,6 +27,72 @@ struct XTToolAuthorizationTests {
     }
 
     @Test
+    func governedAutoApprovalAllowsBenignRunCommandWhenProjectAuthorityIsActive() async {
+        let fixture = ToolExecutorProjectFixture(name: "tool-authorization-governed-auto-approve-run")
+        defer { fixture.cleanup() }
+
+        let config = AXProjectConfig
+            .default(forProjectRoot: fixture.root)
+            .settingTrustedAutomationBinding(
+                mode: .trustedAutomation,
+                deviceId: "device_xt_001",
+                workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
+            )
+            .settingAutonomyPolicy(
+                mode: .trustedOpenClawMode,
+                updatedAt: Date(timeIntervalSince1970: 1_773_800_000)
+            )
+            .settingGovernedAutoApproveLocalToolCalls(enabled: true)
+
+        let decision = await xtToolAuthorizationDecision(
+            call: ToolCall(
+                tool: .run_command,
+                args: ["command": .string("echo hello")]
+            ),
+            config: config,
+            projectRoot: fixture.root
+        )
+
+        #expect(decision.disposition == .allow)
+        #expect(decision.risk == .safe)
+        #expect(decision.policySource == "project_governed_auto_approval")
+        #expect(decision.policyReason == "governed_device_authority")
+    }
+
+    @Test
+    func governedAutoApprovalStillKeepsDangerousRunCommandManual() async {
+        let fixture = ToolExecutorProjectFixture(name: "tool-authorization-governed-auto-approve-dangerous")
+        defer { fixture.cleanup() }
+
+        let config = AXProjectConfig
+            .default(forProjectRoot: fixture.root)
+            .settingTrustedAutomationBinding(
+                mode: .trustedAutomation,
+                deviceId: "device_xt_001",
+                workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
+            )
+            .settingAutonomyPolicy(
+                mode: .trustedOpenClawMode,
+                updatedAt: Date(timeIntervalSince1970: 1_773_800_050)
+            )
+            .settingGovernedAutoApproveLocalToolCalls(enabled: true)
+
+        let decision = await xtToolAuthorizationDecision(
+            call: ToolCall(
+                tool: .run_command,
+                args: ["command": .string("sudo echo hello")]
+            ),
+            config: config,
+            projectRoot: fixture.root
+        )
+
+        #expect(decision.disposition == .ask)
+        #expect(decision.risk == .alwaysConfirm)
+        #expect(decision.policySource == "always_confirm_guard")
+        #expect(decision.policyReason == "dangerous_run_command")
+    }
+
+    @Test
     func writeFileIsDeniedByProjectToolPolicy() async {
         let fixture = ToolExecutorProjectFixture(name: "tool-authorization-write-file-deny")
         defer { fixture.cleanup() }
@@ -179,6 +245,55 @@ struct XTToolAuthorizationTests {
             #expect(decision.risk == .needsConfirm)
             #expect(decision.policySource.isEmpty)
             #expect(decision.policyReason.isEmpty)
+        }
+    }
+
+    @Test
+    func governedAutoApprovalAllowsDeviceBrowserControlWhenDeviceAuthorityIsActive() async {
+        await Self.permissionGate.run {
+            let fixture = ToolExecutorProjectFixture(name: "tool-authorization-device-browser-auto-approve")
+            defer { fixture.cleanup() }
+
+            AXTrustedAutomationPermissionOwnerReadiness.installCurrentProviderForTesting {
+                makeToolAuthorizationPermissionReadiness(
+                    accessibility: .granted,
+                    automation: .granted,
+                    screenRecording: .missing,
+                    auditRef: "audit-tool-authorization-device-browser-auto-approve"
+                )
+            }
+            defer { AXTrustedAutomationPermissionOwnerReadiness.resetCurrentProviderForTesting() }
+
+            let config = AXProjectConfig
+                .default(forProjectRoot: fixture.root)
+                .settingTrustedAutomationBinding(
+                    mode: .trustedAutomation,
+                    deviceId: "device_xt_001",
+                    deviceToolGroups: ["device.browser.control"],
+                    workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
+                )
+                .settingAutonomyPolicy(
+                    mode: .trustedOpenClawMode,
+                    updatedAt: Date(timeIntervalSince1970: 1_773_800_100)
+                )
+                .settingGovernedAutoApproveLocalToolCalls(enabled: true)
+
+            let decision = await xtToolAuthorizationDecision(
+                call: ToolCall(
+                    tool: .deviceBrowserControl,
+                    args: [
+                        "action": .string("open_url"),
+                        "url": .string("https://example.com")
+                    ]
+                ),
+                config: config,
+                projectRoot: fixture.root
+            )
+
+            #expect(decision.disposition == .allow)
+            #expect(decision.risk == .safe)
+            #expect(decision.policySource == "project_governed_auto_approval")
+            #expect(decision.policyReason == "governed_device_authority")
         }
     }
 

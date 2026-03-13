@@ -6,8 +6,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 APP_PATH="$ROOT_DIR/build/X-Hub.app"
-BRIDGE_APP_PATH="$ROOT_DIR/build/RELFlowHubBridge.app"
-DOCK_AGENT_APP_PATH="$ROOT_DIR/build/RELFlowHubDockAgent.app"
+BRIDGE_APP_PATH="$ROOT_DIR/build/X-Hub Bridge.app"
+DOCK_AGENT_APP_PATH="$ROOT_DIR/build/X-Hub Dock Agent.app"
 PLIST_SRC="$ROOT_DIR/x-hub/macos/app_template/Info.plist"
 
 if [ ! -d "$APP_PATH" ]; then
@@ -61,9 +61,15 @@ TXT
 # Optional docs (user guide + security statement)
 DOC_DIR="$ROOT_DIR/docs"
 if [ -d "$DOC_DIR" ]; then
-  if [ -f "$DOC_DIR/AX_RELFlowHub_User_Guide_v${VER}.txt" ]; then
-    cp -f "$DOC_DIR/AX_RELFlowHub_User_Guide_v${VER}.txt" "$STAGE/"
-  fi
+  for doc in \
+    "$DOC_DIR/AX_X-Hub_User_Guide_v${VER}.txt" \
+    "$DOC_DIR/AX_RELFlowHub_User_Guide_v${VER}.txt"
+  do
+    if [ -f "$doc" ]; then
+      cp -f "$doc" "$STAGE/"
+      break
+    fi
+  done
 fi
 
 # Drag-to-install

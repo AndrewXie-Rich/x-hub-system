@@ -95,6 +95,8 @@ enum SupervisorProjectWorkflowCanonicalSync {
             ("active_skill_grant_id", normalizedScalar(snapshot.activeSkillCall?.grantId ?? "")),
             ("active_skill_status", normalizedScalar(snapshot.activeSkillCall?.status.rawValue ?? "")),
             ("active_skill_result_summary", normalizedScalar(snapshot.activeSkillCall?.resultSummary ?? "")),
+            ("last_skill_status", normalizedScalar(snapshot.activeSkillCall?.status.rawValue ?? "")),
+            ("last_skill_result_ref", normalizedScalar(snapshot.activeSkillCall?.resultEvidenceRef ?? "")),
             ("audit_ref", normalizedScalar(snapshot.auditRef)),
             ("summary_json", summaryJSON)
         ]

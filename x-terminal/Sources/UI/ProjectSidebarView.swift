@@ -39,9 +39,12 @@ struct ProjectSidebarView: View {
 }
 
 private struct ProjectRowView: View {
+    @EnvironmentObject private var appModel: AppModel
     let project: AXProjectEntry
 
     var body: some View {
+        let governed = appModel.governedAuthorityPresentation(for: project)
+
         VStack(alignment: .leading, spacing: 2) {
             Text(project.displayName)
                 .lineLimit(1)
@@ -51,7 +54,31 @@ private struct ProjectRowView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
+            if governed.hasAnyVisibleSignal {
+                HStack(spacing: 4) {
+                    if governed.deviceAuthorityConfigured {
+                        projectGovernedChip("Device", color: .green)
+                    }
+                    if governed.localAutoApproveConfigured {
+                        projectGovernedChip("Local Auto", color: .orange)
+                    }
+                    if governed.governedReadableRootCount > 0 {
+                        projectGovernedChip("Read+\(governed.governedReadableRootCount)", color: .blue)
+                    }
+                }
+                .padding(.top, 2)
+            }
         }
         .padding(.vertical, 2)
+    }
+
+    private func projectGovernedChip(_ label: String, color: Color) -> some View {
+        Text(label)
+            .font(.caption2.monospaced())
+            .foregroundStyle(color)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.12))
+            .clipShape(Capsule())
     }
 }

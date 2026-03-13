@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 
 import { makeProtoModelInfo } from './models_util.js';
-import { resolveRuntimeBaseDir, runtimeModelsSnapshot } from './mlx_runtime_ipc.js';
+import { resolveRuntimeBaseDir, runtimeModelsSnapshot } from './local_runtime_ipc.js';
 
 function stableModelKey(models) {
   const rows = Array.isArray(models) ? models : [];
@@ -61,4 +61,3 @@ export function startModelsWatcher({ bus, interval_ms }) {
   }
   return () => clearInterval(t);
 }
-

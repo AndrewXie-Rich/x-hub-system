@@ -41,29 +41,38 @@ struct ProjectSettingsView: View {
                     }
 
                     ForEach(AXRole.allCases) { role in
-                        HStack(alignment: .firstTextBaseline, spacing: 12) {
-                            Text(roleLabel(role))
-                                .font(.system(.body, design: .monospaced))
-                                .frame(width: 90, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                                Text(roleLabel(role))
+                                    .font(.system(.body, design: .monospaced))
+                                    .frame(width: 90, alignment: .leading)
 
-                            Picker("", selection: bindingForRole(role)) {
-                                Text("使用全局设置").tag("")
-                                ForEach(modelOptions()) { opt in
-                                    Text(opt.label).tag(opt.id)
+                                Picker("", selection: bindingForRole(role)) {
+                                    Text("使用全局设置").tag("")
+                                    ForEach(modelOptions()) { opt in
+                                        Text(opt.label).tag(opt.id)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                                .frame(width: 380, alignment: .leading)
+                                .disabled(!appModel.hubInteractive)
+
+                                if let g = globalModelId(role), !g.isEmpty {
+                                    Text("全局：\(g)")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    Text("全局：自动路由")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
                                 }
                             }
-                            .pickerStyle(.menu)
-                            .frame(width: 380, alignment: .leading)
-                            .disabled(!appModel.hubInteractive)
 
-                            if let g = globalModelId(role), !g.isEmpty {
-                                Text("全局：\(g)")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                Text("全局：自动路由")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
+                            if let warning = modelAvailabilityWarningText(for: role) {
+                                Text(warning)
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
                         }
                     }
@@ -291,11 +300,17 @@ struct ProjectSettingsView: View {
         let configuredDeviceAuthority = config.automationMode == .trustedAutomation
             && config.autonomyMode == .trustedOpenClawMode
             && config.autonomyAllowDeviceTools
-        let effectiveDeviceAuthority = effective.effectiveMode == .trustedOpenClawMode
-            && effective.allowDeviceTools
-            && config.automationMode == .trustedAutomation
-            && !config.trustedAutomationDeviceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && config.workspaceBindingHash == xtTrustedAutomationWorkspaceHash(forProjectRoot: ctx.root)
+        let effectiveDeviceAuthority = xtProjectGovernedDeviceAuthorityEnabled(
+            projectRoot: ctx.root,
+            config: config,
+            effectiveAutonomy: effective
+        )
+        let configuredAutoApprove = config.governedAutoApproveLocalToolCalls
+        let effectiveAutoApprove = xtProjectGovernedAutoApprovalEnabled(
+            projectRoot: ctx.root,
+            config: config,
+            effectiveAutonomy: effective
+        )
         let configuredSurfaceText = configuredAutonomySurfaceText(config)
         let effectiveSurfaceText = effective.allowedSurfaceLabels.isEmpty ? "(none)" : effective.allowedSurfaceLabels.joined(separator: ", ")
         let updatedAtText = config.autonomyUpdatedAtDate.map { autonomyTimestampFormatter.string(from: $0) } ?? "(never armed)"
@@ -323,6 +338,27 @@ struct ProjectSettingsView: View {
                     .foregroundStyle(.secondary)
 
                 Text("device_authority: configured=\(configuredDeviceAuthority ? "on" : "off") · effective=\(effectiveDeviceAuthority ? "on" : "off") · paired_device=\(trustedAutomationDeviceIdDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "(missing)" : trustedAutomationDeviceIdDraft)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+
+                Toggle(
+                    "Allow autonomous local tool execution without local approval",
+                    isOn: Binding(
+                        get: { configuredAutoApprove },
+                        set: { appModel.setProjectGovernedAutoApproveLocalToolCalls(enabled: $0) }
+                    )
+                )
+                .toggleStyle(.switch)
+                .disabled(!configuredDeviceAuthority)
+
+                Text(configuredAutoApprove
+                     ? "开启后：当前 project 下的 needs-confirm 本地工具会直接执行，不再等待本地审批。适用于 Supervisor、Coder 和项目聊天回合。"
+                     : "关闭后：write_file / run_command / device browser / UI act 等高风险本地工具仍会停在本地审批。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Text("local_auto_approve: configured=\(configuredAutoApprove ? "on" : "off") · effective=\(effectiveAutoApprove ? "on" : "off") · dangerous_shell=manual · hub_network_grant=still_required")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
@@ -595,6 +631,44 @@ struct ProjectSettingsView: View {
         }
     }
 
+    private func modelInventorySnapshot() -> ModelStateSnapshot {
+        ModelStateSnapshot(
+            models: modelManager.availableModels.isEmpty ? appModel.modelsState.models : modelManager.availableModels,
+            updatedAt: appModel.modelsState.updatedAt
+        )
+    }
+
+    private func modelAvailabilityWarningText(for role: AXRole) -> String? {
+        let configured = appModel.projectConfig?.modelOverride(for: role)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !configured.isEmpty else { return nil }
+        let assessment = HubModelSelectionAdvisor.assess(
+            requestedId: configured,
+            snapshot: modelInventorySnapshot()
+        )
+        guard assessment?.isExactMatchLoaded != true else { return nil }
+
+        if let assessment, let exact = assessment.exactMatch {
+            let candidates = suggestedModelIDs(from: assessment)
+            if let first = candidates.first {
+                return "当前 project 为 \(roleLabel(role)) 配的是 `\(exact.id)`，但它现在是 \(HubModelSelectionAdvisor.stateLabel(exact.state))。若你现在执行，这一路可能会回退到本地；可先切到 `\(first)`。"
+            }
+            return "当前 project 为 \(roleLabel(role)) 配的是 `\(exact.id)`，但它现在是 \(HubModelSelectionAdvisor.stateLabel(exact.state))。若你现在执行，这一路可能会回退到本地。"
+        }
+
+        if let assessment {
+            let candidates = suggestedModelIDs(from: assessment)
+            if !candidates.isEmpty {
+                return "当前 project 为 \(roleLabel(role)) 配的是 `\(configured)`，但 inventory 里没有精确匹配。可先试 `\(candidates.joined(separator: "`, `"))`。"
+            }
+        }
+        return "当前 project 为 \(roleLabel(role)) 配的是 `\(configured)`，但现在无法确认它可执行。"
+    }
+
+    private func suggestedModelIDs(from assessment: HubModelAvailabilityAssessment) -> [String] {
+        let source = assessment.loadedCandidates.isEmpty ? assessment.inventoryCandidates : assessment.loadedCandidates
+        return source.prefix(3).map(\.id)
+    }
+
     private func isRemote(_ m: HubModel) -> Bool {
         let mp = (m.modelPath ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if !mp.isEmpty { return false }
@@ -733,11 +807,11 @@ struct ProjectSettingsView: View {
         config: AXProjectConfig,
         effective: AXProjectAutonomyEffectivePolicy
     ) -> String {
-        let authorityOn = effective.effectiveMode == .trustedOpenClawMode
-            && effective.allowDeviceTools
-            && config.automationMode == .trustedAutomation
-            && !config.trustedAutomationDeviceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && config.workspaceBindingHash == xtTrustedAutomationWorkspaceHash(forProjectRoot: ctx.root)
+        let authorityOn = xtProjectGovernedDeviceAuthorityEnabled(
+            projectRoot: ctx.root,
+            config: config,
+            effectiveAutonomy: effective
+        )
         var roots = [PathGuard.resolve(ctx.root).path]
         if authorityOn {
             roots.append(contentsOf: config.governedReadableRoots)

@@ -224,6 +224,15 @@ enum HubDiagnosticsBundleExporter {
             missing.append("db_integrity_check.txt (export_failed)")
         }
 
+        // Provider-aware runtime summary so operators can see partial readiness without
+        // opening multiple status files manually.
+        do {
+            let runtimeSummaryEntry = try exportLocalRuntimeProviderSummary(to: bundleDir)
+            exported.append(runtimeSummaryEntry)
+        } catch {
+            missing.append("local_runtime_provider_summary.txt (export_failed)")
+        }
+
         // Write a small manifest for quick debugging without opening each file.
         let bid = Bundle.main.bundleIdentifier ?? ""
         let ver = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? ""
@@ -403,6 +412,44 @@ enum HubDiagnosticsBundleExporter {
         return ExportedFileEntry(
             name: "db_integrity_check.txt",
             sourcePath: redactPathForManifest(db.path),
+            bytes: data.count,
+            sha256: sha256Hex(data),
+            truncated: false,
+            redacted: true
+        )
+    }
+
+    private static func exportLocalRuntimeProviderSummary(to bundleDir: URL) throws -> ExportedFileEntry {
+        let statusURL = AIRuntimeStatusStorage.url()
+        let blockedCapabilities = HubLaunchStatusStorage.load()?.degraded.blockedCapabilities ?? []
+        let summary = AIRuntimeStatusStorage.load()?.providerOperatorSummary(
+            ttl: 3.0,
+            blockedCapabilities: blockedCapabilities
+        ) ?? "runtime_alive=0\nready_providers=none\nproviders:\ncapabilities:"
+        let doctor = AIRuntimeStatusStorage.load()?.providerDoctorText(
+            ttl: 3.0,
+            blockedCapabilities: blockedCapabilities
+        ) ?? "Local runtime is not running."
+
+        var lines: [String] = []
+        lines.append("schema_version: xhub_local_runtime_provider_summary.v1")
+        lines.append("generated_at_ms: \(nowMs())")
+        lines.append("status_source: \(redactPathForManifest(statusURL.path))")
+        lines.append(
+            "blocked_capabilities:\n" +
+            (blockedCapabilities.isEmpty ? "(none)" : blockedCapabilities.joined(separator: "\n"))
+        )
+        lines.append("doctor:\n" + (doctor.isEmpty ? "(none)" : doctor))
+        lines.append("operator_summary:\n" + summary)
+
+        let report = redactTextSecrets(lines.joined(separator: "\n\n") + "\n")
+        let data = Data(report.utf8)
+        let dst = bundleDir.appendingPathComponent("local_runtime_provider_summary.txt")
+        try writeDataAtomic(data, to: dst)
+
+        return ExportedFileEntry(
+            name: "local_runtime_provider_summary.txt",
+            sourcePath: redactPathForManifest(statusURL.path),
             bytes: data.count,
             sha256: sha256Hex(data),
             truncated: false,

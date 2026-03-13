@@ -1,11 +1,13 @@
 # X-Hub Skills Discovery & Import v1（skills ecosystem 兼容设计 / Discussion）
 
 - Status: Discussion（用于记录设计讨论与决策依据；落地后可升格为可执行规范）
-- Updated: 2026-02-13
+- Updated: 2026-03-12
 - Applies to:
   - Generic Terminal（含 skills ecosystem）：本机 skill runner + 可选 Hub 托管
   - X-Terminal：Hub 托管 skills + Terminal Runner 执行
   - X-Hub：Skill Store / Pinning / Trust / Audit（不执行第三方代码）
+
+边界冻结参考：`docs/xhub-skills-placement-and-execution-boundary-v1.md`
 
 > 背景：skills ecosystem 生态里常见工作流是通过命令安装/启用技能，例如：
 > `npx skills add vercel-labs/skills --skill find-skills`
@@ -24,6 +26,7 @@
    - v1：Client Pull + Upload
    - v2：在 v1 基础上增加 Hub Pull（通过 Bridge 受控拉取）
 3) `find-skills`：内置（UI/RPC）+ `skills.search` 工具（不做“必须是可执行 skill 才能找 skill”）。
+4) Skills authority 固定在 `X-Hub`；`X-Terminal` 只做 execution plane 与 offline cache，不成为 system-of-record。
 
 ## Implementation Status（已落地，2026-02-15）
 
@@ -32,11 +35,25 @@
   - 存储：`<hub_base>/skills_store/*`（sources/index/pins + packages/manifests）
   - 审计：`skills.search.performed`、`skills.package.imported`、`skills.pin.updated`
   - CLI：`axhubctl skills ...`（通过 client kit 的 `skills_client.js`）
+  - Agent import staging：`StageAgentImport` / `GetAgentImportRecord` / `PromoteAgentImport`
+  - XT 最小导入治理 UI：`Import Skills…` 后可直接 `Review Import` / `Enable Import`
+  - XT `Enable Import` 已固定走 `restage -> package -> upload -> promote`，不允许本地旁路启用
+  - Hub builtin catalog 已补默认 Agent baseline entries：`find-skills`、`agent-browser`、`self-improving-agent`、`summarize`
+  - XT 已补真实 Hub skills client bridge：`SearchSkills` / `SetSkillPin` / `ListResolvedSkills`
+  - XT toolbar 已补 `Baseline` 入口，支持：
+    - `Install in Current Project`
+    - `Install Globally`
+  - baseline 安装流固定走：
+    - `ListResolvedSkills` 判断当前目标是否已具备 baseline
+    - `SearchSkills` 查找每个 baseline 项的真实可装包
+    - `SetSkillPin` 只 pin 带 `package_sha256` 的候选项
+  - 对 builtin catalog 中“可搜索但尚无上传包”的项，XT 会明确显示为 `missing uploadable package`，不做假安装
 
 - 未完成（仍是 v1 checklist 的 TODO）：
   - 签名/信任根（trusted publishers）强制与 developer_mode
   - revocation 生效链路（Hub 分发拒绝 + Runner 拒绝执行）
-  - X-Terminal UI（搜索/导入/分层 pin 管理）与 Runner 沙箱
+  - X-Terminal 完整搜索页 / 分层 pin 管理页与 Runner 沙箱
+  - Hub-native Agent skill vetter（static scan + quarantine + promote gate）
 
 - Hub-L1 冻结件（2026-03-01）：
   - ABI 兼容契约：`docs/skills_abi_compat.v1.md`（机读：`docs/skills_abi_compat.v1.json`）
@@ -98,11 +115,15 @@
   - Hub 行为：验签 -> 验 hash -> 入库 -> 返回 `package_sha256`
   - 验收：非法签名/哈希不匹配会拒绝并产生日志
 
-- [ ] **SKL-V1-022** `SetSkillPin(scope, user_id, project_id?, skill_id, package_sha256)`
+- [ ] **SKL-V1-021A** `Agent Import Vetter Gate`
+  - Hub 行为：对 staged Agent import 运行静态 vetter 扫描，输出 `vetter_status` 与 findings summary
+  - 验收：命中 critical 时直接 quarantine；scan_error / pending 不允许 promote
+
+- [x] **SKL-V1-022** `SetSkillPin(scope, user_id, project_id?, skill_id, package_sha256)`
   - Hub 行为：校验 scope 身份约束 + 写 pin + 写审计
   - 验收：global pin 仅接受 `user_id`；project pin 需 `user_id + project_id`
 
-- [ ] **SKL-V1-023** `ListResolvedSkills(user_id, project_id)`（供 Runner/调度）
+- [x] **SKL-V1-023** `ListResolvedSkills(user_id, project_id)`（供 Runner/调度）
   - 返回：按优先级合并后的技能清单（含来源层级）
   - 验收：冲突 skill_id 可复现地返回最终生效版本
 
@@ -114,6 +135,7 @@
 - [ ] **SKL-V1-031** Skills 导入流（Client Pull + Upload）
   - 流程：终端拉包 -> 调 Hub 上传 -> 选择 pin 到 Global/Project
   - 验收：一次操作可完成“导入 + pin + 生效”
+  - 实施现状（2026-03-12）：XT 已完成本地 skill 导入、Hub stage/review、package upload 与 enable；默认 Agent baseline 已支持 project/global 安装入口；完整的分层 pin 管理页仍待补齐
 
 - [ ] **SKL-V1-032** 分层管理 UI（Global / Project）
   - 功能：查看已 pin、切换版本、回滚
@@ -222,6 +244,47 @@ skills ecosystem 的 `find-skills` 通常承担两件事：
 若必须兼容 “find-skills 本身就是一个可执行 skill”：
 - 允许把它当作普通 skill 包导入 Hub Store，并由 X-Terminal Runner 执行；
 - 但强约束：**不得直连网络**，只能调用 `HubWeb.Fetch` / `HubSkills.Search` 等 Hub 工具（防止 skill 自行上网抓取导致供应链/隐私风险）。
+
+### 2.3 默认 Agent Baseline（2026-03-12 冻结）
+
+为了把 X-Terminal 默认能力面拉到可用的 Agent 基线，v1 先冻结四个默认推荐项：
+
+- `find-skills`
+  - 定位：官方 wrapper / Hub-native discovery front door
+  - 原则：优先映射到 `skills.search`，不是必须依赖第三方可执行插件
+- `agent-browser`
+  - 定位：官方 managed browser automation 包
+  - 原则：运行在 XT 执行面，但浏览器自动化、截图、抓取都必须继续走 Hub/XT 治理边界
+- `self-improving-agent`
+  - 定位：Supervisor 复盘与自改进 workflow pack
+  - 原则：以 retrospective / memory writeback / failure learning 为主，不得变成绕开宪章的自写系统提示黑盒
+- `summarize`
+  - 定位：官方 summarize wrapper
+  - 原则：网页 / PDF / 长文总结继续走 Hub fetch + model route，不给 skill 直连网络和自带 key
+
+这四项在 Hub builtin catalog 中默认可被搜索到；XT 已提供默认 baseline profile 安装入口，但仍坚持“只有 Hub 可解析到真实官方包或真实上传包才允许 pin”，不会把 builtin catalog 推荐项直接伪装成已安装。
+
+当前仓库内的官方落点已经补齐为：
+
+- 源目录：`official-agent-skills/<skill_id>/`
+  - 每个官方 skill 至少包含独立的 `SKILL.md` 与 `skill.json`
+- 官方 publisher trust root：`official-agent-skills/publisher/trusted_publishers.json`
+- 发布产物：`official-agent-skills/dist/`
+  - `packages/<package_sha256>.tgz`
+  - `manifests/<package_sha256>.json`
+  - `index.json`
+  - `trusted_publishers.json`
+- 构建命令：
+  - `node scripts/build_official_agent_skills.js`
+  - 已签名构建：`node scripts/build_official_agent_skills.js --sign-private-key-file /secure/path/xhub_official_ed25519.pem`
+  - 生成/轮换官方签名 key：`node scripts/generate_official_agent_signing_keypair.js --private-key-out /secure/path/xhub_official_ed25519.pem --trust-out official-agent-skills/publisher/trusted_publishers.json`
+
+Hub `skills_store` 现在会把 `official-agent-skills/dist/index.json` 作为官方发布索引 overlay 到 `SearchSkills` / `GetSkillManifest` / `DownloadSkillPackage` / `SetSkillPin` 的解析面，并把 `official-agent-skills/publisher/trusted_publishers.json` 作为官方 publisher 默认 trust root 的一部分；因此这四项不再只是手写 catalog 文案，而是仓库内有源、可打包、可更新、可 pin、可验签的真实官方包。
+
+补充说明：
+
+- `builtin:catalog` 仍保留为官方发现入口，但元数据优先来自 `official-agent-skills/*`，不再靠散落硬编码维护。
+- 签名 / trusted publisher enforcement 仍按 `docs/xhub-skills-signing-distribution-and-runner-v1.md` 的治理边界执行；官方 dist 索引解决的是“真实包存在与可分发”问题，不等于绕过后续 trust gate。
 
 ---
 

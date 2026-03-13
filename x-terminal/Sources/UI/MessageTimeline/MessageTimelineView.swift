@@ -7,11 +7,17 @@ struct MessageTimelineView: View {
     var bottomPadding: CGFloat = 24
     @Namespace private var bottomID
 
+    private var visibleMessages: [AXChatMessage] {
+        session.messages.filter { message in
+            message.role != .tool
+        }
+    }
+
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 16) {
-                    ForEach(session.messages) { message in
+                    ForEach(visibleMessages) { message in
                         MessageCard(message: message)
                             .id(message.id)
                             .transition(.asymmetric(
@@ -21,7 +27,7 @@ struct MessageTimelineView: View {
                     }
 
                     // 加载指示器
-                    if session.isSending {
+                    if session.shouldShowThinkingIndicator {
                         ThinkingIndicator()
                             .transition(.opacity)
                     }
@@ -272,117 +278,104 @@ struct MessageContentView: View {
 struct ToolResultView: View {
     let message: AXChatMessage
     @State private var toolResult: ToolResult?
-    @State private var isExpanded = false
+    @State private var showDiagnostics = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // 头部
-            Button {
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                    isExpanded.toggle()
-                }
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: resultIcon)
-                        .foregroundColor(resultColor)
-                        .font(.system(size: 14))
+        Group {
+            if let result = toolResult, !ToolResultPresentation.shouldShowTimelineCard(for: result) {
+                EmptyView()
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 8) {
+                        Image(systemName: resultIcon)
+                            .foregroundColor(resultColor)
+                            .font(.system(size: 14))
 
-                    Text(resultTitle)
-                        .font(.system(.body, design: .monospaced))
-                        .fontWeight(.medium)
+                        Text(summaryTitle)
+                            .font(.system(.body, design: .rounded))
+                            .fontWeight(.semibold)
 
-                    Spacer()
+                        Spacer()
 
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .rotationEffect(.degrees(isExpanded ? 0 : -90))
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            // 详情
-            if isExpanded {
-                VStack(alignment: .leading, spacing: 8) {
-                    if let result = toolResult {
-                        // 状态
-                        HStack(spacing: 6) {
-                            Image(systemName: result.ok ? "checkmark.circle.fill" : "xmark.circle.fill")
-                                .foregroundColor(result.ok ? .green : .red)
-                                .font(.caption)
-                            Text(result.ok ? "Success" : "Failed")
-                                .font(.caption)
+                        if let result = toolResult {
+                            Text(result.tool.rawValue)
+                                .font(.system(.caption2, design: .monospaced))
                                 .foregroundStyle(.secondary)
                         }
+                    }
 
-                        Divider()
+                    Text(summaryBody)
+                        .font(.system(.subheadline, design: .default))
+                        .foregroundStyle(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
 
-                        // 输出
+                    DisclosureGroup("Diagnostics", isExpanded: $showDiagnostics) {
                         ScrollView {
-                            Text(result.output)
+                            Text(diagnosticsText)
                                 .font(.system(.caption, design: .monospaced))
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .frame(maxHeight: 200)
-                    } else {
-                        // 原始内容
-                        Text(message.content)
-                            .font(.system(.caption, design: .monospaced))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(maxHeight: 220)
+                        .padding(.top, 6)
                     }
+                    .font(.caption)
+                    .tint(.secondary)
                 }
-                .padding(.leading, 22)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .padding(12)
+                .background(resultBackground)
+                .cornerRadius(8)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(resultBorderColor, lineWidth: 1)
+                )
             }
         }
-        .padding(12)
-        .background(resultBackground)
-        .cornerRadius(8)
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(resultBorderColor, lineWidth: 1)
-        )
         .onAppear {
             toolResult = ToolResultParser.parse(message.content)
+        }
+        .onChange(of: message.content) { newContent in
+            toolResult = ToolResultParser.parse(newContent)
         }
     }
 
     private var resultIcon: String {
-        if let result = toolResult {
-            return result.ok ? "checkmark.circle" : "xmark.circle"
-        }
-        return "info.circle"
+        guard let result = toolResult else { return "exclamationmark.triangle.fill" }
+        return ToolResultPresentation.iconName(for: result)
     }
 
     private var resultColor: Color {
-        if let result = toolResult {
-            return result.ok ? .green : .red
-        }
-        return .secondary
+        guard let result = toolResult else { return .orange }
+        return result.ok ? .green : .orange
     }
 
-    private var resultTitle: String {
-        if let result = toolResult {
-            return result.tool.rawValue
+    private var summaryTitle: String {
+        guard let result = toolResult else { return "Action needs attention" }
+        return ToolResultPresentation.title(for: result)
+    }
+
+    private var summaryBody: String {
+        guard let result = toolResult else {
+            return "A tool call returned diagnostics. Open Diagnostics to inspect the raw output."
         }
-        return "Tool Result"
+        return ToolResultPresentation.body(for: result)
+    }
+
+    private var diagnosticsText: String {
+        if let result = toolResult, !result.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return result.output
+        }
+        return message.content
     }
 
     private var resultBackground: Color {
-        if let result = toolResult {
-            return result.ok ? Color.green.opacity(0.05) : Color.red.opacity(0.05)
-        }
-        return Color.secondary.opacity(0.05)
+        guard let result = toolResult else { return Color.orange.opacity(0.06) }
+        return result.ok ? Color.green.opacity(0.06) : Color.orange.opacity(0.06)
     }
 
     private var resultBorderColor: Color {
-        if let result = toolResult {
-            return result.ok ? Color.green.opacity(0.2) : Color.red.opacity(0.2)
-        }
-        return Color.secondary.opacity(0.2)
+        guard let result = toolResult else { return Color.orange.opacity(0.24) }
+        return result.ok ? Color.green.opacity(0.24) : Color.orange.opacity(0.24)
     }
 }
 
@@ -520,6 +513,10 @@ struct ToolCallCard: View {
             return "folder"
         case .search:
             return "magnifyingglass"
+        case .skills_search:
+            return "magnifyingglass"
+        case .summarize:
+            return "text.alignleft"
         case .run_command:
             return "terminal"
         case .git_status, .git_diff, .git_apply_check, .git_apply:
@@ -634,7 +631,7 @@ struct ThinkingIndicator: View {
                 }
             }
 
-            Text("Thinking...")
+            Text("我在整理回复。")
                 .font(.system(.body, design: .rounded))
                 .foregroundStyle(.secondary)
         }

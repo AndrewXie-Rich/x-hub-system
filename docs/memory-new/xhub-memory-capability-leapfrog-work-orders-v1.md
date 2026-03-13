@@ -1,4 +1,4 @@
-# X-Hub + X-Terminal Memory Leapfrog 执行工单（Claude-Mem / OpenClaw）
+# X-Hub + X-Terminal Memory Leapfrog 执行工单（progressive-disclosure reference architecture / skills ecosystem）
 
 - version: v1.0
 - updatedAt: 2026-02-28
@@ -8,12 +8,12 @@
   - `X_MEMORY.md`
   - `docs/memory-new/xhub-memory-v3-execution-plan.md`
   - `docs/memory-new/xhub-memory-v3-m2-work-orders-v1.md`
-  - `docs/memory-new/xhub-leapfrog-opencode-iflow-work-orders-v1.md`
+  - `docs/memory-new/xhub-product-experience-leapfrog-work-orders-v1.md`
   - `docs/xhub-memory-systems-comparison-v1.md`
 
 ## 0) 使用方式（先看）
 
-- 本文聚焦“记忆系统 + 技能体验”的超越路线，目标是同时超过 `claude-mem` 与 `openclaw` 在效率和体验上的强项。
+- 本文聚焦“记忆系统 + 技能体验”的超越路线，目标是同时超过 `external-progressive-disclosure` 与 `skill` 在效率和体验上的强项。
 - 所有工单按 `P0 > P1` 排序；P0 不完成不得进入灰度发布。
 - 每个工单都必须具备：目标、依赖、交付物、验收指标、回归样例、Gate、估时。
 - 所有高风险路径继续执行主链：`ingress -> risk classify -> policy -> grant -> execute -> audit`；任一节点异常一律 `deny` 或 `downgrade_to_local`。
@@ -131,7 +131,7 @@ Definition of Done (DoD)
 
 ### CM-W1-02（P0）记忆效率与体验基线集（可复现）
 
-- 目标：建立对标 `claude-mem/openclaw` 优势点的统一基线集。
+- 目标：建立对标 `external-progressive-disclosure/skill` 优势点的统一基线集。
 - 依赖：`CM-W1-01`
 - 交付物：`benchmark_memory_efficiency_v1.json` + `golden_queries_v2.json` + `skill_startup_suite_v1.json`。
 - 验收指标：固定 seed 可重建；多场景覆盖率 >= 90%。

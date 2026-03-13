@@ -101,3 +101,37 @@ run('trace output is controlled by include_trace', () => {
   assert.equal(on.stage_trace[1].stage, 'gate');
   assert.equal(on.stage_trace[1].blocked, true);
 });
+
+run('hybrid retrieval explain preserves vector weight and score components', () => {
+  const payload = buildMemoryScoreExplainPayload({
+    retrieval: {
+      blocked: false,
+      deny_reason: '',
+      formula: 'final=relevance-risk_penalty; relevance=0.35*vector+0.5*text+0.15*recency; mmr=0',
+      weights: {
+        vector: 0.35,
+        text: 0.5,
+        recency: 0.15,
+        mmr: 0,
+        risk: 1,
+      },
+      results: [
+        {
+          rank: 1,
+          id: 'vec-a',
+          title: 'Vector A',
+          vector_score: 0.92,
+          lexical_score: 0.1,
+          recency_score: 0.4,
+          relevance_score: 0.437,
+          risk_penalty: 0,
+          final_score: 0.437,
+          risk_level: 'low',
+        },
+      ],
+    },
+  });
+  assert.equal(payload.weights.vector, 0.35);
+  assert.equal(payload.items[0].components.vector_score, 0.92);
+  assert.match(String(payload.formula || ''), /0\.35\*vector/);
+});

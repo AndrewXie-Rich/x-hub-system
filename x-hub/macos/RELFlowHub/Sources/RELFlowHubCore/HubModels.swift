@@ -180,6 +180,7 @@ public struct IPCMemoryContextRequestPayload: Codable, Sendable, Equatable {
     public var observationsText: String?
     public var workingSetText: String?
     public var rawEvidenceText: String?
+    public var servingProfile: String?
     public var budgets: IPCMemoryContextBudgets?
 
     public init(
@@ -193,6 +194,7 @@ public struct IPCMemoryContextRequestPayload: Codable, Sendable, Equatable {
         observationsText: String? = nil,
         workingSetText: String? = nil,
         rawEvidenceText: String? = nil,
+        servingProfile: String? = nil,
         budgets: IPCMemoryContextBudgets? = nil
     ) {
         self.mode = mode
@@ -205,6 +207,7 @@ public struct IPCMemoryContextRequestPayload: Codable, Sendable, Equatable {
         self.observationsText = observationsText
         self.workingSetText = workingSetText
         self.rawEvidenceText = rawEvidenceText
+        self.servingProfile = servingProfile
         self.budgets = budgets
     }
 
@@ -219,6 +222,7 @@ public struct IPCMemoryContextRequestPayload: Codable, Sendable, Equatable {
         case observationsText = "observations_text"
         case workingSetText = "working_set_text"
         case rawEvidenceText = "raw_evidence_text"
+        case servingProfile = "serving_profile"
         case budgets
     }
 }
@@ -244,6 +248,7 @@ public struct IPCMemoryContextLayerUsage: Codable, Sendable, Equatable {
 public struct IPCMemoryContextResponsePayload: Codable, Sendable, Equatable {
     public var text: String
     public var source: String
+    public var resolvedProfile: String?
     public var budgetTotalTokens: Int
     public var usedTotalTokens: Int
     public var layerUsage: [IPCMemoryContextLayerUsage]
@@ -254,6 +259,7 @@ public struct IPCMemoryContextResponsePayload: Codable, Sendable, Equatable {
     public init(
         text: String,
         source: String,
+        resolvedProfile: String? = nil,
         budgetTotalTokens: Int,
         usedTotalTokens: Int,
         layerUsage: [IPCMemoryContextLayerUsage],
@@ -263,6 +269,7 @@ public struct IPCMemoryContextResponsePayload: Codable, Sendable, Equatable {
     ) {
         self.text = text
         self.source = source
+        self.resolvedProfile = resolvedProfile
         self.budgetTotalTokens = budgetTotalTokens
         self.usedTotalTokens = usedTotalTokens
         self.layerUsage = layerUsage
@@ -274,12 +281,151 @@ public struct IPCMemoryContextResponsePayload: Codable, Sendable, Equatable {
     public enum CodingKeys: String, CodingKey {
         case text
         case source
+        case resolvedProfile = "resolved_profile"
         case budgetTotalTokens = "budget_total_tokens"
         case usedTotalTokens = "used_total_tokens"
         case layerUsage = "layer_usage"
         case truncatedLayers = "truncated_layers"
         case redactedItems = "redacted_items"
         case privateDrops = "private_drops"
+    }
+}
+
+public struct IPCMemoryRetrievalRequestPayload: Codable, Sendable, Equatable {
+    public var scope: String
+    public var requesterRole: String
+    public var projectId: String?
+    public var projectRoot: String?
+    public var displayName: String?
+    public var latestUser: String
+    public var reason: String?
+    public var requestedKinds: [String]
+    public var explicitRefs: [String]
+    public var maxSnippets: Int
+    public var maxSnippetChars: Int
+    public var auditRef: String
+
+    public init(
+        scope: String,
+        requesterRole: String,
+        projectId: String? = nil,
+        projectRoot: String? = nil,
+        displayName: String? = nil,
+        latestUser: String,
+        reason: String? = nil,
+        requestedKinds: [String] = [],
+        explicitRefs: [String] = [],
+        maxSnippets: Int = 3,
+        maxSnippetChars: Int = 420,
+        auditRef: String
+    ) {
+        self.scope = scope
+        self.requesterRole = requesterRole
+        self.projectId = projectId
+        self.projectRoot = projectRoot
+        self.displayName = displayName
+        self.latestUser = latestUser
+        self.reason = reason
+        self.requestedKinds = requestedKinds
+        self.explicitRefs = explicitRefs
+        self.maxSnippets = maxSnippets
+        self.maxSnippetChars = maxSnippetChars
+        self.auditRef = auditRef
+    }
+
+    public enum CodingKeys: String, CodingKey {
+        case scope
+        case requesterRole = "requester_role"
+        case projectId = "project_id"
+        case projectRoot = "project_root"
+        case displayName = "display_name"
+        case latestUser = "latest_user"
+        case reason
+        case requestedKinds = "requested_kinds"
+        case explicitRefs = "explicit_refs"
+        case maxSnippets = "max_snippets"
+        case maxSnippetChars = "max_snippet_chars"
+        case auditRef = "audit_ref"
+    }
+}
+
+public struct IPCMemoryRetrievalSnippet: Codable, Sendable, Equatable {
+    public var snippetId: String
+    public var sourceKind: String
+    public var title: String
+    public var ref: String
+    public var text: String
+    public var score: Int
+    public var truncated: Bool
+
+    public init(
+        snippetId: String,
+        sourceKind: String,
+        title: String,
+        ref: String,
+        text: String,
+        score: Int,
+        truncated: Bool
+    ) {
+        self.snippetId = snippetId
+        self.sourceKind = sourceKind
+        self.title = title
+        self.ref = ref
+        self.text = text
+        self.score = score
+        self.truncated = truncated
+    }
+
+    public enum CodingKeys: String, CodingKey {
+        case snippetId = "snippet_id"
+        case sourceKind = "source_kind"
+        case title
+        case ref
+        case text
+        case score
+        case truncated
+    }
+}
+
+public struct IPCMemoryRetrievalResponsePayload: Codable, Sendable, Equatable {
+    public var source: String
+    public var scope: String
+    public var auditRef: String
+    public var reasonCode: String?
+    public var denyCode: String?
+    public var snippets: [IPCMemoryRetrievalSnippet]
+    public var truncatedItems: Int
+    public var redactedItems: Int
+
+    public init(
+        source: String,
+        scope: String,
+        auditRef: String,
+        reasonCode: String? = nil,
+        denyCode: String? = nil,
+        snippets: [IPCMemoryRetrievalSnippet],
+        truncatedItems: Int,
+        redactedItems: Int
+    ) {
+        self.source = source
+        self.scope = scope
+        self.auditRef = auditRef
+        self.reasonCode = reasonCode
+        self.denyCode = denyCode
+        self.snippets = snippets
+        self.truncatedItems = truncatedItems
+        self.redactedItems = redactedItems
+    }
+
+    public enum CodingKeys: String, CodingKey {
+        case source
+        case scope
+        case auditRef = "audit_ref"
+        case reasonCode = "reason_code"
+        case denyCode = "deny_code"
+        case snippets
+        case truncatedItems = "truncated_items"
+        case redactedItems = "redacted_items"
     }
 }
 
@@ -493,6 +639,250 @@ public struct IPCVoiceWakeProfile: Codable, Sendable, Equatable {
     }
 }
 
+public struct IPCSecretVaultItem: Codable, Sendable, Equatable {
+    public var itemID: String
+    public var scope: String
+    public var name: String
+    public var sensitivity: String
+    public var createdAtMs: Int64
+    public var updatedAtMs: Int64
+
+    public init(
+        itemID: String,
+        scope: String,
+        name: String,
+        sensitivity: String,
+        createdAtMs: Int64,
+        updatedAtMs: Int64
+    ) {
+        self.itemID = itemID
+        self.scope = scope
+        self.name = name
+        self.sensitivity = sensitivity
+        self.createdAtMs = createdAtMs
+        self.updatedAtMs = updatedAtMs
+    }
+
+    public enum CodingKeys: String, CodingKey {
+        case itemID = "item_id"
+        case scope
+        case name
+        case sensitivity
+        case createdAtMs = "created_at_ms"
+        case updatedAtMs = "updated_at_ms"
+    }
+}
+
+public struct IPCSecretVaultSnapshot: Codable, Sendable, Equatable {
+    public var source: String
+    public var updatedAtMs: Int64
+    public var items: [IPCSecretVaultItem]
+
+    public init(source: String, updatedAtMs: Int64, items: [IPCSecretVaultItem]) {
+        self.source = source
+        self.updatedAtMs = updatedAtMs
+        self.items = items
+    }
+
+    public enum CodingKeys: String, CodingKey {
+        case source
+        case updatedAtMs = "updated_at_ms"
+        case items
+    }
+}
+
+public struct IPCSecretVaultCreateRequestPayload: Codable, Sendable, Equatable {
+    public var scope: String
+    public var name: String
+    public var plaintext: String
+    public var sensitivity: String
+    public var projectID: String?
+    public var displayName: String?
+    public var reason: String?
+
+    public init(
+        scope: String,
+        name: String,
+        plaintext: String,
+        sensitivity: String,
+        projectID: String? = nil,
+        displayName: String? = nil,
+        reason: String? = nil
+    ) {
+        self.scope = scope
+        self.name = name
+        self.plaintext = plaintext
+        self.sensitivity = sensitivity
+        self.projectID = projectID
+        self.displayName = displayName
+        self.reason = reason
+    }
+
+    public enum CodingKeys: String, CodingKey {
+        case scope
+        case name
+        case plaintext
+        case sensitivity
+        case projectID = "project_id"
+        case displayName = "display_name"
+        case reason
+    }
+}
+
+public struct IPCSecretVaultListRequestPayload: Codable, Sendable, Equatable {
+    public var scope: String?
+    public var namePrefix: String?
+    public var projectID: String?
+    public var limit: Int
+
+    public init(
+        scope: String? = nil,
+        namePrefix: String? = nil,
+        projectID: String? = nil,
+        limit: Int
+    ) {
+        self.scope = scope
+        self.namePrefix = namePrefix
+        self.projectID = projectID
+        self.limit = limit
+    }
+
+    public enum CodingKeys: String, CodingKey {
+        case scope
+        case namePrefix = "name_prefix"
+        case projectID = "project_id"
+        case limit
+    }
+}
+
+public struct IPCSecretVaultUseRequestPayload: Codable, Sendable, Equatable {
+    public var itemID: String?
+    public var scope: String?
+    public var name: String?
+    public var projectID: String?
+    public var purpose: String
+    public var target: String?
+    public var ttlMs: Int
+
+    public init(
+        itemID: String? = nil,
+        scope: String? = nil,
+        name: String? = nil,
+        projectID: String? = nil,
+        purpose: String,
+        target: String? = nil,
+        ttlMs: Int
+    ) {
+        self.itemID = itemID
+        self.scope = scope
+        self.name = name
+        self.projectID = projectID
+        self.purpose = purpose
+        self.target = target
+        self.ttlMs = ttlMs
+    }
+
+    public enum CodingKeys: String, CodingKey {
+        case itemID = "item_id"
+        case scope
+        case name
+        case projectID = "project_id"
+        case purpose
+        case target
+        case ttlMs = "ttl_ms"
+    }
+}
+
+public struct IPCSecretVaultUseResult: Codable, Sendable, Equatable {
+    public var ok: Bool
+    public var source: String
+    public var leaseID: String?
+    public var useToken: String?
+    public var itemID: String?
+    public var expiresAtMs: Int64?
+    public var reasonCode: String?
+
+    public init(
+        ok: Bool,
+        source: String,
+        leaseID: String? = nil,
+        useToken: String? = nil,
+        itemID: String? = nil,
+        expiresAtMs: Int64? = nil,
+        reasonCode: String? = nil
+    ) {
+        self.ok = ok
+        self.source = source
+        self.leaseID = leaseID
+        self.useToken = useToken
+        self.itemID = itemID
+        self.expiresAtMs = expiresAtMs
+        self.reasonCode = reasonCode
+    }
+
+    public enum CodingKeys: String, CodingKey {
+        case ok
+        case source
+        case leaseID = "lease_id"
+        case useToken = "use_token"
+        case itemID = "item_id"
+        case expiresAtMs = "expires_at_ms"
+        case reasonCode = "reason_code"
+    }
+}
+
+public struct IPCSecretVaultRedeemRequestPayload: Codable, Sendable, Equatable {
+    public var useToken: String
+    public var projectID: String?
+
+    public init(
+        useToken: String,
+        projectID: String? = nil
+    ) {
+        self.useToken = useToken
+        self.projectID = projectID
+    }
+
+    public enum CodingKeys: String, CodingKey {
+        case useToken = "use_token"
+        case projectID = "project_id"
+    }
+}
+
+public struct IPCSecretVaultRedeemResult: Codable, Sendable, Equatable {
+    public var ok: Bool
+    public var source: String
+    public var leaseID: String?
+    public var itemID: String?
+    public var plaintext: String?
+    public var reasonCode: String?
+
+    public init(
+        ok: Bool,
+        source: String,
+        leaseID: String? = nil,
+        itemID: String? = nil,
+        plaintext: String? = nil,
+        reasonCode: String? = nil
+    ) {
+        self.ok = ok
+        self.source = source
+        self.leaseID = leaseID
+        self.itemID = itemID
+        self.plaintext = plaintext
+        self.reasonCode = reasonCode
+    }
+
+    public enum CodingKeys: String, CodingKey {
+        case ok
+        case source
+        case leaseID = "lease_id"
+        case itemID = "item_id"
+        case plaintext
+        case reasonCode = "reason_code"
+    }
+}
+
 public struct IPCProjectCanonicalMemoryItem: Codable, Sendable, Equatable {
     public var key: String
     public var value: String
@@ -568,10 +958,15 @@ public struct IPCRequest: Codable, Sendable {
     public var deviceCanonicalMemory: IPCDeviceCanonicalMemoryPayload?
     public var network: HubNetworkRequest?
     public var memoryContext: IPCMemoryContextRequestPayload?
+    public var memoryRetrieval: IPCMemoryRetrievalRequestPayload?
     public var supervisorIncident: IPCSupervisorIncidentAuditPayload?
     public var supervisorProjectAction: IPCSupervisorProjectActionAuditPayload?
     public var voiceWakeProfileRequest: IPCVoiceWakeProfileRequestPayload?
     public var voiceWakeProfile: IPCVoiceWakeProfile?
+    public var secretVaultCreate: IPCSecretVaultCreateRequestPayload?
+    public var secretVaultList: IPCSecretVaultListRequestPayload?
+    public var secretVaultUse: IPCSecretVaultUseRequestPayload?
+    public var secretVaultRedeem: IPCSecretVaultRedeemRequestPayload?
 
     public init(
         type: String,
@@ -582,10 +977,15 @@ public struct IPCRequest: Codable, Sendable {
         deviceCanonicalMemory: IPCDeviceCanonicalMemoryPayload? = nil,
         network: HubNetworkRequest? = nil,
         memoryContext: IPCMemoryContextRequestPayload? = nil,
+        memoryRetrieval: IPCMemoryRetrievalRequestPayload? = nil,
         supervisorIncident: IPCSupervisorIncidentAuditPayload? = nil,
         supervisorProjectAction: IPCSupervisorProjectActionAuditPayload? = nil,
         voiceWakeProfileRequest: IPCVoiceWakeProfileRequestPayload? = nil,
-        voiceWakeProfile: IPCVoiceWakeProfile? = nil
+        voiceWakeProfile: IPCVoiceWakeProfile? = nil,
+        secretVaultCreate: IPCSecretVaultCreateRequestPayload? = nil,
+        secretVaultList: IPCSecretVaultListRequestPayload? = nil,
+        secretVaultUse: IPCSecretVaultUseRequestPayload? = nil,
+        secretVaultRedeem: IPCSecretVaultRedeemRequestPayload? = nil
     ) {
         self.type = type
         self.reqId = reqId
@@ -595,10 +995,15 @@ public struct IPCRequest: Codable, Sendable {
         self.deviceCanonicalMemory = deviceCanonicalMemory
         self.network = network
         self.memoryContext = memoryContext
+        self.memoryRetrieval = memoryRetrieval
         self.supervisorIncident = supervisorIncident
         self.supervisorProjectAction = supervisorProjectAction
         self.voiceWakeProfileRequest = voiceWakeProfileRequest
         self.voiceWakeProfile = voiceWakeProfile
+        self.secretVaultCreate = secretVaultCreate
+        self.secretVaultList = secretVaultList
+        self.secretVaultUse = secretVaultUse
+        self.secretVaultRedeem = secretVaultRedeem
     }
 
     public enum CodingKeys: String, CodingKey {
@@ -610,10 +1015,15 @@ public struct IPCRequest: Codable, Sendable {
         case deviceCanonicalMemory = "device_canonical_memory"
         case network
         case memoryContext = "memory_context"
+        case memoryRetrieval = "memory_retrieval"
         case supervisorIncident = "supervisor_incident"
         case supervisorProjectAction = "supervisor_project_action"
         case voiceWakeProfileRequest = "voice_wake_profile_request"
         case voiceWakeProfile = "voice_wake_profile"
+        case secretVaultCreate = "secret_vault_create"
+        case secretVaultList = "secret_vault_list"
+        case secretVaultUse = "secret_vault_use"
+        case secretVaultRedeem = "secret_vault_redeem"
     }
 }
 
@@ -624,7 +1034,12 @@ public struct IPCResponse: Codable, Sendable {
     public var id: String?
     public var error: String?
     public var memoryContext: IPCMemoryContextResponsePayload?
+    public var memoryRetrieval: IPCMemoryRetrievalResponsePayload?
     public var voiceWakeProfile: IPCVoiceWakeProfile?
+    public var secretVaultItem: IPCSecretVaultItem?
+    public var secretVaultSnapshot: IPCSecretVaultSnapshot?
+    public var secretVaultUse: IPCSecretVaultUseResult?
+    public var secretVaultRedeem: IPCSecretVaultRedeemResult?
 
     public init(
         type: String,
@@ -633,7 +1048,12 @@ public struct IPCResponse: Codable, Sendable {
         id: String? = nil,
         error: String? = nil,
         memoryContext: IPCMemoryContextResponsePayload? = nil,
-        voiceWakeProfile: IPCVoiceWakeProfile? = nil
+        memoryRetrieval: IPCMemoryRetrievalResponsePayload? = nil,
+        voiceWakeProfile: IPCVoiceWakeProfile? = nil,
+        secretVaultItem: IPCSecretVaultItem? = nil,
+        secretVaultSnapshot: IPCSecretVaultSnapshot? = nil,
+        secretVaultUse: IPCSecretVaultUseResult? = nil,
+        secretVaultRedeem: IPCSecretVaultRedeemResult? = nil
     ) {
         self.type = type
         self.reqId = reqId
@@ -641,7 +1061,12 @@ public struct IPCResponse: Codable, Sendable {
         self.id = id
         self.error = error
         self.memoryContext = memoryContext
+        self.memoryRetrieval = memoryRetrieval
         self.voiceWakeProfile = voiceWakeProfile
+        self.secretVaultItem = secretVaultItem
+        self.secretVaultSnapshot = secretVaultSnapshot
+        self.secretVaultUse = secretVaultUse
+        self.secretVaultRedeem = secretVaultRedeem
     }
 
     public enum CodingKeys: String, CodingKey {
@@ -651,6 +1076,11 @@ public struct IPCResponse: Codable, Sendable {
         case id
         case error
         case memoryContext = "memory_context"
+        case memoryRetrieval = "memory_retrieval"
         case voiceWakeProfile = "voice_wake_profile"
+        case secretVaultItem = "secret_vault_item"
+        case secretVaultSnapshot = "secret_vault_snapshot"
+        case secretVaultUse = "secret_vault_use"
+        case secretVaultRedeem = "secret_vault_redeem"
     }
 }

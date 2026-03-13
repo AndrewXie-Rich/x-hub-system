@@ -44,6 +44,34 @@ function round6(v) {
   return Number(safeNum(v, 0).toFixed(6));
 }
 
+function normalizeVector(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const value of raw) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return [];
+    out.push(n);
+  }
+  return out;
+}
+
+function cosineSimilarity(queryVector, docVector) {
+  const left = normalizeVector(queryVector);
+  const right = normalizeVector(docVector);
+  if (!left.length || left.length !== right.length) return 0;
+  let dot = 0;
+  let leftNorm = 0;
+  let rightNorm = 0;
+  for (let idx = 0; idx < left.length; idx += 1) {
+    dot += left[idx] * right[idx];
+    leftNorm += left[idx] * left[idx];
+    rightNorm += right[idx] * right[idx];
+  }
+  const denom = Math.sqrt(leftNorm) * Math.sqrt(rightNorm);
+  if (!denom) return 0;
+  return Math.max(-1, Math.min(1, dot / denom));
+}
+
 function docSearchSource(doc) {
   const tags = Array.isArray(doc?.tags) ? doc.tags.join(" ") : "";
   return `${safeStr(doc?.title)} ${safeStr(doc?.text)} ${safeStr(tags)}`.trim();
@@ -253,6 +281,7 @@ export function runMemoryRetrievalPipeline(input = {}) {
   const docs = Array.isArray(input.documents) ? input.documents : [];
   const query = safeStr(input.query);
   const queryTokens = tokenizeText(query);
+  const queryEmbedding = normalizeVector(input.query_embedding || input.queryEmbedding);
   const queryRisk = queryRiskScore(query);
   const reqScope = normalizeScope(input.scope);
   const policy = applyInputPolicy(input);
@@ -294,19 +323,24 @@ export function runMemoryRetrievalPipeline(input = {}) {
   for (const doc of sensTrusted) {
     const docTokenSet = getDocSearchTokenSet(doc);
     const lexical = scoreLexical(queryTokens, docTokenSet);
-    if (lexical <= 0) continue;
+    const vectorScore = Math.max(0, cosineSimilarity(queryEmbedding, doc?.embedding_vector || doc?.embedding || doc?.vector));
+    const hasVector = vectorScore > 0;
+    if (lexical <= 0 && !hasVector) continue;
     retrieved.push({
       doc,
       lexical_score: lexical,
+      vector_score: round6(vectorScore),
+      has_vector: hasVector,
       risk_hints: getDocRiskHints(doc),
     });
   }
+  const anyVectorSignal = retrieved.some((row) => row.has_vector);
   if (traceEnabled) {
     trace.push({
       stage: "retrieval",
       in_count: sensTrusted.length,
       out_count: retrieved.length,
-      method: "lexical_overlap_v1",
+      method: anyVectorSignal ? "hybrid_lexical_vector_v1" : "lexical_overlap_v1",
     });
   }
 
@@ -314,7 +348,14 @@ export function runMemoryRetrievalPipeline(input = {}) {
   const withRecency = computeRecencyScore(retrieved);
   const reranked = withRecency
     .map((r) => {
-      const relevanceScore = (0.85 * safeNum(r.lexical_score, 0)) + (0.15 * safeNum(r.recency_score, 0));
+      const hasVector = !!r.has_vector;
+      const weights = hasVector
+        ? { vector: 0.35, text: 0.5, recency: 0.15 }
+        : { vector: 0, text: 0.85, recency: 0.15 };
+      const relevanceScore =
+        (weights.vector * safeNum(r.vector_score, 0))
+        + (weights.text * safeNum(r.lexical_score, 0))
+        + (weights.recency * safeNum(r.recency_score, 0));
       const risk = computeRiskPenalty({
         doc: r?.doc,
         queryRisk,
@@ -325,6 +366,7 @@ export function runMemoryRetrievalPipeline(input = {}) {
       const finalScore = relevanceScore - safeNum(risk.risk_penalty, 0);
       return {
         ...r,
+        weights,
         relevance_score: round6(relevanceScore),
         risk_penalty: round6(risk.risk_penalty),
         risk_level: String(risk.risk_level || "low"),
@@ -343,7 +385,9 @@ export function runMemoryRetrievalPipeline(input = {}) {
       stage: "rerank",
       in_count: retrieved.length,
       out_count: reranked.length,
-      formula: "final=relevance-risk_penalty, relevance=0.85*lexical+0.15*recency",
+      formula: anyVectorSignal
+        ? "final=relevance-risk_penalty, relevance=0.35*vector+0.5*lexical+0.15*recency"
+        : "final=relevance-risk_penalty, relevance=0.85*lexical+0.15*recency",
       risk_penalty_enabled: policy.riskPenaltyEnabled,
     });
   }
@@ -380,6 +424,7 @@ export function runMemoryRetrievalPipeline(input = {}) {
     scope: r?.doc?.scope && typeof r.doc.scope === "object" ? r.doc.scope : {},
     sensitivity: normalizeSensitivity(r?.doc?.sensitivity),
     trust_level: normalizeTrust(r?.doc?.trust_level),
+    vector_score: round6(r.vector_score),
     lexical_score: Number(safeNum(r.lexical_score, 0).toFixed(6)),
     recency_score: Number(safeNum(r.recency_score, 0).toFixed(6)),
     relevance_score: round6(r.relevance_score),
@@ -393,6 +438,16 @@ export function runMemoryRetrievalPipeline(input = {}) {
   return {
     blocked: false,
     deny_reason: "",
+    formula: anyVectorSignal
+      ? "final=relevance-risk_penalty; relevance=0.35*vector+0.5*text+0.15*recency; mmr=0"
+      : "final=relevance-risk_penalty; relevance=0.85*text+0.15*recency; vector=0; mmr=0",
+    weights: {
+      vector: anyVectorSignal ? 0.35 : 0,
+      text: anyVectorSignal ? 0.5 : 0.85,
+      recency: 0.15,
+      mmr: 0,
+      risk: 1,
+    },
     pipeline_stage_trace: traceEnabled ? trace : [],
     results: top,
   };

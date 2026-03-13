@@ -35,7 +35,8 @@ enum HubMemoryContextBuilder {
     }
 
     static func build(from req: IPCMemoryContextRequestPayload) -> IPCMemoryContextResponsePayload {
-        let budgets = normalizedBudgets(req.budgets)
+        let servingProfile = normalizedServingProfile(req.servingProfile)
+        let budgets = normalizedBudgets(req.budgets, servingProfile: servingProfile)
         let mode = normalized(req.mode).lowercased()
         var counters = RedactionCounters()
         var truncatedLayers: [String] = []
@@ -109,9 +110,11 @@ enum HubMemoryContextBuilder {
         let l3Text = nonEmptyOrNone(l3.text)
         let l4RawText = nonEmptyOrNone(l4Raw.text)
         let l4LatestUserText = nonEmptyOrNone(l4LatestUser.text)
+        let servingProfileSection = servingProfileSection(servingProfile)
 
         let memoryText = """
 [MEMORY_V1]
+\(servingProfileSection.isEmpty ? "" : "\(servingProfileSection)\n")
 [L0_CONSTITUTION]
 \(l0Text)
 [/L0_CONSTITUTION]
@@ -160,6 +163,7 @@ latest_user:
         return IPCMemoryContextResponsePayload(
             text: memoryText,
             source: "hub_memory_v1",
+            resolvedProfile: servingProfile,
             budgetTotalTokens: budgets.totalTokens,
             usedTotalTokens: usedTotal,
             layerUsage: layerUsage,
@@ -169,13 +173,17 @@ latest_user:
         )
     }
 
-    private static func normalizedBudgets(_ raw: IPCMemoryContextBudgets?) -> Budget {
-        let defaultTotal = 1_700
-        let defaultL0 = 70
-        let defaultL1 = 420
-        let defaultL2 = 240
-        let defaultL3 = 560
-        let defaultL4 = 410
+    private static func normalizedBudgets(
+        _ raw: IPCMemoryContextBudgets?,
+        servingProfile: String?
+    ) -> Budget {
+        let defaults = defaultBudgets(for: servingProfile)
+        let defaultTotal = defaults.totalTokens
+        let defaultL0 = defaults.l0Tokens
+        let defaultL1 = defaults.l1Tokens
+        let defaultL2 = defaults.l2Tokens
+        let defaultL3 = defaults.l3Tokens
+        let defaultL4 = defaults.l4Tokens
 
         var total = clamp(raw?.totalTokens ?? defaultTotal, min: 400, max: 16_000)
         let l0 = clamp(raw?.l0Tokens ?? defaultL0, min: 24, max: 1_500)
@@ -206,6 +214,35 @@ latest_user:
 
         total = max(total, l0 + l1 + l2 + l3 + l4)
         return Budget(totalTokens: total, l0Tokens: l0, l1Tokens: l1, l2Tokens: l2, l3Tokens: l3, l4Tokens: l4)
+    }
+
+    private static func defaultBudgets(for servingProfile: String?) -> Budget {
+        switch servingProfile {
+        case "m0_heartbeat":
+            return Budget(totalTokens: 960, l0Tokens: 60, l1Tokens: 260, l2Tokens: 140, l3Tokens: 340, l4Tokens: 160)
+        case "m2_plan_review":
+            return Budget(totalTokens: 3_000, l0Tokens: 80, l1Tokens: 860, l2Tokens: 620, l3Tokens: 920, l4Tokens: 520)
+        case "m3_deep_dive":
+            return Budget(totalTokens: 5_200, l0Tokens: 90, l1Tokens: 1_500, l2Tokens: 1_120, l3Tokens: 1_700, l4Tokens: 790)
+        case "m4_full_scan":
+            return Budget(totalTokens: 8_000, l0Tokens: 110, l1Tokens: 2_200, l2Tokens: 1_900, l3Tokens: 2_650, l4Tokens: 1_140)
+        default:
+            return Budget(totalTokens: 1_700, l0Tokens: 70, l1Tokens: 420, l2Tokens: 240, l3Tokens: 560, l4Tokens: 410)
+        }
+    }
+
+    private static func normalizedServingProfile(_ raw: String?) -> String? {
+        let trimmed = normalized(raw).lowercased()
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func servingProfileSection(_ servingProfile: String?) -> String {
+        guard let servingProfile, !servingProfile.isEmpty else { return "" }
+        return """
+[SERVING_PROFILE]
+profile_id: \(servingProfile)
+[/SERVING_PROFILE]
+"""
     }
 
     private static func clip(_ text: String, budgetTokens: Int, preferTail: Bool) -> ClipResult {

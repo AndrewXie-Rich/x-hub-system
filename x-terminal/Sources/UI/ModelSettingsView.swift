@@ -124,6 +124,13 @@ struct ModelSettingsView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("为 \(selectedRole.displayName) 选择模型")
                 .font(.headline)
+
+            if let warning = selectedRoleWarningText() {
+                Text(warning)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             
             if modelManager.availableModels.isEmpty {
                 Text("没有可用的模型。请确保 X-Hub 已启动并加载了模型。")
@@ -197,5 +204,38 @@ struct ModelSettingsView: View {
             .cornerRadius(8)
         }
         .buttonStyle(.plain)
+    }
+
+    private func selectedRoleWarningText() -> String? {
+        let configured = (modelManager.getPreferredModel(for: selectedRole) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !configured.isEmpty else { return nil }
+        let snapshot = ModelStateSnapshot(
+            models: modelManager.availableModels,
+            updatedAt: Date().timeIntervalSince1970
+        )
+        let assessment = HubModelSelectionAdvisor.assess(requestedId: configured, snapshot: snapshot)
+        guard assessment?.isExactMatchLoaded != true else { return nil }
+
+        if let assessment, let exact = assessment.exactMatch {
+            let replacements = suggestedModelIDs(from: assessment)
+            if let first = replacements.first {
+                return "当前 \(selectedRole.displayName) 绑定的是 `\(exact.id)`，但状态是 \(HubModelSelectionAdvisor.stateLabel(exact.state))。若立刻执行，可能会回退到本地；可先改用 `\(first)`。"
+            }
+            return "当前 \(selectedRole.displayName) 绑定的是 `\(exact.id)`，但状态是 \(HubModelSelectionAdvisor.stateLabel(exact.state))。若立刻执行，可能会回退到本地。"
+        }
+
+        if let assessment {
+            let replacements = suggestedModelIDs(from: assessment)
+            if !replacements.isEmpty {
+                return "当前 \(selectedRole.displayName) 绑定的是 `\(configured)`，但 inventory 里没有精确匹配。可先试 `\(replacements.joined(separator: "`, `"))`。"
+            }
+        }
+        return "当前 \(selectedRole.displayName) 绑定的是 `\(configured)`，但现在无法确认它可执行。"
+    }
+
+    private func suggestedModelIDs(from assessment: HubModelAvailabilityAssessment) -> [String] {
+        let source = assessment.loadedCandidates.isEmpty ? assessment.inventoryCandidates : assessment.loadedCandidates
+        return source.prefix(3).map(\.id)
     }
 }

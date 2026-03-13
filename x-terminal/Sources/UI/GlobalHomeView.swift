@@ -286,6 +286,7 @@ private struct ProjectHomeRow: View {
         let isRunning = session.isSending
         let candidates = appModel.skillCandidates(for: project.projectId)
         let curations = appModel.curationSuggestions(for: project.projectId)
+        let governed = appModel.governedAuthorityPresentation(for: project)
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
                 Text(project.displayName)
@@ -303,6 +304,7 @@ private struct ProjectHomeRow: View {
             let stateValue = (project.currentStateSummary ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             row(title: "状态", value: stateValue.isEmpty ? digest : stateValue, placeholder: "未生成")
             row(title: "记忆", value: memoryHealthSummary(), placeholder: "未知")
+            row(title: "治理", value: governedSummary(governed), placeholder: "manual")
             row(title: "卡点", value: project.blockerSummary, placeholder: "无")
             row(title: "下一步", value: project.nextStepSummary, placeholder: "未生成")
 
@@ -572,6 +574,20 @@ private struct ProjectHomeRow: View {
             out += hasRaw ? "（可从 raw_log 回填）" : "（raw_log 也缺失）"
         }
         return out
+    }
+
+    private func governedSummary(_ governed: AXProjectGovernedAuthorityPresentation) -> String {
+        var parts: [String] = []
+        if governed.deviceAuthorityConfigured {
+            parts.append("device authority on")
+        }
+        if governed.localAutoApproveConfigured {
+            parts.append("local auto on")
+        }
+        if governed.governedReadableRootCount > 0 {
+            parts.append("read+\(governed.governedReadableRootCount)")
+        }
+        return parts.isEmpty ? "manual" : parts.joined(separator: " · ")
     }
 
     private static let timeFormatter: DateFormatter = {

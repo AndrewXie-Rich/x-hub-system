@@ -16,6 +16,7 @@ struct SettingsSheetView: View {
     @State private var showAddNetworkPolicy: Bool = false
     @State private var showAddGRPCClient: Bool = false
     @State private var editingGRPCClient: HubGRPCClientEntry? = nil
+    @State private var grpcClientListFilter: GRPCClientListFilter = .all
     @State private var grpcDevicesStatus: GRPCDevicesStatusSnapshot = GRPCDevicesStatusStorage.load()
     @State private var grpcDeniedAttempts: GRPCDeniedAttemptsSnapshot = GRPCDeniedAttemptsStorage.load()
     @State private var hubLaunchStatus: HubLaunchStatusSnapshot? = HubLaunchStatusStorage.load()
@@ -130,7 +131,7 @@ struct SettingsSheetView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("REL Flow Hub Settings")
+                    Text("X-Hub Settings")
                         .font(.headline)
                     Text("Pairing · Models · Grants · Security · Diagnostics")
                         .font(.caption)
@@ -547,6 +548,30 @@ struct SettingsSheetView: View {
                 Spacer()
             }
 
+            HStack {
+                Text("Local Runtime")
+                Spacer()
+                Text(store.aiRuntimeStatusText)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            if !store.aiRuntimeDoctorSummaryText.isEmpty {
+                Text(store.aiRuntimeDoctorSummaryText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            HStack(spacing: 10) {
+                Button("Copy Provider Summary") {
+                    copyLocalProviderSummaryToClipboard(snapshot: hubLaunchStatus)
+                }
+                Button("Open AI Runtime Log") {
+                    store.openAIRuntimeLog()
+                }
+                Spacer()
+            }
+            .font(.caption)
+
             DisclosureGroup("Details") {
                 if !store.integrationsStatusText.isEmpty {
                     Text(store.integrationsStatusText)
@@ -624,6 +649,29 @@ struct SettingsSheetView: View {
                 Text("Blocked capabilities: (none)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+            }
+
+            DisclosureGroup("Local runtime providers") {
+                if !store.aiRuntimeDoctorSummaryText.isEmpty {
+                    Text(store.aiRuntimeDoctorSummaryText)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                Text(store.aiRuntimeProviderSummaryText.isEmpty ? "provider summary unavailable" : store.aiRuntimeProviderSummaryText)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                HStack(spacing: 10) {
+                    Button("Copy Provider Summary") {
+                        copyLocalProviderSummaryToClipboard(snapshot: snap)
+                    }
+                    Button("Open AI Runtime Log") {
+                        store.openAIRuntimeLog()
+                    }
+                    Spacer()
+                }
+                .font(.caption)
             }
 
             HStack(spacing: 10) {
@@ -827,12 +875,34 @@ struct SettingsSheetView: View {
                     .foregroundStyle(.secondary)
             }
             HStack(spacing: 10) {
-                Button("Enable 30m") {
+                Button("Re-enable") {
                     store.bridge.enable(seconds: 30 * 60)
                 }
-                Button("Disable") { store.bridge.disable() }
                 Button("Refresh") { store.bridge.refresh() }
                 Spacer()
+            }
+
+            Text("Bridge now runs on by default. To cut off networking for a specific Terminal, turn off that device's `web.fetch` / `ai.generate.paid` capabilities instead of shutting down the global Bridge.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            DisclosureGroup("Global Operator Override") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Only use this for diagnostics or emergency isolation. It disables the global Bridge for every paired Terminal until you re-enable it.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 10) {
+                        Button("Disable Global Bridge") {
+                            store.bridge.disable()
+                        }
+                        .tint(.red)
+                        Button("Re-enable Global Bridge") {
+                            store.bridge.enable(seconds: 30 * 60)
+                        }
+                        Spacer()
+                    }
+                }
+                .padding(.top, 4)
             }
 
             if store.pendingNetworkRequests.isEmpty {
@@ -1354,13 +1424,20 @@ struct SettingsSheetView: View {
         Task { await repairDBSafeForDiagnosticsAsync() }
     }
 
-    private func runtimeAliveSnapshot() -> (alive: Bool, pid: Int, mlxOk: Bool, runtimeVersion: String, ageSec: Double) {
+    private func runtimeAliveSnapshot() -> (alive: Bool, pid: Int, localReady: Bool, providerSummary: String, runtimeVersion: String, ageSec: Double) {
         guard let st = AIRuntimeStatusStorage.load() else {
-            return (false, 0, false, "", 0)
+            return (false, 0, false, "none", "", 0)
         }
         let age = max(0.0, Date().timeIntervalSince1970 - st.updatedAt)
         let ver = (st.runtimeVersion ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        return (st.isAlive(ttl: 3.0), st.pid, st.mlxOk, ver, age)
+        return (
+            st.isAlive(ttl: 3.0),
+            st.pid,
+            st.hasReadyProvider(ttl: 3.0),
+            st.providerSummary(ttl: 3.0),
+            ver,
+            age
+        )
     }
 
     private struct RuntimeUnlockRestartOutcome {
@@ -1445,14 +1522,15 @@ struct SettingsSheetView: View {
         try? await Task.sleep(nanoseconds: 1_300_000_000)
         let rt = runtimeAliveSnapshot()
         if rt.alive {
-            let ok = rt.mlxOk ? "mlx_ok=1" : "mlx_ok=0"
+            let ok = rt.localReady ? "local_ready=1" : "local_ready=0"
+            let providers = "providers=\(rt.providerSummary)"
             let ver = rt.runtimeVersion.isEmpty ? "" : " version=\(rt.runtimeVersion)"
             let killed = r.killedPids.isEmpty ? "" : " killed=\(r.killedPids.map(String.init).joined(separator: ","))"
             let mode = forcedMode ? " (force)" : ""
             return RuntimeUnlockRestartOutcome(
                 ok: true,
                 code: forcedMode ? "FIX_RT_LOCK_FORCE_CLEAR_RESTART_OK" : "FIX_RT_LOCK_CLEAR_RESTART_OK",
-                detail: "Runtime lock cleared\(mode) + restarted · pid \(rt.pid) (\(ok))\(ver)\(killed)",
+                detail: "Runtime lock cleared\(mode) + restarted · pid \(rt.pid) (\(ok); \(providers))\(ver)\(killed)",
                 error: ""
             )
         }
@@ -1879,7 +1957,7 @@ struct SettingsSheetView: View {
     }
 
     @MainActor
-    private func waitForRuntimeFixSnapshot(timeoutNs: UInt64 = 4_500_000_000, pollNs: UInt64 = 250_000_000) async -> (alive: Bool, pid: Int, mlxOk: Bool, runtimeVersion: String, ageSec: Double) {
+    private func waitForRuntimeFixSnapshot(timeoutNs: UInt64 = 4_500_000_000, pollNs: UInt64 = 250_000_000) async -> (alive: Bool, pid: Int, localReady: Bool, providerSummary: String, runtimeVersion: String, ageSec: Double) {
         let start = Date().timeIntervalSince1970
         let timeoutSec = Double(timeoutNs) / 1_000_000_000.0
         var snap = runtimeAliveSnapshot()
@@ -1894,12 +1972,13 @@ struct SettingsSheetView: View {
     private func verifyRuntimeAfterFix(successCode: String, failureCode: String, actionSummary: String) async -> FixNowOutcome {
         let rt = await waitForRuntimeFixSnapshot()
         if rt.alive {
-            let ok = rt.mlxOk ? "mlx_ok=1" : "mlx_ok=0"
+            let ok = rt.localReady ? "local_ready=1" : "local_ready=0"
+            let providers = "providers=\(rt.providerSummary)"
             let ver = rt.runtimeVersion.isEmpty ? "" : " version=\(rt.runtimeVersion)"
             return FixNowOutcome(
                 ok: true,
                 code: successCode,
-                detail: "\(actionSummary)\nRuntime: running · pid \(rt.pid) (\(ok))\(ver)"
+                detail: "\(actionSummary)\nRuntime: running · pid \(rt.pid) (\(ok); \(providers))\(ver)"
             )
         }
         let err = store.aiRuntimeLastError.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2195,12 +2274,35 @@ struct SettingsSheetView: View {
         NSPasteboard.general.setString(lines.joined(separator: "\n\n"), forType: .string)
     }
 
+    private func copyLocalProviderSummaryToClipboard(snapshot: HubLaunchStatusSnapshot?) {
+        let blocked = snapshot?.degraded.blockedCapabilities ?? []
+        let rtStatus = store.aiRuntimeStatusText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let doctor = store.aiRuntimeDoctorSummaryText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let providerSummary = store.aiRuntimeProviderSummaryText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var lines: [String] = []
+        if !rtStatus.isEmpty {
+            lines.append("runtime_status:\n\(rtStatus)")
+        }
+        if !doctor.isEmpty {
+            lines.append("runtime_doctor:\n\(doctor)")
+        }
+        lines.append("blocked_capabilities:\n" + (blocked.isEmpty ? "(none)" : blocked.joined(separator: "\n")))
+        lines.append("provider_summary:\n" + (providerSummary.isEmpty ? "(none)" : providerSummary))
+
+        let out = HubDiagnosticsBundleExporter.redactTextForSharing(lines.joined(separator: "\n\n"))
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(out, forType: .string)
+    }
+
     private func copyIssueSnippetToClipboard(snapshot: HubLaunchStatusSnapshot?) {
         let state = snapshot?.state.rawValue ?? "unknown"
         let root = renderRootCauseText(snapshot?.rootCause)
         let blocked = snapshot?.degraded.blockedCapabilities ?? []
         let rtErr = store.aiRuntimeLastError.trimmingCharacters(in: .whitespacesAndNewlines)
         let rtStatus = store.aiRuntimeStatusText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rtDoctor = store.aiRuntimeDoctorSummaryText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rtProviders = store.aiRuntimeProviderSummaryText.trimmingCharacters(in: .whitespacesAndNewlines)
 
         var lines: [String] = []
         lines.append("state: \(state)")
@@ -2214,6 +2316,12 @@ struct SettingsSheetView: View {
         lines.append("blocked_capabilities:\n" + (blocked.isEmpty ? "(none)" : blocked.joined(separator: "\n")))
         if !rtStatus.isEmpty {
             lines.append("runtime_status:\n\(rtStatus)")
+        }
+        if !rtDoctor.isEmpty {
+            lines.append("runtime_doctor:\n\(rtDoctor)")
+        }
+        if !rtProviders.isEmpty {
+            lines.append("runtime_providers:\n\(rtProviders)")
         }
         if !rtErr.isEmpty {
             lines.append("runtime_last_error:\n\(rtErr)")
@@ -2538,7 +2646,42 @@ struct SettingsSheetView: View {
                     let statusById: [String: GRPCDeviceStatusEntry] = Dictionary(
                         uniqueKeysWithValues: grpcDevicesStatus.devices.map { ($0.deviceId, $0) }
                     )
-                    ForEach(grpc.allowedClients) { c in
+                    let summary = grpcClientListSummary(grpc.allowedClients, statusById: statusById)
+                    let visibleClients = grpcVisibleClients(grpc.allowedClients, statusById: statusById)
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 6) {
+                            grpcClientNetworkPill("devices:\(summary.total)", color: .secondary)
+                            grpcClientNetworkPill("enabled:\(summary.enabled)", color: summary.enabled > 0 ? .green : .secondary)
+                            grpcClientNetworkPill("connected:\(summary.connected)", color: summary.connected > 0 ? .green : .secondary)
+                            grpcClientNetworkPill("network:\(summary.networkEnabled)", color: summary.networkEnabled > 0 ? .green : .secondary)
+                            grpcClientNetworkPill("paid:\(summary.paidEnabled)", color: summary.paidEnabled > 0 ? .orange : .secondary)
+                            grpcClientNetworkPill("web:\(summary.webEnabled)", color: summary.webEnabled > 0 ? .blue : .secondary)
+                            grpcClientNetworkPill("blocked:\(summary.blocked)", color: summary.blocked > 0 ? .red : .secondary)
+                            Spacer()
+                        }
+
+                        Picker("Filter", selection: $grpcClientListFilter) {
+                            ForEach(GRPCClientListFilter.allCases) { filter in
+                                Text(filter.title).tag(filter)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .font(.caption)
+
+                        Text("Sorted by connected, effective network access, enabled state, then name.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+
+                        if visibleClients.count != grpc.allowedClients.count {
+                            Text("Showing \(visibleClients.count) of \(grpc.allowedClients.count) paired devices.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    ForEach(visibleClients) { c in
+                        let network = grpcClientNetworkAccessSnapshot(c)
                         VStack(alignment: .leading, spacing: 6) {
                             HStack(spacing: 10) {
                                 VStack(alignment: .leading, spacing: 2) {
@@ -2559,7 +2702,61 @@ struct SettingsSheetView: View {
                                 .font(.caption)
                             }
 
+                            HStack(spacing: 6) {
+                                grpcClientNetworkPill(
+                                    c.enabled ? "device:on" : "device:off",
+                                    color: c.enabled ? .green : .secondary
+                                )
+                                grpcClientNetworkPill(
+                                    network.canNetwork ? "network:on" : "network:off",
+                                    color: network.canNetwork ? .green : .secondary
+                                )
+                                grpcClientNetworkPill(
+                                    network.paidEnabled ? "paid:on" : "paid:off",
+                                    color: network.paidEnabled ? .orange : .secondary
+                                )
+                                grpcClientNetworkPill(
+                                    network.webEnabled ? "web:on" : "web:off",
+                                    color: network.webEnabled ? .blue : .secondary
+                                )
+                                grpcClientNetworkPill(
+                                    network.usesPolicyProfile ? "policy" : "legacy",
+                                    color: network.usesPolicyProfile ? .purple : .secondary
+                                )
+                                if let st = statusById[c.deviceId] {
+                                    grpcClientNetworkPill(
+                                        grpcClientExecutionPillTitle(st),
+                                        color: grpcClientExecutionPillColor(st)
+                                    )
+                                }
+                                Spacer()
+                            }
+
+                            HStack(spacing: 10) {
+                                Button(network.webEnabled ? "Disable Web" : "Enable Web") {
+                                    grpcSetWebFetchEnabled(c, enabled: !network.webEnabled)
+                                }
+                                .font(.caption)
+
+                                if network.policyGrantsNetwork {
+                                    Button("Cut Network") {
+                                        grpcCutOffNetworkAccess(c)
+                                    }
+                                    .font(.caption)
+                                }
+                                Text(grpcClientQuickActionHint(network))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                            }
+
                             Text(grpcClientSecuritySummary(c))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                                .textSelection(.enabled)
+
+                            Text(grpcClientPaidPolicySummary(c))
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(2)
@@ -2576,6 +2773,12 @@ struct SettingsSheetView: View {
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                                     .lineLimit(2)
+                                    .textSelection(.enabled)
+
+                                Text(grpcClientActualExecutionSummary(st))
+                                    .font(.caption2)
+                                    .foregroundStyle(grpcClientExecutionPillColor(st))
+                                    .lineLimit(3)
                                     .textSelection(.enabled)
 
                                 if let act = st.lastActivity {
@@ -2710,6 +2913,256 @@ struct SettingsSheetView: View {
         return "\(policyText) · \(userText) · \(capsText) · \(cidrText) · \(certText)"
     }
 
+    private func grpcClientPaidPolicySummary(_ client: HubGRPCClientEntry) -> String {
+        if client.policyMode == .legacyGrant {
+            let paidEnabled = client.capabilities.contains { cap in
+                cap.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "ai.generate.paid"
+            }
+            return paidEnabled
+                ? "Paid route: legacy grant path still active for this Terminal."
+                : "Paid route: legacy grant path with paid routing currently off."
+        }
+
+        guard let profile = client.approvedTrustProfile else {
+            return "Paid route: new_profile selected, but the trust payload is missing."
+        }
+
+        switch profile.paidModelPolicy.mode {
+        case .off:
+            return "Paid route: off."
+        case .allPaidModels:
+            return "Paid route: all paid models allowed."
+        case .customSelectedModels:
+            let models = profile.paidModelPolicy.allowedModelIds
+            if models.isEmpty {
+                return "Paid route: custom selected models, but the allowlist is empty."
+            }
+            let preview = models.prefix(3).joined(separator: ", ")
+            let suffix = models.count > 3 ? " +\(models.count - 3) more" : ""
+            return "Paid route: custom (\(models.count)) · \(preview)\(suffix)"
+        }
+    }
+
+    private struct GRPCClientNetworkAccessSnapshot {
+        var clientEnabled: Bool
+        var paidEnabled: Bool
+        var webEnabled: Bool
+        var usesPolicyProfile: Bool
+
+        var policyGrantsNetwork: Bool {
+            paidEnabled || webEnabled
+        }
+
+        var canNetwork: Bool {
+            clientEnabled && policyGrantsNetwork
+        }
+    }
+
+    private func grpcClientNetworkAccessSnapshot(_ client: HubGRPCClientEntry) -> GRPCClientNetworkAccessSnapshot {
+        if client.policyMode == .newProfile, let profile = client.approvedTrustProfile {
+            return GRPCClientNetworkAccessSnapshot(
+                clientEnabled: client.enabled,
+                paidEnabled: profile.paidModelPolicy.mode != .off,
+                webEnabled: profile.networkPolicy.defaultWebFetchEnabled,
+                usesPolicyProfile: true
+            )
+        }
+        let caps = Set(client.capabilities.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+        return GRPCClientNetworkAccessSnapshot(
+            clientEnabled: client.enabled,
+            paidEnabled: caps.contains("ai.generate.paid"),
+            webEnabled: caps.contains("web.fetch"),
+            usesPolicyProfile: false
+        )
+    }
+
+    private enum GRPCClientListFilter: String, CaseIterable, Identifiable {
+        case all
+        case connected
+        case networkEnabled
+        case networkOff
+        case blocked
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .all:
+                return "All"
+            case .connected:
+                return "Connected"
+            case .networkEnabled:
+                return "Network On"
+            case .networkOff:
+                return "Network Off"
+            case .blocked:
+                return "Blocked"
+            }
+        }
+    }
+
+    private struct GRPCClientListSummary {
+        var total: Int = 0
+        var enabled: Int = 0
+        var connected: Int = 0
+        var networkEnabled: Int = 0
+        var paidEnabled: Int = 0
+        var webEnabled: Int = 0
+        var blocked: Int = 0
+    }
+
+    private func grpcClientListSummary(
+        _ clients: [HubGRPCClientEntry],
+        statusById: [String: GRPCDeviceStatusEntry]
+    ) -> GRPCClientListSummary {
+        var summary = GRPCClientListSummary()
+        summary.total = clients.count
+        for client in clients {
+            let network = grpcClientNetworkAccessSnapshot(client)
+            let status = statusById[client.deviceId]
+            if client.enabled {
+                summary.enabled += 1
+            }
+            if status?.connected == true {
+                summary.connected += 1
+            }
+            if network.canNetwork {
+                summary.networkEnabled += 1
+            }
+            if network.paidEnabled {
+                summary.paidEnabled += 1
+            }
+            if network.webEnabled {
+                summary.webEnabled += 1
+            }
+            if grpcClientHasBlockedState(status) {
+                summary.blocked += 1
+            }
+        }
+        return summary
+    }
+
+    private func grpcVisibleClients(
+        _ clients: [HubGRPCClientEntry],
+        statusById: [String: GRPCDeviceStatusEntry]
+    ) -> [HubGRPCClientEntry] {
+        clients
+            .filter { client in
+                let network = grpcClientNetworkAccessSnapshot(client)
+                let status = statusById[client.deviceId]
+                switch grpcClientListFilter {
+                case .all:
+                    return true
+                case .connected:
+                    return status?.connected == true
+                case .networkEnabled:
+                    return network.canNetwork
+                case .networkOff:
+                    return !network.canNetwork
+                case .blocked:
+                    return grpcClientHasBlockedState(status)
+                }
+            }
+            .sorted { lhs, rhs in
+                let lhsStatus = statusById[lhs.deviceId]
+                let rhsStatus = statusById[rhs.deviceId]
+                let lhsNetwork = grpcClientNetworkAccessSnapshot(lhs)
+                let rhsNetwork = grpcClientNetworkAccessSnapshot(rhs)
+
+                if (lhsStatus?.connected == true) != (rhsStatus?.connected == true) {
+                    return lhsStatus?.connected == true
+                }
+                if lhsNetwork.canNetwork != rhsNetwork.canNetwork {
+                    return lhsNetwork.canNetwork
+                }
+                if lhs.enabled != rhs.enabled {
+                    return lhs.enabled
+                }
+                let lhsName = (lhs.name.isEmpty ? lhs.deviceId : lhs.name).localizedLowercase
+                let rhsName = (rhs.name.isEmpty ? rhs.deviceId : rhs.name).localizedLowercase
+                if lhsName != rhsName {
+                    return lhsName < rhsName
+                }
+                return lhs.deviceId.localizedLowercase < rhs.deviceId.localizedLowercase
+            }
+    }
+
+    private func grpcClientHasBlockedState(_ status: GRPCDeviceStatusEntry?) -> Bool {
+        guard let status else { return false }
+        if status.blockedToday > 0 {
+            return true
+        }
+        if !status.lastBlockedReason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return true
+        }
+        return !status.lastDenyCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func grpcClientQuickActionHint(_ snapshot: GRPCClientNetworkAccessSnapshot) -> String {
+        if !snapshot.clientEnabled {
+            return "This Terminal entry is disabled. Re-enable the device above before network routes can be used."
+        }
+        if snapshot.policyGrantsNetwork {
+            return "Cuts off this Terminal only. Restore detailed paid-model routing in Edit if needed."
+        }
+        return "Safe quick restore for web access only. Use Edit for paid-model routing."
+    }
+
+    @ViewBuilder
+    private func grpcClientNetworkPill(_ title: String, color: Color) -> some View {
+        Text(title)
+            .font(.caption2.monospaced())
+            .foregroundStyle(color)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.12))
+            .clipShape(Capsule())
+    }
+
+    private func grpcCutOffNetworkAccess(_ client: HubGRPCClientEntry) {
+        var updated = client
+        if client.policyMode == .newProfile, var profile = client.approvedTrustProfile {
+            profile.paidModelPolicy = HubPairedTerminalPaidModelPolicy(mode: .off, allowedModelIds: [])
+            profile.networkPolicy = HubPairedTerminalNetworkPolicy(defaultWebFetchEnabled: false)
+            profile.capabilities = HubGRPCClientEntry.derivedCapabilities(
+                requestedCapabilities: profile.capabilities,
+                paidModelSelectionMode: .off,
+                defaultWebFetchEnabled: false
+            )
+            updated.approvedTrustProfile = profile
+            updated.capabilities = profile.capabilities
+        } else {
+            updated.capabilities = client.capabilities.filter {
+                let lowered = $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                return lowered != "ai.generate.paid" && lowered != "web.fetch"
+            }
+        }
+        grpc.upsertClient(updated)
+    }
+
+    private func grpcSetWebFetchEnabled(_ client: HubGRPCClientEntry, enabled: Bool) {
+        var updated = client
+        if client.policyMode == .newProfile, var profile = client.approvedTrustProfile {
+            profile.networkPolicy = HubPairedTerminalNetworkPolicy(defaultWebFetchEnabled: enabled)
+            profile.capabilities = HubGRPCClientEntry.derivedCapabilities(
+                requestedCapabilities: profile.capabilities,
+                paidModelSelectionMode: profile.paidModelPolicy.mode,
+                defaultWebFetchEnabled: enabled
+            )
+            updated.approvedTrustProfile = profile
+            updated.capabilities = profile.capabilities
+        } else {
+            var caps = client.capabilities.filter {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "web.fetch"
+            }
+            if enabled {
+                caps.append("web.fetch")
+            }
+            updated.capabilities = HubGRPCClientEntry.normalizedStrings(caps)
+        }
+        grpc.upsertClient(updated)
+    }
+
     private func grpcClientStatusSummary(_ st: GRPCDeviceStatusEntry) -> String {
         let ip = st.peerIp.trimmingCharacters(in: .whitespacesAndNewlines)
         let streams = max(0, st.activeEventSubscriptions)
@@ -2742,6 +3195,110 @@ struct SettingsSheetView: View {
         if st.requestsToday > 0 { parts.append("req \(st.requestsToday)") }
         if st.blockedToday > 0 { parts.append("blocked \(st.blockedToday)") }
         return parts.joined(separator: " · ")
+    }
+
+    private enum GRPCClientExecutionState {
+        case remoteCompleted
+        case localCompleted
+        case downgradedToLocal
+        case denied
+        case failed
+        case canceled
+        case unknown
+    }
+
+    private func grpcClientExecutionState(_ st: GRPCDeviceStatusEntry) -> GRPCClientExecutionState {
+        guard let activity = st.lastActivity else { return .unknown }
+        let eventType = activity.eventType.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch eventType {
+        case "ai.generate.downgraded_to_local":
+            return .downgradedToLocal
+        case "ai.generate.completed":
+            return activity.networkAllowed ? .remoteCompleted : .localCompleted
+        case "ai.generate.denied":
+            return .denied
+        case "ai.generate.failed":
+            return .failed
+        case "ai.generate.canceled":
+            return .canceled
+        default:
+            return .unknown
+        }
+    }
+
+    private func grpcClientExecutionPillTitle(_ st: GRPCDeviceStatusEntry) -> String {
+        switch grpcClientExecutionState(st) {
+        case .remoteCompleted:
+            return "last:remote"
+        case .localCompleted:
+            return "last:local"
+        case .downgradedToLocal:
+            return "last:downgraded"
+        case .denied:
+            return "last:denied"
+        case .failed:
+            return "last:failed"
+        case .canceled:
+            return "last:canceled"
+        case .unknown:
+            return "last:unknown"
+        }
+    }
+
+    private func grpcClientExecutionPillColor(_ st: GRPCDeviceStatusEntry) -> Color {
+        switch grpcClientExecutionState(st) {
+        case .remoteCompleted:
+            return .green
+        case .localCompleted:
+            return .secondary
+        case .downgradedToLocal:
+            return .orange
+        case .denied, .failed:
+            return .red
+        case .canceled:
+            return .orange
+        case .unknown:
+            return .secondary
+        }
+    }
+
+    private func grpcClientActualExecutionSummary(_ st: GRPCDeviceStatusEntry) -> String {
+        guard let activity = st.lastActivity else {
+            let topModel = st.topModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !topModel.isEmpty {
+                return "Actual execution: recent paid usage was seen on \(topModel), but the latest request detail is unavailable."
+            }
+            return "Actual execution: no recent request detail is available yet."
+        }
+
+        let model = activity.modelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let code = activity.errorCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let message = activity.errorMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedModel = model.isEmpty ? "(model not reported)" : model
+
+        switch grpcClientExecutionState(st) {
+        case .remoteCompleted:
+            return "Actual execution: remote route hit \(resolvedModel)."
+        case .localCompleted:
+            return "Actual execution: completed on local runtime \(resolvedModel), not the remote paid route."
+        case .downgradedToLocal:
+            let reason = !code.isEmpty ? code : (!message.isEmpty ? message : "downgraded_to_local")
+            return "Actual execution: paid route was downgraded to local runtime \(resolvedModel) · \(reason)."
+        case .denied:
+            let reason = !code.isEmpty ? code : (!message.isEmpty ? message : "denied")
+            return "Actual execution: request was blocked before model execution · \(reason)."
+        case .failed:
+            let reason = !code.isEmpty ? code : (!message.isEmpty ? message : "failed")
+            return "Actual execution: request reached runtime but failed · \(reason)."
+        case .canceled:
+            return "Actual execution: request was canceled before completion."
+        case .unknown:
+            let eventType = activity.eventType.trimmingCharacters(in: .whitespacesAndNewlines)
+            if eventType.isEmpty {
+                return "Actual execution: latest request detail is incomplete."
+            }
+            return "Actual execution: latest event is \(eventType) on \(resolvedModel)."
+        }
     }
 
     private func grpcClientLastBlockedSummary(_ st: GRPCDeviceStatusEntry) -> String {
@@ -2785,16 +3342,18 @@ struct SettingsSheetView: View {
         let model = a.modelId.trimmingCharacters(in: .whitespacesAndNewlines)
         let cap = a.capability.trimmingCharacters(in: .whitespacesAndNewlines)
         let at = a.createdAtMs > 0 ? formatMs(a.createdAtMs) : ""
+        let eventType = a.eventType.trimmingCharacters(in: .whitespacesAndNewlines)
 
         var parts: [String] = []
-        if !model.isEmpty {
-            parts.append("Last: \(model)")
-        } else if !a.eventType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            parts.append("Last: \(a.eventType)")
+        if !eventType.isEmpty {
+            parts.append("Audit: \(eventType)")
+        } else if !model.isEmpty {
+            parts.append("Audit: \(model)")
         } else {
-            parts.append("Last: (unknown)")
+            parts.append("Audit: (unknown)")
         }
 
+        if !model.isEmpty { parts.append("model \(model)") }
         if !cap.isEmpty { parts.append(cap) }
         parts.append(a.networkAllowed ? "net:on" : "net:off")
         if a.totalTokens > 0 { parts.append("tokens \(a.totalTokens)") }
@@ -3895,7 +4454,7 @@ private struct EditGRPCClientSheet: View {
                         .font(.caption2)
                         .foregroundStyle(.red)
                 } else {
-                    Text("Note: Paid AI / Web Fetch still require a time-limited grant and Bridge enable; this only allows the device to request/use them.")
+                    Text("Note: Paid AI / Web Fetch still require capability allow + grant approval. Bridge is expected to stay on by default; use device capabilities to cut off networking for a specific Terminal.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }

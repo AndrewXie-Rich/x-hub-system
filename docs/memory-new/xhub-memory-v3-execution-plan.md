@@ -99,7 +99,7 @@ M2 工单入口（按优先级可执行）
 - 详见：`docs/memory-new/xhub-memory-v3-m2-work-orders-v1.md`（W1-W6 完整工单池，含依赖、交付物、验收标准、Gate 映射）。
 - Gate-0 冻结记录：`docs/memory-new/xhub-memory-v3-m2-spec-freeze-v1.md`（已冻结 contract/score/pipeline/gate 语义）。
 - Connector 可靠性工单：`docs/memory-new/xhub-connector-reliability-kernel-work-orders-v1.md`（重连/回退/游标/幂等投递/内联门禁）。
-- Kiro 质量前置工单：`docs/memory-new/xhub-kiro-spec-gates-work-orders-v1.md`（spec-driven 三件套 + correctness properties + KQ-Gate 门禁，用于降低返工）。
+- Spec Gate 质量前置工单：`docs/memory-new/xhub-spec-gates-work-orders-v1.md`（spec-driven 三件套 + correctness properties + KQ-Gate 门禁，用于降低返工）。
 
 M2 六周执行排程（W1-W6）
 - **W1：质量底座（测量优先）**

@@ -28,6 +28,7 @@ struct AXProjectConfigAutomationRecipeTests {
         #expect(config.deviceToolGroups.isEmpty)
         #expect(config.workspaceBindingHash.isEmpty)
         #expect(config.governedReadableRoots.isEmpty)
+        #expect(config.governedAutoApproveLocalToolCalls == false)
         #expect(config.automationSelfIterateEnabled == false)
         #expect(config.automationMaxAutoRetryDepth == 2)
         #expect(config.preferHubMemory == true)

@@ -138,14 +138,36 @@ struct SupervisorView: View {
         let bounded = totalHeight * 0.42
         return min(max(180, bounded), 360)
     }
+
+    private func todayQueuePriorityHint(_ items: [SupervisorPortfolioActionabilityItem]) -> String? {
+        let names = Array(items.prefix(2)).map(\.projectName)
+        guard !names.isEmpty else { return nil }
+        return "建议优先处理：\(names.joined(separator: "、"))"
+    }
     
     private var header: some View {
-        HStack {
+        let snapshot = ExecutionRoutePresentation.supervisorSnapshot(from: supervisor)
+        let statusColor = supervisorHeaderStatusColor(snapshot: snapshot)
+        let tooltip = ExecutionRoutePresentation.tooltip(
+            configuredModelId: configuredSupervisorModelId,
+            snapshot: snapshot
+        )
+
+        return HStack {
             HStack(spacing: 8) {
                 Image(systemName: "person.3.fill")
                     .foregroundColor(.accentColor)
-                Text("Supervisor AI")
+                Text("Supervisor (\(ExecutionRoutePresentation.activeModelLabel(configuredModelId: configuredSupervisorModelId, snapshot: snapshot)))")
                     .font(.headline)
+                    .help(tooltip)
+                Text(supervisorHeaderStatusText(snapshot: snapshot))
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(statusColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(statusColor.opacity(0.12))
+                    .clipShape(Capsule())
+                    .help(tooltip)
             }
             
             Spacer()
@@ -182,6 +204,25 @@ struct SupervisorView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .background(Color(NSColor.windowBackgroundColor))
+    }
+
+    private var configuredSupervisorModelId: String {
+        appModel.settingsStore.settings.assignment(for: .supervisor).model?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private func supervisorHeaderStatusText(snapshot: AXRoleExecutionSnapshot) -> String {
+        if snapshot.executionPath == "no_record" && !appModel.hubInteractive {
+            return "Hub Off"
+        }
+        return ExecutionRoutePresentation.statusText(snapshot: snapshot)
+    }
+
+    private func supervisorHeaderStatusColor(snapshot: AXRoleExecutionSnapshot) -> Color {
+        if snapshot.executionPath == "no_record" && !appModel.hubInteractive {
+            return .red
+        }
+        return ExecutionRoutePresentation.statusColor(snapshot: snapshot)
     }
 
     private var cockpitSummaryBoard: some View {
@@ -531,6 +572,12 @@ struct SupervisorView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Today to Handle")
                             .font(.caption.weight(.semibold))
+                        if let priorityHint = todayQueuePriorityHint(todayQueue) {
+                            Text(priorityHint)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
                         Text(actionability.statusLine)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
@@ -704,7 +751,11 @@ struct SupervisorView: View {
         isSelected: Bool,
         onSelect: @escaping () -> Void
     ) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        let governed = appModel.registry.project(for: card.projectId).map {
+            appModel.governedAuthorityPresentation(for: $0)
+        }
+
+        return VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(card.displayName)
                     .font(.caption.weight(.semibold))
@@ -729,6 +780,20 @@ struct SupervisorView: View {
                 HStack(spacing: 6) {
                     ForEach(actionabilityItems) { item in
                         portfolioActionabilityTag(item)
+                    }
+                }
+            }
+
+            if let governed, governed.hasAnyVisibleSignal {
+                HStack(spacing: 6) {
+                    if governed.deviceAuthorityConfigured {
+                        portfolioGovernedTag("device authority", color: .green)
+                    }
+                    if governed.localAutoApproveConfigured {
+                        portfolioGovernedTag("local auto", color: .orange)
+                    }
+                    if governed.governedReadableRootCount > 0 {
+                        portfolioGovernedTag("read+\(governed.governedReadableRootCount)", color: .blue)
                     }
                 }
             }
@@ -794,6 +859,16 @@ struct SupervisorView: View {
             .clipShape(Capsule())
     }
 
+    private func portfolioGovernedTag(_ title: String, color: Color) -> some View {
+        Text(title)
+            .font(.caption2.monospaced())
+            .foregroundStyle(color)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.12))
+            .clipShape(Capsule())
+    }
+
     @ViewBuilder
     private func supervisorProjectDrillDownPanel(_ snapshot: SupervisorProjectDrillDownSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -812,6 +887,23 @@ struct SupervisorView: View {
                 Text("Capsule+Recent").tag(SupervisorProjectDrillDownScope.capsulePlusRecent)
             }
             .pickerStyle(.segmented)
+
+            if let project = appModel.registry.project(for: snapshot.projectId) {
+                let governed = appModel.governedAuthorityPresentation(for: project)
+                if governed.hasAnyVisibleSignal {
+                    HStack(spacing: 6) {
+                        if governed.deviceAuthorityConfigured {
+                            portfolioGovernedTag("device authority", color: .green)
+                        }
+                        if governed.localAutoApproveConfigured {
+                            portfolioGovernedTag("local auto", color: .orange)
+                        }
+                        if governed.governedReadableRootCount > 0 {
+                            portfolioGovernedTag("read+\(governed.governedReadableRootCount)", color: .blue)
+                        }
+                    }
+                }
+            }
 
             if !allowedScopes.contains(.capsulePlusRecent) {
                 Text("当前管辖仅允许 `capsule_only`。更深 recent 视图已按 scope-safe 规则禁用。")

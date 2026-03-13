@@ -1,0 +1,11 @@
+{
+  "schema_version": "xhub.trusted_publishers.v1",
+  "updated_at_ms": 1773327600000,
+  "publishers": [
+    {
+      "publisher_id": "xhub.official",
+      "public_key_ed25519": "base64:TGNnemU+ehosOhLMGGIkxgryfeaKAg5HFgnvtr9l72w=",
+      "enabled": true
+    }
+  ]
+}

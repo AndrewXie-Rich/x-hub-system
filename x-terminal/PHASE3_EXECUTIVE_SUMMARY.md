@@ -27,7 +27,7 @@
 
 - 发布门禁主链已可 strict 阻断（`XT-W3-08`），并保留回滚验证闭环。
 - Supervisor 专项工单已落地 P0/P1 框架，自动拆分与多泳道托管为当前主线。
-- OpenClaw 回灌经验已并入主工单：
+- skills ecosystem 回灌经验已并入主工单：
   - 非消息入口授权一致性
   - 预鉴权防护（body/key cap + flood breaker）
   - 发布前 doctor + secrets dry-run
@@ -38,7 +38,7 @@
 
 ### P0
 - 固化 deny_code/blocked_reason 边界语义，避免并行开发歧义。
-- 将 OpenClaw 三项新经验映射到 Supervisor 与 release gate 的可验收条目。
+- 将 skills ecosystem 三项新经验映射到 Supervisor 与 release gate 的可验收条目。
 - 维持 fail-closed：缺证据、跨通道回退、静默溢出都必须阻断。
 
 ### P1
@@ -53,7 +53,7 @@
 
 ## 5) 下一步（72 小时）
 
-1. 完成 Supervisor 工单中 OpenClaw 三项经验的 contract 对齐。
+1. 完成 Supervisor 工单中 skills ecosystem 三项经验的 contract 对齐。
 2. 完成 release gate 文档与证据项扩展，确保 CI 批量并行可机判。
 3. 刷新文档状态面板，确认“叙述口径 -> 工单口径”切换一致。
 

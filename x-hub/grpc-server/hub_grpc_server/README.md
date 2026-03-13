@@ -37,6 +37,94 @@ HUB_ADMIN_TOKEN='replace-admin-token' \
 npm run start
 ```
 
+Dedicated Slack operator ingress worker (local-only by default):
+```bash
+HUB_HOST=127.0.0.1 \
+HUB_PORT=50051 \
+HUB_OPERATOR_CHANNEL_CONNECTOR_TOKEN='replace-connector-token' \
+HUB_SLACK_OPERATOR_ENABLE=1 \
+HUB_SLACK_OPERATOR_SIGNING_SECRET='replace-slack-signing-secret' \
+HUB_SLACK_OPERATOR_BOT_TOKEN='xoxb-...' \
+npm run start-slack-operator
+```
+
+Dedicated Feishu operator ingress worker (local-only by default):
+```bash
+HUB_HOST=127.0.0.1 \
+HUB_PORT=50051 \
+HUB_OPERATOR_CHANNEL_CONNECTOR_TOKEN='replace-connector-token' \
+HUB_FEISHU_OPERATOR_ENABLE=1 \
+HUB_FEISHU_OPERATOR_VERIFICATION_TOKEN='replace-feishu-verification-token' \
+HUB_FEISHU_OPERATOR_REPLY_ENABLE=1 \
+HUB_FEISHU_OPERATOR_BOT_APP_ID='cli_xxx' \
+HUB_FEISHU_OPERATOR_BOT_APP_SECRET='sec_xxx' \
+npm run start-feishu-operator
+```
+
+Dedicated Telegram operator polling worker (outbound-only, no inbound webhook exposure):
+```bash
+HUB_HOST=127.0.0.1 \
+HUB_PORT=50051 \
+HUB_OPERATOR_CHANNEL_CONNECTOR_TOKEN='replace-connector-token' \
+HUB_TELEGRAM_OPERATOR_ENABLE=1 \
+HUB_TELEGRAM_OPERATOR_BOT_TOKEN='replace-telegram-bot-token' \
+HUB_TELEGRAM_OPERATOR_ACCOUNT_ID='telegram_ops_bot' \
+npm run start-telegram-operator
+```
+
+Dedicated WhatsApp Cloud operator ingress worker (local-only by default, intended behind a relay/domain rather than raw Hub IP exposure):
+```bash
+HUB_HOST=127.0.0.1 \
+HUB_PORT=50051 \
+HUB_OPERATOR_CHANNEL_CONNECTOR_TOKEN='replace-connector-token' \
+HUB_WHATSAPP_CLOUD_OPERATOR_ENABLE=1 \
+HUB_WHATSAPP_CLOUD_OPERATOR_VERIFY_TOKEN='replace-whatsapp-verify-token' \
+HUB_WHATSAPP_CLOUD_OPERATOR_APP_SECRET='replace-whatsapp-app-secret' \
+HUB_WHATSAPP_CLOUD_OPERATOR_REPLY_ENABLE=1 \
+HUB_WHATSAPP_CLOUD_OPERATOR_ACCESS_TOKEN='replace-whatsapp-access-token' \
+HUB_WHATSAPP_CLOUD_OPERATOR_PHONE_NUMBER_ID='replace-phone-number-id' \
+HUB_WHATSAPP_CLOUD_OPERATOR_ACCOUNT_ID='ops_whatsapp_cloud' \
+npm run start-whatsapp-cloud-operator
+```
+
+WhatsApp Cloud require-real scaffolding for `XT-W3-24-N`:
+```bash
+node scripts/xt_w3_24_n_whatsapp_cloud_require_real_status.js
+node scripts/generate_xt_w3_24_n_whatsapp_cloud_require_real_report.js
+```
+
+Update one real sample after capture:
+```bash
+node scripts/update_xt_w3_24_n_whatsapp_cloud_require_real_capture_bundle.js \
+  --sample-id xt_w3_24_n_rr_03_deploy_plan_routes_project_first_to_preferred_xt \
+  --status passed \
+  --success true \
+  --performed-at 2026-03-13T02:00:00Z \
+  --evidence-ref build/reports/xt_w3_24_n_whatsapp_cloud_require_real/xt_w3_24_n_rr_03_deploy_plan_routes_project_first_to_preferred_xt/capture-1.png \
+  --set project_binding_enforced=true \
+  --set route_mode=hub_to_xt \
+  --set resolved_device_id=xt-mac-mini-bj-01 \
+  --set execution_disposition=prepared \
+  --set side_effect_executed=false \
+  --set audit_chain_complete=true
+node scripts/generate_xt_w3_24_n_whatsapp_cloud_require_real_report.js
+```
+
+Supported Slack operator text commands:
+```text
+status
+blockers
+queue
+deploy plan   # governed XT prepare path; returns prepared when XT replies in-window, else queued
+grant approve <grant_request_id>
+grant approve <grant_request_id> note approved after release review
+grant reject <grant_request_id> reason outside approved change window
+```
+
+Telegram operator supports the same governed text command surface, plus inline `grant approve` / `grant reject` buttons when the compact callback payload fits within Telegram limits. When it does not fit, the worker falls back to text instructions rather than truncating approval context.
+
+WhatsApp Cloud operator currently stays text-only on purpose: high-risk actions still go through explicit commands such as `grant approve <grant_request_id>` and `grant reject <grant_request_id> reason <why>`. `whatsapp_personal_qr` remains a separate trusted-runner path and is not shipped through the Hub connector worker.
+
 ## Connect from another computer (LAN)
 
 On another computer (with this repo + deps), run:
@@ -158,9 +246,59 @@ npm run smoke
 - `HUB_DB_PATH` (default: `./data/hub.sqlite3`)
 - `HUB_CLIENT_TOKEN` (legacy fallback; if set, clients must send `authorization: Bearer <token>`)
 - `HUB_ADMIN_TOKEN` (if set, admin RPCs require `authorization: Bearer <token>`)
+- `HUB_OPERATOR_CHANNEL_CONNECTOR_TOKEN` (required for operator-channel governance RPCs under `HubRuntime`; do not reuse `HUB_ADMIN_TOKEN`)
+- `HUB_SLACK_OPERATOR_ENABLE` (default: `0`; starts the dedicated Slack operator ingress worker only when set to `1`)
+- `HUB_SLACK_OPERATOR_HOST` (default: `127.0.0.1`; must remain loopback unless `HUB_SLACK_OPERATOR_ALLOW_REMOTE=1`)
+- `HUB_SLACK_OPERATOR_PORT` (default: `50161`)
+- `HUB_SLACK_OPERATOR_EVENT_PATH` (default: `/slack/events`)
+- `HUB_SLACK_OPERATOR_HEALTH_PATH` (default: `/health`)
+- `HUB_SLACK_OPERATOR_BODY_MAX_BYTES` (default: `262144`; bounded to `1024..1048576`)
+- `HUB_SLACK_OPERATOR_SIGNING_SECRET` (required when `HUB_SLACK_OPERATOR_ENABLE=1`)
+- `HUB_SLACK_OPERATOR_BOT_TOKEN` (optional for ingress-only mode; required when Slack reply delivery should post summaries/denials/routing receipts back into the thread)
+- `HUB_SLACK_OPERATOR_REPLY_ENABLE` (default: `1`; when `0`, the worker still accepts ingress but does not attempt Slack reply delivery even if a bot token exists)
+- `HUB_SLACK_OPERATOR_APP_ID` (default: `slack_operator_adapter`; connector principal app id for HubRuntime governance RPCs)
+- `HUB_SLACK_OPERATOR_ALLOW_REMOTE` (default: `0`; set to `1` only when the worker is placed behind an explicit relay/tunnel boundary and raw Hub exposure is still avoided)
+- `HUB_FEISHU_OPERATOR_ENABLE` (default: `0`; starts the dedicated Feishu operator ingress worker only when set to `1`)
+- `HUB_FEISHU_OPERATOR_HOST` (default: `127.0.0.1`; must remain loopback unless `HUB_FEISHU_OPERATOR_ALLOW_REMOTE=1`)
+- `HUB_FEISHU_OPERATOR_PORT` (default: `50162`)
+- `HUB_FEISHU_OPERATOR_EVENT_PATH` (default: `/feishu/events`)
+- `HUB_FEISHU_OPERATOR_HEALTH_PATH` (default: `/health`)
+- `HUB_FEISHU_OPERATOR_BODY_MAX_BYTES` (default: `262144`; bounded to `1024..1048576`)
+- `HUB_FEISHU_OPERATOR_VERIFICATION_TOKEN` (required when `HUB_FEISHU_OPERATOR_ENABLE=1`)
+- `HUB_FEISHU_OPERATOR_REPLY_ENABLE` (default: `0`; when `1`, Feishu reply delivery requires bot credentials and posts governed summaries back to the originating thread anchor)
+- `HUB_FEISHU_OPERATOR_BOT_APP_ID` / `HUB_FEISHU_OPERATOR_BOT_APP_SECRET` (required when `HUB_FEISHU_OPERATOR_REPLY_ENABLE=1`)
+- `HUB_FEISHU_OPERATOR_APP_ID` (default: `feishu_operator_adapter`; connector principal app id for HubRuntime governance RPCs)
+- `HUB_FEISHU_OPERATOR_API_BASE_URL` (default: `https://open.feishu.cn/open-apis`)
+- `HUB_FEISHU_OPERATOR_ALLOW_REMOTE` (default: `0`; set to `1` only when the worker is placed behind an explicit relay/tunnel boundary and raw Hub exposure is still avoided)
+- `HUB_TELEGRAM_OPERATOR_ENABLE` (default: `0`; starts the dedicated Telegram polling worker only when set to `1`)
+- `HUB_TELEGRAM_OPERATOR_BOT_TOKEN` (required when `HUB_TELEGRAM_OPERATOR_ENABLE=1`)
+- `HUB_TELEGRAM_OPERATOR_REPLY_ENABLE` (default: `1`; when `0`, the worker still polls and executes governed commands but does not send Telegram replies)
+- `HUB_TELEGRAM_OPERATOR_POLL_ENABLE` (default: `1`; leave enabled for the outbound-only polling model)
+- `HUB_TELEGRAM_OPERATOR_POLL_TIMEOUT_SEC` (default: `15`; bounded to `0..50`)
+- `HUB_TELEGRAM_OPERATOR_POLL_IDLE_MS` (default: `400`; bounded to `100..30000`; also used as backoff when Telegram returns immediately or errors)
+- `HUB_TELEGRAM_OPERATOR_ACCOUNT_ID` (default: `telegram_operator`; tenant/account id stamped into channel bindings and audit actor metadata)
+- `HUB_TELEGRAM_OPERATOR_APP_ID` (default: `telegram_operator_adapter`; connector principal app id for HubRuntime governance RPCs)
+- `HUB_TELEGRAM_OPERATOR_API_BASE_URL` (default: `https://api.telegram.org`)
+- `HUB_WHATSAPP_CLOUD_OPERATOR_ENABLE` (default: `0`; starts the dedicated WhatsApp Cloud operator ingress worker only when set to `1`)
+- `HUB_WHATSAPP_CLOUD_OPERATOR_HOST` (default: `127.0.0.1`; must remain loopback unless `HUB_WHATSAPP_CLOUD_OPERATOR_ALLOW_REMOTE=1`)
+- `HUB_WHATSAPP_CLOUD_OPERATOR_PORT` (default: `50163`)
+- `HUB_WHATSAPP_CLOUD_OPERATOR_EVENT_PATH` (default: `/whatsapp/events`)
+- `HUB_WHATSAPP_CLOUD_OPERATOR_HEALTH_PATH` (default: `/health`)
+- `HUB_WHATSAPP_CLOUD_OPERATOR_BODY_MAX_BYTES` (default: `262144`; bounded to `1024..1048576`)
+- `HUB_WHATSAPP_CLOUD_OPERATOR_VERIFY_TOKEN` (required when `HUB_WHATSAPP_CLOUD_OPERATOR_ENABLE=1`; used for Meta webhook verification challenge)
+- `HUB_WHATSAPP_CLOUD_OPERATOR_APP_SECRET` (required when `HUB_WHATSAPP_CLOUD_OPERATOR_ENABLE=1`; used to verify `X-Hub-Signature-256` on incoming webhooks)
+- `HUB_WHATSAPP_CLOUD_OPERATOR_REPLY_ENABLE` (default: `0`; when `1`, outbound governed summaries/pending approvals require Cloud API credentials)
+- `HUB_WHATSAPP_CLOUD_OPERATOR_ACCESS_TOKEN` / `HUB_WHATSAPP_CLOUD_OPERATOR_PHONE_NUMBER_ID` (required when `HUB_WHATSAPP_CLOUD_OPERATOR_REPLY_ENABLE=1`)
+- `HUB_WHATSAPP_CLOUD_OPERATOR_ACCOUNT_ID` (default: `HUB_WHATSAPP_CLOUD_OPERATOR_PHONE_NUMBER_ID` or `whatsapp_cloud_operator`; account id stamped into channel bindings and audit actor metadata)
+- `HUB_WHATSAPP_CLOUD_OPERATOR_APP_ID` (default: `whatsapp_cloud_operator_adapter`; connector principal app id for HubRuntime governance RPCs)
+- `HUB_WHATSAPP_CLOUD_OPERATOR_API_BASE_URL` (default: `https://graph.facebook.com`)
+- `HUB_WHATSAPP_CLOUD_OPERATOR_API_VERSION` (default: `v23.0`)
+- `HUB_WHATSAPP_CLOUD_OPERATOR_ALLOW_REMOTE` (default: `0`; set to `1` only when the worker is placed behind an explicit relay/tunnel boundary and raw Hub exposure is still avoided)
 - `HUB_ALLOWED_CIDRS` (optional; comma-separated allowlist like `private,127.0.0.1,192.168.1.0/24`)
 - `HUB_ADMIN_ALLOW_REMOTE` (default: `0`; set to `1` to allow admin RPCs from non-loopback peers)
 - `HUB_ADMIN_ALLOWED_CIDRS` (optional; comma-separated allowlist for admin RPCs when `HUB_ADMIN_ALLOW_REMOTE=0`)
+- `HUB_OPERATOR_CHANNEL_CONNECTOR_ALLOW_REMOTE` (default: `0`; set to `1` only when the connector is behind an explicit relay/tunnel boundary)
+- `HUB_OPERATOR_CHANNEL_CONNECTOR_ALLOWED_CIDRS` (optional; comma-separated allowlist for operator-channel connector RPCs when remote access must be enabled narrowly)
 - `HUB_AUTO_APPROVE_TTL_SEC` (default: `1800`)
 - `HUB_AUTO_APPROVE_TOKEN_CAP` (default: `5000`)
 - `HUB_RUNTIME_BASE_DIR` (optional override for runtime/bridge shared base dir)
@@ -179,10 +317,13 @@ npm run smoke
 - `HUB_SKILLS_DEVELOPER_MODE` (default: `0`; only low-risk unsigned/untrusted skills can bypass signer trust when set to `1`; high-risk skills stay fail-closed)
 - `HUB_REQUIRE_SKILLS_CAP` (default: `0`; when `1`, clients must explicitly include `skills` in `capabilities`)
 
-When `HUB_RUNTIME_BASE_DIR` is not set, server now auto-detects the most active base directory among the current legacy runtime locations:
+When `HUB_RUNTIME_BASE_DIR` is not set, the server now auto-detects the most active base directory across the current compatibility runtime locations:
+- `~/Library/Containers/com.rel.flowhub/Data/XHub`
 - `~/Library/Containers/com.rel.flowhub/Data/RELFlowHub`
+- `/private/tmp/XHub`
 - `/private/tmp/RELFlowHub`
 - `~/Library/Group Containers/group.rel.flowhub`
+- `~/XHub`
 - `~/RELFlowHub`
 
 ## Auth (v1: per-device client allowlist)
@@ -232,8 +373,16 @@ Notes:
 ## Notes
 
 - HubAI.Generate is backed by the existing MLX runtime file IPC (`python_service/relflowhub_mlx_runtime.py`).
-- `web_fetch` is executed via **X-Hub Bridge** file IPC (`bridge_requests/` -> `bridge_responses/`). The current internal bundle name is still `RELFlowHubBridge`.
+- `web_fetch` is executed via **X-Hub Bridge** file IPC (`bridge_requests/` -> `bridge_responses/`). Historical internal executable naming may still use `RELFlowHubBridge` in some implementation surfaces.
 - All decisions and executions emit `audit.v1` events into SQLite.
+- The Slack operator worker is a separate process and stays loopback-only by default; it should sit behind a relay/tunnel instead of exposing the raw Hub IP directly.
+- Without `HUB_SLACK_OPERATOR_BOT_TOKEN`, the Slack operator worker still processes governed ingress but only returns HTTP webhook acknowledgements; thread replies stay disabled.
+- The Feishu operator worker follows the same Hub-first, loopback-only ingress model as Slack; keep it behind a relay/tunnel rather than exposing raw Hub endpoints.
+- The Telegram operator worker is polling-only by design. It does not open an inbound HTTP listener and should be run on the Hub machine or another outbound-only connector host that can reach Hub over the local connector channel.
+- The WhatsApp Cloud operator worker verifies the Meta webhook challenge token and `X-Hub-Signature-256` before any command normalization. Keep it behind a domain/relay boundary and do not treat it as approval to expose the raw Hub IP.
+- `build/reports/xt_w3_24_n_action_grant_whatsapp_evidence.v1.json` is the fail-closed `XT-W3-24-N` require-real report for WhatsApp Cloud. It stays `NO_GO` until the capture bundle is backed by real Meta/Hub/XT samples.
+- `whatsapp_cloud_api` remains `p1 / release_blocked` in the channel runtime snapshot until require-real evidence is collected. `whatsapp_personal_qr` stays a separate trusted-automation track and is not part of this Hub connector worker.
+- `HUB_OPERATOR_CHANNEL_CONNECTOR_TOKEN` is intentionally narrower than `HUB_ADMIN_TOKEN`; do not reuse the admin token for Slack / Feishu / Telegram operator workers.
 
 ## Pairing (MVP)
 
@@ -247,6 +396,7 @@ Defaults:
 - Pairing server listens on `HUB_PAIRING_PORT` (default: `HUB_PORT + 1`, e.g. `50052`).
 - Pairing server only accepts `private,loopback` source IPs by default (override with `HUB_PAIRING_ALLOWED_CIDRS`).
 - Admin endpoints are local-only by default and require `HUB_ADMIN_TOKEN`.
+- Operator-channel governance RPCs are also local-only by default, but require a separate `HUB_OPERATOR_CHANNEL_CONNECTOR_TOKEN` instead of the admin token.
 
 Bootstrap install (new machine, LAN):
 ```bash

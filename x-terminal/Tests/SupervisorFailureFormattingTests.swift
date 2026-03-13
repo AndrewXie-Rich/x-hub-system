@@ -405,6 +405,70 @@ struct SupervisorFailureFormattingTests {
     }
 
     @Test
+    func routeDiagnoseExplainsSupervisorUsesGlobalAssignmentOnly() throws {
+        let originalMode = HubAIClient.transportMode()
+        defer { HubAIClient.setTransportMode(originalMode) }
+
+        HubAIClient.setTransportMode(.auto)
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-route-diagnose")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let appModel = AppModel()
+        appModel.settingsStore.settings = appModel.settingsStore.settings.setting(
+            role: .supervisor,
+            providerKind: .hub,
+            model: "openai/gpt-5-low"
+        )
+        appModel.modelsState = ModelStateSnapshot(
+            models: [
+                HubModel(
+                    id: "openai/gpt-5-low",
+                    name: "GPT 5 Low",
+                    backend: "remote",
+                    quant: "n/a",
+                    contextLength: 200_000,
+                    paramsB: 0,
+                    roles: nil,
+                    state: .loaded,
+                    memoryBytes: nil,
+                    tokensPerSec: nil,
+                    modelPath: nil,
+                    note: nil
+                )
+            ],
+            updatedAt: Date().timeIntervalSince1970
+        )
+        appModel.registry = registry(
+            with: [
+                makeProjectEntry(
+                    root: root,
+                    displayName: "supervisor-route-diagnose-project",
+                    blockerSummary: nil,
+                    nextStepSummary: "继续推进"
+                )
+            ]
+        )
+        manager.setAppModel(appModel)
+        manager.recordSupervisorReplyExecutionForTesting(
+            mode: "local_fallback_after_remote_error",
+            actualModelId: "qwen3-14b-mlx",
+            requestedModelId: "openai/gpt-5-low",
+            failureReasonCode: "model_not_found"
+        )
+
+        let rendered = try #require(manager.directSupervisorReplyIfApplicableForTesting("/route diagnose"))
+
+        #expect(rendered.contains("Supervisor route diagnose"))
+        #expect(rendered.contains("配置来源：global assignment"))
+        #expect(rendered.contains("最近一次执行模式：local_fallback_after_remote_error"))
+        #expect(rendered.contains("requested_model=openai/gpt-5-low"))
+        #expect(rendered.contains("actual_model=qwen3-14b-mlx"))
+        #expect(rendered.contains("Supervisor 不读取 project override，也不使用 project route memory"))
+        #expect(rendered.contains("/hub route grpc"))
+    }
+
+    @Test
     func grpcModeRejectsMismatchedActualRemoteModel() throws {
         let originalMode = HubAIClient.transportMode()
         defer { HubAIClient.setTransportMode(originalMode) }

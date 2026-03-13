@@ -1,7 +1,7 @@
 #!/bin/zsh
 set -euo pipefail
 
-# Start the offline model command worker for REL Flow Hub.
+# Start the offline model command worker for X-Hub.
 # This is intentionally a separate helper process (easy to audit / kill).
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

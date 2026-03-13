@@ -1,0 +1,26 @@
+{
+  "schema_version": "xhub.skill_manifest.v1",
+  "skill_id": "self-improving-agent",
+  "name": "Self Improving Agent",
+  "version": "1.0.0",
+  "description": "Supervisor retrospective and self-improvement workflow pack for learning from failed runs without bypassing governance.",
+  "entrypoint": {
+    "runtime": "text",
+    "command": "cat",
+    "args": [
+      "SKILL.md"
+    ]
+  },
+  "capabilities_required": [
+    "memory.snapshot",
+    "project.snapshot",
+    "repo.read.file"
+  ],
+  "network_policy": {
+    "direct_network_forbidden": true
+  },
+  "publisher": {
+    "publisher_id": "xhub.official"
+  },
+  "install_hint": "Install for Supervisor retrospectives and governed workflow tuning."
+}

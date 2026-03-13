@@ -1,6 +1,6 @@
 import Foundation
 
-enum HubTransportMode: String, CaseIterable {
+enum HubTransportMode: String, CaseIterable, Codable {
     case auto
     case grpc
     case fileIPC = "file"
@@ -654,8 +654,8 @@ actor HubAIClient {
         return try? jsonDecoder.decode(AIRuntimeStatus.self, from: data)
     }
 
-    func loadModelsState() async -> ModelStateSnapshot {
-        let mode = Self.transportMode()
+    func loadModelsState(transportOverride: HubTransportMode? = nil) async -> ModelStateSnapshot {
+        let mode = transportOverride ?? Self.transportMode()
         let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
         let decision = HubRouteStateMachine.resolve(mode: mode, hasRemoteProfile: hasRemote)
         switch decision.mode {
@@ -690,13 +690,14 @@ actor HubAIClient {
         maxTokens: Int = 768,
         temperature: Double = 0.2,
         topP: Double = 0.95,
-        autoLoad: Bool = true
+        autoLoad: Bool = true,
+        transportOverride: HubTransportMode? = nil
     ) async throws -> String {
-        let mode = Self.transportMode()
+        let mode = transportOverride ?? Self.transportMode()
         let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
         let decision = HubRouteStateMachine.resolve(mode: mode, hasRemoteProfile: hasRemote)
         let runtimeAlive = (loadRuntimeStatus()?.isAlive(ttl: 3.0) == true)
-        let modelSnapshot = await loadModelsState()
+        let modelSnapshot = await loadModelsState(transportOverride: transportOverride)
         let resolvedPreferredModelId = Self.normalizeConfiguredModelID(
             preferredModelId,
             availableModels: modelSnapshot.models
@@ -1243,6 +1244,7 @@ actor HubAIClient {
         temperature: Double = 0.2,
         topP: Double = 0.95,
         autoLoad: Bool = true,
+        transportOverride: HubTransportMode? = nil,
         timeoutSec: Double = 120.0
     ) async throws -> String {
         let (rid, text, _) = try await generateTextWithReqId(
@@ -1256,7 +1258,8 @@ actor HubAIClient {
             maxTokens: maxTokens,
             temperature: temperature,
             topP: topP,
-            autoLoad: autoLoad
+            autoLoad: autoLoad,
+            transportOverride: transportOverride
         )
         _ = rid
         return text
@@ -1274,6 +1277,7 @@ actor HubAIClient {
         temperature: Double = 0.2,
         topP: Double = 0.95,
         autoLoad: Bool = true,
+        transportOverride: HubTransportMode? = nil,
         timeoutSec: Double = 120.0
     ) async throws -> (reqId: String, text: String, usage: HubAIUsage?) {
         let rid = try await enqueueGenerate(
@@ -1287,7 +1291,8 @@ actor HubAIClient {
             maxTokens: maxTokens,
             temperature: temperature,
             topP: topP,
-            autoLoad: autoLoad
+            autoLoad: autoLoad,
+            transportOverride: transportOverride
         )
 
         var out = ""

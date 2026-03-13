@@ -20,6 +20,8 @@ class ProviderHealth:
     peak_memory_bytes: int | None = None
     loaded_model_count: int | None = None
     registered_models: list[str] | None = None
+    resource_policy: dict[str, Any] | None = None
+    scheduler_state: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -42,6 +44,10 @@ class ProviderHealth:
             data["loadedModelCount"] = int(self.loaded_model_count)
         if self.registered_models is not None:
             data["registeredModels"] = [str(model_id) for model_id in self.registered_models if str(model_id or "").strip()]
+        if self.resource_policy is not None:
+            data["resourcePolicy"] = dict(self.resource_policy)
+        if self.scheduler_state is not None:
+            data["schedulerState"] = dict(self.scheduler_state)
         return data
 
 

@@ -104,9 +104,15 @@ If you only publish one entry point inside this repository, use this page plus `
 
 Current plan:
 
-- keep this repository as the MIT codebase
+- keep this repository open source under MIT
 - keep the long-form whitepaper lifecycle decoupled if needed
 - mount the final whitepaper repo back into `docs/whitepaper/` as a submodule when it is ready
+
+If whitepaper files are published from this repository, their license wording
+must match the repository's current MIT licensing model.
+
+The current GitHub-release whitepaper variants under `docs/whitepapers/` have
+been updated to follow that repository-level wording.
 
 Until then:
 

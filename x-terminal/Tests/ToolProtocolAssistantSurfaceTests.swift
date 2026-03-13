@@ -7,6 +7,8 @@ struct ToolProtocolAssistantSurfaceTests {
     func assistantSurfaceSpecsExposeSkillAlignedTools() {
         #expect(ToolPolicy.toolSpec(.session_list).contains("project_id"))
         #expect(ToolPolicy.toolSpec(.memory_snapshot).contains("mode"))
+        #expect(ToolPolicy.toolSpec(.skills_search).contains("source_filter"))
+        #expect(ToolPolicy.toolSpec(.summarize).contains("url?|path?|text"))
         #expect(ToolPolicy.toolSpec(.web_search).contains("grant_id"))
         #expect(ToolPolicy.toolSpec(.browser_read).contains("url"))
         #expect(ToolPolicy.toolSpec(.project_snapshot) == "- project_snapshot {}")
@@ -22,6 +24,9 @@ struct ToolProtocolAssistantSurfaceTests {
         #expect(ToolPolicy.toolSpec(.deviceBrowserControl).contains("action"))
         #expect(ToolPolicy.toolSpec(.deviceBrowserControl).contains("click|type|upload"))
         #expect(ToolPolicy.toolSpec(.deviceBrowserControl).contains("selector"))
+        #expect(ToolPolicy.toolSpec(.deviceBrowserControl).contains("field_role"))
+        #expect(ToolPolicy.toolSpec(.deviceBrowserControl).contains("secret_item_id"))
+        #expect(ToolPolicy.toolSpec(.deviceBrowserControl).contains("secret_name"))
         #expect(ToolPolicy.toolSpec(.deviceAppleScript).contains("source"))
     }
 
@@ -38,6 +43,8 @@ struct ToolProtocolAssistantSurfaceTests {
         #expect(allowed.contains(.session_compact))
         #expect(allowed.contains(.memory_snapshot))
         #expect(allowed.contains(.project_snapshot))
+        #expect(allowed.contains(.skills_search))
+        #expect(allowed.contains(.summarize))
         #expect(allowed.contains(.web_search))
         #expect(allowed.contains(.browser_read))
         #expect(!allowed.contains(.deviceUIObserve))
@@ -81,6 +88,8 @@ struct ToolProtocolAssistantSurfaceTests {
         #expect(completeStep.contains(.deviceUIStep))
         #expect(ToolPolicy.risk(for: ToolCall(tool: .session_resume, args: [:])) == .safe)
         #expect(ToolPolicy.risk(for: ToolCall(tool: .memory_snapshot, args: [:])) == .safe)
+        #expect(ToolPolicy.risk(for: ToolCall(tool: .skills_search, args: ["query": .string("browser")])) == .safe)
+        #expect(ToolPolicy.risk(for: ToolCall(tool: .summarize, args: ["text": .string("hello")])) == .safe)
         #expect(ToolPolicy.risk(for: ToolCall(tool: .web_search, args: ["query": .string("OpenAI")])) == .safe)
         #expect(ToolPolicy.risk(for: ToolCall(tool: .deviceUIObserve, args: [:])) == .needsConfirm)
         #expect(ToolPolicy.risk(for: ToolCall(tool: .deviceUIAct, args: [:])) == .needsConfirm)

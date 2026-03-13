@@ -160,6 +160,10 @@ struct PendingToolCallChip: View {
             return "folder"
         case .search:
             return "magnifyingglass"
+        case .skills_search:
+            return "magnifyingglass"
+        case .summarize:
+            return "text.alignleft"
         case .run_command:
             return "terminal"
         case .git_status, .git_diff, .git_apply_check, .git_apply:
@@ -216,9 +220,23 @@ struct PendingToolCallChip: View {
             if case .string(let mode)? = toolCall.args["mode"] {
                 return mode
             }
+        case .skills_search:
+            if case .string(let query)? = toolCall.args["query"] {
+                return query
+            }
         case .web_search:
             if case .string(let query)? = toolCall.args["query"] {
                 return query
+            }
+        case .summarize:
+            if case .string(let url)? = toolCall.args["url"] {
+                return url
+            }
+            if case .string(let path)? = toolCall.args["path"] {
+                return path
+            }
+            if case .string(let text)? = toolCall.args["text"] {
+                return String(text.prefix(72))
             }
         case .browser_read, .web_fetch:
             if case .string(let url)? = toolCall.args["url"] {
@@ -286,6 +304,10 @@ struct ToolCallDetailsPopover: View {
             return "folder"
         case .search:
             return "magnifyingglass"
+        case .skills_search:
+            return "magnifyingglass"
+        case .summarize:
+            return "text.alignleft"
         case .run_command:
             return "terminal"
         case .git_status, .git_diff, .git_apply_check, .git_apply:

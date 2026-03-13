@@ -17,6 +17,7 @@ struct LLMRequest: Codable, Equatable {
     var preferredModelId: String?
     var projectId: String? = nil
     var sessionId: String? = nil
+    var transportOverride: HubTransportMode? = nil
 }
 
 struct LLMUsage: Codable, Equatable {

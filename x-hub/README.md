@@ -6,7 +6,7 @@ If the repository root README explains the product, this directory explains wher
 
 Public product name: `X-Hub`
 
-Developer note: the macOS Swift package under `macos/RELFlowHub/` still uses the historical internal codename `RELFlowHub` for package / target names. Treat that as implementation debt, not public branding. The preferred source-run executable alias is now `XHub`.
+Developer note: the macOS Swift package still lives under `macos/RELFlowHub/` for compatibility. Treat that as implementation debt, not public branding. The preferred public source-run entrypoint is `bash x-hub/tools/run_xhub_from_source.command`.
 
 Release scope note: this module README explains the active Hub trust surface and operator entrypoints. Public release claims still follow the validated-mainline-only scope defined in the repository root `README.md`, `RELEASE.md`, and the open-source release templates.
 
@@ -59,18 +59,40 @@ Launch the built Hub app:
 open build/X-Hub.app
 ```
 
+Launch the built Hub app with staged local dev Agent skills:
+
+```bash
+bash x-hub/tools/run_xhub_app_with_local_dev_agent_skills.command
+```
+
 Developer source run:
 
 ```bash
-cd x-hub/macos/RELFlowHub
-swift run XHub
+bash x-hub/tools/run_xhub_from_source.command
+```
+
+Developer source run with staged local dev Agent skills:
+
+```bash
+bash x-hub/tools/run_xhub_from_source_with_local_dev_agent_skills.command
 ```
 
 Bridge runtime from source:
 
 ```bash
-cd x-hub/macos/RELFlowHub
-swift run XHubBridge
+bash x-hub/tools/run_xhub_bridge_from_source.command
+```
+
+Bridge runtime from source with staged local dev Agent skills:
+
+```bash
+bash x-hub/tools/run_xhub_bridge_from_source_with_local_dev_agent_skills.command
+```
+
+Validate the staged local dev Agent baseline end to end:
+
+```bash
+bash x-hub/tools/run_local_dev_agent_skills_baseline_smoke.command
 ```
 
 ## Operational Boundaries

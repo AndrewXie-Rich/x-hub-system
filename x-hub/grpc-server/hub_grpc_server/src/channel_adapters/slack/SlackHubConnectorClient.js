@@ -55,12 +55,19 @@ export function createSlackHubConnectorClient(options = {}) {
   const principal = options.principal && typeof options.principal === 'object'
     ? options.principal
     : slackConnectorPrincipal({ app_id: safeString(options.app_id || 'slack_operator_adapter') });
+  const proto = (!options.runtimeClient || !options.eventsClient)
+    ? loadProto(resolveHubProtoPath(env))
+    : null;
 
   const runtimeClient = (() => {
     if (options.runtimeClient) return options.runtimeClient;
-    const proto = loadProto(resolveHubProtoPath(env));
     const { creds, options: clientOptions } = makeClientCredentials(env);
     return new proto.HubRuntime(address, creds, clientOptions);
+  })();
+  const eventsClient = (() => {
+    if (options.eventsClient) return options.eventsClient;
+    const { creds, options: clientOptions } = makeClientCredentials(env);
+    return new proto.HubEvents(address, creds, clientOptions);
   })();
 
   return {
@@ -71,6 +78,13 @@ export function createSlackHubConnectorClient(options = {}) {
         runtimeClient.close?.();
       } catch {
         // ignore
+      }
+      if (eventsClient !== runtimeClient) {
+        try {
+          eventsClient.close?.();
+        } catch {
+          // ignore
+        }
       }
     },
     async getChannelRuntimeStatusSnapshot() {
@@ -192,6 +206,29 @@ export function createSlackHubConnectorClient(options = {}) {
         },
         metadataFactory
       );
+    },
+    subscribeHubEvents({
+      scopes = ['grants'],
+      last_event_id = '',
+      on_data = null,
+      on_error = null,
+      on_end = null,
+    } = {}) {
+      if (!eventsClient || typeof eventsClient.Subscribe !== 'function') {
+        throw new Error('hub_events_client_invalid');
+      }
+      const stream = eventsClient.Subscribe(
+        {
+          client: principal,
+          scopes: Array.isArray(scopes) ? scopes.map((scope) => safeString(scope)).filter(Boolean) : [],
+          last_event_id: safeString(last_event_id),
+        },
+        metadataFactory()
+      );
+      if (typeof on_data === 'function') stream.on('data', on_data);
+      if (typeof on_error === 'function') stream.on('error', on_error);
+      if (typeof on_end === 'function') stream.on('end', on_end);
+      return stream;
     },
   };
 }

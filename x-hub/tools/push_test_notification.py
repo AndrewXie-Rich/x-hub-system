@@ -1,4 +1,4 @@
-"""Send a test notification to REL Flow Hub via its unix socket.
+"""Send a test notification to X-Hub via its unix socket.
 
 Usage:
   python3 tools/push_test_notification.py "Title" "Body" "rdar://123"

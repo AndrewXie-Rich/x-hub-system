@@ -28,7 +28,7 @@
    - hard/soft 落盘策略
    - PromptFactory 质量编译
    - heartbeat 巡检 + incident 秒级接管
-2. OpenClaw 新增经验并入：
+2. skills ecosystem 新增经验并入：
    - 父会话上下文溢出保护（XT-W2-17）
    - 同通道回退 + 跨通道硬阻断（XT-W2-18）
    - 运行完成清理安全网（XT-W2-19）

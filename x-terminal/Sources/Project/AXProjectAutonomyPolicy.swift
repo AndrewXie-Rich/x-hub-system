@@ -145,6 +145,60 @@ func xtResolveProjectAutonomyPolicy(
     )
 }
 
+func xtProjectGovernedDeviceAuthorityEnabled(
+    projectRoot: URL,
+    config: AXProjectConfig,
+    effectiveAutonomy: AXProjectAutonomyEffectivePolicy
+) -> Bool {
+    guard xtProjectGovernedDeviceAuthorityConfigured(
+        projectRoot: projectRoot,
+        config: config
+    ) else { return false }
+    guard effectiveAutonomy.effectiveMode == .trustedOpenClawMode else { return false }
+    return effectiveAutonomy.allowDeviceTools
+}
+
+func xtProjectGovernedDeviceAuthorityConfigured(
+    projectRoot: URL,
+    config: AXProjectConfig
+) -> Bool {
+    guard config.autonomyMode == .trustedOpenClawMode else { return false }
+    guard config.autonomyAllowDeviceTools else { return false }
+    guard config.automationMode == .trustedAutomation else { return false }
+    guard !config.trustedAutomationDeviceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        return false
+    }
+
+    let expectedWorkspaceBindingHash = xtTrustedAutomationWorkspaceHash(forProjectRoot: projectRoot)
+    let configuredWorkspaceBindingHash = config.workspaceBindingHash.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !configuredWorkspaceBindingHash.isEmpty else { return false }
+    return configuredWorkspaceBindingHash == expectedWorkspaceBindingHash
+}
+
+func xtProjectGovernedAutoApprovalConfigured(
+    projectRoot: URL,
+    config: AXProjectConfig
+) -> Bool {
+    guard config.governedAutoApproveLocalToolCalls else { return false }
+    return xtProjectGovernedDeviceAuthorityConfigured(
+        projectRoot: projectRoot,
+        config: config
+    )
+}
+
+func xtProjectGovernedAutoApprovalEnabled(
+    projectRoot: URL,
+    config: AXProjectConfig,
+    effectiveAutonomy: AXProjectAutonomyEffectivePolicy
+) -> Bool {
+    guard xtProjectGovernedAutoApprovalConfigured(
+        projectRoot: projectRoot,
+        config: config
+    ) else { return false }
+    guard effectiveAutonomy.effectiveMode == .trustedOpenClawMode else { return false }
+    return effectiveAutonomy.allowDeviceTools
+}
+
 extension AXProjectConfig {
     var configuredAutonomySurfaceLabels: [String] {
         var labels: [String] = []

@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 import { nowMs, uuid, estimateTokens, requireHttpsUrl, chunkText } from './util.js';
-import { requireAdminAuth, requireClientAuth } from './auth.js';
+import { requireAdminAuth, requireClientAuth, requireOperatorChannelConnectorAuth } from './auth.js';
 import { loadClients } from './clients.js';
 import { loadQuotaConfig, resolveDeviceDailyTokenCap, utcDayKey } from './quota.js';
 import { pushHubNotification } from './hub_ipc.js';
@@ -18,16 +18,33 @@ import {
   waitForBridgeEnabled,
 } from './bridge_ipc.js';
 import { makeProtoModelInfo } from './models_util.js';
-import { isRuntimeAlive, resolveRuntimeBaseDir, responsePathForRequest, runtimeModelMeta, runtimeModelsSnapshot, tailResponseJsonl, writeCancelRequest, writeGenerateRequest } from './mlx_runtime_ipc.js';
+import {
+  isRuntimeAlive,
+  isRuntimeProviderReady,
+  localProviderForModel,
+  readRuntimeModelRecord,
+  readRuntimeStatusSnapshot,
+  resolveRuntimeBaseDir,
+  responsePathForRequest,
+  runtimeModelMeta,
+  runtimeModelSupportsTask,
+  runtimeModelsSnapshot,
+  tailResponseJsonl,
+  writeCancelRequest,
+  writeGenerateRequest,
+} from './local_runtime_ipc.js';
 import {
   evaluateSkillExecutionGate,
+  getAgentImportRecord,
   getSkillManifest,
   listResolvedSkills,
   normalizeSkillStoreError,
+  promoteAgentImport,
   readSkillPackage,
   resolveSkillsWithTrace,
   searchSkills,
   setSkillPin,
+  stageAgentImport,
   uploadSkillPackage,
 } from './skills_store.js';
 import { stripPrivateTagsFailClosed } from './private_tags.js';
@@ -45,6 +62,31 @@ import {
   sanitizeLongtermMarkdown,
 } from './memory_markdown_review.js';
 import { getVoiceWakeProfile, setVoiceWakeProfile } from './voicewake.js';
+import { buildChannelRuntimeStatusSnapshot } from './channel_runtime_snapshot.js';
+import {
+  getChannelIdentityBinding,
+  listChannelIdentityBindings,
+  upsertChannelIdentityBinding,
+} from './channel_identity_store.js';
+import {
+  listSupervisorOperatorChannelBindings,
+  upsertSupervisorOperatorChannelBinding,
+} from './channel_bindings_store.js';
+import {
+  evaluateChannelCommandGateWithAudit,
+  getChannelActionPolicy,
+} from './channel_command_gate.js';
+import {
+  loadGrpcDevicesStatusSnapshot,
+  resolveSupervisorChannelRoute,
+} from './supervisor_channel_route_facade.js';
+import { upsertSupervisorChannelSessionRoute } from './supervisor_channel_session_store.js';
+import {
+  enqueueOperatorChannelXTCommand,
+  waitForOperatorChannelXTCommandResult,
+} from './operator_channel_xt_command_queue.js';
+import { prepareLocalMemoryEmbeddings } from './local_embeddings.js';
+import { buildLocalTaskFailure, evaluateLocalTaskPolicyGate } from './local_task_policy.js';
 
 
 function safeStringList(values) {
@@ -59,6 +101,10 @@ function safeStringList(values) {
     out.push(cleaned);
   }
   return out;
+}
+
+function safeString(value) {
+  return String(value ?? '').trim();
 }
 
 function nonNegativeInt(value, fallback = 0) {
@@ -321,25 +367,76 @@ function buildMemoryRetrievalDocs({ canonicalProject, canonicalThread, workingRo
   return docs;
 }
 
-function toProtoCapability(cap) {
+export function toProtoCapability(cap) {
   const c = String(cap || '').toUpperCase();
   if (c.includes('AI_GENERATE_LOCAL')) return 'CAPABILITY_AI_GENERATE_LOCAL';
   if (c.includes('AI_GENERATE_PAID')) return 'CAPABILITY_AI_GENERATE_PAID';
   if (c.includes('WEB_FETCH')) return 'CAPABILITY_WEB_FETCH';
+  if (c.includes('AI_EMBED_LOCAL')) return 'CAPABILITY_AI_EMBED_LOCAL';
+  if (c.includes('AI_AUDIO_LOCAL')) return 'CAPABILITY_AI_AUDIO_LOCAL';
+  if (c.includes('AI_VISION_LOCAL')) return 'CAPABILITY_AI_VISION_LOCAL';
   // Allow legacy string form used by HTTP docs.
   if (String(cap || '') === 'ai.generate.local') return 'CAPABILITY_AI_GENERATE_LOCAL';
   if (String(cap || '') === 'ai.generate.paid') return 'CAPABILITY_AI_GENERATE_PAID';
   if (String(cap || '') === 'web.fetch') return 'CAPABILITY_WEB_FETCH';
+  if (String(cap || '') === 'ai.embed.local') return 'CAPABILITY_AI_EMBED_LOCAL';
+  if (String(cap || '') === 'ai.audio.local') return 'CAPABILITY_AI_AUDIO_LOCAL';
+  if (String(cap || '') === 'ai.vision.local') return 'CAPABILITY_AI_VISION_LOCAL';
   return 'CAPABILITY_UNSPECIFIED';
 }
 
-function capabilityDbKey(capEnumOrText) {
+export function capabilityDbKey(capEnumOrText) {
   // We store capability in DB as stable string values.
   const c = toProtoCapability(capEnumOrText);
   if (c === 'CAPABILITY_AI_GENERATE_LOCAL') return 'ai.generate.local';
   if (c === 'CAPABILITY_AI_GENERATE_PAID') return 'ai.generate.paid';
   if (c === 'CAPABILITY_WEB_FETCH') return 'web.fetch';
+  if (c === 'CAPABILITY_AI_EMBED_LOCAL') return 'ai.embed.local';
+  if (c === 'CAPABILITY_AI_AUDIO_LOCAL') return 'ai.audio.local';
+  if (c === 'CAPABILITY_AI_VISION_LOCAL') return 'ai.vision.local';
   return 'unknown';
+}
+
+function killSwitchBlocksGrantedCapability(capability, killSwitch) {
+  const wanted = String(capability || '').trim();
+  if (!wanted || !killSwitch || typeof killSwitch !== 'object') {
+    return { blocked: false, rule_id: '', reason: '' };
+  }
+  const disabledCapabilities = safeStringList(killSwitch.disabled_local_capabilities);
+  if (
+    (wanted === 'ai.generate.local' || wanted === 'ai.embed.local' || wanted === 'ai.audio.local' || wanted === 'ai.vision.local')
+    && disabledCapabilities.includes(wanted)
+  ) {
+    return {
+      blocked: true,
+      rule_id: `kill_switch_capability:${wanted}`,
+      reason: String(killSwitch.reason || '').trim(),
+    };
+  }
+  if (
+    !!killSwitch.models_disabled
+    && (
+      wanted === 'ai.generate.local'
+      || wanted === 'ai.generate.paid'
+      || wanted === 'ai.embed.local'
+      || wanted === 'ai.audio.local'
+      || wanted === 'ai.vision.local'
+    )
+  ) {
+    return {
+      blocked: true,
+      rule_id: 'models_disabled',
+      reason: String(killSwitch.reason || '').trim(),
+    };
+  }
+  if (!!killSwitch.network_disabled && (wanted === 'web.fetch' || wanted === 'ai.generate.paid')) {
+    return {
+      blocked: true,
+      rule_id: 'network_disabled',
+      reason: String(killSwitch.reason || '').trim(),
+    };
+  }
+  return { blocked: false, rule_id: '', reason: '' };
 }
 
 function grantDecisionEnum(decisionText) {
@@ -509,6 +606,429 @@ function makeProtoAutonomyPolicyOverrideItem(row) {
   };
 }
 
+function maxUpdatedAtMs(rows = []) {
+  return (Array.isArray(rows) ? rows : []).reduce(
+    (max, row) => Math.max(max, Number(row?.updated_at_ms || 0)),
+    0
+  );
+}
+
+function makeProtoChannelIdentityBinding(row) {
+  if (!row) return null;
+  return {
+    schema_version: safeString(row.schema_version),
+    provider: safeString(row.provider),
+    external_user_id: safeString(row.external_user_id),
+    external_tenant_id: safeString(row.external_tenant_id),
+    hub_user_id: safeString(row.hub_user_id),
+    roles: Array.isArray(row.roles) ? row.roles.map((item) => safeString(item)).filter(Boolean) : [],
+    approval_only: !!row.approval_only,
+    status: safeString(row.status),
+    synced_at_ms: Number(row.synced_at_ms || 0),
+    updated_at_ms: Number(row.updated_at_ms || 0),
+    actor_ref: safeString(row.actor_ref),
+    audit_ref: safeString(row.audit_ref),
+  };
+}
+
+function makeProtoSupervisorOperatorChannelBinding(row) {
+  if (!row) return null;
+  return {
+    schema_version: safeString(row.schema_version),
+    binding_id: safeString(row.binding_id),
+    provider: safeString(row.provider),
+    account_id: safeString(row.account_id),
+    conversation_id: safeString(row.conversation_id),
+    thread_key: safeString(row.thread_key),
+    route_key: safeString(row.route_key),
+    channel_scope: safeString(row.channel_scope),
+    scope_type: safeString(row.scope_type),
+    scope_id: safeString(row.scope_id),
+    preferred_device_id: safeString(row.preferred_device_id),
+    allowed_actions: Array.isArray(row.allowed_actions) ? row.allowed_actions.map((item) => safeString(item)).filter(Boolean) : [],
+    approval_surface: safeString(row.approval_surface),
+    threading_mode: safeString(row.threading_mode),
+    status: safeString(row.status),
+    created_at_ms: Number(row.created_at_ms || 0),
+    updated_at_ms: Number(row.updated_at_ms || 0),
+    audit_ref: safeString(row.audit_ref),
+  };
+}
+
+function makeProtoChannelCommandGateDecision(row) {
+  if (!row) return null;
+  const policy = getChannelActionPolicy(row.action_name);
+  return {
+    allowed: !!row.allowed,
+    deny_code: safeString(row.deny_code),
+    detail: safeString(row.detail),
+    action_name: safeString(row.action_name),
+    binding_id: safeString(row.binding_id),
+    binding_match_mode: safeString(row.binding_match_mode),
+    scope_type: safeString(row.scope_type),
+    scope_id: safeString(row.scope_id),
+    actor_ref: safeString(row.actor_ref),
+    approval_only: !!row.approval_only,
+    policy_checked: row.policy_checked !== false,
+    allowed_roles: Array.isArray(row.allowed_roles) ? row.allowed_roles.map((item) => safeString(item)).filter(Boolean) : [],
+    identity_roles: Array.isArray(row.identity_roles) ? row.identity_roles.map((item) => safeString(item)).filter(Boolean) : [],
+    route_mode: safeString(policy?.route_mode),
+  };
+}
+
+function makeProtoSupervisorChannelRoute(row) {
+  if (!row) return null;
+  return {
+    schema_version: safeString(row.schema_version),
+    route_id: safeString(row.route_id),
+    provider: safeString(row.provider),
+    account_id: safeString(row.account_id),
+    conversation_id: safeString(row.conversation_id),
+    thread_key: safeString(row.thread_key),
+    scope_type: safeString(row.scope_type),
+    scope_id: safeString(row.scope_id),
+    supervisor_session_id: safeString(row.supervisor_session_id),
+    preferred_device_id: safeString(row.preferred_device_id),
+    resolved_device_id: safeString(row.resolved_device_id),
+    route_mode: safeString(row.route_mode),
+    xt_online: !!row.xt_online,
+    runner_required: !!row.runner_required,
+    same_project_scope: !!row.same_project_scope,
+    deny_code: safeString(row.deny_code),
+    updated_at_ms: Number(row.updated_at_ms || 0),
+    selected_by: safeString(row.selected_by),
+    action_name: safeString(row.action_name),
+  };
+}
+
+function makeProtoSupervisorTargetScope(row) {
+  if (!row || typeof row !== 'object') return null;
+  return {
+    scope_type: safeString(row.scope_type),
+    pool_id: safeString(row.pool_id),
+    lane_id: safeString(row.lane_id),
+    mission_id: safeString(row.mission_id),
+  };
+}
+
+function makeProtoSupervisorSurfaceIngress(row) {
+  if (!row || typeof row !== 'object') return null;
+  return {
+    schema_version: safeString(row.schema_version),
+    ingress_id: safeString(row.ingress_id),
+    request_id: safeString(row.request_id),
+    surface_type: safeString(row.surface_type),
+    surface_instance_id: safeString(row.surface_instance_id),
+    actor_ref: safeString(row.actor_ref),
+    project_id: safeString(row.project_id),
+    run_id: safeString(row.run_id),
+    trust_level: safeString(row.trust_level),
+    normalized_intent_type: safeString(row.normalized_intent_type),
+    raw_intent_ref: safeString(row.raw_intent_ref),
+    received_at_ms: Number(row.received_at_ms || 0),
+    audit_ref: safeString(row.audit_ref),
+    conversation_id: safeString(row.conversation_id),
+    thread_key: safeString(row.thread_key),
+    preferred_device_id: safeString(row.preferred_device_id),
+    mission_id: safeString(row.mission_id),
+    structured_action_ref: safeString(row.structured_action_ref),
+  };
+}
+
+function makeProtoSupervisorRouteDecision(row) {
+  if (!row || typeof row !== 'object') return null;
+  return {
+    schema_version: safeString(row.schema_version),
+    route_id: safeString(row.route_id),
+    request_id: safeString(row.request_id),
+    project_id: safeString(row.project_id),
+    run_id: safeString(row.run_id),
+    mission_id: safeString(row.mission_id),
+    decision: safeString(row.decision),
+    risk_tier: safeString(row.risk_tier),
+    preferred_device_id: safeString(row.preferred_device_id),
+    resolved_device_id: safeString(row.resolved_device_id),
+    runner_id: safeString(row.runner_id),
+    xt_online: !!row.xt_online,
+    runner_required: !!row.runner_required,
+    same_project_scope: !!row.same_project_scope,
+    requires_grant: !!row.requires_grant,
+    grant_scope: safeString(row.grant_scope),
+    deny_code: safeString(row.deny_code),
+    updated_at_ms: Number(row.updated_at_ms || 0),
+    audit_ref: safeString(row.audit_ref),
+  };
+}
+
+function makeProtoSupervisorBriefProjection(row) {
+  if (!row || typeof row !== 'object') return null;
+  return {
+    schema_version: safeString(row.schema_version),
+    projection_id: safeString(row.projection_id),
+    projection_kind: safeString(row.projection_kind),
+    project_id: safeString(row.project_id),
+    run_id: safeString(row.run_id),
+    mission_id: safeString(row.mission_id),
+    trigger: safeString(row.trigger),
+    status: safeString(row.status),
+    critical_blocker: safeString(row.critical_blocker),
+    topline: safeString(row.topline),
+    next_best_action: safeString(row.next_best_action),
+    pending_grant_count: Number(row.pending_grant_count || 0),
+    tts_script: Array.isArray(row.tts_script) ? row.tts_script.map((item) => safeString(item)).filter(Boolean) : [],
+    card_summary: safeString(row.card_summary),
+    evidence_refs: Array.isArray(row.evidence_refs) ? row.evidence_refs.map((item) => safeString(item)).filter(Boolean) : [],
+    generated_at_ms: Number(row.generated_at_ms || 0),
+    expires_at_ms: Number(row.expires_at_ms || 0),
+    audit_ref: safeString(row.audit_ref),
+  };
+}
+
+function makeProtoSupervisorGuidanceResolution(row) {
+  if (!row || typeof row !== 'object') return null;
+  return {
+    schema_version: safeString(row.schema_version),
+    directive_id: safeString(row.directive_id),
+    request_id: safeString(row.request_id),
+    project_id: safeString(row.project_id),
+    run_id: safeString(row.run_id),
+    mission_id: safeString(row.mission_id),
+    guidance_type: safeString(row.guidance_type),
+    normalized_instruction: safeString(row.normalized_instruction),
+    target_scope: makeProtoSupervisorTargetScope(row.target_scope),
+    requires_confirmation: !!row.requires_confirmation,
+    requires_authorization: !!row.requires_authorization,
+    resolution: safeString(row.resolution),
+    deny_code: safeString(row.deny_code),
+    resolved_at_ms: Number(row.resolved_at_ms || 0),
+    audit_ref: safeString(row.audit_ref),
+  };
+}
+
+function makeProtoSupervisorCheckpointChallenge(row) {
+  if (!row || typeof row !== 'object') return null;
+  return {
+    schema_version: safeString(row.schema_version),
+    challenge_id: safeString(row.challenge_id),
+    request_id: safeString(row.request_id),
+    project_id: safeString(row.project_id),
+    mission_id: safeString(row.mission_id),
+    checkpoint_type: safeString(row.checkpoint_type),
+    risk_tier: safeString(row.risk_tier),
+    decision_path: safeString(row.decision_path),
+    state: safeString(row.state),
+    scope_digest: safeString(row.scope_digest),
+    amount_digest: safeString(row.amount_digest),
+    requires_mobile_confirm: !!row.requires_mobile_confirm,
+    bound_device_id: safeString(row.bound_device_id),
+    evidence_refs: Array.isArray(row.evidence_refs) ? row.evidence_refs.map((item) => safeString(item)).filter(Boolean) : [],
+    issued_at_ms: Number(row.issued_at_ms || 0),
+    expires_at_ms: Number(row.expires_at_ms || 0),
+    deny_code: safeString(row.deny_code),
+    underlying_flow: safeString(row.underlying_flow),
+    underlying_ref_id: safeString(row.underlying_ref_id),
+    audit_ref: safeString(row.audit_ref),
+  };
+}
+
+function makeProtoChannelProviderRuntimeStatus(row) {
+  if (!row) return null;
+  return {
+    provider: safeString(row.provider),
+    label: safeString(row.label),
+    detail_label: safeString(row.detail_label),
+    release_stage: safeString(row.release_stage),
+    automation_path: safeString(row.automation_path),
+    threading_mode: safeString(row.threading_mode),
+    approval_surface: safeString(row.approval_surface),
+    capabilities: Array.isArray(row.capabilities) ? row.capabilities.map((item) => safeString(item)).filter(Boolean) : [],
+    endpoint_visibility: safeString(row.endpoint_visibility),
+    operator_surface: safeString(row.operator_surface),
+    allow_direct_xt: !!row.allow_direct_xt,
+    require_real_evidence: !!row.require_real_evidence,
+    release_blocked: !!row.release_blocked,
+    runtime_state: safeString(row.runtime_state),
+    account_count: Number(row.account_count || 0),
+    configured_accounts: Number(row.configured_accounts || 0),
+    ready_accounts: Number(row.ready_accounts || 0),
+    degraded_accounts: Number(row.degraded_accounts || 0),
+    active_binding_count: Number(row.active_binding_count || 0),
+    delivery_ready: !!row.delivery_ready,
+    command_entry_ready: !!row.command_entry_ready,
+    last_error_code: safeString(row.last_error_code),
+    updated_at_ms: Number(row.updated_at_ms || 0),
+  };
+}
+
+function makeProtoChannelRuntimeStatusTotals(row) {
+  const src = row && typeof row === 'object' ? row : {};
+  return {
+    providers_total: Number(src.providers_total || 0),
+    wave1_total: Number(src.wave1_total || 0),
+    ready_total: Number(src.ready_total || 0),
+    deliverable_total: Number(src.deliverable_total || 0),
+    command_entry_ready_total: Number(src.command_entry_ready_total || 0),
+    degraded_total: Number(src.degraded_total || 0),
+    planned_total: Number(src.planned_total || 0),
+    bindings_total: Number(src.bindings_total || 0),
+    unknown_provider_rows: Number(src.unknown_provider_rows || 0),
+  };
+}
+
+function makeProtoUnknownChannelRuntimeRow(row) {
+  if (!row) return null;
+  return {
+    provider_raw: safeString(row.provider_raw),
+    account_id: safeString(row.account_id),
+    runtime_state: safeString(row.runtime_state),
+    updated_at_ms: Number(row.updated_at_ms || 0),
+    last_error_code: safeString(row.last_error_code),
+  };
+}
+
+function makeProtoOperatorChannelQueueView(row) {
+  const src = row && typeof row === 'object' ? row : {};
+  return {
+    planned: !!src.planned,
+    deny_code: safeString(src.deny_code),
+    batch_id: safeString(src.batch_id),
+    generated_at_ms: Math.max(0, Number(src.generated_at_ms || 0)),
+    conservative_mode: !!src.conservative_mode,
+    items: Array.isArray(src.items)
+      ? src.items.map((item) => makeProtoDispatchPlanItem(item)).filter(Boolean)
+      : [],
+  };
+}
+
+function makeProtoOperatorChannelXTCommandResult(row) {
+  if (!row) return null;
+  return {
+    action_name: safeString(row.action_name),
+    command_id: safeString(row.command_id),
+    request_id: safeString(row.request_id),
+    project_id: safeString(row.project_id),
+    resolved_device_id: safeString(row.resolved_device_id),
+    status: safeString(row.status),
+    deny_code: safeString(row.deny_code),
+    detail: safeString(row.detail),
+    run_id: safeString(row.run_id),
+    created_at_ms: Number(row.created_at_ms || 0),
+    completed_at_ms: Number(row.completed_at_ms || 0),
+    audit_ref: safeString(row.audit_ref),
+  };
+}
+
+function loadChannelRuntimeAccountsSnapshot(runtimeBaseDir) {
+  const base = safeString(runtimeBaseDir);
+  if (!base) {
+    return {
+      updated_at_ms: 0,
+      rows: [],
+    };
+  }
+  const filePath = path.join(base, 'channel_runtime_accounts_status.json');
+  try {
+    const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const rows = Array.isArray(raw?.accounts)
+      ? raw.accounts
+      : (Array.isArray(raw?.items) ? raw.items : (Array.isArray(raw?.rows) ? raw.rows : []));
+    return {
+      updated_at_ms: Number(raw?.updated_at_ms || 0),
+      rows: Array.isArray(rows) ? rows : [],
+    };
+  } catch {
+    return {
+      updated_at_ms: 0,
+      rows: [],
+    };
+  }
+}
+
+function listActiveChannelBindingCountsByAccount(db) {
+  if (!db || typeof db !== 'object' || !db.db || typeof db.db.prepare !== 'function') {
+    return [];
+  }
+  try {
+    return db.db.prepare(
+      `SELECT provider, account_id, COUNT(*) AS active_binding_count, MAX(updated_at_ms) AS updated_at_ms
+       FROM supervisor_operator_channel_bindings
+       WHERE status = 'active'
+       GROUP BY provider, account_id`
+    ).all();
+  } catch {
+    return [];
+  }
+}
+
+function buildHubChannelRuntimeStatusSnapshot({ db, runtimeBaseDir }) {
+  const runtimeSnapshot = loadChannelRuntimeAccountsSnapshot(runtimeBaseDir);
+  const merged = new Map();
+
+  for (const raw of Array.isArray(runtimeSnapshot.rows) ? runtimeSnapshot.rows : []) {
+    const provider = safeString(raw?.provider).toLowerCase();
+    const account_id = safeString(raw?.account_id);
+    const key = `${provider}|${account_id}`;
+    if (!provider) continue;
+    merged.set(key, {
+      ...raw,
+      provider,
+      account_id,
+      active_binding_count: Number(raw?.active_binding_count || 0),
+      updated_at_ms: Number(raw?.updated_at_ms || 0),
+    });
+  }
+
+  for (const raw of listActiveChannelBindingCountsByAccount(db)) {
+    const provider = safeString(raw?.provider).toLowerCase();
+    const account_id = safeString(raw?.account_id);
+    const key = `${provider}|${account_id}`;
+    if (!provider) continue;
+    const existing = merged.get(key) || {
+      provider,
+      account_id,
+      runtime_state: 'not_configured',
+      updated_at_ms: 0,
+    };
+    merged.set(key, {
+      ...existing,
+      provider,
+      account_id,
+      active_binding_count: Number(raw?.active_binding_count || 0),
+      updated_at_ms: Math.max(Number(existing.updated_at_ms || 0), Number(raw?.updated_at_ms || 0)),
+    });
+  }
+
+  const rows = Array.from(merged.values());
+  const updated_at_ms = Math.max(
+    Number(runtimeSnapshot.updated_at_ms || 0),
+    maxUpdatedAtMs(rows),
+    nowMs()
+  );
+  return buildChannelRuntimeStatusSnapshot(rows, { updated_at_ms });
+}
+
+function operatorChannelAuditActor(fallbackAppId = 'hub_runtime_operator_channels') {
+  const app_id = safeString(fallbackAppId) || 'hub_runtime_operator_channels';
+  return {
+    device_id: 'hub_operator_channel_connector',
+    user_id: '',
+    app_id,
+    project_id: '',
+    session_id: '',
+  };
+}
+
+function operatorChannelClientContext(fallbackAppId = 'hub_runtime_operator_channels') {
+  const app_id = safeString(fallbackAppId) || 'hub_runtime_operator_channels';
+  return {
+    device_id: 'hub_operator_channel_connector',
+    user_id: '',
+    app_id,
+    project_id: '',
+    session_id: '',
+  };
+}
+
 function makeProtoProjectLineageNode(row) {
   if (!row || typeof row !== 'object') return null;
   return {
@@ -599,6 +1119,22 @@ function makeProtoVoiceWakeProfile(row) {
     wake_mode: String(row.wake_mode || 'wake_phrase'),
     requires_pairing_ready: !!row.requires_pairing_ready,
     audit_ref: String(row.audit_ref || ''),
+  };
+}
+
+function makeProtoSecretVaultItem(row) {
+  if (!row || typeof row !== 'object') return null;
+  const itemId = String(row.item_id || '').trim();
+  const scope = String(row.scope || '').trim().toLowerCase();
+  const name = String(row.name || '').trim();
+  if (!itemId || !scope || !name) return null;
+  return {
+    item_id: itemId,
+    scope,
+    name,
+    sensitivity: String(row.sensitivity || 'secret').trim().toLowerCase() || 'secret',
+    created_at_ms: Math.max(0, Number(row.created_at_ms || 0)),
+    updated_at_ms: Math.max(0, Number(row.updated_at_ms || 0)),
   };
 }
 
@@ -718,6 +1254,544 @@ function makeProtoDispatchPlanItem(row) {
     conservative_only: !!row.conservative_only,
     queue_depth: Math.max(0, Math.floor(Number(row.queue_depth || 0))),
     oldest_wait_ms: Math.max(0, Number(row.oldest_wait_ms || 0)),
+  };
+}
+
+function loadOperatorChannelProjectState(db, project_id = '') {
+  const projectId = safeString(project_id);
+  if (!db || !projectId) {
+    return {
+      project_id: '',
+      root_project_id: '',
+      lineage: null,
+      dispatch: null,
+      heartbeat: null,
+      owner_identity: null,
+    };
+  }
+
+  const lineage = typeof db._getProjectLineageRowRawByProjectId === 'function' && typeof db._parseProjectLineageRow === 'function'
+    ? db._parseProjectLineageRow(db._getProjectLineageRowRawByProjectId(projectId))
+    : null;
+  const dispatch = typeof db._getProjectDispatchContextRowRawByProjectId === 'function' && typeof db._parseProjectDispatchContextRow === 'function'
+    ? db._parseProjectDispatchContextRow(db._getProjectDispatchContextRowRawByProjectId(projectId))
+    : null;
+  const heartbeat = typeof db._getProjectHeartbeatRowRawByProjectId === 'function' && typeof db._parseProjectHeartbeatRow === 'function'
+    ? db._parseProjectHeartbeatRow(db._getProjectHeartbeatRowRawByProjectId(projectId))
+    : null;
+
+  const owner_identity = lineage || dispatch || heartbeat || null;
+  return {
+    project_id: projectId,
+    root_project_id: safeString(
+      lineage?.root_project_id
+      || dispatch?.root_project_id
+      || heartbeat?.root_project_id
+      || projectId
+    ),
+    lineage,
+    dispatch,
+    heartbeat,
+    owner_identity,
+  };
+}
+
+function projectIdFromOperatorChannelContext({
+  gate = {},
+  route = {},
+  pending_grant = null,
+} = {}) {
+  if (safeString(route.scope_type) === 'project') return safeString(route.scope_id);
+  if (safeString(gate.scope_type) === 'project') return safeString(gate.scope_id);
+  return safeString(pending_grant?.project_id);
+}
+
+function buildOperatorChannelHubQueryResult({
+  db,
+  runtimeBaseDir = '',
+  request_id = '',
+  action_name = '',
+  gate = {},
+  route = {},
+  pending_grant = null,
+} = {}) {
+  const actionName = safeString(action_name).toLowerCase();
+  const project_id = projectIdFromOperatorChannelContext({
+    gate,
+    route,
+    pending_grant,
+  });
+  const projectState = loadOperatorChannelProjectState(db, project_id);
+  const snapshot = buildHubChannelRuntimeStatusSnapshot({
+    db,
+    runtimeBaseDir,
+  });
+  const provider_status_row = Array.isArray(snapshot?.providers)
+    ? snapshot.providers.find((row) => safeString(row?.provider) === safeString(route.provider))
+    : null;
+  const query = {
+    action_name: actionName,
+    project_id: safeString(projectState.project_id),
+    root_project_id: safeString(projectState.root_project_id),
+    provider_status: makeProtoChannelProviderRuntimeStatus(provider_status_row),
+    dispatch: makeProtoProjectDispatchContext(projectState.dispatch),
+    heartbeat: makeProtoProjectHeartbeat(projectState.heartbeat),
+    queue: null,
+  };
+
+  if (actionName !== 'supervisor.queue.get') {
+    return {
+      ok: true,
+      deny_code: '',
+      detail: 'query_executed',
+      query,
+    };
+  }
+
+  const owner = projectState.owner_identity;
+  if (!safeString(projectState.root_project_id) || !owner?.device_id || !owner?.app_id) {
+    return {
+      ok: false,
+      deny_code: 'project_scope_missing',
+      detail: 'queue view requires project scope',
+      query,
+    };
+  }
+
+  const queue = db.buildProjectDispatchPlan({
+    request_id: safeString(request_id),
+    device_id: safeString(owner.device_id),
+    user_id: safeString(owner.user_id),
+    app_id: safeString(owner.app_id),
+    root_project_id: safeString(projectState.root_project_id),
+    max_projects: 6,
+  });
+  query.queue = makeProtoOperatorChannelQueueView(queue);
+  if (!queue?.planned) {
+    return {
+      ok: false,
+      deny_code: safeString(queue?.deny_code || 'queue_view_unavailable'),
+      detail: 'queue view unavailable',
+      query,
+    };
+  }
+
+  return {
+    ok: true,
+    deny_code: '',
+    detail: 'query_executed',
+    query,
+  };
+}
+
+function normalizeSupervisorSurfaceType(value, fallback = 'hub_internal') {
+  const raw = safeString(value).toLowerCase();
+  if (!raw) return fallback;
+  const known = new Set([
+    'xt_ui',
+    'xt_voice',
+    'mobile_companion',
+    'wearable_companion',
+    'slack',
+    'telegram',
+    'feishu',
+    'whatsapp_cloud_api',
+    'whatsapp_personal_runner',
+    'runner_event',
+    'hub_internal',
+  ]);
+  return known.has(raw) ? raw : raw;
+}
+
+function inferSupervisorTrustLevel(surface_type = '') {
+  const surface = normalizeSupervisorSurfaceType(surface_type, 'hub_internal');
+  if (surface === 'runner_event' || surface === 'whatsapp_personal_runner') return 'runner_observation';
+  if (surface === 'hub_internal') return 'hub_internal';
+  if (surface === 'xt_ui' || surface === 'xt_voice' || surface === 'mobile_companion' || surface === 'wearable_companion') {
+    return 'paired_surface';
+  }
+  return 'external_untrusted_ingress';
+}
+
+function normalizeSupervisorTrustLevel(value, surface_type = '') {
+  const raw = safeString(value).toLowerCase();
+  if (!raw) return inferSupervisorTrustLevel(surface_type);
+  const known = new Set([
+    'trusted_local_surface',
+    'paired_surface',
+    'external_untrusted_ingress',
+    'runner_observation',
+    'hub_internal',
+  ]);
+  return known.has(raw) ? raw : inferSupervisorTrustLevel(surface_type);
+}
+
+function normalizeSupervisorIntentType(value, fallback = 'unknown') {
+  const raw = safeString(value).toLowerCase();
+  if (!raw) return fallback;
+  const known = new Set([
+    'progress_query',
+    'directive',
+    'authorization_request',
+    'approval_card_action',
+    'mission_checkpoint',
+    'status_ack',
+    'help',
+    'cancel',
+    'unknown',
+  ]);
+  return known.has(raw) ? raw : fallback;
+}
+
+function normalizeSupervisorProjectionKind(value, fallback = 'progress_brief') {
+  const raw = safeString(value).toLowerCase();
+  if (!raw) return fallback;
+  const known = new Set([
+    'progress_brief',
+    'pending_grants_digest',
+    'next_best_action',
+    'mission_checkpoint_digest',
+  ]);
+  return known.has(raw) ? raw : fallback;
+}
+
+function normalizeSupervisorTrigger(value, fallback = 'user_query') {
+  const raw = safeString(value).toLowerCase();
+  if (!raw) return fallback;
+  const known = new Set([
+    'user_query',
+    'blocked',
+    'awaiting_authorization',
+    'critical_path_changed',
+    'completed',
+    'daily_digest',
+    'mission_checkpoint',
+  ]);
+  return known.has(raw) ? raw : fallback;
+}
+
+function normalizeSupervisorGuidanceType(value) {
+  const raw = safeString(value).toLowerCase();
+  if (!raw) return '';
+  const known = new Set([
+    'priority_shift',
+    'scope_narrow',
+    'scope_hold',
+    'resume_lane',
+    'pause_lane',
+    'delivery_mode_change',
+    'budget_change_request',
+    'mission_replan_request',
+  ]);
+  return known.has(raw) ? raw : '';
+}
+
+function normalizeSupervisorScopeType(value) {
+  const raw = safeString(value).toLowerCase();
+  if (!raw) return '';
+  const known = new Set(['project', 'pool', 'lane', 'mission']);
+  return known.has(raw) ? raw : '';
+}
+
+function normalizeSupervisorCheckpointType(value) {
+  const raw = safeString(value).toLowerCase();
+  if (!raw) return '';
+  const known = new Set([
+    'payment',
+    'substitution',
+    'budget_exceed',
+    'scope_expansion',
+    'external_side_effect',
+    'remote_posture_drop',
+    'geofence_exit',
+  ]);
+  return known.has(raw) ? raw : '';
+}
+
+function normalizeSupervisorDecisionPath(value, fallback = 'approval_card') {
+  const raw = safeString(value).toLowerCase();
+  if (!raw) return fallback;
+  const known = new Set(['voice_only', 'voice_plus_mobile', 'approval_card', 'manual_review']);
+  return known.has(raw) ? raw : fallback;
+}
+
+function normalizeSupervisorRiskTier(value, fallback = 'medium') {
+  const raw = safeString(value).toLowerCase();
+  if (raw === 'low' || raw === 'medium' || raw === 'high' || raw === 'critical') return raw;
+  return safeString(fallback).toLowerCase() || 'medium';
+}
+
+function inferSupervisorRiskTier({
+  intent_type = '',
+  require_xt = false,
+  require_runner = false,
+  checkpoint_type = '',
+} = {}) {
+  if (require_runner) return 'high';
+  const checkpoint = normalizeSupervisorCheckpointType(checkpoint_type);
+  if (checkpoint === 'payment' || checkpoint === 'external_side_effect' || checkpoint === 'remote_posture_drop') {
+    return 'high';
+  }
+  const intent = normalizeSupervisorIntentType(intent_type, 'unknown');
+  if (intent === 'progress_query' || intent === 'help' || intent === 'status_ack') return 'low';
+  if (intent === 'authorization_request' || intent === 'approval_card_action' || intent === 'mission_checkpoint') return 'high';
+  if (intent === 'directive') return require_xt ? 'medium' : 'medium';
+  return 'high';
+}
+
+function supervisorRouteHintFromIntent(intent_type = '') {
+  const intent = normalizeSupervisorIntentType(intent_type, 'unknown');
+  if (intent === 'directive') return 'hub_to_xt';
+  if (intent === 'unknown') return 'fail_closed';
+  return 'hub_only';
+}
+
+function supervisorIntentAllowsProjectlessHubOnly(intent_type = '') {
+  const intent = normalizeSupervisorIntentType(intent_type, 'unknown');
+  return intent === 'progress_query'
+    || intent === 'help'
+    || intent === 'status_ack'
+    || intent === 'cancel';
+}
+
+function normalizeSupervisorTargetScope(input = {}) {
+  const src = input && typeof input === 'object' ? input : {};
+  return {
+    scope_type: normalizeSupervisorScopeType(src.scope_type),
+    pool_id: safeString(src.pool_id),
+    lane_id: safeString(src.lane_id),
+    mission_id: safeString(src.mission_id),
+  };
+}
+
+function normalizeSupervisorSurfaceIngress(input = {}, request_id = '') {
+  const src = input && typeof input === 'object' ? input : {};
+  const surface_type = normalizeSupervisorSurfaceType(src.surface_type, 'hub_internal');
+  return {
+    schema_version: safeString(src.schema_version) || 'xhub.supervisor_surface_ingress.v1',
+    ingress_id: safeString(src.ingress_id) || `sup_ing_${uuid()}`,
+    request_id: safeString(request_id || src.request_id) || `sup_req_${uuid()}`,
+    surface_type,
+    surface_instance_id: safeString(src.surface_instance_id),
+    actor_ref: safeString(src.actor_ref),
+    project_id: safeString(src.project_id),
+    run_id: safeString(src.run_id),
+    trust_level: normalizeSupervisorTrustLevel(src.trust_level, surface_type),
+    normalized_intent_type: normalizeSupervisorIntentType(src.normalized_intent_type, 'unknown'),
+    raw_intent_ref: safeString(src.raw_intent_ref),
+    received_at_ms: Math.max(0, Number(src.received_at_ms || nowMs())),
+    audit_ref: safeString(src.audit_ref) || `audit-supervisor-ingress-${safeString(request_id || src.request_id) || uuid()}`,
+    conversation_id: safeString(src.conversation_id),
+    thread_key: safeString(src.thread_key),
+    preferred_device_id: safeString(src.preferred_device_id),
+    mission_id: safeString(src.mission_id),
+    structured_action_ref: safeString(src.structured_action_ref),
+  };
+}
+
+function supervisorDirectiveLooksLikeDirectToolJump(text) {
+  const raw = safeString(text).toLowerCase();
+  if (!raw) return false;
+  const blocked = [
+    /\bterminal\.(exec|write|delete|grant|sudo|deploy|shell)\b/,
+    /\bdevice\.[a-z0-9_.-]+\b/,
+    /\bconnector\.send\b/,
+    /\bgrant\.approve\b/,
+    /\bpayment\.[a-z0-9_.-]+\b/,
+  ];
+  return blocked.some((pattern) => pattern.test(raw));
+}
+
+function loadSupervisorRoutingDevices(runtimeBaseDir = '') {
+  const clients = loadClients(runtimeBaseDir, 0);
+  const statusSnapshot = loadGrpcDevicesStatusSnapshot(runtimeBaseDir);
+  const statusById = new Map(
+    (Array.isArray(statusSnapshot?.devices) ? statusSnapshot.devices : [])
+      .map((row) => [safeString(row?.device_id), row])
+  );
+
+  return (Array.isArray(clients) ? clients : [])
+    .map((client) => {
+      const device_id = safeString(client?.device_id);
+      if (!device_id) return null;
+      const status = statusById.get(device_id) || {};
+      return {
+        device_id,
+        enabled: client?.enabled !== false,
+        xt_online: client?.enabled !== false && !!status?.connected,
+        last_seen_at_ms: Number(status?.last_seen_at_ms || 0),
+        trusted_automation_mode: safeString(client?.trusted_automation_mode).toLowerCase(),
+        trusted_automation_state: safeString(client?.trusted_automation_state).toLowerCase(),
+        xt_binding_required: !!client?.xt_binding_required,
+        device_permission_owner_ref: safeString(client?.device_permission_owner_ref),
+        allowed_project_ids: safeStringList(client?.allowed_project_ids || []),
+      };
+    })
+    .filter(Boolean);
+}
+
+function supervisorDeviceSupportsProject(device, project_id = '') {
+  const projectId = safeString(project_id);
+  const allowed = safeStringList(device?.allowed_project_ids || []);
+  if (!projectId) return true;
+  if (allowed.length <= 0) return true;
+  return allowed.includes(projectId);
+}
+
+function supervisorRunnerReadiness(device, project_id = '') {
+  if (!device) {
+    return {
+      ready: false,
+      deny_code: 'runner_device_missing',
+    };
+  }
+  if (!device.xt_online) {
+    return {
+      ready: false,
+      deny_code: 'preferred_device_offline',
+    };
+  }
+  if (safeString(device.trusted_automation_mode) !== 'trusted_automation') {
+    return {
+      ready: false,
+      deny_code: 'trusted_automation_mode_off',
+    };
+  }
+  const state = safeString(device.trusted_automation_state);
+  if (!state || state === 'off' || state === 'blocked') {
+    return {
+      ready: false,
+      deny_code: 'trusted_automation_mode_off',
+    };
+  }
+  if (device.xt_binding_required && !safeString(device.device_permission_owner_ref)) {
+    return {
+      ready: false,
+      deny_code: 'device_permission_owner_missing',
+    };
+  }
+  if (!supervisorDeviceSupportsProject(device, project_id)) {
+    return {
+      ready: false,
+      deny_code: 'trusted_automation_project_not_bound',
+    };
+  }
+  return {
+    ready: true,
+    deny_code: '',
+  };
+}
+
+function selectSupervisorRoutingDevice({
+  devices = [],
+  preferred_device_id = '',
+  project_id = '',
+  require_runner = false,
+} = {}) {
+  const preferredId = safeString(preferred_device_id);
+  const byId = new Map((Array.isArray(devices) ? devices : []).map((row) => [safeString(row.device_id), row]));
+  if (preferredId) {
+    const preferred = byId.get(preferredId) || null;
+    if (!preferred) {
+      return {
+        device: null,
+        selected_by: 'preferred_device',
+        same_project_scope: false,
+        deny_code: 'preferred_device_missing',
+      };
+    }
+    const same_project_scope = supervisorDeviceSupportsProject(preferred, project_id);
+    if (!same_project_scope) {
+      return {
+        device: preferred,
+        selected_by: 'preferred_device',
+        same_project_scope: false,
+        deny_code: 'preferred_device_project_scope_mismatch',
+      };
+    }
+    if (require_runner) {
+      const runner = supervisorRunnerReadiness(preferred, project_id);
+      return {
+        device: preferred,
+        selected_by: 'preferred_device',
+        same_project_scope,
+        deny_code: runner.ready ? '' : runner.deny_code,
+      };
+    }
+    return {
+      device: preferred,
+      selected_by: 'preferred_device',
+      same_project_scope,
+      deny_code: preferred.xt_online ? '' : 'preferred_device_offline',
+    };
+  }
+
+  const candidates = (Array.isArray(devices) ? devices : [])
+    .filter((row) => row && row.enabled !== false && supervisorDeviceSupportsProject(row, project_id));
+  const onlineCandidates = candidates.filter((row) => row.xt_online);
+  if (require_runner) {
+    const readyCandidates = onlineCandidates.filter((row) => supervisorRunnerReadiness(row, project_id).ready);
+    if (readyCandidates.length === 1) {
+      return {
+        device: readyCandidates[0],
+        selected_by: 'single_candidate',
+        same_project_scope: true,
+        deny_code: '',
+      };
+    }
+    if (readyCandidates.length > 1) {
+      return {
+        device: null,
+        selected_by: 'ambiguous',
+        same_project_scope: false,
+        deny_code: 'runner_route_ambiguous',
+      };
+    }
+    if (onlineCandidates.length === 1) {
+      return {
+        device: onlineCandidates[0],
+        selected_by: 'single_candidate',
+        same_project_scope: true,
+        deny_code: supervisorRunnerReadiness(onlineCandidates[0], project_id).deny_code,
+      };
+    }
+    if (onlineCandidates.length > 1) {
+      return {
+        device: null,
+        selected_by: 'ambiguous',
+        same_project_scope: false,
+        deny_code: 'runner_route_ambiguous',
+      };
+    }
+    return {
+      device: candidates.length === 1 ? candidates[0] : null,
+      selected_by: candidates.length === 1 ? 'single_candidate' : (candidates.length > 1 ? 'ambiguous' : 'none'),
+      same_project_scope: candidates.length === 1,
+      deny_code: candidates.length === 1 ? 'preferred_device_offline' : 'runner_device_missing',
+    };
+  }
+
+  if (onlineCandidates.length === 1) {
+    return {
+      device: onlineCandidates[0],
+      selected_by: 'single_candidate',
+      same_project_scope: true,
+      deny_code: '',
+    };
+  }
+  if (onlineCandidates.length > 1) {
+    return {
+      device: null,
+      selected_by: 'ambiguous',
+      same_project_scope: false,
+      deny_code: 'xt_route_ambiguous',
+    };
+  }
+  return {
+    device: candidates.length === 1 ? candidates[0] : null,
+    selected_by: candidates.length === 1 ? 'single_candidate' : (candidates.length > 1 ? 'ambiguous' : 'none'),
+    same_project_scope: candidates.length === 1,
+    deny_code: candidates.length === 1 ? 'preferred_device_offline' : 'xt_device_missing',
   };
 }
 
@@ -1182,6 +2256,15 @@ function isPaidModelMeta(model) {
   return String(model?.kind || '').toLowerCase() === 'paid_online' || !!Number(model?.requires_grant || 0);
 }
 
+function supportsLocalTextGenerate({ runtimeBaseDir, modelId, modelMeta = null } = {}) {
+  const runtimeRecord = readRuntimeModelRecord(runtimeBaseDir, modelId);
+  if (runtimeRecord) {
+    return runtimeModelSupportsTask(runtimeBaseDir, modelId, 'text_generate');
+  }
+  const backend = String(modelMeta?.backend || '').trim().toLowerCase();
+  return !backend || backend === 'mlx';
+}
+
 function resolveLocalFallbackModelId({ db, runtimeBaseDir, preferred_model_id = '' } = {}) {
   const preferredModelId = String(preferred_model_id || process.env.HUB_REMOTE_EXPORT_DOWNGRADE_MODEL_ID || '').trim();
   const candidates = [];
@@ -1223,7 +2306,10 @@ function resolveLocalFallbackModelId({ db, runtimeBaseDir, preferred_model_id = 
     } catch {
       meta = null;
     }
-    if (meta && !isPaidModelMeta(meta)) return modelId;
+    if (!meta || isPaidModelMeta(meta)) continue;
+    if (supportsLocalTextGenerate({ runtimeBaseDir, modelId, modelMeta: meta })) {
+      return modelId;
+    }
   }
   return '';
 }
@@ -1929,6 +3015,29 @@ export function makeServices({ db, bus }) {
     };
   }
 
+  function buildSecretVaultItemsSnapshot({
+    scope = '',
+    namePrefix = '',
+    limit = 200,
+  } = {}) {
+    const snapshot = db.listSecretVaultItemsForSnapshot({
+      scope: String(scope || '').trim().toLowerCase(),
+      name_prefix: String(namePrefix || '').trim(),
+      limit: parseIntInRange(limit, 200, 1, 500),
+    });
+    const items = Array.isArray(snapshot?.items)
+      ? snapshot.items.map(makeProtoSecretVaultItem).filter(Boolean)
+      : [];
+    return {
+      updated_at_ms: Math.max(
+        0,
+        Number(snapshot?.updated_at_ms || 0),
+        Number(items[0]?.updated_at_ms || 0)
+      ),
+      items,
+    };
+  }
+
   function writePendingGrantRequestsStatus(runtimeBaseDir) {
     const base = String(runtimeBaseDir || '').trim();
     if (!base) return;
@@ -1964,6 +3073,25 @@ export function makeServices({ db, bus }) {
     });
   }
 
+  function writeSecretVaultItemsStatus(runtimeBaseDir) {
+    const base = String(runtimeBaseDir || '').trim();
+    if (!base) return;
+    const filePath = path.join(base, 'secret_vault_items_status.json');
+    const snapshot = buildSecretVaultItemsSnapshot({
+      scope: '',
+      namePrefix: '',
+      limit: 400,
+    });
+    if (!fs.existsSync(filePath) && (!Array.isArray(snapshot.items) || snapshot.items.length === 0)) {
+      return;
+    }
+    writeJsonAtomic(filePath, {
+      schema_version: 'secret_vault_items_status.v1',
+      updated_at_ms: Number(snapshot.updated_at_ms || 0),
+      items: Array.isArray(snapshot.items) ? snapshot.items : [],
+    });
+  }
+
   // Periodically refresh the exported snapshot so the Hub UI can render near-real-time
   // token usage without requiring reconnects.
   const statusIntervalMs = Math.max(500, Number(process.env.HUB_GRPC_STATUS_EXPORT_MS || 2000));
@@ -1973,6 +3101,7 @@ export function makeServices({ db, bus }) {
       writePaidAISchedulerStatus(resolveRuntimeBaseDir());
       writePendingGrantRequestsStatus(resolveRuntimeBaseDir());
       writeAutonomyPolicyOverridesStatus(resolveRuntimeBaseDir());
+      writeSecretVaultItemsStatus(resolveRuntimeBaseDir());
     } catch {
       // ignore
     }
@@ -2337,10 +3466,8 @@ export function makeServices({ db, bus }) {
         user_id: client.user_id ? String(client.user_id) : '',
         project_id: client.project_id ? String(client.project_id) : '',
       });
-      const blocked =
-        (!!ks.models_disabled && (capability === 'ai.generate.local' || capability === 'ai.generate.paid')) ||
-        (!!ks.network_disabled && (capability === 'web.fetch' || capability === 'ai.generate.paid'));
-      if (blocked) {
+      const killSwitchGate = killSwitchBlocksGrantedCapability(capability, ks);
+      if (killSwitchGate.blocked) {
         const created = db.createGrantRequest({
           request_id,
           device_id,
@@ -2353,7 +3480,7 @@ export function makeServices({ db, bus }) {
           requested_ttl_sec,
           requested_token_cap,
         });
-        const denyReason = ks.reason ? `kill_switch_active: ${ks.reason}` : 'kill_switch_active';
+        const denyReason = killSwitchGate.reason ? `kill_switch_active: ${killSwitchGate.reason}` : 'kill_switch_active';
         const ackFields = parsePolicyAckFields({ reason: req.reason || '' });
         db.decideGrantRequest(created.grant_request_id, {
           status: 'denied',
@@ -2391,7 +3518,7 @@ export function makeServices({ db, bus }) {
           model_id: model_id || null,
           decision: 'deny',
           policy_scope: 'grant_request',
-          rule_ids: ['kill_switch_active'],
+          rule_ids: [String(killSwitchGate.rule_id || 'kill_switch_active')],
           phase: 'explain',
           grant_request_id: created.grant_request_id,
           user_ack_understood: ackFields.user_ack_understood,
@@ -2829,52 +3956,6 @@ export function makeServices({ db, bus }) {
     } catch {
       killSwitch = null;
     }
-    if (killSwitch?.models_disabled) {
-      const msg = killSwitch?.reason ? `kill_switch_active: ${killSwitch.reason}` : 'kill_switch_active';
-      const error = { code: 'kill_switch_active', message: msg, retryable: false };
-      call.write({ error: { request_id, error } });
-      call.end();
-      db.appendAudit({
-        event_type: 'ai.generate.denied',
-        created_at_ms: nowMs(),
-        severity: 'security',
-        device_id,
-        user_id: client.user_id ? String(client.user_id) : null,
-        app_id,
-        project_id: project_id || null,
-        session_id: client.session_id ? String(client.session_id) : null,
-        request_id,
-        capability: 'unknown',
-        model_id: model_id || null,
-        network_allowed: false,
-        ok: false,
-        error_code: error.code,
-        error_message: error.message,
-        ext_json: JSON.stringify(withMemoryMetricsExt(
-          { created_at_ms },
-          {
-            event_kind: 'ai.generate.denied',
-            op: 'generate',
-            job_type: 'ai_generate',
-            channel: 'unknown',
-            remote_mode: false,
-            scope: buildMetricsScope({
-              scope_kind: 'project',
-              device_id,
-              user_id: client.user_id ? String(client.user_id) : '',
-              app_id,
-              project_id,
-            }),
-            security: {
-              blocked: true,
-              deny_code: error.code,
-            },
-          }
-        )),
-      });
-      bus.emitHubEvent(bus.requestStatus({ request_id, status: 'failed', error, client }));
-      return;
-    }
 
     const runtimeBaseDir = resolveRuntimeBaseDir();
     const model = model_id ? (db.getModel(model_id) || runtimeModelMeta(runtimeBaseDir, model_id)) : null;
@@ -2929,6 +4010,16 @@ export function makeServices({ db, bus }) {
     const capability = isPaid ? 'ai.generate.paid' : 'ai.generate.local';
     const runtimeClientConfig = isPaid ? findRuntimeClientConfig(runtimeBaseDir, device_id) : null;
     const capabilityAllowed = clientAllows(auth, capability);
+    const localProviderId = String(localProviderForModel(model) || model?.backend || '').trim();
+    const localTaskGate = !isPaid
+      ? evaluateLocalTaskPolicyGate({
+          taskKind: 'text_generate',
+          provider: localProviderId,
+          capabilityAllowed,
+          capabilityDenyCode: capabilityDenyCode(auth),
+          killSwitch,
+        })
+      : null;
     const deviceDisplayName = String(
       runtimeClientConfig?.name
       || runtimeClientConfig?.trust_profile?.device_name
@@ -3049,6 +4140,24 @@ export function makeServices({ db, bus }) {
       cancels.delete(request_id);
       return error;
     };
+    if (!isPaid && localTaskGate && !localTaskGate.ok) {
+      denyPaidModelWithContext({
+        code: localTaskGate.deny_code || 'task_blocked',
+        message: String(localTaskGate.message || localTaskGate.deny_code || 'task_blocked'),
+        ruleIds: Array.isArray(localTaskGate.rule_ids) && localTaskGate.rule_ids.length > 0
+          ? localTaskGate.rule_ids
+          : [String(localTaskGate.deny_code || 'task_blocked')],
+        phase: 'execute',
+        optionsPresented: false,
+        extraExt: {
+          local_task_kind: String(localTaskGate.task_kind || 'text_generate'),
+          local_provider: String(localTaskGate.provider || ''),
+          local_blocked_by: String(localTaskGate.blocked_by || ''),
+          raw_deny_code: String(localTaskGate.raw_deny_code || ''),
+        },
+      });
+      return;
+    }
     if (isPaid && trustedPaidAccess?.trust_profile_present && !trustedPaidAccess.allow && trustedPaidAccess.deny_code === 'device_paid_model_disabled') {
       denyPaidModelWithContext({
         code: trustedPaidAccess.deny_code,
@@ -3060,7 +4169,7 @@ export function makeServices({ db, bus }) {
       });
       return;
     }
-    if (!capabilityAllowed) {
+    if (isPaid && !capabilityAllowed) {
       const denyCode = capabilityDenyCode(auth);
       const error = { code: denyCode, message: denyCode, retryable: false };
       call.write({ error: { request_id, error } });
@@ -3129,6 +4238,34 @@ export function makeServices({ db, bus }) {
     }
     if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
       const denyCode = capabilityDenyCode(auth);
+      if (!isPaid) {
+        const localPolicyFailure = buildLocalTaskFailure({
+          taskKind: 'text_generate',
+          provider: localProviderId,
+          rawDenyCode: denyCode,
+          message: denyCode,
+          blockedBy: 'policy',
+          ruleIds: [denyCode],
+        });
+        denyPaidModelWithContext({
+          code: localPolicyFailure.deny_code || 'policy_blocked',
+          message: localPolicyFailure.message || localPolicyFailure.deny_code || 'policy_blocked',
+          ruleIds: Array.isArray(localPolicyFailure.rule_ids) && localPolicyFailure.rule_ids.length > 0
+            ? localPolicyFailure.rule_ids
+            : [String(localPolicyFailure.deny_code || 'policy_blocked')],
+          phase: 'scope_bind',
+          optionsPresented: false,
+          extraExt: {
+            local_task_kind: String(localPolicyFailure.task_kind || 'text_generate'),
+            local_provider: String(localPolicyFailure.provider || ''),
+            local_blocked_by: String(localPolicyFailure.blocked_by || 'policy'),
+            raw_deny_code: String(localPolicyFailure.raw_deny_code || denyCode),
+            project_binding_checked: true,
+            workspace_binding_checked: !!trustedAutomationScope.workspace_root,
+          },
+        });
+        return;
+      }
       denyPaidModelWithContext({
         code: denyCode,
         message: denyCode,
@@ -3142,9 +4279,10 @@ export function makeServices({ db, bus }) {
       });
       return;
     }
-    if (isPaid && killSwitch?.network_disabled) {
+    if (isPaid && (killSwitch?.models_disabled || killSwitch?.network_disabled)) {
       const msg = killSwitch?.reason ? `kill_switch_active: ${killSwitch.reason}` : 'kill_switch_active';
       const error = { code: 'kill_switch_active', message: msg, retryable: false };
+      const killSwitchRuleId = killSwitch?.models_disabled ? 'models_disabled' : 'network_disabled';
       call.write({ error: { request_id, error } });
       call.end();
       db.appendAudit({
@@ -3197,7 +4335,7 @@ export function makeServices({ db, bus }) {
         model_id: model_id || null,
         decision: 'deny',
         policy_scope: 'ai_generate',
-        rule_ids: ['kill_switch_active'],
+        rule_ids: [killSwitchRuleId],
         phase: 'execute',
         user_ack_understood: false,
         explain_rounds: 0,
@@ -3397,7 +4535,10 @@ export function makeServices({ db, bus }) {
     let memoryRouteDurationMs = null;
     const memoryScoreExplainControl = resolveMemoryScoreExplainControl(call);
 
-    const runtimeAlive = isRuntimeAlive(runtimeBaseDir, 15_000);
+    const runtimeStatusSnapshot = readRuntimeStatusSnapshot(runtimeBaseDir, 15_000);
+    const runtimeAlive = runtimeStatusSnapshot.ok
+      ? runtimeStatusSnapshot.is_alive
+      : isRuntimeAlive(runtimeBaseDir, 15_000);
     const timeoutAliveMs = Math.max(1000, Number(process.env.HUB_MLX_RESPONSE_TIMEOUT_MS || 180_000));
     const timeoutNoRuntimeMs = Math.max(1000, Number(process.env.HUB_MLX_RESPONSE_TIMEOUT_NO_RUNTIME_MS || 8_000));
     const timeoutMs = runtimeAlive ? timeoutAliveMs : timeoutNoRuntimeMs;
@@ -3573,9 +4714,52 @@ export function makeServices({ db, bus }) {
           memoryScoreExplainControl.include_trace
           || String(process.env.HUB_MEMORY_RETRIEVAL_TRACE || '').trim() === '1';
         const retrievalQuery = latestQueryFromMessages(req.messages, promptText);
+        const embedAuthProbe = { ...auth };
+        const localEmbedCapabilityAllowed = clientAllows(embedAuthProbe, 'ai.embed.local');
+        const localEmbedCapabilityDenyCode = localEmbedCapabilityAllowed ? '' : capabilityDenyCode(embedAuthProbe);
+        let localEmbeddingOutcome = null;
+        let retrievalDocsWithEmbeddings = routeResult.documents;
+        try {
+          localEmbeddingOutcome = await prepareLocalMemoryEmbeddings({
+            runtimeBaseDir,
+            requestId: request_id,
+            preferredModelId: String(process.env.HUB_MEMORY_LOCAL_EMBED_MODEL_ID || '').trim(),
+            query: retrievalQuery,
+            documents: routeResult.documents,
+            allowedSensitivity: routeResult.policy.allowed_sensitivity,
+            allowUntrusted: routeResult.policy.allow_untrusted,
+            capabilityAllowed: localEmbedCapabilityAllowed,
+            capabilityDenyCode: localEmbedCapabilityDenyCode,
+            killSwitch,
+          });
+          if (localEmbeddingOutcome?.ok) {
+            const vectorById = new Map(
+              (Array.isArray(localEmbeddingOutcome.documents) ? localEmbeddingOutcome.documents : [])
+                .map((row) => [String(row?.id || ''), row?.embedding_vector])
+                .filter((row) => row[0] && Array.isArray(row[1]) && row[1].length > 0)
+            );
+            retrievalDocsWithEmbeddings = routeResult.documents.map((doc) => {
+              const embeddingVector = vectorById.get(String(doc?.id || ''));
+              if (!Array.isArray(embeddingVector) || embeddingVector.length === 0) return doc;
+              return {
+                ...doc,
+                embedding_vector: embeddingVector,
+              };
+            });
+          }
+        } catch (error) {
+          localEmbeddingOutcome = {
+            ok: false,
+            deny_code: 'local_embedding_runtime_failed',
+            message: String(error?.message || error || 'local_embedding_runtime_failed'),
+            fallback_mode: 'lexical_only',
+            latency_ms: 0,
+          };
+        }
         const retrieval = runMemoryRetrievalPipeline({
-          documents: routeResult.documents,
+          documents: retrievalDocsWithEmbeddings,
           query: retrievalQuery,
+          query_embedding: localEmbeddingOutcome?.ok ? localEmbeddingOutcome.query_embedding : null,
           scope: { device_id, user_id: userId, app_id, project_id },
           allowed_sensitivity: routeResult.policy.allowed_sensitivity,
           allow_untrusted: routeResult.policy.allow_untrusted,
@@ -3605,6 +4789,23 @@ export function makeServices({ db, bus }) {
             blocked: !!retrieval.blocked,
             deny_reason: String(retrieval.deny_reason || ''),
             results_count: Array.isArray(retrieval.results) ? retrieval.results.length : 0,
+            embedding: {
+              ok: !!localEmbeddingOutcome?.ok,
+              fallback_mode: String(localEmbeddingOutcome?.fallback_mode || ''),
+              deny_code: String(localEmbeddingOutcome?.deny_code || ''),
+              provider: String(localEmbeddingOutcome?.provider || ''),
+              model_id: String(localEmbeddingOutcome?.model_id || ''),
+              dims: Math.max(0, Number(localEmbeddingOutcome?.dims || 0)),
+              vector_count: Math.max(0, Number(localEmbeddingOutcome?.vector_count || 0)),
+              embedded_document_count: Math.max(0, Number(localEmbeddingOutcome?.embedded_document_count || 0)),
+              eligible_document_count: Math.max(0, Number(localEmbeddingOutcome?.eligible_document_count || 0)),
+              truncated_document_count: Math.max(0, Number(localEmbeddingOutcome?.truncated_document_count || 0)),
+              latency_ms: Math.max(0, Number(localEmbeddingOutcome?.latency_ms || 0)),
+              cache_hit_count: Math.max(0, Number(localEmbeddingOutcome?.cache_hit_count || 0)),
+              cache_miss_count: Math.max(0, Number(localEmbeddingOutcome?.cache_miss_count || 0)),
+              sanitized_change_count: Math.max(0, Number(localEmbeddingOutcome?.sanitized_change_count || 0)),
+              sanitized_finding_count: Math.max(0, Number(localEmbeddingOutcome?.sanitized_finding_count || 0)),
+            },
           },
           shard_hits: hitStats,
           debug: {
@@ -3718,6 +4919,79 @@ export function makeServices({ db, bus }) {
           error_message: blocked ? (denyReason || 'memory_route_blocked') : null,
           ext_json: JSON.stringify(memoryRouteExt),
         });
+        const embedSummary = memoryRouteSnapshot?.retrieval?.embedding || {};
+        const embedProvider = String(embedSummary?.provider || '').trim();
+        const embedModelId = String(embedSummary?.model_id || '').trim();
+        const embedDenyCode = String(embedSummary?.deny_code || '').trim();
+        const embedRawDenyCode = String(embedSummary?.raw_deny_code || '').trim();
+        const embedTaskKind = String(embedSummary?.task_kind || 'embedding').trim() || 'embedding';
+        const embedCapability = String(embedSummary?.capability || 'ai.embed.local').trim() || 'ai.embed.local';
+        const embedOk = !!embedSummary?.ok;
+        if (embedOk || embedDenyCode || embedProvider || embedModelId) {
+          db.appendAudit({
+            event_type: embedOk ? 'ai.embed.local.completed' : 'ai.embed.local.denied',
+            created_at_ms: routeAuditAtMs,
+            severity: embedOk ? 'info' : 'warn',
+            device_id,
+            user_id: client.user_id ? String(client.user_id) : null,
+            app_id,
+            project_id: project_id || null,
+            session_id: client.session_id ? String(client.session_id) : null,
+            request_id,
+            capability: embedCapability,
+            model_id: embedModelId || null,
+            network_allowed: false,
+            ok: embedOk,
+            error_code: embedOk ? null : (embedDenyCode || 'local_embedding_failed'),
+            error_message: embedOk ? null : (embedRawDenyCode || embedDenyCode || 'local_embedding_failed'),
+            ext_json: JSON.stringify(withMemoryMetricsExt(
+              {
+                source: 'memory_route',
+                task_kind: embedTaskKind,
+                provider: embedProvider,
+                raw_deny_code: embedRawDenyCode,
+                blocked_by: String(embedSummary?.blocked_by || ''),
+                dims: Math.max(0, Number(embedSummary?.dims || 0)),
+                vector_count: Math.max(0, Number(embedSummary?.vector_count || 0)),
+                embedded_document_count: Math.max(0, Number(embedSummary?.embedded_document_count || 0)),
+                eligible_document_count: Math.max(0, Number(embedSummary?.eligible_document_count || 0)),
+                truncated_document_count: Math.max(0, Number(embedSummary?.truncated_document_count || 0)),
+                cache_hit_count: Math.max(0, Number(embedSummary?.cache_hit_count || 0)),
+                cache_miss_count: Math.max(0, Number(embedSummary?.cache_miss_count || 0)),
+                sanitized_change_count: Math.max(0, Number(embedSummary?.sanitized_change_count || 0)),
+                sanitized_finding_count: Math.max(0, Number(embedSummary?.sanitized_finding_count || 0)),
+                fallback_mode: String(embedSummary?.fallback_mode || ''),
+              },
+              {
+                event_kind: embedOk ? 'ai.embed.local.completed' : 'ai.embed.local.denied',
+                op: 'embed',
+                job_type: 'ai_embed_local',
+                channel: 'local',
+                remote_mode: false,
+                scope: buildMetricsScope({
+                  scope_kind: 'thread',
+                  device_id,
+                  user_id: client.user_id ? String(client.user_id) : '',
+                  app_id,
+                  project_id,
+                  thread_id,
+                }),
+                latency: {
+                  duration_ms: Math.max(0, Number(embedSummary?.latency_ms || 0)),
+                },
+                quality: {
+                  result_count: Math.max(0, Number(embedSummary?.embedded_document_count || 0)),
+                },
+                security: {
+                  blocked: !embedOk,
+                  deny_code: embedDenyCode,
+                  raw_deny_code: embedRawDenyCode,
+                  blocked_by: String(embedSummary?.blocked_by || ''),
+                },
+              }
+            )),
+          });
+        }
       } catch {
         // ignore
       }
@@ -3969,7 +5243,126 @@ export function makeServices({ db, bus }) {
       }
     }
 
-    // Paid/remote models are served via Bridge (network-capable helper). The MLX runtime
+    const denyLocalExecution = ({ code, message, extraExt = {} } = {}) => {
+      const error = {
+        code: String(code || 'local_runtime_unavailable'),
+        message: String(message || code || 'local_runtime_unavailable'),
+        retryable: false,
+      };
+      try {
+        call.write({ error: { request_id, error } });
+      } catch {
+        // ignore
+      }
+      try {
+        call.end();
+      } catch {
+        // ignore
+      }
+      db.appendAudit({
+        event_type: 'ai.generate.denied',
+        created_at_ms: nowMs(),
+        severity: 'security',
+        device_id,
+        user_id: client.user_id ? String(client.user_id) : null,
+        app_id,
+        project_id: project_id || null,
+        session_id: client.session_id ? String(client.session_id) : null,
+        request_id,
+        capability,
+        model_id: executionModelId || null,
+        network_allowed: false,
+        ok: false,
+        error_code: error.code,
+        error_message: error.message,
+        ext_json: JSON.stringify(withMemoryMetricsExt(
+          {
+            created_at_ms,
+            local_provider: String(extraExt.local_provider || ''),
+            local_task_kind: String(extraExt.local_task_kind || ''),
+            ...extraExt,
+          },
+          {
+            event_kind: 'ai.generate.denied',
+            op: 'generate',
+            job_type: 'ai_generate',
+            channel: 'local',
+            remote_mode: false,
+            scope: buildMetricsScope({
+              scope_kind: thread_id ? 'thread' : 'project',
+              device_id,
+              user_id: client.user_id ? String(client.user_id) : '',
+              app_id,
+              project_id,
+              thread_id,
+            }),
+            security: {
+              blocked: true,
+              deny_code: error.code,
+            },
+          }
+        )),
+      });
+      bus.emitHubEvent(bus.requestStatus({ request_id, status: 'failed', error, client }));
+      cancels.delete(request_id);
+    };
+
+    if (!executionRemoteMode) {
+      const localTaskKind = 'text_generate';
+      let executionModelMeta = null;
+      try {
+        executionModelMeta = executionModelId
+          ? (db.getModel(executionModelId) || runtimeModelMeta(runtimeBaseDir, executionModelId))
+          : null;
+      } catch {
+        executionModelMeta = null;
+      }
+      const localRuntimeRecord = readRuntimeModelRecord(runtimeBaseDir, executionModelId);
+      const localProviderId = localProviderForModel(runtimeBaseDir, executionModelId)
+        || String(executionModelMeta?.backend || '').trim().toLowerCase()
+        || 'mlx';
+
+      if (localRuntimeRecord && !runtimeModelSupportsTask(runtimeBaseDir, executionModelId, localTaskKind)) {
+        denyLocalExecution({
+          code: 'local_model_task_unsupported',
+          message: `local_model_task_unsupported:${executionModelId}:${localTaskKind}`,
+          extraExt: {
+            local_provider: localProviderId,
+            local_task_kind: localTaskKind,
+            declared_task_kinds: localRuntimeRecord.task_kinds || [],
+          },
+        });
+        return;
+      }
+
+      const providerStatus = runtimeStatusSnapshot.ok
+        ? runtimeStatusSnapshot.providers[String(localProviderId || '').trim().toLowerCase()] || null
+        : null;
+      if (
+        runtimeStatusSnapshot.ok &&
+        runtimeStatusSnapshot.is_alive &&
+        localProviderId &&
+        !isRuntimeProviderReady(runtimeBaseDir, localProviderId, 15_000)
+      ) {
+        const importError = String(providerStatus?.import_error || '').trim();
+        const reasonCode = String(providerStatus?.reason_code || 'unavailable').trim() || 'unavailable';
+        denyLocalExecution({
+          code: 'local_provider_unavailable',
+          message: importError
+            ? `local_provider_unavailable:${localProviderId}:${importError}`
+            : `local_provider_unavailable:${localProviderId}:${reasonCode}`,
+          extraExt: {
+            local_provider: localProviderId,
+            local_task_kind: localTaskKind,
+            provider_reason_code: reasonCode,
+            provider_import_error: importError,
+          },
+        });
+        return;
+      }
+    }
+
+    // Paid/remote models are served via Bridge (network-capable helper). The local runtime
     // is offline-only and will return model_not_loaded for remote ids.
     if (executionRemoteMode) {
       let releasePaidAISlot = null;
@@ -4480,7 +5873,7 @@ export function makeServices({ db, bus }) {
         created_at_ms,
         app_id,
         model_id: executionModelId,
-        task_type: '',
+        task_type: 'text_generate',
         preferred_model_id: '',
         prompt: promptText,
         max_tokens,
@@ -5418,6 +6811,26 @@ export function makeServices({ db, bus }) {
 
   // -------------------- HubEvents --------------------
   function Subscribe(call) {
+    const req = call.request || {};
+    const scopes = Array.isArray(req.scopes) ? req.scopes.map((s) => String(s || '').trim().toLowerCase()).filter(Boolean) : [];
+    const scopeSet = new Set(scopes);
+    const wantsAll = scopeSet.size === 0;
+
+    const connectorAuth = requireOperatorChannelConnectorAuth(call);
+    if (connectorAuth.ok) {
+      const connectorScopesAllowed = !wantsAll
+        && Array.from(scopeSet.values()).every((scope) => scope === 'grants');
+      if (!connectorScopesAllowed) {
+        call.end();
+        return;
+      }
+
+      bus.subscribe(call, {
+        filter: (ev) => !!ev?.grant_decision,
+      });
+      return;
+    }
+
     const auth = requireClientAuth(call);
     if (!auth.ok) {
       call.end();
@@ -5428,16 +6841,12 @@ export function makeServices({ db, bus }) {
       return;
     }
 
-    const req = call.request || {};
     const client = effectiveClientIdentity(req.client || {}, auth);
     const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
     const device_id = String(client.device_id || '').trim();
     const app_id = String(client.app_id || '').trim();
     const user_id = String(client.user_id || '').trim();
     const project_id = trustedAutomationScope.project_id;
-    const scopes = Array.isArray(req.scopes) ? req.scopes.map((s) => String(s || '').trim().toLowerCase()).filter(Boolean) : [];
-    const scopeSet = new Set(scopes);
-    const wantsAll = scopeSet.size === 0;
 
     // Identity is required for safe filtering.
     if (!device_id || !app_id) {
@@ -5638,6 +7047,637 @@ export function makeServices({ db, bus }) {
       app_id: String(row?.app_id || ''),
       project_id: row?.project_id ? String(row.project_id) : '',
       session_id: '',
+    };
+  }
+
+  function executeOperatorChannelGrantAction({
+    actor = {},
+    action_name = '',
+    pending_grant = null,
+    note = '',
+  } = {}) {
+    const actionName = safeString(action_name).toLowerCase();
+    const grant_request_id = safeString(pending_grant?.grant_request_id);
+    if (!grant_request_id) {
+      return {
+        ok: false,
+        deny_code: 'pending_grant_missing',
+        detail: 'pending grant required',
+        grant_action: null,
+      };
+    }
+
+    const gr = db.getGrantRequest(grant_request_id);
+    if (!gr) {
+      return {
+        ok: false,
+        deny_code: 'grant_request_not_found',
+        detail: 'grant request not found',
+        grant_action: null,
+      };
+    }
+    if (safeString(gr.status) !== 'pending') {
+      return {
+        ok: false,
+        deny_code: 'grant_request_not_pending',
+        detail: `grant_request_not_pending (${safeString(gr.status)})`,
+        grant_action: null,
+      };
+    }
+
+    const requestedProjectId = safeString(pending_grant?.project_id);
+    const grantProjectId = safeString(gr.project_id);
+    if (requestedProjectId && grantProjectId && requestedProjectId !== grantProjectId) {
+      return {
+        ok: false,
+        deny_code: 'pending_grant_scope_mismatch',
+        detail: 'pending grant scope mismatch',
+        grant_action: null,
+      };
+    }
+
+    const identity_binding = getChannelIdentityBinding(db, {
+      provider: actor.provider,
+      external_user_id: actor.external_user_id,
+      external_tenant_id: actor.external_tenant_id,
+    });
+    const approverId = safeString(
+      identity_binding?.hub_user_id
+      || actor.external_user_id
+      || 'operator_channel_connector'
+    );
+
+    if (actionName === 'grant.approve') {
+      const ttl_sec = Math.max(10, Math.floor(Number(gr.requested_ttl_sec || 1800) || 1800));
+      const token_cap = Math.max(0, Math.floor(Number(gr.requested_token_cap || 0) || 0));
+      const ackFields = parsePolicyAckFields({ note });
+      const expires_at_ms = nowMs() + (ttl_sec * 1000);
+
+      db.decideGrantRequest(grant_request_id, {
+        status: 'approved',
+        decision: 'approved',
+        approver_id: approverId,
+        note,
+        user_ack_understood: ackFields.user_ack_understood,
+        explain_rounds: ackFields.explain_rounds,
+        options_presented: ackFields.options_presented,
+      });
+
+      const grantRow = db.createGrant({
+        grant_request_id,
+        device_id: safeString(gr.device_id),
+        user_id: gr.user_id ? safeString(gr.user_id) : null,
+        app_id: safeString(gr.app_id),
+        project_id: gr.project_id ? safeString(gr.project_id) : null,
+        capability: safeString(gr.capability),
+        model_id: gr.model_id ? safeString(gr.model_id) : null,
+        token_cap,
+        expires_at_ms,
+      });
+      const grant = makeProtoGrant(grantRow);
+
+      if (safeString(grantRow?.capability) === 'ai.generate.paid' || safeString(grantRow?.capability) === 'web.fetch') {
+        try {
+          ensureBridgeEnabledUntil(resolveBridgeBaseDir(), Number(expires_at_ms || 0) / 1000.0);
+        } catch {
+          // ignore
+        }
+      }
+
+      db.appendAudit({
+        event_type: 'grant.request.approved',
+        created_at_ms: nowMs(),
+        severity: 'security',
+        device_id: safeString(gr.device_id) || 'hub_operator_channel_connector',
+        user_id: gr.user_id ? safeString(gr.user_id) : (safeString(identity_binding?.hub_user_id) || null),
+        app_id: safeString(gr.app_id) || 'hub_runtime_channel_execute',
+        project_id: gr.project_id ? safeString(gr.project_id) : null,
+        request_id: gr.request_id ? safeString(gr.request_id) : null,
+        capability: gr.capability ? safeString(gr.capability) : null,
+        model_id: gr.model_id ? safeString(gr.model_id) : null,
+        ok: true,
+        ext_json: JSON.stringify({
+          grant_request_id,
+          approver_id: approverId,
+          note,
+          source: 'operator_channel_connector',
+          provider: safeString(actor.provider),
+          actor_external_user_id: safeString(actor.external_user_id),
+          actor_hub_user_id: safeString(identity_binding?.hub_user_id),
+        }),
+      });
+      appendPolicyEvalAudit({
+        created_at_ms: nowMs(),
+        device_id: safeString(gr.device_id) || 'hub_operator_channel_connector',
+        user_id: gr.user_id ? safeString(gr.user_id) : (safeString(identity_binding?.hub_user_id) || null),
+        app_id: safeString(gr.app_id) || 'hub_runtime_channel_execute',
+        project_id: gr.project_id ? safeString(gr.project_id) : null,
+        session_id: null,
+        request_id: gr.request_id ? safeString(gr.request_id) : null,
+        capability: gr.capability ? safeString(gr.capability) : null,
+        model_id: gr.model_id ? safeString(gr.model_id) : null,
+        decision: 'allow',
+        policy_scope: 'grant_request',
+        rule_ids: ['operator_channel_connector_confirmed'],
+        ttl_sec,
+        phase: 'confirm',
+        grant_request_id,
+        grant_id: grant?.grant_id || '',
+        user_ack_understood: ackFields.user_ack_understood,
+        explain_rounds: ackFields.explain_rounds,
+        options_presented: ackFields.options_presented,
+        ok: true,
+      });
+      bus.emitHubEvent(
+        bus.grantDecision({
+          grant_request_id,
+          decision: 'GRANT_DECISION_APPROVED',
+          grant,
+          deny_reason: '',
+          client: grantRequestClientFromRow(gr),
+        })
+      );
+
+      return {
+        ok: true,
+        deny_code: '',
+        detail: 'grant approved',
+        grant_action: {
+          action_name: actionName,
+          grant_request_id,
+          decision: 'approved',
+          reason: '',
+          grant,
+          note,
+        },
+      };
+    }
+
+    if (actionName === 'grant.reject') {
+      const reason = safeString(note) || 'denied_via_operator_channel';
+      const ackFields = parsePolicyAckFields({ reason });
+      db.decideGrantRequest(grant_request_id, {
+        status: 'denied',
+        decision: 'denied',
+        deny_reason: reason,
+        approver_id: approverId,
+        user_ack_understood: ackFields.user_ack_understood,
+        explain_rounds: ackFields.explain_rounds,
+        options_presented: ackFields.options_presented,
+      });
+      db.appendAudit({
+        event_type: 'grant.request.denied',
+        created_at_ms: nowMs(),
+        severity: 'security',
+        device_id: safeString(gr.device_id) || 'hub_operator_channel_connector',
+        user_id: gr.user_id ? safeString(gr.user_id) : (safeString(identity_binding?.hub_user_id) || null),
+        app_id: safeString(gr.app_id) || 'hub_runtime_channel_execute',
+        project_id: gr.project_id ? safeString(gr.project_id) : null,
+        request_id: gr.request_id ? safeString(gr.request_id) : null,
+        capability: gr.capability ? safeString(gr.capability) : null,
+        model_id: gr.model_id ? safeString(gr.model_id) : null,
+        ok: true,
+        ext_json: JSON.stringify({
+          grant_request_id,
+          approver_id: approverId,
+          reason,
+          source: 'operator_channel_connector',
+          provider: safeString(actor.provider),
+          actor_external_user_id: safeString(actor.external_user_id),
+          actor_hub_user_id: safeString(identity_binding?.hub_user_id),
+        }),
+      });
+      appendPolicyEvalAudit({
+        created_at_ms: nowMs(),
+        device_id: safeString(gr.device_id) || 'hub_operator_channel_connector',
+        user_id: gr.user_id ? safeString(gr.user_id) : (safeString(identity_binding?.hub_user_id) || null),
+        app_id: safeString(gr.app_id) || 'hub_runtime_channel_execute',
+        project_id: gr.project_id ? safeString(gr.project_id) : null,
+        session_id: null,
+        request_id: gr.request_id ? safeString(gr.request_id) : null,
+        capability: gr.capability ? safeString(gr.capability) : null,
+        model_id: gr.model_id ? safeString(gr.model_id) : null,
+        decision: 'deny',
+        policy_scope: 'grant_request',
+        rule_ids: ['operator_channel_connector_denied'],
+        phase: 'confirm',
+        grant_request_id,
+        user_ack_understood: ackFields.user_ack_understood,
+        explain_rounds: ackFields.explain_rounds,
+        options_presented: ackFields.options_presented,
+        ok: false,
+      });
+      bus.emitHubEvent(
+        bus.grantDecision({
+          grant_request_id,
+          decision: 'GRANT_DECISION_DENIED',
+          grant: null,
+          deny_reason: reason,
+          client: grantRequestClientFromRow(gr),
+        })
+      );
+
+      return {
+        ok: true,
+        deny_code: '',
+        detail: 'grant denied',
+        grant_action: {
+          action_name: actionName,
+          grant_request_id,
+          decision: 'denied',
+          reason,
+          grant: null,
+          note: reason,
+        },
+      };
+    }
+
+    return {
+      ok: false,
+      deny_code: 'action_unsupported',
+      detail: 'unsupported grant action',
+      grant_action: null,
+    };
+  }
+
+  function executeOperatorChannelXTCommand({
+    req = {},
+    gate = {},
+    route = {},
+    action_name = '',
+    runtimeBaseDir = '',
+  } = {}) {
+    const actionName = safeString(action_name).toLowerCase();
+    const routeMode = safeString(route?.route_mode || gate?.route_mode || '');
+    const resolvedDeviceId = safeString(route?.resolved_device_id);
+    const projectId = safeString(
+      (safeString(route?.scope_type) === 'project' ? route?.scope_id : '')
+      || (safeString(gate?.scope_type) === 'project' ? gate?.scope_id : '')
+      || req.scope_id
+    );
+    const audit_ref = `audit-operator-channel-xt-command-${safeString(req.request_id || uuid())}`;
+
+    if (routeMode !== 'hub_to_xt') {
+      return {
+        ok: false,
+        deny_code: 'xt_command_route_invalid',
+        detail: 'xt command requires hub_to_xt route',
+        xt_command: makeProtoOperatorChannelXTCommandResult({
+          action_name: actionName,
+          command_id: '',
+          request_id: safeString(req.request_id),
+          project_id: projectId,
+          resolved_device_id: resolvedDeviceId,
+          status: 'failed',
+          deny_code: 'xt_command_route_invalid',
+          detail: 'xt command requires hub_to_xt route',
+          run_id: '',
+          created_at_ms: nowMs(),
+          completed_at_ms: nowMs(),
+          audit_ref,
+        }),
+      };
+    }
+
+    if (!resolvedDeviceId || route?.xt_online !== true) {
+      const deny_code = safeString(route?.deny_code || 'preferred_device_offline');
+      return {
+        ok: false,
+        deny_code,
+        detail: 'xt command blocked by route',
+        xt_command: makeProtoOperatorChannelXTCommandResult({
+          action_name: actionName,
+          command_id: '',
+          request_id: safeString(req.request_id),
+          project_id: projectId,
+          resolved_device_id: resolvedDeviceId,
+          status: 'failed',
+          deny_code,
+          detail: 'xt command blocked by route',
+          run_id: '',
+          created_at_ms: nowMs(),
+          completed_at_ms: nowMs(),
+          audit_ref,
+        }),
+      };
+    }
+
+    if (actionName !== 'deploy.plan') {
+      return {
+        ok: false,
+        deny_code: 'xt_command_action_not_supported_yet',
+        detail: 'xt command action not supported yet',
+        xt_command: makeProtoOperatorChannelXTCommandResult({
+          action_name: actionName,
+          command_id: '',
+          request_id: safeString(req.request_id),
+          project_id: projectId,
+          resolved_device_id: resolvedDeviceId,
+          status: 'failed',
+          deny_code: 'xt_command_action_not_supported_yet',
+          detail: 'xt command action not supported yet',
+          run_id: '',
+          created_at_ms: nowMs(),
+          completed_at_ms: nowMs(),
+          audit_ref,
+        }),
+      };
+    }
+
+    const queued = enqueueOperatorChannelXTCommand(runtimeBaseDir, {
+      request_id: safeString(req.request_id),
+      action_name: actionName,
+      binding_id: safeString(gate?.binding_id || req.binding_id),
+      route_id: safeString(route?.route_id),
+      scope_type: safeString(route?.scope_type || gate?.scope_type || req.scope_type),
+      scope_id: safeString(route?.scope_id || gate?.scope_id || req.scope_id),
+      project_id: projectId,
+      provider: safeString(req?.channel?.provider || route?.provider || req?.actor?.provider),
+      account_id: safeString(req?.channel?.account_id || route?.account_id),
+      conversation_id: safeString(req?.channel?.conversation_id || route?.conversation_id),
+      thread_key: safeString(req?.channel?.thread_key || route?.thread_key),
+      actor_ref: safeString(gate?.actor_ref),
+      resolved_device_id: resolvedDeviceId,
+      preferred_device_id: safeString(route?.preferred_device_id),
+      note: safeString(req.note),
+      created_at_ms: nowMs(),
+      audit_ref,
+    });
+
+    if (!queued) {
+      return {
+        ok: false,
+        deny_code: 'xt_command_enqueue_failed',
+        detail: 'xt command enqueue failed',
+        xt_command: makeProtoOperatorChannelXTCommandResult({
+          action_name: actionName,
+          command_id: '',
+          request_id: safeString(req.request_id),
+          project_id: projectId,
+          resolved_device_id: resolvedDeviceId,
+          status: 'failed',
+          deny_code: 'xt_command_enqueue_failed',
+          detail: 'xt command enqueue failed',
+          run_id: '',
+          created_at_ms: nowMs(),
+          completed_at_ms: nowMs(),
+          audit_ref,
+        }),
+      };
+    }
+
+    db.appendAudit({
+      event_type: 'operator_channel.xt_command.queued',
+      created_at_ms: nowMs(),
+      severity: 'security',
+      device_id: 'hub_operator_channel_connector',
+      user_id: null,
+      app_id: 'hub_runtime_channel_execute',
+      project_id: projectId || null,
+      request_id: safeString(req.request_id) || null,
+      ok: true,
+      ext_json: JSON.stringify({
+        command_id: queued.command_id,
+        action_name: actionName,
+        binding_id: safeString(gate?.binding_id || req.binding_id),
+        actor_ref: safeString(gate?.actor_ref),
+        route_mode: routeMode,
+        resolved_device_id: resolvedDeviceId,
+        provider: safeString(queued.provider),
+        conversation_id: safeString(queued.conversation_id),
+        thread_key: safeString(queued.thread_key),
+        note: safeString(req.note),
+        audit_ref,
+      }),
+    });
+
+    return {
+      ok: true,
+      deny_code: '',
+      detail: 'xt command queued',
+      xt_command: makeProtoOperatorChannelXTCommandResult({
+        action_name: actionName,
+        command_id: queued.command_id,
+        request_id: safeString(queued.request_id),
+        project_id: safeString(queued.project_id),
+        resolved_device_id: safeString(queued.resolved_device_id),
+        status: 'queued',
+        deny_code: '',
+        detail: 'xt command queued',
+        run_id: '',
+        created_at_ms: Number(queued.created_at_ms || 0),
+        completed_at_ms: 0,
+        audit_ref: safeString(queued.audit_ref),
+      }),
+    };
+  }
+
+  async function executeOperatorChannelHubCommandInternal(req = {}) {
+    const action_name = safeString(req.action_name).toLowerCase();
+    const pending_grant = req.pending_grant && typeof req.pending_grant === 'object'
+      ? req.pending_grant
+      : null;
+    const runtimeBaseDir = resolveRuntimeBaseDir();
+    const gate = evaluateChannelCommandGateWithAudit({
+      db,
+      actor: req.actor || {},
+      channel: req.channel || {},
+      action: {
+        binding_id: safeString(req.binding_id),
+        action_name,
+        scope_type: safeString(req.scope_type),
+        scope_id: safeString(req.scope_id),
+        pending_grant,
+      },
+      client: operatorChannelClientContext('hub_runtime_channel_execute'),
+      request_id: safeString(req.request_id),
+    });
+    if (gate.allowed === false) {
+      return {
+        ok: false,
+        deny_code: safeString(gate.deny_code || 'channel_command_denied'),
+        detail: safeString(gate.detail || gate.deny_code || 'channel_command_denied'),
+        gate: makeProtoChannelCommandGateDecision(gate),
+        route: null,
+        query: null,
+        grant_action: null,
+        audit_logged: !!gate.audit_logged,
+      };
+    }
+
+    const resolved = resolveSupervisorChannelRoute({
+      db,
+      binding_id: safeString(gate.binding_id || req.binding_id),
+      route_context: {
+        ...((req.channel && typeof req.channel === 'object') ? req.channel : {}),
+        project_id: safeString(
+          (safeString(gate.scope_type) === 'project' ? gate.scope_id : '')
+          || pending_grant?.project_id
+        ),
+        root_project_id: '',
+      },
+      action_name: safeString(gate.action_name || action_name),
+      runtimeBaseDir,
+    });
+
+    let route = resolved;
+    let routeAuditLogged = false;
+    if (resolved && safeString(resolved.scope_id)) {
+      const persisted = upsertSupervisorChannelSessionRoute(db, {
+        route: resolved,
+        request_id: safeString(req.request_id),
+        audit: operatorChannelAuditActor('hub_runtime_channel_execute'),
+      });
+      if (!persisted.ok) {
+        return {
+          ok: false,
+          deny_code: safeString(persisted.deny_code || 'channel_route_persist_failed'),
+          detail: safeString(persisted.deny_code || 'channel_route_persist_failed'),
+          gate: makeProtoChannelCommandGateDecision(gate),
+          route: makeProtoSupervisorChannelRoute(resolved),
+          query: null,
+          grant_action: null,
+          xt_command: null,
+          audit_logged: !!gate.audit_logged,
+        };
+      }
+      routeAuditLogged = !!persisted.audit_logged;
+      route = {
+        ...(persisted.route || {}),
+        selected_by: safeString(resolved.selected_by),
+        action_name: safeString(resolved.action_name),
+      };
+    }
+
+    const route_mode = safeString(route?.route_mode || gate.route_mode || 'hub_only_status');
+    if (route_mode === 'hub_to_xt') {
+      const queued = executeOperatorChannelXTCommand({
+        req,
+        gate,
+        route,
+        action_name,
+        runtimeBaseDir,
+      });
+      const waitMs = parseIntInRange(process.env.HUB_OPERATOR_CHANNEL_XT_COMMAND_WAIT_MS, 4600, 0, 30_000);
+      const commandId = safeString(queued?.xt_command?.command_id);
+      const completed = commandId
+        ? await waitForOperatorChannelXTCommandResult(runtimeBaseDir, commandId, {
+            timeout_ms: waitMs,
+            poll_ms: 220,
+          })
+        : null;
+      if (!completed) {
+        return {
+          ok: !!queued.ok,
+          deny_code: safeString(queued.deny_code),
+          detail: safeString(queued.detail),
+          gate: makeProtoChannelCommandGateDecision(gate),
+          route: makeProtoSupervisorChannelRoute(route),
+          query: null,
+          grant_action: null,
+          xt_command: queued.xt_command || null,
+          audit_logged: !!gate.audit_logged || routeAuditLogged,
+        };
+      }
+
+      const completedProto = makeProtoOperatorChannelXTCommandResult({
+        ...completed,
+        audit_ref: safeString(completed.audit_ref || queued?.xt_command?.audit_ref),
+      });
+      const completedOk = ['prepared', 'completed', 'accepted'].includes(safeString(completed?.status).toLowerCase());
+      db.appendAudit({
+        event_type: completedOk
+          ? 'operator_channel.xt_command.completed'
+          : 'operator_channel.xt_command.failed',
+        created_at_ms: nowMs(),
+        severity: completedOk ? 'info' : 'security',
+        device_id: safeString(completed?.resolved_device_id) || 'hub_operator_channel_connector',
+        user_id: null,
+        app_id: 'hub_runtime_channel_execute',
+        project_id: safeString(completed?.project_id) || null,
+        request_id: safeString(completed?.request_id || req.request_id) || null,
+        ok: completedOk,
+        ext_json: JSON.stringify({
+          command_id: safeString(completed?.command_id),
+          action_name: safeString(completed?.action_name),
+          status: safeString(completed?.status),
+          deny_code: safeString(completed?.deny_code),
+          detail: safeString(completed?.detail),
+          run_id: safeString(completed?.run_id),
+          audit_ref: safeString(completedProto?.audit_ref),
+        }),
+      });
+
+      return {
+        ok: completedOk,
+        deny_code: completedOk ? '' : safeString(completed?.deny_code || 'xt_command_failed'),
+        detail: completedOk
+          ? safeString(completed?.detail || 'xt command completed')
+          : safeString(completed?.detail || completed?.deny_code || 'xt command failed'),
+        gate: makeProtoChannelCommandGateDecision(gate),
+        route: makeProtoSupervisorChannelRoute(route),
+        query: null,
+        grant_action: null,
+        xt_command: completedProto,
+        audit_logged: !!gate.audit_logged || routeAuditLogged,
+      };
+    }
+
+    if (route_mode !== 'hub_only_status') {
+      return {
+        ok: false,
+        deny_code: safeString(route?.deny_code || 'hub_execution_requires_hub_only_route'),
+        detail: route_mode === 'xt_offline' || route_mode === 'runner_not_ready'
+          ? 'hub execution blocked by route'
+          : 'hub execution requires hub-only route',
+        gate: makeProtoChannelCommandGateDecision(gate),
+        route: makeProtoSupervisorChannelRoute(route),
+        query: null,
+        grant_action: null,
+        xt_command: null,
+        audit_logged: !!gate.audit_logged || routeAuditLogged,
+      };
+    }
+
+    if (action_name === 'grant.approve' || action_name === 'grant.reject') {
+      const grantResult = executeOperatorChannelGrantAction({
+        actor: req.actor || {},
+        action_name,
+        pending_grant,
+        note: safeString(req.note),
+      });
+      return {
+        ok: !!grantResult.ok,
+        deny_code: safeString(grantResult.deny_code),
+        detail: safeString(grantResult.detail),
+        gate: makeProtoChannelCommandGateDecision(gate),
+        route: makeProtoSupervisorChannelRoute(route),
+        query: null,
+        grant_action: grantResult.grant_action,
+        xt_command: null,
+        audit_logged: !!gate.audit_logged || routeAuditLogged,
+      };
+    }
+
+    const queryResult = buildOperatorChannelHubQueryResult({
+      db,
+      runtimeBaseDir,
+      request_id: safeString(req.request_id),
+      action_name,
+      gate,
+      route,
+      pending_grant,
+    });
+    return {
+      ok: !!queryResult.ok,
+      deny_code: safeString(queryResult.deny_code),
+      detail: safeString(queryResult.detail),
+      gate: makeProtoChannelCommandGateDecision(gate),
+      route: makeProtoSupervisorChannelRoute(route),
+      query: queryResult.query,
+      grant_action: null,
+      xt_command: null,
+      audit_logged: !!gate.audit_logged || routeAuditLogged,
     };
   }
 
@@ -6016,6 +8056,943 @@ export function makeServices({ db, bus }) {
       })
     );
     callback(null, { grant_request_id });
+  }
+
+  function GetChannelRuntimeStatusSnapshot(call, callback) {
+    const auth = requireOperatorChannelConnectorAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+
+    const snapshot = buildHubChannelRuntimeStatusSnapshot({
+      db,
+      runtimeBaseDir: resolveRuntimeBaseDir(),
+    });
+    callback(null, {
+      schema_version: safeString(snapshot.schema_version),
+      updated_at_ms: Number(snapshot.updated_at_ms || 0),
+      providers: Array.isArray(snapshot.providers)
+        ? snapshot.providers.map((row) => makeProtoChannelProviderRuntimeStatus(row)).filter(Boolean)
+        : [],
+      totals: makeProtoChannelRuntimeStatusTotals(snapshot.totals),
+      unknown_provider_rows: Array.isArray(snapshot.unknown_provider_rows)
+        ? snapshot.unknown_provider_rows.map((row) => makeProtoUnknownChannelRuntimeRow(row)).filter(Boolean)
+        : [],
+    });
+  }
+
+  function ListChannelIdentityBindings(call, callback) {
+    const auth = requireOperatorChannelConnectorAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+
+    const req = call.request || {};
+    const rows = listChannelIdentityBindings(db, {
+      provider: req.provider,
+      hub_user_id: req.hub_user_id,
+      external_tenant_id: req.external_tenant_id,
+      status: req.status,
+      limit: req.limit,
+    });
+    callback(null, {
+      updated_at_ms: maxUpdatedAtMs(rows),
+      bindings: rows.map((row) => makeProtoChannelIdentityBinding(row)).filter(Boolean),
+    });
+  }
+
+  function UpsertChannelIdentityBinding(call, callback) {
+    const auth = requireOperatorChannelConnectorAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+
+    const req = call.request || {};
+    const out = upsertChannelIdentityBinding(db, {
+      binding: req.binding || {},
+      request_id: safeString(req.request_id),
+      audit: operatorChannelAuditActor('hub_runtime_channel_identity'),
+    });
+    callback(null, {
+      ok: !!out.ok,
+      deny_code: safeString(out.deny_code),
+      binding: makeProtoChannelIdentityBinding(out.binding),
+      created: !!out.created,
+      updated: !!out.updated,
+    });
+  }
+
+  function ListSupervisorOperatorChannelBindings(call, callback) {
+    const auth = requireOperatorChannelConnectorAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+
+    const req = call.request || {};
+    const rows = listSupervisorOperatorChannelBindings(db, {
+      provider: req.provider,
+      account_id: req.account_id,
+      conversation_id: req.conversation_id,
+      scope_type: req.scope_type,
+      scope_id: req.scope_id,
+      channel_scope: req.channel_scope,
+      status: req.status,
+      limit: req.limit,
+    });
+    callback(null, {
+      updated_at_ms: maxUpdatedAtMs(rows),
+      bindings: rows.map((row) => makeProtoSupervisorOperatorChannelBinding(row)).filter(Boolean),
+    });
+  }
+
+  function UpsertSupervisorOperatorChannelBinding(call, callback) {
+    const auth = requireOperatorChannelConnectorAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+
+    const req = call.request || {};
+    const out = upsertSupervisorOperatorChannelBinding(db, {
+      binding: req.binding || {},
+      request_id: safeString(req.request_id),
+      audit: operatorChannelAuditActor('hub_runtime_channel_binding'),
+    });
+    callback(null, {
+      ok: !!out.ok,
+      deny_code: safeString(out.deny_code),
+      binding: makeProtoSupervisorOperatorChannelBinding(out.binding),
+      binding_match_mode: safeString(out.binding_match_mode),
+      created: !!out.created,
+      updated: !!out.updated,
+    });
+  }
+
+  function EvaluateChannelCommandGate(call, callback) {
+    const auth = requireOperatorChannelConnectorAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+
+    const req = call.request || {};
+    const out = evaluateChannelCommandGateWithAudit({
+      db,
+      actor: req.actor || {},
+      channel: req.channel || {},
+      action: {
+        binding_id: safeString(req.binding_id),
+        action_name: safeString(req.action_name),
+        scope_type: safeString(req.scope_type),
+        scope_id: safeString(req.scope_id),
+        pending_grant: req.pending_grant || null,
+      },
+      client: operatorChannelClientContext('hub_runtime_channel_gate'),
+      request_id: safeString(req.request_id),
+    });
+    callback(null, {
+      decision: makeProtoChannelCommandGateDecision(out),
+      audit_logged: !!out.audit_logged,
+    });
+  }
+
+  function ResolveSupervisorChannelRoute(call, callback) {
+    const auth = requireOperatorChannelConnectorAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+
+    const req = call.request || {};
+    const routeContext = {
+      ...(req.channel && typeof req.channel === 'object' ? req.channel : {}),
+      project_id: safeString(req.project_id),
+      root_project_id: safeString(req.root_project_id),
+    };
+    const resolved = resolveSupervisorChannelRoute({
+      db,
+      binding_id: safeString(req.binding_id),
+      route_context: routeContext,
+      action_name: safeString(req.action_name),
+      runtimeBaseDir: resolveRuntimeBaseDir(),
+    });
+
+    if (!resolved || !safeString(resolved.scope_id)) {
+      callback(null, {
+        ok: true,
+        deny_code: '',
+        route: makeProtoSupervisorChannelRoute(resolved),
+        audit_logged: false,
+        created: false,
+        updated: false,
+      });
+      return;
+    }
+
+    const persisted = upsertSupervisorChannelSessionRoute(db, {
+      route: resolved,
+      request_id: safeString(req.request_id),
+      audit: operatorChannelAuditActor('hub_runtime_channel_route'),
+    });
+
+    const route = persisted.ok
+      ? {
+          ...(persisted.route || {}),
+          selected_by: safeString(resolved.selected_by),
+          action_name: safeString(resolved.action_name),
+        }
+      : resolved;
+
+    callback(null, {
+      ok: !!persisted.ok,
+      deny_code: safeString(persisted.deny_code),
+      route: makeProtoSupervisorChannelRoute(route),
+      audit_logged: !!persisted.audit_logged,
+      created: !!persisted.created,
+      updated: !!persisted.updated,
+    });
+  }
+
+  function ExecuteOperatorChannelHubCommand(call, callback) {
+    const auth = requireOperatorChannelConnectorAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+
+    (async () => {
+      try {
+        const out = await executeOperatorChannelHubCommandInternal(call.request || {});
+        callback(null, {
+          ok: !!out.ok,
+          deny_code: safeString(out.deny_code),
+          detail: safeString(out.detail),
+          gate: out.gate || null,
+          route: out.route || null,
+          query: out.query || null,
+          grant_action: out.grant_action || null,
+          audit_logged: !!out.audit_logged,
+          xt_command: out.xt_command || null,
+        });
+      } catch (error) {
+        callback(error);
+      }
+    })();
+  }
+
+  function requireSupervisorServiceAccess(call, {
+    client_capability = 'events',
+  } = {}) {
+    const connectorAuth = requireOperatorChannelConnectorAuth(call);
+    if (connectorAuth.ok) {
+      return {
+        ok: true,
+        auth_kind: 'connector',
+        auth: connectorAuth,
+        client: operatorChannelClientContext('hub_supervisor_connector'),
+      };
+    }
+
+    const auth = requireClientAuth(call);
+    if (!auth.ok) {
+      return {
+        ok: false,
+        message: auth.message,
+      };
+    }
+    if (client_capability && !clientAllows(auth, client_capability)) {
+      return {
+        ok: false,
+        message: capabilityDenyCode(auth),
+      };
+    }
+
+    const req = call.request || {};
+    const client = effectiveClientIdentity(req.client || {}, auth);
+    const project_id = safeString(req.project_id || req?.ingress?.project_id || client.project_id);
+    const workspace_root = safeString(req.workspace_root || client.workspace_root || client.project_root);
+    const scope = trustedAutomationScopeWithProject(
+      {
+        ...trustedAutomationScopeFromRequest(req, client),
+        workspace_root,
+      },
+      project_id
+    );
+    if (!trustedAutomationAllows(auth, scope)) {
+      return {
+        ok: false,
+        message: capabilityDenyCode(auth),
+      };
+    }
+    return {
+      ok: true,
+      auth_kind: 'client',
+      auth,
+      client,
+      scope,
+    };
+  }
+
+  function supervisorAuditActor(access, req = {}) {
+    if (access?.auth_kind === 'client' && access.client && typeof access.client === 'object') {
+      return {
+        device_id: safeString(access.client.device_id),
+        user_id: safeString(access.client.user_id),
+        app_id: safeString(access.client.app_id),
+        project_id: safeString(access.client.project_id || req.project_id || req?.ingress?.project_id),
+        session_id: safeString(access.client.session_id),
+      };
+    }
+    return {
+      device_id: 'hub_supervisor_connector',
+      user_id: '',
+      app_id: safeString(req?.client?.app_id) || 'hub_supervisor_connector',
+      project_id: safeString(req.project_id || req?.ingress?.project_id),
+      session_id: '',
+    };
+  }
+
+  function appendSupervisorAudit({
+    access,
+    req = {},
+    event_type = 'supervisor.event',
+    ok = true,
+    severity = 'info',
+    request_id = '',
+    project_id = '',
+    deny_code = '',
+    error_message = '',
+    ext = {},
+  } = {}) {
+    const actor = supervisorAuditActor(access, req);
+    try {
+      db.appendAudit({
+        event_type: safeString(event_type) || 'supervisor.event',
+        created_at_ms: nowMs(),
+        severity: safeString(severity) || (ok ? 'info' : 'warn'),
+        device_id: safeString(actor.device_id),
+        user_id: safeString(actor.user_id) || null,
+        app_id: safeString(actor.app_id),
+        project_id: safeString(project_id || actor.project_id) || null,
+        session_id: safeString(actor.session_id) || null,
+        request_id: safeString(request_id) || null,
+        capability: 'unknown',
+        model_id: null,
+        ok: !!ok,
+        error_code: ok ? null : (safeString(deny_code) || 'permission_denied'),
+        error_message: ok ? null : (safeString(error_message) || 'supervisor_request_denied'),
+        ext_json: JSON.stringify({
+          deny_code: safeString(deny_code),
+          ...(ext && typeof ext === 'object' ? ext : {}),
+        }),
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function resolveSupervisorRouteDecisionInternal({
+    req = {},
+    ingress = {},
+    request_id = '',
+  } = {}) {
+    const normalizedIngress = normalizeSupervisorSurfaceIngress(ingress, request_id);
+    const intent = normalizeSupervisorIntentType(normalizedIngress.normalized_intent_type, 'unknown');
+    const project_id = safeString(normalizedIngress.project_id);
+    const preferred_device_id = safeString(req.preferred_device_id_override || normalizedIngress.preferred_device_id);
+    const require_runner = req.require_runner === true;
+    const require_xt = req.require_xt === true || intent === 'directive';
+    const selected = selectSupervisorRoutingDevice({
+      devices: loadSupervisorRoutingDevices(resolveRuntimeBaseDir()),
+      preferred_device_id,
+      project_id,
+      require_runner,
+    });
+    const selectedDevice = selected?.device || null;
+    const same_project_scope = !!selected?.same_project_scope;
+    const xt_online = !!selectedDevice?.xt_online;
+    const requires_grant = intent === 'authorization_request'
+      || intent === 'approval_card_action'
+      || require_runner;
+    const grant_scope = intent === 'authorization_request' || intent === 'approval_card_action'
+      ? 'supervisor.authorization'
+      : (require_runner ? 'trusted_runner.execution' : '');
+    const route = {
+      schema_version: 'xhub.supervisor_route_decision.v1',
+      route_id: `sup_route_${uuid()}`,
+      request_id: safeString(request_id || normalizedIngress.request_id),
+      project_id,
+      run_id: safeString(normalizedIngress.run_id),
+      mission_id: safeString(normalizedIngress.mission_id),
+      decision: 'hub_only',
+      risk_tier: inferSupervisorRiskTier({
+        intent_type: intent,
+        require_xt,
+        require_runner,
+      }),
+      preferred_device_id,
+      resolved_device_id: safeString(selectedDevice?.device_id),
+      runner_id: '',
+      xt_online,
+      runner_required: require_runner,
+      same_project_scope,
+      requires_grant,
+      grant_scope,
+      deny_code: '',
+      updated_at_ms: nowMs(),
+      audit_ref: `audit-supervisor-route-${safeString(request_id || normalizedIngress.request_id) || uuid()}`,
+    };
+
+    if (intent === 'unknown') {
+      return {
+        ...route,
+        decision: 'fail_closed',
+        risk_tier: 'high',
+        deny_code: 'supervisor_intent_unknown',
+      };
+    }
+
+    if (!project_id && (require_xt || require_runner || !supervisorIntentAllowsProjectlessHubOnly(intent))) {
+      return {
+        ...route,
+        decision: 'fail_closed',
+        risk_tier: normalizeSupervisorRiskTier(route.risk_tier, 'high'),
+        deny_code: 'project_id_required',
+      };
+    }
+
+    if (require_runner) {
+      if (!selectedDevice || safeString(selected?.deny_code)) {
+        return {
+          ...route,
+          decision: 'fail_closed',
+          deny_code: safeString(selected?.deny_code) || 'runner_device_missing',
+        };
+      }
+      return {
+        ...route,
+        decision: 'hub_to_runner',
+        runner_id: `trusted_runner:${safeString(selectedDevice.device_id)}`,
+      };
+    }
+
+    if (require_xt) {
+      if (!selectedDevice || safeString(selected?.deny_code)) {
+        return {
+          ...route,
+          decision: 'fail_closed',
+          deny_code: safeString(selected?.deny_code) || 'xt_device_missing',
+        };
+      }
+      return {
+        ...route,
+        decision: 'hub_to_xt',
+      };
+    }
+
+    return route;
+  }
+
+  function buildSupervisorBriefProjectionInternal(req = {}) {
+    const project_id = safeString(req.project_id);
+    if (!project_id) {
+      return {
+        ok: false,
+        deny_code: 'missing_project_id',
+        projection: null,
+      };
+    }
+
+    const projectState = loadOperatorChannelProjectState(db, project_id);
+    const pending = buildPendingGrantRequestsSnapshot({
+      projectId: project_id,
+      limit: parseIntInRange(req.max_evidence_refs, 6, 1, 32),
+    });
+    const pendingItems = Array.isArray(pending.items) ? pending.items : [];
+    const heartbeat = projectState.heartbeat || null;
+    const dispatch = projectState.dispatch || null;
+    const blockers = [
+      ...(Array.isArray(heartbeat?.blocked_reason) ? heartbeat.blocked_reason.map((item) => safeString(item)).filter(Boolean) : []),
+    ];
+    if (pendingItems.length > 0) {
+      blockers.push(`${pendingItems.length} pending grants awaiting supervisor decision`);
+    }
+
+    let status = 'unknown';
+    if (blockers.length > 0) {
+      status = pendingItems.length > 0 ? 'awaiting_authorization' : 'blocked';
+    } else if (heartbeat) {
+      status = Number(heartbeat.queue_depth || 0) > 0 ? 'active' : 'idle';
+    }
+
+    const next_best_action = pendingItems.length > 0
+      ? `Review ${pendingItems.length} pending grant request${pendingItems.length === 1 ? '' : 's'}`
+      : safeString(Array.isArray(heartbeat?.next_actions) ? heartbeat.next_actions[0] : '')
+        || (dispatch ? `Continue ${safeString(dispatch.assigned_agent_profile) || 'current'} execution lane` : 'Collect fresh project heartbeat');
+
+    const critical_blocker = safeString(blockers[0])
+      || (!heartbeat ? 'project_heartbeat_missing' : '');
+    const topline = !heartbeat
+      ? `Project ${project_id} has no fresh heartbeat in hub memory.`
+      : (critical_blocker
+          ? `Project ${project_id} is blocked: ${critical_blocker}.`
+          : `Project ${project_id} is ${status} with queue depth ${Math.max(0, Number(heartbeat.queue_depth || 0))}.`);
+
+    const trigger = normalizeSupervisorTrigger(req.trigger, 'user_query');
+    const projection_kind = normalizeSupervisorProjectionKind(req.projection_kind, 'progress_brief');
+    const generated_at_ms = nowMs();
+    const evidence_refs = [];
+    if (heartbeat) evidence_refs.push(`heartbeat:${project_id}:${Math.max(0, Number(heartbeat.heartbeat_seq || 0))}`);
+    if (dispatch) evidence_refs.push(`dispatch:${project_id}`);
+    for (const item of pendingItems) {
+      const grantId = safeString(item?.grant_request_id);
+      if (grantId) evidence_refs.push(`grant_request:${grantId}`);
+    }
+
+    const projection = {
+      schema_version: 'xhub.supervisor_brief_projection.v1',
+      projection_id: `sup_proj_${uuid()}`,
+      projection_kind,
+      project_id,
+      run_id: safeString(req.run_id),
+      mission_id: safeString(req.mission_id),
+      trigger,
+      status,
+      critical_blocker,
+      topline,
+      next_best_action,
+      pending_grant_count: pendingItems.length,
+      tts_script: req.include_tts_script === false
+        ? []
+        : [
+            topline,
+            critical_blocker ? `Primary blocker: ${critical_blocker}.` : 'No critical blocker detected.',
+            `Next best action: ${next_best_action}.`,
+          ].filter(Boolean),
+      card_summary: req.include_card_summary === false
+        ? ''
+        : `${status.toUpperCase()}: ${topline} Next: ${next_best_action}.`,
+      evidence_refs: evidence_refs.slice(0, parseIntInRange(req.max_evidence_refs, 4, 1, 32)),
+      generated_at_ms,
+      expires_at_ms: generated_at_ms + (2 * 60 * 1000),
+      audit_ref: `audit-supervisor-brief-${safeString(req.request_id) || uuid()}`,
+    };
+
+    return {
+      ok: true,
+      deny_code: '',
+      projection,
+    };
+  }
+
+  function resolveSupervisorGuidanceInternal(req = {}) {
+    const ingress = normalizeSupervisorSurfaceIngress(req.ingress || {}, req.request_id);
+    const guidance_type = normalizeSupervisorGuidanceType(req.guidance_type);
+    const normalized_instruction = safeString(req.normalized_instruction || ingress.raw_intent_ref);
+    const target_scope = normalizeSupervisorTargetScope(req.target_scope || {});
+    const requires_authorization = !!req.requires_authorization
+      || guidance_type === 'budget_change_request'
+      || guidance_type === 'mission_replan_request';
+    const requires_confirmation = !!req.requires_confirmation
+      || requires_authorization
+      || guidance_type === 'delivery_mode_change';
+    const out = {
+      schema_version: 'xhub.supervisor_guidance_resolution.v1',
+      directive_id: `sup_dir_${uuid()}`,
+      request_id: safeString(req.request_id || ingress.request_id),
+      project_id: safeString(ingress.project_id),
+      run_id: safeString(ingress.run_id),
+      mission_id: safeString(ingress.mission_id || target_scope.mission_id),
+      guidance_type,
+      normalized_instruction,
+      target_scope,
+      requires_confirmation,
+      requires_authorization,
+      resolution: 'confirmed',
+      deny_code: '',
+      resolved_at_ms: nowMs(),
+      audit_ref: `audit-supervisor-guidance-${safeString(req.request_id || ingress.request_id) || uuid()}`,
+    };
+
+    if (!safeString(out.project_id)) {
+      return {
+        ok: false,
+        deny_code: 'project_id_required',
+        resolution: {
+          ...out,
+          resolution: 'fail_closed',
+          deny_code: 'project_id_required',
+        },
+      };
+    }
+    if (!guidance_type) {
+      return {
+        ok: false,
+        deny_code: 'guidance_type_invalid',
+        resolution: {
+          ...out,
+          resolution: 'fail_closed',
+          deny_code: 'guidance_type_invalid',
+        },
+      };
+    }
+    if (!normalized_instruction) {
+      return {
+        ok: false,
+        deny_code: 'guidance_instruction_missing',
+        resolution: {
+          ...out,
+          resolution: 'fail_closed',
+          deny_code: 'guidance_instruction_missing',
+        },
+      };
+    }
+    if (supervisorDirectiveLooksLikeDirectToolJump(normalized_instruction)) {
+      return {
+        ok: false,
+        deny_code: 'direct_tool_jump_blocked',
+        resolution: {
+          ...out,
+          resolution: 'fail_closed',
+          deny_code: 'direct_tool_jump_blocked',
+        },
+      };
+    }
+    return {
+      ok: true,
+      deny_code: '',
+      resolution: {
+        ...out,
+        resolution: requires_authorization ? 'pending' : 'confirmed',
+      },
+    };
+  }
+
+  function inferSupervisorCheckpointUnderlyingFlow(checkpoint_type = '', decision_path = '') {
+    const checkpoint = normalizeSupervisorCheckpointType(checkpoint_type);
+    const decisionPath = normalizeSupervisorDecisionPath(decision_path, 'approval_card');
+    if (checkpoint === 'payment') return 'payment_intent';
+    if (decisionPath === 'voice_only' || decisionPath === 'voice_plus_mobile') return 'voice_grant';
+    if (decisionPath === 'approval_card') return 'approval_card';
+    if (decisionPath === 'manual_review') return 'manual_review';
+    return 'none';
+  }
+
+  function issueSupervisorCheckpointChallengeInternal(req = {}) {
+    const project_id = safeString(req.project_id);
+    const checkpoint_type = normalizeSupervisorCheckpointType(req.checkpoint_type);
+    const risk_tier = normalizeSupervisorRiskTier(
+      req.risk_tier,
+      inferSupervisorRiskTier({ checkpoint_type })
+    );
+    const decision_path = normalizeSupervisorDecisionPath(
+      req.decision_path,
+      risk_tier === 'low' ? 'voice_plus_mobile' : 'approval_card'
+    );
+    const challenge = {
+      schema_version: 'xhub.supervisor_checkpoint_challenge.v1',
+      challenge_id: `sup_chk_${uuid()}`,
+      request_id: safeString(req.request_id),
+      project_id,
+      mission_id: safeString(req.mission_id),
+      checkpoint_type,
+      risk_tier,
+      decision_path,
+      state: 'pending',
+      scope_digest: safeString(req.scope_digest),
+      amount_digest: safeString(req.amount_digest),
+      requires_mobile_confirm: !!req.requires_mobile_confirm || decision_path === 'voice_plus_mobile',
+      bound_device_id: safeString(req.bound_device_id),
+      evidence_refs: Array.isArray(req.evidence_refs) ? req.evidence_refs.map((item) => safeString(item)).filter(Boolean) : [],
+      issued_at_ms: nowMs(),
+      expires_at_ms: nowMs() + parseIntInRange(req.ttl_ms, 10 * 60 * 1000, 30 * 1000, 24 * 60 * 60 * 1000),
+      deny_code: '',
+      underlying_flow: inferSupervisorCheckpointUnderlyingFlow(checkpoint_type, decision_path),
+      underlying_ref_id: '',
+      audit_ref: `audit-supervisor-checkpoint-${safeString(req.request_id) || uuid()}`,
+    };
+
+    if (!project_id || !checkpoint_type) {
+      return {
+        ok: false,
+        deny_code: !project_id ? 'project_id_required' : 'checkpoint_type_invalid',
+        challenge: {
+          ...challenge,
+          state: 'fail_closed',
+          deny_code: !project_id ? 'project_id_required' : 'checkpoint_type_invalid',
+          underlying_flow: 'none',
+        },
+      };
+    }
+    if ((risk_tier === 'high' || risk_tier === 'critical') && decision_path === 'voice_only') {
+      return {
+        ok: false,
+        deny_code: 'voice_only_high_risk_blocked',
+        challenge: {
+          ...challenge,
+          state: 'denied',
+          deny_code: 'voice_only_high_risk_blocked',
+          underlying_flow: 'none',
+        },
+      };
+    }
+    if (challenge.requires_mobile_confirm && decision_path === 'voice_only') {
+      return {
+        ok: false,
+        deny_code: 'mobile_confirm_required',
+        challenge: {
+          ...challenge,
+          state: 'denied',
+          deny_code: 'mobile_confirm_required',
+          underlying_flow: 'none',
+        },
+      };
+    }
+    return {
+      ok: true,
+      deny_code: '',
+      challenge,
+    };
+  }
+
+  function IngestSupervisorSurface(call, callback) {
+    const access = requireSupervisorServiceAccess(call, {
+      client_capability: 'events',
+    });
+    if (!access.ok) {
+      callback(new Error(access.message));
+      return;
+    }
+
+    const req = call.request || {};
+    const request_id = safeString(req.request_id || req?.ingress?.request_id) || `sup_req_${uuid()}`;
+    const ingress = normalizeSupervisorSurfaceIngress(req.ingress || {}, request_id);
+    const route_hint = supervisorRouteHintFromIntent(ingress.normalized_intent_type);
+
+    if (!safeString(ingress.project_id)) {
+      const allowProjectless = supervisorIntentAllowsProjectlessHubOnly(ingress.normalized_intent_type)
+        || (!!req.allow_hub_only_without_project && route_hint === 'hub_only');
+      if (!allowProjectless) {
+        const audit_logged = appendSupervisorAudit({
+          access,
+          req,
+          event_type: 'supervisor.surface.denied',
+          ok: false,
+          severity: 'warn',
+          request_id,
+          project_id: '',
+          deny_code: 'project_id_required',
+          error_message: 'supervisor_surface_rejected',
+          ext: {
+            op: 'ingest_supervisor_surface',
+            ingress_id: ingress.ingress_id,
+            surface_type: ingress.surface_type,
+            normalized_intent_type: ingress.normalized_intent_type,
+          },
+        });
+        callback(null, {
+          ok: false,
+          deny_code: 'project_id_required',
+          ingress: makeProtoSupervisorSurfaceIngress(ingress),
+          audit_logged,
+          normalization_mode: 'canonical_ingress_v1',
+          route_hint: 'fail_closed',
+        });
+        return;
+      }
+    }
+
+    const audit_logged = appendSupervisorAudit({
+      access,
+      req,
+      event_type: 'supervisor.surface.ingested',
+      ok: true,
+      severity: 'info',
+      request_id,
+      project_id: ingress.project_id,
+      ext: {
+        op: 'ingest_supervisor_surface',
+        ingress_id: ingress.ingress_id,
+        surface_type: ingress.surface_type,
+        normalized_intent_type: ingress.normalized_intent_type,
+        trust_level: ingress.trust_level,
+      },
+    });
+    callback(null, {
+      ok: true,
+      deny_code: '',
+      ingress: makeProtoSupervisorSurfaceIngress(ingress),
+      audit_logged,
+      normalization_mode: 'canonical_ingress_v1',
+      route_hint,
+    });
+  }
+
+  function ResolveSupervisorRoute(call, callback) {
+    const access = requireSupervisorServiceAccess(call, {
+      client_capability: 'events',
+    });
+    if (!access.ok) {
+      callback(new Error(access.message));
+      return;
+    }
+
+    const req = call.request || {};
+    const route = resolveSupervisorRouteDecisionInternal({
+      req,
+      ingress: req.ingress || {},
+      request_id: safeString(req.request_id),
+    });
+    const ok = safeString(route.deny_code) === '';
+    const audit_logged = appendSupervisorAudit({
+      access,
+      req,
+      event_type: ok ? 'supervisor.route.resolved' : 'supervisor.route.denied',
+      ok,
+      severity: ok ? 'info' : 'warn',
+      request_id: safeString(req.request_id || route.request_id),
+      project_id: safeString(route.project_id),
+      deny_code: safeString(route.deny_code),
+      error_message: ok ? '' : 'supervisor_route_denied',
+      ext: {
+        op: 'resolve_supervisor_route',
+        decision: route.decision,
+        resolved_device_id: route.resolved_device_id,
+        preferred_device_id: route.preferred_device_id,
+        runner_required: route.runner_required,
+      },
+    });
+    callback(null, {
+      ok,
+      deny_code: safeString(route.deny_code),
+      route: makeProtoSupervisorRouteDecision(route),
+      audit_logged,
+    });
+  }
+
+  function GetSupervisorBriefProjection(call, callback) {
+    const access = requireSupervisorServiceAccess(call, {
+      client_capability: 'events',
+    });
+    if (!access.ok) {
+      callback(new Error(access.message));
+      return;
+    }
+
+    const req = call.request || {};
+    const resolvedReq = {
+      ...req,
+      project_id: safeString(req.project_id || access?.client?.project_id),
+    };
+    const out = buildSupervisorBriefProjectionInternal(resolvedReq);
+    if (!out.ok) {
+      callback(null, {
+        ok: false,
+        deny_code: safeString(out.deny_code),
+        projection: out.projection ? makeProtoSupervisorBriefProjection(out.projection) : null,
+      });
+      return;
+    }
+
+    appendSupervisorAudit({
+      access,
+      req: resolvedReq,
+      event_type: 'supervisor.brief.projected',
+      ok: true,
+      severity: 'info',
+      request_id: safeString(resolvedReq.request_id),
+      project_id: safeString(resolvedReq.project_id),
+      ext: {
+        op: 'get_supervisor_brief_projection',
+        projection_kind: out.projection.projection_kind,
+        status: out.projection.status,
+        pending_grant_count: out.projection.pending_grant_count,
+      },
+    });
+    callback(null, {
+      ok: true,
+      deny_code: '',
+      projection: makeProtoSupervisorBriefProjection(out.projection),
+    });
+  }
+
+  function ResolveSupervisorGuidance(call, callback) {
+    const access = requireSupervisorServiceAccess(call, {
+      client_capability: 'events',
+    });
+    if (!access.ok) {
+      callback(new Error(access.message));
+      return;
+    }
+
+    const req = call.request || {};
+    const out = resolveSupervisorGuidanceInternal(req);
+    const audit_logged = appendSupervisorAudit({
+      access,
+      req,
+      event_type: out.ok ? 'supervisor.guidance.resolved' : 'supervisor.guidance.denied',
+      ok: !!out.ok,
+      severity: out.ok ? 'info' : 'warn',
+      request_id: safeString(req.request_id || out?.resolution?.request_id),
+      project_id: safeString(out?.resolution?.project_id),
+      deny_code: safeString(out.deny_code),
+      error_message: out.ok ? '' : 'supervisor_guidance_denied',
+      ext: {
+        op: 'resolve_supervisor_guidance',
+        guidance_type: safeString(out?.resolution?.guidance_type),
+        resolution: safeString(out?.resolution?.resolution),
+      },
+    });
+    callback(null, {
+      ok: !!out.ok,
+      deny_code: safeString(out.deny_code),
+      resolution: makeProtoSupervisorGuidanceResolution(out.resolution),
+      audit_logged,
+    });
+  }
+
+  function IssueSupervisorCheckpointChallenge(call, callback) {
+    const access = requireSupervisorServiceAccess(call, {
+      client_capability: 'memory',
+    });
+    if (!access.ok) {
+      callback(new Error(access.message));
+      return;
+    }
+
+    const req = call.request || {};
+    const out = issueSupervisorCheckpointChallengeInternal({
+      ...req,
+      project_id: safeString(req.project_id || access?.client?.project_id),
+    });
+    const audit_logged = appendSupervisorAudit({
+      access,
+      req,
+      event_type: out.ok ? 'supervisor.checkpoint.challenge_issued' : 'supervisor.checkpoint.denied',
+      ok: !!out.ok,
+      severity: out.ok ? 'info' : 'warn',
+      request_id: safeString(req.request_id || out?.challenge?.request_id),
+      project_id: safeString(out?.challenge?.project_id),
+      deny_code: safeString(out.deny_code),
+      error_message: out.ok ? '' : 'supervisor_checkpoint_denied',
+      ext: {
+        op: 'issue_supervisor_checkpoint_challenge',
+        checkpoint_type: safeString(out?.challenge?.checkpoint_type),
+        decision_path: safeString(out?.challenge?.decision_path),
+        risk_tier: safeString(out?.challenge?.risk_tier),
+      },
+    });
+    callback(null, {
+      ok: !!out.ok,
+      deny_code: safeString(out.deny_code),
+      challenge: makeProtoSupervisorCheckpointChallenge(out.challenge),
+      audit_logged,
+    });
   }
 
   // -------------------- HubAudit --------------------
@@ -7520,6 +10497,396 @@ export function makeServices({ db, bus }) {
       challenge_match: !!out?.challenge_match,
       device_binding_ok: !!out?.device_binding_ok,
       mobile_confirmed: !!out?.mobile_confirmed,
+    });
+  }
+
+  function ListSecretVaultItems(call, callback) {
+    const auth = requireClientAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    if (!clientAllows(auth, 'memory')) {
+      callback(new Error(capabilityDenyCode(auth)));
+      return;
+    }
+
+    const req = call.request || {};
+    const client = effectiveClientIdentity(req.client || {}, auth);
+    const device_id = String(client.device_id || '').trim();
+    const app_id = String(client.app_id || '').trim();
+    const user_id = client.user_id ? String(client.user_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
+    if (!device_id || !app_id) {
+      callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendDeniedAudit({
+        event_type: 'secret_vault.denied',
+        error_message: 'secret_vault_list_denied',
+        op: 'list_secret_vault_items',
+        client,
+        request_id: '',
+        project_id: project_id || null,
+        deny_code: denyCode,
+        ext: {
+          scope: String(req.scope || ''),
+          name_prefix: String(req.name_prefix || ''),
+        },
+      });
+      callback(new Error(denyCode));
+      return;
+    }
+
+    let snapshot;
+    try {
+      snapshot = db.listSecretVaultItems({
+        device_id,
+        user_id,
+        app_id,
+        project_id,
+        scope: String(req.scope || ''),
+        name_prefix: String(req.name_prefix || ''),
+        limit: Number(req.limit || 0),
+      });
+    } catch (e) {
+      callback(new Error(String(e?.message || e || 'secret_vault_list_failed')));
+      return;
+    }
+
+    db.appendAudit({
+      event_type: 'secret_vault.items_listed',
+      created_at_ms: nowMs(),
+      severity: 'info',
+      device_id,
+      user_id: user_id || null,
+      app_id,
+      project_id: project_id || null,
+      session_id: client.session_id ? String(client.session_id) : null,
+      request_id: null,
+      capability: 'unknown',
+      model_id: null,
+      ok: true,
+      ext_json: JSON.stringify({
+        op: 'list_secret_vault_items',
+        scope: String(req.scope || ''),
+        name_prefix: String(req.name_prefix || ''),
+        item_count: Array.isArray(snapshot?.items) ? snapshot.items.length : 0,
+      }),
+    });
+
+    callback(null, {
+      updated_at_ms: Number(snapshot?.updated_at_ms || 0),
+      items: Array.isArray(snapshot?.items) ? snapshot.items.map(makeProtoSecretVaultItem).filter(Boolean) : [],
+    });
+  }
+
+  function CreateSecretVaultItem(call, callback) {
+    const auth = requireClientAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    if (!clientAllows(auth, 'memory')) {
+      callback(new Error(capabilityDenyCode(auth)));
+      return;
+    }
+
+    const req = call.request || {};
+    const client = effectiveClientIdentity(req.client || {}, auth);
+    const device_id = String(client.device_id || '').trim();
+    const app_id = String(client.app_id || '').trim();
+    const user_id = client.user_id ? String(client.user_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
+    if (!device_id || !app_id) {
+      callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendDeniedAudit({
+        event_type: 'secret_vault.denied',
+        error_message: 'secret_vault_create_denied',
+        op: 'create_secret_vault_item',
+        client,
+        request_id: '',
+        project_id: project_id || null,
+        deny_code: denyCode,
+        ext: {
+          scope: String(req.scope || ''),
+          name: String(req.name || ''),
+        },
+      });
+      callback(new Error(denyCode));
+      return;
+    }
+
+    let plaintext = '';
+    if (Buffer.isBuffer(req.plaintext_bytes)) {
+      plaintext = req.plaintext_bytes.toString('utf8');
+    } else if (req.plaintext_bytes != null && typeof req.plaintext_bytes === 'object' && typeof req.plaintext_bytes.length === 'number') {
+      plaintext = Buffer.from(req.plaintext_bytes).toString('utf8');
+    } else if (String(req.plaintext_b64 || '').trim()) {
+      try {
+        plaintext = Buffer.from(String(req.plaintext_b64 || '').trim(), 'base64').toString('utf8');
+      } catch {
+        plaintext = '';
+      }
+    }
+
+    let out;
+    try {
+      out = db.createOrUpdateSecretVaultItem({
+        scope: String(req.scope || ''),
+        name: String(req.name || ''),
+        plaintext,
+        sensitivity: String(req.sensitivity || ''),
+        display_name: String(req.display_name || ''),
+        reason: String(req.reason || ''),
+        device_id,
+        user_id,
+        app_id,
+        project_id,
+      });
+    } catch (e) {
+      callback(new Error(String(e?.message || e || 'secret_vault_create_failed')));
+      return;
+    }
+
+    if (!out?.ok || !out?.item) {
+      callback(new Error(String(out?.deny_code || 'secret_vault_create_failed')));
+      return;
+    }
+
+    writeSecretVaultItemsStatus(resolveRuntimeBaseDir());
+
+    db.appendAudit({
+      event_type: out.created ? 'secret_vault.item_created' : 'secret_vault.item_updated',
+      created_at_ms: nowMs(),
+      severity: 'info',
+      device_id,
+      user_id: user_id || null,
+      app_id,
+      project_id: project_id || null,
+      session_id: client.session_id ? String(client.session_id) : null,
+      request_id: null,
+      capability: 'unknown',
+      model_id: null,
+      ok: true,
+      ext_json: JSON.stringify({
+        op: 'create_secret_vault_item',
+        created: !!out.created,
+        item_id: String(out.item.item_id || ''),
+        scope: String(out.item.scope || ''),
+        name: String(out.item.name || ''),
+        sensitivity: String(out.item.sensitivity || 'secret'),
+      }),
+    });
+
+    callback(null, {
+      item: makeProtoSecretVaultItem(out.item),
+    });
+  }
+
+  function BeginSecretVaultUse(call, callback) {
+    const auth = requireClientAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    if (!clientAllows(auth, 'memory')) {
+      callback(new Error(capabilityDenyCode(auth)));
+      return;
+    }
+
+    const req = call.request || {};
+    const client = effectiveClientIdentity(req.client || {}, auth);
+    const device_id = String(client.device_id || '').trim();
+    const app_id = String(client.app_id || '').trim();
+    const user_id = client.user_id ? String(client.user_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
+    if (!device_id || !app_id) {
+      callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendDeniedAudit({
+        event_type: 'secret_vault.denied',
+        error_message: 'secret_vault_use_denied',
+        op: 'begin_secret_vault_use',
+        client,
+        request_id: '',
+        project_id: project_id || null,
+        deny_code: denyCode,
+        ext: {
+          item_id: String(req.item_id || ''),
+          scope: String(req.scope || ''),
+          name: String(req.name || ''),
+          purpose: String(req.purpose || ''),
+        },
+      });
+      callback(new Error(denyCode));
+      return;
+    }
+
+    let out;
+    try {
+      out = db.beginSecretVaultUse({
+        item_id: String(req.item_id || ''),
+        scope: String(req.scope || ''),
+        name: String(req.name || ''),
+        purpose: String(req.purpose || ''),
+        target: String(req.target || ''),
+        ttl_ms: Number(req.ttl_ms || 0),
+        device_id,
+        user_id,
+        app_id,
+        project_id,
+      });
+    } catch (e) {
+      callback(new Error(String(e?.message || e || 'secret_vault_use_failed')));
+      return;
+    }
+
+    if (!out?.ok || !out?.lease) {
+      callback(new Error(String(out?.deny_code || 'secret_vault_use_failed')));
+      return;
+    }
+
+    db.appendAudit({
+      event_type: 'secret_vault.lease_issued',
+      created_at_ms: nowMs(),
+      severity: 'info',
+      device_id,
+      user_id: user_id || null,
+      app_id,
+      project_id: project_id || null,
+      session_id: client.session_id ? String(client.session_id) : null,
+      request_id: null,
+      capability: 'unknown',
+      model_id: null,
+      ok: true,
+      ext_json: JSON.stringify({
+        op: 'begin_secret_vault_use',
+        lease_id: String(out.lease.lease_id || ''),
+        item_id: String(out.lease.item_id || ''),
+        purpose: String(req.purpose || ''),
+        expires_at_ms: Number(out.lease.expires_at_ms || 0),
+      }),
+    });
+
+    callback(null, {
+      lease: {
+        lease_id: String(out.lease.lease_id || ''),
+        use_token: String(out.lease.use_token || ''),
+        item_id: String(out.lease.item_id || ''),
+        expires_at_ms: Number(out.lease.expires_at_ms || 0),
+      },
+      lease_id: String(out.lease.lease_id || ''),
+      use_token: String(out.lease.use_token || ''),
+      item_id: String(out.lease.item_id || ''),
+      expires_at_ms: Number(out.lease.expires_at_ms || 0),
+    });
+  }
+
+  function RedeemSecretVaultUse(call, callback) {
+    const auth = requireClientAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    if (!clientAllows(auth, 'memory')) {
+      callback(new Error(capabilityDenyCode(auth)));
+      return;
+    }
+
+    const req = call.request || {};
+    const client = effectiveClientIdentity(req.client || {}, auth);
+    const device_id = String(client.device_id || '').trim();
+    const app_id = String(client.app_id || '').trim();
+    const user_id = client.user_id ? String(client.user_id) : '';
+    const trustedAutomationScope = trustedAutomationScopeFromRequest(req, client);
+    const project_id = trustedAutomationScope.project_id;
+    if (!device_id || !app_id) {
+      callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, trustedAutomationScope)) {
+      const denyCode = capabilityDenyCode(auth);
+      appendDeniedAudit({
+        event_type: 'secret_vault.denied',
+        error_message: 'secret_vault_redeem_denied',
+        op: 'redeem_secret_vault_use',
+        client,
+        request_id: '',
+        project_id: project_id || null,
+        deny_code: denyCode,
+        ext: {
+          use_token_present: !!String(req.use_token || '').trim(),
+        },
+      });
+      callback(new Error(denyCode));
+      return;
+    }
+
+    let out;
+    try {
+      out = db.redeemSecretVaultUse({
+        use_token: String(req.use_token || ''),
+        device_id,
+        user_id,
+        app_id,
+        project_id,
+      });
+    } catch (e) {
+      callback(new Error(String(e?.message || e || 'secret_vault_redeem_failed')));
+      return;
+    }
+
+    if (!out?.ok || !out?.item) {
+      callback(new Error(String(out?.deny_code || 'secret_vault_redeem_failed')));
+      return;
+    }
+
+    const plaintext = String(out.plaintext || '');
+    db.appendAudit({
+      event_type: 'secret_vault.lease_redeemed',
+      created_at_ms: nowMs(),
+      severity: 'info',
+      device_id,
+      user_id: user_id || null,
+      app_id,
+      project_id: project_id || null,
+      session_id: client.session_id ? String(client.session_id) : null,
+      request_id: null,
+      capability: 'unknown',
+      model_id: null,
+      ok: true,
+      ext_json: JSON.stringify({
+        op: 'redeem_secret_vault_use',
+        lease_id: String(out.lease?.lease_id || ''),
+        item_id: String(out.item.item_id || ''),
+        plaintext_bytes: Buffer.byteLength(plaintext, 'utf8'),
+      }),
+    });
+
+    callback(null, {
+      lease: out.lease ? {
+        lease_id: String(out.lease.lease_id || ''),
+        use_token: '',
+        item_id: String(out.lease.item_id || ''),
+        expires_at_ms: Number(out.lease.expires_at_ms || 0),
+      } : undefined,
+      item: makeProtoSecretVaultItem(out.item),
+      plaintext_bytes: Buffer.from(plaintext, 'utf8'),
+      lease_id: String(out.lease?.lease_id || ''),
+      item_id: String(out.item.item_id || ''),
     });
   }
 
@@ -11538,6 +14905,307 @@ export function makeServices({ db, bus }) {
     });
   }
 
+  function StageAgentImport(call, callback) {
+    const auth = requireClientAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    if (!clientAllows(auth, 'skills')) {
+      callback(new Error(capabilityDenyCode(auth)));
+      return;
+    }
+
+    const req = call.request || {};
+    const identity = skillsIdentityFromRequest(req, auth);
+    const {
+      device_id,
+      user_id,
+      app_id,
+      project_id,
+      workspace_root,
+      session_id,
+    } = identity;
+    if (!device_id || !app_id) {
+      callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, { project_id, workspace_root })) {
+      callback(new Error(capabilityDenyCode(auth)));
+      return;
+    }
+
+    const request_id = String(req.request_id || '').trim();
+    const import_manifest_json = String(req.import_manifest_json || '');
+    const findings_json = String(req.findings_json || '');
+    const scan_input_json = String(req.scan_input_json || '');
+    const requested_by = String(req.requested_by || user_id || device_id || 'xt-terminal').trim() || 'xt-terminal';
+    const note = req.note ? String(req.note) : '';
+
+    let out;
+    try {
+      out = stageAgentImport(resolveRuntimeBaseDir(), {
+        importManifestJson: import_manifest_json,
+        findingsJson: findings_json,
+        scanInputJson: scan_input_json,
+        requestedBy: requested_by,
+        note,
+      });
+    } catch (e) {
+      const normalized = normalizeSkillStoreError(e, 'agent_import_stage_failed');
+      appendSkillsAudit({
+        event_type: 'skills.agent_import.staged',
+        device_id,
+        user_id,
+        app_id,
+        project_id,
+        session_id,
+        request_id,
+        ok: false,
+        error_code: normalized.code,
+        ext: {
+          requested_by,
+          deny_detail: normalized.detail,
+        },
+        severity: 'warn',
+      });
+      callback(new Error(normalized.code));
+      return;
+    }
+
+    appendSkillsAudit({
+      event_type: 'skills.agent_import.staged',
+      device_id,
+      user_id,
+      app_id,
+      project_id,
+      session_id,
+      request_id,
+      ok: true,
+      ext: {
+        requested_by,
+        staging_id: String(out.staging_id || ''),
+        status: String(out.status || ''),
+        preflight_status: String(out.preflight_status || ''),
+        skill_id: String(out.skill_id || ''),
+        policy_scope: String(out.policy_scope || ''),
+        findings_count: Number(out.findings_count || 0),
+        vetter_status: String(out.vetter_status || ''),
+        vetter_critical_count: Number(out.vetter_critical_count || 0),
+        vetter_warn_count: Number(out.vetter_warn_count || 0),
+        vetter_audit_ref: String(out.vetter_audit_ref || ''),
+      },
+    });
+
+    callback(null, {
+      staging_id: String(out.staging_id || ''),
+      status: String(out.status || ''),
+      audit_ref: String(out.audit_ref || ''),
+      preflight_status: String(out.preflight_status || ''),
+      skill_id: String(out.skill_id || ''),
+      policy_scope: String(out.policy_scope || ''),
+      findings_count: Number(out.findings_count || 0),
+      record_path: String(out.record_path || ''),
+      vetter_status: String(out.vetter_status || ''),
+      vetter_critical_count: Number(out.vetter_critical_count || 0),
+      vetter_warn_count: Number(out.vetter_warn_count || 0),
+      vetter_audit_ref: String(out.vetter_audit_ref || ''),
+    });
+  }
+
+  function GetAgentImportRecord(call, callback) {
+    const auth = requireClientAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    if (!clientAllows(auth, 'skills')) {
+      callback(new Error(capabilityDenyCode(auth)));
+      return;
+    }
+
+    const req = call.request || {};
+    const identity = skillsIdentityFromRequest(req, auth);
+    const {
+      device_id,
+      user_id,
+      app_id,
+      project_id,
+      workspace_root,
+      session_id,
+    } = identity;
+    const staging_id = String(req.staging_id || '').trim();
+    if (!device_id || !app_id) {
+      callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!staging_id) {
+      callback(new Error('missing_agent_staging_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, { project_id, workspace_root })) {
+      callback(new Error(capabilityDenyCode(auth)));
+      return;
+    }
+
+    const record = getAgentImportRecord(resolveRuntimeBaseDir(), staging_id);
+    if (!record || typeof record !== 'object') {
+      appendSkillsAudit({
+        event_type: 'skills.agent_import.record.requested',
+        device_id,
+        user_id,
+        app_id,
+        project_id,
+        session_id,
+        request_id: '',
+        ok: false,
+        error_code: 'agent_import_not_found',
+        ext: { staging_id },
+        severity: 'warn',
+      });
+      callback(new Error('agent_import_not_found'));
+      return;
+    }
+
+    let record_json = '{}';
+    try {
+      record_json = JSON.stringify(record);
+    } catch {
+      record_json = '{}';
+    }
+
+    appendSkillsAudit({
+      event_type: 'skills.agent_import.record.requested',
+      device_id,
+      user_id,
+      app_id,
+      project_id,
+      session_id,
+      request_id: '',
+      ok: true,
+      ext: {
+        staging_id,
+        status: String(record.status || ''),
+        skill_id: String(record?.import_manifest?.skill_id || ''),
+      },
+    });
+
+    callback(null, {
+      staging_id,
+      status: String(record.status || ''),
+      audit_ref: String(record.audit_ref || ''),
+      schema_version: String(record.schema_version || ''),
+      skill_id: String(record?.import_manifest?.skill_id || ''),
+      record_json,
+    });
+  }
+
+  function PromoteAgentImport(call, callback) {
+    const auth = requireClientAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    if (!clientAllows(auth, 'skills')) {
+      callback(new Error(capabilityDenyCode(auth)));
+      return;
+    }
+
+    const req = call.request || {};
+    const identity = skillsIdentityFromRequest(req, auth);
+    const {
+      device_id,
+      user_id,
+      app_id,
+      project_id,
+      workspace_root,
+      session_id,
+    } = identity;
+    if (!device_id || !app_id || !user_id) {
+      callback(new Error('invalid client identity: missing device_id/user_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, { project_id, workspace_root })) {
+      callback(new Error(capabilityDenyCode(auth)));
+      return;
+    }
+
+    const request_id = String(req.request_id || '').trim();
+    const staging_id = String(req.staging_id || '').trim();
+    const package_sha256 = String(req.package_sha256 || '').trim().toLowerCase();
+    const note = req.note ? String(req.note) : '';
+    if (!staging_id) {
+      callback(new Error('missing_agent_staging_id'));
+      return;
+    }
+    if (!package_sha256) {
+      callback(new Error('missing_package_sha256'));
+      return;
+    }
+
+    let out;
+    try {
+      out = promoteAgentImport(resolveRuntimeBaseDir(), {
+        stagingId: staging_id,
+        packageSha256: package_sha256,
+        userId: user_id,
+        projectId: project_id,
+        note,
+      });
+    } catch (e) {
+      const normalized = normalizeSkillStoreError(e, 'agent_import_promote_failed');
+      appendSkillsAudit({
+        event_type: 'skills.agent_import.promoted',
+        device_id,
+        user_id,
+        app_id,
+        project_id,
+        session_id,
+        request_id,
+        ok: false,
+        error_code: normalized.code,
+        ext: {
+          staging_id,
+          package_sha256,
+          deny_detail: normalized.detail,
+        },
+        severity: 'warn',
+      });
+      callback(new Error(normalized.code));
+      return;
+    }
+
+    appendSkillsAudit({
+      event_type: 'skills.agent_import.promoted',
+      device_id,
+      user_id,
+      app_id,
+      project_id,
+      session_id,
+      request_id,
+      ok: true,
+      ext: {
+        staging_id: String(out.staging_id || ''),
+        status: String(out.status || ''),
+        package_sha256: String(out.package_sha256 || ''),
+        scope: String(out.scope || ''),
+        skill_id: String(out.skill_id || ''),
+        previous_package_sha256: String(out.previous_package_sha256 || ''),
+      },
+    });
+
+    callback(null, {
+      staging_id: String(out.staging_id || ''),
+      status: String(out.status || ''),
+      audit_ref: String(out.audit_ref || ''),
+      package_sha256: String(out.package_sha256 || ''),
+      scope: toProtoSkillPinScope(out.scope),
+      skill_id: String(out.skill_id || ''),
+      previous_package_sha256: String(out.previous_package_sha256 || ''),
+      record_path: String(out.record_path || ''),
+    });
+  }
+
   function ListResolvedSkills(call, callback) {
     const auth = requireClientAuth(call);
     if (!auth.ok) {
@@ -11807,6 +15475,8 @@ export function makeServices({ db, bus }) {
         scope,
         models_disabled: !!req.models_disabled,
         network_disabled: !!req.network_disabled,
+        disabled_local_capabilities: safeStringList(req.disabled_local_capabilities),
+        disabled_local_providers: safeStringList(req.disabled_local_providers),
         reason: req.reason ? String(req.reason) : '',
       });
     } catch (e) {
@@ -11816,8 +15486,10 @@ export function makeServices({ db, bus }) {
 
     const ks = {
       scope: String(row?.scope || scope),
-      models_disabled: !!Number(row?.models_disabled || 0),
-      network_disabled: !!Number(row?.network_disabled || 0),
+      models_disabled: !!row?.models_disabled,
+      network_disabled: !!row?.network_disabled,
+      disabled_local_capabilities: safeStringList(row?.disabled_local_capabilities),
+      disabled_local_providers: safeStringList(row?.disabled_local_providers),
       reason: row?.reason ? String(row.reason) : '',
       updated_at_ms: Number(row?.updated_at_ms || nowMs()),
     };
@@ -11838,7 +15510,13 @@ export function makeServices({ db, bus }) {
       model_id: null,
       network_allowed: null,
       ok: true,
-      ext_json: JSON.stringify({ scope, models_disabled: ks.models_disabled, network_disabled: ks.network_disabled }),
+      ext_json: JSON.stringify({
+        scope,
+        models_disabled: ks.models_disabled,
+        network_disabled: ks.network_disabled,
+        disabled_local_capabilities: ks.disabled_local_capabilities,
+        disabled_local_providers: ks.disabled_local_providers,
+      }),
     });
 
     bus.emitHubEvent(bus.killSwitchUpdated(ks));
@@ -11861,12 +15539,22 @@ export function makeServices({ db, bus }) {
     const ks = row
       ? {
           scope: String(row.scope || scope),
-          models_disabled: !!Number(row.models_disabled || 0),
-          network_disabled: !!Number(row.network_disabled || 0),
+          models_disabled: !!row.models_disabled,
+          network_disabled: !!row.network_disabled,
+          disabled_local_capabilities: safeStringList(row.disabled_local_capabilities),
+          disabled_local_providers: safeStringList(row.disabled_local_providers),
           reason: row.reason ? String(row.reason) : '',
           updated_at_ms: Number(row.updated_at_ms || 0),
         }
-      : { scope, models_disabled: false, network_disabled: false, reason: '', updated_at_ms: 0 };
+      : {
+          scope,
+          models_disabled: false,
+          network_disabled: false,
+          disabled_local_capabilities: [],
+          disabled_local_providers: [],
+          reason: '',
+          updated_at_ms: 0,
+        };
     callback(null, { kill_switch: ks });
   }
 
@@ -11883,6 +15571,21 @@ export function makeServices({ db, bus }) {
       GetAutonomyPolicyOverrides,
       ApprovePendingGrantRequest,
       DenyPendingGrantRequest,
+      GetChannelRuntimeStatusSnapshot,
+      ListChannelIdentityBindings,
+      UpsertChannelIdentityBinding,
+      ListSupervisorOperatorChannelBindings,
+      UpsertSupervisorOperatorChannelBinding,
+      EvaluateChannelCommandGate,
+      ResolveSupervisorChannelRoute,
+      ExecuteOperatorChannelHubCommand,
+    },
+    HubSupervisor: {
+      IngestSupervisorSurface,
+      ResolveSupervisorRoute,
+      GetSupervisorBriefProjection,
+      ResolveSupervisorGuidance,
+      IssueSupervisorCheckpointChallenge,
     },
     HubAudit: { ListAuditEvents },
     HubMemory: {
@@ -11901,6 +15604,10 @@ export function makeServices({ db, bus }) {
       SetVoiceWakeProfile,
       IssueVoiceGrantChallenge,
       VerifyVoiceGrantResponse,
+      ListSecretVaultItems,
+      CreateSecretVaultItem,
+      BeginSecretVaultUse,
+      RedeemSecretVaultUse,
       RegisterAgentCapsule,
       VerifyAgentCapsule,
       ActivateAgentCapsule,
@@ -11922,7 +15629,17 @@ export function makeServices({ db, bus }) {
       LongtermMarkdownWriteback,
       LongtermMarkdownRollback,
     },
-    HubSkills: { SearchSkills, UploadSkillPackage, SetSkillPin, ListResolvedSkills, GetSkillManifest, DownloadSkillPackage },
+    HubSkills: {
+      SearchSkills,
+      UploadSkillPackage,
+      SetSkillPin,
+      StageAgentImport,
+      GetAgentImportRecord,
+      PromoteAgentImport,
+      ListResolvedSkills,
+      GetSkillManifest,
+      DownloadSkillPackage,
+    },
     HubAdmin: { SetKillSwitch, GetKillSwitch },
   };
 }

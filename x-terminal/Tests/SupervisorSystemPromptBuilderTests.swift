@@ -53,6 +53,8 @@ struct SupervisorSystemPromptBuilderTests {
         #expect(prompt.contains("Never invent runtime restrictions."))
         #expect(prompt.contains("For build requests such as making a game, app, tool, or feature"))
         #expect(prompt.contains("## Memory Context"))
+        #expect(prompt.contains("If Memory Context contains [focused_project_execution_brief], inspect that section first"))
+        #expect(prompt.contains("Ground concrete planning in the focused project's goal, current state, next step, blocker"))
         #expect(prompt.contains("project=myworld\nstatus=running"))
         #expect(prompt.contains("## User Turn"))
         #expect(prompt.contains("把我的世界这个项目的模型换成5.3"))
@@ -64,6 +66,9 @@ struct SupervisorSystemPromptBuilderTests {
         #expect(prompt.contains(#"[UPSERT_PLAN]{"project_ref":"project_ref_or_empty","job_id":"job-id","plan_id":"plan-id","steps":[{"step_id":"step-001","title":"step title"}]}[/UPSERT_PLAN]"#))
         #expect(prompt.contains(#"[CALL_SKILL]{"project_ref":"project_ref_or_empty","job_id":"job-id","step_id":"step-001","skill_id":"skill.id","payload":{"key":"value"}}[/CALL_SKILL]"#))
         #expect(prompt.contains(#"[CANCEL_SKILL]{"project_ref":"project_ref_or_empty","request_id":"call-id","reason":"brief reason"}[/CANCEL_SKILL]"#))
+        #expect(prompt.contains("If the user asks you to continue, advance, or push a focused project forward"))
+        #expect(prompt.contains("If the user asks you to review project memory/context and give an execution plan"))
+        #expect(prompt.contains("For review or planning requests that do not clearly ask for immediate execution, do not emit action tags"))
         #expect(prompt.contains("Constraint: CREATE_JOB / UPSERT_PLAN / CALL_SKILL / CANCEL_SKILL must use a single JSON object body."))
         #expect(prompt.contains("## Output Rules"))
         #expect(prompt.contains("Do not ask the user to reply with a trigger phrase like '开始生成'"))
@@ -100,6 +105,7 @@ struct SupervisorSystemPromptBuilderTests {
         #expect(prompt.contains("## Current Date & Time"))
         #expect(prompt.contains("## Conversation Style"))
         #expect(prompt.contains("## Memory Context"))
+        #expect(prompt.contains("[focused_project_execution_brief]"))
         #expect(prompt.contains("## User Turn"))
         #expect(!prompt.contains("## Runtime"))
         #expect(!prompt.contains("## Responsibilities"))
@@ -110,6 +116,8 @@ struct SupervisorSystemPromptBuilderTests {
         #expect(!prompt.contains("[CANCEL_SKILL]"))
         #expect(prompt.contains("## Action Protocol"))
         #expect(prompt.contains("Only emit action tags when the user clearly wants execution"))
+        #expect(prompt.contains("continue, advance, or push a focused project forward"))
+        #expect(prompt.contains("review project memory/context and give an execution plan"))
     }
 
     @Test

@@ -1,7 +1,12 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
+import {
+  isAgentSkillScannable,
+  scanAgentSkillDirectoryWithSummary,
+} from './agent_skill_vetter.js';
 
 const SKILL_SCOPE_PRIORITY = {
   SKILL_PIN_SCOPE_MEMORY_CORE: 3,
@@ -20,6 +25,48 @@ const HIGH_RISK_CAPABILITY_RE = [
   /^filesystem\./i,
   /^fs\./i,
 ];
+
+const OFFICIAL_AGENT_CATALOG_SOURCE_ID = 'builtin:catalog';
+const OFFICIAL_AGENT_SKILL_SRC_DIR = path.dirname(fileURLToPath(import.meta.url));
+const OFFICIAL_AGENT_SKILL_REPO_ROOT = path.resolve(OFFICIAL_AGENT_SKILL_SRC_DIR, '../../../../');
+const OFFICIAL_AGENT_BASELINE_FALLBACK = Object.freeze([
+  {
+    skill_id: 'find-skills',
+    name: 'Find Skills',
+    version: '1.0.0',
+    description: 'Official discovery wrapper over Hub skills.search; default baseline for finding capabilities and usage.',
+    publisher_id: 'xhub.official',
+    capabilities_required: ['skills.search'],
+    install_hint: 'Included in the default Agent baseline profile; prefer the built-in SearchSkills flow in X-Terminal.',
+  },
+  {
+    skill_id: 'agent-browser',
+    name: 'Agent Browser',
+    version: '1.0.0',
+    description: 'Governed browser automation package for navigation, screenshot capture, structured extraction, and Secret Vault-aware credential handling.',
+    publisher_id: 'xhub.official',
+    capabilities_required: ['browser.read', 'device.browser.control', 'web.fetch'],
+    install_hint: 'Recommended default managed skill; enable through Hub-governed import and pin flow before browser-heavy tasks.',
+  },
+  {
+    skill_id: 'self-improving-agent',
+    name: 'Self Improving Agent',
+    version: '1.0.0',
+    description: 'Supervisor retrospective and self-improvement workflow pack for learning from failed runs without bypassing governance.',
+    publisher_id: 'xhub.official',
+    capabilities_required: ['memory.snapshot', 'project.snapshot', 'repo.read.file'],
+    install_hint: 'Recommended default managed skill; intended for the Agent baseline profile and Supervisor retrospectives.',
+  },
+  {
+    skill_id: 'summarize',
+    name: 'Summarize',
+    version: '1.0.0',
+    description: 'Governed summarize wrapper for webpages, PDFs, and long documents using Hub-routed fetch and model generation.',
+    publisher_id: 'xhub.official',
+    capabilities_required: ['web.fetch', 'browser.read', 'ai.generate.local'],
+    install_hint: 'Included in the default Agent baseline profile; use for document and webpage summarization under Hub policy.',
+  },
+]);
 
 function parseBoolLike(v) {
   if (typeof v === 'boolean') return v;
@@ -685,6 +732,94 @@ function revocationsPath(runtimeBaseDir) {
   return path.join(dir, 'revoked.json');
 }
 
+function agentImportsBaseDir(runtimeBaseDir) {
+  const dir = skillsStoreBaseDir(runtimeBaseDir);
+  if (!dir) return '';
+  return path.join(dir, 'agent_imports');
+}
+
+function agentStagingDir(runtimeBaseDir) {
+  const dir = agentImportsBaseDir(runtimeBaseDir);
+  if (!dir) return '';
+  return path.join(dir, 'staging');
+}
+
+function agentQuarantineDir(runtimeBaseDir) {
+  const dir = agentImportsBaseDir(runtimeBaseDir);
+  if (!dir) return '';
+  return path.join(dir, 'quarantine');
+}
+
+function agentMirrorBaseDir(runtimeBaseDir) {
+  const dir = agentImportsBaseDir(runtimeBaseDir);
+  if (!dir) return '';
+  return path.join(dir, 'mirror');
+}
+
+function agentReportsDir(runtimeBaseDir) {
+  const dir = agentImportsBaseDir(runtimeBaseDir);
+  if (!dir) return '';
+  return path.join(dir, 'reports');
+}
+
+function legacyOpenClawImportsBaseDir(runtimeBaseDir) {
+  const dir = skillsStoreBaseDir(runtimeBaseDir);
+  if (!dir) return '';
+  return path.join(dir, 'openclaw_imports');
+}
+
+function legacyOpenClawStagingDir(runtimeBaseDir) {
+  const dir = legacyOpenClawImportsBaseDir(runtimeBaseDir);
+  if (!dir) return '';
+  return path.join(dir, 'staging');
+}
+
+function legacyOpenClawQuarantineDir(runtimeBaseDir) {
+  const dir = legacyOpenClawImportsBaseDir(runtimeBaseDir);
+  if (!dir) return '';
+  return path.join(dir, 'quarantine');
+}
+
+function normalizeRecordToken(input, fallback = 'record') {
+  const raw = safeString(input).toLowerCase();
+  const cleaned = raw.replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  return cleaned || fallback;
+}
+
+function agentImportRecordPath(runtimeBaseDir, stagingId, status = 'staged') {
+  const token = normalizeRecordToken(stagingId, 'record');
+  if (!token) return '';
+  const baseDir = status === 'quarantined'
+    ? agentQuarantineDir(runtimeBaseDir)
+    : agentStagingDir(runtimeBaseDir);
+  if (!baseDir) return '';
+  return path.join(baseDir, `${token}.json`);
+}
+
+function agentImportMirrorDir(runtimeBaseDir, stagingId) {
+  const token = normalizeRecordToken(stagingId, 'record');
+  const baseDir = agentMirrorBaseDir(runtimeBaseDir);
+  if (!token || !baseDir) return '';
+  return path.join(baseDir, token);
+}
+
+function agentImportVetterReportPath(runtimeBaseDir, stagingId) {
+  const token = normalizeRecordToken(stagingId, 'record');
+  const baseDir = agentReportsDir(runtimeBaseDir);
+  if (!token || !baseDir) return '';
+  return path.join(baseDir, `${token}.json`);
+}
+
+function legacyOpenClawImportRecordPath(runtimeBaseDir, stagingId, status = 'staged') {
+  const token = normalizeRecordToken(stagingId, 'record');
+  if (!token) return '';
+  const baseDir = status === 'quarantined'
+    ? legacyOpenClawQuarantineDir(runtimeBaseDir)
+    : legacyOpenClawStagingDir(runtimeBaseDir);
+  if (!baseDir) return '';
+  return path.join(baseDir, `${token}.json`);
+}
+
 function policyPath(runtimeBaseDir) {
   const base = safeString(runtimeBaseDir);
   if (!base) return '';
@@ -736,6 +871,111 @@ function manifestPath(runtimeBaseDir, packageSha256) {
   return path.join(dir, 'manifests', `${sha}.json`);
 }
 
+function officialAgentSkillsSourceRoot() {
+  const override = safeString(process.env.XHUB_OFFICIAL_AGENT_SKILLS_DIR);
+  if (override) return path.resolve(override);
+  return path.join(OFFICIAL_AGENT_SKILL_REPO_ROOT, 'official-agent-skills');
+}
+
+function officialAgentSkillsDistRoot() {
+  const override = safeString(process.env.XHUB_OFFICIAL_AGENT_SKILLS_DIST_DIR);
+  if (override) return path.resolve(override);
+  return path.join(officialAgentSkillsSourceRoot(), 'dist');
+}
+
+function defaultOfficialAgentCatalogFallback() {
+  return OFFICIAL_AGENT_BASELINE_FALLBACK.map((row) => ({ ...row }));
+}
+
+function loadOfficialAgentCatalogEntriesFromSource() {
+  const root = officialAgentSkillsSourceRoot();
+  if (!root || !fs.existsSync(root)) return [];
+  let rows = [];
+  try {
+    rows = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const entries = [];
+  for (const row of rows) {
+    if (!row?.isDirectory?.()) continue;
+    const dirName = safeString(row.name);
+    if (!dirName || dirName.startsWith('.') || dirName === 'dist') continue;
+    const manifestFp = path.join(root, dirName, 'skill.json');
+    const manifestObj = readJsonSafe(manifestFp);
+    const meta = normalizeSkillMeta(manifestObj, OFFICIAL_AGENT_CATALOG_SOURCE_ID);
+    if (!meta) continue;
+    entries.push(meta);
+  }
+  entries.sort((lhs, rhs) => safeString(lhs.skill_id).localeCompare(safeString(rhs.skill_id)));
+  return entries;
+}
+
+function loadOfficialAgentPublishedIndex() {
+  const distRoot = officialAgentSkillsDistRoot();
+  const indexFp = path.join(distRoot, 'index.json');
+  const obj = readJsonSafe(indexFp);
+  if (!isObject(obj)) {
+    return {
+      index_path: indexFp,
+      dist_root: distRoot,
+      generated_at_ms: 0,
+      skills: [],
+    };
+  }
+  const rows = Array.isArray(obj.skills) ? obj.skills : [];
+  const skills = rows
+    .map((row) => {
+      const normalized = normalizePackageEntry(row);
+      if (!normalized) return null;
+      const packageRel = safeString(row.package_path);
+      const manifestRel = safeString(row.manifest_path);
+      const package_fp = packageRel ? path.resolve(distRoot, packageRel) : '';
+      const manifest_fp = manifestRel ? path.resolve(distRoot, manifestRel) : '';
+      if (!package_fp || !manifest_fp) return null;
+      if (!fs.existsSync(package_fp) || !fs.existsSync(manifest_fp)) return null;
+      return {
+        ...normalized,
+        source_id: OFFICIAL_AGENT_CATALOG_SOURCE_ID,
+        package_fp,
+        manifest_fp,
+      };
+    })
+    .filter(Boolean);
+  return {
+    index_path: indexFp,
+    dist_root: distRoot,
+    generated_at_ms: Number(obj.generated_at_ms || 0),
+    skills,
+  };
+}
+
+function findOfficialAgentPublishedSkill(packageSha256) {
+  const sha = safeString(packageSha256).toLowerCase();
+  if (!sha) return null;
+  const index = loadOfficialAgentPublishedIndex();
+  for (const row of index.skills) {
+    if (safeString(row.package_sha256).toLowerCase() === sha) return row;
+  }
+  return null;
+}
+
+function defaultAgentBaselineCatalogEntries() {
+  const entries = loadOfficialAgentCatalogEntriesFromSource();
+  if (entries.length > 0) {
+    return entries.map((row) => ({
+      skill_id: safeString(row.skill_id),
+      name: safeString(row.name),
+      version: safeString(row.version),
+      description: safeString(row.description),
+      publisher_id: safeString(row.publisher_id),
+      capabilities_required: safeStringArray(row.capabilities_required),
+      install_hint: safeString(row.install_hint),
+    }));
+  }
+  return defaultOfficialAgentCatalogFallback();
+}
+
 function defaultSources() {
   return {
     schema_version: 'skill_sources.v1',
@@ -746,17 +986,47 @@ function defaultSources() {
         type: 'catalog',
         default_trust_policy: 'trusted_official',
         updated_at_ms: 0,
-        discovery_index: [],
+        discovery_index: defaultAgentBaselineCatalogEntries(),
       },
     ],
   };
 }
 
-function defaultTrustedPublishers() {
+function officialAgentTrustedPublishersPath() {
+  const sourceRoot = officialAgentSkillsSourceRoot();
+  const sourcePath = path.join(sourceRoot, 'publisher', 'trusted_publishers.json');
+  if (fs.existsSync(sourcePath)) return sourcePath;
+  const distPath = path.join(officialAgentSkillsDistRoot(), 'trusted_publishers.json');
+  if (fs.existsSync(distPath)) return distPath;
+  return sourcePath;
+}
+
+function loadBundledOfficialTrustedPublishers() {
+  const fp = officialAgentTrustedPublishersPath();
+  const obj = readJsonSafe(fp);
+  if (!isObject(obj)) {
+    return {
+      schema_version: 'xhub.trusted_publishers.v1',
+      updated_at_ms: 0,
+      publishers: [],
+    };
+  }
+  const publishers = Array.isArray(obj.publishers)
+    ? obj.publishers.map((it) => normalizeTrustedPublisher(it)).filter(Boolean)
+    : [];
   return {
-    schema_version: 'xhub.trusted_publishers.v1',
-    updated_at_ms: 0,
-    publishers: [],
+    schema_version: safeString(obj.schema_version || 'xhub.trusted_publishers.v1') || 'xhub.trusted_publishers.v1',
+    updated_at_ms: Number(obj.updated_at_ms || 0),
+    publishers,
+  };
+}
+
+function defaultTrustedPublishers() {
+  const bundled = loadBundledOfficialTrustedPublishers();
+  return {
+    schema_version: safeString(bundled.schema_version || 'xhub.trusted_publishers.v1') || 'xhub.trusted_publishers.v1',
+    updated_at_ms: Number(bundled.updated_at_ms || 0),
+    publishers: Array.isArray(bundled.publishers) ? bundled.publishers : [],
   };
 }
 
@@ -783,20 +1053,31 @@ function normalizeTrustedPublisher(it) {
 
 export function loadTrustedPublishers(runtimeBaseDir) {
   const fp = trustedPublishersPath(runtimeBaseDir);
+  const defaults = defaultTrustedPublishers();
   ensureStableSnapshotExists(fp);
   const obj = readJsonSafe(fp);
   if (!isObject(obj)) {
-    const def = defaultTrustedPublishers();
-    writeJsonAtomic(fp, def);
-    return def;
+    writeJsonAtomic(fp, defaults);
+    return defaults;
   }
   const publishers = Array.isArray(obj.publishers)
     ? obj.publishers.map((it) => normalizeTrustedPublisher(it)).filter(Boolean)
     : [];
+  const merged = new Map();
+  for (const row of Array.isArray(defaults.publishers) ? defaults.publishers : []) {
+    const key = safeString(row?.publisher_id);
+    if (!key) continue;
+    merged.set(key, row);
+  }
+  for (const row of publishers) {
+    const key = safeString(row?.publisher_id);
+    if (!key) continue;
+    merged.set(key, row);
+  }
   return {
-    schema_version: safeString(obj.schema_version || 'xhub.trusted_publishers.v1') || 'xhub.trusted_publishers.v1',
-    updated_at_ms: Number(obj.updated_at_ms || 0),
-    publishers,
+    schema_version: safeString(obj.schema_version || defaults.schema_version || 'xhub.trusted_publishers.v1') || 'xhub.trusted_publishers.v1',
+    updated_at_ms: Math.max(Number(defaults.updated_at_ms || 0), Number(obj.updated_at_ms || 0)),
+    publishers: Array.from(merged.values()),
   };
 }
 
@@ -961,6 +1242,7 @@ function normalizePackageEntry(it) {
     publisher_id: safeString(it.publisher_id),
     capabilities_required: safeStringArray(it.capabilities_required),
     source_id: safeString(it.source_id || 'local'),
+    install_hint: safeString(it.install_hint),
     manifest_json: safeString(it.manifest_json),
     manifest_sha256: safeString(it.manifest_sha256).toLowerCase(),
     abi_compat_version: safeString(it.abi_compat_version || SKILL_ABI_COMPAT_VERSION) || SKILL_ABI_COMPAT_VERSION,
@@ -978,6 +1260,8 @@ function normalizePackageEntry(it) {
     package_format: safeString(it.package_format || ''),
     file_hash_count: Math.max(0, Number(it.file_hash_count || 0)),
     package_size_bytes: Math.max(0, Number(it.package_size_bytes || 0)),
+    package_fp: safeString(it.package_fp || ''),
+    manifest_fp: safeString(it.manifest_fp || ''),
     created_at_ms: Number(it.created_at_ms || 0),
     updated_at_ms: Number(it.updated_at_ms || 0),
   };
@@ -1252,10 +1536,553 @@ function ensureSkillsStoreDirs(runtimeBaseDir) {
   try {
     fs.mkdirSync(path.join(base, 'packages'), { recursive: true });
     fs.mkdirSync(path.join(base, 'manifests'), { recursive: true });
+    fs.mkdirSync(agentStagingDir(runtimeBaseDir), { recursive: true });
+    fs.mkdirSync(agentQuarantineDir(runtimeBaseDir), { recursive: true });
+    fs.mkdirSync(agentMirrorBaseDir(runtimeBaseDir), { recursive: true });
+    fs.mkdirSync(agentReportsDir(runtimeBaseDir), { recursive: true });
+    fs.mkdirSync(legacyOpenClawStagingDir(runtimeBaseDir), { recursive: true });
+    fs.mkdirSync(legacyOpenClawQuarantineDir(runtimeBaseDir), { recursive: true });
     return true;
   } catch {
     return false;
   }
+}
+
+function normalizeAgentPreflightStatus(raw) {
+  const text = safeString(raw).toLowerCase();
+  if (text === 'passed') return 'passed';
+  if (text === 'pending') return 'pending';
+  if (text === 'failed') return 'failed';
+  if (text === 'quarantined') return 'quarantined';
+  throw new SkillStoreDenyError('invalid_agent_import_manifest', {
+    reason: 'preflight_status_invalid',
+    value: text,
+  });
+}
+
+function normalizeAgentPolicyScope(raw) {
+  const text = safeString(raw).toLowerCase();
+  if (!text || text === 'project') return 'project';
+  if (text === 'global') return 'global';
+  if (text === 'memory_core') return 'memory_core';
+  throw new SkillStoreDenyError('invalid_agent_import_manifest', {
+    reason: 'policy_scope_invalid',
+    value: text,
+  });
+}
+
+function normalizeAgentImportManifest(input) {
+  const obj = isObject(input) ? input : {};
+  const schema_version = safeString(obj.schema_version);
+  if (schema_version !== 'xt.agent_skill_import_manifest.v1'
+      && schema_version !== 'xt.openclaw_skill_import_manifest.v1') {
+    throw new SkillStoreDenyError('invalid_agent_import_manifest', {
+      reason: 'schema_version_invalid',
+      value: schema_version,
+    });
+  }
+  const source = safeString(obj.source || 'agent').toLowerCase();
+  if (source !== 'agent' && source !== 'openclaw') {
+    throw new SkillStoreDenyError('invalid_agent_import_manifest', {
+      reason: 'source_invalid',
+      value: source,
+    });
+  }
+  const source_ref = safeString(obj.source_ref);
+  const skill_id = safeString(obj.skill_id);
+  const upstream_package_ref = safeString(obj.upstream_package_ref);
+  if (!source_ref || !skill_id || !upstream_package_ref) {
+    throw new SkillStoreDenyError('invalid_agent_import_manifest', {
+      reason: 'required_field_missing',
+      source_ref,
+      skill_id,
+      upstream_package_ref,
+    });
+  }
+  return {
+    schema_version: 'xt.agent_skill_import_manifest.v1',
+    source: 'agent',
+    source_ref,
+    skill_id,
+    display_name: safeString(obj.display_name || skill_id) || skill_id,
+    kind: safeString(obj.kind || 'skill') || 'skill',
+    upstream_package_ref,
+    normalized_capabilities: safeStringArray(obj.normalized_capabilities),
+    requires_grant: !!obj.requires_grant,
+    risk_level: safeString(obj.risk_level || 'low').toLowerCase() || 'low',
+    policy_scope: normalizeAgentPolicyScope(obj.policy_scope),
+    sandbox_class: safeString(obj.sandbox_class || 'governed_project_local') || 'governed_project_local',
+    prompt_mutation_allowed: !!obj.prompt_mutation_allowed,
+    install_provenance: safeString(obj.install_provenance || 'local_import') || 'local_import',
+    preflight_status: normalizeAgentPreflightStatus(obj.preflight_status),
+  };
+}
+
+function normalizeAgentImportFindings(input) {
+  if (!Array.isArray(input)) return [];
+  const out = [];
+  for (const row of input) {
+    if (!isObject(row)) continue;
+    const code = safeString(row.code);
+    const detail = safeString(row.detail);
+    if (!code) continue;
+    out.push({ code, detail });
+  }
+  return out;
+}
+
+function normalizeAgentScanInput(input) {
+  const obj = isObject(input) ? input : {};
+  const schema_version = safeString(obj.schema_version);
+  if (schema_version !== 'xt.agent_skill_scan_input.v1'
+      && schema_version !== 'xt.openclaw_skill_scan_input.v1') {
+    throw new SkillStoreDenyError('invalid_agent_import_scan_input', {
+      reason: 'schema_version_invalid',
+      value: schema_version,
+    });
+  }
+  if (!Array.isArray(obj.files)) {
+    throw new SkillStoreDenyError('invalid_agent_import_scan_input', {
+      reason: 'files_missing',
+    });
+  }
+
+  const normalized = [];
+  let totalBytes = 0;
+  for (const row of obj.files) {
+    if (!isObject(row)) continue;
+    const filePath = normalizeArchivePath(row.path);
+    if (!filePath) {
+      throw new SkillStoreDenyError('invalid_agent_import_scan_input', {
+        reason: 'file_path_invalid',
+        value: row.path,
+      });
+    }
+    const content = typeof row.content === 'string'
+      ? row.content
+      : safeString(row.content_base64)
+        ? Buffer.from(safeString(row.content_base64), 'base64').toString('utf8')
+        : '';
+    totalBytes += Buffer.byteLength(content, 'utf8');
+    if (totalBytes > 2 * 1024 * 1024) {
+      throw new SkillStoreDenyError('invalid_agent_import_scan_input', {
+        reason: 'scan_input_too_large',
+        total_bytes: totalBytes,
+      });
+    }
+    normalized.push({ path: filePath, content });
+    if (normalized.length > 500) {
+      throw new SkillStoreDenyError('invalid_agent_import_scan_input', {
+        reason: 'too_many_files',
+        file_count: normalized.length,
+      });
+    }
+  }
+
+  return {
+    schema_version: 'xt.agent_skill_scan_input.v1',
+    files: normalized,
+  };
+}
+
+function normalizeAgentVetterStatus(raw, fallback = 'pending') {
+  const text = safeString(raw).toLowerCase();
+  if (text === 'pending') return 'pending';
+  if (text === 'passed') return 'passed';
+  if (text === 'warn_only') return 'warn_only';
+  if (text === 'critical') return 'critical';
+  if (text === 'scan_error') return 'scan_error';
+  return fallback;
+}
+
+function agentImportStatusForManifest(manifest) {
+  const preflight = normalizeAgentPreflightStatus(manifest?.preflight_status);
+  if (preflight === 'quarantined' || preflight === 'failed') return 'quarantined';
+  return 'staged';
+}
+
+function buildAgentImportRecord({
+  manifest,
+  findings,
+  requestedBy,
+  note,
+  auditRef,
+  createdAtMs,
+  status,
+}) {
+  const manifestObj = normalizeAgentImportManifest(manifest);
+  const now = Math.max(0, Number(createdAtMs || nowMs()));
+  const tokenSeed = sha256Hex(Buffer.from(JSON.stringify(toCanonicalValue(manifestObj)), 'utf8')).slice(0, 12);
+  const staging_id = `agent-${now}-${tokenSeed}`;
+  const resolvedStatus = status || agentImportStatusForManifest(manifestObj);
+  return {
+    schema_version: 'xhub.agent_import_record.v1',
+    staging_id,
+    status: resolvedStatus,
+    created_at_ms: now,
+    updated_at_ms: now,
+    audit_ref: safeString(auditRef || `audit-agent-import-${tokenSeed}`) || `audit-agent-import-${tokenSeed}`,
+    requested_by: safeString(requestedBy),
+    note: safeString(note),
+    import_manifest: manifestObj,
+    findings: normalizeAgentImportFindings(findings),
+    vetter_status: resolvedStatus === 'quarantined' ? 'critical' : 'pending',
+    vetter_audit_ref: '',
+    vetter_report_ref: '',
+    vetter_critical_count: 0,
+    vetter_warn_count: 0,
+    promotion_blocked_reason: resolvedStatus === 'quarantined' ? 'preflight_quarantined' : 'vetter_pending',
+    enabled_package_sha256: '',
+    enabled_scope: '',
+    user_id: '',
+    project_id: '',
+    pin_note: '',
+  };
+}
+
+function writeAgentImportMirror(runtimeBaseDir, stagingId, scanInput) {
+  const mirrorDir = agentImportMirrorDir(runtimeBaseDir, stagingId);
+  if (!mirrorDir) {
+    throw new SkillStoreDenyError('skills_store_unavailable');
+  }
+  try {
+    fs.rmSync(mirrorDir, { recursive: true, force: true });
+    fs.mkdirSync(mirrorDir, { recursive: true });
+    let writtenFiles = 0;
+    for (const row of scanInput.files) {
+      if (!isAgentSkillScannable(row.path)) continue;
+      const target = path.join(mirrorDir, row.path);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, String(row.content || ''), 'utf8');
+      writtenFiles += 1;
+    }
+    return { mirror_dir: mirrorDir, written_files: writtenFiles };
+  } catch (err) {
+    throw new SkillStoreDenyError('agent_import_vetter_mirror_failed', {
+      staging_id: stagingId,
+      reason: String(err?.message || err || 'mirror_failed'),
+    });
+  }
+}
+
+function writeAgentImportVetterReport(runtimeBaseDir, stagingId, report) {
+  const reportPath = agentImportVetterReportPath(runtimeBaseDir, stagingId);
+  if (!reportPath) {
+    throw new SkillStoreDenyError('skills_store_unavailable');
+  }
+  writeJsonAtomic(reportPath, report);
+  return reportPath;
+}
+
+function evaluateAgentImportVetter(runtimeBaseDir, record, scanInputJson) {
+  const staging_id = safeString(record?.staging_id);
+  const current_status = safeString(record?.status).toLowerCase();
+  const audit_ref = `audit-agent-vetter-${normalizeRecordToken(staging_id, 'record')}`;
+  const generated_at_ms = nowMs();
+
+  if (current_status === 'quarantined') {
+    return {
+      vetter_status: 'critical',
+      vetter_audit_ref: audit_ref,
+      vetter_report_ref: '',
+      vetter_critical_count: Math.max(1, Array.isArray(record?.findings) ? record.findings.length : 1),
+      vetter_warn_count: 0,
+      promotion_blocked_reason: 'preflight_quarantined',
+    };
+  }
+
+  const scanInputText = safeString(scanInputJson);
+  if (!scanInputText) {
+    return {
+      vetter_status: 'pending',
+      vetter_audit_ref: '',
+      vetter_report_ref: '',
+      vetter_critical_count: 0,
+      vetter_warn_count: 0,
+      promotion_blocked_reason: 'vetter_scan_input_missing',
+    };
+  }
+
+  let scanInputObj = null;
+  try {
+    scanInputObj = JSON.parse(scanInputText);
+  } catch {
+    throw new SkillStoreDenyError('invalid_agent_import_scan_input_json');
+  }
+
+  const normalizedScanInput = normalizeAgentScanInput(scanInputObj);
+  const mirror = writeAgentImportMirror(runtimeBaseDir, staging_id, normalizedScanInput);
+  if (mirror.written_files <= 0) {
+    return {
+      vetter_status: 'scan_error',
+      vetter_audit_ref: audit_ref,
+      vetter_report_ref: '',
+      vetter_critical_count: 0,
+      vetter_warn_count: 0,
+      promotion_blocked_reason: 'vetter_no_scannable_files',
+    };
+  }
+
+  let reportPath = '';
+  try {
+    const report = scanAgentSkillDirectoryWithSummary(mirror.mirror_dir);
+    const finalReport = {
+      ...report,
+      staging_id,
+      audit_ref,
+      generated_at_ms,
+    };
+    reportPath = writeAgentImportVetterReport(runtimeBaseDir, staging_id, finalReport);
+    const status = normalizeAgentVetterStatus(finalReport.status, 'scan_error');
+    return {
+      vetter_status: status,
+      vetter_audit_ref: audit_ref,
+      vetter_report_ref: reportPath,
+      vetter_critical_count: Number(finalReport?.summary?.critical_count || 0),
+      vetter_warn_count: Number(finalReport?.summary?.warn_count || 0),
+      promotion_blocked_reason: status === 'critical'
+        ? 'vetter_critical_findings'
+        : status === 'scan_error'
+          ? 'vetter_scan_error'
+          : '',
+    };
+  } catch (err) {
+    const report = {
+      schema_version: 'xhub.agent_skill_vetter_report.v1',
+      scanner_version: 'hub.agent.vetter.v1',
+      staging_id,
+      status: 'scan_error',
+      summary: {
+        scanned_files: 0,
+        critical_count: 0,
+        warn_count: 0,
+        info_count: 0,
+      },
+      findings: [],
+      audit_ref,
+      generated_at_ms,
+      error: String(err?.message || err || 'scan_error'),
+    };
+    try {
+      reportPath = writeAgentImportVetterReport(runtimeBaseDir, staging_id, report);
+    } catch {
+      reportPath = '';
+    }
+    return {
+      vetter_status: 'scan_error',
+      vetter_audit_ref: audit_ref,
+      vetter_report_ref: reportPath,
+      vetter_critical_count: 0,
+      vetter_warn_count: 0,
+      promotion_blocked_reason: 'vetter_scan_error',
+    };
+  }
+}
+
+function writeAgentImportRecord(runtimeBaseDir, record) {
+  const status = safeString(record?.status).toLowerCase() === 'quarantined' ? 'quarantined' : 'staged';
+  const fp = agentImportRecordPath(runtimeBaseDir, record?.staging_id, status);
+  if (!fp) return false;
+  return writeJsonAtomic(fp, record);
+}
+
+export function getAgentImportRecord(runtimeBaseDir, stagingId) {
+  const candidates = [
+    agentImportRecordPath(runtimeBaseDir, stagingId, 'staged'),
+    agentImportRecordPath(runtimeBaseDir, stagingId, 'quarantined'),
+    legacyOpenClawImportRecordPath(runtimeBaseDir, stagingId, 'staged'),
+    legacyOpenClawImportRecordPath(runtimeBaseDir, stagingId, 'quarantined'),
+  ].filter(Boolean);
+  for (const fp of candidates) {
+    const obj = readJsonSafe(fp);
+    if (isObject(obj)) return obj;
+  }
+  return null;
+}
+
+export function stageAgentImport(runtimeBaseDir, {
+  importManifestJson,
+  findingsJson,
+  scanInputJson,
+  requestedBy,
+  note,
+  auditRef,
+} = {}) {
+  if (!ensureSkillsStoreDirs(runtimeBaseDir)) {
+    throw new SkillStoreDenyError('skills_store_unavailable');
+  }
+  const manifestText = safeString(importManifestJson);
+  if (!manifestText) {
+    throw new SkillStoreDenyError('missing_agent_import_manifest');
+  }
+
+  let manifestObj = null;
+  try {
+    manifestObj = JSON.parse(manifestText);
+  } catch {
+    throw new SkillStoreDenyError('invalid_agent_import_manifest_json');
+  }
+
+  let findingsObj = [];
+  const findingsText = safeString(findingsJson);
+  if (findingsText) {
+    try {
+      findingsObj = JSON.parse(findingsText);
+    } catch {
+      throw new SkillStoreDenyError('invalid_agent_import_findings_json');
+    }
+  }
+
+  const record = buildAgentImportRecord({
+    manifest: manifestObj,
+    findings: findingsObj,
+    requestedBy,
+    note,
+    auditRef,
+    createdAtMs: nowMs(),
+  });
+  const vetter = evaluateAgentImportVetter(runtimeBaseDir, record, scanInputJson);
+  record.vetter_status = vetter.vetter_status;
+  record.vetter_audit_ref = vetter.vetter_audit_ref;
+  record.vetter_report_ref = vetter.vetter_report_ref;
+  record.vetter_critical_count = vetter.vetter_critical_count;
+  record.vetter_warn_count = vetter.vetter_warn_count;
+  record.promotion_blocked_reason = vetter.promotion_blocked_reason;
+  if (record.status !== 'quarantined' && vetter.vetter_status === 'critical') {
+    record.status = 'quarantined';
+  }
+  record.updated_at_ms = nowMs();
+  if (!writeAgentImportRecord(runtimeBaseDir, record)) {
+    throw new SkillStoreDenyError('skills_store_unavailable');
+  }
+  return {
+    staging_id: record.staging_id,
+    status: record.status,
+    audit_ref: record.audit_ref,
+    preflight_status: record.import_manifest.preflight_status,
+    skill_id: record.import_manifest.skill_id,
+    policy_scope: record.import_manifest.policy_scope,
+    findings_count: Array.isArray(record.findings) ? record.findings.length : 0,
+    vetter_status: normalizeAgentVetterStatus(record.vetter_status, 'pending'),
+    vetter_critical_count: Number(record.vetter_critical_count || 0),
+    vetter_warn_count: Number(record.vetter_warn_count || 0),
+    vetter_audit_ref: safeString(record.vetter_audit_ref),
+    record_path: agentImportRecordPath(runtimeBaseDir, record.staging_id, record.status),
+  };
+}
+
+export function promoteAgentImport(runtimeBaseDir, {
+  stagingId,
+  packageSha256,
+  userId,
+  projectId,
+  note,
+  auditRef,
+} = {}) {
+  const staging_id = normalizeRecordToken(stagingId, '');
+  if (!staging_id) {
+    throw new SkillStoreDenyError('missing_agent_staging_id');
+  }
+  const record = getAgentImportRecord(runtimeBaseDir, staging_id);
+  if (!isObject(record)) {
+    throw new SkillStoreDenyError('agent_import_not_found', { staging_id });
+  }
+  if (safeString(record.status).toLowerCase() === 'quarantined') {
+    throw new SkillStoreDenyError('agent_import_quarantined', { staging_id });
+  }
+  const vetter_status = normalizeAgentVetterStatus(record?.vetter_status, 'pending');
+  if (vetter_status === 'pending') {
+    throw new SkillStoreDenyError('agent_import_vetter_pending', { staging_id });
+  }
+  if (vetter_status === 'scan_error') {
+    throw new SkillStoreDenyError('agent_import_vetter_scan_error', { staging_id });
+  }
+  if (vetter_status === 'critical') {
+    throw new SkillStoreDenyError('agent_import_vetter_critical', { staging_id });
+  }
+
+  const manifest = normalizeAgentImportManifest(record.import_manifest);
+  const scope = manifest.policy_scope === 'global'
+    ? 'SKILL_PIN_SCOPE_GLOBAL'
+    : manifest.policy_scope === 'project'
+      ? 'SKILL_PIN_SCOPE_PROJECT'
+      : 'SKILL_PIN_SCOPE_UNSPECIFIED';
+  if (scope === 'SKILL_PIN_SCOPE_UNSPECIFIED') {
+    throw new SkillStoreDenyError('unsupported_agent_policy_scope', {
+      staging_id,
+      policy_scope: manifest.policy_scope,
+    });
+  }
+
+  const package_sha256 = safeString(packageSha256).toLowerCase();
+  if (!package_sha256) {
+    throw new SkillStoreDenyError('missing_package_sha256');
+  }
+  const meta = getSkillPackageMeta(runtimeBaseDir, package_sha256);
+  if (!meta) {
+    throw new SkillStoreDenyError('package_not_found', { package_sha256 });
+  }
+  if (safeString(meta.skill_id) !== safeString(manifest.skill_id)) {
+    throw new SkillStoreDenyError('staged_skill_package_mismatch', {
+      staging_id,
+      expected_skill_id: manifest.skill_id,
+      actual_skill_id: safeString(meta.skill_id),
+      package_sha256,
+    });
+  }
+
+  const pin = setSkillPin(runtimeBaseDir, {
+    scope,
+    userId,
+    projectId,
+    skillId: manifest.skill_id,
+    packageSha256: package_sha256,
+    note: safeString(note || record.note || ''),
+  });
+
+  const updated = {
+    ...record,
+    status: 'enabled',
+    updated_at_ms: nowMs(),
+    audit_ref: safeString(auditRef || record.audit_ref) || record.audit_ref,
+    enabled_package_sha256: package_sha256,
+    enabled_scope: scope,
+    user_id: safeString(userId),
+    project_id: safeString(projectId),
+    pin_note: safeString(note || record.note || ''),
+    promotion_blocked_reason: '',
+    pin_result: {
+      scope: safeString(pin.scope),
+      package_sha256: safeString(pin.package_sha256).toLowerCase(),
+      previous_package_sha256: safeString(pin.previous_package_sha256).toLowerCase(),
+      updated_at_ms: Number(pin.updated_at_ms || 0),
+    },
+  };
+  if (!writeAgentImportRecord(runtimeBaseDir, updated)) {
+    throw new SkillStoreDenyError('skills_store_unavailable');
+  }
+  return {
+    staging_id,
+    status: 'enabled',
+    audit_ref: updated.audit_ref,
+    package_sha256,
+    scope,
+    skill_id: manifest.skill_id,
+    previous_package_sha256: safeString(pin.previous_package_sha256).toLowerCase(),
+    record_path: agentImportRecordPath(runtimeBaseDir, staging_id, 'staged'),
+  };
+}
+
+export function getOpenClawImportRecord(runtimeBaseDir, stagingId) {
+  return getAgentImportRecord(runtimeBaseDir, stagingId);
+}
+
+export function stageOpenClawImport(runtimeBaseDir, args = {}) {
+  return stageAgentImport(runtimeBaseDir, args);
+}
+
+export function promoteOpenClawImport(runtimeBaseDir, args = {}) {
+  return promoteAgentImport(runtimeBaseDir, args);
 }
 
 export function normalizeSkillMeta(input, fallbackSourceId = '') {
@@ -1408,6 +2235,8 @@ export function getSkillPackageMeta(runtimeBaseDir, packageSha256) {
   for (const it of snap.skills) {
     if (safeString(it.package_sha256).toLowerCase() === sha) return it;
   }
+  const official = findOfficialAgentPublishedSkill(sha);
+  if (official) return official;
   return null;
 }
 
@@ -1440,6 +2269,13 @@ export function getSkillManifest(runtimeBaseDir, packageSha256) {
     });
   }
   if (meta?.manifest_json) return String(meta.manifest_json);
+  if (meta?.manifest_fp) {
+    try {
+      return fs.readFileSync(meta.manifest_fp, 'utf8');
+    } catch {
+      return '';
+    }
+  }
   const fp = manifestPath(runtimeBaseDir, sha);
   try {
     return fs.readFileSync(fp, 'utf8');
@@ -1459,6 +2295,13 @@ export function readSkillPackage(runtimeBaseDir, packageSha256) {
       publisher_id: meta.publisher_id,
     });
   }
+  if (meta?.package_fp) {
+    try {
+      return fs.readFileSync(meta.package_fp);
+    } catch {
+      return null;
+    }
+  }
   const fp = packagePath(runtimeBaseDir, packageSha256);
   if (!fp) return null;
   try {
@@ -1466,6 +2309,62 @@ export function readSkillPackage(runtimeBaseDir, packageSha256) {
   } catch {
     return null;
   }
+}
+
+function mirrorSkillPackageMetaIntoRuntimeIndex(runtimeBaseDir, packageSha256) {
+  const package_sha256 = safeString(packageSha256).toLowerCase();
+  if (!package_sha256) return null;
+  if (!ensureSkillsStoreDirs(runtimeBaseDir)) return null;
+
+  const meta = getSkillPackageMeta(runtimeBaseDir, package_sha256);
+  if (!meta) return null;
+
+  const manifest_json = safeString(meta.manifest_json || getSkillManifest(runtimeBaseDir, package_sha256));
+  let package_size_bytes = Math.max(0, Number(meta.package_size_bytes || 0));
+  if (!(package_size_bytes > 0)) {
+    const packageBytes = readSkillPackage(runtimeBaseDir, package_sha256);
+    package_size_bytes = Buffer.isBuffer(packageBytes) ? packageBytes.length : 0;
+  }
+
+  const now = nowMs();
+  const normalized = normalizePackageEntry({
+    ...meta,
+    package_sha256,
+    manifest_json,
+    package_size_bytes,
+    package_fp: safeString(meta.package_fp || ''),
+    manifest_fp: safeString(meta.manifest_fp || ''),
+    created_at_ms: Number(meta.created_at_ms || now),
+    updated_at_ms: now,
+  });
+  if (!normalized) return null;
+
+  const snap = loadSkillsIndex(runtimeBaseDir);
+  const skills = Array.isArray(snap.skills) ? [...snap.skills] : [];
+  const next = [];
+  let updated = false;
+  for (const row of skills) {
+    if (safeString(row?.package_sha256).toLowerCase() !== package_sha256) {
+      next.push(row);
+      continue;
+    }
+    next.push({
+      ...row,
+      ...normalized,
+      created_at_ms: Number(row?.created_at_ms || normalized.created_at_ms || now),
+      updated_at_ms: now,
+    });
+    updated = true;
+  }
+  if (!updated) {
+    next.push(normalized);
+  }
+  saveSkillsIndex(runtimeBaseDir, {
+    schema_version: 'skills_store_index.v1',
+    updated_at_ms: now,
+    skills: next,
+  });
+  return normalized;
 }
 
 export function setSkillPin(runtimeBaseDir, { scope, userId, projectId, skillId, packageSha256, note }) {
@@ -1491,6 +2390,7 @@ export function setSkillPin(runtimeBaseDir, { scope, userId, projectId, skillId,
     skill_id,
     publisher_id: skill.publisher_id,
   });
+  mirrorSkillPackageMetaIntoRuntimeIndex(runtimeBaseDir, package_sha256);
 
   const pins = loadSkillsPins(runtimeBaseDir);
   const now = nowMs();
@@ -1583,6 +2483,26 @@ export function searchSkills(runtimeBaseDir, { query, sourceFilter, limit }) {
     meta.install_hint = safeString(it.install_hint || '');
     if (sf && safeString(meta.source_id) !== sf) continue;
     merged.push({ meta, uploaded: true, sort_updated_at_ms: Number(it.updated_at_ms || 0) });
+  }
+
+  const official = loadOfficialAgentPublishedIndex();
+  for (const it of official.skills) {
+    const revoked = revocationDecision(runtimeBaseDir, {
+      package_sha256: it.package_sha256,
+      skill_id: it.skill_id,
+      publisher_id: it.publisher_id,
+    });
+    if (revoked.revoked) continue;
+    const meta = normalizeSkillMeta(it, OFFICIAL_AGENT_CATALOG_SOURCE_ID);
+    if (!meta) continue;
+    meta.package_sha256 = safeString(it.package_sha256).toLowerCase();
+    meta.install_hint = safeString(it.install_hint || '');
+    if (sf && safeString(meta.source_id) !== sf) continue;
+    merged.push({
+      meta,
+      uploaded: true,
+      sort_updated_at_ms: Number(it.updated_at_ms || official.generated_at_ms || 0),
+    });
   }
 
   const sources = loadSkillSources(runtimeBaseDir);
@@ -1713,11 +2633,12 @@ export function resolveSkillsWithTrace(runtimeBaseDir, { userId, projectId }) {
     rows.sort(comparePinCandidate);
     const winner = rows[0];
     if (!winner) continue;
-    const pkg = bySha.get(safeString(winner.package_sha256).toLowerCase());
+    const winnerSha = safeString(winner.package_sha256).toLowerCase();
+    const pkg = bySha.get(winnerSha) || getSkillPackageMeta(runtimeBaseDir, winnerSha);
     if (!pkg) {
       blocked.push({
         skill_id: sid,
-        package_sha256: safeString(winner.package_sha256).toLowerCase(),
+        package_sha256: winnerSha,
         scope: winner.scope,
         deny_code: 'package_not_found',
       });
@@ -1741,7 +2662,7 @@ export function resolveSkillsWithTrace(runtimeBaseDir, { userId, projectId }) {
 
     const meta = normalizeSkillMeta(pkg, pkg.source_id || 'local');
     if (!meta) continue;
-    meta.package_sha256 = safeString(winner.package_sha256).toLowerCase();
+    meta.package_sha256 = winnerSha;
     resolved.push({
       scope: winner.scope,
       skill: meta,
@@ -1767,6 +2688,16 @@ export function skillsGovernanceSnapshotPaths(runtimeBaseDir) {
     pins: { active: pins, previous_stable: stableSnapshotPath(pins) },
     trusted_publishers: { active: trusted, previous_stable: stableSnapshotPath(trusted) },
     revoked: { active: revoked, previous_stable: stableSnapshotPath(revoked) },
+    agent_imports: {
+      staging_dir: agentStagingDir(runtimeBaseDir),
+      quarantine_dir: agentQuarantineDir(runtimeBaseDir),
+      mirror_dir: agentMirrorBaseDir(runtimeBaseDir),
+      reports_dir: agentReportsDir(runtimeBaseDir),
+    },
+    openclaw_imports: {
+      staging_dir: agentStagingDir(runtimeBaseDir),
+      quarantine_dir: agentQuarantineDir(runtimeBaseDir),
+    },
   };
 }
 

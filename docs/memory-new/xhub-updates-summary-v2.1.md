@@ -11,7 +11,7 @@
 
 ## 1. 更新概览
 
-基于与 OpenClaw 和 Claude-Mem 两个开源项目的深入对比分析，我们识别出 X-Hub 系统的 6 个核心劣势，并制定了完整的改进方案。**核心突破：采用Memory v3 架构（5层逻辑 + 4层物理），全面超越现有开源方案。**
+基于与 skills ecosystem 和 progressive-disclosure reference architecture 两个开源项目的深入对比分析，我们识别出 X-Hub 系统的 6 个核心劣势，并制定了完整的改进方案。**核心突破：采用Memory v3 架构（5层逻辑 + 4层物理），全面超越现有开源方案。**
 
 ### 1.1 架构升级：三层 → 四层
 
@@ -39,7 +39,7 @@ vs 三层架构:
 - P95 延迟: 10ms → 5ms（50% 提升）
 - P99 延迟: 50ms → 8ms（84% 提升）
 
-vs Claude-Mem:
+vs progressive-disclosure reference architecture:
 - 平均延迟: 7.2ms → 4.9ms（31.5% 提升）
 - P95 延迟: 20ms → 5ms（4x 提升）
 - P99 延迟: 100ms → 8ms（12.5x 提升）
@@ -220,7 +220,7 @@ L3: Cold Storage（冷存储）
 
 **解决方案**:
 ```
-借鉴 Claude-Mem 的 3 层工作流:
+借鉴 progressive-disclosure reference architecture 的 3 层工作流:
 
 Stage 1: search_index()
 - 返回简要索引（50-100 tokens/结果）
@@ -452,9 +452,9 @@ memory:
 | P95 延迟 | 10ms | 5ms | 50% |
 | P99 延迟 | 50ms | 8ms | 84% |
 
-### 4.2 vs Claude-Mem
+### 4.2 vs progressive-disclosure reference architecture
 
-| 指标 | Claude-Mem | X-Hub v3.0 | 提升 |
+| 指标 | progressive-disclosure reference architecture | X-Hub v3.0 | 提升 |
 |------|-----------|-----------|------|
 | 平均延迟 | 7.2ms | 4.9ms | 31.5% |
 | P95 延迟 | 20ms | 5ms | 4x |
@@ -607,7 +607,7 @@ xhub-system-improvements-roadmap-v2.1.md (v3.0)
 
 ## 8. 总结
 
-本次更新（v2.0 → v3.0）是 X-Hub 系统的重大架构升级，基于与 OpenClaw 和 Claude-Mem 的深入对比分析，采用Memory v3 架构（5层逻辑 + 4层物理），针对性地解决了 6 个核心劣势：
+本次更新（v2.0 → v3.0）是 X-Hub 系统的重大架构升级，基于与 skills ecosystem 和 progressive-disclosure reference architecture 的深入对比分析，采用Memory v3 架构（5层逻辑 + 4层物理），针对性地解决了 6 个核心劣势：
 
 **已解决**:
 1. ✅ 性能瓶颈 → 4层物理架构（平均延迟提升 24%）
@@ -625,8 +625,8 @@ xhub-system-improvements-roadmap-v2.1.md (v3.0)
 
 **全面超越**:
 - ✅ vs 三层架构：平均延迟提升 24%，P95 延迟提升 50%
-- ✅ vs Claude-Mem：平均延迟提升 31.5%，P95 延迟提升 4x，成本降低 92%
-- ✅ vs OpenClaw：更先进的架构 + 更灵活的部署 + 独有的道德约束
+- ✅ vs progressive-disclosure reference architecture：平均延迟提升 31.5%，P95 延迟提升 4x，成本降低 92%
+- ✅ vs skills ecosystem：更先进的架构 + 更灵活的部署 + 独有的道德约束
 
 实施完成后，X-Hub v3.0 将在功能性、性能、效率、易用性上全面超越现有开源方案，同时保持独有的道德约束优势。
 

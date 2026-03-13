@@ -5,6 +5,7 @@ import path from 'node:path';
 
 import {
   isRuntimeProviderReady,
+  listRuntimeModelRecords,
   localProviderForModel,
   readRuntimeStatusSnapshot,
   runtimeModelSupportsTask,
@@ -50,6 +51,32 @@ run('readRuntimeStatusSnapshot exposes provider-aware readiness', () => {
         ok: true,
         reasonCode: 'ready',
         availableTaskKinds: ['embedding'],
+        resourcePolicy: {
+          preferredDevice: 'cpu',
+          memoryFloorMB: 1024,
+          dtype: 'float32',
+          concurrencyLimit: 2,
+          taskLimits: {
+            embedding: 2,
+          },
+          queueingSupported: true,
+          queueMode: 'opt_in_wait',
+        },
+        schedulerState: {
+          activeTaskCount: 1,
+          queuedTaskCount: 2,
+          activeTasks: [
+            {
+              leaseId: 'lease-1',
+              taskKind: 'embedding',
+              modelId: 'hf-embed',
+              requestId: 'req-1',
+              startedAt: Date.now() / 1000.0,
+            },
+          ],
+          contentionCount: 3,
+          updatedAt: Date.now() / 1000.0,
+        },
         updatedAt: Date.now() / 1000.0,
       },
     },
@@ -61,6 +88,11 @@ run('readRuntimeStatusSnapshot exposes provider-aware readiness', () => {
   assert.deepEqual(snapshot.ready_provider_ids, ['transformers']);
   assert.equal(isRuntimeProviderReady(baseDir, 'transformers', 15_000), true);
   assert.equal(isRuntimeProviderReady(baseDir, 'mlx', 15_000), false);
+  assert.equal(snapshot.providers.transformers.resource_policy.concurrency_limit, 2);
+  assert.equal(snapshot.providers.transformers.resource_policy.task_limits.embedding, 2);
+  assert.equal(snapshot.providers.transformers.scheduler_state.active_task_count, 1);
+  assert.equal(snapshot.providers.transformers.scheduler_state.queued_task_count, 2);
+  assert.equal(snapshot.providers.transformers.scheduler_state.active_tasks.length, 1);
 });
 
 run('runtimeModelSupportsTask filters non text local models and preserves MLX legacy default', () => {
@@ -89,4 +121,31 @@ run('runtimeModelSupportsTask filters non text local models and preserves MLX le
   assert.equal(runtimeModelSupportsTask(baseDir, 'mlx-qwen', 'text_generate'), true);
   assert.equal(runtimeModelSupportsTask(baseDir, 'hf-embed', 'text_generate'), false);
   assert.equal(runtimeModelSupportsTask(baseDir, 'hf-embed', 'embedding'), true);
+});
+
+run('listRuntimeModelRecords exposes normalized task and modality metadata', () => {
+  const baseDir = makeTempRuntimeDir();
+  writeJson(path.join(baseDir, 'models_state.json'), {
+    updatedAt: Date.now() / 1000.0,
+    models: [
+      {
+        id: 'hf-embed',
+        name: 'HF Embed',
+        backend: 'transformers',
+        modelPath: '/models/hf-embed',
+        taskKinds: ['embedding'],
+        inputModalities: ['text'],
+        outputModalities: ['embedding'],
+        modelFormat: 'huggingface',
+      },
+    ],
+  });
+
+  const rows = listRuntimeModelRecords(baseDir);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].model_id, 'hf-embed');
+  assert.deepEqual(rows[0].task_kinds, ['embedding']);
+  assert.deepEqual(rows[0].input_modalities, ['text']);
+  assert.deepEqual(rows[0].output_modalities, ['embedding']);
+  assert.equal(rows[0].model_format, 'huggingface');
 });

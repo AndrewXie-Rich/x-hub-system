@@ -278,15 +278,15 @@ enum SupervisorPortfolioSnapshotBuilder {
 
     private static func priority(for state: SupervisorPortfolioProjectState) -> Int {
         switch state {
-        case .awaitingAuthorization:
-            return 0
         case .blocked:
+            return 0
+        case .awaitingAuthorization:
             return 1
         case .active:
             return 2
-        case .completed:
-            return 3
         case .idle:
+            return 3
+        case .completed:
             return 4
         }
     }

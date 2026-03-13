@@ -1,0 +1,397 @@
+{
+  "schema_version": "xhub.multimodal_supervisor_control_plane_contract.v1",
+  "contract_version": "2026-03-13",
+  "contract_id": "MMS-W1-W2",
+  "owner_lane": "Hub-L5/XT-L2/Mobile-L1",
+  "execution_chain": [
+    "ingress",
+    "identity_bind",
+    "normalize",
+    "project_bind",
+    "risk_classify",
+    "route_decide",
+    "policy",
+    "grant",
+    "execute",
+    "audit",
+    "memory_project"
+  ],
+  "surface_type_enum": [
+    "xt_ui",
+    "xt_voice",
+    "mobile_companion",
+    "wearable_companion",
+    "slack",
+    "telegram",
+    "feishu",
+    "whatsapp_cloud_api",
+    "whatsapp_personal_runner",
+    "runner_event",
+    "hub_internal"
+  ],
+  "trust_level_enum": [
+    "trusted_local_surface",
+    "paired_surface",
+    "external_untrusted_ingress",
+    "runner_observation",
+    "hub_internal"
+  ],
+  "normalized_intent_type_enum": [
+    "progress_query",
+    "directive",
+    "authorization_request",
+    "approval_card_action",
+    "mission_checkpoint",
+    "status_ack",
+    "help",
+    "cancel",
+    "unknown"
+  ],
+  "route_decision_enum": [
+    "hub_only",
+    "hub_to_xt",
+    "hub_to_runner",
+    "fail_closed"
+  ],
+  "projection_kind_enum": [
+    "progress_brief",
+    "pending_grants_digest",
+    "next_best_action",
+    "mission_checkpoint_digest"
+  ],
+  "guidance_type_enum": [
+    "priority_shift",
+    "scope_narrow",
+    "scope_hold",
+    "resume_lane",
+    "pause_lane",
+    "delivery_mode_change",
+    "budget_change_request",
+    "mission_replan_request"
+  ],
+  "checkpoint_type_enum": [
+    "payment",
+    "substitution",
+    "budget_exceed",
+    "scope_expansion",
+    "external_side_effect",
+    "remote_posture_drop",
+    "geofence_exit"
+  ],
+  "risk_tier_enum": [
+    "low",
+    "medium",
+    "high",
+    "critical"
+  ],
+  "decision_path_enum": [
+    "voice_only",
+    "voice_plus_mobile",
+    "approval_card",
+    "manual_review"
+  ],
+  "resolution_state_enum": [
+    "pending",
+    "confirmed",
+    "denied",
+    "fail_closed"
+  ],
+  "checkpoint_state_enum": [
+    "pending",
+    "verified",
+    "denied",
+    "downgraded",
+    "fail_closed"
+  ],
+  "deny_code_dictionary": [
+    {
+      "deny_code": "none",
+      "stage": "success_path",
+      "action": "allow",
+      "retryable": false,
+      "meaning": "No denial applied."
+    },
+    {
+      "deny_code": "identity_unbound",
+      "stage": "identity_bind",
+      "action": "fail_closed",
+      "retryable": true,
+      "meaning": "Surface actor is not bound to a Hub principal."
+    },
+    {
+      "deny_code": "project_not_bound",
+      "stage": "project_bind",
+      "action": "fail_closed",
+      "retryable": true,
+      "meaning": "Request cannot be safely bound to a project scope."
+    },
+    {
+      "deny_code": "ambiguous_target",
+      "stage": "normalize",
+      "action": "fail_closed",
+      "retryable": true,
+      "meaning": "Intent target, project, lane, or mission is ambiguous."
+    },
+    {
+      "deny_code": "scope_expansion_detected",
+      "stage": "policy",
+      "action": "fail_closed",
+      "retryable": false,
+      "meaning": "Guidance or action expands scope beyond allowed boundary."
+    },
+    {
+      "deny_code": "xt_offline",
+      "stage": "route_decide",
+      "action": "hub_only_or_fail_closed",
+      "retryable": true,
+      "meaning": "XT route selected but target XT is offline."
+    },
+    {
+      "deny_code": "runner_not_ready",
+      "stage": "route_decide",
+      "action": "fail_closed",
+      "retryable": true,
+      "meaning": "Trusted runner route selected but local execution plane is not ready."
+    },
+    {
+      "deny_code": "trusted_automation_project_not_bound",
+      "stage": "route_decide",
+      "action": "fail_closed",
+      "retryable": true,
+      "meaning": "Project is not bound to trusted automation profile."
+    },
+    {
+      "deny_code": "remote_posture_insufficient",
+      "stage": "policy",
+      "action": "fail_closed",
+      "retryable": true,
+      "meaning": "Remote posture does not satisfy strict automation path requirements."
+    },
+    {
+      "deny_code": "grant_required",
+      "stage": "grant",
+      "action": "fail_closed",
+      "retryable": true,
+      "meaning": "Grant is required and not currently allowed."
+    },
+    {
+      "deny_code": "voice_only_not_allowed",
+      "stage": "grant",
+      "action": "fail_closed",
+      "retryable": true,
+      "meaning": "High-risk action cannot be approved through voice only."
+    },
+    {
+      "deny_code": "policy_denied",
+      "stage": "policy",
+      "action": "fail_closed",
+      "retryable": true,
+      "meaning": "Policy explicitly denied the request."
+    },
+    {
+      "deny_code": "challenge_expired",
+      "stage": "grant",
+      "action": "fail_closed",
+      "retryable": true,
+      "meaning": "Voice or checkpoint challenge expired."
+    },
+    {
+      "deny_code": "device_not_bound",
+      "stage": "grant_execute",
+      "action": "fail_closed",
+      "retryable": true,
+      "meaning": "Device binding failed during challenge or execution."
+    },
+    {
+      "deny_code": "runtime_error",
+      "stage": "execute",
+      "action": "fail_closed",
+      "retryable": true,
+      "meaning": "Runtime failed while processing the request."
+    }
+  ],
+  "objects": {
+    "xhub.supervisor_surface_ingress.v1": {
+      "required_fields": [
+        "schema_version",
+        "ingress_id",
+        "request_id",
+        "surface_type",
+        "surface_instance_id",
+        "actor_ref",
+        "project_id",
+        "run_id",
+        "trust_level",
+        "normalized_intent_type",
+        "raw_intent_ref",
+        "received_at_ms",
+        "audit_ref"
+      ],
+      "optional_fields": [
+        "conversation_id",
+        "thread_key",
+        "preferred_device_id",
+        "mission_id",
+        "structured_action_ref"
+      ],
+      "enum_refs": {
+        "surface_type": "surface_type_enum",
+        "trust_level": "trust_level_enum",
+        "normalized_intent_type": "normalized_intent_type_enum"
+      },
+      "idempotency_key": [
+        "surface_type",
+        "surface_instance_id",
+        "request_id"
+      ],
+      "rules": [
+        "Missing project_id is only allowed for help, status_ack, or hub_only-safe queries.",
+        "External attachments and links must stay behind raw_intent_ref until normalized."
+      ]
+    },
+    "xhub.supervisor_route_decision.v1": {
+      "required_fields": [
+        "schema_version",
+        "route_id",
+        "request_id",
+        "project_id",
+        "decision",
+        "risk_tier",
+        "xt_online",
+        "runner_required",
+        "same_project_scope",
+        "requires_grant",
+        "deny_code",
+        "audit_ref"
+      ],
+      "optional_fields": [
+        "preferred_device_id",
+        "bound_device_id",
+        "runner_id",
+        "mission_id",
+        "grant_scope"
+      ],
+      "enum_refs": {
+        "decision": "route_decision_enum",
+        "risk_tier": "risk_tier_enum"
+      },
+      "rules": [
+        "decision=hub_to_runner requires runner_required=true.",
+        "decision=hub_to_xt or hub_to_runner requires same_project_scope=true.",
+        "xt_online=false must not produce fake success."
+      ]
+    },
+    "xhub.supervisor_brief_projection.v1": {
+      "required_fields": [
+        "schema_version",
+        "projection_id",
+        "projection_kind",
+        "project_id",
+        "run_id",
+        "status",
+        "topline",
+        "next_best_action",
+        "evidence_refs",
+        "generated_at_ms",
+        "audit_ref"
+      ],
+      "optional_fields": [
+        "critical_blocker",
+        "pending_grant_count",
+        "mission_id",
+        "tts_script",
+        "card_summary",
+        "expires_at_ms"
+      ],
+      "enum_refs": {
+        "projection_kind": "projection_kind_enum"
+      },
+      "rules": [
+        "Every projection must carry evidence_refs.",
+        "pending_grants_digest must include pending_grant_count.",
+        "Raw audio and external attachment body must not be embedded in brief projections."
+      ]
+    },
+    "xhub.supervisor_guidance_resolution.v1": {
+      "required_fields": [
+        "schema_version",
+        "directive_id",
+        "request_id",
+        "project_id",
+        "run_id",
+        "guidance_type",
+        "normalized_instruction",
+        "target_scope",
+        "requires_confirmation",
+        "requires_authorization",
+        "resolution",
+        "deny_code",
+        "audit_ref"
+      ],
+      "target_scope_fields": [
+        "scope_type",
+        "pool_id",
+        "lane_id",
+        "mission_id"
+      ],
+      "enum_refs": {
+        "guidance_type": "guidance_type_enum",
+        "resolution": "resolution_state_enum"
+      },
+      "rules": [
+        "Guidance cannot be written into orchestrator state before confirmed.",
+        "Scope expansion, delivery freeze override, or ambiguous target must fail closed."
+      ]
+    },
+    "xhub.supervisor_checkpoint_challenge.v1": {
+      "required_fields": [
+        "schema_version",
+        "challenge_id",
+        "request_id",
+        "project_id",
+        "checkpoint_type",
+        "risk_tier",
+        "decision_path",
+        "state",
+        "scope_digest",
+        "evidence_refs",
+        "audit_ref"
+      ],
+      "optional_fields": [
+        "mission_id",
+        "amount_digest",
+        "requires_mobile_confirm",
+        "bound_device_id",
+        "expires_at_ms",
+        "deny_code"
+      ],
+      "enum_refs": {
+        "checkpoint_type": "checkpoint_type_enum",
+        "risk_tier": "risk_tier_enum",
+        "decision_path": "decision_path_enum",
+        "state": "checkpoint_state_enum"
+      },
+      "rules": [
+        "High and critical risk default to requires_mobile_confirm=true.",
+        "decision_path=voice_only is only valid for low risk.",
+        "payment checkpoint requires amount_digest.",
+        "state=verified can only be written by Hub challenge/verify chain."
+      ]
+    }
+  },
+  "memory_write_boundary": {
+    "allow_longterm": [
+      "structured_directive_summary",
+      "brief_projection_summary",
+      "challenge_result_summary",
+      "mission_checkpoint_result",
+      "evidence_reference"
+    ],
+    "deny_default": [
+      "raw_audio",
+      "external_attachment_body",
+      "external_link_body",
+      "unredacted_transcript"
+    ]
+  }
+}

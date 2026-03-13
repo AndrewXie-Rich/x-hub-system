@@ -113,8 +113,8 @@ final class ModelStore: ObservableObject {
         // Prefer runtime-reported active MLX memory for accuracy.
         if let st = AIRuntimeStatusStorage.load(),
            st.isAlive(ttl: 3.0),
-           st.mlxOk,
-           let b = st.activeMemoryBytes,
+           st.isProviderReady("mlx", ttl: 3.0),
+           let b = st.providerStatus("mlx")?.activeMemoryBytes ?? st.activeMemoryBytes,
            b > 0 {
             return b
         }
@@ -168,6 +168,17 @@ final class ModelStore: ObservableObject {
     }
 
     func enqueue(action: String, modelId: String) {
+        if let model = snapshot.models.first(where: { $0.id == modelId }),
+           !isRemoteModel(model),
+           model.backend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "mlx" {
+            recordImmediateFailure(
+                action: action,
+                modelId: modelId,
+                msg: "Local backend '\(model.backend)' is registered, but load/unload still routes to the legacy MLX command path. Finish Local Provider Runtime wiring before executing this model."
+            )
+            return
+        }
+
         // If the runtime isn't alive, don't enqueue a command that will never be consumed.
         // This prevents the UI from showing an infinite spinner with no explanation.
         if let st = AIRuntimeStatusStorage.load() {
@@ -175,13 +186,14 @@ final class ModelStore: ObservableObject {
                 recordImmediateFailure(action: action, modelId: modelId, msg: "AI runtime is not running. Open Settings -> AI Runtime -> Start.")
                 return
             }
-            if !st.mlxOk {
-                let extra = (st.importError ?? "").isEmpty ? "" : " (\(st.importError ?? ""))"
+            if !st.isProviderReady("mlx", ttl: 3.0) {
+                let mlxError = st.providerStatus("mlx")?.importError ?? st.importError ?? ""
+                let extra = mlxError.isEmpty ? "" : " (\(mlxError))"
                 recordImmediateFailure(
                     action: action,
                     modelId: modelId,
                     msg:
-                        "AI runtime is running but MLX is unavailable\(extra).\n\n" +
+                        "AI runtime is running but the MLX provider is unavailable\(extra).\n\n" +
                             "Fix: open Settings -> AI Runtime (it will show the import error + install hints)."
                 )
                 return
@@ -250,6 +262,14 @@ final class ModelStore: ObservableObject {
             cur.models[idx].modelPath = entry.modelPath
             cur.models[idx].roles = entry.roles
             cur.models[idx].note = entry.note
+            cur.models[idx].modelFormat = entry.modelFormat
+            cur.models[idx].taskKinds = entry.taskKinds
+            cur.models[idx].inputModalities = entry.inputModalities
+            cur.models[idx].outputModalities = entry.outputModalities
+            cur.models[idx].offlineReady = entry.offlineReady
+            cur.models[idx].resourceProfile = entry.resourceProfile
+            cur.models[idx].trustProfile = entry.trustProfile
+            cur.models[idx].processorRequirements = entry.processorRequirements
         } else {
             cur.models.append(
                 HubModel(
@@ -262,7 +282,15 @@ final class ModelStore: ObservableObject {
                     roles: entry.roles,
                     state: .available,
                     modelPath: entry.modelPath,
-                    note: entry.note
+                    note: entry.note,
+                    modelFormat: entry.modelFormat,
+                    taskKinds: entry.taskKinds,
+                    inputModalities: entry.inputModalities,
+                    outputModalities: entry.outputModalities,
+                    offlineReady: entry.offlineReady,
+                    resourceProfile: entry.resourceProfile,
+                    trustProfile: entry.trustProfile,
+                    processorRequirements: entry.processorRequirements
                 )
             )
         }
@@ -321,7 +349,15 @@ final class ModelStore: ObservableObject {
             paramsB: m.paramsB,
             modelPath: mp,
             roles: cleaned,
-            note: m.note
+            note: m.note,
+            modelFormat: m.modelFormat,
+            taskKinds: m.taskKinds,
+            inputModalities: m.inputModalities,
+            outputModalities: m.outputModalities,
+            offlineReady: m.offlineReady,
+            resourceProfile: m.resourceProfile,
+            trustProfile: m.trustProfile,
+            processorRequirements: m.processorRequirements
         )
         cat.models.append(entry)
         ModelCatalogStorage.save(cat)

@@ -52,4 +52,30 @@ final class IPCSecretVaultPayloadTests: XCTestCase {
         XCTAssertEqual(decoded.secretVaultUse?.useToken, "svtok_local_1")
         XCTAssertEqual(decoded.secretVaultUse?.itemID, "sv_local_1")
     }
+
+    func testIPCResponseRoundTripsSecretVaultRedeemPayload() throws {
+        let response = IPCResponse(
+            type: "secret_vault_redeem_ack",
+            reqId: "req-secret-3",
+            ok: true,
+            id: "svl_local_1",
+            error: nil,
+            secretVaultRedeem: IPCSecretVaultRedeemResult(
+                ok: true,
+                source: "hub_local_secret_vault",
+                leaseID: "svl_local_1",
+                itemID: "sv_local_1",
+                plaintext: "CorrectHorseBatteryStaple!",
+                reasonCode: nil
+            )
+        )
+
+        let data = try JSONEncoder().encode(response)
+        let decoded = try JSONDecoder().decode(IPCResponse.self, from: data)
+
+        XCTAssertEqual(decoded.type, "secret_vault_redeem_ack")
+        XCTAssertEqual(decoded.secretVaultRedeem?.leaseID, "svl_local_1")
+        XCTAssertEqual(decoded.secretVaultRedeem?.itemID, "sv_local_1")
+        XCTAssertEqual(decoded.secretVaultRedeem?.plaintext, "CorrectHorseBatteryStaple!")
+    }
 }

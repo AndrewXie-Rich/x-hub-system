@@ -126,3 +126,19 @@ run("XT-W3-33 capture bundle updater dedupes refs and marks executed samples", (
   assert.equal(sample.release_refs_traceable, true);
   assert.equal(updated.status, "executed");
 });
+
+run("XT-W3-33 require-real report carries refreshed F/G shadow statuses when provided", () => {
+  const report = buildRequireRealReport(makeBundle([
+    baseSample({ sample_id: "xt_w3_33_rr_05" }),
+  ]), {
+    shadowStatuses: {
+      f: "candidate_pass_runtime_output_wired",
+      g: "candidate_pass_runtime_digest_rollup_wired",
+    },
+  });
+
+  assert.equal(report.shadow_checklist[0].current_status, "candidate_pass_runtime_output_wired");
+  assert.equal(report.shadow_checklist[1].current_status, "candidate_pass_runtime_digest_rollup_wired");
+  assert.equal(report.gate_readiness["XT-SDK-G5"], "candidate_pass(runtime_output_wired)");
+  assert.equal(report.gate_readiness["XT-SDK-G6"], "candidate_pass(runtime_digest_rollup_wired)");
+});

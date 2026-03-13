@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import XTerminal
 
+@Suite(.serialized)
 struct HubIPCClientOperatorChannelXTCommandSnapshotTests {
     @Test
     func requestOperatorChannelXTCommandsReadsLocalSnapshotAndFiltersProject() async throws {

@@ -1,5 +1,5 @@
 - version: v2.0
-- updatedAt: 2026-03-06
+- updatedAt: 2026-03-12
 - owner: Hub Runtime / X-Terminal Supervisor / Security / QA / Product
 - status: active
 - dispatchPolicy: active
@@ -18,8 +18,11 @@
   - `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md`
   - `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`
   - `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`
+  - `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`
   - `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`
-  - `x-terminal/work-orders/xt-openclaw-skills-compat-reliability-work-orders-v1.md`
+  - `x-terminal/work-orders/xt-w3-31-supervisor-portfolio-awareness-and-project-action-feed-implementation-pack-v1.md`
+  - `x-terminal/work-orders/xt-w3-33-supervisor-decision-kernel-routing-and-memory-governance-implementation-pack-v1.md`
+  - `x-terminal/work-orders/xt-skills-compat-reliability-work-orders-v1.md`
   - `docs/memory-new/xhub-security-innovation-work-orders-v1.md`
 
 ## 0) 使用方式（先看）
@@ -434,7 +437,7 @@
   - decision_owner: AI-COORD-PRIMARY
 - `CR-20260306-003`（accepted）
   - requester: user
-  - change_summary: 新增 `XT-W3-25` 自动化产品面补短板执行包并同步挂入 Command Board，补齐对标 `Cursor Automations` 暴露出的事件驱动、主动解阻、运行操作台、一键启用与竞争性毕业线短板
+  - change_summary: 新增 `XT-W3-25` 自动化产品面补短板执行包并同步挂入 Command Board，补齐对标 `external automation products` 暴露出的事件驱动、主动解阻、运行操作台、一键启用与竞争性毕业线短板
   - urgency: P1
   - impact_lanes: XT-L2, XT-L1, Hub-L5, QA
   - impact_gates: XT-AUTO-G0..G5 / XT-MP-G4..G5 / XT-Ready
@@ -448,15 +451,31 @@
   - impact_gates: XT-MP-G0..G5 / XT-AUTO-G0..G5 / XT-CHAN-G0..G5 / XT-MEM-G0..G5 / XT-Ready
   - preempt_policy: immediate_policy_overlay
   - decision_owner: AI-COORD-PRIMARY
+- `CR-20260312-001`（accepted）
+  - requester: user
+  - change_summary: 将 `XT-W3-24-G..N` 多渠道 Supervisor Operator Channel 直执行包同步挂入 Command Board，要求 Slack/Telegram/Feishu/WhatsApp 按安全优先、Hub-first、复用 OpenClaw 可借资产的口径直接可 claim
+  - urgency: P1
+  - impact_lanes: XT-L2, XT-L1, Hub-L5, QA
+  - impact_gates: XT-CHAN-OP-G0..G6 / XT-CHAN-G2..G5 / XT-AUTO-G1..G4 / XT-Ready
+  - preempt_policy: next_replan_window
+  - decision_owner: AI-COORD-PRIMARY
+- `CR-20260312-002`（accepted）
+  - requester: user
+  - change_summary: 将 `Local Provider Runtime + Transformers` 主线及 `LPR-W1-01..03` 初始任务同步挂入 Command Board，要求把 X-Hub 本地执行面从 MLX-only 升级为 provider-aware local runtime，并为 embeddings / audio / vision 等专业模型保留 Hub-first 接线
+  - urgency: P1
+  - impact_lanes: Hub-L5, XT-L2, QA
+  - impact_gates: LPR-G0..G6 / XT-MEM-G0..G5 / XT-Ready
+  - preempt_policy: next_replan_window
+  - decision_owner: AI-COORD-PRIMARY
 
 ## C. Task Catalog（运行态）
 
 | task_id | lane_owner | priority | status | gate_vector | release_blocker | depends_on | claim_id | claim_ttl_until | evidence_refs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `SKC-W1-01+SKC-W1-02` | `Hub-L5(pool_takeover)` | `P0` | `delivered` | `SKC-G0:PASS,SKC-G1:PASS,SKC-G3:PASS` | `true` | `none` | `claim_skc_w1_01_02_auto_continue_20260302_1926` | `2026-03-04T00:10:46-08:00` | `docs/openclaw_skill_abi_compat.v1.json`, `build/reports/skc_w1_hub_l1_evidence.v1.json`, `build/reports/skc_w1_hub_l1_g3_handoff.v2.json`, `build/reports/skc_w1_hub_l1_autocontinue_checkpoint.v59.json`, `build/reports/skc_w1_hub_l1_autocontinue_checkpoint.v59.consistency.json`, `build/reports/skc_w1_hub_l1_delta_3line.v59.json`, `build/reports/skc_w1_runner_execute_chain_evaluateSkillExecutionGate_evidence.hubl1.v2.json`, `build/reports/skc_w1_hub_l1_require_real_alignment.v14.json`, `build/reports/skc_w1_xt_l2_hub_l1_real_sample_probe_results.v10.json`, `build/reports/skc_w3_08_require_real_sampling_gap.v16.json`, `build/reports/skc_brk_h1_event_bridge_evidence.v1.json`, `build/reports/skc_brk_h1_probe.json`, `build/reports/skc_w1_hub_l1_contract_drift_guard.v3.json`, `build/hub_l5_release_skc_g3_real_sampling.json` |
-| `SKC-W1-03` | `Hub-L5(pool_takeover)` | `P0` | `delivered` | `SKC-G2:PASS,SKC-G4:PASS` | `true` | `SKC-W1-02` | `claim_skc_w1_03_20260301_2135` | `2026-03-02T01:35:00-08:00` | `build/reports/skc_w1_03_hub_l2_evidence.v1.json`, `x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js`, `x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js` |
+| `SKC-W1-01+SKC-W1-02` | `Hub-L5(pool_takeover)` | `P0` | `delivered` | `SKC-G0:PASS,SKC-G1:PASS,SKC-G3:PASS` | `true` | `none` | `claim_skc_w1_01_02_auto_continue_20260302_1926` | `2026-03-04T00:10:46-08:00` | `docs/skills_abi_compat.v1.json`, `build/reports/skc_w1_hub_l1_evidence.v1.json`, `build/reports/skc_w1_hub_l1_g3_handoff.v2.json`, `build/reports/skc_w1_hub_l1_autocontinue_checkpoint.v59.json`, `build/reports/skc_w1_hub_l1_autocontinue_checkpoint.v59.consistency.json`, `build/reports/skc_w1_hub_l1_delta_3line.v59.json`, `build/reports/skc_w1_runner_execute_chain_evaluateSkillExecutionGate_evidence.hubl1.v2.json`, `build/reports/skc_w1_hub_l1_require_real_alignment.v14.json`, `build/reports/skc_w1_xt_l2_hub_l1_real_sample_probe_results.v10.json`, `build/reports/skc_w3_08_require_real_sampling_gap.v16.json`, `build/reports/skc_brk_h1_event_bridge_evidence.v1.json`, `build/reports/skc_brk_h1_probe.json`, `build/reports/skc_w1_hub_l1_contract_drift_guard.v3.json`, `build/hub_l5_release_skc_g3_real_sampling.json` |
+| `SKC-W1-03` | `Hub-L5(pool_takeover)` | `P0` | `delivered` | `SKC-G2:PASS,SKC-G4:PASS` | `true` | `SKC-W1-02` | `claim_skc_w1_03_20260301_2135` | `2026-03-02T01:35:00-08:00` | `build/reports/skc_w1_03_hub_l2_evidence.v1.json`, `x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js`, `x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js` |
 | `SKC-W1-04` | `Hub-L5(pool_takeover)` | `P0` | `delivered` | `SKC-G2:PASS,SKC-G4:PASS` | `true` | `SKC-W1-03` | `claim_skc_w1_04_hub_l2_20260302_0129` | `2026-03-03T22:10:43-08:00` | `build/reports/skc_w1_04_hub_l2_evidence.v1.json`, `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v1.json`, `build/reports/skc_w1_04_hub_l3_preflight_readiness.v1.json`, `build/reports/skc_w1_04_hub_l3_evidence.v1.json`, `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v39.json`, `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v40.json`, `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v41.json`, `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v42.json`, `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v43.json`, `build/reports/skc_w1_04_hub_l3_prereq_monitor.v1.json`, `build/reports/skc_w1_04_hub_l3_prereq_monitor.v2.json`, `build/reports/skc_w1_04_hub_l3_prereq_monitor.v3.json`, `build/reports/skc_w1_04_hub_l3_prereq_monitor.v4.json`, `build/reports/skc_w1_04_hub_l3_runner_execute_chain_probe.v1.json`, `build/reports/skc_w1_04_hub_l3_downstream_unblock_signal.v1.json`, `build/reports/skc_w1_04_hub_l3_directed_baton_dispatch.v1.json`, `build/reports/skc_w1_04_hub_l3_7lane_daily_receipt.v1.json`, `build/reports/skc_w1_runner_execute_chain_evaluateSkillExecutionGate_evidence.hubl1.v1.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v2.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`, `build/hubl3_skc_w1_04_dependency_probe.log`, `build/hubl3_skc_w1_04_contract_check.log`, `build/hubl3_skc_w1_04_skills_store_security.test.log`, `build/hubl3_skc_w1_04_memory_agent_grant_chain.test.log`, `build/hubl3_skills_grant_chain_contract_report.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v45.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v1.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v2.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v3.json`, `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v45.json`, `build/reports/skc_w1_04_hub_l2_drift_guard.v1.json`, `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v46.json`, `build/reports/skc_w1_04_hub_l2_drift_guard.v2.json`, `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v47.json`, `build/reports/skc_w1_04_hub_l2_drift_guard.v3.json`, `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v48.json`, `build/reports/skc_w1_04_hub_l2_drift_guard.v4.json`, `build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v49.json`, `build/reports/skc_w1_04_hub_l2_drift_guard.v5.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v46.json`, `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v44.json`, `build/reports/skc_w1_04_hub_l3_prereq_monitor.v5.json`, `build/reports/skc_w1_04_hub_l3_directed_baton_dispatch.v2.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v4.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v47.json`, `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v45.json`, `build/reports/skc_w1_04_hub_l3_prereq_monitor.v6.json`, `build/reports/skc_w1_04_hub_l3_directed_baton_dispatch.v3.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v5.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v48.json`, `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v46.json`, `build/reports/skc_w1_04_hub_l3_prereq_monitor.v7.json`, `build/reports/skc_w1_04_hub_l3_prereq_b_alignment.v1.json`, `build/reports/skc_w1_04_hub_l3_directed_baton_dispatch.v4.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v6.json`, `build/reports/skc_w1_04_hub_l3_autocontinue_checkpoint.v47.json`, `build/reports/skc_w1_04_hub_l3_prereq_monitor.v8.json`, `build/reports/skc_w1_04_hub_l3_prereq_b_alignment.v2.json`, `build/reports/skc_w1_04_hub_l3_directed_baton_dispatch.v5.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v7.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v8.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v49.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v50.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v51.json`, `build/reports/skc_w1_04_hub_l3_prereq_monitor.v9.json`, `build/reports/skc_w1_04_hub_l3_prereq_b_alignment.v3.json`, `build/reports/skc_w1_04_hub_l3_directed_baton_dispatch.v6.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v9.json`, `build/reports/skc_w1_04_hub_l3_prereq_monitor.v10.json`, `build/reports/skc_w1_04_hub_l3_prereq_b_alignment.v4.json`, `build/reports/skc_w1_04_hub_l3_directed_baton_dispatch.v7.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v10.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v52.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v53.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v11.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v54.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v55.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v56.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v12.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v13.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v14.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v57.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v15.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v16.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v58.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v17.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v19.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v59.json`, `build/reports/skc_w1_04_hub_l2_delta_3line.v60.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v20.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v21.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v22.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v23.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v24.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v25.json`, `build/reports/skc_w1_04_hub_l3_delta_3line.v26.json` |
-| `SKC-W2-05` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `SKC-G1:PASS,SKC-G3:PASS,SKC-G4:PASS` | `true` | `SKC-W1-04` | `claim_skc_w2_05_xt_l1_hf_directed_20260301_2211` | `2026-03-05T14:53:45-08:00` | `x-terminal/work-orders/xt-l1-openclaw-skills-ux-preflight-runner-contract-v1.md`, `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v2.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v1.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v3.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v4.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v2.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v3.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v4.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v5.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v6.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v7.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v8.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v9.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v10.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v11.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v12.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v13.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v14.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v15.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v16.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v17.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v18.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v19.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v20.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v21.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v22.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v23.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v24.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v25.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v26.json`, `build/xt_l1_release_sprint.memory_agent_grant_chain.test.log`, `build/xt_l1_release_sprint.skills_store_security.test.log`, `build/xt_l1_release_sprint.contract_check.log`, `build/hub_l5_release_skc_g3_real_sampling.json`, `build/reports/skc_w3_08_require_real_sampling_gap.v9.json`, `x-terminal/scripts/fixtures/skills_xt_l1_contract.sample.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_hard_line_triplet_qa_alignment.v1.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v5.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v27.json`, `build/reports/skc_w2_05_xt_l1_verified_handoff.v1.json`, `build/reports/skc_brk_x2_g3_probe.compat.v1.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_delta_3line.v28.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v28.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_delta_3line.v29.json`, `build/reports/xt_l1_prep_only_bundle.v1.json`, `build/reports/xt_w2_23_b_innovation_level_ui_prep_draft.v1.json`, `build/reports/xt_w2_24_a_tri_prompt_compiler_prep_draft.v1.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v29.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_delta_3line.v30.json`, `build/reports/xt_w2_23_b_innovation_level_ui_prep_draft.v2.json`, `build/reports/xt_w2_24_a_tri_prompt_compiler_prep_draft.v2.json`, `build/reports/xt_l1_prep_only_bundle.v2.json`, `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_checklist.v2.json`, `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_minicard.v1.json` |
+| `SKC-W2-05` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `SKC-G1:PASS,SKC-G3:PASS,SKC-G4:PASS` | `true` | `SKC-W1-04` | `claim_skc_w2_05_xt_l1_hf_directed_20260301_2211` | `2026-03-05T14:53:45-08:00` | `x-terminal/work-orders/xt-l1-skills-ux-preflight-runner-contract-v1.md`, `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v2.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_runner_execute_chain_gate_evidence.v3.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v1.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v2.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v3.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v4.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_fail_closed_gap_list.v1.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v2.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v3.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v4.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v5.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v6.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v7.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v8.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v9.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v10.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v11.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v12.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v13.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v14.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v15.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v16.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v17.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v18.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v19.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v20.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v21.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v22.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v23.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v24.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v25.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v26.json`, `build/xt_l1_release_sprint.memory_agent_grant_chain.test.log`, `build/xt_l1_release_sprint.skills_store_security.test.log`, `build/xt_l1_release_sprint.contract_check.log`, `build/hub_l5_release_skc_g3_real_sampling.json`, `build/reports/skc_w3_08_require_real_sampling_gap.v9.json`, `x-terminal/scripts/fixtures/skills_xt_l1_contract.sample.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_hard_line_triplet_qa_alignment.v1.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_release_sprint_blockers.v5.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v27.json`, `build/reports/skc_w2_05_xt_l1_verified_handoff.v1.json`, `build/reports/skc_brk_x2_g3_probe.compat.v1.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_delta_3line.v28.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v28.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_delta_3line.v29.json`, `build/reports/xt_l1_prep_only_bundle.v1.json`, `build/reports/xt_w2_23_b_innovation_level_ui_prep_draft.v1.json`, `build/reports/xt_w2_24_a_tri_prompt_compiler_prep_draft.v1.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v29.json`, `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_delta_3line.v30.json`, `build/reports/xt_w2_23_b_innovation_level_ui_prep_draft.v2.json`, `build/reports/xt_w2_24_a_tri_prompt_compiler_prep_draft.v2.json`, `build/reports/xt_l1_prep_only_bundle.v2.json`, `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_checklist.v2.json`, `build/reports/xt_l1_hub_l4_hub_l5_runner_execute_pull_minicard.v1.json` |
 | `SKC-W2-06` | `XT-L2(pool_takeover)` | `P0` | `verified_handoff` | `SKC-G1:PASS,SKC-G2:PASS,SKC-G3:PASS,SKC-G4:PASS,SKC-G5:PASS` | `true` | `XT-W2-12/13/14,SKC-W2-05` | `claim_skc_w2_06_xt_l2_hubl5_prereqb_20260303_0039` | `2026-03-05T16:39:17-08:00` | `build/reports/skc_w2_06_xt_l2_pre_takeover_readiness.v1.json`, `build/reports/skc_w2_06_xt_l2_hub_l5_prereq_b_metrics_fill.v10.json`, `build/reports/skc_w2_06_xt_l2_hub_l5_prereq_b_internal_pass_recheck.v11.json`, `build/reports/skc_w2_06_xt_l2_hub_l5_prereq_b_consistency_check.v11.json`, `build/reports/skc_w2_06_xt_l2_hub_l5_directed_prereq_b_catalyst.v12.json`, `build/reports/skc_w2_06_xt_l2_internal_pass_metrics_patch.v8.json`, `build/reports/skc_w2_06_xt_l2_internal_pass_samples_patch.v7.json`, `build/reports/skc_w2_06_xt_l2_xt_report_index_overlay.v1.json`, `build/reports/skc_w2_06_xt_l2_xt_mainline_switch_signal.v2.json`, `build/reports/skc_w2_06_xt_l2_hub_l1_sample_sufficiency_source_patch.v1.json`, `build/reports/skc_w2_06_xt_l2_delta_3line.v75.json`, `build/reports/skc_w3_08_hub_l5_delta_3line.v93.json`, `build/hub_l5_release_skc_g5_summary.json`, `build/hub_l5_release_internal_pass_lines_report.json`, `build/hub_l5_release_skc_g3_real_sampling.json`, `build/reports/skc_w2_06_xt_l2_verified_handoff.v1.json` |
 | `SKC-W2-07` | `Hub-L5(pool_takeover)` | `P0` | `delivered` | `SKC-G2:PASS,SKC-G4:PASS` | `true` | `SKC-W2-06,XT-W2-17,XT-W2-18,XT-W2-19,CRK-W1-07,CRK-W1-08` | `claim_skc_w2_07_precheck_20260301_1909` | `2026-03-05T08:15:00-08:00` | `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_precheck_report.v1.json`, `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_blocked_status.v1.json`, `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_skc_w2_06_verified_handoff_check.v47.json`, `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_autocontinue_checkpoint.v48.json`, `x-terminal/.axcoder/reports/skc_w2_07_gate_evidence.json`, `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_execution_ready_checklist.v1.json`, `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_to_hub_l5_handoff.v1.json`, `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_hub_l5_handoff_consume_check.v8.json`, `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_delta_3line.v6.json` |
 | `SKC-W3-08` | `Hub-L5(pool_takeover)` | `P0` | `delivered` | `SKC-G5:PASS,SKC-G3:PASS` | `true` | `SKC-W2-07` | `claim_skc_w3_08_hub_l5_autocontinue_20260303_1831` | `2026-03-05T19:25:55+08:00` | `build/reports/skc_w3_08_hub_l5_evidence.v1.json`, `build/reports/skc_w3_08_hub_l5_hub_l4_handoff_consume.v1.json`, `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_to_hub_l5_handoff.v1.json`, `build/reports/skc_w3_08_hub_l5_delta_3line.v121.json`, `build/reports/skc_w3_08_hub_l5_delta_3line.v120.json`, `build/reports/hub_pool_takeover_delta_3line.v1.json`, `build/reports/hub_l5_xt_w2_26_probe_unblock_decision.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v24.json`, `build/reports/xt_w2_26_g3_g4_first_probe.v3.json`, `build/reports/xt_w2_26_probe_runtime_env_check.v2.log`, `build/reports/xt_w2_26_probe_supervisor_incident_arbiter_tests.v4.log`, `build/reports/xt_w2_26_probe_gate_smoke_tests.v4.log`, `build/reports/xt_w2_26_a_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v23.json`, `build/reports/xt_w2_26_unsandboxed_probe_request.v1.json`, `build/reports/xt_w2_26_runtime_env_patch.v1.json`, `build/reports/hub_l5_xt_w2_26_minimal_patch_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_xt_w2_26_dependency_check.v7.json`, `build/reports/xt_main_xt_l2_xt_w2_13_14_evidence_board_link.v1.json`, `build/reports/xt_main_xt_l2_xt_w2_25_dependency_fill.v2.json`, `build/hub_l5_release_skc_g5_summary.json`, `build/hub_l5_release_internal_pass_lines_report.json`, `build/hub_l5_release_skc_g3_real_sampling.json`, `build/reports/skc_w1_hub_l1_delta_3line.v60.json`, `build/reports/skc_w1_xt_l2_hub_l1_real_sample_probe_results.v11.json` |
@@ -563,6 +582,14 @@
 | `XT-W3-24-D` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-G1:pending,XT-CHAN-G4:pending,XT-CHAN-G5:pending` | `false` | `XT-W3-24-A,XT-W3-24-B` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w2-23-w2-26-autocontinue-autonomy-implementation-pack-v1.md` |
 | `XT-W3-24-E` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-G1:pending,XT-CHAN-G5:pending` | `false` | `XT-W3-24-A,XT-W3-24-B,XT-W3-24-D` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `docs/open-source/OSS_MINIMAL_RUNNABLE_PACKAGE_CHECKLIST_v1.md` |
 | `XT-W3-24-F` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-G2:pending,XT-CHAN-G5:pending,XT-MEM-G2:pending,SI-G1:pending,SI-G2:pending,SI-G4:pending` | `false` | `XT-W3-24-A,XT-W3-24-B,XT-W3-23` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md`, `docs/memory-new/xhub-security-innovation-work-orders-v1.md` |
+| `XT-W3-24-G` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-OP-G0:pending` | `false` | `XT-W3-24-A,XT-W3-24-F` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w3-30-openclaw-mode-capability-gap-closure-implementation-pack-v1.md` |
+| `XT-W3-24-H` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-OP-G1:pending` | `false` | `XT-W3-24-G,XT-W3-24-F` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`, `docs/xhub-connectors-isolation-and-runtime-v1.md`, `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md` |
+| `XT-W3-24-I` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-OP-G2:pending` | `false` | `XT-W3-24-G,XT-W3-24-H,XT-W3-23` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md` |
+| `XT-W3-24-J` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-OP-G3:pending` | `false` | `XT-W3-24-H,XT-W3-24-I` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md` |
+| `XT-W3-24-K` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-OP-G3:pending` | `false` | `XT-W3-24-H,XT-W3-24-I` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md` |
+| `XT-W3-24-L` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-OP-G3:pending` | `false` | `XT-W3-24-H,XT-W3-24-I` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md` |
+| `XT-W3-24-M` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-OP-G5:pending` | `false` | `XT-W3-24-J,XT-W3-24-K,XT-W3-24-L,XT-W3-24-D` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`, `x-terminal/work-orders/xt-supervisor-rhythm-user-explainability-implementation-pack-v1.md` |
+| `XT-W3-24-N` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-OP-G4:pending,XT-CHAN-OP-G6:pending` | `false` | `XT-W3-24-H,XT-W3-24-I,XT-W3-24-M` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`, `docs/memory-new/xhub-trusted-automation-device-execution-plane-implementation-pack-v1.md`, `docs/xhub-connectors-isolation-and-runtime-v1.md` |
 | `XT-W3-25` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-AUTO-G0:pending,XT-AUTO-G1:pending,XT-AUTO-G2:pending,XT-AUTO-G3:pending,XT-AUTO-G4:pending,XT-AUTO-G5:pending,XT-MP-G4:pending,XT-MP-G5:pending` | `false` | `XT-W3-21,XT-W3-23,XT-W3-24,XT-W2-27,XT-W2-28` | `none` | `none` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md`, `docs/memory-new/xhub-security-innovation-work-orders-v1.md` |
 | `XT-W3-25-A` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-AUTO-G0:pending,XT-AUTO-G1:pending` | `false` | `XT-W3-21,XT-W3-22` | `none` | `none` | `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md` |
 | `XT-W3-25-B` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-AUTO-G1:pending,XT-AUTO-G2:pending` | `false` | `XT-W3-25-A,XT-W3-24` | `none` | `none` | `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md` |
@@ -570,9 +597,31 @@
 | `XT-W3-25-D` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-AUTO-G4:pending` | `false` | `XT-W3-25-B,XT-W3-24-D` | `none` | `none` | `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `x-terminal/work-orders/xt-supervisor-rhythm-user-explainability-implementation-pack-v1.md` |
 | `XT-W3-25-E` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-AUTO-G1:pending,XT-AUTO-G4:pending` | `false` | `XT-W3-25-A,XT-W3-25-D,XT-W3-24-E` | `none` | `none` | `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `docs/open-source/OSS_MINIMAL_RUNNABLE_PACKAGE_CHECKLIST_v1.md` |
 | `XT-W3-25-F` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-AUTO-G5:pending,XT-MP-G5:pending` | `false` | `XT-W3-25-A,XT-W3-25-B,XT-W3-25-C,XT-W3-25-D,XT-W3-25-E` | `none` | `none` | `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `docs/memory-new/xhub-security-innovation-work-orders-v1.md` |
-| `SI-W1-01` | `Hub-L5(pool_takeover)` | `P0` | `delivered` | `SI-G1:candidate_pass,SI-G2:candidate_pass,SI-G4:candidate_pass` | `false` | `M3-W1-02,CM-W3-19` | `claim_si_w1_01_hub_l5_20260306_1342` | `2026-03-06T17:42:24+08:00` | `docs/memory-new/xhub-security-innovation-work-orders-v1.md`, `docs/memory-new/xhub-memory-v3-execution-plan.md`, `docs/memory-new/xhub-leapfrog-claudemem-openclaw-memory-work-orders-v1.md`, `build/reports/si_w1_01_prereq_audit.v1.json`, `build/reports/si_w1_01_binding_contract_delta_3line.v1.json`, `build/reports/si_w1_01_approval_binding_evidence.v2.json`, `build/reports/si_w1_01_g1_g2_g4_first_probe.v2.json`, `build/reports/si_w1_01_hub_l5_delta_3line.v3.json`, `build/reports/si_w1_01_identity_mismatch_probe.v1.log` |
+| `SI-W1-01` | `Hub-L5(pool_takeover)` | `P0` | `delivered` | `SI-G1:candidate_pass,SI-G2:candidate_pass,SI-G4:candidate_pass` | `false` | `M3-W1-02,CM-W3-19` | `claim_si_w1_01_hub_l5_20260306_1342` | `2026-03-06T17:42:24+08:00` | `docs/memory-new/xhub-security-innovation-work-orders-v1.md`, `docs/memory-new/xhub-memory-v3-execution-plan.md`, `docs/memory-new/xhub-memory-capability-leapfrog-work-orders-v1.md`, `build/reports/si_w1_01_prereq_audit.v1.json`, `build/reports/si_w1_01_binding_contract_delta_3line.v1.json`, `build/reports/si_w1_01_approval_binding_evidence.v2.json`, `build/reports/si_w1_01_g1_g2_g4_first_probe.v2.json`, `build/reports/si_w1_01_hub_l5_delta_3line.v3.json`, `build/reports/si_w1_01_identity_mismatch_probe.v1.log` |
 | `SI-W1-02` | `Hub-L5(pool_takeover)` | `P0` | `delivered` | `SI-G1:candidate_pass,SI-G2:candidate_pass,SI-G4:candidate_pass` | `false` | `SI-W1-01` | `claim_si_w1_02_hub_l5_20260306_1421` | `2026-03-06T18:21:13+08:00` | `docs/memory-new/xhub-security-innovation-work-orders-v1.md`, `build/reports/si_w1_02_task_row_materialization_audit.v1.json`, `build/reports/si_w1_02_prereq_audit.v1.json`, `build/reports/si_w1_02_capability_token_evidence.v2.json`, `build/reports/si_w1_02_g1_g2_g4_first_probe.v2.json`, `build/reports/si_w1_02_hub_l5_delta_3line.v3.json`, `build/reports/si_w1_02_capability_token_probe.v2.log` |
 | `SI-W1-03` | `Hub-L5(pool_takeover)` | `P0` | `claimed` | `SI-G1:hold,SI-G2:hold,SI-G4:candidate_pass` | `false` | `SI-W1-02,CRK-W1-03` | `claim_si_w1_03_hub_l5_20260306_1639` | `2026-03-06T20:39:46+08:00` | `docs/memory-new/xhub-security-innovation-work-orders-v1.md`, `docs/memory-new/xhub-connector-reliability-kernel-work-orders-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md`, `docs/xhub-connectors-isolation-and-runtime-v1.md`, `build/reports/crk_w1_03_dependency_anchor.v1.json`, `build/reports/si_w1_03_task_row_materialization_audit.v1.json`, `build/reports/si_w1_03_prereq_audit.v2.json`, `build/reports/si_w1_03_payment_two_phase_evidence.v1.json`, `build/reports/si_w1_03_g1_g2_g4_first_probe.v1.json`, `build/reports/si_w1_03_hub_l5_delta_3line.v3.json`, `build/reports/si_w1_03_payment_probe.v1.log` |
+| `LPR-W1-01` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G0:PASS` | `false` | `none` | `claim_lpr_w1_01_hub_l5_20260312_2002` | `2026-03-12T20:02:21+08:00` | `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w1_01_hub_l5_evidence.v1.json`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubCoreTests/LocalProviderRuntimeSchemaTests.swift` |
+| `LPR-W1-02` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G0:PASS,LPR-G1:PASS` | `false` | `LPR-W1-01` | `claim_lpr_w1_02_hub_l5_20260312_2035` | `2026-03-12T20:35:29+08:00` | `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w1_02_a_add_model_backend_selector_evidence.v1.json`, `build/reports/lpr_w1_02_b_catalog_migration_evidence.v1.json` |
+| `LPR-W1-03` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G0:PASS,LPR-G1:PASS` | `false` | `LPR-W1-01,LPR-W1-02` | `claim_lpr_w1_03_hub_l5_20260312_2035` | `2026-03-12T20:35:29+08:00` | `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w1_03_hub_l5_evidence.v1.json`, `build/reports/lpr_w1_03_a_local_runtime_entry_evidence.v1.json`, `build/reports/lpr_w1_03_b_mlx_provider_adapter_evidence.v1.json`, `build/reports/lpr_w1_03_c_transformers_provider_skeleton_evidence.v1.json` |
+| `LPR-W1-04` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G0:PASS,LPR-G1:PASS` | `false` | `LPR-W1-03` | `claim_lpr_w1_04_hub_l5_20260312_2055` | `2026-03-12T20:55:12+08:00` | `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w1_04_hub_l5_evidence.v1.json`, `build/reports/lpr_w1_04_a_hubstore_bridge_generalization_evidence.v1.json`, `build/reports/lpr_w1_04_b_node_runtime_bridge_evidence.v1.json` |
+| `LPR-W1-05` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G0:PASS,LPR-G1:PASS` | `false` | `LPR-W1-04` | `claim_lpr_w1_05_hub_l5_20260312_2111` | `2026-03-12T21:11:14+08:00` | `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w1_05_hub_l5_evidence.v1.json`, `build/reports/lpr_w1_05_a_mlx_regression_matrix_evidence.v1.json` |
+| `LPR-W2-01` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G1:PASS,LPR-G2:PASS` | `false` | `LPR-W1-05` | `claim_lpr_w2_01_hub_l5_20260312_2230` | `2026-03-12T22:30:23+0800` | `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w2_01_hub_l5_evidence.v1.json`, `build/reports/lpr_w2_01_a_embedding_contract_evidence.v1.json`, `build/reports/lpr_w2_01_b_memory_embeddings_integration_evidence.v1.json` |
+| `LPR-W2-01-A` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G2:PASS` | `false` | `LPR-W1-05` | `claim_lpr_w2_01_hub_l5_20260312_2230` | `2026-03-12T22:30:23+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w2_01_a_embedding_contract_evidence.v1.json` |
+| `LPR-W2-01-B` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G2:PASS` | `false` | `LPR-W2-01-A` | `claim_lpr_w2_01_hub_l5_20260312_2230` | `2026-03-12T22:30:23+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `docs/xhub-memory-system-spec-v2.md`, `build/reports/lpr_w2_01_b_memory_embeddings_integration_evidence.v1.json` |
+| `LPR-W2-02` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G2:PASS,LPR-G3:PASS` | `false` | `LPR-W2-01` | `claim_lpr_w2_02_hub_l5_20260312_2301` | `2026-03-12T23:01:03+0800` | `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w2_02_hub_l5_evidence.v1.json`, `build/reports/lpr_w2_02_a_asr_contract_evidence.v1.json`, `build/reports/lpr_w2_02_b_audio_guard_evidence.v1.json` |
+| `LPR-W2-02-A` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G3:PASS` | `false` | `LPR-W2-01` | `claim_lpr_w2_02_hub_l5_20260312_2301` | `2026-03-12T23:01:03+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w2_02_a_asr_contract_evidence.v1.json` |
+| `LPR-W2-02-B` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G3:PASS` | `false` | `LPR-W2-02-A` | `claim_lpr_w2_02_hub_l5_20260312_2301` | `2026-03-12T23:01:03+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w2_02_b_audio_guard_evidence.v1.json` |
+| `LPR-W2-03` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G0:PASS,LPR-G1:PASS` | `false` | `LPR-W2-01,LPR-W2-02` | `claim_lpr_w2_03_hub_l5_20260312_2332` | `2026-03-12T23:32:33+0800` | `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w2_03_hub_l5_evidence.v1.json`, `build/reports/lpr_w2_03_a_capability_policy_evidence.v1.json`, `build/reports/lpr_w2_03_b_local_task_audit_evidence.v1.json` |
+| `LPR-W2-03-A` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G0:PASS,LPR-G1:PASS` | `false` | `LPR-W2-02` | `claim_lpr_w2_03_hub_l5_20260312_2332` | `2026-03-12T23:32:33+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `protocol/hub_protocol_v1.proto`, `protocol/hub_protocol_v1.md`, `build/reports/lpr_w2_03_a_capability_policy_evidence.v1.json` |
+| `LPR-W2-03-B` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G0:PASS,LPR-G1:PASS` | `false` | `LPR-W2-03-A` | `claim_lpr_w2_03_hub_l5_20260312_2332` | `2026-03-12T23:32:33+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w2_03_b_local_task_audit_evidence.v1.json` |
+| `LPR-W2-04` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G0:PASS,LPR-G1:PASS` | `false` | `LPR-W2-03` | `claim_lpr_w2_04_hub_l5_20260312_2352` | `2026-03-12T23:52:05+0800` | `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w2_04_hub_l5_evidence.v1.json`, `build/reports/lpr_w2_04_a_provider_diagnostics_evidence.v1.json`, `build/reports/lpr_w2_04_b_operator_summary_evidence.v1.json` |
+| `LPR-W2-04-A` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G0:PASS,LPR-G1:PASS` | `false` | `LPR-W2-03` | `claim_lpr_w2_04_hub_l5_20260312_2352` | `2026-03-12T23:52:05+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w2_04_a_provider_diagnostics_evidence.v1.json` |
+| `LPR-W2-04-B` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G0:PASS,LPR-G1:PASS` | `false` | `LPR-W2-04-A` | `claim_lpr_w2_04_hub_l5_20260312_2352` | `2026-03-12T23:52:05+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w2_04_b_operator_summary_evidence.v1.json` |
+| `LPR-W3-01` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G4:PASS,LPR-G5:PASS` | `false` | `LPR-W2-04` | `claim_lpr_w3_01_hub_l5_20260313_0013` | `2026-03-13T00:13:15+0800` | `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w3_01_hub_l5_evidence.v1.json`, `build/reports/lpr_w3_01_a_vision_preview_contract_evidence.v1.json`, `build/reports/lpr_w3_01_b_image_guard_evidence.v1.json` |
+| `LPR-W3-01-A` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G4:PASS` | `false` | `LPR-W2-04` | `claim_lpr_w3_01_hub_l5_20260313_0013` | `2026-03-13T00:13:15+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w3_01_a_vision_preview_contract_evidence.v1.json` |
+| `LPR-W3-01-B` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G4:PASS,LPR-G5:PASS` | `false` | `LPR-W3-01-A` | `claim_lpr_w3_01_hub_l5_20260313_0013` | `2026-03-13T00:13:15+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w3_01_b_image_guard_evidence.v1.json` |
+| `LPR-W3-02` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G4:PASS,LPR-G5:PASS` | `false` | `LPR-W3-01` | `claim_lpr_w3_02_hub_l5_20260313_0655` | `2026-03-13T06:55:41+0800` | `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w3_02_hub_l5_evidence.v1.json`, `build/reports/lpr_w3_02_a_runtime_resource_policy_evidence.v1.json` |
+| `LPR-W3-02-A` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G4:PASS,LPR-G5:PASS` | `false` | `LPR-W3-01` | `claim_lpr_w3_02_hub_l5_20260313_0655` | `2026-03-13T06:55:41+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w3_02_a_runtime_resource_policy_evidence.v1.json` |
 ## D. Lane Zones（运行态）
 
 ### Hub-L1
@@ -653,8 +702,8 @@
   - `build/reports/skc_w1_hub_l1_contract_drift_guard.v2.json`
 
 5) KPI Snapshot
-- `openclaw_manifest_mapping_coverage`: `1.0`
-- `openclaw_skill_import_success_rate`: `1`
+- `skill_manifest_mapping_coverage`: `1.0`
+- `skill_import_success_rate`: `1`
 - `import_to_first_run_p95_ms`: `null`
 - `require_real_probe_rows_returned(matched_only)`: `0/30`
 - `require_real_probe_candidate_rows_observed`: `34`
@@ -897,7 +946,7 @@
   - `build/reports/skc_w1_04_hub_l2_delta_3line.v59.json`
   - `build/reports/skc_w1_04_hub_l2_delta_3line.v60.json`
   - `x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js`
-  - `x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js`
+  - `x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js`
   - `x-hub/grpc-server/hub_grpc_server/data/skills_failclosed_gate_snapshot.json`
 
 #### Hub-L2 / SKC-W1-04 / 7件套（Auto-Continue 首轮交付）
@@ -956,12 +1005,12 @@
 
 命令回填（real run）:
 ```bash
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 ```
 
 #### Hub-L2 / SKC-W1-04 / Auto-Continue 7件套（blocked checkpoint）
@@ -1012,7 +1061,7 @@ node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.
 
 命令回填（real run）:
 ```bash
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v1.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked evidence json parse');"
 ```
@@ -1065,12 +1114,12 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 
 命令回填（real run）:
 ```bash
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v2.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v2 json parse');"
 ```
 
@@ -1122,12 +1171,12 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 
 命令回填（real run）:
 ```bash
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v3.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v3 json parse');"
 ```
 
@@ -1179,12 +1228,12 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 
 命令回填（real run）:
 ```bash
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v4.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v4 json parse');"
 ```
 
@@ -1236,12 +1285,12 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 
 命令回填（real run）:
 ```bash
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v5.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v5 json parse');"
 ```
 
@@ -1295,12 +1344,12 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 
 命令回填（real run）:
 ```bash
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v6.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v6 json parse');"
 ```
 
@@ -1359,9 +1408,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v9.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v9 json parse');"
@@ -1419,9 +1468,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v10.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v10 json parse');"
@@ -1484,9 +1533,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v11.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v11 json parse');"
@@ -1549,9 +1598,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v12.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v12 json parse');"
@@ -1614,9 +1663,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v13.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v13 json parse');"
@@ -1679,9 +1728,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v14.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v14 json parse');"
@@ -1744,9 +1793,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v15.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v15 json parse');"
@@ -1809,9 +1858,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v16.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v16 json parse');"
@@ -1874,9 +1923,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v17.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v17 json parse');"
@@ -1939,9 +1988,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v18.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v18 json parse');"
@@ -2004,9 +2053,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v19.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v19 json parse');"
@@ -2069,9 +2118,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v20.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v20 json parse');"
@@ -2134,9 +2183,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v21.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v21 json parse');"
@@ -2199,9 +2248,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v22.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v22 json parse');"
@@ -2264,9 +2313,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v23.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v23 json parse');"
@@ -2329,9 +2378,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v24.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v24 json parse');"
@@ -2394,9 +2443,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v25.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v25 json parse');"
@@ -2459,9 +2508,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v26.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v26 json parse');"
@@ -2524,9 +2573,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v27.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v27 json parse');"
@@ -2589,9 +2638,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v28.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v28 json parse');"
@@ -2654,9 +2703,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v29.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v29 json parse');"
@@ -2719,9 +2768,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v30.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v30 json parse');"
@@ -2784,9 +2833,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v31.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v31 json parse');"
@@ -2851,9 +2900,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v32.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v32 json parse');"
@@ -2918,9 +2967,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v33.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v33 json parse');"
@@ -2985,9 +3034,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v34.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v34 json parse');"
@@ -3052,9 +3101,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v35.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v35 json parse');"
@@ -3119,9 +3168,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v36.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v36 json parse');"
@@ -3186,9 +3235,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v37.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v37 json parse');"
@@ -3253,9 +3302,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v38.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v38 json parse');"
@@ -3320,9 +3369,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v39.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v39 json parse');"
@@ -3387,9 +3436,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v40.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v40 json parse');"
@@ -3454,9 +3503,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v41.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v41 json parse');"
@@ -3521,9 +3570,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v42.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v42 json parse');"
@@ -3586,9 +3635,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v43.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v43 json parse');"
@@ -3651,9 +3700,9 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node --check x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node --check x-hub/grpc-server/hub_grpc_server/src/skills_store.js
 node --check x-hub/grpc-server/hub_grpc_server/src/services.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v44.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v44 json parse');"
@@ -3727,7 +3776,7 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_drift_guard.v1.json','utf8')); console.log('ok - skc_w1_04_hub_l2_drift_guard.v1 json parse');"
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v45.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v45 json parse');"
 ```
@@ -3792,7 +3841,7 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_drift_guard.v2.json','utf8')); console.log('ok - skc_w1_04_hub_l2_drift_guard.v2 json parse');"
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v46.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v46 json parse');"
 ```
@@ -3857,7 +3906,7 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_drift_guard.v3.json','utf8')); console.log('ok - skc_w1_04_hub_l2_drift_guard.v3 json parse');"
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v47.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v47 json parse');"
 ```
@@ -3922,7 +3971,7 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_drift_guard.v4.json','utf8')); console.log('ok - skc_w1_04_hub_l2_drift_guard.v4 json parse');"
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v48.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v48 json parse');"
 ```
@@ -3987,7 +4036,7 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 命令回填（real run）:
 ```bash
 node x-hub/grpc-server/hub_grpc_server/src/skills_store_security.test.js
-node x-hub/grpc-server/hub_grpc_server/src/skills_store_openclaw_compat.test.js
+node x-hub/grpc-server/hub_grpc_server/src/skills_store_manifest_compat.test.js
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_drift_guard.v5.json','utf8')); console.log('ok - skc_w1_04_hub_l2_drift_guard.v5 json parse');"
 node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w1_04_hub_l2_autocontinue_blocked.v49.json','utf8')); console.log('ok - skc_w1_04_hub_l2_autocontinue_blocked.v49 json parse');"
 ```
@@ -8584,7 +8633,7 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 - `SKC-W3-08`: require-real 审计证据链（3 类 incident）
 - `SKC-W3-09`: release evidence matrix 回归 + validator
 - `SKC-W3-10`: 一键门禁 + rollback drill
-- `SKC-G3`: 真实性能采样（`openclaw_skill_import_success_rate`、`import_to_first_run_p95_ms`）
+- `SKC-G3`: 真实性能采样（`skill_import_success_rate`、`import_to_first_run_p95_ms`）
 
 2) Changes
 - scripts/docs:
@@ -8607,7 +8656,7 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 - [x] `baseline_release1_auto0_fail_closed` 回归通过
 - [x] synthetic 输入 / 缺失文件 / schema 漂移三类回归均 fail-closed
 - [x] machine-readable 7 件套证据落盘（`build/reports/skc_w3_08_hub_l5_evidence.v1.json`）
-- [ ] `openclaw_skill_import_success_rate` 与 `import_to_first_run_p95_ms` 达发布采样门槛（当前样本不足）
+- [ ] `skill_import_success_rate` 与 `import_to_first_run_p95_ms` 达发布采样门槛（当前样本不足）
 
 4) Gate
 - `SKC-G5`: `INSUFFICIENT_EVIDENCE`
@@ -8625,7 +8674,7 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 5) KPI Snapshot
 - `require_real_evidence_pass_rate (release)`: `1.0`
 - `matrix_validator_false_pass`: `0`
-- `openclaw_skill_import_success_rate`: `null`（real sample 缺失）
+- `skill_import_success_rate`: `null`（real sample 缺失）
 - `import_to_first_run_p95_ms`: `null`（real sample 缺失）
 - `internal_pass_lines.release_decision`: `INSUFFICIENT_EVIDENCE`
 
@@ -8699,7 +8748,7 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 5) KPI Snapshot
 - `require_real_evidence_pass_rate (release)`: `1.0`
 - `matrix_validator_false_pass`: `0`
-- `openclaw_skill_import_success_rate`: `null`
+- `skill_import_success_rate`: `null`
 - `import_to_first_run_p95_ms`: `null`
 - `matched_latency_rows`: `0`
 - 报告路径：
@@ -8770,7 +8819,7 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 5) KPI Snapshot
 - `require_real_evidence_pass_rate (release)`: `1.0`
 - `matrix_validator_false_pass`: `0`
-- `openclaw_skill_import_success_rate`: `null`
+- `skill_import_success_rate`: `null`
 - `import_to_first_run_p95_ms`: `null`
 - `matched_latency_rows`: `0`
 - `sample_summary(lane/high_risk/mergeback)`: `546 / 1 / 0`
@@ -8847,7 +8896,7 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 5) KPI Snapshot
 - `require_real_evidence_pass_rate (release)`: `1.0`
 - `matrix_validator_false_pass`: `0`
-- `openclaw_skill_import_success_rate`: `null`
+- `skill_import_success_rate`: `null`
 - `import_to_first_run_p95_ms`: `null`
 - `matched_latency_rows`: `0`
 - `sample_summary(lane/high_risk/mergeback)`: `546 / 1 / 0`
@@ -9864,7 +9913,7 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 - unblock_owner: `XT-L2`
 - next_step: `进入 NO_DELTA_STANDBY/no_claim：仅响应 XT-L2/Hub-L5 的 directed mention；当 XT-W3-22-B/XT-W3-22-C/XT-W3-23-B/XT-W3-23-C/XT-W3-24-B/XT-W3-24-C/XT-W3-24-D/XT-W3-24-E/XT-W3-25-D/XT-W3-25-E 被定向点名时提交最小补件 delta_3line；非定向请求 fail-closed 不写任务状态`
 - evidence_refs:
-  - `x-terminal/work-orders/xt-l1-openclaw-skills-ux-preflight-runner-contract-v1.md`
+  - `x-terminal/work-orders/xt-l1-skills-ux-preflight-runner-contract-v1.md`
   - `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`
   - `x-terminal/work-orders/xt-w2-23-w2-26-autocontinue-autonomy-implementation-pack-v1.md`
   - `x-terminal/work-orders/xt-w2-24-token-optimal-context-capsule-implementation-pack-v1.md`
@@ -9944,7 +9993,7 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 
 2) Changes
 - 规范文档草案：
-  - `x-terminal/work-orders/xt-l1-openclaw-skills-ux-preflight-runner-contract-v1.md`
+  - `x-terminal/work-orders/xt-l1-skills-ux-preflight-runner-contract-v1.md`
   - `x-terminal/work-orders/xt-w2-23-w2-26-autocontinue-autonomy-implementation-pack-v1.md`（仅排程对齐输入，不提前 claim）
 - 机读契约与回归样本：
   - `x-terminal/scripts/fixtures/skills_xt_l1_contract.sample.json`
@@ -9971,7 +10020,7 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 - 证据路径：
   - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
   - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
-  - `x-terminal/work-orders/xt-l1-openclaw-skills-ux-preflight-runner-contract-v1.md`
+  - `x-terminal/work-orders/xt-l1-skills-ux-preflight-runner-contract-v1.md`
 
 5) KPI Snapshot
 - 发布口径（contract snapshot）：
@@ -11642,7 +11691,7 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 5) KPI Snapshot
 - `successful_import_rows`: `34`
 - `matched_latency_rows`: `34`
-- `openclaw_skill_import_success_rate`: `1`
+- `skill_import_success_rate`: `1`
 - `import_to_first_run_p95_ms`: `32`
 - `hard_line_triplet_zero_violation`: `3/3`（overflow/origin/cleanup）
 - 报告路径：
@@ -12218,7 +12267,7 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
   - `x-terminal/work-orders/xt-w2-23-w2-26-autocontinue-autonomy-implementation-pack-v1.md`
   - `x-terminal/work-orders/xt-w2-24-token-optimal-context-capsule-implementation-pack-v1.md`
   - `x-terminal/work-orders/xt-w2-27-anti-block-unblock-orchestration-implementation-pack-v1.md`
-  - `x-terminal/work-orders/xt-openclaw-skills-compat-reliability-work-orders-v1.md`
+  - `x-terminal/work-orders/xt-skills-compat-reliability-work-orders-v1.md`
   - `x-terminal/.axcoder/reports/xt-overflow-fairness-report.json`
   - `x-terminal/.axcoder/reports/xt-origin-fallback-report.json`
   - `x-terminal/.axcoder/reports/xt-dispatch-cleanup-report.json`
@@ -12867,7 +12916,7 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
   - `build/hub_l5_release_skc_g3_real_sampling.json`
 
 5) KPI Snapshot
-- `openclaw_skill_import_success_rate`: `1.0`（threshold `>=0.98`）
+- `skill_import_success_rate`: `1.0`（threshold `>=0.98`）
 - `import_to_first_run_p95_ms`: `23`（threshold `<=12000`）
 - `successful_import_rows`: `34`
 - `matched_latency_rows`: `34`
@@ -12933,7 +12982,7 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 5) KPI Snapshot
 - `successful_import_rows`: `34`
 - `matched_latency_rows`: `34`
-- `openclaw_skill_import_success_rate`: `1.0`
+- `skill_import_success_rate`: `1.0`
 - `import_to_first_run_p95_ms`: `23`
 - `supervisor_action_latency_p95_ms`: `1100`（assertion sample）
 
@@ -14980,6 +15029,272 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
     - `XT-W3-28`: `XT-TP-G0..G5` 任一未绿 = `NO_GO`
     - `XT-W3-28`: 若设备级用量面板缺失 `device_name + model breakdown + remaining budget` 任一字段 = `NO_GO`
     - `XT-W3-28`: 若新 trust profile 设备仍出现“无 policy context 的 grant_required” = `NO_GO`
+
+- `CR-20260311-XT-W331-001`
+  - type: `change_request`
+  - status: `active`
+  - owner: `AI-COORD-PRIMARY`
+  - scope: `XT-W3-31`
+  - reason: Supervisor 需要自然看到其管辖的所有项目进度、记忆摘要与当前动作；项目侧也必须把关键动作变化结构化回推给 Supervisor，避免临时扫全文、漏看 blocker、和无差别广播导致的 token 浪费。
+  - decision:
+    - 新增 `XT-W3-31 = supervisor_portfolio_awareness_and_project_action_feed`
+    - 冻结 `jurisdiction registry + project capsule + project action event + portfolio snapshot + notification policy + drill-down contract`
+    - Supervisor 默认只消费 `delta/capsule/refs`，不消费跨项目全文
+    - 所有项目关键动作变化都必须通知到 Supervisor，但按 `silent_log|badge_only|brief_card|interrupt_now|authorization_required` 分级
+    - 需要深看某项目时，只允许 `scope-safe drill-down`，默认不展开 raw evidence
+  - evidence_refs:
+    - `x-terminal/work-orders/xt-w3-31-supervisor-portfolio-awareness-and-project-action-feed-implementation-pack-v1.md`
+    - `docs/memory-new/xhub-terminal-hub-memory-governance-work-orders-v1.md`
+    - `docs/memory-new/xhub-terminal-hub-memory-layer-usage-work-orders-v1.md`
+    - `x-terminal/Sources/Supervisor/SupervisorView.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorManager.swift`
+
+- `XT-W3-31`
+  - owner_lane: `XT-Main(XT-L2)`
+  - status: `in_progress(project_capsule_and_action_local_hub_routes_landed_require_real_pending)`
+  - dependencies:
+    - `XT-W3-23`: `PASS`（Hub-first memory UX / supervisor memory bus 基线）
+    - `XT-W3-26`: `PASS`（one-shot intake / adaptive pool planner 基线）
+    - `XT-W3-29`: `PASS`（Supervisor 对话 / 语音 / 节奏控制基线）
+    - `xhub-terminal-hub-memory-governance`: `PASS`（记忆治理边界已冻结）
+  - minimal_gaps:
+    - `XT-W3-31-A jurisdiction registry freeze`: `CANDIDATE_PASS(local registry + portfolio/event filtering + drill-down baseline landed; Hub truth-sync pending)`
+    - `XT-W3-31-B project capsule`: `CANDIDATE_PASS(stable capsule contract + digest->capsule builder + queued->idle state fix + Hub canonical sync + focused tests landed; require-real pending)`
+    - `XT-W3-31-C project action event feed`: `CANDIDATE_PASS(local supervisor feed + jurisdiction filter + XT audit sink + Hub file/socket consumer + audit_events persistence + paired remote canonical route landed; require-real pending)`
+    - `XT-W3-31-D portfolio snapshot`: `CANDIDATE_PASS(local aggregation + counts + critical_queue + jurisdiction visibility + Hub device canonical truth-sync landed; require-real pending)`
+    - `XT-W3-31-E notification policy`: `CANDIDATE_PASS(local severity-routing + interrupt dedupe + portfolio status line + Hub push route landed; require-real pending)`
+    - `XT-W3-31-F portfolio UI`: `CANDIDATE_PASS(local portfolio board + notification status line + drill-down panel binding landed; require-real UI flow pending)`
+    - `XT-W3-31-G scope-safe drill-down`: `CANDIDATE_PASS(local drill-down snapshot contract + jurisdiction deny + capsule_plus_recent cap + UI binding + scope-safe Hub refs landed; require-real pending)`
+    - `XT-W3-31-H require-real`: `PLANNED(capture_bundle_ready_for_execution + qa_shadow_baseline_landed + operator_runbook_and_status_helper_landed; real_samples_pending)`
+  - next_owner_lane: `XT-Main -> Hub-Main -> QA-Main`
+  - unblock_policy: `directed_only`
+  - notes:
+    - 本项是 Supervisor 自举推进能力补强，优先级高，但不扩大当前 GitHub validated-mainline-only 对外口径
+    - 默认真相源继续在 Hub；XT 只做 portfolio 展示、短 TTL cache 与 drill-down 入口
+    - 默认不允许跨项目全文注入或 raw evidence 广播
+    - 当前目标是“用户打开 Supervisor 即能看到全部受辖项目的最新状态与当前动作”，不是把 Supervisor 变成跨项目全文搜索器
+    - 所有项目动作变化必须具备 machine-readable event 来源，禁止只靠聊天文本推断
+    - 已落本地切片：`portfolio snapshot + recent action feed + supervisor portfolio board + jurisdiction registry + role-based visibility filter + notification policy + scope-safe drill-down contract + drill-down panel binding + project action audit sink + pure snapshot/jurisdiction/notification/drill-down/action-audit tests`
+    - 已补 project capsule Hub truth-sync：`SupervisorProjectCapsuleCanonicalSync + HubIPCClient.syncSupervisorProjectCapsule + SupervisorManager audit_ref 去重同步`
+    - 已补 Hub project action audit consumer：`HubModels + FileIPC + UnixSocketServer + HubStore append + focused Hub tests`
+    - 已补 paired remote project action route：`HubIPCClient preferred-route + HubPairingCoordinator canonical-memory upsert + canonical sync contract`
+    - 已补 portfolio snapshot Hub truth-sync：`SupervisorPortfolioSnapshotCanonicalSync + HubIPCClient.syncSupervisorPortfolioSnapshot + SupervisorManager fingerprint dedupe + device_canonical_memory local IPC/Hub store + paired remote device canonical route + focused XT/Hub tests`
+    - 已补 require-real 执行包：`xt_w3_31_require_real_capture_bundle.v1.json + xt_w3_31_h_require_real_evidence.v1.json + scripts/update_xt_w3_31_require_real_capture_bundle.js + scripts/generate_xt_w3_31_require_real_report.js`，当前仍 fail-closed 等待真实样本
+    - 已补两机执行入口：`docs/memory-new/xt-w3-31-require-real-runbook-v1.md + scripts/xt_w3_31_require_real_status.js`，用于最小 token 回填与 QA 重算
+    - 当前仍缺 Hub-side jurisdiction / require-real 样本，因此不得宣告 `SPF-G0..G5` 通过
+  - evidence_refs:
+    - `x-terminal/work-orders/xt-w3-31-supervisor-portfolio-awareness-and-project-action-feed-implementation-pack-v1.md`
+    - `docs/memory-new/xhub-terminal-hub-memory-governance-work-orders-v1.md`
+    - `docs/memory-new/xhub-terminal-hub-memory-layer-usage-work-orders-v1.md`
+    - `x-terminal/Sources/Supervisor/SupervisorView.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorManager.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorJurisdictionRegistry.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorProjectNotificationPolicy.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorProjectActionCanonicalSync.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorProjectCapsuleCanonicalSync.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorPortfolioSnapshotCanonicalSync.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorProjectDrillDown.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorView.swift`
+    - `x-terminal/Sources/Hub/HubIPCClient.swift`
+    - `x-terminal/Sources/Hub/HubPairingCoordinator.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorPortfolioSnapshot.swift`
+    - `x-terminal/Sources/AppModel+MultiProject.swift`
+    - `x-terminal/Sources/Project/MultiProjectManager.swift`
+    - `x-hub/macos/RELFlowHub/Sources/RELFlowHubCore/DeviceCanonicalMemory.swift`
+    - `x-hub/macos/RELFlowHub/Sources/RELFlowHubCore/HubModels.swift`
+    - `x-hub/macos/RELFlowHub/Sources/RELFlowHub/FileIPC.swift`
+    - `x-hub/macos/RELFlowHub/Sources/RELFlowHub/UnixSocketServer.swift`
+    - `x-hub/macos/RELFlowHub/Sources/RELFlowHub/HubStore.swift`
+    - `build/reports/xt_w3_31_a_jurisdiction_registry_evidence.v1.json`
+    - `build/reports/xt_w3_31_b_project_capsule_evidence.v1.json`
+    - `build/reports/xt_w3_31_c_project_action_feed_evidence.v1.json`
+    - `build/reports/xt_w3_31_d_portfolio_snapshot_evidence.v1.json`
+    - `build/reports/xt_w3_31_f_portfolio_ui_evidence.v1.json`
+    - `build/reports/xt_w3_31_e_notification_policy_evidence.v1.json`
+    - `build/reports/xt_w3_31_g_drilldown_contract_evidence.v1.json`
+    - `build/reports/xt_w3_31_require_real_capture_bundle.v1.json`
+    - `build/reports/xt_w3_31_h_require_real_evidence.v1.json`
+    - `docs/memory-new/xt-w3-31-require-real-runbook-v1.md`
+    - `scripts/update_xt_w3_31_require_real_capture_bundle.js`
+    - `scripts/xt_w3_31_require_real_status.js`
+    - `scripts/generate_xt_w3_31_require_real_report.js`
+    - `x-terminal/Tests/SupervisorProjectActionAuditTests.swift`
+    - `x-terminal/Tests/SupervisorProjectActionCanonicalSyncTests.swift`
+    - `x-terminal/Tests/SupervisorProjectCapsuleCanonicalSyncTests.swift`
+    - `x-terminal/Tests/SupervisorProjectCapsuleTests.swift`
+    - `x-terminal/Tests/SupervisorProjectCapsuleSyncTests.swift`
+    - `x-terminal/Tests/SupervisorPortfolioSnapshotCanonicalSyncTests.swift`
+    - `x-terminal/Tests/SupervisorPortfolioSnapshotSyncTests.swift`
+    - `x-hub/macos/RELFlowHub/Tests/RELFlowHubCoreTests/IPCSupervisorProjectActionAuditPayloadTests.swift`
+    - `x-hub/macos/RELFlowHub/Tests/RELFlowHubCoreTests/IPCDeviceCanonicalMemoryPayloadTests.swift`
+    - `x-hub/macos/RELFlowHub/Tests/RELFlowHubCoreTests/DeviceCanonicalMemoryStorageTests.swift`
+    - `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/SupervisorProjectActionAuditStoreTests.swift`
+    - `x-terminal/Tests/SupervisorProjectDrillDownTests.swift`
+    - `x-terminal/Tests/SupervisorProjectNotificationPolicyTests.swift`
+    - `x-terminal/Tests/SupervisorPortfolioSnapshotTests.swift`
+    - `x-terminal/Tests/SupervisorJurisdictionRegistryTests.swift`
+
+- `CD-20260311-XT-W331-001`
+  - type: `coordination_decision`
+  - status: `active`
+  - owner: `AI-COORD-PRIMARY`
+  - rule:
+    - `XT-W3-31` 当前只允许推进以下六类内容：
+      - jurisdiction registry
+      - project capsule
+      - project action event feed
+      - portfolio snapshot
+      - directed notification policy
+      - scope-safe drill-down
+    - 禁止把当前需求扩写成“跨项目全文 prompt 融合”或“全局 enterprise reporting”
+    - Supervisor 默认只消费 `delta/capsule/refs`；raw evidence 默认禁止自动展开
+    - 所有项目事件都必须具备 severity；缺失 severity 时只能降级为 `silent_log`
+    - jurisdiction 外项目默认不可见；drill-down contract 缺失时只允许 `capsule_only`
+  - merge_order:
+    1. `XT-Main`
+    2. `Hub-Main`
+    3. `QA-Main`
+  - go_no_go:
+    - `XT-W3-31`: `SPF-G0..G5` 任一未绿 = `NO_GO`
+    - `XT-W3-31`: 若 Supervisor 首屏无法回答“所有受辖项目当前动作” = `NO_GO`
+    - `XT-W3-31`: 若出现 cross-project memory leak 或 duplicate interrupt flood = `NO_GO`
+
+- `CR-20260311-XT-W333-001`
+  - type: `change_request`
+  - status: `active`
+  - owner: `AI-COORD-PRIMARY`
+  - scope: `XT-W3-33`
+  - reason: `XT-W3-31` 已补 portfolio visibility，`XT-W3-32` 已开始补 skill orchestration，但 Supervisor 仍缺正式决策轨、角色化模型路由、动作优先 dashboard、决策 blocker 默认建议与可解释记忆压缩；这些能力若继续隐含在聊天里，会持续增加 token 消耗、决策歧义和错误路由概率。
+  - decision:
+    - 新增 `XT-W3-33 = supervisor_decision_kernel_routing_and_memory_governance`
+    - 冻结 `project spec capsule + decision_track + background_preference_track + role-based model routing + portfolio actionability snapshot + rhythm v2 + decision-blocker assist + memory compaction rollup`
+    - `decision_track` 为正式事实轨，`background_preference_track` 只能弱参考
+    - 决策 blocker 只允许生成受治理默认建议；不可逆/高风险/安全/release-scope 决策禁止静默自动采纳
+    - XT 负责 routing intent，Hub 继续负责具体 model、grant、budget、trust 与 authorization
+    - 当前 GitHub validated-mainline-only 对外口径不扩 scope
+  - evidence_refs:
+    - `x-terminal/work-orders/xt-w3-33-supervisor-decision-kernel-routing-and-memory-governance-implementation-pack-v1.md`
+    - `x-terminal/work-orders/xt-w3-31-supervisor-portfolio-awareness-and-project-action-feed-implementation-pack-v1.md`
+    - `x-terminal/work-orders/xt-w3-32-supervisor-skill-orchestration-and-governed-event-loop-implementation-pack-v1.md`
+    - `docs/memory-new/xhub-terminal-hub-memory-governance-work-orders-v1.md`
+    - `docs/xhub-multi-model-orchestration-and-supervisor-v1.md`
+
+- `XT-W3-33`
+  - owner_lane: `XT-Main(XT-L2)`
+  - status: `planned(scope_frozen_for_post_xt_w3_31_closeout_and_xt_w3_32_integration)`
+  - dependencies:
+    - `XT-W3-31`: `PASS(candidate visibility foundation landed; H require-real pending for release)`
+    - `XT-W3-32`: `REQUIRED(job-plan / callback / governed dispatch integration)`
+    - `XT-W3-23`: `PASS`（Hub-first memory UX / memory bus 基线）
+    - `xhub-terminal-hub-memory-governance`: `PASS`
+    - `xt-supervisor-rhythm-user-explainability`: `PASS`
+  - minimal_gaps:
+    - `XT-W3-33-A project spec capsule`: `PLANNED(goal/mvp/non_goals/tech_stack/milestones canonicalization pending)`
+    - `XT-W3-33-B decision/background tracks`: `PLANNED(formal decision rail + weak preference rail pending)`
+    - `XT-W3-33-C role-based model routing`: `PLANNED(planner/coder/reviewer/doc/ops route policy pending)`
+    - `XT-W3-33-D actionability dashboard`: `PLANNED(missing_next_step/stalled/zombie/actionable_today metrics pending)`
+    - `XT-W3-33-E rhythm v2`: `PLANNED(action-first recommendation cadence pending)`
+    - `XT-W3-33-F decision-blocker assist`: `PLANNED(low-risk default proposal engine pending)`
+    - `XT-W3-33-G memory compaction`: `PLANNED(rollup/archive policy with decision-node preservation pending)`
+    - `XT-W3-33-H require-real`: `PLANNED(real decision/routing/compaction governance regression pending)`
+  - next_owner_lane: `XT-Main -> Hub-Main -> QA-Main`
+  - unblock_policy: `directed_only`
+  - notes:
+    - 本项是 Supervisor 控制面增强，不是当前 public release scope 扩张
+    - Hub 继续是正式决策、模型授权、预算与记忆治理真相源；XT 只做控制面展示与短 TTL 交互
+    - `decision_track` 必须强于 `background_preference_track`；任何冲突均以前者为准
+    - role routing 解决“该找哪类 AI”，不解决“是否允许使用该模型”；后者继续由 Hub gate 裁决
+    - decision-blocker assist 必须是 `proposal-first`；只有低风险、可逆、政策明确允许的项才可 `auto_adopt_if_policy_allows`
+    - memory compaction 不得丢失 decision / milestone / audit / release evidence refs
+  - evidence_refs:
+    - `x-terminal/work-orders/xt-w3-33-supervisor-decision-kernel-routing-and-memory-governance-implementation-pack-v1.md`
+    - `x-terminal/work-orders/xt-w3-31-supervisor-portfolio-awareness-and-project-action-feed-implementation-pack-v1.md`
+    - `x-terminal/work-orders/xt-w3-32-supervisor-skill-orchestration-and-governed-event-loop-implementation-pack-v1.md`
+    - `docs/memory-new/xhub-terminal-hub-memory-governance-work-orders-v1.md`
+    - `docs/memory-new/xhub-terminal-hub-memory-layer-usage-work-orders-v1.md`
+    - `docs/xhub-memory-system-spec-v2.md`
+    - `docs/xhub-multi-model-orchestration-and-supervisor-v1.md`
+    - `docs/xhub-agent-efficiency-and-safety-governance-v1.md`
+
+- `CD-20260311-XT-W333-001`
+  - type: `coordination_decision`
+  - status: `active`
+  - owner: `AI-COORD-PRIMARY`
+  - rule:
+    - `XT-W3-33` 当前只允许推进以下八类内容：
+      - project spec capsule
+      - decision track
+      - background preference track
+      - role-based model routing
+      - portfolio actionability metrics
+      - rhythm v2
+      - decision-blocker assist
+      - memory compaction / rollup / archive
+    - 禁止把本项扩写成 `enterprise BI`, `cross-project fulltext search`, `grant bypass`, `full autonomy without governance`
+    - 不可逆 / 高风险 / 安全 / release-scope 决策禁止静默自动采纳
+    - `decision_track` 永远高于 `background_preference_track`
+    - Dashboard 必须动作优先，不能只堆状态指标
+    - compaction 不得丢失 decision / approval / milestone / release evidence refs
+  - merge_order:
+    1. `XT-Main`
+    2. `Hub-Main`
+    3. `QA-Main`
+  - go_no_go:
+    - `XT-W3-33`: 若 background preference 被提升成 formal decision = `NO_GO`
+    - `XT-W3-33`: 若不可逆决策在无用户/Hub 授权下被自动采纳 = `NO_GO`
+    - `XT-W3-33`: 若 managed project 缺 `next_step` 但 dashboard 未浮现 = `NO_GO`
+    - `XT-W3-33`: 若 role route 无法解释为什么选择 `planner/coder/reviewer/doc/ops` = `NO_GO`
+    - `XT-W3-33`: 若 compaction 导致 decision/audit/release refs 丢失 = `NO_GO`
+
+- `CD-20260312-001`
+  - type: `coordination_decision`
+  - status: `active`
+  - owner: `AI-COORD-PRIMARY`
+  - rule:
+    - `XT-W3-24-G..N` 当前只允许推进以下八类内容：
+      - OpenClaw reuse normalization / HubChannelRegistry
+      - IM identity binding + access groups + command gate
+      - supervisor operator session + project/device route binding
+      - Slack operator adapter
+      - Telegram operator adapter
+      - Feishu operator adapter
+      - delivery outbox + alert / heartbeat / cron push plane
+      - structured action / grant / audit plane + WhatsApp hybrid freeze
+    - 外部 IM 只允许进入 `Hub Supervisor Facade`，禁止 `external_im_direct_xt_bypass`
+    - 默认 `project-first`；`device scope` 只用于 diagnostics / trusted automation / explicit route inspection
+    - 所有高风险动作必须走 `structured_action -> policy -> grant -> execute -> audit`
+    - `whatsapp_personal_qr` 未有 require-real 证据前一律保持 `planned`，不得口头冒绿
+  - merge_order:
+    1. `XT-Main`
+    2. `Hub-Main`
+    3. `QA-Main`
+  - go_no_go:
+    - `XT-W3-24-G..N`: `XT-CHAN-OP-G0..G6` 任一关键 gate 未绿 = `NO_GO`
+    - 若出现 `external_im_direct_xt_bypass`、`unauthorized_channel_action` 或 `device_offline_false_success` 任一非零 = `NO_GO`
+    - 若 `whatsapp_personal_qr` 以 synthetic 证据或口头口径冒绿 = `NO_GO`
+
+- `CD-20260312-002`
+  - type: `coordination_decision`
+  - status: `active`
+  - owner: `AI-COORD-PRIMARY`
+  - rule:
+    - `LPR-W1-01..03` 当前只允许推进以下三类内容：
+      - canonical schema / manifest / runtime status freeze
+      - backend-aware local model import / catalog compatibility
+      - local provider runtime skeleton / provider registry / MLX adapterization
+    - 禁止把当前需求扩写成 `online model marketplace`、`open plugin runtime`、`xt_direct_local_provider_bypass`、`transformers_text_generate_full_swap_for_mlx`
+    - v1 默认 `strict_offline_local_models_only`；未有本地目录与 manifest 证据前不得口头冒绿
+    - `MLX` 继续是本地 `text_generate` 主路径；引入 LPR 不得破坏现有 load/unload/generate 主链
+    - provider-aware readiness 必须替代 `mlxOk == local_runtime_ready` 的唯一语义；允许 `partial_ready`，但不得误报全绿
+  - merge_order:
+    1. `Hub-Main`
+    2. `XT-Main`
+    3. `QA-Main`
+  - go_no_go:
+    - `LPR-W1-01`: 若 schema / manifest / status v2 仍无法 machine-readable 判定 provider 能力 = `NO_GO`
+    - `LPR-W1-02`: 若 Add Model 仍只能按 MLX 路径导入，或旧 catalog 迁移出现 silent drop = `NO_GO`
+    - `LPR-W1-03`: 若新 runtime skeleton 不能 provider-aware 汇总健康状态，或导致 MLX 主链回退 = `NO_GO`
+    - `LPR-W1-01..03`: 若出现自动在线拉模、绕过 Hub policy / audit / kill-switch 的本地执行路径 = `NO_GO`
 
 ## G. Archive Index（运行态）
 

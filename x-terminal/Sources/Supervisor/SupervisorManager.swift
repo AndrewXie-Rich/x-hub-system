@@ -58,6 +58,7 @@ final class SupervisorManager: ObservableObject {
     private var recentEvents: [String] = []
     private var actionLedger: [SupervisorActionLedgerEntry] = []
     private let actionLedgerMaxEntries = 80
+    private let supervisorWorkingSetRecentTurns = 8
     private var supervisorProjectCapsuleSyncAuditRefs: [String: String] = [:]
     private var supervisorPortfolioSnapshotSyncFingerprint: String = ""
     private var supervisorSkillExecutionTasks: [String: Task<Void, Never>] = [:]
@@ -203,6 +204,17 @@ final class SupervisorManager: ObservableObject {
         var workingSet: String
     }
 
+    private struct SupervisorFocusedProjectSelection {
+        var project: AXProjectEntry
+        var source: String
+    }
+
+    private struct SupervisorFocusedProjectExecutionBrief {
+        var canonical: String
+        var observation: String
+        var workingSet: String
+    }
+
     struct SupervisorMemoryProjectDigest: Identifiable, Equatable {
         var projectId: String
         var displayName: String
@@ -223,6 +235,7 @@ final class SupervisorManager: ObservableObject {
         var missingSpecFields: [SupervisorProjectSpecField]
         var hardDecisions: [SupervisorDecisionCategory: SupervisorDecisionTrackEvent]
         var backgroundShadowHint: String
+        var decisionAssist: SupervisorDecisionBlockerAssist?
         var updatedAt: TimeInterval
         var sourceTags: [String]
     }
@@ -1344,7 +1357,10 @@ final class SupervisorManager: ObservableObject {
         let params = SupervisorSystemPromptParamsBuilder.build(
             identity: currentSupervisorIdentityProfile(),
             preferredSupervisorModelId: preferredModel,
-            supervisorModelRouteSummary: currentSupervisorModelRouteSummary(),
+            supervisorModelRouteSummary: contextualSupervisorModelRouteSummary(
+                userMessage: userMessage,
+                projects: projects
+            ),
             memorySource: memoryInfo.source,
             projectCount: projects.count,
             userMessage: userMessage,
@@ -2119,12 +2135,36 @@ final class SupervisorManager: ObservableObject {
         }
 
         let lower = out.lowercased()
-        let prefixes = ["project_id:", "project id:", "项目id:", "项目id：", "项目:", "项目："]
+        let prefixes = [
+            "project_ref:", "project_ref：",
+            "project ref:", "project ref：",
+            "project_id:", "project_id：",
+            "project id:", "project id：",
+            "项目ref:", "项目ref：",
+            "项目引用:", "项目引用：",
+            "项目id:", "项目id：",
+            "项目:", "项目："
+        ]
         for prefix in prefixes where lower.hasPrefix(prefix) {
             out = String(out.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
             break
         }
         return out
+    }
+
+    private func syntheticProjectIdentifierKey(_ projectRef: String) -> String? {
+        let trimmed = projectRef.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let lowered = trimmed.lowercased()
+        for prefix in ["hex:", "id:"] where lowered.hasPrefix(prefix) {
+            let suffix = String(trimmed.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            let key = normalizedLookupKey(suffix)
+            if key.count >= 4 {
+                return key
+            }
+        }
+        return nil
     }
 
     private func supervisorTriggerContextValue(_ key: String, userMessage: String?) -> String? {
@@ -2209,7 +2249,13 @@ final class SupervisorManager: ObservableObject {
     }
 
     private func resolveProjectReference(_ projectRef: String) -> ProjectReferenceResolution {
-        let projects = allProjects()
+        resolveProjectReference(projectRef, in: allProjects())
+    }
+
+    private func resolveProjectReference(
+        _ projectRef: String,
+        in projects: [AXProjectEntry]
+    ) -> ProjectReferenceResolution {
         guard !projects.isEmpty else { return .notFound }
 
         if let exactId = projects.first(where: { $0.projectId.compare(projectRef, options: .caseInsensitive) == .orderedSame }) {
@@ -2220,12 +2266,17 @@ final class SupervisorManager: ObservableObject {
         }
 
         let key = normalizedLookupKey(projectRef)
-        guard !key.isEmpty else { return .notFound }
+        let syntheticIDKey = syntheticProjectIdentifierKey(projectRef)
+        guard !key.isEmpty || syntheticIDKey != nil else { return .notFound }
 
         let scored: [(entry: AXProjectEntry, score: Int)] = projects.compactMap { entry in
             let nameKey = normalizedLookupKey(entry.displayName)
             let idKey = normalizedLookupKey(entry.projectId)
             var score = 0
+            if let syntheticIDKey {
+                if syntheticIDKey == idKey { score = max(score, 130) }
+                if !idKey.isEmpty && idKey.hasPrefix(syntheticIDKey) { score = max(score, 125) }
+            }
             if key == idKey { score = max(score, 120) }
             if key == nameKey { score = max(score, 110) }
             if !nameKey.isEmpty && nameKey.hasPrefix(key) { score = max(score, 95) }
@@ -2365,7 +2416,7 @@ final class SupervisorManager: ObservableObject {
         let runtime = runtimeStatus(for: project)
         let localMemory = try? AXProjectStore.loadOrCreateMemory(for: ctx)
         let recent = AXRecentContextStore.load(for: ctx)
-        let governance = loadSupervisorProjectDigestGovernanceContext(projectId: project.projectId, ctx: ctx)
+        var governance = loadSupervisorProjectDigestGovernanceContext(projectId: project.projectId, ctx: ctx)
 
         let localGoal = (localMemory?.goal ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let localCurrent = firstNonEmptyLine(items: localMemory?.currentState ?? [])
@@ -2375,13 +2426,23 @@ final class SupervisorManager: ObservableObject {
             localBlocker = firstNonEmptyLine(items: localMemory?.risks ?? [])
         }
 
-        let state = resolvedSupervisorDigestCurrentState(
+        governance.decisionAssist = inferredSupervisorDecisionBlockerAssist(
+            projectId: project.projectId,
+            localBlocker: localBlocker,
+            registryBlocker: project.blockerSummary,
+            governance: governance
+        )
+        if governance.decisionAssist != nil, !governance.sourceTags.contains("decision_blocker_assist") {
+            governance.sourceTags.append("decision_blocker_assist")
+        }
+
+        var state = resolvedSupervisorDigestCurrentState(
             localCurrent: localCurrent,
             registryCurrent: project.currentStateSummary,
             runtimeText: runtime.text,
             governance: governance
         )
-        let next = resolvedSupervisorDigestNextStep(
+        var next = resolvedSupervisorDigestNextStep(
             localNext: localNext,
             registryNext: project.nextStepSummary,
             governance: governance
@@ -2397,9 +2458,34 @@ final class SupervisorManager: ObservableObject {
             governance: governance
         )
 
+        let projectState = SupervisorProjectCapsuleBuilder.projectState(
+            runtimeState: runtime.text,
+            currentAction: state,
+            blocker: blocker == "(无)" ? "" : blocker,
+            nextStep: next
+        )
+        let compactionRollup = supervisorMemoryCompactionRollup(
+            projectId: project.projectId,
+            ctx: ctx,
+            localMemory: localMemory,
+            recent: recent,
+            governance: governance,
+            projectState: projectState
+        )
+        if state.isEmpty {
+            state = supervisorMemoryCompactionStateHint(compactionRollup)
+        }
+        if next.isEmpty {
+            next = supervisorMemoryCompactionNextStepHint(
+                compactionRollup,
+                projectState: projectState
+            )
+        }
+
         let source = resolvedSupervisorDigestSource(
             hasDurableLocalMemory: hasDurableSupervisorProjectMemory(localMemory),
-            governance: governance
+            governance: governance,
+            hasMemoryCompactionRollup: compactionRollup != nil
         )
         let updatedAt = max(
             localMemory?.updatedAt ?? 0,
@@ -2478,6 +2564,7 @@ final class SupervisorManager: ObservableObject {
             missingSpecFields: specCapsule?.missingRequiredFields ?? [],
             hardDecisions: hardDecisions,
             backgroundShadowHint: backgroundShadowHint,
+            decisionAssist: nil,
             updatedAt: updatedAt,
             sourceTags: sourceTags
         )
@@ -2508,11 +2595,18 @@ final class SupervisorManager: ObservableObject {
             return preferred
         }
         if !governance.missingSpecFields.isEmpty {
-            return supervisorSpecGapStateHint(governance.missingSpecFields)
+            return supervisorSpecGapStateHint(
+                governance.missingSpecFields,
+                assist: governance.decisionAssist
+            )
         }
         let decisionSummary = supervisorFormalDecisionSummary(governance.hardDecisions)
         if !decisionSummary.isEmpty {
             return decisionSummary
+        }
+        let assistState = supervisorDecisionAssistStateHint(governance.decisionAssist)
+        if !assistState.isEmpty {
+            return assistState
         }
         if !governance.backgroundShadowHint.isEmpty {
             return governance.backgroundShadowHint
@@ -2537,7 +2631,14 @@ final class SupervisorManager: ObservableObject {
             return preferred
         }
         if !governance.missingSpecFields.isEmpty {
-            return supervisorSpecGapNextStepHint(governance.missingSpecFields)
+            return supervisorSpecGapNextStepHint(
+                governance.missingSpecFields,
+                assist: governance.decisionAssist
+            )
+        }
+        let assistHint = supervisorDecisionAssistNextStepHint(governance.decisionAssist)
+        if !assistHint.isEmpty {
+            return assistHint
         }
         let decisionHint = supervisorDecisionNextStepHint(governance.hardDecisions)
         if !decisionHint.isEmpty {
@@ -2564,21 +2665,38 @@ final class SupervisorManager: ObservableObject {
             treatNoValueAsPlaceholder: true
         )
         if !preferred.isEmpty {
-            return preferred
+            return mergedSupervisorBlockerHint(
+                preferred: preferred,
+                assist: governance.decisionAssist
+            )
         }
         if !governance.missingSpecFields.isEmpty {
-            return supervisorSpecGapBlockerHint(governance.missingSpecFields)
+            return supervisorSpecGapBlockerHint(
+                governance.missingSpecFields,
+                assist: governance.decisionAssist
+            )
         }
-        return supervisorDecisionBlockerHint(governance.hardDecisions)
+        let formalBlocker = supervisorDecisionBlockerHint(governance.hardDecisions)
+        if !formalBlocker.isEmpty {
+            return mergedSupervisorBlockerHint(
+                preferred: formalBlocker,
+                assist: governance.decisionAssist
+            )
+        }
+        return supervisorDecisionAssistBlockerHint(governance.decisionAssist)
     }
 
     private func resolvedSupervisorDigestSource(
         hasDurableLocalMemory: Bool,
-        governance: SupervisorProjectDigestGovernanceContext
+        governance: SupervisorProjectDigestGovernanceContext,
+        hasMemoryCompactionRollup: Bool
     ) -> String {
         var parts = hasDurableLocalMemory ? ["local_project_memory", "registry"] : ["registry_summary"]
         for tag in governance.sourceTags where !parts.contains(tag) {
             parts.append(tag)
+        }
+        if hasMemoryCompactionRollup, !parts.contains("memory_compaction_rollup") {
+            parts.append("memory_compaction_rollup")
         }
         return parts.joined(separator: "+")
     }
@@ -2602,16 +2720,40 @@ final class SupervisorManager: ObservableObject {
         }
     }
 
-    private func supervisorSpecGapStateHint(_ fields: [SupervisorProjectSpecField]) -> String {
-        capped("规格待补齐：\(supervisorSpecGapFieldList(fields))", maxChars: 120)
+    private func supervisorSpecGapStateHint(
+        _ fields: [SupervisorProjectSpecField],
+        assist: SupervisorDecisionBlockerAssist? = nil
+    ) -> String {
+        let base = "规格待补齐：\(supervisorSpecGapFieldList(fields))"
+        let assistSummary = supervisorDecisionAssistStateHint(assist)
+        guard !assistSummary.isEmpty else {
+            return capped(base, maxChars: 120)
+        }
+        return capped("\(base)；\(assistSummary)", maxChars: 120)
     }
 
-    private func supervisorSpecGapNextStepHint(_ fields: [SupervisorProjectSpecField]) -> String {
-        capped("补齐 formal spec 字段：\(supervisorSpecGapFieldList(fields))", maxChars: 120)
+    private func supervisorSpecGapNextStepHint(
+        _ fields: [SupervisorProjectSpecField],
+        assist: SupervisorDecisionBlockerAssist? = nil
+    ) -> String {
+        let base = "补齐 formal spec 字段：\(supervisorSpecGapFieldList(fields))"
+        let assistSummary = supervisorDecisionAssistNextStepHint(assist)
+        guard !assistSummary.isEmpty else {
+            return capped(base, maxChars: 120)
+        }
+        return capped("\(base)；\(assistSummary)", maxChars: 120)
     }
 
-    private func supervisorSpecGapBlockerHint(_ fields: [SupervisorProjectSpecField]) -> String {
-        capped("formal_spec_missing: \(supervisorSpecGapFieldList(fields))", maxChars: 120)
+    private func supervisorSpecGapBlockerHint(
+        _ fields: [SupervisorProjectSpecField],
+        assist: SupervisorDecisionBlockerAssist? = nil
+    ) -> String {
+        let base = "formal_spec_missing: \(supervisorSpecGapFieldList(fields))"
+        let assistSummary = supervisorDecisionAssistBlockerHint(assist)
+        guard !assistSummary.isEmpty else {
+            return capped(base, maxChars: 120)
+        }
+        return capped("\(base) | \(assistSummary)", maxChars: 120)
     }
 
     private func supervisorDecisionHintOrder() -> [SupervisorDecisionCategory] {
@@ -2683,6 +2825,438 @@ final class SupervisorManager: ObservableObject {
             "阻塞",
             "驳回"
         ].contains { lowered.contains($0) }
+    }
+
+    private func inferredSupervisorDecisionBlockerAssist(
+        projectId: String,
+        localBlocker: String,
+        registryBlocker: String?,
+        governance: SupervisorProjectDigestGovernanceContext
+    ) -> SupervisorDecisionBlockerAssist? {
+        let preferredBlocker = firstMeaningfulDigestValue(
+            [localBlocker, registryBlocker],
+            treatNoValueAsPlaceholder: true
+        )
+        let fallbackFormalBlocker = supervisorDecisionBlockerHint(governance.hardDecisions)
+        let normalized = normalizedSupervisorIntentText(
+            !preferredBlocker.isEmpty
+                ? preferredBlocker
+                : (!fallbackFormalBlocker.isEmpty ? fallbackFormalBlocker : inferredSupervisorSpecGapAssistSeed(governance))
+        )
+        let category = inferredSupervisorDecisionBlockerCategory(
+            normalized: normalized,
+            governance: governance
+        )
+
+        let candidateText = !preferredBlocker.isEmpty
+            ? preferredBlocker
+            : (!fallbackFormalBlocker.isEmpty ? fallbackFormalBlocker : inferredSupervisorSpecGapAssistSeed(governance))
+        guard !candidateText.isEmpty else { return nil }
+
+        let riskLevel = inferredSupervisorDecisionBlockerRiskLevel(
+            normalized: normalized,
+            category: category
+        )
+        let reversible = inferredSupervisorDecisionBlockerReversible(
+            normalized: normalized,
+            category: category
+        )
+        let touchesSecurity = category == .security || containsAny(
+            normalized,
+            ["security", "权限", "grant", "授权", "secret", "token", "credential", "安全"]
+        )
+        let touchesReleaseScope = category == .releaseScope || containsAny(
+            normalized,
+            ["release scope", "release", "发版", "go/no-go", "上线范围", "门禁", "release gate"]
+        )
+        let requiresHubAuthorization = touchesSecurity || touchesReleaseScope || containsAny(
+            normalized,
+            ["approval", "authorize", "授权", "审批", "grant_required", "paid", "付费", "prod", "production"]
+        )
+
+        let assist = SupervisorDecisionBlockerAssistEngine.build(
+            context: SupervisorDecisionBlockerContext(
+                projectId: projectId,
+                blockerId: "digest-\(category.rawValue)",
+                category: category,
+                reversible: reversible,
+                riskLevel: riskLevel,
+                touchesSecurity: touchesSecurity,
+                touchesReleaseScope: touchesReleaseScope,
+                requiresHubAuthorization: requiresHubAuthorization,
+                explicitApprovalGranted: false,
+                allowAutoAdoptWhenPolicyAllows: false,
+                evidenceRefs: governanceAssistEvidenceRefs(governance)
+            )
+        )
+
+        if assist.templateCandidates.isEmpty && !assist.failClosed {
+            return nil
+        }
+        return assist
+    }
+
+    private func inferredSupervisorSpecGapAssistSeed(
+        _ governance: SupervisorProjectDigestGovernanceContext
+    ) -> String {
+        if governance.missingSpecFields.contains(.approvedTechStack) {
+            return "missing approved tech stack"
+        }
+        return ""
+    }
+
+    private func inferredSupervisorDecisionBlockerCategory(
+        normalized: String,
+        governance: SupervisorProjectDigestGovernanceContext
+    ) -> SupervisorDecisionBlockerCategory {
+        if containsAny(normalized, ["delete", "删除", "wipe", "drop", "purge", "reset", "migrate", "migration", "销毁", "不可逆", "irreversible"]) {
+            return .irreversibleOperation
+        }
+        if containsAny(normalized, ["release scope", "release", "发版", "上线", "go/no-go", "release gate", "发布范围"]) {
+            return .releaseScope
+        }
+        if containsAny(normalized, ["security", "权限", "grant", "授权", "secret", "token", "credential", "安全"]) {
+            return .security
+        }
+        if governance.missingSpecFields.contains(.approvedTechStack) || containsAny(
+            normalized,
+            ["tech stack", "技术栈", "语言", "框架", "stack", "选型"]
+        ) {
+            return .techStack
+        }
+        if containsAny(
+            normalized,
+            ["test stack", "test framework", "测试框架", "swift testing", "xctest", "jest", "pytest", "测试工具"]
+        ) {
+            return .testStack
+        }
+        if containsAny(
+            normalized,
+            ["scaffold", "脚手架", "目录结构", "project structure", "boilerplate", "template repo", "模板工程"]
+        ) {
+            return .scaffold
+        }
+        if containsAny(
+            normalized,
+            ["doc template", "文档模板", "readme", "release notes", "说明模板", "documentation template", "spec template"]
+        ) {
+            return .docTemplate
+        }
+        return .other
+    }
+
+    private func inferredSupervisorDecisionBlockerRiskLevel(
+        normalized: String,
+        category: SupervisorDecisionBlockerCategory
+    ) -> SupervisorDecisionBlockerRiskLevel {
+        switch category {
+        case .irreversibleOperation:
+            return .critical
+        case .security, .releaseScope:
+            return .high
+        case .techStack, .scaffold, .testStack, .docTemplate:
+            return .low
+        case .other:
+            if containsAny(normalized, ["prod", "production", "paid", "付费", "上线"]) {
+                return .high
+            }
+            return .medium
+        }
+    }
+
+    private func inferredSupervisorDecisionBlockerReversible(
+        normalized: String,
+        category: SupervisorDecisionBlockerCategory
+    ) -> Bool {
+        switch category {
+        case .techStack, .scaffold, .testStack, .docTemplate:
+            return true
+        case .security, .releaseScope, .irreversibleOperation:
+            return false
+        case .other:
+            return !containsAny(
+                normalized,
+                ["delete", "删除", "wipe", "drop", "purge", "销毁", "不可逆", "irreversible"]
+            )
+        }
+    }
+
+    private func governanceAssistEvidenceRefs(
+        _ governance: SupervisorProjectDigestGovernanceContext
+    ) -> [String] {
+        var refs: [String] = []
+        if let specCapsule = governance.specCapsule {
+            refs.append(contentsOf: specCapsule.sourceRefs)
+        }
+        refs.append(contentsOf: governance.hardDecisions.values.flatMap(\.evidenceRefs))
+        refs.append(contentsOf: governance.hardDecisions.values.map(\.auditRef))
+        return orderedUniqueSupervisorRefs(refs)
+    }
+
+    private func supervisorDecisionAssistStateHint(_ assist: SupervisorDecisionBlockerAssist?) -> String {
+        guard let assist else { return "" }
+        if assist.failClosed {
+            return "默认建议已生成但保持 fail-closed：\(assist.blockerCategory.rawValue)"
+        }
+        let option = assist.recommendedOption ?? assist.templateCandidates.first ?? assist.blockerCategory.rawValue
+        return "默认建议待确认：\(option)（\(assist.approvalState.rawValue)）"
+    }
+
+    private func supervisorDecisionAssistNextStepHint(_ assist: SupervisorDecisionBlockerAssist?) -> String {
+        guard let assist else { return "" }
+        if assist.failClosed {
+            return capped(
+                "该决策需显式审批：\(assist.blockerCategory.rawValue)，当前只允许 \(assist.governanceMode.rawValue)",
+                maxChars: 110
+            )
+        }
+        let option = assist.recommendedOption ?? assist.templateCandidates.first ?? assist.blockerCategory.rawValue
+        return capped(
+            "审阅待定默认建议：\(option)，确认后再走 governed adoption",
+            maxChars: 110
+        )
+    }
+
+    private func supervisorDecisionAssistBlockerHint(_ assist: SupervisorDecisionBlockerAssist?) -> String {
+        guard let assist else { return "" }
+        if assist.failClosed {
+            return "decision_requires_approval:\(assist.blockerCategory.rawValue)"
+        }
+        let option = assist.recommendedOption ?? assist.templateCandidates.first ?? assist.blockerCategory.rawValue
+        return "default_proposal_pending:\(assist.blockerCategory.rawValue)=\(option)"
+    }
+
+    private func mergedSupervisorBlockerHint(
+        preferred: String,
+        assist: SupervisorDecisionBlockerAssist?
+    ) -> String {
+        let trimmed = preferred.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return supervisorDecisionAssistBlockerHint(assist) }
+        let assistHint = supervisorDecisionAssistBlockerHint(assist)
+        guard !assistHint.isEmpty else { return capped(trimmed, maxChars: 120) }
+        return capped("\(trimmed) | \(assistHint)", maxChars: 120)
+    }
+
+    private func supervisorMemoryCompactionRollup(
+        projectId: String,
+        ctx: AXProjectContext,
+        localMemory: AXMemory?,
+        recent: AXRecentContext,
+        governance: SupervisorProjectDigestGovernanceContext,
+        projectState: SupervisorPortfolioProjectState
+    ) -> SupervisorMemoryCompactionRollup? {
+        let nowMs = max(0, Int64(Date().timeIntervalSince1970 * 1_000))
+        let nodes = supervisorMemoryCompactionNodes(
+            ctx: ctx,
+            localMemory: localMemory,
+            recent: recent,
+            governance: governance
+        )
+        guard !nodes.isEmpty else { return nil }
+
+        let plan = SupervisorMemoryCompactionPolicy.makePlan(
+            SupervisorMemoryCompactionPolicyInput(
+                projectId: projectId,
+                projectState: supervisorCompactionProjectState(projectState),
+                nowMs: nowMs,
+                nodes: nodes
+            )
+        )
+        guard plan.archiveCandidate || !plan.rollupNodes.isEmpty || !plan.archiveNodes.isEmpty else {
+            return nil
+        }
+        return try? SupervisorArchiveRollup.build(from: plan, updatedAtMs: nowMs)
+    }
+
+    private func supervisorMemoryCompactionNodes(
+        ctx: AXProjectContext,
+        localMemory: AXMemory?,
+        recent: AXRecentContext,
+        governance: SupervisorProjectDigestGovernanceContext
+    ) -> [SupervisorMemoryNode] {
+        var nodes: [SupervisorMemoryNode] = []
+
+        func appendNoiseNodes(
+            _ items: [String],
+            kind: SupervisorMemoryNodeKind,
+            prefix: String,
+            timestampMs: Int64,
+            activeFirst: Bool = false
+        ) {
+            for (index, raw) in items.enumerated() {
+                let summary = firstNonEmptyLine(in: raw)
+                guard !summary.isEmpty else { continue }
+                nodes.append(
+                    SupervisorMemoryNode(
+                        id: "\(prefix)-\(index)",
+                        kind: kind,
+                        createdAtMs: timestampMs,
+                        lastTouchedAtMs: timestampMs,
+                        summary: capped(summary, maxChars: 180),
+                        refs: [],
+                        pinned: false,
+                        active: activeFirst && index == 0
+                    )
+                )
+            }
+        }
+
+        if let localMemory {
+            let memoryMs = max(0, Int64((localMemory.updatedAt * 1_000.0).rounded()))
+            let goal = localMemory.goal.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !goal.isEmpty {
+                nodes.append(
+                    SupervisorMemoryNode(
+                        id: "goal",
+                        kind: .workingSet,
+                        createdAtMs: memoryMs,
+                        lastTouchedAtMs: memoryMs,
+                        summary: capped(goal, maxChars: 180),
+                        refs: [],
+                        pinned: true,
+                        active: true
+                    )
+                )
+            }
+            appendNoiseNodes(localMemory.currentState, kind: .workingSet, prefix: "current", timestampMs: memoryMs, activeFirst: true)
+            appendNoiseNodes(localMemory.nextSteps, kind: .workingSet, prefix: "next", timestampMs: memoryMs, activeFirst: true)
+            appendNoiseNodes(localMemory.openQuestions, kind: .observation, prefix: "open-question", timestampMs: memoryMs)
+            appendNoiseNodes(localMemory.risks, kind: .observation, prefix: "risk", timestampMs: memoryMs)
+            appendNoiseNodes(localMemory.recommendations, kind: .observation, prefix: "recommendation", timestampMs: memoryMs)
+            appendNoiseNodes(localMemory.decisions, kind: .actionLog, prefix: "legacy-decision", timestampMs: memoryMs)
+        }
+
+        let recentRef = AXRecentContextStore.jsonURL(for: ctx).path
+        for (index, message) in recent.messages.enumerated() {
+            let summary = firstNonEmptyLine(in: message.content)
+            guard !summary.isEmpty else { continue }
+            let timestampMs = max(0, Int64((message.createdAt * 1_000.0).rounded()))
+            let rolePrefix = message.role.trimmingCharacters(in: .whitespacesAndNewlines)
+            nodes.append(
+                SupervisorMemoryNode(
+                    id: "recent-\(index)",
+                    kind: .actionLog,
+                    createdAtMs: timestampMs,
+                    lastTouchedAtMs: timestampMs,
+                    summary: capped("\(rolePrefix): \(summary)", maxChars: 180),
+                    refs: [recentRef],
+                    pinned: false,
+                    active: index >= max(0, recent.messages.count - 2)
+                )
+            )
+        }
+
+        for event in governance.hardDecisions.values.sorted(by: { lhs, rhs in
+            if lhs.updatedAtMs == rhs.updatedAtMs {
+                return lhs.decisionId < rhs.decisionId
+            }
+            return lhs.updatedAtMs < rhs.updatedAtMs
+        }) {
+            nodes.append(
+                SupervisorMemoryNode(
+                    id: "decision-\(event.decisionId)",
+                    kind: .decision,
+                    createdAtMs: event.createdAtMs,
+                    lastTouchedAtMs: event.updatedAtMs,
+                    summary: capped(firstNonEmptyLine(in: event.statement), maxChars: 180),
+                    refs: orderedUniqueSupervisorRefs(event.evidenceRefs + [event.auditRef]),
+                    decisionId: event.decisionId,
+                    milestoneId: nil,
+                    pinned: true,
+                    active: false
+                )
+            )
+        }
+
+        if let specCapsule = governance.specCapsule {
+            for milestone in specCapsule.milestoneMap {
+                nodes.append(
+                    SupervisorMemoryNode(
+                        id: "milestone-\(milestone.milestoneId)",
+                        kind: .milestone,
+                        createdAtMs: specCapsule.updatedAtMs,
+                        lastTouchedAtMs: specCapsule.updatedAtMs,
+                        summary: capped(milestone.title, maxChars: 180),
+                        refs: orderedUniqueSupervisorRefs(specCapsule.sourceRefs),
+                        decisionId: nil,
+                        milestoneId: milestone.milestoneId,
+                        pinned: milestone.status == .blocked,
+                        active: milestone.status == .active
+                    )
+                )
+            }
+            if !specCapsule.sourceRefs.isEmpty {
+                nodes.append(
+                    SupervisorMemoryNode(
+                        id: "spec-audit",
+                        kind: .audit,
+                        createdAtMs: specCapsule.updatedAtMs,
+                        lastTouchedAtMs: specCapsule.updatedAtMs,
+                        summary: "spec capsule sources",
+                        refs: orderedUniqueSupervisorRefs(specCapsule.sourceRefs),
+                        pinned: true,
+                        active: false
+                    )
+                )
+            }
+        }
+
+        return nodes
+    }
+
+    private func supervisorCompactionProjectState(
+        _ state: SupervisorPortfolioProjectState
+    ) -> SupervisorProjectCapsuleState {
+        switch state {
+        case .active:
+            return .active
+        case .blocked:
+            return .blocked
+        case .awaitingAuthorization:
+            return .awaitingAuthorization
+        case .completed:
+            return .completed
+        case .idle:
+            return .idle
+        }
+    }
+
+    private func supervisorMemoryCompactionStateHint(
+        _ rollup: SupervisorMemoryCompactionRollup?
+    ) -> String {
+        guard let rollup, !rollup.rollupSummary.isEmpty else { return "" }
+        return capped("记忆收口：\(rollup.rollupSummary)", maxChars: 120)
+    }
+
+    private func supervisorMemoryCompactionNextStepHint(
+        _ rollup: SupervisorMemoryCompactionRollup?,
+        projectState: SupervisorPortfolioProjectState
+    ) -> String {
+        guard let rollup else { return "" }
+        if projectState == .completed && rollup.archiveCandidate {
+            return capped(
+                "审阅 archive rollup：关键 decision/milestone/gate refs 已保留，可按 archive 模式收口",
+                maxChars: 120
+            )
+        }
+        if !rollup.rolledUpNodeIds.isEmpty {
+            return capped(
+                "继续围绕 active facts 推进；旧 observation 已转为 rollup 摘要",
+                maxChars: 120
+            )
+        }
+        return ""
+    }
+
+    private func orderedUniqueSupervisorRefs(_ refs: [String]) -> [String] {
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for ref in refs {
+            let trimmed = ref.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { continue }
+            ordered.append(trimmed)
+        }
+        return ordered
     }
 
     private func supervisorSpecMilestoneStateHint(_ specCapsule: SupervisorProjectSpecCapsule?) -> String {
@@ -2889,8 +3463,8 @@ final class SupervisorManager: ObservableObject {
         _ userMessage: String,
         projects: [AXProjectEntry]
     ) -> String? {
-        if let hubRouteReply = directSupervisorHubRouteReplyIfApplicable(userMessage) {
-            return hubRouteReply
+        if let slashReply = directSupervisorSlashReplyIfApplicable(userMessage) {
+            return slashReply
         }
         let normalized = normalizedSupervisorIntentText(userMessage)
         if isLastActualModelQuestion(normalized) {
@@ -2911,14 +3485,21 @@ final class SupervisorManager: ObservableObject {
         return nil
     }
 
-    private func directSupervisorHubRouteReplyIfApplicable(_ userMessage: String) -> String? {
+    private func directSupervisorSlashReplyIfApplicable(_ userMessage: String) -> String? {
         let trimmed = userMessage.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasPrefix("/") else { return nil }
 
         let tokens = trimmed.split(whereSeparator: \.isWhitespace).map(String.init)
-        guard let head = tokens.first?.lowercased(), head == "/hub" else { return nil }
+        guard let head = tokens.first?.lowercased() else { return nil }
         let args = Array(tokens.dropFirst())
-        return handleSupervisorSlashHub(args: args)
+        switch head {
+        case "/hub":
+            return handleSupervisorSlashHub(args: args)
+        case "/route":
+            return handleSupervisorSlashRoute(args: args)
+        default:
+            return nil
+        }
     }
 
     private func handleSupervisorSlashHub(args: [String]) -> String {
@@ -2949,6 +3530,24 @@ final class SupervisorManager: ObservableObject {
 - /hub route
 - /hub route <auto|grpc|file>
 - /hub route selftest
+"""
+        }
+    }
+
+    private func handleSupervisorSlashRoute(args: [String]) -> String {
+        guard let headRaw = args.first?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !headRaw.isEmpty else {
+            return supervisorRouteDiagnosisText()
+        }
+
+        switch headRaw {
+        case "diagnose", "status", "show", "list":
+            return supervisorRouteDiagnosisText()
+        default:
+            return """
+用法：
+- /route
+- /route diagnose
 """
         }
     }
@@ -3188,6 +3787,13 @@ final class SupervisorManager: ObservableObject {
             "cancel skill",
             "停止技能",
             "执行这个技能",
+            "写入文件",
+            "写个文件",
+            "修改文件",
+            "应用补丁",
+            "打补丁",
+            "write file",
+            "apply patch",
             "自动处理",
             "自动执行",
             "自动继续",
@@ -3777,6 +4383,11 @@ final class SupervisorManager: ObservableObject {
         var reasonCode: String
     }
 
+    private enum SupervisorRepoCommandProfile {
+        case test
+        case build
+    }
+
     private func resolveSupervisorProjectScope(
         projectRef: String?,
         commandName: String,
@@ -4069,6 +4680,7 @@ final class SupervisorManager: ObservableObject {
             addSystemMessage(message)
             return (false, "skill_registry_unavailable", message, workflow.project.projectId, workflow.project.displayName)
         }
+        warmResolvedSkillsCacheIfPossible(for: workflow.project)
         guard let registryItem = registrySnapshot.items.first(where: { $0.skillId == skillId }) else {
             let message = "❌ CALL_SKILL 失败：技能 \(skillId) 不在当前 project scope 的 Hub registry 中（skill_not_registered）"
             addSystemMessage(message)
@@ -4086,8 +4698,12 @@ final class SupervisorManager: ObservableObject {
         switch mapSupervisorSkillToToolCall(skillId: skillId, payload: payloadObject, requestId: requestId) {
         case .success(let dispatch):
             mapped = dispatch
-        case .failure:
-            let blocked = SupervisorSkillCallRecord(
+        case .failure(let failure):
+            let blockedSummary = supervisorSkillMappingFailureSummary(failure)
+            let blockedDenyCode = failure.reasonCode == "unsupported_skill_id"
+                ? "skill_mapping_missing"
+                : failure.reasonCode
+            var blocked = SupervisorSkillCallRecord(
                 schemaVersion: SupervisorSkillCallRecord.currentSchemaVersion,
                 requestId: requestId,
                 projectId: workflow.project.projectId,
@@ -4099,14 +4715,22 @@ final class SupervisorManager: ObservableObject {
                 status: .blocked,
                 payload: payloadObject,
                 currentOwner: owner,
-                resultSummary: "skill mapping unavailable",
-                denyCode: "skill_mapping_missing",
+                resultSummary: blockedSummary,
+                denyCode: blockedDenyCode,
+                resultEvidenceRef: nil,
                 requiredCapability: nil,
                 grantRequestId: nil,
                 grantId: nil,
                 createdAtMs: nowMs,
                 updatedAtMs: nowMs,
                 auditRef: "audit-xt-supervisor-skill-\(String(requestId.suffix(12)))"
+            )
+            blocked.resultEvidenceRef = SupervisorSkillResultEvidenceStore.write(
+                record: blocked,
+                toolCall: nil,
+                rawOutput: nil,
+                triggerSource: triggerSource.rawValue,
+                ctx: workflow.ctx
             )
             try? SupervisorProjectSkillCallStore.upsert(blocked, for: workflow.ctx)
             _ = updateSupervisorWorkflowStepState(
@@ -4127,14 +4751,34 @@ final class SupervisorManager: ObservableObject {
                 triggerSource: triggerSource,
                 ctx: workflow.ctx
             )
-            let message = "❌ CALL_SKILL 失败：技能 \(skillId) 还没有接到受治理 runtime（skill_mapping_missing）"
+            appendSupervisorSkillResultRawLog(
+                record: blocked,
+                toolCall: nil,
+                rawOutput: nil,
+                triggerSource: triggerSource,
+                ctx: workflow.ctx
+            )
+            appendRecentEvent("skill_result: \(workflow.project.displayName) -> \(blocked.skillId) \(blocked.status.rawValue)")
+            let message = supervisorSkillMappingFailureMessage(skillId: skillId, failure: failure)
             addSystemMessage(message)
-            return (false, "skill_mapping_missing", message, workflow.project.projectId, workflow.project.displayName)
+            return (false, blockedDenyCode, message, workflow.project.projectId, workflow.project.displayName)
         }
 
         let requiredCapability = supervisorRequiredHubCapability(for: mapped.toolCall)
-        let requiresGrant = registryItem.requiresGrant
-        let requiresWaitingAuthorization = requiresGrant && !supervisorToolCallHasExplicitGrant(mapped.toolCall)
+        let projectConfig = (try? AXProjectStore.loadOrCreateConfig(for: workflow.ctx))
+            ?? .default(forProjectRoot: workflow.ctx.root)
+        let requiresGrant = registryItem.requiresGrant || requiredCapability != nil
+        let canBypassLocalGrantWait =
+            requiredCapability == nil &&
+            xtProjectGovernedAutoApprovalConfigured(
+                projectRoot: workflow.ctx.root,
+                config: projectConfig
+            ) &&
+            !ToolPolicy.isAlwaysConfirm(call: mapped.toolCall)
+        let requiresWaitingAuthorization =
+            requiresGrant &&
+            !supervisorToolCallHasExplicitGrant(mapped.toolCall) &&
+            !canBypassLocalGrantWait
         let awaitingResultSummary: String = {
             guard requiresWaitingAuthorization else { return "queued governed dispatch" }
             if let requiredCapability, !requiredCapability.isEmpty {
@@ -4149,7 +4793,7 @@ final class SupervisorManager: ObservableObject {
             }
             return "local_approval_required"
         }()
-        let record = SupervisorSkillCallRecord(
+        var record = SupervisorSkillCallRecord(
             schemaVersion: SupervisorSkillCallRecord.currentSchemaVersion,
             requestId: requestId,
             projectId: workflow.project.projectId,
@@ -4163,12 +4807,20 @@ final class SupervisorManager: ObservableObject {
             currentOwner: owner,
             resultSummary: awaitingResultSummary,
             denyCode: awaitingDenyCode,
+            resultEvidenceRef: nil,
             requiredCapability: requiredCapability,
             grantRequestId: nil,
             grantId: nil,
             createdAtMs: nowMs,
             updatedAtMs: nowMs,
             auditRef: "audit-xt-supervisor-skill-\(String(requestId.suffix(12)))"
+        )
+        record.resultEvidenceRef = SupervisorSkillResultEvidenceStore.write(
+            record: record,
+            toolCall: mapped.toolCall,
+            rawOutput: nil,
+            triggerSource: triggerSource.rawValue,
+            ctx: workflow.ctx
         )
 
         do {
@@ -4197,8 +4849,16 @@ final class SupervisorManager: ObservableObject {
             triggerSource: triggerSource,
             ctx: workflow.ctx
         )
+        appendSupervisorSkillResultRawLog(
+            record: record,
+            toolCall: mapped.toolCall,
+            rawOutput: nil,
+            triggerSource: triggerSource,
+            ctx: workflow.ctx
+        )
 
         if requiresWaitingAuthorization {
+            appendRecentEvent("skill_result: \(workflow.project.displayName) -> \(record.skillId) \(record.status.rawValue)")
             if let requiredCapability,
                supervisorHubGrantPreflightEnabled {
                 let requestedSeconds = supervisorRequestedGrantWindowSeconds(payload: payloadObject)
@@ -4294,6 +4954,13 @@ final class SupervisorManager: ObservableObject {
         )
         record.denyCode = ""
         record.updatedAtMs = Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
+        record.resultEvidenceRef = SupervisorSkillResultEvidenceStore.write(
+            record: record,
+            toolCall: resolvedSupervisorToolCallForRecord(record),
+            rawOutput: nil,
+            triggerSource: triggerSource.rawValue,
+            ctx: resolved.ctx
+        ) ?? record.resultEvidenceRef
         do {
             try SupervisorProjectSkillCallStore.upsert(record, for: resolved.ctx)
         } catch {
@@ -4320,6 +4987,14 @@ final class SupervisorManager: ObservableObject {
             triggerSource: triggerSource,
             ctx: resolved.ctx
         )
+        appendSupervisorSkillResultRawLog(
+            record: record,
+            toolCall: nil,
+            rawOutput: nil,
+            triggerSource: triggerSource,
+            ctx: resolved.ctx
+        )
+        appendRecentEvent("skill_result: \(resolved.project.displayName) -> \(record.skillId) \(record.status.rawValue)")
 
         supervisorSkillExecutionTasks.removeValue(forKey: requestId)?.cancel()
         let message = "✅ 已取消项目 \(resolved.project.displayName) 的技能调用：\(record.skillId)（request_id=\(requestId)）"
@@ -4331,6 +5006,20 @@ final class SupervisorManager: ObservableObject {
         switch toolCall.tool {
         case .web_fetch, .web_search, .browser_read:
             return "web.fetch"
+        case .deviceBrowserControl:
+            if let action = toolCall.args["action"]?.stringValue?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased(),
+               action == "extract" {
+                return "web.fetch"
+            }
+            return nil
+        case .summarize:
+            if let url = toolCall.args["url"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !url.isEmpty {
+                return "web.fetch"
+            }
+            return nil
         default:
             return nil
         }
@@ -4794,8 +5483,13 @@ final class SupervisorManager: ObservableObject {
                 project: project,
                 status: finalStatus,
                 stepStatus: result.ok ? .completed : .failed,
-                resultSummary: summarizedSupervisorSkillOutput(result.output, ok: result.ok),
+                resultSummary: summarizedSupervisorSkillOutput(
+                    result.output,
+                    ok: result.ok,
+                    toolCall: toolCall
+                ),
                 denyCode: "",
+                rawOutput: result.output,
                 updatedAtMs: Int64((Date().timeIntervalSince1970 * 1000.0).rounded()),
                 triggerSource: triggerSource,
                 toolCall: toolCall
@@ -4819,6 +5513,7 @@ final class SupervisorManager: ObservableObject {
                 stepStatus: .failed,
                 resultSummary: capped(String(describing: error), maxChars: 320),
                 denyCode: "tool_execution_failed",
+                rawOutput: String(describing: error),
                 updatedAtMs: Int64((Date().timeIntervalSince1970 * 1000.0).rounded()),
                 triggerSource: triggerSource,
                 toolCall: toolCall
@@ -4874,6 +5569,7 @@ final class SupervisorManager: ObservableObject {
         stepStatus: SupervisorPlanStepStatus,
         resultSummary: String,
         denyCode: String,
+        rawOutput: String? = nil,
         requiredCapability: String? = nil,
         grantRequestId: String? = nil,
         grantId: String? = nil,
@@ -4896,6 +5592,13 @@ final class SupervisorManager: ObservableObject {
             record.grantId = grantId.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         record.updatedAtMs = updatedAtMs
+        record.resultEvidenceRef = SupervisorSkillResultEvidenceStore.write(
+            record: record,
+            toolCall: toolCall,
+            rawOutput: rawOutput,
+            triggerSource: triggerSource.rawValue,
+            ctx: ctx
+        ) ?? record.resultEvidenceRef
         try? SupervisorProjectSkillCallStore.upsert(record, for: ctx)
         _ = updateSupervisorWorkflowStepState(
             ctx: ctx,
@@ -4915,6 +5618,16 @@ final class SupervisorManager: ObservableObject {
             triggerSource: triggerSource,
             ctx: ctx
         )
+        appendSupervisorSkillResultRawLog(
+            record: record,
+            toolCall: toolCall,
+            rawOutput: rawOutput,
+            triggerSource: triggerSource,
+            ctx: ctx
+        )
+        if status != .running && status != .queued {
+            appendRecentEvent("skill_result: \(project.displayName) -> \(record.skillId) \(status.rawValue)")
+        }
         return record
     }
 
@@ -4990,6 +5703,15 @@ final class SupervisorManager: ObservableObject {
                 toolCall: ToolCall(id: requestId, tool: .git_diff, args: args),
                 toolName: ToolName.git_diff.rawValue
             ))
+        case "repo.git.apply", "repo.patch.apply", "repo.git.patch.apply":
+            guard let patch = payload["patch"]?.stringValue,
+                  !patch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return .failure(SupervisorSkillMappingFailure(reasonCode: "payload.patch_missing"))
+            }
+            return .success(SupervisorMappedSkillDispatch(
+                toolCall: ToolCall(id: requestId, tool: .git_apply, args: ["patch": .string(patch)]),
+                toolName: ToolName.git_apply.rawValue
+            ))
         case "repo.search", "repo.grep":
             guard let pattern = payload["pattern"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !pattern.isEmpty else {
@@ -5008,6 +5730,11 @@ final class SupervisorManager: ObservableObject {
                 toolCall: ToolCall(id: requestId, tool: .search, args: args),
                 toolName: ToolName.search.rawValue
             ))
+        case "repo.write.file", "repo.write", "repo.file.write":
+            return mappedSupervisorRepoWriteFileDispatch(
+                payload: payload,
+                requestId: requestId
+            )
         case "repo.read.file", "repo.read", "repo.file.read":
             guard let path = payload["path"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !path.isEmpty else {
@@ -5043,6 +5770,40 @@ final class SupervisorManager: ObservableObject {
                 toolCall: ToolCall(id: requestId, tool: .bridge_status, args: [:]),
                 toolName: ToolName.bridge_status.rawValue
             ))
+        case "find-skills", "skills.search", "skills_search":
+            guard let query = payload["query"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !query.isEmpty else {
+                return .failure(SupervisorSkillMappingFailure(reasonCode: "payload.query_missing"))
+            }
+            var args: [String: JSONValue] = ["query": .string(query)]
+            if let sourceFilter = firstNonEmptyString(
+                payload["source_filter"]?.stringValue,
+                payload["source"]?.stringValue
+            )?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !sourceFilter.isEmpty {
+                args["source_filter"] = .string(sourceFilter)
+            }
+            if let projectId = payload["project_id"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !projectId.isEmpty {
+                args["project_id"] = .string(projectId)
+            }
+            if let limit = payload["limit"] ?? payload["max_results"] {
+                args["limit"] = limit
+            }
+            return .success(SupervisorMappedSkillDispatch(
+                toolCall: ToolCall(id: requestId, tool: .skills_search, args: args),
+                toolName: ToolName.skills_search.rawValue
+            ))
+        case "agent-browser", "agent_browser", "agent.browser":
+            return mappedSupervisorAgentBrowserDispatch(
+                payload: payload,
+                requestId: requestId
+            )
+        case "self-improving-agent", "self_improving_agent", "agent.retrospective", "agent_retrospective":
+            return mappedSupervisorSelfImprovingAgentDispatch(
+                payload: payload,
+                requestId: requestId
+            )
         case "browser.open", "browser.navigate", "browser_open", "browser_navigate":
             guard let url = payload["url"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !url.isEmpty else {
@@ -5134,6 +5895,23 @@ final class SupervisorManager: ObservableObject {
                 toolCall: ToolCall(id: requestId, tool: .browser_read, args: args),
                 toolName: ToolName.browser_read.rawValue
             ))
+        case "summarize", "document.summarize", "document_summarize":
+            return mappedSupervisorSummarizeDispatch(
+                payload: payload,
+                requestId: requestId
+            )
+        case "repo.test.run", "repo.test", "repo.verify.run":
+            return mappedSupervisorRepoCommandDispatch(
+                payload: payload,
+                requestId: requestId,
+                profile: .test
+            )
+        case "repo.build.run", "repo.build":
+            return mappedSupervisorRepoCommandDispatch(
+                payload: payload,
+                requestId: requestId,
+                profile: .build
+            )
         case "coder.run.command", "coder.run", "coder_run.command", "coder_run":
             guard let command = payload["command"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !command.isEmpty else {
@@ -5149,6 +5927,438 @@ final class SupervisorManager: ObservableObject {
             ))
         default:
             return .failure(SupervisorSkillMappingFailure(reasonCode: "unsupported_skill_id"))
+        }
+    }
+
+    private func mappedSupervisorRepoWriteFileDispatch(
+        payload: [String: JSONValue],
+        requestId: String
+    ) -> Result<SupervisorMappedSkillDispatch, SupervisorSkillMappingFailure> {
+        guard let path = payload["path"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !path.isEmpty else {
+            return .failure(SupervisorSkillMappingFailure(reasonCode: "payload.path_missing"))
+        }
+        guard let content = payload["content"]?.stringValue else {
+            return .failure(SupervisorSkillMappingFailure(reasonCode: "payload.content_missing"))
+        }
+        return .success(SupervisorMappedSkillDispatch(
+            toolCall: ToolCall(
+                id: requestId,
+                tool: .write_file,
+                args: [
+                    "path": .string(path),
+                    "content": .string(content)
+                ]
+            ),
+            toolName: ToolName.write_file.rawValue
+        ))
+    }
+
+    private func mappedSupervisorRepoCommandDispatch(
+        payload: [String: JSONValue],
+        requestId: String,
+        profile: SupervisorRepoCommandProfile
+    ) -> Result<SupervisorMappedSkillDispatch, SupervisorSkillMappingFailure> {
+        guard let rawCommand = payload["command"]?.stringValue else {
+            return .failure(SupervisorSkillMappingFailure(reasonCode: "payload.command_missing"))
+        }
+        guard let command = supervisorValidatedRepoCommand(rawCommand, profile: profile) else {
+            return .failure(SupervisorSkillMappingFailure(reasonCode: "payload.command_not_allowed"))
+        }
+        var args: [String: JSONValue] = ["command": .string(command)]
+        if let timeout = payload["timeout_sec"] {
+            args["timeout_sec"] = timeout
+        }
+        return .success(SupervisorMappedSkillDispatch(
+            toolCall: ToolCall(id: requestId, tool: .run_command, args: args),
+            toolName: ToolName.run_command.rawValue
+        ))
+    }
+
+    private func mappedSupervisorSummarizeDispatch(
+        payload: [String: JSONValue],
+        requestId: String
+    ) -> Result<SupervisorMappedSkillDispatch, SupervisorSkillMappingFailure> {
+        let url = payload["url"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let path = payload["path"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let text = firstNonEmptyString(
+            payload["text"]?.stringValue,
+            payload["content"]?.stringValue,
+            payload["value"]?.stringValue
+        ) ?? ""
+        let sourceCount = [!url.isEmpty, !path.isEmpty, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty].filter { $0 }.count
+        guard sourceCount > 0 else {
+            return .failure(SupervisorSkillMappingFailure(reasonCode: "payload.source_missing"))
+        }
+        guard sourceCount == 1 else {
+            return .failure(SupervisorSkillMappingFailure(reasonCode: "payload.multiple_sources"))
+        }
+
+        var args: [String: JSONValue] = [:]
+        if !url.isEmpty {
+            args["url"] = .string(url)
+        } else if !path.isEmpty {
+            args["path"] = .string(path)
+        } else {
+            args["text"] = .string(text)
+        }
+
+        for key in ["focus", "format", "grant_id", "timeout_sec", "max_bytes", "max_chars"] {
+            if let value = payload[key] {
+                args[key] = value
+            }
+        }
+
+        return .success(SupervisorMappedSkillDispatch(
+            toolCall: ToolCall(id: requestId, tool: .summarize, args: args),
+            toolName: ToolName.summarize.rawValue
+        ))
+    }
+
+    private func mappedSupervisorAgentBrowserDispatch(
+        payload: [String: JSONValue],
+        requestId: String
+    ) -> Result<SupervisorMappedSkillDispatch, SupervisorSkillMappingFailure> {
+        let requestedAction = firstNonEmptyString(
+            payload["action"]?.stringValue,
+            payload["operation"]?.stringValue,
+            payload["mode"]?.stringValue
+        )?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased() ?? ""
+        let url = payload["url"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let sessionId = payload["session_id"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        let action: String
+        if requestedAction.isEmpty {
+            if !url.isEmpty {
+                action = "open_url"
+            } else if !sessionId.isEmpty {
+                action = "snapshot"
+            } else {
+                return .failure(SupervisorSkillMappingFailure(reasonCode: "payload.action_missing"))
+            }
+        } else {
+            action = requestedAction
+        }
+
+        switch action {
+        case "open", "open_url", "navigate", "goto", "visit":
+            guard !url.isEmpty else {
+                return .failure(SupervisorSkillMappingFailure(reasonCode: "payload.url_missing"))
+            }
+            let runtimeAction = action == "navigate" || action == "goto" || action == "visit"
+                ? "navigate"
+                : "open_url"
+            return .success(SupervisorMappedSkillDispatch(
+                toolCall: ToolCall(
+                    id: requestId,
+                    tool: .deviceBrowserControl,
+                    args: mappedSupervisorAgentBrowserRuntimeArgs(
+                        payload: payload,
+                        action: runtimeAction
+                    )
+                ),
+                toolName: ToolName.deviceBrowserControl.rawValue
+            ))
+        case "snapshot", "inspect":
+            guard !url.isEmpty || !sessionId.isEmpty else {
+                return .failure(SupervisorSkillMappingFailure(reasonCode: "payload.url_or_session_id_missing"))
+            }
+            return .success(SupervisorMappedSkillDispatch(
+                toolCall: ToolCall(
+                    id: requestId,
+                    tool: .deviceBrowserControl,
+                    args: mappedSupervisorAgentBrowserRuntimeArgs(
+                        payload: payload,
+                        action: "snapshot"
+                    )
+                ),
+                toolName: ToolName.deviceBrowserControl.rawValue
+            ))
+        case "extract":
+            guard !url.isEmpty || !sessionId.isEmpty else {
+                return .failure(SupervisorSkillMappingFailure(reasonCode: "payload.url_or_session_id_missing"))
+            }
+            return .success(SupervisorMappedSkillDispatch(
+                toolCall: ToolCall(
+                    id: requestId,
+                    tool: .deviceBrowserControl,
+                    args: mappedSupervisorAgentBrowserRuntimeArgs(
+                        payload: payload,
+                        action: "extract"
+                    )
+                ),
+                toolName: ToolName.deviceBrowserControl.rawValue
+            ))
+        case "read", "read_page", "read-page", "fetch":
+            guard !url.isEmpty else {
+                return .failure(SupervisorSkillMappingFailure(reasonCode: "payload.url_missing"))
+            }
+            var args: [String: JSONValue] = ["url": .string(url)]
+            for key in ["grant_id", "timeout_sec", "max_bytes"] {
+                if let value = payload[key] {
+                    args[key] = value
+                }
+            }
+            return .success(SupervisorMappedSkillDispatch(
+                toolCall: ToolCall(id: requestId, tool: .browser_read, args: args),
+                toolName: ToolName.browser_read.rawValue
+            ))
+        case "click", "tap":
+            return .success(SupervisorMappedSkillDispatch(
+                toolCall: ToolCall(
+                    id: requestId,
+                    tool: .deviceBrowserControl,
+                    args: mappedSupervisorAgentBrowserRuntimeArgs(
+                        payload: payload,
+                        action: "click"
+                    )
+                ),
+                toolName: ToolName.deviceBrowserControl.rawValue
+            ))
+        case "type", "fill", "input", "enter":
+            return .success(SupervisorMappedSkillDispatch(
+                toolCall: ToolCall(
+                    id: requestId,
+                    tool: .deviceBrowserControl,
+                    args: mappedSupervisorAgentBrowserRuntimeArgs(
+                        payload: payload,
+                        action: "type"
+                    )
+                ),
+                toolName: ToolName.deviceBrowserControl.rawValue
+            ))
+        case "upload", "attach":
+            return .success(SupervisorMappedSkillDispatch(
+                toolCall: ToolCall(
+                    id: requestId,
+                    tool: .deviceBrowserControl,
+                    args: mappedSupervisorAgentBrowserRuntimeArgs(
+                        payload: payload,
+                        action: "upload"
+                    )
+                ),
+                toolName: ToolName.deviceBrowserControl.rawValue
+            ))
+        default:
+            return .failure(SupervisorSkillMappingFailure(reasonCode: "payload.action_unsupported"))
+        }
+    }
+
+    private func mappedSupervisorAgentBrowserRuntimeArgs(
+        payload: [String: JSONValue],
+        action: String
+    ) -> [String: JSONValue] {
+        var args: [String: JSONValue] = ["action": .string(action)]
+        for key in [
+            "url",
+            "session_id",
+            "selector",
+            "field_role",
+            "text",
+            "content",
+            "value",
+            "secret_item_id",
+            "secret_scope",
+            "secret_name",
+            "secret_project_id",
+            "path",
+            "grant_id",
+            "timeout_sec",
+            "max_bytes",
+        ] {
+            if let value = payload[key] {
+                args[key] = value
+            }
+        }
+        return args
+    }
+
+    private func mappedSupervisorSelfImprovingAgentDispatch(
+        payload: [String: JSONValue],
+        requestId: String
+    ) -> Result<SupervisorMappedSkillDispatch, SupervisorSkillMappingFailure> {
+        var args: [String: JSONValue] = [
+            "mode": .string(XTMemoryUseMode.supervisorOrchestration.rawValue),
+            "retrospective": .bool(true)
+        ]
+
+        if let focus = firstNonEmptyString(
+            payload["focus"]?.stringValue,
+            payload["goal"]?.stringValue,
+            payload["topic"]?.stringValue
+        )?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !focus.isEmpty {
+            args["focus"] = .string(focus)
+        }
+
+        if let value = payload["limit"] ?? payload["max_results"] ?? payload["top_n"] {
+            args["limit"] = value
+        }
+
+        for key in [
+            "project_id",
+            "include_doctor",
+            "include_incidents",
+            "include_skill_calls",
+            "include_plan",
+            "include_memory",
+        ] {
+            if let value = payload[key] {
+                args[key] = value
+            }
+        }
+
+        return .success(SupervisorMappedSkillDispatch(
+            toolCall: ToolCall(id: requestId, tool: .memory_snapshot, args: args),
+            toolName: ToolName.memory_snapshot.rawValue
+        ))
+    }
+
+    private func supervisorValidatedRepoCommand(
+        _ raw: String,
+        profile: SupervisorRepoCommandProfile
+    ) -> String? {
+        let trimmed = raw
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard !supervisorRepoCommandContainsUnsafeShellOperators(trimmed) else {
+            return nil
+        }
+
+        let lowered = trimmed.lowercased()
+        let allowedPrefixes = supervisorAllowedRepoCommandPrefixes(for: profile)
+        guard allowedPrefixes.contains(where: { prefix in
+            lowered == prefix || lowered.hasPrefix(prefix + " ")
+        }) else {
+            return nil
+        }
+        return trimmed
+    }
+
+    private func supervisorAllowedRepoCommandPrefixes(
+        for profile: SupervisorRepoCommandProfile
+    ) -> [String] {
+        switch profile {
+        case .test:
+            return [
+                "swift test",
+                "swift package test",
+                "npm test",
+                "npm run test",
+                "npm run smoke",
+                "npm exec vitest",
+                "pnpm test",
+                "pnpm run test",
+                "pnpm run smoke",
+                "pnpm vitest",
+                "yarn test",
+                "yarn smoke",
+                "bun test",
+                "bun run test",
+                "pytest",
+                "python -m pytest",
+                "python3 -m pytest",
+                "go test",
+                "cargo test",
+                "xcodebuild test",
+                "gradle test",
+                "./gradlew test",
+                "mvn test",
+                "bundle exec rspec",
+                "rspec",
+                "ctest",
+                "deno test",
+                "vitest",
+                "npx vitest"
+            ]
+        case .build:
+            return [
+                "swift build",
+                "swift package resolve",
+                "npm run build",
+                "pnpm run build",
+                "yarn build",
+                "bun run build",
+                "cargo build",
+                "go build",
+                "xcodebuild build",
+                "gradle build",
+                "./gradlew build",
+                "mvn package"
+            ]
+        }
+    }
+
+    private func supervisorRepoCommandContainsUnsafeShellOperators(_ command: String) -> Bool {
+        let forbiddenTokens = [
+            "&&",
+            "||",
+            ";",
+            "|",
+            ">",
+            "<",
+            "$(",
+            "`",
+            "\n"
+        ]
+        return forbiddenTokens.contains(where: { command.contains($0) })
+    }
+
+    private func firstNonEmptyString(_ values: String?...) -> String? {
+        for value in values {
+            let trimmed = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return trimmed
+            }
+        }
+        return nil
+    }
+
+    private func supervisorSkillMappingFailureSummary(_ failure: SupervisorSkillMappingFailure) -> String {
+        switch failure.reasonCode {
+        case "payload.command_not_allowed":
+            return "repo command rejected by governed allowlist"
+        case "payload.command_missing":
+            return "payload.command missing"
+        case "payload.action_missing":
+            return "payload.action missing"
+        case "payload.action_unsupported":
+            return "unsupported browser action requested"
+        case "payload.content_missing":
+            return "payload.content missing"
+        case "payload.patch_missing":
+            return "payload.patch missing"
+        case "payload.path_missing":
+            return "payload.path missing"
+        case "payload.query_missing":
+            return "payload.query missing"
+        case "payload.source_missing":
+            return "payload source missing"
+        case "payload.multiple_sources":
+            return "multiple payload sources provided"
+        case "payload.url_missing":
+            return "payload.url missing"
+        case "payload.url_or_session_id_missing":
+            return "payload.url or payload.session_id missing"
+        default:
+            return "skill mapping unavailable"
+        }
+    }
+
+    private func supervisorSkillMappingFailureMessage(
+        skillId: String,
+        failure: SupervisorSkillMappingFailure
+    ) -> String {
+        switch failure.reasonCode {
+        case "unsupported_skill_id":
+            return "❌ CALL_SKILL 失败：技能 \(skillId) 还没有接到受治理 runtime（skill_mapping_missing）"
+        case "payload.command_not_allowed":
+            return "❌ CALL_SKILL 失败：技能 \(skillId) 请求的命令不在受治理 allowlist 内（payload.command_not_allowed）"
+        default:
+            return "❌ CALL_SKILL 失败：技能 \(skillId) payload 校验失败（\(failure.reasonCode)）"
         }
     }
 
@@ -5182,6 +6392,10 @@ final class SupervisorManager: ObservableObject {
         if !record.denyCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             row["deny_code"] = record.denyCode
         }
+        if let resultEvidenceRef = record.resultEvidenceRef?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !resultEvidenceRef.isEmpty {
+            row["result_evidence_ref"] = resultEvidenceRef
+        }
         if let capability = record.requiredCapability?.trimmingCharacters(in: .whitespacesAndNewlines),
            !capability.isEmpty {
             row["required_capability"] = capability
@@ -5201,8 +6415,117 @@ final class SupervisorManager: ObservableObject {
         AXProjectStore.appendRawLog(row, for: ctx)
     }
 
-    private func summarizedSupervisorSkillOutput(_ output: String, ok: Bool) -> String {
+    private func appendSupervisorSkillResultRawLog(
+        record: SupervisorSkillCallRecord,
+        toolCall: ToolCall?,
+        rawOutput: String?,
+        triggerSource: SupervisorCommandTriggerSource,
+        ctx: AXProjectContext
+    ) {
+        var row: [String: Any] = [
+            "type": "supervisor_skill_result",
+            "schema_version": SupervisorSkillResultEvidence.currentSchemaVersion,
+            "request_id": record.requestId,
+            "project_id": record.projectId,
+            "job_id": record.jobId,
+            "plan_id": record.planId,
+            "step_id": record.stepId,
+            "skill_id": record.skillId,
+            "tool_name": record.toolName,
+            "status": record.status.rawValue,
+            "result_summary": record.resultSummary,
+            "deny_code": record.denyCode,
+            "trigger_source": triggerSource.rawValue,
+            "audit_ref": record.auditRef,
+            "updated_at_ms": record.updatedAtMs
+        ]
+        if let resultEvidenceRef = record.resultEvidenceRef?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !resultEvidenceRef.isEmpty {
+            row["result_evidence_ref"] = resultEvidenceRef
+            let normalizedOutput = (rawOutput ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !normalizedOutput.isEmpty {
+                row["raw_output_ref"] = "\(resultEvidenceRef)#raw_output"
+                row["raw_output_chars"] = normalizedOutput.count
+            }
+        }
+        if let capability = record.requiredCapability?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !capability.isEmpty {
+            row["required_capability"] = capability
+        }
+        if let toolCall {
+            row["tool"] = toolCall.tool.rawValue
+            row["tool_args"] = foundationJSONObject(from: toolCall.args)
+        }
+        AXProjectStore.appendRawLog(row, for: ctx)
+    }
+
+    private func summarizedSupervisorSkillOutput(
+        _ output: String,
+        ok: Bool,
+        toolCall: ToolCall? = nil
+    ) -> String {
         let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let toolCall {
+            switch toolCall.tool {
+            case .write_file:
+                let path = toolCall.args["path"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "(none)"
+                if ok, trimmed == "ok" {
+                    return capped("write_file completed: \(path)", maxChars: 320)
+                }
+                if !trimmed.isEmpty {
+                    return capped("write_file \(ok ? "completed" : "failed"): \(path)\n\(trimmed)", maxChars: 320)
+                }
+            case .run_command:
+                let command = toolCall.args["command"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "(none)"
+                if ok, trimmed.hasPrefix("exit: 0") {
+                    return capped("run_command completed: \(command)", maxChars: 320)
+                }
+                if !trimmed.isEmpty {
+                    return capped("run_command \(ok ? "completed" : "failed"): \(command)\n\(trimmed)", maxChars: 320)
+                }
+            case .git_apply:
+                let patchChars = toolCall.args["patch"]?.stringValue?.count ?? 0
+                if ok, trimmed.hasPrefix("exit: 0") {
+                    return capped("git_apply completed: patch_chars=\(patchChars)", maxChars: 320)
+                }
+                if !trimmed.isEmpty {
+                    return capped("git_apply \(ok ? "completed" : "failed"): patch_chars=\(patchChars)\n\(trimmed)", maxChars: 320)
+                }
+            case .skills_search:
+                let query = toolCall.args["query"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "(none)"
+                let parsed = ToolExecutor.parseStructuredToolOutput(output)
+                if case .object(let summary)? = parsed.summary,
+                   case .number(let count)? = summary["results_count"] {
+                    return capped("skills.search completed: \(query) (\(Int(count)) results)", maxChars: 320)
+                }
+                if !trimmed.isEmpty {
+                    return capped("skills.search \(ok ? "completed" : "failed"): \(query)\n\(trimmed)", maxChars: 320)
+                }
+            case .summarize:
+                let source = firstNonEmptyString(
+                    toolCall.args["url"]?.stringValue,
+                    toolCall.args["path"]?.stringValue,
+                    toolCall.args["text"]?.stringValue
+                ) ?? "(inline)"
+                if !trimmed.isEmpty {
+                    return capped("summarize \(ok ? "completed" : "failed"): \(source)\n\(trimmed)", maxChars: 320)
+                }
+            case .memory_snapshot:
+                let parsed = ToolExecutor.parseStructuredToolOutput(output)
+                if case .object(let summary)? = parsed.summary,
+                   case .string(let profile)? = summary["analysis_profile"],
+                   profile == "self_improvement" {
+                    let focus = summary["focus"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    let label = focus.isEmpty ? "self_improvement" : "self_improvement: \(focus)"
+                    if case .number(let count)? = summary["recommendation_count"] {
+                        return capped("\(label) \(ok ? "completed" : "failed"): \(Int(count)) recommendations", maxChars: 320)
+                    }
+                    return capped("\(label) \(ok ? "completed" : "failed")", maxChars: 320)
+                }
+            default:
+                break
+            }
+        }
         guard !trimmed.isEmpty else {
             return ok ? "tool execution completed" : "tool execution failed"
         }
@@ -5672,6 +6995,7 @@ final class SupervisorManager: ObservableObject {
 
     private func buildSupervisorMemoryV1(userMessage: String) async -> SupervisorMemoryBuildInfo {
         let composition = await composeSupervisorMemoryV1(userMessage: userMessage)
+        let servingProfile = preferredSupervisorMemoryServingProfile(userMessage: userMessage)
         let hub = await HubIPCClient.requestMemoryContext(
             useMode: .supervisorOrchestration,
             requesterRole: .supervisor,
@@ -5684,6 +7008,7 @@ final class SupervisorManager: ObservableObject {
             observationsText: composition.observations,
             workingSetText: composition.workingSet,
             rawEvidenceText: composition.rawEvidence,
+            servingProfile: servingProfile,
             budgets: nil,
             timeoutSec: 1.2
         )
@@ -5706,13 +7031,47 @@ final class SupervisorManager: ObservableObject {
         )
     }
 
+    private func preferredSupervisorMemoryServingProfile(
+        userMessage: String
+    ) -> XTMemoryServingProfile? {
+        let normalized = userMessage.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return nil }
+        if containsAny(
+            normalized,
+            [
+                "全局", "全仓", "仓库级", "整个仓库", "完整上下文", "全部背景",
+                "全量背景", "portfolio", "repo-wide", "full scan", "system-wide",
+                "全面审查", "全面评审", "从全局看", "完整背景", "通读"
+            ]
+        ) {
+            return .m3DeepDive
+        }
+        if containsAny(
+            normalized,
+            [
+                "审查", "审阅", "review", "上下文记忆", "项目记忆", "执行方案",
+                "重构建议", "方案评审", "规划", "计划", "梳理", "全貌", "背景信息",
+                "设计建议", "refactor", "architecture review", "planning", "deep dive"
+            ]
+        ) {
+            return .m2PlanReview
+        }
+        return nil
+    }
+
     private func composeSupervisorMemoryV1(userMessage: String) async -> SupervisorMemoryComposition {
         let constitution = loadConstitutionOneLiner(userMessage: userMessage)
+        let servingProfile = preferredSupervisorMemoryServingProfile(userMessage: userMessage)
         let projects = allProjects()
         let projectDigests = collectSupervisorProjectMemoryDigests()
-        let focusedSkillProject = focusedSupervisorSkillRegistryProject(projects: projects)
+        let focusedProjectSelection = focusedSupervisorProjectSelection(
+            projects: projects,
+            userMessage: userMessage
+        )
+        let focusedSkillProject = focusedProjectSelection?.project
         let skillRegistrySnapshot: SupervisorSkillRegistrySnapshot?
         if let focusedSkillProject {
+            warmResolvedSkillsCacheIfPossible(for: focusedSkillProject)
             skillRegistrySnapshot = await HubIPCClient.requestSupervisorSkillRegistrySnapshot(
                 projectId: focusedSkillProject.projectId,
                 projectName: focusedSkillProject.displayName
@@ -5720,10 +7079,18 @@ final class SupervisorManager: ObservableObject {
         } else {
             skillRegistrySnapshot = nil
         }
-        let workflowSlice = focusedSupervisorWorkflowMemorySlice(projects: projects)
+        let workflowSlice = focusedSupervisorWorkflowMemorySlice(
+            projects: projects,
+            userMessage: userMessage,
+            selection: focusedProjectSelection
+        )
+        let executionBrief = focusedProjectSelection.map {
+            focusedSupervisorExecutionBrief(selection: $0, projectDigests: projectDigests)
+        }
         let canonical = capped(
             [
                 generateProjectList(from: projectDigests),
+                executionBrief?.canonical ?? "",
                 workflowSlice?.canonical ?? ""
             ]
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -5735,28 +7102,28 @@ final class SupervisorManager: ObservableObject {
             (recentEvents.suffix(8) + [
                 "managed_projects: \(projectDigests.count)",
                 "projects_with_local_memory: \(localMemoryProjectCount)",
+                executionBrief?.observation ?? "",
                 workflowSlice?.observation ?? ""
             ]).joined(separator: "\n")
         )
-        let chatWorkingSet = messages
-            .suffix(8)
-            .map {
-                let content = sanitizeSupervisorPromptIdentifiers(
-                    capped($0.content, maxChars: 220)
-                )
-                return "\($0.role.rawValue): \(content)"
-            }
-            .joined(separator: "\n")
+        let chatWorkingSet = recentSupervisorConversationWorkingSet(
+            from: messages,
+            maxTurns: supervisorWorkingSetRecentTurns
+        )
         let actionWorkingSet = sanitizeSupervisorPromptIdentifiers(
             generateActionLedgerSummary(maxItems: 8)
         )
         let workflowWorkingSet = sanitizeSupervisorPromptIdentifiers(
             workflowSlice?.workingSet ?? ""
         )
+        let executionWorkingSet = sanitizeSupervisorPromptIdentifiers(
+            executionBrief?.workingSet ?? ""
+        )
         let workingSet = """
 \(chatWorkingSet.isEmpty ? "(none)" : chatWorkingSet)
 \(actionWorkingSet.isEmpty ? "" : "\n[action_ledger]\n\(actionWorkingSet)")
 \(workflowWorkingSet.isEmpty ? "" : "\n[workflow]\n\(workflowWorkingSet)")
+\(executionWorkingSet.isEmpty ? "" : "\n[focused_project_execution]\n\(executionWorkingSet)")
 """
         let modelEvidence = sanitizeSupervisorPromptIdentifiers(
             capped(generateAvailableModels(), maxChars: 1400)
@@ -5769,9 +7136,17 @@ models:
 \(modelEvidence.isEmpty ? "(none)" : modelEvidence)
 \(skillRegistryEvidence.isEmpty ? "" : "\nskills_registry:\n\(skillRegistryEvidence)")
 """
+        let servingProfileSection = servingProfile.map { profile in
+            """
+[SERVING_PROFILE]
+profile_id: \(profile.rawValue)
+[/SERVING_PROFILE]
+"""
+        } ?? ""
 
         let local = """
 [MEMORY_V1]
+\(servingProfileSection.isEmpty ? "" : "\(servingProfileSection)\n")
 [L0_CONSTITUTION]
 \(constitution)
 [/L0_CONSTITUTION]
@@ -5808,29 +7183,195 @@ latest_user:
         )
     }
 
-    private func focusedSupervisorSkillRegistryProject(projects: [AXProjectEntry]) -> AXProjectEntry? {
+    private func recentSupervisorConversationWorkingSet(
+        from sourceMessages: [SupervisorMessage],
+        maxTurns: Int
+    ) -> String {
+        guard maxTurns > 0, !sourceMessages.isEmpty else { return "" }
+
+        var collected: [SupervisorMessage] = []
+        var userTurns = 0
+
+        for message in sourceMessages.reversed() {
+            collected.append(message)
+            if message.role == .user {
+                userTurns += 1
+                if userTurns >= maxTurns {
+                    break
+                }
+            }
+        }
+
+        return collected
+            .reversed()
+            .map {
+                let content = sanitizeSupervisorPromptIdentifiers(
+                    capped($0.content, maxChars: 220)
+                )
+                return "\($0.role.rawValue): \(content)"
+            }
+            .joined(separator: "\n")
+    }
+
+    private func warmResolvedSkillsCacheIfPossible(for project: AXProjectEntry) {
+        let normalizedRootPath = project.rootPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedRootPath.isEmpty else { return }
+        let context = AXProjectContext(
+            root: URL(fileURLWithPath: normalizedRootPath, isDirectory: true)
+        )
+        _ = XTResolvedSkillsCacheStore.refreshFromHub(
+            projectId: project.projectId,
+            projectName: project.displayName,
+            context: context,
+            hubBaseDir: HubPaths.baseDir()
+        )
+    }
+
+    private func focusedSupervisorProjectSelection(
+        projects: [AXProjectEntry],
+        userMessage: String?
+    ) -> SupervisorFocusedProjectSelection? {
+        if let explicitProject = explicitlyMentionedSupervisorProject(
+            in: userMessage,
+            projects: projects
+        ) {
+            return SupervisorFocusedProjectSelection(
+                project: explicitProject,
+                source: "explicit_user_mention"
+            )
+        }
         if let taskProjectID = currentTask?.projectId,
            let taskProject = projects.first(where: { $0.projectId == taskProjectID }) {
-            return taskProject
+            return SupervisorFocusedProjectSelection(
+                project: taskProject,
+                source: "current_task"
+            )
         }
         if let selectedProjectID = appModel?.selectedProjectId,
            selectedProjectID != AXProjectRegistry.globalHomeId,
            let selectedProject = projects.first(where: { $0.projectId == selectedProjectID }) {
-            return selectedProject
+            return SupervisorFocusedProjectSelection(
+                project: selectedProject,
+                source: "selected_project"
+            )
         }
         if projects.count == 1 {
-            return projects[0]
+            return SupervisorFocusedProjectSelection(
+                project: projects[0],
+                source: "single_project"
+            )
         }
         return nil
     }
 
-    private func focusedSupervisorWorkflowMemorySlice(
+    private func explicitlyMentionedSupervisorProject(
+        in userMessage: String?,
         projects: [AXProjectEntry]
+    ) -> AXProjectEntry? {
+        guard let userMessage else { return nil }
+        let trimmed = userMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !projects.isEmpty else { return nil }
+
+        for key in ["project_id", "project_ref"] {
+            if let explicitRef = supervisorTriggerContextValue(key, userMessage: trimmed) {
+                let resolved = resolveProjectReference(explicitRef, in: projects)
+                if case .matched(let project) = resolved {
+                    return project
+                }
+            }
+        }
+
+        let foldedMessage = trimmed
+            .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
+            .lowercased()
+        let normalizedMessage = normalizedLookupKey(trimmed)
+
+        let scored: [(entry: AXProjectEntry, score: Int)] = projects.compactMap { project in
+            var score = 0
+            let displayName = project.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let projectId = project.projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+            let foldedName = displayName
+                .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
+                .lowercased()
+            let normalizedName = normalizedLookupKey(displayName)
+            let normalizedProjectID = normalizedLookupKey(projectId)
+            let projectIdPrefix = String(projectId.prefix(8)).lowercased()
+
+            if isReliableProjectMentionToken(displayName),
+               !foldedName.isEmpty,
+               foldedMessage.contains(foldedName) {
+                score = max(score, 180)
+            }
+            if !projectId.isEmpty,
+               foldedMessage.contains(projectId.lowercased()) {
+                score = max(score, 170)
+            }
+            if !projectIdPrefix.isEmpty,
+               (foldedMessage.contains("hex:\(projectIdPrefix)") ||
+                    foldedMessage.contains("id:\(projectIdPrefix)")) {
+                score = max(score, 165)
+            }
+            if isReliableProjectMentionToken(displayName),
+               !normalizedName.isEmpty,
+               normalizedMessage.contains(normalizedName) {
+                score = max(score, 160)
+            }
+            if !normalizedProjectID.isEmpty,
+               normalizedMessage.contains(normalizedProjectID) {
+                score = max(score, 150)
+            }
+
+            guard score > 0 else { return nil }
+            return (project, score)
+        }
+        .sorted { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            if lhs.entry.lastOpenedAt != rhs.entry.lastOpenedAt { return lhs.entry.lastOpenedAt > rhs.entry.lastOpenedAt }
+            return lhs.entry.displayName.localizedCaseInsensitiveCompare(rhs.entry.displayName) == .orderedAscending
+        }
+
+        guard let best = scored.first else { return nil }
+        if scored.count == 1 {
+            return best.entry
+        }
+        let second = scored[1]
+        if best.score - second.score >= 20 {
+            return best.entry
+        }
+        return nil
+    }
+
+    private func isReliableProjectMentionToken(_ raw: String) -> Bool {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let normalized = normalizedLookupKey(trimmed)
+        if normalized.count >= 4 {
+            return true
+        }
+        let hasNonASCII = trimmed.unicodeScalars.contains { !$0.isASCII }
+        return hasNonASCII && trimmed.count >= 2
+    }
+
+    private func focusedSupervisorSkillRegistryProject(
+        projects: [AXProjectEntry],
+        userMessage: String?
+    ) -> AXProjectEntry? {
+        focusedSupervisorProjectSelection(projects: projects, userMessage: userMessage)?.project
+    }
+
+    private func focusedSupervisorWorkflowMemorySlice(
+        projects: [AXProjectEntry],
+        userMessage: String?,
+        selection: SupervisorFocusedProjectSelection? = nil
     ) -> SupervisorWorkflowMemorySlice? {
-        guard let project = focusedSupervisorSkillRegistryProject(projects: projects),
-              let ctx = appModel?.projectContext(for: project.projectId) else {
+        guard let selection = selection ?? focusedSupervisorProjectSelection(
+            projects: projects,
+            userMessage: userMessage
+        ) else {
             return nil
         }
+        let project = selection.project
+        let ctx = supervisorMemoryContext(for: project)
         return supervisorWorkflowMemorySlice(
             project: project,
             ctx: ctx,
@@ -5838,6 +7379,124 @@ latest_user:
             preferredPlanId: nil,
             preferredRequestId: nil
         )
+    }
+
+    private func supervisorMemoryContext(for project: AXProjectEntry) -> AXProjectContext {
+        if let ctx = appModel?.projectContext(for: project.projectId) {
+            return ctx
+        }
+        return AXProjectContext(
+            root: URL(fileURLWithPath: project.rootPath, isDirectory: true)
+        )
+    }
+
+    private func focusedSupervisorExecutionBrief(
+        selection: SupervisorFocusedProjectSelection,
+        projectDigests: [SupervisorMemoryProjectDigest],
+        recentMessageLimit: Int = 4
+    ) -> SupervisorFocusedProjectExecutionBrief {
+        let project = selection.project
+        let digest = projectDigests.first(where: { $0.projectId == project.projectId }) ??
+            supervisorMemoryDigest(project)
+        let ctx = supervisorMemoryContext(for: project)
+        let recent = AXRecentContextStore.load(for: ctx)
+        let state = supervisorWorkflowState(
+            project: project,
+            ctx: ctx,
+            preferredJobId: currentTask?.projectId == project.projectId ? currentTask?.id : nil,
+            preferredPlanId: nil,
+            preferredRequestId: nil
+        )
+
+        let activeJob = state?.job
+        let activePlan = state?.plan
+        let activeSkillCall = state?.skillCall
+        let planSteps = activePlan.map(workflowPlanStepsDigest) ?? "(none)"
+        let nextPendingSteps = activePlan.map {
+            workflowPlanFilteredStepsDigest($0, statuses: [.pending])
+        } ?? "(none)"
+        let attentionSteps = activePlan.map {
+            workflowPlanFilteredStepsDigest(
+                $0,
+                statuses: [.running, .blocked, .awaitingAuthorization]
+            )
+        } ?? "(none)"
+        let recentMessages = focusedSupervisorRecentMessagesDigest(
+            recent,
+            limit: recentMessageLimit
+        )
+        let activeJobGoal = activeJob?.goal.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let activeSkillResult = activeSkillCall?.resultSummary.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        let canonical = """
+[focused_project_execution_brief]
+focus_source: \(selection.source)
+project: \(project.displayName) (\(project.projectId))
+memory_source: \(digest.source)
+runtime_state: \(digest.runtimeState)
+goal: \(digest.goal)
+current_state: \(digest.currentState)
+next_step: \(digest.nextStep)
+blocker: \(digest.blocker)
+active_job_id: \(activeJob?.jobId ?? "(none)")
+active_job_goal: \(activeJobGoal.isEmpty ? "(none)" : activeJobGoal)
+active_job_status: \(activeJob?.status.rawValue ?? "(none)")
+active_plan_id: \(activePlan?.planId ?? "(none)")
+active_plan_status: \(activePlan?.status.rawValue ?? "(none)")
+active_plan_steps:
+\(planSteps)
+next_pending_steps:
+\(nextPendingSteps)
+attention_steps:
+\(attentionSteps)
+active_skill_request_id: \(activeSkillCall?.requestId ?? "(none)")
+active_skill_id: \(activeSkillCall?.skillId ?? "(none)")
+active_skill_status: \(activeSkillCall?.status.rawValue ?? "(none)")
+active_skill_result_summary: \(activeSkillResult.isEmpty ? "(none)" : activeSkillResult)
+recent_relevant_messages:
+\(recentMessages)
+[/focused_project_execution_brief]
+"""
+        let observation = "focused_project_execution_brief: source=\(selection.source) project=\(project.projectId) job=\(activeJob?.jobId ?? "(none)") plan=\(activePlan?.planId ?? "(none)") blocker=\(capped(digest.blocker, maxChars: 80)) next=\(capped(digest.nextStep, maxChars: 80))"
+        let workingSet = """
+focus_source=\(selection.source)
+project=\(project.displayName) (\(project.projectId))
+goal=\(digest.goal)
+current_state=\(digest.currentState)
+next_step=\(digest.nextStep)
+blocker=\(digest.blocker)
+active_job=\(activeJob?.jobId ?? "(none)") status=\(activeJob?.status.rawValue ?? "(none)")
+active_plan=\(activePlan?.planId ?? "(none)") status=\(activePlan?.status.rawValue ?? "(none)")
+next_pending_steps:
+\(nextPendingSteps)
+attention_steps:
+\(attentionSteps)
+recent_relevant_messages:
+\(recentMessages)
+"""
+        return SupervisorFocusedProjectExecutionBrief(
+            canonical: canonical,
+            observation: observation,
+            workingSet: workingSet
+        )
+    }
+
+    private func focusedSupervisorRecentMessagesDigest(
+        _ recent: AXRecentContext,
+        limit: Int
+    ) -> String {
+        let rows = recent.messages
+            .suffix(max(0, limit))
+            .map { message in
+                let role = message.role.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? "unknown"
+                    : message.role
+                let content = sanitizeSupervisorPromptIdentifiers(
+                    capped(message.content, maxChars: 180)
+                )
+                return "- \(role): \(content.isEmpty ? "(empty)" : content)"
+            }
+        return rows.isEmpty ? "(none)" : rows.joined(separator: "\n")
     }
 
     private func supervisorWorkflowState(
@@ -5898,6 +7557,7 @@ active_skill_required_capability: \(call.requiredCapability?.isEmpty == false ? 
 active_skill_grant_request_id: \(call.grantRequestId?.isEmpty == false ? call.grantRequestId! : "(none)")
 active_skill_grant_id: \(call.grantId?.isEmpty == false ? call.grantId! : "(none)")
 active_skill_status: \(call.status.rawValue)
+active_skill_result_ref: \(call.resultEvidenceRef?.isEmpty == false ? call.resultEvidenceRef! : "(none)")
 active_skill_result_summary: \(call.resultSummary.isEmpty ? "(none)" : call.resultSummary)
 """
         } ?? """
@@ -5909,6 +7569,7 @@ active_skill_required_capability: (none)
 active_skill_grant_request_id: (none)
 active_skill_grant_id: (none)
 active_skill_status: (none)
+active_skill_result_ref: (none)
 active_skill_result_summary: (none)
 """
 
@@ -5935,7 +7596,7 @@ steps:
 \(activePlan.map(workflowPlanStepsDigest) ?? "(none)")
 active_skill:
 \(activeSkillCall.map { call in
-    "request_id=\(call.requestId) skill=\(call.skillId) status=\(call.status.rawValue) tool=\(call.toolName.isEmpty ? "(none)" : call.toolName) capability=\(call.requiredCapability?.isEmpty == false ? call.requiredCapability! : "(none)") grant_request_id=\(call.grantRequestId?.isEmpty == false ? call.grantRequestId! : "(none)") grant_id=\(call.grantId?.isEmpty == false ? call.grantId! : "(none)")\nsummary=\(call.resultSummary.isEmpty ? "(none)" : call.resultSummary)"
+    "request_id=\(call.requestId) skill=\(call.skillId) status=\(call.status.rawValue) tool=\(call.toolName.isEmpty ? "(none)" : call.toolName) capability=\(call.requiredCapability?.isEmpty == false ? call.requiredCapability! : "(none)") grant_request_id=\(call.grantRequestId?.isEmpty == false ? call.grantRequestId! : "(none)") grant_id=\(call.grantId?.isEmpty == false ? call.grantId! : "(none)") result_ref=\(call.resultEvidenceRef?.isEmpty == false ? call.resultEvidenceRef! : "(none)")\nsummary=\(call.resultSummary.isEmpty ? "(none)" : call.resultSummary)"
 } ?? "(none)")
 """
         return SupervisorWorkflowMemorySlice(
@@ -6555,6 +8216,8 @@ why=\(event.whyItMatters)
         async let schedulerSnapshotRequest = HubIPCClient.requestSchedulerStatus(includeQueueItems: true, queueItemsLimit: 120)
         async let pendingGrantsRequest = HubIPCClient.requestPendingGrantRequests(projectId: nil, limit: 240)
         async let connectorIngressRequest = HubIPCClient.requestConnectorIngressReceipts(projectId: nil, limit: 240)
+        async let operatorChannelXTCommandsRequest = HubIPCClient.requestOperatorChannelXTCommands(projectId: nil, limit: 240)
+        async let operatorChannelXTCommandResultsRequest = HubIPCClient.requestOperatorChannelXTCommandResults(projectId: nil, limit: 400)
 
         let snapshot = await schedulerSnapshotRequest
         if let snapshot {
@@ -6579,11 +8242,20 @@ why=\(event.whyItMatters)
         } else if force || (connectorIngressLastSuccessAt > 0 && (now - connectorIngressLastSuccessAt) >= schedulerSnapshotStaleSec) {
             connectorIngressSnapshot = nil
         }
+        let operatorChannelXTCommands = await operatorChannelXTCommandsRequest
+        let operatorChannelXTCommandResults = await operatorChannelXTCommandResultsRequest
         let refreshCompletedAt = Date()
         rebuildPendingHubGrantViewState(now: refreshCompletedAt.timeIntervalSince1970)
         rebuildPendingSupervisorSkillApprovalViewState()
         _ = serviceHubConnectorIngressReceipts(now: refreshCompletedAt, emitSystemMessage: false)
         _ = serviceAutomationScheduleTriggers(now: refreshCompletedAt, emitSystemMessage: false)
+        if let operatorChannelXTCommands {
+            _ = serviceOperatorChannelXTCommands(
+                operatorChannelXTCommands,
+                resultsSnapshot: operatorChannelXTCommandResults,
+                now: refreshCompletedAt
+            )
+        }
     }
 
     private func schedulerSignal(
@@ -7312,10 +8984,28 @@ Coder 下一步建议：
                !pattern.isEmpty {
                 return pattern
             }
+        case .skills_search:
+            if let query = toolCall.args["query"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !query.isEmpty {
+                return query
+            }
         case .web_search:
             if let query = toolCall.args["query"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
                !query.isEmpty {
                 return query
+            }
+        case .summarize:
+            if let url = toolCall.args["url"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !url.isEmpty {
+                return url
+            }
+            if let path = toolCall.args["path"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !path.isEmpty {
+                return path
+            }
+            if let text = toolCall.args["text"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !text.isEmpty {
+                return capped(text, maxChars: 72)
             }
         case .web_fetch, .browser_read, .deviceBrowserControl:
             if let url = toolCall.args["url"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -7625,6 +9315,15 @@ Coder 下一步建议：
         for project in orderedProjects {
             if lines.count >= maxCount { break }
             if includedProjectIds.contains(project.projectId) { continue }
+            guard let routeNotice = AXProjectModelRouteMemoryStore.heartbeatNotice(for: project) else { continue }
+            lines.append("\(rank). \(routeNotice)")
+            includedProjectIds.insert(project.projectId)
+            rank += 1
+        }
+
+        for project in orderedProjects {
+            if lines.count >= maxCount { break }
+            if includedProjectIds.contains(project.projectId) { continue }
             let next = (project.nextStepSummary ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             if !next.isEmpty {
                 lines.append("\(rank). 常规推进：\(project.displayName) — \(capped(next, maxChars: 72))")
@@ -7839,13 +9538,50 @@ Coder 下一步建议：
         sanitizeSupervisorOutboundPrompt(text)
     }
 
-    func recordSupervisorReplyExecutionForTesting(mode: String, actualModelId: String?) {
+    func currentSupervisorModelRouteSummaryForTesting(
+        _ userMessage: String,
+        projects: [AXProjectEntry]? = nil
+    ) -> String {
+        contextualSupervisorModelRouteSummary(
+            userMessage: userMessage,
+            projects: projects ?? allProjects()
+        )
+    }
+
+    func buildSupervisorSystemPromptForTesting(
+        _ userMessage: String,
+        projects: [AXProjectEntry]? = nil,
+        preferredModel: String? = nil,
+        memorySource: String = "memory_v1",
+        memoryText: String = "memory-line"
+    ) -> String {
+        let info = SupervisorMemoryBuildInfo(
+            text: memoryText,
+            source: memorySource,
+            updatedAt: 0,
+            projectDigests: [],
+            skillRegistrySnapshot: nil
+        )
+        return buildSupervisorSystemPrompt(
+            userMessage: userMessage,
+            projects: projects ?? allProjects(),
+            preferredModel: preferredModel,
+            memoryInfo: info
+        )
+    }
+
+    func recordSupervisorReplyExecutionForTesting(
+        mode: String,
+        actualModelId: String?,
+        requestedModelId: String? = nil,
+        failureReasonCode: String? = nil
+    ) {
         let resolved = SupervisorReplyExecutionMode(rawValue: mode) ?? .idle
         recordSupervisorReplyExecution(
             mode: resolved,
             actualModelId: actualModelId,
-            requestedModelId: nil,
-            failureReasonCode: nil
+            requestedModelId: requestedModelId,
+            failureReasonCode: failureReasonCode
         )
     }
 
@@ -8117,6 +9853,32 @@ XT 当前 transport 是 grpc-only，这不属于 XT 本地 auto fallback；更�
     }
 
     private func currentSupervisorModelRouteSummary() -> String {
+        currentConfiguredSupervisorModelRouteSummary()
+    }
+
+    private func contextualSupervisorModelRouteSummary(
+        userMessage: String,
+        projects: [AXProjectEntry]
+    ) -> String {
+        let configuredSummary = currentConfiguredSupervisorModelRouteSummary()
+        let trimmed = userMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return configuredSummary }
+
+        let routeProject = resolvedRouteIntentProject(for: trimmed, projects: projects)
+        let projectConfig = routeProject.flatMap { loadRouteIntentProjectConfig(for: $0) }
+        let routeDecision = inferredSupervisorRouteDecision(
+            for: trimmed,
+            project: routeProject,
+            projectConfig: projectConfig
+        )
+        let intentSummary = currentSupervisorTaskIntentSummary(
+            for: routeDecision,
+            project: routeProject
+        )
+        return "\(configuredSummary) | \(intentSummary)"
+    }
+
+    private func currentConfiguredSupervisorModelRouteSummary() -> String {
         guard let preferred = currentPreferredModelID(for: .supervisor) else {
             return "未绑定固定 model id，当前按默认 Hub 路由执行。"
         }
@@ -8135,6 +9897,277 @@ XT 当前 transport 是 grpc-only，这不属于 XT 本地 auto fallback；更�
             return "\(matched.id)（\(stateText)，名称：\(matched.name)）"
         }
         return "\(preferred)（当前 Hub 模型清单里暂未看到这个 id）"
+    }
+
+    private func supervisorRouteDiagnosisText() -> String {
+        let configured = currentPreferredModelID(for: .supervisor)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let actualModelId = lastSupervisorActualModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let requestedModelId = lastSupervisorRequestedModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let failureReason = displayedSupervisorFailureReason(lastSupervisorRemoteFailureReasonCode)
+        let mode = SupervisorReplyExecutionMode(rawValue: lastSupervisorReplyExecutionMode) ?? .idle
+        let mismatch = currentSupervisorModelMismatchSummary()
+
+        var lines: [String] = [
+            "Supervisor route diagnose",
+            "配置来源：\(configured.isEmpty ? "default auto（没有固定 model id）" : "global assignment（Supervisor 全局配置）")",
+            "当前配置：\(configured.isEmpty ? "auto" : currentConfiguredSupervisorModelRouteSummary())",
+            "当前 Hub transport：\(currentHubTransportSummary())",
+            "最近一次执行模式：\(mode.rawValue)",
+            "",
+            "最近一次 Supervisor 真实记录：",
+            supervisorExecutionDiagnosisSummary(
+                requestedModelId: requestedModelId,
+                actualModelId: actualModelId,
+                failureReason: failureReason
+            ),
+            "",
+            "当前验证状态：",
+            currentSupervisorModelVerificationSummary(),
+            "",
+            "判定：",
+            supervisorRouteDiagnosisConclusion(
+                configuredModelId: configured,
+                mode: mode,
+                mismatchSummary: mismatch,
+                failureReason: failureReason
+            ),
+            "",
+            "提示：Supervisor 不读取 project override，也不使用 project route memory；它只看自己的全局 assignment 和当前 Hub transport。"
+        ]
+
+        if let mismatch, !mismatch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.insert("当前差异提示：\n\(mismatch)", at: 10)
+            lines.insert("", at: 11)
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    private func supervisorExecutionDiagnosisSummary(
+        requestedModelId: String,
+        actualModelId: String,
+        failureReason: String
+    ) -> String {
+        var lines: [String] = [
+            "- requested_model=\(requestedModelId.isEmpty ? "(none)" : requestedModelId)",
+            "- actual_model=\(actualModelId.isEmpty ? "(none)" : actualModelId)",
+            "- failure_reason=\(failureReason.isEmpty ? "(none)" : failureReason)"
+        ]
+        return lines.joined(separator: "\n")
+    }
+
+    private func supervisorRouteDiagnosisConclusion(
+        configuredModelId: String,
+        mode: SupervisorReplyExecutionMode,
+        mismatchSummary: String?,
+        failureReason: String
+    ) -> String {
+        switch HubAIClient.transportMode() {
+        case .fileIPC:
+            return "XT 当前 transport 是 fileIPC，所以 Supervisor 这轮本来就不会强制走远端。先切 `/hub route auto` 或 `/hub route grpc` 再验证。"
+        case .grpc:
+            if let mismatchSummary, !mismatchSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return mismatchSummary
+            }
+            if mode == .localFallbackAfterRemoteError {
+                return "XT 当前已经是 grpc-only；如果这时仍出现本地接管，优先查 Hub 端的 downgrade_to_local 或 remote_export_blocked。"
+            }
+            if configuredModelId.isEmpty {
+                return "Supervisor 当前没有固定 model id，但 XT 这层也没有 project route memory 之类的额外锁。"
+            }
+            return "从 XT 这层看，Supervisor 没有被本地锁住；如果后续还是没命中 GPT，更可能是 Hub 侧策略或远端配置问题。"
+        case .auto:
+            if mode == .localFallbackAfterRemoteError {
+                if !failureReason.isEmpty {
+                    return "最近一次 Supervisor 远端失败后走了本地兜底，当前 reason=\(failureReason)。在 auto 模式下，这既可能是 XT auto fallback，也可能是 Hub 自己降级；想 fail-closed 验证请切 `/hub route grpc`。"
+                }
+                return "最近一次 Supervisor 远端失败后走了本地兜底。在 auto 模式下，这既可能是 XT auto fallback，也可能是 Hub 自己降级；想 fail-closed 验证请切 `/hub route grpc`。"
+            }
+            if let mismatchSummary, !mismatchSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return mismatchSummary
+            }
+            if configuredModelId.isEmpty {
+                return "Supervisor 当前没有固定 model id，XT 只会按默认 Hub 路由尝试。"
+            }
+            return "从 XT 这层看，Supervisor 当前没有 project 级别的额外路由干预；如果你看到异常分叉，优先对比 Project chat 那边是否有项目级 override 或 route memory 锁定。"
+        }
+    }
+
+    private func resolvedRouteIntentProject(
+        for userMessage: String,
+        projects: [AXProjectEntry]
+    ) -> AXProjectEntry? {
+        let explicitRef = extractProjectReferenceForDirectAssignment(userMessage, projects: projects)
+        let fallbackRef = defaultProjectReferenceForDirectAssignment(projects: projects)
+
+        for candidate in [explicitRef, fallbackRef] {
+            guard let candidate, !candidate.isEmpty else { continue }
+            if case .matched(let project) = resolveProjectReference(candidate, in: projects) {
+                return project
+            }
+        }
+        return nil
+    }
+
+    private func loadRouteIntentProjectConfig(for project: AXProjectEntry) -> AXProjectConfig? {
+        let root = URL(fileURLWithPath: project.rootPath, isDirectory: true)
+        let ctx = AXProjectContext(root: root)
+        return try? AXProjectStore.loadOrCreateConfig(for: ctx)
+    }
+
+    private func inferredSupervisorRouteDecision(
+        for userMessage: String,
+        project: AXProjectEntry?,
+        projectConfig: AXProjectConfig?
+    ) -> SupervisorModelRouteDecision {
+        let normalized = normalizedSupervisorIntentText(userMessage)
+        let input = SupervisorTaskRoleClassifier.Input(
+            taskTags: inferredSupervisorRouteTaskTags(from: normalized),
+            risk: inferredSupervisorRouteRisk(from: normalized),
+            sideEffect: inferredSupervisorRouteSideEffect(from: normalized),
+            codeExecution: inferredSupervisorRouteCodeExecution(from: normalized)
+        )
+        let projectID = project?.projectId ?? "supervisor"
+        return SupervisorModelRoutePolicy.default(projectID: projectID)
+            .routeDecision(for: input, projectConfig: projectConfig)
+    }
+
+    private func inferredSupervisorRouteTaskTags(from normalized: String) -> [String] {
+        var tags: [String] = []
+
+        func appendTag(_ tag: String) {
+            guard !tag.isEmpty, !tags.contains(tag) else { return }
+            tags.append(tag)
+        }
+
+        if containsAny(normalized, ["范围", "scope", "freeze", "冻结", "规格", "spec", "里程碑", "milestone"]) {
+            appendTag("scope_freeze")
+        }
+        if containsAny(normalized, ["goal", "mvp", "non goal", "non-goal", "技术栈", "tech stack", "模块", "规格胶囊", "spec capsule"]) {
+            appendTag("spec_capsule")
+        }
+        if containsAny(normalized, ["卡住", "卡在哪", "阻塞", "blocked", "决策", "decision", "选型"]) {
+            appendTag("decision_blocker")
+        }
+        if containsAny(normalized, ["写代码", "代码", "编码", "编程", "实现", "开发", "feature", "patch"]) {
+            appendTag("codegen")
+        }
+        if containsAny(normalized, ["重构", "重写", "refactor", "整理代码"]) {
+            appendTag("refactor")
+        }
+        if containsAny(normalized, ["修复", "fix", "bug", "runtime", "编译错误", "build error", "报错"]) {
+            appendTag("runtime_fix")
+        }
+        if containsAny(normalized, ["review", "审查", "审阅", "评审", "检查代码"]) {
+            appendTag("review")
+        }
+        if containsAny(normalized, ["回归", "regression", "qa", "测试一下", "验收"]) {
+            appendTag("regression")
+        }
+        if containsAny(normalized, ["gate", "checklist", "收口", "门禁"]) {
+            appendTag("gate_review")
+        }
+        if containsAny(normalized, ["文档", "docs", "readme", "说明文档"]) {
+            appendTag("docs")
+        }
+        if containsAny(normalized, ["release notes", "release note", "发版说明", "发布说明", "更新日志", "changelog"]) {
+            appendTag("release_notes")
+        }
+        if containsAny(normalized, ["spec freeze writeup", "scope note", "冻结说明", "口径说明"]) {
+            appendTag("spec_freeze_writeup")
+        }
+        if containsAny(normalized, ["runbook", "操作手册", "故障手册"]) {
+            appendTag("runbook")
+        }
+        if containsAny(normalized, ["rollout", "上线", "部署", "发布到"]) {
+            appendTag("rollout")
+        }
+        if containsAny(normalized, ["probe", "doctor", "诊断", "排查", "健康检查", "runtime probe"]) {
+            appendTag("runtime_probe")
+        }
+        if containsAny(normalized, ["operator", "人工处理", "手工操作", "执行一下"]) {
+            appendTag("operator_action")
+        }
+
+        if let explicitRole = firstExplicitRoleMention(in: normalized) {
+            switch explicitRole {
+            case .coder, .coarse, .refine:
+                appendTag("codegen")
+            case .reviewer:
+                appendTag("review")
+            case .advisor:
+                appendTag("scope_freeze")
+            case .supervisor:
+                appendTag("operator_action")
+            }
+        }
+
+        return tags
+    }
+
+    private func inferredSupervisorRouteRisk(from normalized: String) -> SupervisorTaskRisk {
+        if containsAny(normalized, ["delete", "删除", "wipe", "drop db", "销毁", "不可逆", "irreversible"]) {
+            return .critical
+        }
+        if containsAny(normalized, ["授权", "grant", "权限", "安全", "security", "付费", "paid", "上线", "部署", "rollout", "production", "prod", "迁移", "connector", "联网"]) {
+            return .high
+        }
+        if containsAny(normalized, ["review", "审查", "审阅", "回归", "regression", "qa", "probe", "doctor", "诊断"]) {
+            return .medium
+        }
+        return .low
+    }
+
+    private func inferredSupervisorRouteSideEffect(from normalized: String) -> SupervisorTaskSideEffect {
+        if containsAny(normalized, ["delete", "删除", "wipe", "drop db", "销毁", "不可逆", "irreversible"]) {
+            return .irreversible
+        }
+        if containsAny(normalized, ["上线", "部署", "rollout", "发布到", "connector", "联网", "browser", "web fetch"]) {
+            return .externalWrite
+        }
+        if containsAny(normalized, ["probe", "doctor", "诊断", "排查", "日志", "log", "health", "审计", "audit"]) {
+            return .externalRead
+        }
+        if containsAny(normalized, ["写代码", "代码", "编码", "编程", "实现", "开发", "修复", "fix", "bug", "重构", "refactor", "patch", "编译"]) {
+            return .localMutation
+        }
+        return .none
+    }
+
+    private func inferredSupervisorRouteCodeExecution(from normalized: String) -> Bool {
+        containsAny(
+            normalized,
+            ["写代码", "代码", "编码", "编程", "实现", "开发", "修复", "fix", "bug", "重构", "refactor", "patch", "编译", "build"]
+        )
+    }
+
+    private func currentSupervisorTaskIntentSummary(
+        for decision: SupervisorModelRouteDecision,
+        project: AXProjectEntry?
+    ) -> String {
+        let preferredClasses = decision.preferredModelClasses.map(\.rawValue).joined(separator: ", ")
+        let matchedSignals = decision.explainability.matchedSignals.isEmpty
+            ? ["fail_closed_default:\(decision.role.rawValue)"]
+            : decision.explainability.matchedSignals
+        var parts = [
+            "task-intent role=\(decision.role.rawValue)",
+            "signals=[\(matchedSignals.joined(separator: ", "))]",
+            "preferred_classes=[\(preferredClasses)]",
+            "grant=\(decision.grantPolicy.rawValue)",
+            "hub_gate=\(decision.hubPolicyRequired ? "required" : "not_required")",
+            "why_role=\(capped(decision.explainability.whyRole, maxChars: 120))",
+            "why_classes=\(capped(decision.explainability.whyPreferredModelClasses, maxChars: 140))"
+        ]
+
+        if let project {
+            parts.append("project=\(project.displayName)")
+        }
+        if !decision.projectModelHints.isEmpty {
+            parts.append("project_hints=[\(decision.projectModelHints.joined(separator: ", "))]")
+        }
+        parts.append("hub_resolves_concrete_model=true")
+        return parts.joined(separator: "; ")
     }
 
     private func parseDirectModelAssignmentIntent(
@@ -10648,6 +12681,232 @@ Coder 下一步建议：
         return results
     }
 
+    @discardableResult
+    func serviceOperatorChannelXTCommandsForTesting(
+        _ snapshot: HubIPCClient.OperatorChannelXTCommandSnapshot,
+        resultsSnapshot: HubIPCClient.OperatorChannelXTCommandResultSnapshot? = nil,
+        now: Date = Date()
+    ) -> [HubIPCClient.OperatorChannelXTCommandResultItem] {
+        serviceOperatorChannelXTCommands(
+            snapshot,
+            resultsSnapshot: resultsSnapshot,
+            now: now
+        )
+    }
+
+    func executeOperatorChannelXTCommandForTesting(
+        _ command: HubIPCClient.OperatorChannelXTCommandItem,
+        project: AXProjectEntry,
+        now: Date = Date()
+    ) -> HubIPCClient.OperatorChannelXTCommandResultItem {
+        executeOperatorChannelXTCommand(
+            command,
+            projectMap: [project.projectId: project],
+            now: now
+        )
+    }
+
+    @discardableResult
+    private func serviceOperatorChannelXTCommands(
+        _ snapshot: HubIPCClient.OperatorChannelXTCommandSnapshot,
+        resultsSnapshot: HubIPCClient.OperatorChannelXTCommandResultSnapshot?,
+        now: Date = Date()
+    ) -> [HubIPCClient.OperatorChannelXTCommandResultItem] {
+        let snapshotUpdatedAtSec: TimeInterval = {
+            let ms = max(0, snapshot.updatedAtMs)
+            if ms > 0 {
+                return ms / 1000.0
+            }
+            return now.timeIntervalSince1970
+        }()
+        if snapshotUpdatedAtSec > 0, now.timeIntervalSince1970 - snapshotUpdatedAtSec > schedulerSnapshotStaleSec {
+            return []
+        }
+
+        let completedCommandIDs = Set(
+            (resultsSnapshot?.items ?? []).map { $0.commandId.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
+        let projectMap = allProjects().reduce(into: [String: AXProjectEntry]()) { partialResult, project in
+            partialResult[project.projectId] = project
+        }
+        guard !projectMap.isEmpty else { return [] }
+
+        let commands = snapshot.items.sorted { lhs, rhs in
+            if lhs.createdAtMs != rhs.createdAtMs {
+                return lhs.createdAtMs < rhs.createdAtMs
+            }
+            return lhs.commandId.localizedCaseInsensitiveCompare(rhs.commandId) == .orderedAscending
+        }
+
+        var outputs: [HubIPCClient.OperatorChannelXTCommandResultItem] = []
+        for command in commands {
+            let commandID = command.commandId.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !commandID.isEmpty else { continue }
+            guard !completedCommandIDs.contains(commandID) else { continue }
+
+            let result = executeOperatorChannelXTCommand(
+                command,
+                projectMap: projectMap,
+                now: now
+            )
+            outputs.append(result)
+            _ = HubIPCClient.appendOperatorChannelXTCommandResult(result)
+        }
+
+        return outputs
+    }
+
+    private func executeOperatorChannelXTCommand(
+        _ command: HubIPCClient.OperatorChannelXTCommandItem,
+        projectMap: [String: AXProjectEntry],
+        now: Date
+    ) -> HubIPCClient.OperatorChannelXTCommandResultItem {
+        let commandID = command.commandId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let requestID = command.requestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let actionName = command.actionName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let projectID = command.projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedDeviceID = command.resolvedDeviceId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let createdAtMs = max(0, command.createdAtMs)
+        let completedAtMs = now.timeIntervalSince1970 * 1000.0
+        let auditRef = command.auditRef.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "audit-operator-channel-xt-command-\(commandID)"
+            : command.auditRef.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        func finalize(
+            status: String,
+            denyCode: String = "",
+            detail: String,
+            runId: String = ""
+        ) -> HubIPCClient.OperatorChannelXTCommandResultItem {
+            HubIPCClient.OperatorChannelXTCommandResultItem(
+                commandId: commandID,
+                requestId: requestID,
+                actionName: actionName,
+                projectId: projectID,
+                resolvedDeviceId: resolvedDeviceID,
+                status: status,
+                denyCode: denyCode,
+                detail: detail,
+                runId: runId,
+                createdAtMs: createdAtMs,
+                completedAtMs: completedAtMs,
+                auditRef: auditRef
+            )
+        }
+
+        guard actionName == "deploy.plan" else {
+            return finalize(
+                status: "failed",
+                denyCode: "xt_command_action_not_supported_yet",
+                detail: "xt command action not supported yet"
+            )
+        }
+
+        guard let project = projectMap[projectID],
+              let ctx = projectContext(from: project) else {
+            return finalize(
+                status: "failed",
+                denyCode: "project_context_missing",
+                detail: "project context missing"
+            )
+        }
+
+        do {
+            let config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+            let boundDeviceID = config.trustedAutomationDeviceId.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !boundDeviceID.isEmpty, boundDeviceID == resolvedDeviceID else {
+                let result = finalize(
+                    status: "failed",
+                    denyCode: "trusted_automation_project_not_bound",
+                    detail: "trusted automation project not bound to routed device"
+                )
+                AXProjectStore.appendRawLog(
+                    [
+                        "type": "operator_channel_xt_command",
+                        "phase": "failed",
+                        "created_at": now.timeIntervalSince1970,
+                        "command_id": commandID,
+                        "request_id": requestID,
+                        "action_name": actionName,
+                        "provider": command.provider,
+                        "conversation_id": command.conversationId,
+                        "thread_key": command.threadKey,
+                        "resolved_device_id": resolvedDeviceID,
+                        "deny_code": result.denyCode,
+                        "detail": result.detail,
+                        "audit_ref": auditRef
+                    ],
+                    for: ctx
+                )
+                appendRecentEvent("operator channel xt command failed: \(project.projectId) -> \(actionName) (\(result.denyCode))")
+                return result
+            }
+
+            let request = try makeOperatorChannelDeployPlanRequest(
+                for: project,
+                ctx: ctx,
+                command: command
+            )
+            let prepared = try prepareAutomationRun(
+                for: ctx,
+                request: request,
+                emitSystemMessage: false
+            )
+            let result = finalize(
+                status: "prepared",
+                detail: "automation prepared",
+                runId: prepared.launchRef
+            )
+            AXProjectStore.appendRawLog(
+                [
+                    "type": "operator_channel_xt_command",
+                    "phase": "prepared",
+                    "created_at": now.timeIntervalSince1970,
+                    "command_id": commandID,
+                    "request_id": requestID,
+                    "action_name": actionName,
+                    "provider": command.provider,
+                    "conversation_id": command.conversationId,
+                    "thread_key": command.threadKey,
+                    "resolved_device_id": resolvedDeviceID,
+                    "run_id": prepared.launchRef,
+                    "audit_ref": auditRef
+                ],
+                for: ctx
+            )
+            appendRecentEvent("operator channel xt command prepared: \(project.projectId) -> \(prepared.launchRef)")
+            return result
+        } catch {
+            let denyCode = operatorChannelXTCommandReasonCode(from: error)
+            let result = finalize(
+                status: "failed",
+                denyCode: denyCode,
+                detail: denyCode
+            )
+            AXProjectStore.appendRawLog(
+                [
+                    "type": "operator_channel_xt_command",
+                    "phase": "failed",
+                    "created_at": now.timeIntervalSince1970,
+                    "command_id": commandID,
+                    "request_id": requestID,
+                    "action_name": actionName,
+                    "provider": command.provider,
+                    "conversation_id": command.conversationId,
+                    "thread_key": command.threadKey,
+                    "resolved_device_id": resolvedDeviceID,
+                    "deny_code": denyCode,
+                    "detail": String(describing: error),
+                    "audit_ref": auditRef
+                ],
+                for: ctx
+            )
+            appendRecentEvent("operator channel xt command failed: \(project.projectId) -> \(actionName) (\(denyCode))")
+            return result
+        }
+    }
+
     private func resolveHubConnectorIngressReceipt(
         _ receipt: HubIPCClient.ConnectorIngressReceipt,
         ctx: AXProjectContext,
@@ -11211,6 +13470,14 @@ Coder 下一步建议：
         return "automation_external_trigger_failed_closed"
     }
 
+    private func operatorChannelXTCommandReasonCode(from error: Error) -> String {
+        let upstream = automationExternalTriggerReasonCode(from: error)
+        if upstream != "automation_external_trigger_failed_closed" {
+            return upstream
+        }
+        return "operator_channel_xt_command_failed_closed"
+    }
+
     private func automationProjectHasBlockingRun(_ ctx: AXProjectContext) -> Bool {
         guard let runId = try? latestAutomationLaunchRef(for: ctx),
               let checkpoint = try? automationRunCoordinator.latestCheckpoint(for: runId, in: ctx) else {
@@ -11294,6 +13561,64 @@ Coder 下一步建议：
                 "manual://supervisor_command/start",
                 "recipe://\(recipe.ref)",
                 "trusted_automation://\(trustedAutomationStatus.state.rawValue)"
+            ] + trustedAutomationStatus.missingPrerequisites.map {
+                "trusted_automation_issue://\($0)"
+            },
+            now: now
+        )
+    }
+
+    private func makeOperatorChannelDeployPlanRequest(
+        for project: AXProjectEntry,
+        ctx: AXProjectContext,
+        command: HubIPCClient.OperatorChannelXTCommandItem
+    ) throws -> XTAutomationRunRequest {
+        let config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        guard let recipe = config.activeAutomationRecipe else {
+            throw XTAutomationRunCoordinatorError.activeRecipeMissing
+        }
+        let trustedAutomationStatus = config.trustedAutomationStatus(
+            forProjectRoot: ctx.root,
+            permissionReadiness: AXTrustedAutomationPermissionOwnerReadiness.current(),
+            requiredDeviceToolGroups: recipe.requiredDeviceToolGroups
+        )
+
+        let now = Date()
+        let commandToken = xtAutomationActionToken(command.commandId, fallback: "operator_command")
+        let actionToken = xtAutomationActionToken(command.actionName, fallback: "deploy_plan")
+        let requiresGrant = !recipe.grantPolicyRef.isEmpty
+        let policyRef = requiresGrant ? recipe.grantPolicyRef : ""
+        let routedDeviceToken = xtAutomationActionToken(
+            command.resolvedDeviceId,
+            fallback: "device"
+        )
+
+        return XTAutomationRunRequest(
+            triggerSeeds: [
+                XTAutomationTriggerSeed(
+                    triggerID: "manual/operator_channel/\(actionToken)",
+                    triggerType: .manual,
+                    source: .hub,
+                    payloadRef: "hub://operator_channel/\(commandToken)",
+                    requiresGrant: requiresGrant,
+                    policyRef: policyRef,
+                    dedupeKey: "operator_channel|\(project.projectId)|\(command.commandId)"
+                )
+            ],
+            trustedAutomationReady: trustedAutomationStatus.trustedAutomationReady,
+            permissionOwnerReady: trustedAutomationStatus.permissionOwnerReady,
+            currentOwner: trustedAutomationStatus.permissionOwnerReady ? "XT-TRUSTED" : "XT-L2",
+            blockedTaskID: "XT-OP-CHANNEL-\(actionToken.uppercased())",
+            operatorConsoleEvidenceRef: "build/reports/xt_operator_channel_\(actionToken)_operator_console.v1.json",
+            latestDeltaRef: "build/reports/xt_operator_channel_\(actionToken)_delta.v1.json",
+            deliveryRef: "build/reports/xt_operator_channel_\(actionToken)_delivery.v1.json",
+            additionalEvidenceRefs: [
+                "operator_channel://\(command.commandId)",
+                "operator_channel_action://\(actionToken)",
+                "operator_channel_route://\(xtAutomationActionToken(command.routeId, fallback: "route"))",
+                "operator_channel_device://\(routedDeviceToken)",
+                "operator_channel_binding://\(xtAutomationActionToken(command.bindingId, fallback: "binding"))",
+                "operator_channel_thread://\(xtAutomationActionToken(command.threadKey, fallback: "thread"))"
             ] + trustedAutomationStatus.missingPrerequisites.map {
                 "trusted_automation_issue://\($0)"
             },

@@ -30,6 +30,8 @@ enum ToolName: String, Codable, CaseIterable, Sendable {
     // Networking (via Hub Bridge)
     case need_network
     case bridge_status
+    case skills_search = "skills.search"
+    case summarize
     case web_fetch
     case web_search
     case browser_read
@@ -114,6 +116,8 @@ enum ToolPolicy {
                 .memory_snapshot,
                 .project_snapshot,
                 .bridge_status,
+                .skills_search,
+                .summarize,
             ]
         case .coding:
             return [
@@ -132,6 +136,8 @@ enum ToolPolicy {
                 .memory_snapshot,
                 .project_snapshot,
                 .bridge_status,
+                .skills_search,
+                .summarize,
             ]
         case .full:
             return [
@@ -151,6 +157,8 @@ enum ToolPolicy {
                 .project_snapshot,
                 .need_network,
                 .bridge_status,
+                .skills_search,
+                .summarize,
                 .web_fetch,
                 .web_search,
                 .browser_read,
@@ -250,13 +258,17 @@ enum ToolPolicy {
         case .deviceScreenCapture:
             return "- device.screen.capture {path?}"
         case .deviceBrowserControl:
-            return "- device.browser.control {action=open|open_url|navigate|snapshot|extract|click|type|upload, url?, session_id?, selector?, text|content|value?, path?, grant_id?, timeout_sec?, max_bytes?}"
+            return "- device.browser.control {action=open|open_url|navigate|snapshot|extract|click|type|upload, url?, session_id?, selector?, field_role?, text|content|value?, secret_item_id?|secret_scope?|secret_name?|secret_project_id?, path?, grant_id?, timeout_sec?, max_bytes?}"
         case .deviceAppleScript:
             return "- device.applescript {source}"
         case .bridge_status:
             return "- bridge_status {}"
         case .need_network:
             return "- need_network {seconds, reason?}"
+        case .skills_search:
+            return "- skills.search {query, source_filter?, project_id?, limit?}"
+        case .summarize:
+            return "- summarize {url?|path?|text|content|value, focus?, format?, max_chars?, grant_id?, timeout_sec?, max_bytes?}"
         case .web_fetch:
             return "- web_fetch {url, grant_id, timeout_sec?, max_bytes?}"
         case .web_search:
@@ -283,6 +295,8 @@ enum ToolPolicy {
                     .memory_snapshot,
                     .project_snapshot,
                     .bridge_status,
+                    .skills_search,
+                    .summarize,
                 ])
             case "group:fs":
                 out.formUnion([.read_file, .write_file, .list_dir, .search])
@@ -334,6 +348,8 @@ enum ToolPolicy {
         case .bridge_status:
             return .safe
         case .need_network:
+            return .safe
+        case .skills_search, .summarize:
             return .safe
         case .web_fetch, .web_search, .browser_read:
             // Network approvals are handled in Hub; avoid local confirmations.

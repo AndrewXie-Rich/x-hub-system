@@ -1,4 +1,4 @@
-# X-Hub 项目质量前置执行工单（Kiro 方法借鉴版）
+# X-Hub 项目质量前置执行工单（Spec Gate 方法借鉴版）
 
 - version: v1.0
 - updatedAt: 2026-02-27
@@ -7,12 +7,12 @@
 - parent:
   - `X_MEMORY.md`
   - `docs/memory-new/xhub-memory-v3-execution-plan.md`
-  - `docs/memory-new/xhub-leapfrog-opencode-iflow-work-orders-v1.md`
-  - `docs/memory-new/xhub-leapfrog-claudemem-openclaw-memory-work-orders-v1.md`
+  - `docs/memory-new/xhub-product-experience-leapfrog-work-orders-v1.md`
+  - `docs/memory-new/xhub-memory-capability-leapfrog-work-orders-v1.md`
 
 ## 0) 使用方式（先看）
 
-- 目标不是“照搬 Kiro 仓库代码”，而是借鉴其高价值方法：`requirements -> design -> tasks -> gate`，把返工前移到需求和设计阶段。
+- 目标不是“照搬 Spec Gate 仓库代码”，而是借鉴其高价值方法：`requirements -> design -> tasks -> gate`，把返工前移到需求和设计阶段。
 - 本工单聚焦三件事：`效率`、`安全`、`Token 经济性`，并要求每个改动都具备可追踪验收链。
 - 所有涉及高风险能力的变更，必须继续经过主链：`ingress -> risk classify -> policy -> grant -> execute -> audit`。
 - 本文按 `P0 > P1` 排序，P0 不完成不得进入灰度。
@@ -101,7 +101,7 @@ Definition of Done (DoD)
 
 ### P0（阻断型，先做）
 
-1. `KQ-W1-01` 三件套规格化落地（`.kiro/specs/xhub-memory-quality-v1`）
+1. `KQ-W1-01` 三件套规格化落地（`specs/xhub-memory-quality-v1`）
 2. `KQ-W1-02` 需求-设计-任务追踪矩阵自动校验
 3. `KQ-W1-03` Correctness Properties 与安全不变量固化
 4. `KQ-W1-04` KQ-Gate CI 门禁落地（阻断发布）
@@ -125,7 +125,7 @@ Definition of Done (DoD)
 
 - 目标：建立 X-Hub 版本化 spec 三件套，确保“先定义后实现”。
 - 依赖：无。
-- 交付物：`.kiro/specs/xhub-memory-quality-v1/{requirements,design,tasks}.md`。
+- 交付物：`specs/xhub-memory-quality-v1/{requirements,design,tasks}.md`。
 - 验收指标：P0 变更覆盖率 100%；新增工单均可追踪 requirement id。
 - 回归样例：
   - 缺 `requirements id` 的任务 -> CI 失败。

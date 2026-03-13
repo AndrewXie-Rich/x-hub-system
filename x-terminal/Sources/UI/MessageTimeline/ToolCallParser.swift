@@ -122,6 +122,10 @@ enum ToolResultParser {
 
     /// 从 tool 消息中解析 result
     static func parse(_ content: String) -> ToolResult? {
+        if let bracketResult = parseBracketToolResult(content) {
+            return bracketResult
+        }
+
         // 尝试直接解析 ToolResult JSON
         if let data = content.data(using: .utf8),
            let result = try? JSONDecoder().decode(ToolResult.self, from: data) {
@@ -143,5 +147,57 @@ enum ToolResultParser {
         }
 
         return nil
+    }
+
+    static func shouldHideFromTimeline(_ content: String) -> Bool {
+        guard let result = parse(content) else { return false }
+        return result.ok
+    }
+
+    private static func parseBracketToolResult(_ content: String) -> ToolResult? {
+        let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.hasPrefix("[tool:"),
+              let closing = text.firstIndex(of: "]") else {
+            return nil
+        }
+
+        let header = String(text[..<text.index(after: closing)])
+        let bodyStart = text.index(after: closing)
+        let remainder = String(text[bodyStart...]).trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard let toolStart = header.range(of: "[tool:")?.upperBound,
+              let toolEnd = header.firstIndex(of: "]") else {
+            return nil
+        }
+
+        let toolRaw = String(header[toolStart..<toolEnd]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let tool = ToolName(rawValue: toolRaw) else { return nil }
+
+        if remainder.hasPrefix("running") {
+            return ToolResult(id: UUID().uuidString, tool: tool, ok: true, output: "")
+        }
+
+        let okValue: Bool
+        if remainder.hasPrefix("ok=true") {
+            okValue = true
+        } else if remainder.hasPrefix("ok=false") {
+            okValue = false
+        } else {
+            return nil
+        }
+
+        let output: String
+        if let newline = remainder.firstIndex(of: "\n") {
+            output = String(remainder[remainder.index(after: newline)...])
+        } else {
+            output = ""
+        }
+
+        return ToolResult(
+            id: UUID().uuidString,
+            tool: tool,
+            ok: okValue,
+            output: output.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
     }
 }

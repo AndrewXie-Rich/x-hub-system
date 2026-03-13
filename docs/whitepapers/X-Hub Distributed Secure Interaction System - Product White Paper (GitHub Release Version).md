@@ -6,7 +6,7 @@ With the popularization of AI interaction scenarios and the increasing demand fo
 
 This white paper details the product positioning, core architecture, operation modes, security system, and application scenarios of the X-Hub Distributed Secure Interaction System (hereinafter referred to as the "X-Hub System"). It fully presents the core design concept of the system: "X-Hub as the only trusted core, lightweight terminal interaction, security and controllability, and multi-scenario adaptability", providing users, technical partners, and security audit institutions with a complete product understanding and technical reference.
 
-The content of this white paper is based on the current core design of the system and will be continuously updated with product iterations. All technical details and security specifications are real and implementable engineering designs without idealized assumptions. This white paper and the repository materials it accompanies are currently published as source-available materials under the repository's `FSL-1.1-MIT` licensing model. That means the current repository state is not an OSI open-source release; see `LICENSE`, `LICENSE_POLICY.md`, `GOVERNANCE.md`, and `TRADEMARKS.md` for the exact current terms.
+The content of this white paper is based on the current core design of the system and will be continuously updated with product iterations. All technical details and security specifications are real and implementable engineering designs without idealized assumptions. This white paper and the repository materials it accompanies are currently published under the repository's MIT licensing model. See `LICENSE`, `LICENSE_POLICY.md`, `GOVERNANCE.md`, and `TRADEMARKS.md` for the current repository terms and trademark boundary.
 
 # Executive Summary
 
@@ -432,10 +432,10 @@ If C is a single-sign hot wallet, C compromise can still sign malicious transact
 
 |Functional Module|Core Path/Configuration|
 |---|---|
-|X-Hub gRPC Service Skeleton|`hub_grpc_server/` (Node + SQLite + MLX runtime IPC)|
-|Memory Pipeline|`X-Terminal/XTerminal/Sources/Project/XMemoryPipeline.swift`|
-|Short-Term Context Storage (for Crash Recovery)|`<project_root>/.xterminal/recent_context.json` + `.xterminal/X_RECENT.md`|
-|Candidate Skills/Automatic Upgrade|`X-Terminal/XTerminal/Sources/Project/XSkillCandidates.swift`|
+|X-Hub gRPC Service Runtime|`x-hub/grpc-server/hub_grpc_server/` (Node + SQLite + Local Provider Runtime IPC, default MLX delegate path)|
+|Memory Pipeline|`x-terminal/Sources/Project/AXMemoryPipeline.swift`|
+|Short-Term Context Storage (for Crash Recovery)|`<project_root>/.xterminal/recent_context.json` + `.xterminal/AX_RECENT.md`|
+|Candidate Skills/Automatic Upgrade|`x-terminal/Sources/Project/AXSkillCandidates.swift`|
 |Forgotten Vault|`<skills_dir>/_projects/<project>/forgotten-vault/`|
 |Global Skill Library|`<skills_dir>/_global/` (Memory-Core Skill: `<skills_dir>/memory-core/`)|
 |Project-Specific Skill Library|`<skills_dir>/_projects/<project>/`|
@@ -454,7 +454,7 @@ To ensure the context experience of multi-device terminals, X-Hub defines unifie
 
 The X-Terminal side has built-in "memory health" detection to ensure the reliable operation of the memory system, including X-Constitution integrity check:
 
-1. Check Items: Existence/update time/integrity of `.xterminal/raw_log.jsonl` (complete logs), `recent_context.json` (short-term context), `x_memory.json` (structured memory), and X-Constitution files;
+1. Check Items: Existence/update time/integrity of `.xterminal/raw_log.jsonl` (complete logs), `recent_context.json` (short-term context), `AX_MEMORY.md` / `ax_memory.json` (structured memory), and X-Constitution files;
 
 2. Downgrade Strategy: When core files are missing, X-Terminal automatically fills in the latest 12 rounds of context from the end of `raw_log.jsonl`; when the X-Constitution file is missing/damaged, it prompts the administrator to re-import it through the cold storage Token to ensure that value constraints take effect.
 
@@ -515,16 +515,16 @@ Rollout target: ETH first. Core objective: Hub is the only trusted source; termi
 # Appendix: Repository License Note (GitHub Release Version)
 
 This white paper is distributed as part of the repository's current
-source-available release model.
+MIT-licensed release model.
 
 Current repository-state summary:
 
-1. The repository is currently published under `FSL-1.1-MIT`.
+1. The repository is currently published under `MIT`.
 2. The exact current terms live in `LICENSE`, `LICENSE_POLICY.md`,
    `GOVERNANCE.md`, and `TRADEMARKS.md`.
-3. Each version converts to MIT on the second anniversary of the date that
-   version was made available, as stated in `LICENSE`.
-4. Trademark rights are not granted by the source license.
+3. Trademark rights are not granted by the software license; see
+   `TRADEMARKS.md`.
+4. Project names, logos, and branding boundaries are defined in `TRADEMARKS.md`.
 
 If this white paper is copied or redistributed with a future repository version,
 follow the license and notice files that ship with that version.

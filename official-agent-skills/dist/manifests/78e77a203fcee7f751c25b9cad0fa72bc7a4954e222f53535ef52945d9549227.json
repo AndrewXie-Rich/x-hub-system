@@ -1,0 +1,43 @@
+{
+  "schema_version": "xhub.skill_manifest.v1",
+  "skill_id": "summarize",
+  "name": "Summarize",
+  "version": "1.0.0",
+  "description": "Governed summarize wrapper for webpages, PDFs, and long documents using Hub-routed fetch and model generation.",
+  "entrypoint": {
+    "runtime": "text",
+    "command": "cat",
+    "args": [
+      "SKILL.md"
+    ]
+  },
+  "capabilities_required": [
+    "web.fetch",
+    "browser.read",
+    "ai.generate.local"
+  ],
+  "network_policy": {
+    "direct_network_forbidden": true
+  },
+  "publisher": {
+    "publisher_id": "xhub.official",
+    "public_key_ed25519": "base64:TGNnemU+ehosOhLMGGIkxgryfeaKAg5HFgnvtr9l72w="
+  },
+  "install_hint": "Install from the default Agent Baseline for governed document and webpage summarization.",
+  "package_sha256": "78e77a203fcee7f751c25b9cad0fa72bc7a4954e222f53535ef52945d9549227",
+  "files": [
+    {
+      "path": "skill.json",
+      "sha256": "1cb3141daa43c6fe0926950bee57984c1fc0a6c5540a3bba33de9d8dd2deb456"
+    },
+    {
+      "path": "SKILL.md",
+      "sha256": "171f9004d12cbfdd24718bdf78f1190e94516dd3d30170d03bda1a45ad5c153c"
+    }
+  ],
+  "signature": {
+    "alg": "ed25519",
+    "signed_at_ms": 1773327543255,
+    "sig": "base64:WWYY4M1/TQIHzqRZzyMv7vgfap0kbWsiIt23CP748EaF2aHpZ+kVzJ+bOWm3e3E9sUuWUWi124NUcX17Jj9HCw=="
+  }
+}

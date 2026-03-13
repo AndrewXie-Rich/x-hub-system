@@ -60,6 +60,7 @@ This repository has one active Hub surface and one active terminal surface:
 | `protocol/` | active | Shared contracts between Hub and terminal surfaces |
 | `specs/` | active | Executable spec packs and traceability material |
 | `docs/` | active | Product docs, release docs, work orders, security docs, and operating guidance |
+| `official-agent-skills/` | active | Official Agent skill sources, trust roots, and distribution artifacts used by the active skills surface |
 | `scripts/` | active | Repo-level validation, packaging, and reporting scripts |
 | `archive/` | archived | Historical material only; not part of the active runtime surface |
 | `build/` | generated | Local outputs and machine-readable reports |
@@ -84,17 +85,15 @@ open build/X-Hub.app
 ### Hub Developer Source Run
 
 ```bash
-cd x-hub/macos/RELFlowHub
-swift run XHub
+bash x-hub/tools/run_xhub_from_source.command
 ```
 
-Note: `RELFlowHub` is still the current internal Swift target name under the hood. The preferred source-run alias is `XHub`, and the public product name is `X-Hub`.
+Note: `RELFlowHub` is still the current internal Swift package directory and target family under the hood. The preferred public source-run entrypoint is `x-hub/tools/run_xhub_from_source.command`, and the public product name is `X-Hub`.
 
 ### Hub Bridge Run
 
 ```bash
-cd x-hub/macos/RELFlowHub
-swift run XHubBridge
+bash x-hub/tools/run_xhub_bridge_from_source.command
 ```
 
 ### Terminal Run
@@ -147,6 +146,10 @@ Owns shared interfaces and contracts between Hub and terminal surfaces.
 ### `docs/`
 
 Owns the written operating model: release constraints, work orders, security notes, architectural references, and open-source release templates under `docs/open-source/`.
+
+### `official-agent-skills/`
+
+Owns official Agent skill sources, trust roots, and release-facing distribution metadata used by the active Hub and X-Terminal skills surface.
 
 ### `scripts/`
 

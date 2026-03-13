@@ -98,4 +98,31 @@ struct SupervisorRhythmRecommendationTests {
         #expect(decision.channel == .silentLog)
         #expect(decision.systemMessage == nil)
     }
+
+    @Test
+    func pendingDecisionProposalRemainsDecisionRequiredWithoutBypassingGovernance() {
+        let proposalEvent = SupervisorProjectActionEvent(
+            eventId: "evt-proposal",
+            projectId: "p-proposal",
+            projectName: "Proposal Project",
+            eventType: .blocked,
+            severity: .briefCard,
+            actionTitle: "项目阻塞：Proposal Project",
+            actionSummary: "default_proposal_pending:test_stack=swift_testing_contract_default",
+            whyItMatters: "This proposal needs a portfolio decision before safe routing can continue.",
+            nextAction: "需要确认默认建议：swift_testing_contract_default，再决定是否采纳。",
+            occurredAt: 30
+        )
+
+        let recommendation = SupervisorRhythmRecommendationEngine.recommendation(for: proposalEvent)
+        let decision = SupervisorProjectNotificationPolicy.decide(for: proposalEvent)
+
+        #expect(recommendation.isSubstantiveChange)
+        #expect(recommendation.recommendationType == .decisionRequired)
+        #expect(recommendation.waitingOn == "a portfolio-level decision")
+        #expect(recommendation.recommendedNextAction.contains("确认默认建议"))
+        #expect(recommendation.recommendedNextAction.contains("swift_testing_contract_default"))
+        #expect(decision.channel == .briefCard)
+        #expect(decision.systemMessage == nil)
+    }
 }

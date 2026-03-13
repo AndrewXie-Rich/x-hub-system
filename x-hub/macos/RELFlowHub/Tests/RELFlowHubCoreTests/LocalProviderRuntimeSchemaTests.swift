@@ -173,4 +173,87 @@ final class LocalProviderRuntimeSchemaTests: XCTestCase {
         XCTAssertEqual(status.providerStatus("mlx")?.importError, "missing_module:mlx_lm")
         XCTAssertEqual(status.providerStatus("mlx")?.reasonCode, "import_error")
     }
+
+    func testProviderAwareAIRuntimeStatusBuildsProviderOperatorSummary() {
+        let status = AIRuntimeStatus(
+            pid: 789,
+            updatedAt: Date().timeIntervalSince1970,
+            mlxOk: false,
+            runtimeVersion: "legacy-mlx-test",
+            importError: "missing_module:mlx_lm",
+            schemaVersion: "xhub.local_runtime_status.v2",
+            providers: [
+                "mlx": AIRuntimeProviderStatus(
+                    provider: "mlx",
+                    ok: false,
+                    reasonCode: "import_error",
+                    runtimeVersion: "legacy-mlx-test",
+                    availableTaskKinds: [],
+                    loadedModels: [],
+                    deviceBackend: "mps",
+                    updatedAt: Date().timeIntervalSince1970,
+                    importError: "missing_module:mlx_lm"
+                ),
+                "transformers": AIRuntimeProviderStatus(
+                    provider: "transformers",
+                    ok: true,
+                    reasonCode: "ready",
+                    runtimeVersion: "transformers-skeleton",
+                    availableTaskKinds: ["embedding", "speech_to_text"],
+                    loadedModels: ["bge-small", "whisper-small"],
+                    deviceBackend: "mps",
+                    updatedAt: Date().timeIntervalSince1970,
+                    loadedModelCount: 2
+                ),
+            ]
+        )
+
+        let summary = status.providerOperatorSummary(ttl: 30, blockedCapabilities: ["ai.audio.local"])
+        XCTAssertTrue(summary.contains("ready_providers=transformers"))
+        XCTAssertTrue(summary.contains("provider=mlx state=down reason=import_error"))
+        XCTAssertTrue(summary.contains("provider=transformers state=ready reason=ready"))
+        XCTAssertTrue(summary.contains("capability=ai.embed.local state=available providers=transformers"))
+        XCTAssertTrue(summary.contains("capability=ai.audio.local state=blocked providers=none detail=blocked by ai.audio.local"))
+    }
+
+    func testProviderAwareAIRuntimeStatusDoctorTextExplainsPartialReadinessAndBlockedAudio() {
+        let status = AIRuntimeStatus(
+            pid: 790,
+            updatedAt: Date().timeIntervalSince1970,
+            mlxOk: false,
+            runtimeVersion: "legacy-mlx-test",
+            importError: "missing_module:mlx_lm",
+            schemaVersion: "xhub.local_runtime_status.v2",
+            providers: [
+                "mlx": AIRuntimeProviderStatus(
+                    provider: "mlx",
+                    ok: false,
+                    reasonCode: "import_error",
+                    runtimeVersion: "legacy-mlx-test",
+                    availableTaskKinds: [],
+                    loadedModels: [],
+                    deviceBackend: "mps",
+                    updatedAt: Date().timeIntervalSince1970,
+                    importError: "missing_module:mlx_lm"
+                ),
+                "transformers": AIRuntimeProviderStatus(
+                    provider: "transformers",
+                    ok: true,
+                    reasonCode: "ready",
+                    runtimeVersion: "transformers-skeleton",
+                    availableTaskKinds: ["embedding"],
+                    loadedModels: ["bge-small"],
+                    deviceBackend: "mps",
+                    updatedAt: Date().timeIntervalSince1970,
+                    loadedModelCount: 1
+                ),
+            ]
+        )
+
+        let doctor = status.providerDoctorText(ttl: 30, blockedCapabilities: ["ai.audio.local"])
+        XCTAssertTrue(doctor.contains("Local runtime is partially ready: transformers ready; mlx unavailable (import_error)."))
+        XCTAssertTrue(doctor.contains("Text generation is unavailable"))
+        XCTAssertTrue(doctor.contains("Embeddings are available via transformers."))
+        XCTAssertTrue(doctor.contains("Local audio is blocked by ai.audio.local."))
+    }
 }

@@ -321,6 +321,7 @@ struct SlashSuggestionsView: View {
             SlashSuggestion(title: "/model <id>", subtitle: "Select a model", insertion: "/model "),
             SlashSuggestion(title: "/tools", subtitle: "Tool policy settings", insertion: "/tools"),
             SlashSuggestion(title: "/hub route", subtitle: "Hub transport mode", insertion: "/hub route"),
+            SlashSuggestion(title: "/route diagnose", subtitle: "Diagnose current model route", insertion: "/route diagnose"),
             SlashSuggestion(title: "/network 30m", subtitle: "Request network access", insertion: "/network 30m"),
             SlashSuggestion(title: "/clear", subtitle: "Clear chat history", insertion: "/clear"),
             SlashSuggestion(title: "/help", subtitle: "Show help", insertion: "/help"),

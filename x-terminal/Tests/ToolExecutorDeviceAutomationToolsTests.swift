@@ -1597,6 +1597,633 @@ struct ToolExecutorDeviceAutomationToolsTests {
     }
 
     @Test
+    func deviceBrowserControlSensitivePlaintextTypingIsRejectedBeforeManagedDriverFallback() async throws {
+        try await Self.gate.run {
+            let fixture = ToolExecutorProjectFixture(name: "device-browser-secret-plaintext")
+            defer { fixture.cleanup() }
+
+            let probe = BrowserOpenProbe()
+            AXTrustedAutomationPermissionOwnerReadiness.installCurrentProviderForTesting {
+                makePermissionReadiness(
+                    accessibility: .granted,
+                    automation: .granted,
+                    screenRecording: .missing,
+                    auditRef: "audit-browser-secret-plaintext"
+                )
+            }
+            DeviceAutomationTools.installBrowserOpenProviderForTesting { url in
+                probe.record(url)
+                return true
+            }
+            defer {
+                AXTrustedAutomationPermissionOwnerReadiness.resetCurrentProviderForTesting()
+                DeviceAutomationTools.resetBrowserOpenProviderForTesting()
+            }
+
+            let ctx = AXProjectContext(root: fixture.root)
+            var cfg = try AXProjectStore.loadOrCreateConfig(for: ctx)
+            cfg = cfg.settingTrustedAutomationBinding(
+                mode: .trustedAutomation,
+                deviceId: "device_xt_001",
+                deviceToolGroups: ["device.browser.control"],
+                workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
+            )
+            cfg = armTrustedOpenClawMode(cfg)
+            try AXProjectStore.saveConfig(cfg, for: ctx)
+
+            let opened = try await ToolExecutor.execute(
+                call: ToolCall(
+                    tool: .deviceBrowserControl,
+                    args: [
+                        "action": .string("open_url"),
+                        "url": .string("https://example.com/login")
+                    ]
+                ),
+                projectRoot: fixture.root
+            )
+            #expect(opened.ok)
+            let openSummary = try #require(toolSummaryObject(opened.output))
+            let sessionID = try #require(jsonString(openSummary["browser_runtime_session_id"]))
+
+            let typed = try await ToolExecutor.execute(
+                call: ToolCall(
+                    tool: .deviceBrowserControl,
+                    args: [
+                        "action": .string("type"),
+                        "session_id": .string(sessionID),
+                        "selector": .string("input[type=password]"),
+                        "field_role": .string("password"),
+                        "text": .string("CorrectHorseBatteryStaple!")
+                    ]
+                ),
+                projectRoot: fixture.root
+            )
+
+            #expect(!typed.ok)
+            let summary = try #require(toolSummaryObject(typed.output))
+            #expect(jsonString(summary["deny_code"]) == XTDeviceAutomationRejectCode.browserSecretPlaintextForbidden.rawValue)
+            #expect(jsonString(summary["action"]) == "type")
+            #expect(jsonString(summary["selector"]) == "input[type=password]")
+            #expect(jsonString(summary["secret_field_role"]) == "password")
+            #expect(jsonBool(summary["secret_ref_only"]) == true)
+            #expect(jsonNumber(summary["input_chars"]) == 26)
+            #expect(toolBody(typed.output) == "browser_secret_plaintext_forbidden")
+
+            let actionLog = try String(contentsOf: ctx.browserRuntimeActionLogURL, encoding: .utf8)
+            #expect(actionLog.contains("\"reject_code\":\"\(XTDeviceAutomationRejectCode.browserSecretPlaintextForbidden.rawValue)\""))
+            #expect(probe.count() == 1)
+        }
+    }
+
+    @Test
+    func deviceBrowserControlSecretReferencePathFailsClosedWithExplicitCapabilityGap() async throws {
+        try await Self.gate.run {
+            let fixture = ToolExecutorProjectFixture(name: "device-browser-secret-ref")
+            defer { fixture.cleanup() }
+
+            let probe = BrowserOpenProbe()
+            let appleScriptProbe = AppleScriptProbe()
+            AXTrustedAutomationPermissionOwnerReadiness.installCurrentProviderForTesting {
+                makePermissionReadiness(
+                    accessibility: .granted,
+                    automation: .granted,
+                    screenRecording: .missing,
+                    auditRef: "audit-browser-secret-ref"
+                )
+            }
+            DeviceAutomationTools.installBrowserOpenProviderForTesting { url in
+                probe.record(url)
+                return true
+            }
+            DeviceAutomationTools.installAppleScriptProviderForTesting { source in
+                appleScriptProbe.record(source)
+                return XTDeviceAppleScriptResult(
+                    ok: false,
+                    output: "",
+                    errorMessage: "unsupported_frontmost_browser:Finder"
+                )
+            }
+            HubIPCClient.installSecretVaultUseOverrideForTesting { payload in
+                HubIPCClient.SecretUseResult(
+                    ok: true,
+                    source: "test_secret_vault",
+                    leaseId: "svl_test_1",
+                    useToken: "svtok_test_1",
+                    itemId: payload.itemId ?? "sv_project_login",
+                    expiresAtMs: 123_456,
+                    reasonCode: nil
+                )
+            }
+            HubIPCClient.installSecretVaultRedeemOverrideForTesting { payload in
+                #expect(payload.useToken == "svtok_test_1")
+                return HubIPCClient.SecretRedeemResult(
+                    ok: true,
+                    source: "test_secret_vault",
+                    leaseId: "svl_test_1",
+                    itemId: "sv_project_login",
+                    plaintext: "CorrectHorseBatteryStaple!",
+                    reasonCode: nil
+                )
+            }
+            defer {
+                AXTrustedAutomationPermissionOwnerReadiness.resetCurrentProviderForTesting()
+                DeviceAutomationTools.resetBrowserOpenProviderForTesting()
+                DeviceAutomationTools.resetAppleScriptProviderForTesting()
+                HubIPCClient.resetSecretVaultOverridesForTesting()
+            }
+
+            let ctx = AXProjectContext(root: fixture.root)
+            var cfg = try AXProjectStore.loadOrCreateConfig(for: ctx)
+            cfg = cfg.settingTrustedAutomationBinding(
+                mode: .trustedAutomation,
+                deviceId: "device_xt_001",
+                deviceToolGroups: ["device.browser.control"],
+                workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
+            )
+            cfg = armTrustedOpenClawMode(cfg)
+            try AXProjectStore.saveConfig(cfg, for: ctx)
+
+            let opened = try await ToolExecutor.execute(
+                call: ToolCall(
+                    tool: .deviceBrowserControl,
+                    args: [
+                        "action": .string("open_url"),
+                        "url": .string("https://example.com/login")
+                    ]
+                ),
+                projectRoot: fixture.root
+            )
+            #expect(opened.ok)
+            let openSummary = try #require(toolSummaryObject(opened.output))
+            let sessionID = try #require(jsonString(openSummary["browser_runtime_session_id"]))
+
+            let typed = try await ToolExecutor.execute(
+                call: ToolCall(
+                    tool: .deviceBrowserControl,
+                    args: [
+                        "action": .string("type"),
+                        "session_id": .string(sessionID),
+                        "selector": .string("input[type=password]"),
+                        "field_role": .string("password"),
+                        "secret_item_id": .string("sv_project_login"),
+                        "secret_project_id": .string("proj-secret-1")
+                    ]
+                ),
+                projectRoot: fixture.root
+            )
+
+            #expect(!typed.ok)
+            let summary = try #require(toolSummaryObject(typed.output))
+            #expect(jsonString(summary["deny_code"]) == XTDeviceAutomationRejectCode.browserSecretFillUnavailable.rawValue)
+            #expect(jsonString(summary["action"]) == "type")
+            #expect(jsonString(summary["selector"]) == "input[type=password]")
+            #expect(jsonString(summary["secret_field_role"]) == "password")
+            #expect(jsonString(summary["secret_item_id"]) == "sv_project_login")
+            #expect(jsonString(summary["secret_project_id"]) == "proj-secret-1")
+            #expect(jsonString(summary["secret_lease_id"]) == "svl_test_1")
+            #expect(jsonString(summary["secret_use_source"]) == "test_secret_vault")
+            #expect(jsonBool(summary["secret_ref_only"]) == true)
+            #expect(toolBody(typed.output) == "browser_secret_fill_unavailable")
+            #expect(appleScriptProbe.first()?.contains("CorrectHorseBatteryStaple!") == false)
+
+            let actionLog = try String(contentsOf: ctx.browserRuntimeActionLogURL, encoding: .utf8)
+            #expect(actionLog.contains("\"reject_code\":\"\(XTDeviceAutomationRejectCode.browserSecretFillUnavailable.rawValue)\""))
+            #expect(probe.count() == 1)
+        }
+    }
+
+    @Test
+    func deviceBrowserControlSecretReferencePathRedeemsVaultAndFillsBrowserField() async throws {
+        try await Self.gate.run {
+            let fixture = ToolExecutorProjectFixture(name: "device-browser-secret-ref-ok")
+            defer { fixture.cleanup() }
+
+            let probe = BrowserOpenProbe()
+            let appleScriptProbe = AppleScriptProbe()
+            AXTrustedAutomationPermissionOwnerReadiness.installCurrentProviderForTesting {
+                makePermissionReadiness(
+                    accessibility: .granted,
+                    automation: .granted,
+                    screenRecording: .missing,
+                    auditRef: "audit-browser-secret-ref-ok"
+                )
+            }
+            DeviceAutomationTools.installBrowserOpenProviderForTesting { url in
+                probe.record(url)
+                return true
+            }
+            DeviceAutomationTools.installAppleScriptProviderForTesting { source in
+                appleScriptProbe.record(source)
+                return XTDeviceAppleScriptResult(
+                    ok: true,
+                    output: #"{"ok":true,"selector":"input[type=password]","tag_name":"input"}"#,
+                    errorMessage: ""
+                )
+            }
+            HubIPCClient.installSecretVaultUseOverrideForTesting { payload in
+                #expect(payload.itemId == "sv_project_login")
+                #expect(payload.projectId == "proj-secret-1")
+                return HubIPCClient.SecretUseResult(
+                    ok: true,
+                    source: "test_secret_vault",
+                    leaseId: "svl_test_ok_1",
+                    useToken: "svtok_test_ok_1",
+                    itemId: "sv_project_login",
+                    expiresAtMs: 123_456,
+                    reasonCode: nil
+                )
+            }
+            HubIPCClient.installSecretVaultRedeemOverrideForTesting { payload in
+                #expect(payload.useToken == "svtok_test_ok_1")
+                #expect(payload.projectId == "proj-secret-1")
+                return HubIPCClient.SecretRedeemResult(
+                    ok: true,
+                    source: "test_secret_vault",
+                    leaseId: "svl_test_ok_1",
+                    itemId: "sv_project_login",
+                    plaintext: "CorrectHorseBatteryStaple!",
+                    reasonCode: nil
+                )
+            }
+            defer {
+                AXTrustedAutomationPermissionOwnerReadiness.resetCurrentProviderForTesting()
+                DeviceAutomationTools.resetBrowserOpenProviderForTesting()
+                DeviceAutomationTools.resetAppleScriptProviderForTesting()
+                HubIPCClient.resetSecretVaultOverridesForTesting()
+            }
+
+            let ctx = AXProjectContext(root: fixture.root)
+            var cfg = try AXProjectStore.loadOrCreateConfig(for: ctx)
+            cfg = cfg.settingTrustedAutomationBinding(
+                mode: .trustedAutomation,
+                deviceId: "device_xt_001",
+                deviceToolGroups: ["device.browser.control"],
+                workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
+            )
+            cfg = armTrustedOpenClawMode(cfg)
+            try AXProjectStore.saveConfig(cfg, for: ctx)
+
+            let opened = try await ToolExecutor.execute(
+                call: ToolCall(
+                    tool: .deviceBrowserControl,
+                    args: [
+                        "action": .string("open_url"),
+                        "url": .string("https://example.com/login")
+                    ]
+                ),
+                projectRoot: fixture.root
+            )
+            #expect(opened.ok)
+            let openSummary = try #require(toolSummaryObject(opened.output))
+            let sessionID = try #require(jsonString(openSummary["browser_runtime_session_id"]))
+
+            let typed = try await ToolExecutor.execute(
+                call: ToolCall(
+                    tool: .deviceBrowserControl,
+                    args: [
+                        "action": .string("type"),
+                        "session_id": .string(sessionID),
+                        "selector": .string("input[type=password]"),
+                        "field_role": .string("password"),
+                        "secret_item_id": .string("sv_project_login"),
+                        "secret_project_id": .string("proj-secret-1")
+                    ]
+                ),
+                projectRoot: fixture.root
+            )
+
+            #expect(typed.ok)
+            let summary = try #require(toolSummaryObject(typed.output))
+            #expect(jsonString(summary["action"]) == "type")
+            #expect(jsonString(summary["selector"]) == "input[type=password]")
+            #expect(jsonString(summary["secret_item_id"]) == "sv_project_login")
+            #expect(jsonString(summary["secret_project_id"]) == "proj-secret-1")
+            #expect(jsonString(summary["secret_lease_id"]) == "svl_test_ok_1")
+            #expect(jsonString(summary["secret_use_source"]) == "test_secret_vault")
+            #expect(jsonString(summary["browser_runtime_driver_state"]) == "secret_vault_applescript_fill")
+            #expect(jsonString(summary["browser_fill_tag_name"]) == "input")
+            #expect(jsonNumber(summary["input_chars"]) == 26)
+            #expect(toolBody(typed.output).contains("CorrectHorseBatteryStaple!") == false)
+
+            let actionLog = try String(contentsOf: ctx.browserRuntimeActionLogURL, encoding: .utf8)
+            #expect(actionLog.contains("\"action\":\"type\""))
+            #expect(actionLog.contains("\"ok\":true"))
+            #expect(actionLog.contains("CorrectHorseBatteryStaple!") == false)
+            #expect(appleScriptProbe.first()?.contains("CorrectHorseBatteryStaple!") == false)
+            #expect(probe.count() == 1)
+        }
+    }
+
+    @Test
+    func deviceBrowserControlSecretReferenceRequiresSelector() async throws {
+        try await Self.gate.run {
+            let fixture = ToolExecutorProjectFixture(name: "device-browser-secret-selector-missing")
+            defer { fixture.cleanup() }
+
+            let probe = BrowserOpenProbe()
+            AXTrustedAutomationPermissionOwnerReadiness.installCurrentProviderForTesting {
+                makePermissionReadiness(
+                    accessibility: .granted,
+                    automation: .granted,
+                    screenRecording: .missing,
+                    auditRef: "audit-browser-secret-selector-missing"
+                )
+            }
+            DeviceAutomationTools.installBrowserOpenProviderForTesting { url in
+                probe.record(url)
+                return true
+            }
+            defer {
+                AXTrustedAutomationPermissionOwnerReadiness.resetCurrentProviderForTesting()
+                DeviceAutomationTools.resetBrowserOpenProviderForTesting()
+            }
+
+            let ctx = AXProjectContext(root: fixture.root)
+            var cfg = try AXProjectStore.loadOrCreateConfig(for: ctx)
+            cfg = cfg.settingTrustedAutomationBinding(
+                mode: .trustedAutomation,
+                deviceId: "device_xt_001",
+                deviceToolGroups: ["device.browser.control"],
+                workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
+            )
+            cfg = armTrustedOpenClawMode(cfg)
+            try AXProjectStore.saveConfig(cfg, for: ctx)
+
+            let opened = try await ToolExecutor.execute(
+                call: ToolCall(
+                    tool: .deviceBrowserControl,
+                    args: [
+                        "action": .string("open_url"),
+                        "url": .string("https://example.com/login")
+                    ]
+                ),
+                projectRoot: fixture.root
+            )
+            #expect(opened.ok)
+            let openSummary = try #require(toolSummaryObject(opened.output))
+            let sessionID = try #require(jsonString(openSummary["browser_runtime_session_id"]))
+
+            let typed = try await ToolExecutor.execute(
+                call: ToolCall(
+                    tool: .deviceBrowserControl,
+                    args: [
+                        "action": .string("type"),
+                        "session_id": .string(sessionID),
+                        "field_role": .string("password"),
+                        "secret_item_id": .string("sv_project_login"),
+                        "secret_project_id": .string("proj-secret-1")
+                    ]
+                ),
+                projectRoot: fixture.root
+            )
+
+            #expect(!typed.ok)
+            let summary = try #require(toolSummaryObject(typed.output))
+            #expect(jsonString(summary["deny_code"]) == XTDeviceAutomationRejectCode.browserSecretSelectorMissing.rawValue)
+            #expect(jsonString(summary["browser_runtime_driver_state"]) == "secret_vault_selector_required")
+            #expect(toolBody(typed.output) == "browser_secret_selector_missing")
+            #expect(probe.count() == 1)
+        }
+    }
+
+    @Test
+    func deviceBrowserControlSecretReferencePathReportsBeginUseFailure() async throws {
+        try await Self.gate.run {
+            let fixture = ToolExecutorProjectFixture(name: "device-browser-secret-begin-fail")
+            defer { fixture.cleanup() }
+
+            let probe = BrowserOpenProbe()
+            AXTrustedAutomationPermissionOwnerReadiness.installCurrentProviderForTesting {
+                makePermissionReadiness(
+                    accessibility: .granted,
+                    automation: .granted,
+                    screenRecording: .missing,
+                    auditRef: "audit-browser-secret-begin-fail"
+                )
+            }
+            DeviceAutomationTools.installBrowserOpenProviderForTesting { url in
+                probe.record(url)
+                return true
+            }
+            HubIPCClient.installSecretVaultUseOverrideForTesting { payload in
+                #expect(payload.itemId == "sv_missing_login")
+                return HubIPCClient.SecretUseResult(
+                    ok: false,
+                    source: "test_secret_vault",
+                    leaseId: nil,
+                    useToken: nil,
+                    itemId: payload.itemId,
+                    expiresAtMs: nil,
+                    reasonCode: "secret_vault_item_not_found"
+                )
+            }
+            defer {
+                AXTrustedAutomationPermissionOwnerReadiness.resetCurrentProviderForTesting()
+                DeviceAutomationTools.resetBrowserOpenProviderForTesting()
+                HubIPCClient.resetSecretVaultOverridesForTesting()
+            }
+
+            let ctx = AXProjectContext(root: fixture.root)
+            var cfg = try AXProjectStore.loadOrCreateConfig(for: ctx)
+            cfg = cfg.settingTrustedAutomationBinding(
+                mode: .trustedAutomation,
+                deviceId: "device_xt_001",
+                deviceToolGroups: ["device.browser.control"],
+                workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
+            )
+            cfg = armTrustedOpenClawMode(cfg)
+            try AXProjectStore.saveConfig(cfg, for: ctx)
+
+            let opened = try await ToolExecutor.execute(
+                call: ToolCall(
+                    tool: .deviceBrowserControl,
+                    args: [
+                        "action": .string("open_url"),
+                        "url": .string("https://example.com/login")
+                    ]
+                ),
+                projectRoot: fixture.root
+            )
+            #expect(opened.ok)
+            let openSummary = try #require(toolSummaryObject(opened.output))
+            let sessionID = try #require(jsonString(openSummary["browser_runtime_session_id"]))
+
+            let typed = try await ToolExecutor.execute(
+                call: ToolCall(
+                    tool: .deviceBrowserControl,
+                    args: [
+                        "action": .string("type"),
+                        "session_id": .string(sessionID),
+                        "selector": .string("input[type=password]"),
+                        "field_role": .string("password"),
+                        "secret_item_id": .string("sv_missing_login"),
+                        "secret_project_id": .string("proj-secret-1")
+                    ]
+                ),
+                projectRoot: fixture.root
+            )
+
+            #expect(!typed.ok)
+            let summary = try #require(toolSummaryObject(typed.output))
+            #expect(jsonString(summary["deny_code"]) == XTDeviceAutomationRejectCode.browserSecretBeginUseFailed.rawValue)
+            #expect(jsonString(summary["secret_reason_code"]) == "secret_vault_item_not_found")
+            #expect(jsonString(summary["browser_runtime_driver_state"]) == "secret_vault_resolution_failed")
+            #expect(toolBody(typed.output) == "browser_secret_begin_use_failed")
+            #expect(probe.count() == 1)
+        }
+    }
+
+    @Test
+    func deviceBrowserControlSecretReferencePathReportsRedeemAndFillFailures() async throws {
+        try await Self.gate.run {
+            let fixture = ToolExecutorProjectFixture(name: "device-browser-secret-redeem-and-fill-fail")
+            defer { fixture.cleanup() }
+
+            let probe = BrowserOpenProbe()
+            AXTrustedAutomationPermissionOwnerReadiness.installCurrentProviderForTesting {
+                makePermissionReadiness(
+                    accessibility: .granted,
+                    automation: .granted,
+                    screenRecording: .missing,
+                    auditRef: "audit-browser-secret-redeem-and-fill-fail"
+                )
+            }
+            DeviceAutomationTools.installBrowserOpenProviderForTesting { url in
+                probe.record(url)
+                return true
+            }
+            defer {
+                AXTrustedAutomationPermissionOwnerReadiness.resetCurrentProviderForTesting()
+                DeviceAutomationTools.resetBrowserOpenProviderForTesting()
+                DeviceAutomationTools.resetAppleScriptProviderForTesting()
+                HubIPCClient.resetSecretVaultOverridesForTesting()
+            }
+
+            let ctx = AXProjectContext(root: fixture.root)
+            var cfg = try AXProjectStore.loadOrCreateConfig(for: ctx)
+            cfg = cfg.settingTrustedAutomationBinding(
+                mode: .trustedAutomation,
+                deviceId: "device_xt_001",
+                deviceToolGroups: ["device.browser.control"],
+                workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
+            )
+            cfg = armTrustedOpenClawMode(cfg)
+            try AXProjectStore.saveConfig(cfg, for: ctx)
+
+            let opened = try await ToolExecutor.execute(
+                call: ToolCall(
+                    tool: .deviceBrowserControl,
+                    args: [
+                        "action": .string("open_url"),
+                        "url": .string("https://example.com/login")
+                    ]
+                ),
+                projectRoot: fixture.root
+            )
+            #expect(opened.ok)
+            let openSummary = try #require(toolSummaryObject(opened.output))
+            let sessionID = try #require(jsonString(openSummary["browser_runtime_session_id"]))
+
+            HubIPCClient.installSecretVaultUseOverrideForTesting { _ in
+                HubIPCClient.SecretUseResult(
+                    ok: true,
+                    source: "test_secret_vault",
+                    leaseId: "svl_redeem_fail_1",
+                    useToken: "svtok_redeem_fail_1",
+                    itemId: "sv_project_login",
+                    expiresAtMs: 123_456,
+                    reasonCode: nil
+                )
+            }
+            HubIPCClient.installSecretVaultRedeemOverrideForTesting { payload in
+                #expect(payload.useToken == "svtok_redeem_fail_1")
+                return HubIPCClient.SecretRedeemResult(
+                    ok: false,
+                    source: "test_secret_vault",
+                    leaseId: "svl_redeem_fail_1",
+                    itemId: "sv_project_login",
+                    plaintext: nil,
+                    reasonCode: "secret_vault_use_token_not_found"
+                )
+            }
+
+            let redeemFailed = try await ToolExecutor.execute(
+                call: ToolCall(
+                    tool: .deviceBrowserControl,
+                    args: [
+                        "action": .string("type"),
+                        "session_id": .string(sessionID),
+                        "selector": .string("input[type=password]"),
+                        "field_role": .string("password"),
+                        "secret_item_id": .string("sv_project_login"),
+                        "secret_project_id": .string("proj-secret-1")
+                    ]
+                ),
+                projectRoot: fixture.root
+            )
+
+            #expect(!redeemFailed.ok)
+            let redeemSummary = try #require(toolSummaryObject(redeemFailed.output))
+            #expect(jsonString(redeemSummary["deny_code"]) == XTDeviceAutomationRejectCode.browserSecretRedeemFailed.rawValue)
+            #expect(jsonString(redeemSummary["secret_reason_code"]) == "secret_vault_use_token_not_found")
+            #expect(toolBody(redeemFailed.output) == "browser_secret_redeem_failed")
+
+            HubIPCClient.installSecretVaultUseOverrideForTesting { _ in
+                HubIPCClient.SecretUseResult(
+                    ok: true,
+                    source: "test_secret_vault",
+                    leaseId: "svl_fill_fail_1",
+                    useToken: "svtok_fill_fail_1",
+                    itemId: "sv_project_login",
+                    expiresAtMs: 123_456,
+                    reasonCode: nil
+                )
+            }
+            HubIPCClient.installSecretVaultRedeemOverrideForTesting { payload in
+                #expect(payload.useToken == "svtok_fill_fail_1")
+                return HubIPCClient.SecretRedeemResult(
+                    ok: true,
+                    source: "test_secret_vault",
+                    leaseId: "svl_fill_fail_1",
+                    itemId: "sv_project_login",
+                    plaintext: "CorrectHorseBatteryStaple!",
+                    reasonCode: nil
+                )
+            }
+            DeviceAutomationTools.installAppleScriptProviderForTesting { _ in
+                XTDeviceAppleScriptResult(
+                    ok: true,
+                    output: #"{"ok":false,"reason":"selector_not_found","selector":"input[type=password]"}"#,
+                    errorMessage: ""
+                )
+            }
+
+            let fillFailed = try await ToolExecutor.execute(
+                call: ToolCall(
+                    tool: .deviceBrowserControl,
+                    args: [
+                        "action": .string("type"),
+                        "session_id": .string(sessionID),
+                        "selector": .string("input[type=password]"),
+                        "field_role": .string("password"),
+                        "secret_item_id": .string("sv_project_login"),
+                        "secret_project_id": .string("proj-secret-1")
+                    ]
+                ),
+                projectRoot: fixture.root
+            )
+
+            #expect(!fillFailed.ok)
+            let fillSummary = try #require(toolSummaryObject(fillFailed.output))
+            #expect(jsonString(fillSummary["deny_code"]) == XTDeviceAutomationRejectCode.browserSecretFillFailed.rawValue)
+            #expect(jsonString(fillSummary["secret_reason_code"]) == "selector_not_found")
+            #expect(jsonString(fillSummary["browser_runtime_driver_state"]) == "secret_vault_applescript_fill_failed")
+            #expect(toolBody(fillFailed.output) == "browser_secret_fill_failed")
+            #expect(probe.count() == 1)
+        }
+    }
+
+    @Test
     func deviceAppleScriptFailsClosedWhenAutomationPermissionMissing() async throws {
         try await Self.gate.run {
             let fixture = ToolExecutorProjectFixture(name: "device-applescript-deny")

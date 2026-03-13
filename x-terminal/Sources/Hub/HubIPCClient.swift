@@ -4,6 +4,9 @@ import Darwin
 enum HubIPCClient {
     private static let remoteMemorySnapshotCache = HubRemoteMemorySnapshotCache(ttlSeconds: 15.0)
     private static let remoteAutonomyPolicyOverrideCache = HubRemoteAutonomyPolicyOverrideCache(ttlSeconds: 3.0)
+    private static let testingOverrideLock = NSLock()
+    private static var secretUseOverrideForTesting: (@Sendable (SecretUseRequestPayload) async -> SecretUseResult)?
+    private static var secretRedeemOverrideForTesting: (@Sendable (SecretRedeemRequestPayload) async -> SecretRedeemResult)?
 
     struct AutonomyPolicyOverrideItem: Equatable, Sendable {
         var projectId: String
@@ -17,6 +20,351 @@ enum HubIPCClient {
         var source: String
         var updatedAtMs: Int64
         var items: [AutonomyPolicyOverrideItem]
+    }
+
+    struct AgentImportStageResult: Codable, Equatable, Sendable {
+        var ok: Bool
+        var source: String
+        var stagingId: String?
+        var status: String?
+        var auditRef: String?
+        var preflightStatus: String?
+        var skillId: String?
+        var policyScope: String?
+        var findingsCount: Int
+        var vetterStatus: String?
+        var vetterCriticalCount: Int
+        var vetterWarnCount: Int
+        var vetterAuditRef: String?
+        var recordPath: String?
+        var reasonCode: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case stagingId = "staging_id"
+            case status
+            case auditRef = "audit_ref"
+            case preflightStatus = "preflight_status"
+            case skillId = "skill_id"
+            case policyScope = "policy_scope"
+            case findingsCount = "findings_count"
+            case vetterStatus = "vetter_status"
+            case vetterCriticalCount = "vetter_critical_count"
+            case vetterWarnCount = "vetter_warn_count"
+            case vetterAuditRef = "vetter_audit_ref"
+            case recordPath = "record_path"
+            case reasonCode = "reason_code"
+        }
+    }
+
+    struct AgentImportRecordResult: Codable, Equatable, Sendable {
+        var ok: Bool
+        var source: String
+        var stagingId: String?
+        var status: String?
+        var auditRef: String?
+        var schemaVersion: String?
+        var skillId: String?
+        var recordJSON: String?
+        var reasonCode: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case stagingId = "staging_id"
+            case status
+            case auditRef = "audit_ref"
+            case schemaVersion = "schema_version"
+            case skillId = "skill_id"
+            case recordJSON = "record_json"
+            case reasonCode = "reason_code"
+        }
+    }
+
+    struct SkillPackageUploadResult: Codable, Equatable, Sendable {
+        var ok: Bool
+        var source: String
+        var packageSHA256: String?
+        var alreadyPresent: Bool
+        var skillId: String?
+        var version: String?
+        var reasonCode: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case packageSHA256 = "package_sha256"
+            case alreadyPresent = "already_present"
+            case skillId = "skill_id"
+            case version
+            case reasonCode = "reason_code"
+        }
+    }
+
+    struct AgentImportPromoteResult: Codable, Equatable, Sendable {
+        var ok: Bool
+        var source: String
+        var stagingId: String?
+        var status: String?
+        var auditRef: String?
+        var packageSHA256: String?
+        var scope: String?
+        var skillId: String?
+        var previousPackageSHA256: String?
+        var recordPath: String?
+        var reasonCode: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case stagingId = "staging_id"
+            case status
+            case auditRef = "audit_ref"
+            case packageSHA256 = "package_sha256"
+            case scope
+            case skillId = "skill_id"
+            case previousPackageSHA256 = "previous_package_sha256"
+            case recordPath = "record_path"
+            case reasonCode = "reason_code"
+        }
+    }
+
+    struct SkillCatalogEntry: Codable, Equatable, Sendable, Identifiable {
+        var skillID: String
+        var name: String
+        var version: String
+        var description: String
+        var publisherID: String
+        var capabilitiesRequired: [String]
+        var sourceID: String
+        var packageSHA256: String
+        var installHint: String
+
+        var id: String { "\(skillID)::\(version)::\(sourceID)::\(packageSHA256)" }
+
+        enum CodingKeys: String, CodingKey {
+            case skillID = "skill_id"
+            case name
+            case version
+            case description
+            case publisherID = "publisher_id"
+            case capabilitiesRequired = "capabilities_required"
+            case sourceID = "source_id"
+            case packageSHA256 = "package_sha256"
+            case installHint = "install_hint"
+        }
+    }
+
+    struct SkillsSearchResult: Codable, Equatable, Sendable {
+        var ok: Bool
+        var source: String
+        var updatedAtMs: Int64
+        var results: [SkillCatalogEntry]
+        var reasonCode: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case updatedAtMs = "updated_at_ms"
+            case results
+            case reasonCode = "reason_code"
+        }
+    }
+
+    struct SkillPinResult: Codable, Equatable, Sendable {
+        var ok: Bool
+        var source: String
+        var scope: String
+        var userId: String
+        var projectId: String
+        var skillId: String
+        var packageSHA256: String
+        var previousPackageSHA256: String
+        var updatedAtMs: Int64
+        var reasonCode: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case scope
+            case userId = "user_id"
+            case projectId = "project_id"
+            case skillId = "skill_id"
+            case packageSHA256 = "package_sha256"
+            case previousPackageSHA256 = "previous_package_sha256"
+            case updatedAtMs = "updated_at_ms"
+            case reasonCode = "reason_code"
+        }
+    }
+
+    struct ResolvedSkillEntry: Codable, Equatable, Sendable, Identifiable {
+        var scope: String
+        var skill: SkillCatalogEntry
+
+        var id: String { "\(scope)::\(skill.id)" }
+    }
+
+    struct ResolvedSkillsResult: Codable, Equatable, Sendable {
+        var ok: Bool
+        var source: String
+        var skills: [ResolvedSkillEntry]
+        var reasonCode: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case skills
+            case reasonCode = "reason_code"
+        }
+    }
+
+    struct SecretVaultItem: Codable, Equatable, Sendable, Identifiable {
+        var itemId: String
+        var scope: String
+        var name: String
+        var sensitivity: String
+        var createdAtMs: Int64
+        var updatedAtMs: Int64
+
+        var id: String { itemId }
+
+        enum CodingKeys: String, CodingKey {
+            case itemId = "item_id"
+            case scope
+            case name
+            case sensitivity
+            case createdAtMs = "created_at_ms"
+            case updatedAtMs = "updated_at_ms"
+        }
+    }
+
+    struct SecretVaultSnapshot: Codable, Equatable, Sendable {
+        var source: String
+        var updatedAtMs: Int64
+        var items: [SecretVaultItem]
+
+        enum CodingKeys: String, CodingKey {
+            case source
+            case updatedAtMs = "updated_at_ms"
+            case items
+        }
+    }
+
+    struct SecretCreateRequestPayload: Codable, Equatable, Sendable {
+        var scope: String
+        var name: String
+        var plaintext: String
+        var sensitivity: String
+        var projectId: String?
+        var displayName: String?
+        var reason: String?
+
+        enum CodingKeys: String, CodingKey {
+            case scope
+            case name
+            case plaintext
+            case sensitivity
+            case projectId = "project_id"
+            case displayName = "display_name"
+            case reason
+        }
+    }
+
+    struct SecretCreateResult: Codable, Equatable, Sendable {
+        var ok: Bool
+        var source: String
+        var item: SecretVaultItem?
+        var reasonCode: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case item
+            case reasonCode = "reason_code"
+        }
+    }
+
+    struct SecretVaultListRequestPayload: Codable, Equatable, Sendable {
+        var scope: String?
+        var namePrefix: String?
+        var projectId: String?
+        var limit: Int
+
+        enum CodingKeys: String, CodingKey {
+            case scope
+            case namePrefix = "name_prefix"
+            case projectId = "project_id"
+            case limit
+        }
+    }
+
+    struct SecretUseRequestPayload: Codable, Equatable, Sendable {
+        var itemId: String?
+        var scope: String?
+        var name: String?
+        var projectId: String?
+        var purpose: String
+        var target: String?
+        var ttlMs: Int
+
+        enum CodingKeys: String, CodingKey {
+            case itemId = "item_id"
+            case scope
+            case name
+            case projectId = "project_id"
+            case purpose
+            case target
+            case ttlMs = "ttl_ms"
+        }
+    }
+
+    struct SecretUseResult: Codable, Equatable, Sendable {
+        var ok: Bool
+        var source: String
+        var leaseId: String?
+        var useToken: String?
+        var itemId: String?
+        var expiresAtMs: Int64?
+        var reasonCode: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case leaseId = "lease_id"
+            case useToken = "use_token"
+            case itemId = "item_id"
+            case expiresAtMs = "expires_at_ms"
+            case reasonCode = "reason_code"
+        }
+    }
+
+    struct SecretRedeemRequestPayload: Codable, Equatable, Sendable {
+        var useToken: String
+        var projectId: String?
+
+        enum CodingKeys: String, CodingKey {
+            case useToken = "use_token"
+            case projectId = "project_id"
+        }
+    }
+
+    struct SecretRedeemResult: Codable, Equatable, Sendable {
+        var ok: Bool
+        var source: String
+        var leaseId: String?
+        var itemId: String?
+        var plaintext: String?
+        var reasonCode: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case leaseId = "lease_id"
+            case itemId = "item_id"
+            case plaintext
+            case reasonCode = "reason_code"
+        }
     }
 
     struct ProjectSyncPayload: Codable {
@@ -341,6 +689,7 @@ enum HubIPCClient {
         var observationsText: String?
         var workingSetText: String?
         var rawEvidenceText: String?
+        var servingProfile: String? = nil
         var budgets: MemoryContextBudgets?
 
         enum CodingKeys: String, CodingKey {
@@ -354,7 +703,38 @@ enum HubIPCClient {
             case observationsText = "observations_text"
             case workingSetText = "working_set_text"
             case rawEvidenceText = "raw_evidence_text"
+            case servingProfile = "serving_profile"
             case budgets
+        }
+    }
+
+    struct MemoryRetrievalPayload: Codable, Equatable {
+        var scope: String
+        var requesterRole: String
+        var projectId: String?
+        var projectRoot: String?
+        var displayName: String?
+        var latestUser: String
+        var reason: String?
+        var requestedKinds: [String]
+        var explicitRefs: [String]
+        var maxSnippets: Int
+        var maxSnippetChars: Int
+        var auditRef: String
+
+        enum CodingKeys: String, CodingKey {
+            case scope
+            case requesterRole = "requester_role"
+            case projectId = "project_id"
+            case projectRoot = "project_root"
+            case displayName = "display_name"
+            case latestUser = "latest_user"
+            case reason
+            case requestedKinds = "requested_kinds"
+            case explicitRefs = "explicit_refs"
+            case maxSnippets = "max_snippets"
+            case maxSnippetChars = "max_snippet_chars"
+            case auditRef = "audit_ref"
         }
     }
 
@@ -367,6 +747,38 @@ enum HubIPCClient {
             case type
             case reqId = "req_id"
             case memoryContext = "memory_context"
+        }
+    }
+
+    struct MemoryRetrievalSnippet: Codable, Equatable, Sendable {
+        var snippetId: String
+        var sourceKind: String
+        var title: String
+        var ref: String
+        var text: String
+        var score: Int
+        var truncated: Bool
+
+        enum CodingKeys: String, CodingKey {
+            case snippetId = "snippet_id"
+            case sourceKind = "source_kind"
+            case title
+            case ref
+            case text
+            case score
+            case truncated
+        }
+    }
+
+    struct MemoryRetrievalIPCRequest: Codable {
+        var type: String
+        var reqId: String
+        var memoryRetrieval: MemoryRetrievalPayload
+
+        enum CodingKeys: String, CodingKey {
+            case type
+            case reqId = "req_id"
+            case memoryRetrieval = "memory_retrieval"
         }
     }
 
@@ -386,6 +798,7 @@ enum HubIPCClient {
         var text: String
         var source: String
         var resolvedMode: String?
+        var resolvedProfile: String?
         var freshness: String?
         var cacheHit: Bool?
         var denyCode: String?
@@ -401,6 +814,7 @@ enum HubIPCClient {
             text: String,
             source: String,
             resolvedMode: String? = nil,
+            resolvedProfile: String? = nil,
             freshness: String? = nil,
             cacheHit: Bool? = nil,
             denyCode: String? = nil,
@@ -415,6 +829,7 @@ enum HubIPCClient {
             self.text = text
             self.source = source
             self.resolvedMode = resolvedMode
+            self.resolvedProfile = resolvedProfile
             self.freshness = freshness
             self.cacheHit = cacheHit
             self.denyCode = denyCode
@@ -431,6 +846,7 @@ enum HubIPCClient {
             case text
             case source
             case resolvedMode = "resolved_mode"
+            case resolvedProfile = "resolved_profile"
             case freshness
             case cacheHit = "cache_hit"
             case denyCode = "deny_code"
@@ -441,6 +857,28 @@ enum HubIPCClient {
             case truncatedLayers = "truncated_layers"
             case redactedItems = "redacted_items"
             case privateDrops = "private_drops"
+        }
+    }
+
+    struct MemoryRetrievalResponsePayload: Codable, Equatable, Sendable {
+        var source: String
+        var scope: String
+        var auditRef: String
+        var reasonCode: String?
+        var denyCode: String?
+        var snippets: [MemoryRetrievalSnippet]
+        var truncatedItems: Int
+        var redactedItems: Int
+
+        enum CodingKeys: String, CodingKey {
+            case source
+            case scope
+            case auditRef = "audit_ref"
+            case reasonCode = "reason_code"
+            case denyCode = "deny_code"
+            case snippets
+            case truncatedItems = "truncated_items"
+            case redactedItems = "redacted_items"
         }
     }
 
@@ -462,6 +900,7 @@ enum HubIPCClient {
         var id: String?
         var error: String?
         var memoryContext: MemoryContextResponsePayload?
+        var memoryRetrieval: MemoryRetrievalResponsePayload?
 
         enum CodingKeys: String, CodingKey {
             case type
@@ -470,6 +909,7 @@ enum HubIPCClient {
             case id
             case error
             case memoryContext = "memory_context"
+            case memoryRetrieval = "memory_retrieval"
         }
     }
 
@@ -520,6 +960,126 @@ enum HubIPCClient {
             case id
             case error
             case voiceWakeProfile = "voice_wake_profile"
+        }
+    }
+
+    struct SecretVaultCreateIPCRequest: Codable {
+        var type: String
+        var reqId: String
+        var secretVaultCreate: SecretCreateRequestPayload
+
+        enum CodingKeys: String, CodingKey {
+            case type
+            case reqId = "req_id"
+            case secretVaultCreate = "secret_vault_create"
+        }
+    }
+
+    struct SecretVaultListIPCRequest: Codable {
+        var type: String
+        var reqId: String
+        var secretVaultList: SecretVaultListRequestPayload
+
+        enum CodingKeys: String, CodingKey {
+            case type
+            case reqId = "req_id"
+            case secretVaultList = "secret_vault_list"
+        }
+    }
+
+    struct SecretVaultBeginUseIPCRequest: Codable {
+        var type: String
+        var reqId: String
+        var secretVaultUse: SecretUseRequestPayload
+
+        enum CodingKeys: String, CodingKey {
+            case type
+            case reqId = "req_id"
+            case secretVaultUse = "secret_vault_use"
+        }
+    }
+
+    struct SecretVaultRedeemIPCRequest: Codable {
+        var type: String
+        var reqId: String
+        var secretVaultRedeem: SecretRedeemRequestPayload
+
+        enum CodingKeys: String, CodingKey {
+            case type
+            case reqId = "req_id"
+            case secretVaultRedeem = "secret_vault_redeem"
+        }
+    }
+
+    struct SecretVaultCreateIPCResponse: Codable {
+        var type: String
+        var reqId: String?
+        var ok: Bool
+        var id: String?
+        var error: String?
+        var secretVaultItem: SecretVaultItem?
+
+        enum CodingKeys: String, CodingKey {
+            case type
+            case reqId = "req_id"
+            case ok
+            case id
+            case error
+            case secretVaultItem = "secret_vault_item"
+        }
+    }
+
+    struct SecretVaultListIPCResponse: Codable {
+        var type: String
+        var reqId: String?
+        var ok: Bool
+        var id: String?
+        var error: String?
+        var secretVaultSnapshot: SecretVaultSnapshot?
+
+        enum CodingKeys: String, CodingKey {
+            case type
+            case reqId = "req_id"
+            case ok
+            case id
+            case error
+            case secretVaultSnapshot = "secret_vault_snapshot"
+        }
+    }
+
+    struct SecretVaultUseIPCResponse: Codable {
+        var type: String
+        var reqId: String?
+        var ok: Bool
+        var id: String?
+        var error: String?
+        var secretVaultUse: SecretUseResult?
+
+        enum CodingKeys: String, CodingKey {
+            case type
+            case reqId = "req_id"
+            case ok
+            case id
+            case error
+            case secretVaultUse = "secret_vault_use"
+        }
+    }
+
+    struct SecretVaultRedeemIPCResponse: Codable {
+        var type: String
+        var reqId: String?
+        var ok: Bool
+        var id: String?
+        var error: String?
+        var secretVaultRedeem: SecretRedeemResult?
+
+        enum CodingKeys: String, CodingKey {
+            case type
+            case reqId = "req_id"
+            case ok
+            case id
+            case error
+            case secretVaultRedeem = "secret_vault_redeem"
         }
     }
 
@@ -595,6 +1155,94 @@ enum HubIPCClient {
         var source: String
         var updatedAtMs: Double
         var items: [ConnectorIngressReceipt]
+    }
+
+    struct OperatorChannelXTCommandItem: Codable, Equatable, Identifiable {
+        var commandId: String
+        var requestId: String
+        var actionName: String
+        var bindingId: String
+        var routeId: String
+        var scopeType: String
+        var scopeId: String
+        var projectId: String
+        var provider: String
+        var accountId: String
+        var conversationId: String
+        var threadKey: String
+        var actorRef: String
+        var resolvedDeviceId: String
+        var preferredDeviceId: String
+        var note: String
+        var createdAtMs: Double
+        var auditRef: String
+
+        var id: String { commandId }
+
+        enum CodingKeys: String, CodingKey {
+            case commandId = "command_id"
+            case requestId = "request_id"
+            case actionName = "action_name"
+            case bindingId = "binding_id"
+            case routeId = "route_id"
+            case scopeType = "scope_type"
+            case scopeId = "scope_id"
+            case projectId = "project_id"
+            case provider
+            case accountId = "account_id"
+            case conversationId = "conversation_id"
+            case threadKey = "thread_key"
+            case actorRef = "actor_ref"
+            case resolvedDeviceId = "resolved_device_id"
+            case preferredDeviceId = "preferred_device_id"
+            case note
+            case createdAtMs = "created_at_ms"
+            case auditRef = "audit_ref"
+        }
+    }
+
+    struct OperatorChannelXTCommandSnapshot: Codable, Equatable {
+        var source: String
+        var updatedAtMs: Double
+        var items: [OperatorChannelXTCommandItem]
+    }
+
+    struct OperatorChannelXTCommandResultItem: Codable, Equatable, Identifiable {
+        var commandId: String
+        var requestId: String
+        var actionName: String
+        var projectId: String
+        var resolvedDeviceId: String
+        var status: String
+        var denyCode: String
+        var detail: String
+        var runId: String
+        var createdAtMs: Double
+        var completedAtMs: Double
+        var auditRef: String
+
+        var id: String { commandId }
+
+        enum CodingKeys: String, CodingKey {
+            case commandId = "command_id"
+            case requestId = "request_id"
+            case actionName = "action_name"
+            case projectId = "project_id"
+            case resolvedDeviceId = "resolved_device_id"
+            case status
+            case denyCode = "deny_code"
+            case detail
+            case runId = "run_id"
+            case createdAtMs = "created_at_ms"
+            case completedAtMs = "completed_at_ms"
+            case auditRef = "audit_ref"
+        }
+    }
+
+    struct OperatorChannelXTCommandResultSnapshot: Codable, Equatable {
+        var source: String
+        var updatedAtMs: Double
+        var items: [OperatorChannelXTCommandResultItem]
     }
 
     enum PendingGrantActionDecision: String {
@@ -1662,6 +2310,7 @@ enum HubIPCClient {
         observationsText: String?,
         workingSetText: String?,
         rawEvidenceText: String?,
+        servingProfile: XTMemoryServingProfile? = nil,
         budgets: MemoryContextBudgets? = nil,
         timeoutSec: Double = 1.2
     ) async -> MemoryContextResponsePayload? {
@@ -1677,6 +2326,7 @@ enum HubIPCClient {
             observationsText: observationsText,
             workingSetText: workingSetText,
             rawEvidenceText: rawEvidenceText,
+            servingProfile: servingProfile,
             budgets: budgets,
             timeoutSec: timeoutSec
         )
@@ -1695,6 +2345,7 @@ enum HubIPCClient {
         observationsText: String?,
         workingSetText: String?,
         rawEvidenceText: String?,
+        servingProfile: XTMemoryServingProfile? = nil,
         budgets: MemoryContextBudgets? = nil,
         timeoutSec: Double = 1.2
     ) async -> MemoryContextResolutionResult {
@@ -1709,6 +2360,7 @@ enum HubIPCClient {
             observationsText: normalized(observationsText),
             workingSetText: normalized(workingSetText),
             rawEvidenceText: normalized(rawEvidenceText),
+            servingProfile: servingProfile?.rawValue,
             budgets: budgets
         )
         let route = XTMemoryRoleScopedRouter.route(
@@ -1741,6 +2393,7 @@ enum HubIPCClient {
             if remote.snapshot.ok {
                 var response = buildMemoryContextFromRemoteSnapshot(snapshot: remote.snapshot, payload: payload)
                 response.resolvedMode = useMode.rawValue
+                response.resolvedProfile = route.servingProfile.rawValue
                 response.freshness = remote.cacheHit ? "ttl_cache" : "fresh_remote"
                 response.cacheHit = remote.cacheHit
                 response.denyCode = nil
@@ -1807,6 +2460,7 @@ enum HubIPCClient {
 
         var response = local
         response.resolvedMode = useMode.rawValue
+        response.resolvedProfile = route.servingProfile.rawValue
         response.freshness = "fresh_local_ipc"
         response.cacheHit = false
         response.denyCode = nil
@@ -1821,6 +2475,37 @@ enum HubIPCClient {
             downgradeCode: route.downgradeCode?.rawValue,
             reasonCode: nil
         )
+    }
+
+    static func requestProjectMemoryRetrieval(
+        requesterRole: XTMemoryRequesterRole,
+        projectId: String?,
+        projectRoot: String?,
+        displayName: String?,
+        latestUser: String,
+        reason: String?,
+        requestedKinds: [String] = [],
+        explicitRefs: [String] = [],
+        maxSnippets: Int = 3,
+        maxSnippetChars: Int = 420,
+        timeoutSec: Double = 1.0
+    ) async -> MemoryRetrievalResponsePayload? {
+        let scope = "current_project"
+        let payload = MemoryRetrievalPayload(
+            scope: scope,
+            requesterRole: requesterRole.rawValue,
+            projectId: normalized(projectId),
+            projectRoot: normalized(projectRoot),
+            displayName: normalized(displayName),
+            latestUser: latestUser,
+            reason: normalized(reason),
+            requestedKinds: HubIPCClient.orderedUniqueStringTokens(requestedKinds),
+            explicitRefs: HubIPCClient.orderedUniqueStringTokens(explicitRefs),
+            maxSnippets: max(1, min(6, maxSnippets)),
+            maxSnippetChars: max(120, min(1_200, maxSnippetChars)),
+            auditRef: "audit-xt-memory-retrieval-\(String(UUID().uuidString.lowercased().prefix(12)))"
+        )
+        return await requestMemoryRetrievalViaLocalIPC(payload: payload, timeoutSec: timeoutSec)
     }
 
     static func pushNotification(
@@ -2192,6 +2877,462 @@ enum HubIPCClient {
         )
     }
 
+    static func searchSkills(
+        query: String,
+        sourceFilter: String? = nil,
+        projectId: String? = nil,
+        limit: Int = 20
+    ) async -> SkillsSearchResult {
+        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedSourceFilter = normalized(sourceFilter)
+        let normalizedProjectId = normalized(projectId)
+        let boundedLimit = max(1, min(100, limit))
+
+        let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
+        if hasRemote {
+            let remote = await HubPairingCoordinator.shared.searchRemoteSkills(
+                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                query: normalizedQuery,
+                sourceFilter: normalizedSourceFilter,
+                projectId: normalizedProjectId,
+                limit: boundedLimit
+            )
+            return SkillsSearchResult(
+                ok: remote.ok,
+                source: remote.source,
+                updatedAtMs: remote.updatedAtMs,
+                results: remote.results.map { row in
+                    SkillCatalogEntry(
+                        skillID: row.skillID,
+                        name: row.name,
+                        version: row.version,
+                        description: row.description,
+                        publisherID: row.publisherID,
+                        capabilitiesRequired: row.capabilitiesRequired,
+                        sourceID: row.sourceID,
+                        packageSHA256: row.packageSHA256,
+                        installHint: row.installHint
+                    )
+                },
+                reasonCode: remote.reasonCode
+            )
+        }
+
+        return SkillsSearchResult(
+            ok: false,
+            source: "file_ipc",
+            updatedAtMs: 0,
+            results: [],
+            reasonCode: "skills_search_file_ipc_not_supported"
+        )
+    }
+
+    static func setSkillPin(
+        scope: String,
+        skillId: String,
+        packageSHA256: String,
+        projectId: String? = nil,
+        note: String? = nil,
+        requestId: String? = nil
+    ) async -> SkillPinResult {
+        let normalizedScope = scope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedSkillId = skillId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedPackageSHA256 = packageSHA256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedProjectId = normalized(projectId)
+
+        guard normalizedScope == "global" || normalizedScope == "project" else {
+            return SkillPinResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                scope: normalizedScope,
+                userId: "",
+                projectId: "",
+                skillId: normalizedSkillId,
+                packageSHA256: normalizedPackageSHA256,
+                previousPackageSHA256: "",
+                updatedAtMs: 0,
+                reasonCode: "unsupported_skill_pin_scope"
+            )
+        }
+        if normalizedScope == "project", normalizedProjectId == nil {
+            return SkillPinResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                scope: normalizedScope,
+                userId: "",
+                projectId: "",
+                skillId: normalizedSkillId,
+                packageSHA256: normalizedPackageSHA256,
+                previousPackageSHA256: "",
+                updatedAtMs: 0,
+                reasonCode: "missing_project_id"
+            )
+        }
+        guard !normalizedSkillId.isEmpty else {
+            return SkillPinResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                scope: normalizedScope,
+                userId: "",
+                projectId: normalizedProjectId ?? "",
+                skillId: "",
+                packageSHA256: normalizedPackageSHA256,
+                previousPackageSHA256: "",
+                updatedAtMs: 0,
+                reasonCode: "missing_skill_id"
+            )
+        }
+        guard !normalizedPackageSHA256.isEmpty else {
+            return SkillPinResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                scope: normalizedScope,
+                userId: "",
+                projectId: normalizedProjectId ?? "",
+                skillId: normalizedSkillId,
+                packageSHA256: "",
+                previousPackageSHA256: "",
+                updatedAtMs: 0,
+                reasonCode: "missing_package_sha256"
+            )
+        }
+
+        let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
+        if hasRemote {
+            let remote = await HubPairingCoordinator.shared.setRemoteSkillPin(
+                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                scope: normalizedScope,
+                skillId: normalizedSkillId,
+                packageSHA256: normalizedPackageSHA256,
+                projectId: normalizedProjectId,
+                note: note,
+                requestId: requestId
+            )
+            return SkillPinResult(
+                ok: remote.ok,
+                source: remote.source,
+                scope: remote.scope,
+                userId: remote.userId,
+                projectId: remote.projectId,
+                skillId: remote.skillId,
+                packageSHA256: remote.packageSHA256,
+                previousPackageSHA256: remote.previousPackageSHA256,
+                updatedAtMs: remote.updatedAtMs,
+                reasonCode: remote.reasonCode
+            )
+        }
+
+        return SkillPinResult(
+            ok: false,
+            source: "file_ipc",
+            scope: normalizedScope,
+            userId: "",
+            projectId: normalizedProjectId ?? "",
+            skillId: normalizedSkillId,
+            packageSHA256: normalizedPackageSHA256,
+            previousPackageSHA256: "",
+            updatedAtMs: 0,
+            reasonCode: "skills_pin_file_ipc_not_supported"
+        )
+    }
+
+    static func listResolvedSkills(
+        projectId: String? = nil
+    ) async -> ResolvedSkillsResult {
+        let normalizedProjectId = normalized(projectId)
+        let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
+        if hasRemote {
+            let remote = await HubPairingCoordinator.shared.fetchRemoteResolvedSkills(
+                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                projectId: normalizedProjectId
+            )
+            return ResolvedSkillsResult(
+                ok: remote.ok,
+                source: remote.source,
+                skills: remote.skills.map { row in
+                    ResolvedSkillEntry(
+                        scope: row.scope,
+                        skill: SkillCatalogEntry(
+                            skillID: row.skill.skillID,
+                            name: row.skill.name,
+                            version: row.skill.version,
+                            description: row.skill.description,
+                            publisherID: row.skill.publisherID,
+                            capabilitiesRequired: row.skill.capabilitiesRequired,
+                            sourceID: row.skill.sourceID,
+                            packageSHA256: row.skill.packageSHA256,
+                            installHint: row.skill.installHint
+                        )
+                    )
+                },
+                reasonCode: remote.reasonCode
+            )
+        }
+
+        return ResolvedSkillsResult(
+            ok: false,
+            source: "file_ipc",
+            skills: [],
+            reasonCode: "skills_resolved_file_ipc_not_supported"
+        )
+    }
+
+    static func stageAgentImport(
+        importManifestJSON: String,
+        findingsJSON: String? = nil,
+        scanInputJSON: String? = nil,
+        requestedBy: String? = nil,
+        note: String? = nil,
+        requestId: String? = nil
+    ) async -> AgentImportStageResult {
+        let manifestText = importManifestJSON.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !manifestText.isEmpty else {
+            return AgentImportStageResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                stagingId: nil,
+                status: nil,
+                auditRef: nil,
+                preflightStatus: nil,
+                skillId: nil,
+                policyScope: nil,
+                findingsCount: 0,
+                vetterStatus: nil,
+                vetterCriticalCount: 0,
+                vetterWarnCount: 0,
+                vetterAuditRef: nil,
+                recordPath: nil,
+                reasonCode: "missing_agent_import_manifest"
+            )
+        }
+
+        let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
+        if hasRemote {
+            let remote = await HubPairingCoordinator.shared.stageRemoteAgentImport(
+                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                importManifestJSON: manifestText,
+                findingsJSON: findingsJSON,
+                scanInputJSON: scanInputJSON,
+                requestedBy: requestedBy,
+                note: note,
+                requestId: requestId
+            )
+            return AgentImportStageResult(
+                ok: remote.ok,
+                source: remote.source,
+                stagingId: remote.stagingId,
+                status: remote.status,
+                auditRef: remote.auditRef,
+                preflightStatus: remote.preflightStatus,
+                skillId: remote.skillId,
+                policyScope: remote.policyScope,
+                findingsCount: remote.findingsCount,
+                vetterStatus: remote.vetterStatus,
+                vetterCriticalCount: remote.vetterCriticalCount,
+                vetterWarnCount: remote.vetterWarnCount,
+                vetterAuditRef: remote.vetterAuditRef,
+                recordPath: remote.recordPath,
+                reasonCode: remote.reasonCode
+            )
+        }
+
+        return AgentImportStageResult(
+            ok: false,
+            source: "file_ipc",
+            stagingId: nil,
+            status: nil,
+            auditRef: nil,
+            preflightStatus: nil,
+            skillId: nil,
+            policyScope: nil,
+            findingsCount: 0,
+            vetterStatus: nil,
+            vetterCriticalCount: 0,
+            vetterWarnCount: 0,
+            vetterAuditRef: nil,
+            recordPath: nil,
+            reasonCode: "skills_stage_file_ipc_not_supported"
+        )
+    }
+
+    static func getAgentImportRecord(
+        stagingId: String
+    ) async -> AgentImportRecordResult {
+        let normalized = stagingId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            return AgentImportRecordResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                stagingId: nil,
+                status: nil,
+                auditRef: nil,
+                schemaVersion: nil,
+                skillId: nil,
+                recordJSON: nil,
+                reasonCode: "missing_agent_staging_id"
+            )
+        }
+
+        let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
+        if hasRemote {
+            let remote = await HubPairingCoordinator.shared.fetchRemoteAgentImportRecord(
+                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                stagingId: normalized
+            )
+            return AgentImportRecordResult(
+                ok: remote.ok,
+                source: remote.source,
+                stagingId: remote.stagingId,
+                status: remote.status,
+                auditRef: remote.auditRef,
+                schemaVersion: remote.schemaVersion,
+                skillId: remote.skillId,
+                recordJSON: remote.recordJSON,
+                reasonCode: remote.reasonCode
+            )
+        }
+
+        return AgentImportRecordResult(
+            ok: false,
+            source: "file_ipc",
+            stagingId: nil,
+            status: nil,
+            auditRef: nil,
+            schemaVersion: nil,
+            skillId: nil,
+            recordJSON: nil,
+            reasonCode: "skills_record_file_ipc_not_supported"
+        )
+    }
+
+    static func uploadSkillPackage(
+        packageFileURL: URL,
+        manifestJSON: String,
+        sourceId: String = "local:xt-import",
+        requestId: String? = nil
+    ) async -> SkillPackageUploadResult {
+        let manifestText = manifestJSON.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !manifestText.isEmpty else {
+            return SkillPackageUploadResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                packageSHA256: nil,
+                alreadyPresent: false,
+                skillId: nil,
+                version: nil,
+                reasonCode: "missing_manifest_json"
+            )
+        }
+
+        let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
+        if hasRemote {
+            let remote = await HubPairingCoordinator.shared.uploadRemoteSkillPackage(
+                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                packageFileURL: packageFileURL,
+                manifestJSON: manifestText,
+                sourceId: sourceId,
+                requestId: requestId
+            )
+            return SkillPackageUploadResult(
+                ok: remote.ok,
+                source: remote.source,
+                packageSHA256: remote.packageSHA256,
+                alreadyPresent: remote.alreadyPresent,
+                skillId: remote.skillId,
+                version: remote.version,
+                reasonCode: remote.reasonCode
+            )
+        }
+
+        return SkillPackageUploadResult(
+            ok: false,
+            source: "file_ipc",
+            packageSHA256: nil,
+            alreadyPresent: false,
+            skillId: nil,
+            version: nil,
+            reasonCode: "skills_upload_file_ipc_not_supported"
+        )
+    }
+
+    static func promoteAgentImport(
+        stagingId: String,
+        packageSHA256: String,
+        note: String? = nil,
+        requestId: String? = nil
+    ) async -> AgentImportPromoteResult {
+        let normalizedStagingId = stagingId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedPackageSHA256 = packageSHA256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalizedStagingId.isEmpty else {
+            return AgentImportPromoteResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                stagingId: nil,
+                status: nil,
+                auditRef: nil,
+                packageSHA256: nil,
+                scope: nil,
+                skillId: nil,
+                previousPackageSHA256: nil,
+                recordPath: nil,
+                reasonCode: "missing_agent_staging_id"
+            )
+        }
+        guard !normalizedPackageSHA256.isEmpty else {
+            return AgentImportPromoteResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                stagingId: nil,
+                status: nil,
+                auditRef: nil,
+                packageSHA256: nil,
+                scope: nil,
+                skillId: nil,
+                previousPackageSHA256: nil,
+                recordPath: nil,
+                reasonCode: "missing_package_sha256"
+            )
+        }
+
+        let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
+        if hasRemote {
+            let remote = await HubPairingCoordinator.shared.promoteRemoteAgentImport(
+                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                stagingId: normalizedStagingId,
+                packageSHA256: normalizedPackageSHA256,
+                note: note,
+                requestId: requestId
+            )
+            return AgentImportPromoteResult(
+                ok: remote.ok,
+                source: remote.source,
+                stagingId: remote.stagingId,
+                status: remote.status,
+                auditRef: remote.auditRef,
+                packageSHA256: remote.packageSHA256,
+                scope: remote.scope,
+                skillId: remote.skillId,
+                previousPackageSHA256: remote.previousPackageSHA256,
+                recordPath: remote.recordPath,
+                reasonCode: remote.reasonCode
+            )
+        }
+
+        return AgentImportPromoteResult(
+            ok: false,
+            source: "file_ipc",
+            stagingId: nil,
+            status: nil,
+            auditRef: nil,
+            packageSHA256: nil,
+            scope: nil,
+            skillId: nil,
+            previousPackageSHA256: nil,
+            recordPath: nil,
+            reasonCode: "skills_promote_file_ipc_not_supported"
+        )
+    }
+
     static func requestConnectorIngressReceipts(
         projectId: String? = nil,
         limit: Int = 200
@@ -2244,6 +3385,85 @@ enum HubIPCClient {
             projectId: normalizedProjectId,
             limit: boundedLimit
         )
+    }
+
+    static func requestOperatorChannelXTCommands(
+        projectId: String? = nil,
+        limit: Int = 200
+    ) async -> OperatorChannelXTCommandSnapshot? {
+        let routeDecision = await currentRouteDecision()
+        let boundedLimit = max(1, min(500, limit))
+        let normalizedProjectId = normalized(projectId)
+
+        if routeDecision.preferRemote, !routeDecision.allowFileFallback {
+            return nil
+        }
+
+        if routeDecision.requiresRemote, !routeDecision.allowFileFallback {
+            return nil
+        }
+
+        return readLocalOperatorChannelXTCommands(
+            projectId: normalizedProjectId,
+            limit: boundedLimit
+        )
+    }
+
+    static func requestOperatorChannelXTCommandResults(
+        projectId: String? = nil,
+        limit: Int = 200
+    ) async -> OperatorChannelXTCommandResultSnapshot? {
+        let routeDecision = await currentRouteDecision()
+        let boundedLimit = max(1, min(500, limit))
+        let normalizedProjectId = normalized(projectId)
+
+        if routeDecision.preferRemote, !routeDecision.allowFileFallback {
+            return nil
+        }
+
+        if routeDecision.requiresRemote, !routeDecision.allowFileFallback {
+            return nil
+        }
+
+        return readLocalOperatorChannelXTCommandResults(
+            projectId: normalizedProjectId,
+            limit: boundedLimit
+        )
+    }
+
+    @discardableResult
+    static func appendOperatorChannelXTCommandResult(
+        _ result: OperatorChannelXTCommandResultItem
+    ) -> Bool {
+        let commandId = result.commandId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !commandId.isEmpty else { return false }
+
+        let baseDir = HubPaths.baseDir()
+        let url = baseDir.appendingPathComponent("operator_channel_xt_command_results_status.json")
+        let existing = readLocalOperatorChannelXTCommandResults(projectId: nil, limit: 1_000)
+        var deduped: [String: OperatorChannelXTCommandResultItem] = [:]
+        for item in existing?.items ?? [] {
+            deduped[item.commandId] = item
+        }
+        deduped[commandId] = result
+
+        let merged = deduped.values.sorted { lhs, rhs in
+            let leftTimestamp = max(lhs.completedAtMs, lhs.createdAtMs)
+            let rightTimestamp = max(rhs.completedAtMs, rhs.createdAtMs)
+            if leftTimestamp != rightTimestamp { return leftTimestamp > rightTimestamp }
+            return lhs.commandId.localizedCaseInsensitiveCompare(rhs.commandId) == .orderedAscending
+        }
+
+        let payload = OperatorChannelXTCommandResultSnapshot(
+            source: "xterminal_operator_channel_result_writer",
+            updatedAtMs: max(
+                result.completedAtMs,
+                result.createdAtMs,
+                Date().timeIntervalSince1970 * 1000.0
+            ),
+            items: Array(merged.prefix(1_000))
+        )
+        return writeLocalSnapshot(payload, to: url)
     }
 
     static func requestAutonomyPolicyOverrides(
@@ -2301,6 +3521,255 @@ enum HubIPCClient {
             projectId: normalizedProjectId,
             limit: boundedLimit
         )
+    }
+
+    static func requestSecretVaultSnapshot(
+        scope: String? = nil,
+        namePrefix: String? = nil,
+        projectId: String? = nil,
+        limit: Int = 200
+    ) async -> SecretVaultSnapshot? {
+        let routeDecision = await currentRouteDecision()
+        let boundedLimit = max(1, min(500, limit))
+        let normalizedScope = normalized(scope)?.lowercased()
+        let normalizedNamePrefix = normalized(namePrefix)?.lowercased()
+        let normalizedProjectId = normalized(projectId)
+
+        if routeDecision.preferRemote {
+            let remote = await HubPairingCoordinator.shared.fetchRemoteSecretVaultItems(
+                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                scope: normalizedScope,
+                namePrefix: normalizedNamePrefix,
+                limit: boundedLimit
+            )
+            if remote.ok {
+                return SecretVaultSnapshot(
+                    source: remote.source.trimmingCharacters(in: .whitespacesAndNewlines),
+                    updatedAtMs: max(0, Int64(remote.updatedAtMs.rounded())),
+                    items: remote.items.map { row in
+                        SecretVaultItem(
+                            itemId: row.itemId.trimmingCharacters(in: .whitespacesAndNewlines),
+                            scope: row.scope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                            name: row.name.trimmingCharacters(in: .whitespacesAndNewlines),
+                            sensitivity: row.sensitivity.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                            createdAtMs: max(0, Int64(row.createdAtMs.rounded())),
+                            updatedAtMs: max(0, Int64(row.updatedAtMs.rounded()))
+                        )
+                    }
+                )
+            }
+            if !routeDecision.allowFileFallback {
+                return nil
+            }
+        }
+
+        if routeDecision.requiresRemote {
+            return nil
+        }
+
+        if let snapshot = readLocalSecretVaultSnapshot(
+            scope: normalizedScope,
+            namePrefix: normalizedNamePrefix,
+            projectId: normalizedProjectId,
+            limit: boundedLimit
+        ) {
+            return snapshot
+        }
+
+        return await requestSecretVaultSnapshotViaLocalIPC(
+            scope: normalizedScope,
+            namePrefix: normalizedNamePrefix,
+            projectId: normalizedProjectId,
+            limit: boundedLimit
+        )
+    }
+
+    static func createProtectedSecret(
+        _ payload: SecretCreateRequestPayload
+    ) async -> SecretCreateResult {
+        let normalizedScope = normalized(payload.scope)?.lowercased()
+        let normalizedName = normalized(payload.name)
+        let normalizedPlaintext = normalized(payload.plaintext)
+        let normalizedSensitivity = normalized(payload.sensitivity)?.lowercased() ?? "secret"
+
+        guard normalizedScope != nil, normalizedName != nil, normalizedPlaintext != nil else {
+            return SecretCreateResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                item: nil,
+                reasonCode: "invalid_request"
+            )
+        }
+
+        let sanitizedPayload = SecretCreateRequestPayload(
+            scope: normalizedScope ?? "",
+            name: normalizedName ?? "",
+            plaintext: normalizedPlaintext ?? "",
+            sensitivity: normalizedSensitivity,
+            projectId: normalized(payload.projectId),
+            displayName: normalized(payload.displayName),
+            reason: normalized(payload.reason)
+        )
+
+        let routeDecision = await currentRouteDecision()
+        if routeDecision.preferRemote {
+            let remote = await HubPairingCoordinator.shared.createRemoteSecretVaultItem(
+                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                scope: sanitizedPayload.scope,
+                name: sanitizedPayload.name,
+                plaintext: sanitizedPayload.plaintext,
+                sensitivity: sanitizedPayload.sensitivity,
+                projectId: sanitizedPayload.projectId,
+                displayName: sanitizedPayload.displayName,
+                reason: sanitizedPayload.reason
+            )
+            if remote.ok || !routeDecision.allowFileFallback {
+                return mapSecretVaultCreateResult(remote)
+            }
+        }
+
+        if routeDecision.requiresRemote {
+            return SecretCreateResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                item: nil,
+                reasonCode: normalizedReasonCode(
+                    routeDecision.remoteUnavailableReasonCode,
+                    fallback: "hub_env_missing"
+                )
+            )
+        }
+
+        return await createProtectedSecretViaLocalIPC(sanitizedPayload)
+    }
+
+    static func beginSecretUse(
+        _ payload: SecretUseRequestPayload
+    ) async -> SecretUseResult {
+        testingOverrideLock.lock()
+        let override = secretUseOverrideForTesting
+        testingOverrideLock.unlock()
+        if let override {
+            return await override(payload)
+        }
+
+        let normalizedItemId = normalized(payload.itemId)
+        let normalizedScope = normalized(payload.scope)?.lowercased()
+        let normalizedName = normalized(payload.name)
+        let normalizedPurpose = normalized(payload.purpose)
+
+        guard normalizedPurpose != nil,
+              normalizedItemId != nil || (normalizedScope != nil && normalizedName != nil) else {
+            return SecretUseResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                leaseId: nil,
+                useToken: nil,
+                itemId: nil,
+                expiresAtMs: nil,
+                reasonCode: "invalid_request"
+            )
+        }
+
+        let sanitizedPayload = SecretUseRequestPayload(
+            itemId: normalizedItemId,
+            scope: normalizedScope,
+            name: normalizedName,
+            projectId: normalized(payload.projectId),
+            purpose: normalizedPurpose ?? "",
+            target: normalized(payload.target),
+            ttlMs: max(1_000, min(600_000, payload.ttlMs))
+        )
+
+        let routeDecision = await currentRouteDecision()
+        if routeDecision.preferRemote {
+            let remote = await HubPairingCoordinator.shared.beginRemoteSecretVaultUse(
+                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                itemId: sanitizedPayload.itemId,
+                scope: sanitizedPayload.scope,
+                name: sanitizedPayload.name,
+                projectId: sanitizedPayload.projectId,
+                purpose: sanitizedPayload.purpose,
+                target: sanitizedPayload.target,
+                ttlMs: sanitizedPayload.ttlMs
+            )
+            if remote.ok || !routeDecision.allowFileFallback {
+                return mapSecretVaultUseResult(remote)
+            }
+        }
+
+        if routeDecision.requiresRemote {
+            return SecretUseResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                leaseId: nil,
+                useToken: nil,
+                itemId: sanitizedPayload.itemId,
+                expiresAtMs: nil,
+                reasonCode: normalizedReasonCode(
+                    routeDecision.remoteUnavailableReasonCode,
+                    fallback: "hub_env_missing"
+                )
+            )
+        }
+
+        return await beginSecretUseViaLocalIPC(sanitizedPayload)
+    }
+
+    static func redeemSecretUse(
+        _ payload: SecretRedeemRequestPayload
+    ) async -> SecretRedeemResult {
+        testingOverrideLock.lock()
+        let override = secretRedeemOverrideForTesting
+        testingOverrideLock.unlock()
+        if let override {
+            return await override(payload)
+        }
+
+        let normalizedUseToken = normalized(payload.useToken)
+        guard normalizedUseToken != nil else {
+            return SecretRedeemResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                leaseId: nil,
+                itemId: nil,
+                plaintext: nil,
+                reasonCode: "invalid_request"
+            )
+        }
+
+        let sanitizedPayload = SecretRedeemRequestPayload(
+            useToken: normalizedUseToken ?? "",
+            projectId: normalized(payload.projectId)
+        )
+
+        let routeDecision = await currentRouteDecision()
+        if routeDecision.preferRemote {
+            let remote = await HubPairingCoordinator.shared.redeemRemoteSecretVaultUse(
+                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                useToken: sanitizedPayload.useToken,
+                projectId: sanitizedPayload.projectId
+            )
+            if remote.ok || !routeDecision.allowFileFallback {
+                return mapSecretVaultRedeemResult(remote)
+            }
+        }
+
+        if routeDecision.requiresRemote {
+            return SecretRedeemResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                leaseId: nil,
+                itemId: nil,
+                plaintext: nil,
+                reasonCode: normalizedReasonCode(
+                    routeDecision.remoteUnavailableReasonCode,
+                    fallback: "hub_env_missing"
+                )
+            )
+        }
+
+        return await redeemSecretUseViaLocalIPC(sanitizedPayload)
     }
 
     static func requestProjectAutonomyPolicyOverride(
@@ -2647,6 +4116,54 @@ enum HubIPCClient {
         }
     }
 
+    private static func requestMemoryRetrievalViaLocalIPC(
+        payload: MemoryRetrievalPayload,
+        timeoutSec: Double
+    ) async -> MemoryRetrievalResponsePayload? {
+        guard let transport = localIPCTransport(ttl: 3.0) else { return nil }
+
+        let reqId = UUID().uuidString
+        let req = MemoryRetrievalIPCRequest(
+            type: "memory_retrieval",
+            reqId: reqId,
+            memoryRetrieval: payload
+        )
+
+        switch transport.mode {
+        case "file":
+            try? FileManager.default.createDirectory(at: transport.ipcURL, withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            guard let data = try? encoder.encode(req) else { return nil }
+            guard writeEvent(
+                data: data,
+                reqId: reqId,
+                filePrefix: "xterminal_mem_retrieval",
+                tmpPrefix: ".xterminal_mem_retrieval",
+                in: transport.ipcURL
+            ) else {
+                return nil
+            }
+
+            guard let ack = await pollMemoryRetrievalResponse(
+                baseDir: transport.baseDir,
+                reqId: reqId,
+                timeoutSec: timeoutSec
+            ) else {
+                return nil
+            }
+            guard ack.ok else { return nil }
+            return ack.memoryRetrieval
+        case "socket":
+            guard let ack: MemoryContextIPCResponse = sendSocketRequest(req, socketURL: transport.ipcURL, timeoutSec: timeoutSec) else {
+                return nil
+            }
+            guard ack.ok else { return nil }
+            return ack.memoryRetrieval
+        default:
+            return nil
+        }
+    }
+
     private static func fetchVoiceWakeProfileViaLocalIPC(
         desiredWakeMode: VoiceWakeMode
     ) async -> VoiceWakeProfileSyncResult {
@@ -2801,6 +4318,257 @@ enum HubIPCClient {
         }
     }
 
+    private static func requestSecretVaultSnapshotViaLocalIPC(
+        scope: String?,
+        namePrefix: String?,
+        projectId: String?,
+        limit: Int
+    ) async -> SecretVaultSnapshot? {
+        guard let transport = localIPCTransport(ttl: 3.0) else { return nil }
+
+        let reqId = UUID().uuidString
+        let req = SecretVaultListIPCRequest(
+            type: "secret_vault_list",
+            reqId: reqId,
+            secretVaultList: SecretVaultListRequestPayload(
+                scope: scope,
+                namePrefix: namePrefix,
+                projectId: projectId,
+                limit: max(1, min(500, limit))
+            )
+        )
+
+        switch transport.mode {
+        case "file":
+            try? FileManager.default.createDirectory(at: transport.ipcURL, withIntermediateDirectories: true)
+            guard let data = try? JSONEncoder().encode(req),
+                  writeEvent(
+                    data: data,
+                    reqId: reqId,
+                    filePrefix: "xterminal_secret_vault_list",
+                    tmpPrefix: ".xterminal_secret_vault_list",
+                    in: transport.ipcURL
+                  ),
+                  let ack = await pollSecretVaultListResponse(baseDir: transport.baseDir, reqId: reqId, timeoutSec: 2.0),
+                  ack.ok,
+                  let snapshot = ack.secretVaultSnapshot else {
+                return nil
+            }
+            return snapshot
+        case "socket":
+            guard let ack: SecretVaultListIPCResponse = sendSocketRequest(req, socketURL: transport.ipcURL, timeoutSec: 2.0),
+                  ack.ok,
+                  let snapshot = ack.secretVaultSnapshot else {
+                return nil
+            }
+            return snapshot
+        default:
+            return nil
+        }
+    }
+
+    private static func createProtectedSecretViaLocalIPC(
+        _ payload: SecretCreateRequestPayload
+    ) async -> SecretCreateResult {
+        guard let transport = localIPCTransport(ttl: 3.0) else {
+            return SecretCreateResult(
+                ok: false,
+                source: "local_ipc",
+                item: nil,
+                reasonCode: "secret_vault_local_ipc_unavailable"
+            )
+        }
+
+        if transport.mode == "file" {
+            return SecretCreateResult(
+                ok: false,
+                source: "file_ipc",
+                item: nil,
+                reasonCode: "secret_vault_secure_capture_requires_socket_ipc"
+            )
+        }
+
+        let req = SecretVaultCreateIPCRequest(
+            type: "secret_vault_create",
+            reqId: UUID().uuidString,
+            secretVaultCreate: payload
+        )
+
+        guard let ack: SecretVaultCreateIPCResponse = sendSocketRequest(
+            req,
+            socketURL: transport.ipcURL,
+            timeoutSec: 3.0
+        ) else {
+            return SecretCreateResult(
+                ok: false,
+                source: "socket_ipc",
+                item: nil,
+                reasonCode: "socket_request_failed"
+            )
+        }
+
+        guard ack.ok else {
+            return SecretCreateResult(
+                ok: false,
+                source: "socket_ipc",
+                item: nil,
+                reasonCode: normalizedReasonCode(ack.error, fallback: "secret_vault_create_failed")
+            )
+        }
+
+        guard let item = ack.secretVaultItem else {
+            return SecretCreateResult(
+                ok: false,
+                source: "socket_ipc",
+                item: nil,
+                reasonCode: "secret_vault_item_missing"
+            )
+        }
+
+        return SecretCreateResult(
+            ok: true,
+            source: "socket_ipc",
+            item: item,
+            reasonCode: nil
+        )
+    }
+
+    private static func beginSecretUseViaLocalIPC(
+        _ payload: SecretUseRequestPayload
+    ) async -> SecretUseResult {
+        guard let transport = localIPCTransport(ttl: 3.0) else {
+            return SecretUseResult(
+                ok: false,
+                source: "local_ipc",
+                leaseId: nil,
+                useToken: nil,
+                itemId: payload.itemId,
+                expiresAtMs: nil,
+                reasonCode: "secret_vault_local_ipc_unavailable"
+            )
+        }
+
+        let reqId = UUID().uuidString
+        let req = SecretVaultBeginUseIPCRequest(
+            type: "secret_vault_begin_use",
+            reqId: reqId,
+            secretVaultUse: payload
+        )
+
+        switch transport.mode {
+        case "file":
+            try? FileManager.default.createDirectory(at: transport.ipcURL, withIntermediateDirectories: true)
+            guard let data = try? JSONEncoder().encode(req),
+                  writeEvent(
+                    data: data,
+                    reqId: reqId,
+                    filePrefix: "xterminal_secret_vault_use",
+                    tmpPrefix: ".xterminal_secret_vault_use",
+                    in: transport.ipcURL
+                  ) else {
+                return SecretUseResult(
+                    ok: false,
+                    source: "file_ipc",
+                    leaseId: nil,
+                    useToken: nil,
+                    itemId: payload.itemId,
+                    expiresAtMs: nil,
+                    reasonCode: "secret_vault_use_write_failed"
+                )
+            }
+            guard let ack = await pollSecretVaultUseResponse(baseDir: transport.baseDir, reqId: reqId, timeoutSec: 2.0) else {
+                return SecretUseResult(
+                    ok: false,
+                    source: "file_ipc",
+                    leaseId: nil,
+                    useToken: nil,
+                    itemId: payload.itemId,
+                    expiresAtMs: nil,
+                    reasonCode: "ack_timeout"
+                )
+            }
+            return mapSecretVaultUseAck(ack, source: "file_ipc", fallbackItemId: payload.itemId)
+        case "socket":
+            guard let ack: SecretVaultUseIPCResponse = sendSocketRequest(req, socketURL: transport.ipcURL, timeoutSec: 2.0) else {
+                return SecretUseResult(
+                    ok: false,
+                    source: "socket_ipc",
+                    leaseId: nil,
+                    useToken: nil,
+                    itemId: payload.itemId,
+                    expiresAtMs: nil,
+                    reasonCode: "socket_request_failed"
+                )
+            }
+            return mapSecretVaultUseAck(ack, source: "socket_ipc", fallbackItemId: payload.itemId)
+        default:
+            return SecretUseResult(
+                ok: false,
+                source: "local_ipc",
+                leaseId: nil,
+                useToken: nil,
+                itemId: payload.itemId,
+                expiresAtMs: nil,
+                reasonCode: "unsupported_ipc_mode"
+            )
+        }
+    }
+
+    private static func redeemSecretUseViaLocalIPC(
+        _ payload: SecretRedeemRequestPayload
+    ) async -> SecretRedeemResult {
+        guard let transport = localIPCTransport(ttl: 3.0) else {
+            return SecretRedeemResult(
+                ok: false,
+                source: "local_ipc",
+                leaseId: nil,
+                itemId: nil,
+                plaintext: nil,
+                reasonCode: "secret_vault_local_ipc_unavailable"
+            )
+        }
+
+        let reqId = UUID().uuidString
+        let req = SecretVaultRedeemIPCRequest(
+            type: "secret_vault_redeem_use",
+            reqId: reqId,
+            secretVaultRedeem: payload
+        )
+
+        switch transport.mode {
+        case "file":
+            return SecretRedeemResult(
+                ok: false,
+                source: "file_ipc",
+                leaseId: nil,
+                itemId: nil,
+                plaintext: nil,
+                reasonCode: "secret_vault_redeem_requires_socket_ipc"
+            )
+        case "socket":
+            guard let ack: SecretVaultRedeemIPCResponse = sendSocketRequest(req, socketURL: transport.ipcURL, timeoutSec: 2.0) else {
+                return SecretRedeemResult(
+                    ok: false,
+                    source: "socket_ipc",
+                    leaseId: nil,
+                    itemId: nil,
+                    plaintext: nil,
+                    reasonCode: "socket_request_failed"
+                )
+            }
+            return mapSecretVaultRedeemAck(ack, source: "socket_ipc")
+        default:
+            return SecretRedeemResult(
+                ok: false,
+                source: "local_ipc",
+                leaseId: nil,
+                itemId: nil,
+                plaintext: nil,
+                reasonCode: "unsupported_ipc_mode"
+            )
+        }
+    }
+
     private static func mapVoiceWakeProfileAck(
         _ ack: VoiceWakeProfileIPCResponse,
         source: String,
@@ -2840,6 +4608,7 @@ enum HubIPCClient {
         snapshot: HubRemoteMemorySnapshotResult,
         payload: MemoryContextPayload
     ) -> MemoryContextResponsePayload {
+        let servingProfile = normalized(payload.servingProfile)
         let localCanonical = XTMemorySanitizer.sanitizeText(payload.canonicalText, maxChars: 3_200, lineCap: 36) ?? ""
         let localObservations = XTMemorySanitizer.sanitizeText(payload.observationsText, maxChars: 1_800, lineCap: 24) ?? ""
         let localWorking = XTMemorySanitizer.sanitizeText(payload.workingSetText, maxChars: 2_600, lineCap: 28) ?? ""
@@ -2852,9 +4621,11 @@ enum HubIPCClient {
 
         let mergedCanonical = mergedMemoryLayer(localPrimary: localCanonical, remoteSecondary: remoteCanonical)
         let mergedWorking = mergedMemoryLayer(localPrimary: localWorking, remoteSecondary: remoteWorking)
+        let servingProfileSection = memoryServingProfileSection(servingProfile)
 
         let finalText = """
 [MEMORY_V1]
+\(servingProfileSection.isEmpty ? "" : "\(servingProfileSection)\n")
 [L0_CONSTITUTION]
 \(constitution.isEmpty ? "(none)" : constitution)
 [/L0_CONSTITUTION]
@@ -2917,6 +4688,7 @@ latest_user:
             text: finalText,
             source: snapshot.source,
             resolvedMode: payload.mode,
+            resolvedProfile: servingProfile,
             freshness: nil,
             cacheHit: nil,
             denyCode: nil,
@@ -2928,6 +4700,16 @@ latest_user:
             redactedItems: 0,
             privateDrops: 0
         )
+    }
+
+    private static func memoryServingProfileSection(_ servingProfile: String?) -> String {
+        let normalizedProfile = normalized(servingProfile) ?? ""
+        guard !normalizedProfile.isEmpty else { return "" }
+        return """
+[SERVING_PROFILE]
+profile_id: \(normalizedProfile)
+[/SERVING_PROFILE]
+"""
     }
 
     private static func mergedMemoryLayer(localPrimary: String, remoteSecondary: String) -> String {
@@ -3305,6 +5087,208 @@ latest_user:
         )
     }
 
+    private struct LocalOperatorChannelXTCommandItem: Codable {
+        var commandId: String?
+        var requestId: String?
+        var actionName: String?
+        var bindingId: String?
+        var routeId: String?
+        var scopeType: String?
+        var scopeId: String?
+        var projectId: String?
+        var provider: String?
+        var accountId: String?
+        var conversationId: String?
+        var threadKey: String?
+        var actorRef: String?
+        var resolvedDeviceId: String?
+        var preferredDeviceId: String?
+        var note: String?
+        var createdAtMs: Double?
+        var auditRef: String?
+
+        enum CodingKeys: String, CodingKey {
+            case commandId = "command_id"
+            case requestId = "request_id"
+            case actionName = "action_name"
+            case bindingId = "binding_id"
+            case routeId = "route_id"
+            case scopeType = "scope_type"
+            case scopeId = "scope_id"
+            case projectId = "project_id"
+            case provider
+            case accountId = "account_id"
+            case conversationId = "conversation_id"
+            case threadKey = "thread_key"
+            case actorRef = "actor_ref"
+            case resolvedDeviceId = "resolved_device_id"
+            case preferredDeviceId = "preferred_device_id"
+            case note
+            case createdAtMs = "created_at_ms"
+            case auditRef = "audit_ref"
+        }
+    }
+
+    private struct LocalOperatorChannelXTCommandSnapshotFile: Codable {
+        var schemaVersion: String?
+        var updatedAtMs: Double?
+        var items: [LocalOperatorChannelXTCommandItem]?
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+            case updatedAtMs = "updated_at_ms"
+            case items
+        }
+    }
+
+    private static func readLocalOperatorChannelXTCommands(
+        projectId: String?,
+        limit: Int
+    ) -> OperatorChannelXTCommandSnapshot? {
+        let url = HubPaths.baseDir().appendingPathComponent("operator_channel_xt_command_queue_status.json")
+        guard let data = try? Data(contentsOf: url),
+              let decoded = try? JSONDecoder().decode(LocalOperatorChannelXTCommandSnapshotFile.self, from: data) else {
+            return nil
+        }
+
+        let normalizedProjectId = normalized(projectId)
+        let boundedLimit = max(1, min(500, limit))
+
+        let mapped = (decoded.items ?? []).compactMap { row -> OperatorChannelXTCommandItem? in
+            let commandId = row.commandId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !commandId.isEmpty else { return nil }
+
+            let project = (row.projectId ?? row.scopeId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if let normalizedProjectId, !normalizedProjectId.isEmpty, project != normalizedProjectId {
+                return nil
+            }
+
+            return OperatorChannelXTCommandItem(
+                commandId: commandId,
+                requestId: row.requestId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                actionName: row.actionName?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "",
+                bindingId: row.bindingId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                routeId: row.routeId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                scopeType: row.scopeType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "",
+                scopeId: row.scopeId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                projectId: project,
+                provider: row.provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "",
+                accountId: row.accountId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                conversationId: row.conversationId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                threadKey: row.threadKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                actorRef: row.actorRef?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                resolvedDeviceId: row.resolvedDeviceId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                preferredDeviceId: row.preferredDeviceId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                note: row.note?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                createdAtMs: max(0, row.createdAtMs ?? 0),
+                auditRef: row.auditRef?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.createdAtMs != rhs.createdAtMs { return lhs.createdAtMs > rhs.createdAtMs }
+            return lhs.commandId.localizedCaseInsensitiveCompare(rhs.commandId) == .orderedAscending
+        }
+
+        return OperatorChannelXTCommandSnapshot(
+            source: "hub_operator_channel_xt_command_file",
+            updatedAtMs: max(0, decoded.updatedAtMs ?? 0),
+            items: Array(mapped.prefix(boundedLimit))
+        )
+    }
+
+    private struct LocalOperatorChannelXTCommandResultItem: Codable {
+        var commandId: String?
+        var requestId: String?
+        var actionName: String?
+        var projectId: String?
+        var resolvedDeviceId: String?
+        var status: String?
+        var denyCode: String?
+        var detail: String?
+        var runId: String?
+        var createdAtMs: Double?
+        var completedAtMs: Double?
+        var auditRef: String?
+
+        enum CodingKeys: String, CodingKey {
+            case commandId = "command_id"
+            case requestId = "request_id"
+            case actionName = "action_name"
+            case projectId = "project_id"
+            case resolvedDeviceId = "resolved_device_id"
+            case status
+            case denyCode = "deny_code"
+            case detail
+            case runId = "run_id"
+            case createdAtMs = "created_at_ms"
+            case completedAtMs = "completed_at_ms"
+            case auditRef = "audit_ref"
+        }
+    }
+
+    private struct LocalOperatorChannelXTCommandResultSnapshotFile: Codable {
+        var schemaVersion: String?
+        var updatedAtMs: Double?
+        var items: [LocalOperatorChannelXTCommandResultItem]?
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+            case updatedAtMs = "updated_at_ms"
+            case items
+        }
+    }
+
+    private static func readLocalOperatorChannelXTCommandResults(
+        projectId: String?,
+        limit: Int
+    ) -> OperatorChannelXTCommandResultSnapshot? {
+        let url = HubPaths.baseDir().appendingPathComponent("operator_channel_xt_command_results_status.json")
+        guard let data = try? Data(contentsOf: url),
+              let decoded = try? JSONDecoder().decode(LocalOperatorChannelXTCommandResultSnapshotFile.self, from: data) else {
+            return nil
+        }
+
+        let normalizedProjectId = normalized(projectId)
+        let boundedLimit = max(1, min(500, limit))
+
+        let mapped = (decoded.items ?? []).compactMap { row -> OperatorChannelXTCommandResultItem? in
+            let commandId = row.commandId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !commandId.isEmpty else { return nil }
+
+            let project = row.projectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if let normalizedProjectId, !normalizedProjectId.isEmpty, project != normalizedProjectId {
+                return nil
+            }
+
+            return OperatorChannelXTCommandResultItem(
+                commandId: commandId,
+                requestId: row.requestId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                actionName: row.actionName?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "",
+                projectId: project,
+                resolvedDeviceId: row.resolvedDeviceId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                status: row.status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "",
+                denyCode: row.denyCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                detail: row.detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                runId: row.runId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                createdAtMs: max(0, row.createdAtMs ?? 0),
+                completedAtMs: max(0, row.completedAtMs ?? 0),
+                auditRef: row.auditRef?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            )
+        }
+        .sorted { lhs, rhs in
+            let leftTimestamp = max(lhs.completedAtMs, lhs.createdAtMs)
+            let rightTimestamp = max(rhs.completedAtMs, rhs.createdAtMs)
+            if leftTimestamp != rightTimestamp { return leftTimestamp > rightTimestamp }
+            return lhs.commandId.localizedCaseInsensitiveCompare(rhs.commandId) == .orderedAscending
+        }
+
+        return OperatorChannelXTCommandResultSnapshot(
+            source: "hub_operator_channel_xt_command_result_file",
+            updatedAtMs: max(0, decoded.updatedAtMs ?? 0),
+            items: Array(mapped.prefix(boundedLimit))
+        )
+    }
+
     private struct LocalAutonomyPolicyOverrideItem: Codable {
         var projectId: String
         var overrideMode: String
@@ -3377,6 +5361,96 @@ latest_user:
         )
     }
 
+    private struct LocalSecretVaultItem: Codable {
+        var itemId: String
+        var scope: String
+        var name: String
+        var sensitivity: String?
+        var createdAtMs: Double?
+        var updatedAtMs: Double?
+
+        enum CodingKeys: String, CodingKey {
+            case itemId = "item_id"
+            case scope
+            case name
+            case sensitivity
+            case createdAtMs = "created_at_ms"
+            case updatedAtMs = "updated_at_ms"
+        }
+    }
+
+    private struct LocalSecretVaultSnapshotFile: Codable {
+        var schemaVersion: String?
+        var updatedAtMs: Double?
+        var items: [LocalSecretVaultItem]?
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+            case updatedAtMs = "updated_at_ms"
+            case items
+        }
+    }
+
+    private static func readLocalSecretVaultSnapshot(
+        scope: String?,
+        namePrefix: String?,
+        projectId: String?,
+        limit: Int
+    ) -> SecretVaultSnapshot? {
+        if normalized(projectId) != nil {
+            return nil
+        }
+
+        let url = HubPaths.baseDir().appendingPathComponent("secret_vault_items_status.json")
+        guard let data = try? Data(contentsOf: url),
+              let decoded = try? JSONDecoder().decode(LocalSecretVaultSnapshotFile.self, from: data) else {
+            return nil
+        }
+
+        let normalizedScope = normalized(scope)?.lowercased()
+        let normalizedNamePrefix = normalized(namePrefix)?.lowercased()
+        let boundedLimit = max(1, min(500, limit))
+
+        let mapped = (decoded.items ?? []).compactMap { row -> SecretVaultItem? in
+            let itemId = row.itemId.trimmingCharacters(in: .whitespacesAndNewlines)
+            let scope = row.scope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let name = row.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let sensitivity = row.sensitivity?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "secret"
+            guard !itemId.isEmpty, !scope.isEmpty, !name.isEmpty else { return nil }
+            if scope == "project" {
+                return nil
+            }
+            if let normalizedScope, scope != normalizedScope {
+                return nil
+            }
+            if let normalizedNamePrefix, !name.lowercased().hasPrefix(normalizedNamePrefix) {
+                return nil
+            }
+            return SecretVaultItem(
+                itemId: itemId,
+                scope: scope,
+                name: name,
+                sensitivity: sensitivity,
+                createdAtMs: max(0, Int64((row.createdAtMs ?? 0).rounded())),
+                updatedAtMs: max(0, Int64((row.updatedAtMs ?? 0).rounded()))
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.updatedAtMs != rhs.updatedAtMs { return lhs.updatedAtMs > rhs.updatedAtMs }
+            let nameCompare = lhs.name.localizedCaseInsensitiveCompare(rhs.name)
+            if nameCompare != .orderedSame {
+                return nameCompare == .orderedAscending
+            }
+            return lhs.itemId.localizedCaseInsensitiveCompare(rhs.itemId) == .orderedAscending
+        }
+
+        return SecretVaultSnapshot(
+            source: "hub_secret_vault_file",
+            updatedAtMs: max(0, Int64((decoded.updatedAtMs ?? 0).rounded())),
+            items: Array(mapped.prefix(boundedLimit))
+        )
+    }
+
     private static func fileIPCEventsDir() -> URL? {
         guard let st = HubConnector.readHubStatusIfAny(ttl: 3.0) else { return nil }
         guard let mode = st.ipcMode, mode == "file" else { return nil }
@@ -3423,6 +5497,29 @@ latest_user:
         return nil
     }
 
+    private static func pollMemoryRetrievalResponse(
+        baseDir: URL,
+        reqId: String,
+        timeoutSec: Double
+    ) async -> MemoryContextIPCResponse? {
+        let rid = reqId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rid.isEmpty else { return nil }
+
+        let dir = baseDir.appendingPathComponent("ipc_responses", isDirectory: true)
+        let url = dir.appendingPathComponent("resp_\(rid).json")
+        let deadline = Date().addingTimeInterval(max(0.25, min(4.0, timeoutSec)))
+
+        while Date() < deadline {
+            if let data = try? Data(contentsOf: url),
+               let resp = try? JSONDecoder().decode(MemoryContextIPCResponse.self, from: data) {
+                try? FileManager.default.removeItem(at: url)
+                return resp
+            }
+            try? await Task.sleep(nanoseconds: 90_000_000)
+        }
+        return nil
+    }
+
     private static func pollVoiceWakeProfileResponse(
         baseDir: URL,
         reqId: String,
@@ -3438,6 +5535,52 @@ latest_user:
         while Date() < deadline {
             if let data = try? Data(contentsOf: url),
                let resp = try? JSONDecoder().decode(VoiceWakeProfileIPCResponse.self, from: data) {
+                try? FileManager.default.removeItem(at: url)
+                return resp
+            }
+            try? await Task.sleep(nanoseconds: 90_000_000)
+        }
+        return nil
+    }
+
+    private static func pollSecretVaultListResponse(
+        baseDir: URL,
+        reqId: String,
+        timeoutSec: Double
+    ) async -> SecretVaultListIPCResponse? {
+        let rid = reqId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rid.isEmpty else { return nil }
+
+        let dir = baseDir.appendingPathComponent("ipc_responses", isDirectory: true)
+        let url = dir.appendingPathComponent("resp_\(rid).json")
+        let deadline = Date().addingTimeInterval(max(0.2, min(4.0, timeoutSec)))
+
+        while Date() < deadline {
+            if let data = try? Data(contentsOf: url),
+               let resp = try? JSONDecoder().decode(SecretVaultListIPCResponse.self, from: data) {
+                try? FileManager.default.removeItem(at: url)
+                return resp
+            }
+            try? await Task.sleep(nanoseconds: 90_000_000)
+        }
+        return nil
+    }
+
+    private static func pollSecretVaultUseResponse(
+        baseDir: URL,
+        reqId: String,
+        timeoutSec: Double
+    ) async -> SecretVaultUseIPCResponse? {
+        let rid = reqId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rid.isEmpty else { return nil }
+
+        let dir = baseDir.appendingPathComponent("ipc_responses", isDirectory: true)
+        let url = dir.appendingPathComponent("resp_\(rid).json")
+        let deadline = Date().addingTimeInterval(max(0.2, min(4.0, timeoutSec)))
+
+        while Date() < deadline {
+            if let data = try? Data(contentsOf: url),
+               let resp = try? JSONDecoder().decode(SecretVaultUseIPCResponse.self, from: data) {
                 try? FileManager.default.removeItem(at: url)
                 return resp
             }
@@ -3504,6 +5647,142 @@ latest_user:
             grantId: normalized(remote.grantId),
             expiresAtMs: remote.expiresAtMs,
             reasonCode: reason
+        )
+    }
+
+    private static func mapSecretVaultCreateResult(
+        _ remote: HubRemoteSecretVaultCreateResult
+    ) -> SecretCreateResult {
+        let mappedItem: SecretVaultItem? = {
+            guard let item = remote.item else { return nil }
+            return SecretVaultItem(
+                itemId: item.itemId,
+                scope: item.scope,
+                name: item.name,
+                sensitivity: item.sensitivity,
+                createdAtMs: max(0, Int64(item.createdAtMs.rounded())),
+                updatedAtMs: max(0, Int64(item.updatedAtMs.rounded()))
+            )
+        }()
+        return SecretCreateResult(
+            ok: remote.ok,
+            source: remote.source,
+            item: mappedItem,
+            reasonCode: normalizedReasonCode(
+                remote.reasonCode,
+                fallback: remote.ok ? nil : "remote_secret_vault_create_failed"
+            )
+        )
+    }
+
+    private static func mapSecretVaultUseResult(
+        _ remote: HubRemoteSecretVaultUseResult
+    ) -> SecretUseResult {
+        SecretUseResult(
+            ok: remote.ok,
+            source: remote.source,
+            leaseId: normalized(remote.leaseId),
+            useToken: normalized(remote.useToken),
+            itemId: normalized(remote.itemId),
+            expiresAtMs: remote.expiresAtMs.map { max(0, Int64($0.rounded())) },
+            reasonCode: normalizedReasonCode(
+                remote.reasonCode,
+                fallback: remote.ok ? nil : "remote_secret_vault_use_failed"
+            )
+        )
+    }
+
+    private static func mapSecretVaultUseAck(
+        _ ack: SecretVaultUseIPCResponse,
+        source: String,
+        fallbackItemId: String?
+    ) -> SecretUseResult {
+        guard ack.ok else {
+            return SecretUseResult(
+                ok: false,
+                source: source,
+                leaseId: nil,
+                useToken: nil,
+                itemId: fallbackItemId,
+                expiresAtMs: nil,
+                reasonCode: normalizedReasonCode(ack.error, fallback: "secret_vault_use_failed")
+            )
+        }
+        guard let result = ack.secretVaultUse else {
+            return SecretUseResult(
+                ok: false,
+                source: source,
+                leaseId: nil,
+                useToken: nil,
+                itemId: fallbackItemId,
+                expiresAtMs: nil,
+                reasonCode: "secret_vault_use_missing"
+            )
+        }
+        return SecretUseResult(
+            ok: result.ok,
+            source: source,
+            leaseId: normalized(result.leaseId),
+            useToken: normalized(result.useToken),
+            itemId: normalized(result.itemId) ?? fallbackItemId,
+            expiresAtMs: result.expiresAtMs.map { max(0, $0) },
+            reasonCode: normalizedReasonCode(
+                result.reasonCode,
+                fallback: result.ok ? nil : "secret_vault_use_failed"
+            )
+        )
+    }
+
+    private static func mapSecretVaultRedeemResult(
+        _ remote: HubRemoteSecretVaultRedeemResult
+    ) -> SecretRedeemResult {
+        SecretRedeemResult(
+            ok: remote.ok,
+            source: remote.source,
+            leaseId: normalized(remote.leaseId),
+            itemId: normalized(remote.itemId),
+            plaintext: remote.plaintext,
+            reasonCode: normalizedReasonCode(
+                remote.reasonCode,
+                fallback: remote.ok ? nil : "remote_secret_vault_redeem_failed"
+            )
+        )
+    }
+
+    private static func mapSecretVaultRedeemAck(
+        _ ack: SecretVaultRedeemIPCResponse,
+        source: String
+    ) -> SecretRedeemResult {
+        guard ack.ok else {
+            return SecretRedeemResult(
+                ok: false,
+                source: source,
+                leaseId: nil,
+                itemId: nil,
+                plaintext: nil,
+                reasonCode: normalizedReasonCode(ack.error, fallback: "secret_vault_redeem_failed")
+            )
+        }
+        guard let result = ack.secretVaultRedeem else {
+            return SecretRedeemResult(
+                ok: false,
+                source: source,
+                leaseId: nil,
+                itemId: nil,
+                plaintext: nil,
+                reasonCode: "secret_vault_redeem_missing"
+            )
+        }
+        return SecretRedeemResult(
+            ok: result.ok,
+            source: source,
+            leaseId: normalized(result.leaseId),
+            itemId: normalized(result.itemId),
+            plaintext: result.plaintext,
+            reasonCode: normalizedReasonCode(
+                result.reasonCode,
+                fallback: result.ok ? nil : "secret_vault_redeem_failed"
+            )
         )
     }
 
@@ -3627,6 +5906,24 @@ latest_user:
         return token.trimmingCharacters(in: CharacterSet(charactersIn: "_"))
     }
 
+    private static func writeLocalSnapshot<T: Encodable>(_ payload: T, to url: URL) -> Bool {
+        let directory = url.deletingLastPathComponent()
+        let tmp = directory.appendingPathComponent(".\(url.lastPathComponent).tmp")
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let data = try JSONEncoder().encode(payload)
+            try data.write(to: tmp, options: .atomic)
+            if FileManager.default.fileExists(atPath: url.path) {
+                try? FileManager.default.removeItem(at: url)
+            }
+            try FileManager.default.moveItem(at: tmp, to: url)
+            return true
+        } catch {
+            try? FileManager.default.removeItem(at: tmp)
+            return false
+        }
+    }
+
     private static func writeEvent(
         data: Data,
         reqId: String,
@@ -3645,9 +5942,41 @@ latest_user:
         }
     }
 
+    private static func orderedUniqueStringTokens(_ raw: [String]) -> [String] {
+        var seen = Set<String>()
+        return raw.compactMap { item in
+            guard let token = normalized(item)?.lowercased(), !token.isEmpty else { return nil }
+            guard seen.insert(token).inserted else { return nil }
+            return token
+        }
+    }
+
     private static func normalized(_ text: String?) -> String? {
         guard let text else { return nil }
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return t.isEmpty ? nil : t
+    }
+
+    static func installSecretVaultUseOverrideForTesting(
+        _ override: (@Sendable (SecretUseRequestPayload) async -> SecretUseResult)?
+    ) {
+        testingOverrideLock.lock()
+        secretUseOverrideForTesting = override
+        testingOverrideLock.unlock()
+    }
+
+    static func installSecretVaultRedeemOverrideForTesting(
+        _ override: (@Sendable (SecretRedeemRequestPayload) async -> SecretRedeemResult)?
+    ) {
+        testingOverrideLock.lock()
+        secretRedeemOverrideForTesting = override
+        testingOverrideLock.unlock()
+    }
+
+    static func resetSecretVaultOverridesForTesting() {
+        testingOverrideLock.lock()
+        secretUseOverrideForTesting = nil
+        secretRedeemOverrideForTesting = nil
+        testingOverrideLock.unlock()
     }
 }

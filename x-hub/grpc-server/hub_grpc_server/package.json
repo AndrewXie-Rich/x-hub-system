@@ -5,6 +5,10 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
+    "start-slack-operator": "node src/slack_operator_worker.js",
+    "start-telegram-operator": "node src/telegram_operator_worker.js",
+    "start-feishu-operator": "node src/feishu_operator_worker.js",
+    "start-whatsapp-cloud-operator": "node src/whatsapp_cloud_operator_worker.js",
     "smoke": "node src/smoke_client.js",
     "list-models": "node src/list_models_client.js",
     "skills": "node src/skills_client.js",

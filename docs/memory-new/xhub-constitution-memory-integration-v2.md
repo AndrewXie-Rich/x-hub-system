@@ -6,7 +6,7 @@
 **版本**: 3.0
 **日期**: 2026-02-26
 **状态**: Integration Design - Memory v3 Logical+Physical Architecture
-**目标**: 将 X 宪章深度集成到 Memory v3（5层逻辑 + 4层物理），实现价值边界的持久化、智能化和自适应，全面超越 Claude-Mem
+**目标**: 将 X 宪章深度集成到 Memory v3（5层逻辑 + 4层物理），实现价值边界的持久化、智能化和自适应，全面超越 progressive-disclosure reference architecture
 
 ---
 
@@ -16,7 +16,7 @@
 
 **核心思想**: X 宪章不是独立的"规则文件"，而是记忆系统的"价值内核"
 
-**架构升级**: 从三层物理优化到四层物理，并引入五层逻辑语义，全面超越 Claude-Mem
+**架构升级**: 从三层物理优化到四层物理，并引入五层逻辑语义，全面超越 progressive-disclosure reference architecture
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -105,7 +105,7 @@
 - 智能预热和降级
 ```
 
-**vs Claude-Mem**:
+**vs progressive-disclosure reference architecture**:
 ```
 性能优势:
 - 平均延迟: 7.2ms → 4.9ms（31.5% 提升）
@@ -1236,7 +1236,7 @@ L3 缓存（数据库）:
 
 ## 9. 系统改进方案（基于开源项目对比）
 
-### 9.1 与 OpenClaw 和 Claude-Mem 的对比分析
+### 9.1 与 skills ecosystem 和 progressive-disclosure reference architecture 的对比分析
 
 **当前优势**：
 - ✅ 唯一集成完整道德约束框架（X 宪章 v2.0）
@@ -1245,7 +1245,7 @@ L3 缓存（数据库）:
 
 **发现的劣势**：
 - ❌ 缺少专业向量数据库（Chroma）或轻量级向量扩展（sqlite-vec）
-- ❌ 渐进式披露是被动的，不如 Claude-Mem 的主动 3 层工作流高效（10x token 节省）
+- ❌ 渐进式披露是被动的，不如 progressive-disclosure reference architecture 的主动 3 层工作流高效（10x token 节省）
 - ❌ 缺少文件监听（chokidar）实现实时增量索引
 - ❌ 缺少用户级隐私标签（`<private>` 标签）
 - ❌ 部署复杂度较高（需要 PostgreSQL + Redis + S3）
@@ -1300,7 +1300,7 @@ L3 缓存（数据库）:
 
 #### Phase 6: 主动渐进式披露（P0 - 必须实现）
 
-**目标**: 实现 Claude-Mem 风格的 3 层工作流，实现 10x token 节省
+**目标**: 实现 progressive-disclosure reference architecture 风格的 3 层工作流，实现 10x token 节省
 
 **API 设计**:
 
@@ -1845,27 +1845,27 @@ P99 延迟:
 - ✅ 智能预热机制（4-20x 提升）
 - ✅ 智能降级机制（自动容量管理）
 
-### 10.2 vs Claude-Mem
+### 10.2 vs progressive-disclosure reference architecture
 
 **性能优势**:
 ```
 平均延迟:
-- Claude-Mem: 7.2ms
+- progressive-disclosure reference architecture: 7.2ms
 - X-Hub v3.0: 4.9ms
 - 提升: 31.5%
 
 P95 延迟:
-- Claude-Mem: 20ms
+- progressive-disclosure reference architecture: 20ms
 - X-Hub v3.0: 5ms
 - 提升: 4x
 
 P99 延迟:
-- Claude-Mem: 100ms
+- progressive-disclosure reference architecture: 100ms
 - X-Hub v3.0: 8ms
 - 提升: 12.5x
 
 热缓存命中率:
-- Claude-Mem: 60%
+- progressive-disclosure reference architecture: 60%
 - X-Hub v3.0: 75%
 - 提升: 25%
 ```
@@ -1881,7 +1881,7 @@ P99 延迟:
 **成本优势**:
 ```
 月成本:
-- Claude-Mem: $65（需要独立 Chroma 服务器）
+- progressive-disclosure reference architecture: $65（需要独立 Chroma 服务器）
 - X-Hub v3.0 Lite: $5（SQLite + sqlite-vec）
 - X-Hub v3.0 Pro: $45（可选 Chroma）
 - 节省: 92%（Lite 模式）
@@ -1949,7 +1949,7 @@ X 宪章与 Memory v3（5层逻辑 + 4层物理）的集成方案核心特点：
 - ✅ P95 延迟提升 50%（10ms → 5ms）
 - ✅ P99 延迟提升 84%（50ms → 8ms）
 
-**vs Claude-Mem**:
+**vs progressive-disclosure reference architecture**:
 - ✅ 平均延迟提升 31.5%（7.2ms → 4.9ms）
 - ✅ P95 延迟提升 4x（20ms → 5ms）
 - ✅ P99 延迟提升 12.5x（100ms → 8ms）
@@ -1991,12 +1991,12 @@ X 宪章与 Memory v3（5层逻辑 + 4层物理）的集成方案核心特点：
 
 这套 Memory v3（5层逻辑 + 4层物理）集成方案确保 X 宪章不是"外挂的规则文件"，而是深度融入记忆系统的"价值内核"，为 AGI 提供稳定、智能、可追溯的道德边界。
 
-通过 5层逻辑 + 4层物理、智能预热、混合搜索等创新设计，X-Hub v3.0 在性能、易用性、灵活性上全面超越 Claude-Mem 和 OpenClaw，同时保持独有的道德约束优势。
+通过 5层逻辑 + 4层物理、智能预热、混合搜索等创新设计，X-Hub v3.0 在性能、易用性、灵活性上全面超越 progressive-disclosure reference architecture 和 skills ecosystem，同时保持独有的道德约束优势。
 
 **关键指标**:
-- 平均延迟: 4.9ms（vs Claude-Mem 7.2ms，提升 31.5%）
-- P95 延迟: 5ms（vs Claude-Mem 20ms，提升 4x）
-- 成本: $5/月（vs Claude-Mem $65/月，降低 92%）
+- 平均延迟: 4.9ms（vs progressive-disclosure reference architecture 7.2ms，提升 31.5%）
+- P95 延迟: 5ms（vs progressive-disclosure reference architecture 20ms，提升 4x）
+- 成本: $5/月（vs progressive-disclosure reference architecture $65/月，降低 92%）
 - Token 节省: 78%（主动渐进式披露）
 - 部署时间: < 5 分钟（Lite 模式）
 

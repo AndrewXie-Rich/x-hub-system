@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { resolveRuntimeBaseDir } from './mlx_runtime_ipc.js';
+import { resolveRuntimeBaseDir } from './local_runtime_ipc.js';
 import { sleep, uuid } from './util.js';
 
 function expandHome(p) {

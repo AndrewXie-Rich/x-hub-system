@@ -39,10 +39,69 @@ function normalizeProviderId(value) {
   return String(value || '').trim().toLowerCase();
 }
 
+function normalizeObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
 function normalizeTaskKinds(taskKinds, backend) {
   const out = safeStringList(taskKinds).map((value) => String(value || '').trim().toLowerCase()).filter(Boolean);
   if (out.length > 0) return out;
   return normalizeProviderId(backend) === 'mlx' ? ['text_generate'] : [];
+}
+
+function normalizeTaskLimits(value) {
+  const obj = normalizeObject(value);
+  const out = {};
+  for (const [taskKind, rawLimit] of Object.entries(obj)) {
+    const key = String(taskKind || '').trim().toLowerCase();
+    if (!key) continue;
+    const limit = Number(rawLimit || 0);
+    out[key] = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 1;
+  }
+  return out;
+}
+
+function normalizeResourcePolicy(value) {
+  const obj = normalizeObject(value);
+  return {
+    preferred_device: String(obj.preferredDevice || obj.preferred_device || '').trim(),
+    memory_floor_mb: Math.max(0, Math.floor(Number(obj.memoryFloorMB || obj.memory_floor_mb || 0) || 0)),
+    dtype: String(obj.dtype || '').trim(),
+    concurrency_limit: Math.max(1, Math.floor(Number(obj.concurrencyLimit || obj.concurrency_limit || 1) || 1)),
+    selected_task_kind: String(obj.selectedTaskKind || obj.selected_task_kind || '').trim().toLowerCase(),
+    selected_task_limit: Math.max(1, Math.floor(Number(obj.selectedTaskLimit || obj.selected_task_limit || 1) || 1)),
+    queueing_supported: !!(obj.queueingSupported ?? obj.queueing_supported ?? false),
+    queue_mode: String(obj.queueMode || obj.queue_mode || '').trim(),
+    default_queue_poll_ms: Math.max(0, Math.floor(Number(obj.defaultQueuePollMs || obj.default_queue_poll_ms || 0) || 0)),
+    task_limits: normalizeTaskLimits(obj.taskLimits || obj.task_limits),
+  };
+}
+
+function normalizeSchedulerState(value, fallbackUpdatedAtMs) {
+  const obj = normalizeObject(value);
+  const activeTasks = Array.isArray(obj.activeTasks || obj.active_tasks)
+    ? (obj.activeTasks || obj.active_tasks).map((entry) => {
+      const row = normalizeObject(entry);
+      return {
+        lease_id: String(row.leaseId || row.lease_id || '').trim(),
+        task_kind: String(row.taskKind || row.task_kind || '').trim().toLowerCase(),
+        model_id: String(row.modelId || row.model_id || '').trim(),
+        request_id: String(row.requestId || row.request_id || '').trim(),
+        started_at_ms: parseUpdatedAtMs(row, fallbackUpdatedAtMs),
+      };
+    }).filter((row) => row.lease_id)
+    : [];
+  return {
+    concurrency_limit: Math.max(1, Math.floor(Number(obj.concurrencyLimit || obj.concurrency_limit || 1) || 1)),
+    active_task_count: Math.max(0, Math.floor(Number(obj.activeTaskCount || obj.active_task_count || 0) || 0)),
+    queued_task_count: Math.max(0, Math.floor(Number(obj.queuedTaskCount || obj.queued_task_count || 0) || 0)),
+    queue_mode: String(obj.queueMode || obj.queue_mode || '').trim(),
+    queueing_supported: !!(obj.queueingSupported ?? obj.queueing_supported ?? false),
+    contention_count: Math.max(0, Math.floor(Number(obj.contentionCount || obj.contention_count || 0) || 0)),
+    last_contention_at_ms: parseUpdatedAtMs({ updatedAt: obj.lastContentionAt || obj.last_contention_at }, 0),
+    updated_at_ms: parseUpdatedAtMs(obj, fallbackUpdatedAtMs),
+    active_tasks: activeTasks,
+  };
 }
 
 function normalizeProviderStatus(rawProviderId, rawStatus, fallbackUpdatedAtMs, fallbackRuntimeVersion) {
@@ -59,6 +118,8 @@ function normalizeProviderStatus(rawProviderId, rawStatus, fallbackUpdatedAtMs, 
     device_backend: String(rawStatus?.deviceBackend || rawStatus?.device_backend || '').trim(),
     updated_at_ms: updatedAtMs,
     import_error: String(rawStatus?.importError || rawStatus?.import_error || '').trim(),
+    resource_policy: normalizeResourcePolicy(rawStatus?.resourcePolicy || rawStatus?.resource_policy),
+    scheduler_state: normalizeSchedulerState(rawStatus?.schedulerState || rawStatus?.scheduler_state, updatedAtMs),
   };
 }
 
@@ -146,19 +207,46 @@ export function readRuntimeModelRecord(baseDir, modelId) {
   const models = Array.isArray(raw?.models) ? raw.models : [];
   const needle = String(modelId || '').trim();
   if (!needle) return null;
-  const model = models.find((row) => row && typeof row === 'object' && String(row.id || '').trim() === needle);
-  if (!model || typeof model !== 'object') return null;
-  return {
-    model_id: needle,
-    name: String(model.name || needle).trim(),
-    backend: String(model.backend || '').trim(),
-    model_path: String(model.modelPath || model.model_path || '').trim(),
-    task_kinds: normalizeTaskKinds(model.taskKinds || model.task_kinds, model.backend),
-    input_modalities: safeStringList(model.inputModalities || model.input_modalities),
-    output_modalities: safeStringList(model.outputModalities || model.output_modalities),
-    offline_ready: !!(model.offlineReady ?? model.offline_ready),
-    model_format: String(model.modelFormat || model.model_format || '').trim(),
-  };
+  for (const model of models) {
+    if (!model || typeof model !== 'object') continue;
+    if (String(model.id || '').trim() !== needle) continue;
+    return {
+      model_id: needle,
+      name: String(model.name || needle).trim(),
+      backend: String(model.backend || '').trim(),
+      model_path: String(model.modelPath || model.model_path || '').trim(),
+      task_kinds: normalizeTaskKinds(model.taskKinds || model.task_kinds, model.backend),
+      input_modalities: safeStringList(model.inputModalities || model.input_modalities),
+      output_modalities: safeStringList(model.outputModalities || model.output_modalities),
+      offline_ready: !!(model.offlineReady ?? model.offline_ready),
+      model_format: String(model.modelFormat || model.model_format || '').trim(),
+    };
+  }
+  return null;
+}
+
+export function listRuntimeModelRecords(baseDir) {
+  const p = runtimePaths(baseDir);
+  const raw = readJsonSafe(p.statePath);
+  const models = Array.isArray(raw?.models) ? raw.models : [];
+  const out = [];
+  for (const model of models) {
+    if (!model || typeof model !== 'object') continue;
+    const modelId = String(model.id || '').trim();
+    if (!modelId) continue;
+    out.push({
+      model_id: modelId,
+      name: String(model.name || modelId).trim(),
+      backend: String(model.backend || '').trim(),
+      model_path: String(model.modelPath || model.model_path || '').trim(),
+      task_kinds: normalizeTaskKinds(model.taskKinds || model.task_kinds, model.backend),
+      input_modalities: safeStringList(model.inputModalities || model.input_modalities),
+      output_modalities: safeStringList(model.outputModalities || model.output_modalities),
+      offline_ready: !!(model.offlineReady ?? model.offline_ready),
+      model_format: String(model.modelFormat || model.model_format || '').trim(),
+    });
+  }
+  return out;
 }
 
 export function localProviderForModel(baseDir, modelId) {

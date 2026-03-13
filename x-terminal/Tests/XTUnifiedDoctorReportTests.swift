@@ -118,6 +118,72 @@ struct XTUnifiedDoctorReportTests {
         #expect(decoded.section(.skillsCompatibilityReadiness) != nil)
         #expect(decoded.sections.count == XTUnifiedDoctorSectionKind.allCases.count)
     }
+
+    @Test
+    func skillsSectionRequiresDefaultBaselineWhenMissing() {
+        let model = sampleModel(id: "hub.model.coder")
+        var skills = readySkillsSnapshot()
+        skills.statusKind = .partial
+        skills.missingBaselineSkillIDs = ["find-skills", "agent-browser"]
+        skills.baselineRecommendedSkills = [
+            AXDefaultAgentBaselineSkill(skillID: "find-skills", displayName: "Find Skills", summary: ""),
+            AXDefaultAgentBaselineSkill(skillID: "agent-browser", displayName: "Agent Browser", summary: ""),
+            AXDefaultAgentBaselineSkill(skillID: "self-improving-agent", displayName: "Self Improving Agent", summary: ""),
+            AXDefaultAgentBaselineSkill(skillID: "summarize", displayName: "Summarize", summary: ""),
+        ]
+        skills.statusLine = "skills~ 0/0 b2/4"
+        skills.compatibilityExplain = "baseline_missing=find-skills,agent-browser"
+
+        let report = XTUnifiedDoctorBuilder.build(
+            input: makeDoctorInput(
+                localConnected: true,
+                remoteConnected: false,
+                configuredModelIDs: [model.id],
+                models: [model],
+                bridgeAlive: true,
+                bridgeEnabled: true,
+                sessionRuntime: nil,
+                skillsSnapshot: skills
+            )
+        )
+
+        let section = report.section(.skillsCompatibilityReadiness)
+        #expect(section?.state == .inProgress)
+        #expect(section?.headline == "Default Agent baseline is incomplete")
+        #expect(section?.nextStep.contains("find-skills") == true)
+        #expect(section?.nextStep.contains("agent-browser") == true)
+    }
+
+    @Test
+    func skillsSectionShowsLocalDevPublisherCoverageWhenActive() {
+        let model = sampleModel(id: "hub.model.coder")
+        var skills = readySkillsSnapshot()
+        skills.installedSkillCount = 4
+        skills.compatibleSkillCount = 4
+        skills.baselineRecommendedSkills = defaultBaselineSkills()
+        skills.installedSkills = defaultBaselineSkillEntries(publisherID: AXSkillsDoctorSnapshot.localDevPublisherID)
+        skills.statusLine = "skills 4/4 b4/4"
+
+        let report = XTUnifiedDoctorBuilder.build(
+            input: makeDoctorInput(
+                localConnected: true,
+                remoteConnected: false,
+                configuredModelIDs: [model.id],
+                models: [model],
+                bridgeAlive: true,
+                bridgeEnabled: true,
+                sessionRuntime: nil,
+                skillsSnapshot: skills
+            )
+        )
+
+        let section = report.section(.skillsCompatibilityReadiness)
+        #expect(section?.state == .ready)
+        #expect(section?.detailLines.contains("active_publishers=xhub.local.dev") == true)
+        #expect(section?.detailLines.contains("local_dev_publisher_active=yes") == true)
+        #expect(section?.detailLines.contains("baseline_publishers=xhub.local.dev") == true)
+        #expect(section?.detailLines.contains("baseline_local_dev=4/4") == true)
+    }
 }
 
 private func makeDoctorInput(
@@ -199,4 +265,82 @@ private func readySkillsSnapshot() -> AXSkillsDoctorSnapshot {
         statusLine: "skills 0/0",
         compatibilityExplain: "skills compatibility ready"
     )
+}
+
+private func defaultBaselineSkills() -> [AXDefaultAgentBaselineSkill] {
+    [
+        AXDefaultAgentBaselineSkill(skillID: "find-skills", displayName: "Find Skills", summary: ""),
+        AXDefaultAgentBaselineSkill(skillID: "agent-browser", displayName: "Agent Browser", summary: ""),
+        AXDefaultAgentBaselineSkill(skillID: "self-improving-agent", displayName: "Self Improving Agent", summary: ""),
+        AXDefaultAgentBaselineSkill(skillID: "summarize", displayName: "Summarize", summary: ""),
+    ]
+}
+
+private func defaultBaselineSkillEntries(publisherID: String) -> [AXHubSkillCompatibilityEntry] {
+    [
+        AXHubSkillCompatibilityEntry(
+            skillID: "find-skills",
+            name: "Find Skills",
+            version: "1.1.0",
+            publisherID: publisherID,
+            sourceID: "builtin:catalog",
+            packageSHA256: "a100000000000000000000000000000000000000000000000000000000000001",
+            abiCompatVersion: "skills_abi_compat.v1",
+            compatibilityState: .supported,
+            canonicalManifestSHA256: "b100000000000000000000000000000000000000000000000000000000000001",
+            installHint: "",
+            mappingAliasesUsed: [],
+            defaultsApplied: [],
+            pinnedScopes: ["project"],
+            revoked: false
+        ),
+        AXHubSkillCompatibilityEntry(
+            skillID: "agent-browser",
+            name: "Agent Browser",
+            version: "1.0.0",
+            publisherID: publisherID,
+            sourceID: "builtin:catalog",
+            packageSHA256: "a100000000000000000000000000000000000000000000000000000000000002",
+            abiCompatVersion: "skills_abi_compat.v1",
+            compatibilityState: .supported,
+            canonicalManifestSHA256: "b100000000000000000000000000000000000000000000000000000000000002",
+            installHint: "",
+            mappingAliasesUsed: [],
+            defaultsApplied: [],
+            pinnedScopes: ["project"],
+            revoked: false
+        ),
+        AXHubSkillCompatibilityEntry(
+            skillID: "self-improving-agent",
+            name: "Self Improving Agent",
+            version: "1.0.0",
+            publisherID: publisherID,
+            sourceID: "builtin:catalog",
+            packageSHA256: "a100000000000000000000000000000000000000000000000000000000000003",
+            abiCompatVersion: "skills_abi_compat.v1",
+            compatibilityState: .supported,
+            canonicalManifestSHA256: "b100000000000000000000000000000000000000000000000000000000000003",
+            installHint: "",
+            mappingAliasesUsed: [],
+            defaultsApplied: [],
+            pinnedScopes: ["project"],
+            revoked: false
+        ),
+        AXHubSkillCompatibilityEntry(
+            skillID: "summarize",
+            name: "Summarize",
+            version: "1.1.0",
+            publisherID: publisherID,
+            sourceID: "builtin:catalog",
+            packageSHA256: "a100000000000000000000000000000000000000000000000000000000000004",
+            abiCompatVersion: "skills_abi_compat.v1",
+            compatibilityState: .supported,
+            canonicalManifestSHA256: "b100000000000000000000000000000000000000000000000000000000000004",
+            installHint: "",
+            mappingAliasesUsed: [],
+            defaultsApplied: [],
+            pinnedScopes: ["project"],
+            revoked: false
+        ),
+    ]
 }

@@ -50,6 +50,118 @@ struct ChatSessionModelDirectReplyTests {
     }
 
     @Test
+    func routeDiagnoseShowsProjectOverrideRouteMemoryAndCurrentDecision() throws {
+        let root = try makeProjectRoot(named: "project-route-diagnose")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        let now = Date().timeIntervalSince1970
+
+        AXProjectStore.appendUsage(
+            [
+                "type": "ai_usage",
+                "created_at": now - 60,
+                "stage": "chat_plan",
+                "role": "coder",
+                "requested_model_id": "openai/gpt-5.4",
+                "actual_model_id": "qwen3-14b-mlx",
+                "runtime_provider": "Hub (Local)",
+                "execution_path": "local_fallback_after_remote_error",
+                "fallback_reason_code": "model_not_found",
+            ],
+            for: ctx
+        )
+        AXProjectStore.appendUsage(
+            [
+                "type": "ai_usage",
+                "created_at": now - 40,
+                "stage": "chat_plan",
+                "role": "coder",
+                "requested_model_id": "openai/gpt-5.4",
+                "actual_model_id": "qwen3-14b-mlx",
+                "runtime_provider": "Hub (Local)",
+                "execution_path": "local_fallback_after_remote_error",
+                "fallback_reason_code": "model_not_found",
+            ],
+            for: ctx
+        )
+        AXProjectStore.appendUsage(
+            [
+                "type": "ai_usage",
+                "created_at": now - 20,
+                "stage": "chat_plan",
+                "role": "coder",
+                "requested_model_id": "openai/gpt-5.4",
+                "actual_model_id": "qwen3-14b-mlx",
+                "runtime_provider": "Hub (Local)",
+                "execution_path": "local_fallback_after_remote_error",
+                "fallback_reason_code": "model_not_found",
+            ],
+            for: ctx
+        )
+
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingModelOverride(role: .coder, modelId: "openai/gpt-5.4")
+
+        let store = SettingsStore()
+        store.settings = store.settings.setting(role: .coder, providerKind: .hub, model: "openai/gpt-5-low")
+        let router = LLMRouter(settingsStore: store)
+        let session = ChatSessionModel()
+
+        let rendered = session.projectRouteDiagnosisTextForTesting(
+            ctx: ctx,
+            config: config,
+            router: router,
+            routeSnapshot: ModelStateSnapshot(
+                models: [
+                    HubModel(
+                        id: "openai/gpt-5.4",
+                        name: "GPT 5.4",
+                        backend: "openai",
+                        quant: "n/a",
+                        contextLength: 200_000,
+                        paramsB: 0,
+                        roles: nil,
+                        state: .available,
+                        memoryBytes: nil,
+                        tokensPerSec: nil,
+                        modelPath: nil,
+                        note: nil
+                    )
+                ],
+                updatedAt: 130
+            ),
+            localSnapshot: ModelStateSnapshot(
+                models: [
+                    HubModel(
+                        id: "qwen3-14b-mlx",
+                        name: "Qwen 3 14B",
+                        backend: "mlx",
+                        quant: "bf16",
+                        contextLength: 32_768,
+                        paramsB: 14,
+                        roles: nil,
+                        state: .loaded,
+                        memoryBytes: nil,
+                        tokensPerSec: nil,
+                        modelPath: "/models/qwen3",
+                        note: nil
+                    )
+                ],
+                updatedAt: 130
+            )
+        )
+
+        #expect(rendered.contains("Project route diagnose: coder"))
+        #expect(rendered.contains("配置来源：project override"))
+        #expect(rendered.contains("当前决策：XT 当前会先锁本地：qwen3-14b-mlx"))
+        #expect(rendered.contains("route memory"))
+        #expect(rendered.contains("consecutive_remote_fallbacks=3"))
+        #expect(rendered.contains("提示：project override 会优先于全局 assignment"))
+    }
+
+    @Test
     func identityQuestionDoesNotPretendRemoteModelWasUsed() throws {
         let root = try makeProjectRoot(named: "project-direct-identity")
         defer { try? FileManager.default.removeItem(at: root) }

@@ -103,6 +103,31 @@ struct ContentView: View {
                 }
                 .help("Import skill folders into the skills library")
 
+                Button("Review Import") {
+                    appModel.reviewLastImportedSkill()
+                }
+                .help("Review the last staged agent skill import from Hub")
+                .disabled(!appModel.canReviewLastImportedAgentSkill)
+
+                Button("Enable Import") {
+                    appModel.enableLastImportedSkill()
+                }
+                .help("Package, upload, and enable the last imported agent skill through Hub governance")
+                .disabled(!appModel.canEnableLastImportedAgentSkill)
+
+                Menu("Baseline") {
+                    Button("Install in Current Project") {
+                        appModel.installDefaultAgentBaselineForCurrentProject()
+                    }
+                    .disabled(!appModel.canInstallDefaultAgentBaselineForCurrentProject)
+
+                    Button("Install Globally") {
+                        appModel.installDefaultAgentBaselineGlobally()
+                    }
+                    .disabled(!appModel.canInstallDefaultAgentBaselineGlobally)
+                }
+                .help("Install the default Agent baseline through Hub-governed skill pinning")
+
                 Button {
                     appModel.openCurrentSkillsIndex()
                 } label: {
@@ -175,6 +200,20 @@ struct ContentView: View {
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(skillsStatusColor)
                         .help(appModel.skillsCompatibilitySnapshot.compatibilityExplain)
+                }
+
+                if !appModel.lastImportedAgentSkillToolbarStatusLine.isEmpty {
+                    Text(appModel.lastImportedAgentSkillToolbarStatusLine)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(appModel.agentSkillImportBusy ? .orange : .secondary)
+                        .help(appModel.lastImportedAgentSkillStatusLine)
+                }
+
+                if !appModel.baselineInstallToolbarStatusLine.isEmpty {
+                    Text(appModel.baselineInstallToolbarStatusLine)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(appModel.baselineInstallBusy ? .orange : .secondary)
+                        .help(appModel.baselineInstallStatusLine)
                 }
             }
         }

@@ -167,7 +167,7 @@ struct SupervisorManagerAutomationRuntimeTests {
                 )
             }
 
-            let root = try makeProjectRoot()
+            let root = try makeRegistryVisibleProjectRoot()
             defer {
                 manager.resetAutomationRuntimeState()
                 AXTrustedAutomationPermissionOwnerReadiness.resetCurrentProviderForTesting()
@@ -574,6 +574,174 @@ struct SupervisorManagerAutomationRuntimeTests {
                 && ($0["decision"] as? String) == "run"
                 && ($0["run_id"] as? String) == runId
         })
+    }
+
+    @Test
+    func operatorChannelXTCommandPrepareDeployPlanUsesPrepareOnlyPathAndPersistsResult() async throws {
+        try await Self.gate.run {
+            let manager = SupervisorManager.makeForTesting()
+            manager.resetAutomationRuntimeState()
+
+            let originalMode = HubAIClient.transportMode()
+            let hubBase = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xt_operator_channel_test_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: hubBase, withIntermediateDirectories: true)
+            HubAIClient.setTransportMode(.fileIPC)
+            HubPaths.setPinnedBaseDirOverride(hubBase)
+
+            let root = try makeRegistryVisibleProjectRoot()
+            defer {
+                HubAIClient.setTransportMode(originalMode)
+                HubPaths.clearPinnedBaseDirOverride()
+                manager.resetAutomationRuntimeState()
+                try? FileManager.default.removeItem(at: root)
+                try? FileManager.default.removeItem(at: hubBase)
+            }
+
+            let ctx = AXProjectContext(root: root)
+            _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+            try armTrustedAutomation(for: ctx)
+            let project = makeProjectEntry(root: root)
+            let appModel = AppModel()
+            appModel.registry = AXProjectRegistry(
+                version: AXProjectRegistry.currentVersion,
+                updatedAt: 1_773_202_300,
+                sortPolicy: "manual_then_last_opened",
+                globalHomeVisible: false,
+                lastSelectedProjectId: project.projectId,
+                projects: [project]
+            )
+            manager.setAppModel(appModel)
+
+            let snapshot = HubIPCClient.OperatorChannelXTCommandSnapshot(
+                source: "hub_runtime_grpc",
+                updatedAtMs: 1_773_202_301_000,
+                items: [
+                    HubIPCClient.OperatorChannelXTCommandItem(
+                        commandId: "cmd-op-1",
+                        requestId: "req-op-1",
+                        actionName: "deploy.plan",
+                        bindingId: "binding-op-1",
+                        routeId: "route-op-1",
+                        scopeType: "project",
+                        scopeId: project.projectId,
+                        projectId: project.projectId,
+                        provider: "slack",
+                        accountId: "ops-slack",
+                        conversationId: "C123",
+                        threadKey: "1710000000.0001",
+                        actorRef: "xhub.im_identity_binding.v1:slack/U123",
+                        resolvedDeviceId: "device_xt_001",
+                        preferredDeviceId: "device_xt_001",
+                        note: "",
+                        createdAtMs: 1_773_202_300_500,
+                        auditRef: "audit-op-1"
+                    )
+                ]
+            )
+
+            let results = manager.serviceOperatorChannelXTCommandsForTesting(
+                snapshot,
+                now: Date(timeIntervalSince1970: 1_773_202_302)
+            )
+            #expect(results.count == 1)
+            let first = try #require(results.first)
+            #expect(first.commandId == "cmd-op-1")
+            #expect(first.status == "prepared")
+            #expect(first.actionName == "deploy.plan")
+            #expect(first.projectId == project.projectId)
+            let runId = try #require(first.runId.isEmpty ? nil : first.runId)
+            #expect(manager.automationPreparedRun?.launchRef == runId)
+            #expect(manager.automationCurrentCheckpoint?.state == .queued)
+
+            let stored = await HubIPCClient.requestOperatorChannelXTCommandResults(projectId: project.projectId, limit: 10)
+            #expect(stored?.items.first?.commandId == "cmd-op-1")
+            #expect(stored?.items.first?.status == "prepared")
+
+            let commandRows = try rawLogEntries(for: ctx).filter {
+                ($0["type"] as? String) == "operator_channel_xt_command"
+            }
+            #expect(commandRows.contains {
+                ($0["phase"] as? String) == "prepared"
+                    && ($0["command_id"] as? String) == "cmd-op-1"
+                    && ($0["run_id"] as? String) == runId
+            })
+        }
+    }
+
+    @Test
+    func operatorChannelXTCommandFailsClosedWhenProjectBindingDoesNotMatchRoutedDevice() async throws {
+        try await Self.gate.run {
+            let manager = SupervisorManager.makeForTesting()
+            manager.resetAutomationRuntimeState()
+
+            let root = try makeProjectRoot()
+            defer {
+                manager.resetAutomationRuntimeState()
+                try? FileManager.default.removeItem(at: root)
+            }
+
+            let ctx = AXProjectContext(root: root)
+            _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+            try armTrustedAutomation(for: ctx)
+            let project = makeProjectEntry(root: root)
+            let appModel = AppModel()
+            appModel.registry = AXProjectRegistry(
+                version: AXProjectRegistry.currentVersion,
+                updatedAt: 1_773_202_400,
+                sortPolicy: "manual_then_last_opened",
+                globalHomeVisible: false,
+                lastSelectedProjectId: project.projectId,
+                projects: [project]
+            )
+            manager.setAppModel(appModel)
+
+            let snapshot = HubIPCClient.OperatorChannelXTCommandSnapshot(
+                source: "hub_runtime_grpc",
+                updatedAtMs: 1_773_202_401_000,
+                items: [
+                    HubIPCClient.OperatorChannelXTCommandItem(
+                        commandId: "cmd-op-mismatch",
+                        requestId: "req-op-mismatch",
+                        actionName: "deploy.plan",
+                        bindingId: "binding-op-1",
+                        routeId: "route-op-1",
+                        scopeType: "project",
+                        scopeId: project.projectId,
+                        projectId: project.projectId,
+                        provider: "slack",
+                        accountId: "ops-slack",
+                        conversationId: "C123",
+                        threadKey: "1710000000.0002",
+                        actorRef: "xhub.im_identity_binding.v1:slack/U123",
+                        resolvedDeviceId: "device_xt_999",
+                        preferredDeviceId: "device_xt_999",
+                        note: "",
+                        createdAtMs: 1_773_202_400_500,
+                        auditRef: "audit-op-mismatch"
+                    )
+                ]
+            )
+
+            let first = manager.executeOperatorChannelXTCommandForTesting(
+                snapshot.items[0],
+                project: project,
+                now: Date(timeIntervalSince1970: 1_773_202_402)
+            )
+            #expect(first.status == "failed")
+            #expect(first.denyCode == "trusted_automation_project_not_bound")
+            #expect(first.runId.isEmpty)
+            #expect(manager.automationPreparedRun == nil)
+
+            let commandRows = try rawLogEntries(for: ctx).filter {
+                ($0["type"] as? String) == "operator_channel_xt_command"
+            }
+            #expect(commandRows.contains {
+                ($0["phase"] as? String) == "failed"
+                    && ($0["command_id"] as? String) == "cmd-op-mismatch"
+                    && ($0["deny_code"] as? String) == "trusted_automation_project_not_bound"
+            })
+        }
     }
 
     @Test
@@ -1357,6 +1525,13 @@ struct SupervisorManagerAutomationRuntimeTests {
     private func makeProjectRoot() throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("xterminal-supervisor-manager-automation-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    private func makeRegistryVisibleProjectRoot() throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xt-operator-channel-runtime-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
     }

@@ -31,6 +31,14 @@ struct AXProjectContext: Equatable {
         xterminalDir.appendingPathComponent("supervisor_skill_calls.json")
     }
 
+    var supervisorSkillResultsDir: URL {
+        xterminalDir.appendingPathComponent("supervisor_skill_results", isDirectory: true)
+    }
+
+    var resolvedSkillsCacheURL: URL {
+        xterminalDir.appendingPathComponent("resolved_skills_cache.json")
+    }
+
     var usageLogURL: URL {
         xterminalDir.appendingPathComponent("usage.jsonl")
     }
@@ -83,5 +91,14 @@ struct AXProjectContext: Equatable {
 
     func projectName() -> String {
         root.lastPathComponent
+    }
+
+    func supervisorSkillResultEvidenceURL(requestId: String) -> URL {
+        let base = requestId
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+        let safe = base.isEmpty ? UUID().uuidString.lowercased() : base
+        return supervisorSkillResultsDir.appendingPathComponent("\(safe).json")
     }
 }

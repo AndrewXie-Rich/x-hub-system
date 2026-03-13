@@ -26,6 +26,7 @@ struct SupervisorSkillCallRecord: Identifiable, Equatable, Codable, Sendable {
     var currentOwner: String
     var resultSummary: String
     var denyCode: String
+    var resultEvidenceRef: String?
     var requiredCapability: String?
     var grantRequestId: String?
     var grantId: String?
@@ -49,6 +50,7 @@ struct SupervisorSkillCallRecord: Identifiable, Equatable, Codable, Sendable {
         case currentOwner = "current_owner"
         case resultSummary = "result_summary"
         case denyCode = "deny_code"
+        case resultEvidenceRef = "result_evidence_ref"
         case requiredCapability = "required_capability"
         case grantRequestId = "grant_request_id"
         case grantId = "grant_id"

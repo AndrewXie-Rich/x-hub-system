@@ -1,0 +1,26 @@
+{
+  "schema_version": "xhub.skill_manifest.v1",
+  "skill_id": "agent-browser",
+  "name": "Agent Browser",
+  "version": "1.0.0",
+  "description": "Governed browser automation package for navigation, screenshot capture, structured extraction, and Secret Vault-aware credential handling.",
+  "entrypoint": {
+    "runtime": "text",
+    "command": "cat",
+    "args": [
+      "SKILL.md"
+    ]
+  },
+  "capabilities_required": [
+    "browser.read",
+    "device.browser.control",
+    "web.fetch"
+  ],
+  "network_policy": {
+    "direct_network_forbidden": true
+  },
+  "publisher": {
+    "publisher_id": "xhub.official"
+  },
+  "install_hint": "Install through the governed Agent Baseline flow before browser-heavy tasks."
+}

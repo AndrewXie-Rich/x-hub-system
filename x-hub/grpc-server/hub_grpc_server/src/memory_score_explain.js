@@ -42,7 +42,7 @@ function normalizeExplainItem(row, defaultRank = 1) {
     trust_level: safeStr(r.trust_level) || 'trusted',
     final_score: round6(r.final_score),
     components: {
-      vector_score: 0,
+      vector_score: round6(r.vector_score),
       text_score: round6(r.lexical_score),
       recency_score: round6(r.recency_score),
       mmr_score: 0,
@@ -59,6 +59,21 @@ export function buildMemoryScoreExplainPayload({ retrieval, limit = 3, include_t
   const rows = Array.isArray(out.results) ? out.results : [];
   const lim = parseIntInRange(limit, 3, 1, 10);
   const normalized = rows.slice(0, lim).map((row, idx) => normalizeExplainItem(row, idx + 1));
+  const weights = out.weights && typeof out.weights === 'object'
+    ? {
+        vector: round6(out.weights.vector),
+        text: round6(out.weights.text),
+        recency: round6(out.weights.recency),
+        mmr: round6(out.weights.mmr),
+        risk: round6(out.weights.risk || 1),
+      }
+    : {
+        vector: 0,
+        text: 0.85,
+        recency: 0.15,
+        mmr: 0,
+        risk: 1,
+      };
   const traceRows = include_trace
     ? (Array.isArray(out.pipeline_stage_trace) ? out.pipeline_stage_trace : [])
       .slice(0, 8)
@@ -67,14 +82,8 @@ export function buildMemoryScoreExplainPayload({ retrieval, limit = 3, include_t
 
   return {
     schema_version: 'xhub.memory.score_explain.v1',
-    formula: 'final=relevance-risk_penalty; relevance=0.85*text+0.15*recency; vector=0; mmr=0',
-    weights: {
-      vector: 0,
-      text: 0.85,
-      recency: 0.15,
-      mmr: 0,
-      risk: 1,
-    },
+    formula: safeStr(out.formula) || 'final=relevance-risk_penalty; relevance=0.85*text+0.15*recency; vector=0; mmr=0',
+    weights,
     blocked: !!out.blocked,
     deny_reason: safeStr(out.deny_reason),
     result_total: rows.length,

@@ -2,10 +2,59 @@ import AppKit
 import SwiftUI
 import RELFlowHubCore
 
+private enum LocalBackendOption: String, CaseIterable, Identifiable {
+    case mlx
+    case transformers
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .mlx:
+            return "MLX"
+        case .transformers:
+            return "Transformers"
+        }
+    }
+}
+
+private struct DetectedLocalModelMetadata {
+    var modelFormat: String
+    var taskKinds: [String]
+    var inputModalities: [String]
+    var outputModalities: [String]
+    var offlineReady: Bool
+    var resourceProfile: ModelResourceProfile
+    var trustProfile: ModelTrustProfile
+    var processorRequirements: ModelProcessorRequirements
+    var sourceSummary: String
+
+    static func defaults(backend: String, quant: String = "", paramsB: Double = 0.0) -> DetectedLocalModelMetadata {
+        let defaultTaskKinds = LocalModelCapabilityDefaults.defaultTaskKinds(forBackend: backend)
+        let modelFormat = LocalModelCapabilityDefaults.defaultModelFormat(forBackend: backend)
+        return DetectedLocalModelMetadata(
+            modelFormat: modelFormat,
+            taskKinds: defaultTaskKinds,
+            inputModalities: LocalModelCapabilityDefaults.defaultInputModalities(forTaskKinds: defaultTaskKinds),
+            outputModalities: LocalModelCapabilityDefaults.defaultOutputModalities(forTaskKinds: defaultTaskKinds),
+            offlineReady: LocalModelCapabilityDefaults.defaultOfflineReady(backend: backend, modelPath: "/local"),
+            resourceProfile: LocalModelCapabilityDefaults.defaultResourceProfile(backend: backend, quant: quant, paramsB: paramsB),
+            trustProfile: LocalModelCapabilityDefaults.defaultTrustProfile(),
+            processorRequirements: LocalModelCapabilityDefaults.defaultProcessorRequirements(
+                backend: backend,
+                modelFormat: modelFormat,
+                taskKinds: defaultTaskKinds
+            ),
+            sourceSummary: "inferred"
+        )
+    }
+}
+
 @MainActor
 struct AddModelSheet: View {
     @Environment(\.dismiss) private var dismiss
 
+    @State private var backend: LocalBackendOption = .mlx
     @State private var modelPath: String = ""
     @State private var modelId: String = ""
     @State private var modelName: String = ""
@@ -18,6 +67,7 @@ struct AddModelSheet: View {
     @State private var errorText: String = ""
     @State private var isAdding: Bool = false
     @State private var progressText: String = ""
+    @State private var detectedMetadata: DetectedLocalModelMetadata = .defaults(backend: "mlx")
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -25,15 +75,36 @@ struct AddModelSheet: View {
                 .font(.headline)
 
             VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 10) {
-                    Button("Select Folder…") {
-                        pickFolder()
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Backend")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Picker("Backend", selection: $backend) {
+                            ForEach(LocalBackendOption.allCases) { option in
+                                Text(option.title).tag(option)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(width: 160, alignment: .leading)
                     }
 
-                    Text(modelPath.isEmpty ? "No folder selected" : modelPath)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Folder")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        HStack(spacing: 10) {
+                            Button("Select Folder…") {
+                                pickFolder()
+                            }
+
+                            Text(modelPath.isEmpty ? "No folder selected" : modelPath)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
                 }
 
                 HStack {
@@ -42,7 +113,7 @@ struct AddModelSheet: View {
                 }
 
                 HStack(spacing: 10) {
-                    Text("Detected: \(quantText()) · ctx \(ctx) · \(paramsText())")
+                    Text("Detected: \(backend.title) · \(detectedMetadata.modelFormat) · \(taskSummary())")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -53,9 +124,20 @@ struct AddModelSheet: View {
                     .buttonStyle(.link)
                 }
 
+                HStack(spacing: 10) {
+                    Text("Resources: \(quantText()) · ctx \(ctx) · \(paramsText()) · \(detectedMetadata.resourceProfile.preferredDevice)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer()
+                    Text("Source: \(detectedMetadata.sourceSummary)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 if showAdvanced {
                     HStack {
-                        TextField("Quant (e.g. int4/bf16)", text: $quant)
+                        TextField("Quant (e.g. int4/bf16/fp16)", text: $quant)
                         Stepper("ctx \(ctx)", value: $ctx, in: 512...131072, step: 512)
                     }
 
@@ -63,7 +145,6 @@ struct AddModelSheet: View {
                 }
 
                 HStack(alignment: .top, spacing: 12) {
-                    // Use a menu-style picker so it doesn't look like an editable text field.
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Role")
                             .font(.caption)
@@ -120,7 +201,11 @@ struct AddModelSheet: View {
             }
         }
         .padding(18)
-        .frame(width: 520)
+        .frame(width: 560)
+        .onChange(of: backend) { _ in
+            guard !modelPath.isEmpty else { return }
+            detectMetadata(for: URL(fileURLWithPath: modelPath, isDirectory: true))
+        }
     }
 
     private func pickFolder() {
@@ -135,38 +220,54 @@ struct AddModelSheet: View {
         if p.runModal() == .OK, let url = p.url {
             modelPath = url.path
 
-            // Best-effort defaults.
             let folder = url.lastPathComponent
             if modelName.isEmpty { modelName = folder }
             if modelId.isEmpty { modelId = sanitizeId(folder) }
 
-            // Auto-detect metadata from config.json and/or filenames.
             detectMetadata(for: url)
         }
     }
 
     private func detectMetadata(for url: URL) {
+        errorText = ""
         let folder = url.lastPathComponent
-
         let config = readConfigJSON(dir: url)
+        let manifest = XHubLocalModelManifestLoader.load(from: url)
 
-        // ctx
+        if let manifest,
+           let manifestBackend = LocalBackendOption(rawValue: manifest.backend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()),
+           manifestBackend != backend {
+            backend = manifestBackend
+            return
+        }
+
         if let c = detectContextLength(config: config), c > 0 {
             ctx = c
         } else {
             ctx = 8192
         }
 
-        // quant
         if quant.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             quant = detectQuant(folder: folder, config: config)
         }
 
-        // paramsB
-        if paramsBText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            if let pb = detectParamsB(folder: folder, dir: url, quant: quant), pb > 0 {
-                paramsBText = String(format: "%.1f", pb)
-            }
+        if paramsBText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let pb = detectParamsB(folder: folder, dir: url, quant: quant),
+           pb > 0 {
+            paramsBText = String(format: "%.1f", pb)
+        }
+
+        let pb = Double(paramsBText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0.0
+        let resolved = resolveMetadata(for: url, config: config, paramsB: pb, surfaceErrors: false)
+        if let metadata = resolved.metadata {
+            detectedMetadata = metadata
+        } else if let error = resolved.error {
+            detectedMetadata = DetectedLocalModelMetadata.defaults(
+                backend: backend.rawValue,
+                quant: quant,
+                paramsB: pb
+            )
+            errorText = error
         }
     }
 
@@ -195,20 +296,16 @@ struct AddModelSheet: View {
     }
 
     private func detectQuant(folder: String, config: [String: Any]?) -> String {
-        // Config sometimes encodes dtype (bf16/fp16) but not int4.
-        if let c = config {
-            if let td = c["torch_dtype"] as? String {
-                let s = td.lowercased()
-                if s.contains("bfloat16") { return "bf16" }
-                if s.contains("float16") { return "fp16" }
-                if s.contains("float32") { return "fp32" }
-            }
+        if let c = config, let td = c["torch_dtype"] as? String {
+            let s = td.lowercased()
+            if s.contains("bfloat16") { return "bf16" }
+            if s.contains("float16") { return "fp16" }
+            if s.contains("float32") { return "fp32" }
         }
         return inferQuant(folder)
     }
 
     private func detectParamsB(folder: String, dir: URL, quant: String) -> Double? {
-        // 1) Folder-name heuristic: "8B", "1.8B", "14b".
         do {
             let s = folder
             let r = try NSRegularExpression(pattern: "(?i)(\\d+(?:\\.\\d+)?)\\s*b")
@@ -220,7 +317,6 @@ struct AddModelSheet: View {
             // ignore
         }
 
-        // 2) Size-based heuristic from weights files.
         let bpp: Double
         let q = quant.lowercased()
         if q.contains("int4") || q == "4" {
@@ -258,7 +354,12 @@ struct AddModelSheet: View {
         if s.contains("int8") || s.contains("8bit") || s.contains("_8") { return "int8" }
         if s.contains("bf16") { return "bf16" }
         if s.contains("fp16") { return "fp16" }
-        return "int4"
+        return backend == .mlx ? "int4" : "fp16"
+    }
+
+    private func taskSummary() -> String {
+        let taskKinds = detectedMetadata.taskKinds.isEmpty ? ["unknown"] : detectedMetadata.taskKinds
+        return taskKinds.joined(separator: ", ")
     }
 
     private func quantText() -> String {
@@ -289,6 +390,173 @@ struct AddModelSheet: View {
         return out.trimmingCharacters(in: CharacterSet(charactersIn: "_-"))
     }
 
+    private func resolveMetadata(
+        for url: URL,
+        config: [String: Any]?,
+        paramsB: Double,
+        surfaceErrors: Bool
+    ) -> (metadata: DetectedLocalModelMetadata?, error: String?) {
+        let manifest = XHubLocalModelManifestLoader.load(from: url)
+        let normalizedBackend = (manifest?.backend ?? backend.rawValue).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard normalizedBackend == LocalBackendOption.mlx.rawValue || normalizedBackend == LocalBackendOption.transformers.rawValue else {
+            return (nil, "Unsupported local backend '\(normalizedBackend)'. v1 only accepts MLX or Transformers.")
+        }
+
+        if normalizedBackend == LocalBackendOption.mlx.rawValue {
+            let cfg = url.appendingPathComponent("config.json")
+            guard FileManager.default.fileExists(atPath: cfg.path) else {
+                return (nil, "Selected folder is not a valid MLX model folder (missing config.json).")
+            }
+            return (
+                DetectedLocalModelMetadata(
+                    modelFormat: manifest?.modelFormat ?? "mlx",
+                    taskKinds: manifest?.taskKinds ?? ["text_generate"],
+                    inputModalities: manifest?.inputModalities ?? ["text"],
+                    outputModalities: manifest?.outputModalities ?? ["text"],
+                    offlineReady: manifest?.offlineReady ?? true,
+                    resourceProfile: manifest?.resourceProfile ?? LocalModelCapabilityDefaults.defaultResourceProfile(
+                        backend: normalizedBackend,
+                        quant: quant,
+                        paramsB: paramsB
+                    ),
+                    trustProfile: manifest?.trustProfile ?? LocalModelCapabilityDefaults.defaultTrustProfile(),
+                    processorRequirements: manifest?.processorRequirements ?? ModelProcessorRequirements(
+                        tokenizerRequired: true,
+                        processorRequired: false,
+                        featureExtractorRequired: false
+                    ),
+                    sourceSummary: manifest == nil ? "inferred" : XHubLocalModelManifestLoader.fileName
+                ),
+                nil
+            )
+        }
+
+        let cfg = url.appendingPathComponent("config.json")
+        guard manifest != nil || FileManager.default.fileExists(atPath: cfg.path) else {
+            return (nil, "Transformers import requires config.json or xhub_model_manifest.json in the selected folder.")
+        }
+
+        if let manifest {
+            return (
+                DetectedLocalModelMetadata(
+                    modelFormat: manifest.modelFormat,
+                    taskKinds: manifest.taskKinds,
+                    inputModalities: manifest.inputModalities,
+                    outputModalities: manifest.outputModalities,
+                    offlineReady: manifest.offlineReady,
+                    resourceProfile: manifest.resourceProfile,
+                    trustProfile: manifest.trustProfile,
+                    processorRequirements: manifest.processorRequirements,
+                    sourceSummary: XHubLocalModelManifestLoader.fileName
+                ),
+                nil
+            )
+        }
+
+        guard let inferred = inferTransformersMetadata(folder: url.lastPathComponent, config: config, paramsB: paramsB) else {
+            let msg = "Transformers folder is missing xhub_model_manifest.json, and task kind could not be inferred from config.json. Add a manifest to declare embedding / speech_to_text / vision_understand / ocr."
+            return (nil, msg)
+        }
+        return (inferred, nil)
+    }
+
+    private func inferTransformersMetadata(
+        folder: String,
+        config: [String: Any]?,
+        paramsB: Double
+    ) -> DetectedLocalModelMetadata? {
+        let architectures = ((config?["architectures"] as? [String]) ?? []).joined(separator: " ").lowercased()
+        let modelType = (config?["model_type"] as? String ?? "").lowercased()
+        let nameSignal = folder.lowercased()
+        let haystack = [architectures, modelType, nameSignal].joined(separator: " ")
+
+        let modelFormat = "hf_transformers"
+        let trustProfile = LocalModelCapabilityDefaults.defaultTrustProfile()
+        let baseProfile = LocalModelCapabilityDefaults.defaultResourceProfile(
+            backend: LocalBackendOption.transformers.rawValue,
+            quant: quant,
+            paramsB: paramsB
+        )
+
+        if containsAny(haystack, keywords: ["whisper", "wav2vec", "hubert", "speech", "asr", "ctc"]) {
+            return DetectedLocalModelMetadata(
+                modelFormat: modelFormat,
+                taskKinds: ["speech_to_text"],
+                inputModalities: ["audio"],
+                outputModalities: ["text", "segments"],
+                offlineReady: true,
+                resourceProfile: baseProfile,
+                trustProfile: trustProfile,
+                processorRequirements: ModelProcessorRequirements(
+                    tokenizerRequired: false,
+                    processorRequired: true,
+                    featureExtractorRequired: true
+                ),
+                sourceSummary: "inferred: config/audio"
+            )
+        }
+
+        if containsAny(haystack, keywords: ["trocr", "donut", "ocr"]) {
+            return DetectedLocalModelMetadata(
+                modelFormat: modelFormat,
+                taskKinds: ["ocr"],
+                inputModalities: ["image"],
+                outputModalities: ["text", "spans"],
+                offlineReady: true,
+                resourceProfile: baseProfile,
+                trustProfile: trustProfile,
+                processorRequirements: ModelProcessorRequirements(
+                    tokenizerRequired: true,
+                    processorRequired: true,
+                    featureExtractorRequired: true
+                ),
+                sourceSummary: "inferred: config/ocr"
+            )
+        }
+
+        if containsAny(haystack, keywords: ["llava", "blip", "siglip", "clip", "florence", "pix2struct", "vision"]) {
+            return DetectedLocalModelMetadata(
+                modelFormat: modelFormat,
+                taskKinds: ["vision_understand"],
+                inputModalities: ["image"],
+                outputModalities: ["text"],
+                offlineReady: true,
+                resourceProfile: baseProfile,
+                trustProfile: trustProfile,
+                processorRequirements: ModelProcessorRequirements(
+                    tokenizerRequired: true,
+                    processorRequired: true,
+                    featureExtractorRequired: true
+                ),
+                sourceSummary: "inferred: config/vision"
+            )
+        }
+
+        if containsAny(haystack, keywords: ["bge", "gte", "e5", "mpnet", "sentence", "jina", "embed"]) {
+            return DetectedLocalModelMetadata(
+                modelFormat: modelFormat,
+                taskKinds: ["embedding"],
+                inputModalities: ["text"],
+                outputModalities: ["embedding"],
+                offlineReady: true,
+                resourceProfile: baseProfile,
+                trustProfile: trustProfile,
+                processorRequirements: ModelProcessorRequirements(
+                    tokenizerRequired: true,
+                    processorRequired: false,
+                    featureExtractorRequired: false
+                ),
+                sourceSummary: "inferred: config/embedding"
+            )
+        }
+
+        return nil
+    }
+
+    private func containsAny(_ haystack: String, keywords: [String]) -> Bool {
+        keywords.contains { haystack.contains($0) }
+    }
+
     private func validateAndBuildEntry() -> ModelCatalogEntry? {
         errorText = ""
         let id = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -300,16 +568,27 @@ struct AddModelSheet: View {
             errorText = "Please select a model folder."
             return nil
         }
-        // MLX-LM expects a HuggingFace-style folder with config.json.
-        let cfg = URL(fileURLWithPath: modelPath, isDirectory: true).appendingPathComponent("config.json")
-        if !FileManager.default.fileExists(atPath: cfg.path) {
-            errorText = "Selected folder is not a valid MLX model folder (missing config.json). Please pick the folder that contains config.json."
-            return nil
-        }
 
         let name = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
         let q = quant.trimmingCharacters(in: .whitespacesAndNewlines)
         let pb = Double(paramsBText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0.0
+        let modelURL = URL(fileURLWithPath: modelPath, isDirectory: true)
+        let config = readConfigJSON(dir: modelURL)
+        let resolved: DetectedLocalModelMetadata
+        let result = resolveMetadata(for: modelURL, config: config, paramsB: pb, surfaceErrors: true)
+        if let metadata = result.metadata {
+            resolved = metadata
+        } else {
+            let error = result.error ?? "Model capabilities could not be resolved."
+            errorText = error
+            return nil
+        }
+
+        if resolved.taskKinds.isEmpty {
+            errorText = "Model capabilities could not be determined. Add xhub_model_manifest.json with task_kinds/input_modalities/output_modalities."
+            return nil
+        }
+
         var roles: [String] = []
         let baseRole = role.trimmingCharacters(in: .whitespacesAndNewlines)
         if !baseRole.isEmpty {
@@ -320,7 +599,7 @@ struct AddModelSheet: View {
             .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
             .filter { !$0.isEmpty }
         roles.append(contentsOf: extra)
-        // De-dup while preserving order.
+
         var uniq: [String] = []
         var seen: Set<String> = []
         for r in roles {
@@ -328,18 +607,25 @@ struct AddModelSheet: View {
             seen.insert(r)
             uniq.append(r)
         }
-        roles = uniq
 
         return ModelCatalogEntry(
             id: id,
             name: name.isEmpty ? id : name,
-            backend: "mlx",
-            quant: q.isEmpty ? "int4" : q,
+            backend: backend.rawValue,
+            quant: q.isEmpty ? inferQuant(modelURL.lastPathComponent) : q,
             contextLength: max(512, ctx),
             paramsB: max(0.0, pb),
             modelPath: modelPath,
-            roles: roles,
-            note: "catalog"
+            roles: uniq,
+            note: "catalog",
+            modelFormat: resolved.modelFormat,
+            taskKinds: resolved.taskKinds,
+            inputModalities: resolved.inputModalities,
+            outputModalities: resolved.outputModalities,
+            offlineReady: resolved.offlineReady,
+            resourceProfile: resolved.resourceProfile,
+            trustProfile: resolved.trustProfile,
+            processorRequirements: resolved.processorRequirements
         )
     }
 
@@ -356,7 +642,6 @@ struct AddModelSheet: View {
             return
         }
 
-        // Sandbox builds: copy the model folder into Hub-managed storage so the runtime can read it.
         if SharedPaths.isSandboxedProcess() {
             progressText = "Importing model into Hub storage..."
             let base = SharedPaths.ensureHubDirectory()

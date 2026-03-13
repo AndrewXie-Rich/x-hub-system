@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 
 import grpc from '@grpc/grpc-js';
 
-import { resolveRuntimeBaseDir } from './mlx_runtime_ipc.js';
+import { resolveRuntimeBaseDir } from './local_runtime_ipc.js';
 
 function safeString(v) {
   return String(v ?? '').trim();

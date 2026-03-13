@@ -188,6 +188,140 @@ struct HubRemoteMutationResult: Sendable {
     }
 }
 
+struct HubRemoteSkillCatalogEntry: Sendable {
+    var skillID: String
+    var name: String
+    var version: String
+    var description: String
+    var publisherID: String
+    var capabilitiesRequired: [String]
+    var sourceID: String
+    var packageSHA256: String
+    var installHint: String
+}
+
+struct HubRemoteSkillsSearchResult: Sendable {
+    var ok: Bool
+    var source: String
+    var updatedAtMs: Int64
+    var results: [HubRemoteSkillCatalogEntry]
+    var reasonCode: String?
+    var logLines: [String]
+
+    var logText: String {
+        logLines.joined(separator: "\n")
+    }
+}
+
+struct HubRemoteSkillPinResult: Sendable {
+    var ok: Bool
+    var source: String
+    var scope: String
+    var userId: String
+    var projectId: String
+    var skillId: String
+    var packageSHA256: String
+    var previousPackageSHA256: String
+    var updatedAtMs: Int64
+    var reasonCode: String?
+    var logLines: [String]
+
+    var logText: String {
+        logLines.joined(separator: "\n")
+    }
+}
+
+struct HubRemoteResolvedSkillEntry: Sendable {
+    var scope: String
+    var skill: HubRemoteSkillCatalogEntry
+}
+
+struct HubRemoteResolvedSkillsResult: Sendable {
+    var ok: Bool
+    var source: String
+    var skills: [HubRemoteResolvedSkillEntry]
+    var reasonCode: String?
+    var logLines: [String]
+
+    var logText: String {
+        logLines.joined(separator: "\n")
+    }
+}
+
+struct HubRemoteAgentImportStageResult: Sendable {
+    var ok: Bool
+    var source: String
+    var stagingId: String?
+    var status: String?
+    var auditRef: String?
+    var preflightStatus: String?
+    var skillId: String?
+    var policyScope: String?
+    var findingsCount: Int
+    var vetterStatus: String?
+    var vetterCriticalCount: Int
+    var vetterWarnCount: Int
+    var vetterAuditRef: String?
+    var recordPath: String?
+    var reasonCode: String?
+    var logLines: [String]
+
+    var logText: String {
+        logLines.joined(separator: "\n")
+    }
+}
+
+struct HubRemoteAgentImportRecordResult: Sendable {
+    var ok: Bool
+    var source: String
+    var stagingId: String?
+    var status: String?
+    var auditRef: String?
+    var schemaVersion: String?
+    var skillId: String?
+    var recordJSON: String?
+    var reasonCode: String?
+    var logLines: [String]
+
+    var logText: String {
+        logLines.joined(separator: "\n")
+    }
+}
+
+struct HubRemoteSkillPackageUploadResult: Sendable {
+    var ok: Bool
+    var source: String
+    var packageSHA256: String?
+    var alreadyPresent: Bool
+    var skillId: String?
+    var version: String?
+    var reasonCode: String?
+    var logLines: [String]
+
+    var logText: String {
+        logLines.joined(separator: "\n")
+    }
+}
+
+struct HubRemoteAgentImportPromoteResult: Sendable {
+    var ok: Bool
+    var source: String
+    var stagingId: String?
+    var status: String?
+    var auditRef: String?
+    var packageSHA256: String?
+    var scope: String?
+    var skillId: String?
+    var previousPackageSHA256: String?
+    var recordPath: String?
+    var reasonCode: String?
+    var logLines: [String]
+
+    var logText: String {
+        logLines.joined(separator: "\n")
+    }
+}
+
 struct HubRemoteMemorySnapshotResult: Sendable {
     var ok: Bool
     var source: String
@@ -379,6 +513,69 @@ struct HubRemoteVoiceGrantVerificationResult: Sendable {
     var challengeMatch: Bool
     var deviceBindingOK: Bool
     var mobileConfirmed: Bool
+    var reasonCode: String?
+    var logLines: [String]
+
+    var logText: String {
+        logLines.joined(separator: "\n")
+    }
+}
+
+struct HubRemoteSecretVaultItem: Sendable {
+    var itemId: String
+    var scope: String
+    var name: String
+    var sensitivity: String
+    var createdAtMs: Double
+    var updatedAtMs: Double
+}
+
+struct HubRemoteSecretVaultItemsResult: Sendable {
+    var ok: Bool
+    var source: String
+    var updatedAtMs: Double
+    var items: [HubRemoteSecretVaultItem]
+    var reasonCode: String?
+    var logLines: [String]
+
+    var logText: String {
+        logLines.joined(separator: "\n")
+    }
+}
+
+struct HubRemoteSecretVaultCreateResult: Sendable {
+    var ok: Bool
+    var source: String
+    var item: HubRemoteSecretVaultItem?
+    var reasonCode: String?
+    var logLines: [String]
+
+    var logText: String {
+        logLines.joined(separator: "\n")
+    }
+}
+
+struct HubRemoteSecretVaultUseResult: Sendable {
+    var ok: Bool
+    var source: String
+    var leaseId: String?
+    var useToken: String?
+    var itemId: String?
+    var expiresAtMs: Double?
+    var reasonCode: String?
+    var logLines: [String]
+
+    var logText: String {
+        logLines.joined(separator: "\n")
+    }
+}
+
+struct HubRemoteSecretVaultRedeemResult: Sendable {
+    var ok: Bool
+    var source: String
+    var leaseId: String?
+    var itemId: String?
+    var plaintext: String?
     var reasonCode: String?
     var logLines: [String]
 
@@ -2211,6 +2408,992 @@ actor HubPairingCoordinator {
         )
     }
 
+    func searchRemoteSkills(
+        options rawOptions: HubRemoteConnectOptions,
+        query: String,
+        sourceFilter: String?,
+        projectId: String?,
+        limit: Int
+    ) -> HubRemoteSkillsSearchResult {
+        let opts = sanitize(rawOptions)
+        var logs: [String] = []
+        let boundedLimit = max(1, min(100, limit))
+
+        let stateDir = opts.stateDir ?? defaultStateDir()
+        let hubEnv = stateDir.appendingPathComponent("hub.env")
+        let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
+        let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
+        let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: hubEnv.path),
+              FileManager.default.fileExists(atPath: clientKitSrc.path) else {
+            return HubRemoteSkillsSearchResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                updatedAtMs: 0,
+                results: [],
+                reasonCode: FileManager.default.fileExists(atPath: hubEnv.path) ? "client_kit_missing" : "hub_env_missing",
+                logLines: ["hub env or client kit missing for remote skills search"]
+            )
+        }
+
+        let exported = readEnvExports(from: hubEnv)
+        let merged = mergedAxhubEnv(options: opts, extra: exported)
+        guard let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged) else {
+            return HubRemoteSkillsSearchResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                updatedAtMs: 0,
+                results: [],
+                reasonCode: "node_missing",
+                logLines: ["missing node runtime for remote skills search"]
+            )
+        }
+
+        var scriptEnv = merged
+        scriptEnv["XTERMINAL_SKILLS_QUERY"] = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        scriptEnv["XTERMINAL_SKILLS_SOURCE_FILTER"] = sourceFilter?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        scriptEnv["XTERMINAL_SKILLS_LIMIT"] = String(boundedLimit)
+        scriptEnv["XTERMINAL_SKILLS_PROJECT_ID"] = projectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
+        func runScript() -> StepOutput {
+            do {
+                let script = remoteSkillsSearchScriptSource()
+                let result = try ProcessCapture.run(
+                    nodeBin,
+                    ["--input-type=module", "-"],
+                    cwd: clientKitHub,
+                    stdin: script.data(using: .utf8),
+                    timeoutSec: 20.0,
+                    env: scriptEnv
+                )
+                return StepOutput(exitCode: result.exitCode, output: result.combined, command: command)
+            } catch {
+                return StepOutput(exitCode: 127, output: String(describing: error), command: command)
+            }
+        }
+
+        var step = runScript()
+        appendStepLogs(into: &logs, step: step)
+        if step.exitCode != 0, shouldRetryAfterClientKitInstall(step.output) {
+            let install = runAxhubctl(args: ["install-client"], options: opts, env: [:], timeoutSec: 120.0)
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                step = runScript()
+                appendStepLogs(into: &logs, step: step)
+            }
+        }
+
+        guard let jsonLine = extractTrailingJSONObjectLine(step.output),
+              let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteSkillsSearchScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(from: step.output, fallback: "remote_skills_search_failed")
+            return HubRemoteSkillsSearchResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                updatedAtMs: 0,
+                results: [],
+                reasonCode: fallback,
+                logLines: logs
+            )
+        }
+
+        let reason = nonEmpty(decoded.errorCode)
+            ?? nonEmpty(decoded.reason)
+            ?? nonEmpty(decoded.errorMessage)
+            ?? ((decoded.ok ?? false) ? nil : "remote_skills_search_failed")
+        let results = (decoded.results ?? []).compactMap { row -> HubRemoteSkillCatalogEntry? in
+            let skillID = nonEmpty(row.skillID) ?? ""
+            guard !skillID.isEmpty else { return nil }
+            return HubRemoteSkillCatalogEntry(
+                skillID: skillID,
+                name: nonEmpty(row.name) ?? skillID,
+                version: nonEmpty(row.version) ?? "",
+                description: nonEmpty(row.description) ?? "",
+                publisherID: nonEmpty(row.publisherID) ?? "",
+                capabilitiesRequired: row.capabilitiesRequired ?? [],
+                sourceID: nonEmpty(row.sourceID) ?? "",
+                packageSHA256: nonEmpty(row.packageSHA256) ?? "",
+                installHint: nonEmpty(row.installHint) ?? ""
+            )
+        }
+
+        return HubRemoteSkillsSearchResult(
+            ok: decoded.ok ?? false,
+            source: nonEmpty(decoded.source) ?? "hub_runtime_grpc",
+            updatedAtMs: max(0, decoded.updatedAtMs ?? 0),
+            results: results,
+            reasonCode: reason?.replacingOccurrences(of: " ", with: "_"),
+            logLines: logs
+        )
+    }
+
+    func setRemoteSkillPin(
+        options rawOptions: HubRemoteConnectOptions,
+        scope: String,
+        skillId: String,
+        packageSHA256: String,
+        projectId: String?,
+        note: String?,
+        requestId: String?
+    ) -> HubRemoteSkillPinResult {
+        let opts = sanitize(rawOptions)
+        var logs: [String] = []
+        let normalizedScope = scope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedSkillId = skillId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedPackageSHA256 = packageSHA256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedProjectId = projectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        guard normalizedScope == "global" || normalizedScope == "project" else {
+            return HubRemoteSkillPinResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                scope: normalizedScope,
+                userId: "",
+                projectId: normalizedProjectId,
+                skillId: normalizedSkillId,
+                packageSHA256: normalizedPackageSHA256,
+                previousPackageSHA256: "",
+                updatedAtMs: 0,
+                reasonCode: "unsupported_skill_pin_scope",
+                logLines: ["unsupported skill pin scope: \(normalizedScope)"]
+            )
+        }
+        if normalizedScope == "project", normalizedProjectId.isEmpty {
+            return HubRemoteSkillPinResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                scope: normalizedScope,
+                userId: "",
+                projectId: "",
+                skillId: normalizedSkillId,
+                packageSHA256: normalizedPackageSHA256,
+                previousPackageSHA256: "",
+                updatedAtMs: 0,
+                reasonCode: "missing_project_id",
+                logLines: ["project scope skill pin requires project id"]
+            )
+        }
+
+        let stateDir = opts.stateDir ?? defaultStateDir()
+        let hubEnv = stateDir.appendingPathComponent("hub.env")
+        let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
+        let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
+        let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: hubEnv.path),
+              FileManager.default.fileExists(atPath: clientKitSrc.path) else {
+            return HubRemoteSkillPinResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                scope: normalizedScope,
+                userId: "",
+                projectId: normalizedProjectId,
+                skillId: normalizedSkillId,
+                packageSHA256: normalizedPackageSHA256,
+                previousPackageSHA256: "",
+                updatedAtMs: 0,
+                reasonCode: FileManager.default.fileExists(atPath: hubEnv.path) ? "client_kit_missing" : "hub_env_missing",
+                logLines: ["hub env or client kit missing for remote skill pin"]
+            )
+        }
+
+        let exported = readEnvExports(from: hubEnv)
+        let merged = mergedAxhubEnv(options: opts, extra: exported)
+        guard let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged) else {
+            return HubRemoteSkillPinResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                scope: normalizedScope,
+                userId: "",
+                projectId: normalizedProjectId,
+                skillId: normalizedSkillId,
+                packageSHA256: normalizedPackageSHA256,
+                previousPackageSHA256: "",
+                updatedAtMs: 0,
+                reasonCode: "node_missing",
+                logLines: ["missing node runtime for remote skill pin"]
+            )
+        }
+
+        var scriptEnv = merged
+        scriptEnv["XTERMINAL_SKILLS_PIN_SCOPE"] = normalizedScope
+        scriptEnv["XTERMINAL_SKILLS_PIN_SKILL_ID"] = normalizedSkillId
+        scriptEnv["XTERMINAL_SKILLS_PIN_PACKAGE_SHA256"] = normalizedPackageSHA256
+        scriptEnv["XTERMINAL_SKILLS_PIN_PROJECT_ID"] = normalizedProjectId
+        scriptEnv["XTERMINAL_SKILLS_PIN_NOTE"] = note?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        scriptEnv["XTERMINAL_SKILLS_PIN_REQUEST_ID"] = requestId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
+        func runScript() -> StepOutput {
+            do {
+                let script = remoteSkillPinScriptSource()
+                let result = try ProcessCapture.run(
+                    nodeBin,
+                    ["--input-type=module", "-"],
+                    cwd: clientKitHub,
+                    stdin: script.data(using: .utf8),
+                    timeoutSec: 20.0,
+                    env: scriptEnv
+                )
+                return StepOutput(exitCode: result.exitCode, output: result.combined, command: command)
+            } catch {
+                return StepOutput(exitCode: 127, output: String(describing: error), command: command)
+            }
+        }
+
+        var step = runScript()
+        appendStepLogs(into: &logs, step: step)
+        if step.exitCode != 0, shouldRetryAfterClientKitInstall(step.output) {
+            let install = runAxhubctl(args: ["install-client"], options: opts, env: [:], timeoutSec: 120.0)
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                step = runScript()
+                appendStepLogs(into: &logs, step: step)
+            }
+        }
+
+        guard let jsonLine = extractTrailingJSONObjectLine(step.output),
+              let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteSkillPinScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(from: step.output, fallback: "remote_skill_pin_failed")
+            return HubRemoteSkillPinResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                scope: normalizedScope,
+                userId: "",
+                projectId: normalizedProjectId,
+                skillId: normalizedSkillId,
+                packageSHA256: normalizedPackageSHA256,
+                previousPackageSHA256: "",
+                updatedAtMs: 0,
+                reasonCode: fallback,
+                logLines: logs
+            )
+        }
+
+        let reason = nonEmpty(decoded.errorCode)
+            ?? nonEmpty(decoded.reason)
+            ?? nonEmpty(decoded.errorMessage)
+            ?? ((decoded.ok ?? false) ? nil : "remote_skill_pin_failed")
+
+        return HubRemoteSkillPinResult(
+            ok: decoded.ok ?? false,
+            source: nonEmpty(decoded.source) ?? "hub_runtime_grpc",
+            scope: nonEmpty(decoded.scope) ?? normalizedScope,
+            userId: nonEmpty(decoded.userId) ?? "",
+            projectId: nonEmpty(decoded.projectId) ?? normalizedProjectId,
+            skillId: nonEmpty(decoded.skillId) ?? normalizedSkillId,
+            packageSHA256: nonEmpty(decoded.packageSHA256) ?? normalizedPackageSHA256,
+            previousPackageSHA256: nonEmpty(decoded.previousPackageSHA256) ?? "",
+            updatedAtMs: max(0, decoded.updatedAtMs ?? 0),
+            reasonCode: reason?.replacingOccurrences(of: " ", with: "_"),
+            logLines: logs
+        )
+    }
+
+    func fetchRemoteResolvedSkills(
+        options rawOptions: HubRemoteConnectOptions,
+        projectId: String?
+    ) -> HubRemoteResolvedSkillsResult {
+        let opts = sanitize(rawOptions)
+        var logs: [String] = []
+        let normalizedProjectId = projectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        let stateDir = opts.stateDir ?? defaultStateDir()
+        let hubEnv = stateDir.appendingPathComponent("hub.env")
+        let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
+        let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
+        let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: hubEnv.path),
+              FileManager.default.fileExists(atPath: clientKitSrc.path) else {
+            return HubRemoteResolvedSkillsResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                skills: [],
+                reasonCode: FileManager.default.fileExists(atPath: hubEnv.path) ? "client_kit_missing" : "hub_env_missing",
+                logLines: ["hub env or client kit missing for remote resolved skills request"]
+            )
+        }
+
+        let exported = readEnvExports(from: hubEnv)
+        let merged = mergedAxhubEnv(options: opts, extra: exported)
+        guard let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged) else {
+            return HubRemoteResolvedSkillsResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                skills: [],
+                reasonCode: "node_missing",
+                logLines: ["missing node runtime for remote resolved skills request"]
+            )
+        }
+
+        var scriptEnv = merged
+        scriptEnv["XTERMINAL_RESOLVED_SKILLS_PROJECT_ID"] = normalizedProjectId
+
+        let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
+        func runScript() -> StepOutput {
+            do {
+                let script = remoteResolvedSkillsScriptSource()
+                let result = try ProcessCapture.run(
+                    nodeBin,
+                    ["--input-type=module", "-"],
+                    cwd: clientKitHub,
+                    stdin: script.data(using: .utf8),
+                    timeoutSec: 20.0,
+                    env: scriptEnv
+                )
+                return StepOutput(exitCode: result.exitCode, output: result.combined, command: command)
+            } catch {
+                return StepOutput(exitCode: 127, output: String(describing: error), command: command)
+            }
+        }
+
+        var step = runScript()
+        appendStepLogs(into: &logs, step: step)
+        if step.exitCode != 0, shouldRetryAfterClientKitInstall(step.output) {
+            let install = runAxhubctl(args: ["install-client"], options: opts, env: [:], timeoutSec: 120.0)
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                step = runScript()
+                appendStepLogs(into: &logs, step: step)
+            }
+        }
+
+        guard let jsonLine = extractTrailingJSONObjectLine(step.output),
+              let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteResolvedSkillsScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(from: step.output, fallback: "remote_resolved_skills_failed")
+            return HubRemoteResolvedSkillsResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                skills: [],
+                reasonCode: fallback,
+                logLines: logs
+            )
+        }
+
+        let reason = nonEmpty(decoded.errorCode)
+            ?? nonEmpty(decoded.reason)
+            ?? nonEmpty(decoded.errorMessage)
+            ?? ((decoded.ok ?? false) ? nil : "remote_resolved_skills_failed")
+        let skills = (decoded.skills ?? []).compactMap { row -> HubRemoteResolvedSkillEntry? in
+            guard let skillRow = row.skill else { return nil }
+            let skillID = nonEmpty(skillRow.skillID) ?? ""
+            guard !skillID.isEmpty else { return nil }
+            let skill = HubRemoteSkillCatalogEntry(
+                skillID: skillID,
+                name: nonEmpty(skillRow.name) ?? skillID,
+                version: nonEmpty(skillRow.version) ?? "",
+                description: nonEmpty(skillRow.description) ?? "",
+                publisherID: nonEmpty(skillRow.publisherID) ?? "",
+                capabilitiesRequired: skillRow.capabilitiesRequired ?? [],
+                sourceID: nonEmpty(skillRow.sourceID) ?? "",
+                packageSHA256: nonEmpty(skillRow.packageSHA256) ?? "",
+                installHint: nonEmpty(skillRow.installHint) ?? ""
+            )
+            return HubRemoteResolvedSkillEntry(
+                scope: nonEmpty(row.scope) ?? "",
+                skill: skill
+            )
+        }
+
+        return HubRemoteResolvedSkillsResult(
+            ok: decoded.ok ?? false,
+            source: nonEmpty(decoded.source) ?? "hub_runtime_grpc",
+            skills: skills,
+            reasonCode: reason?.replacingOccurrences(of: " ", with: "_"),
+            logLines: logs
+        )
+    }
+
+    func stageRemoteAgentImport(
+        options rawOptions: HubRemoteConnectOptions,
+        importManifestJSON: String,
+        findingsJSON: String?,
+        scanInputJSON: String?,
+        requestedBy: String?,
+        note: String?,
+        requestId: String?
+    ) -> HubRemoteAgentImportStageResult {
+        let opts = sanitize(rawOptions)
+        var logs: [String] = []
+
+        let manifestText = importManifestJSON.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !manifestText.isEmpty else {
+            return HubRemoteAgentImportStageResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                stagingId: nil,
+                status: nil,
+                auditRef: nil,
+                preflightStatus: nil,
+                skillId: nil,
+                policyScope: nil,
+                findingsCount: 0,
+                vetterStatus: nil,
+                vetterCriticalCount: 0,
+                vetterWarnCount: 0,
+                vetterAuditRef: nil,
+                recordPath: nil,
+                reasonCode: "missing_agent_import_manifest",
+                logLines: ["agent import manifest is empty"]
+            )
+        }
+
+        let stateDir = opts.stateDir ?? defaultStateDir()
+        let hubEnv = stateDir.appendingPathComponent("hub.env")
+        let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
+        let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
+        let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
+
+        guard FileManager.default.fileExists(atPath: hubEnv.path) else {
+            return HubRemoteAgentImportStageResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                stagingId: nil,
+                status: nil,
+                auditRef: nil,
+                preflightStatus: nil,
+                skillId: nil,
+                policyScope: nil,
+                findingsCount: 0,
+                vetterStatus: nil,
+                vetterCriticalCount: 0,
+                vetterWarnCount: 0,
+                vetterAuditRef: nil,
+                recordPath: nil,
+                reasonCode: "hub_env_missing",
+                logLines: ["missing hub env: \(hubEnv.path)"]
+            )
+        }
+        guard FileManager.default.fileExists(atPath: clientKitSrc.path) else {
+            return HubRemoteAgentImportStageResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                stagingId: nil,
+                status: nil,
+                auditRef: nil,
+                preflightStatus: nil,
+                skillId: nil,
+                policyScope: nil,
+                findingsCount: 0,
+                vetterStatus: nil,
+                vetterCriticalCount: 0,
+                vetterWarnCount: 0,
+                vetterAuditRef: nil,
+                recordPath: nil,
+                reasonCode: "client_kit_missing",
+                logLines: ["missing client kit src: \(clientKitSrc.path)"]
+            )
+        }
+
+        let exported = readEnvExports(from: hubEnv)
+        let merged = mergedAxhubEnv(options: opts, extra: exported)
+        let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged)
+        guard let nodeBin else {
+            return HubRemoteAgentImportStageResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                stagingId: nil,
+                status: nil,
+                auditRef: nil,
+                preflightStatus: nil,
+                skillId: nil,
+                policyScope: nil,
+                findingsCount: 0,
+                vetterStatus: nil,
+                vetterCriticalCount: 0,
+                vetterWarnCount: 0,
+                vetterAuditRef: nil,
+                recordPath: nil,
+                reasonCode: "node_missing",
+                logLines: ["missing node runtime for remote agent import stage"]
+            )
+        }
+
+        var scriptEnv = merged
+        scriptEnv["XTERMINAL_AGENT_IMPORT_MANIFEST_JSON"] = manifestText
+        scriptEnv["XTERMINAL_AGENT_IMPORT_FINDINGS_JSON"] = findingsJSON ?? ""
+        scriptEnv["XTERMINAL_AGENT_IMPORT_SCAN_INPUT_JSON"] = scanInputJSON ?? ""
+        scriptEnv["XTERMINAL_AGENT_IMPORT_REQUESTED_BY"] = requestedBy?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        scriptEnv["XTERMINAL_AGENT_IMPORT_NOTE"] = note?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        scriptEnv["XTERMINAL_AGENT_IMPORT_REQUEST_ID"] = requestId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
+        func runScript() -> StepOutput {
+            do {
+                let script = remoteAgentImportStageScriptSource()
+                let result = try ProcessCapture.run(
+                    nodeBin,
+                    ["--input-type=module", "-"],
+                    cwd: clientKitHub,
+                    stdin: script.data(using: .utf8),
+                    timeoutSec: 20.0,
+                    env: scriptEnv
+                )
+                return StepOutput(exitCode: result.exitCode, output: result.combined, command: command)
+            } catch {
+                return StepOutput(exitCode: 127, output: String(describing: error), command: command)
+            }
+        }
+
+        var step = runScript()
+        appendStepLogs(into: &logs, step: step)
+        if step.exitCode != 0, shouldRetryAfterClientKitInstall(step.output) {
+            let install = runAxhubctl(args: ["install-client"], options: opts, env: [:], timeoutSec: 120.0)
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                step = runScript()
+                appendStepLogs(into: &logs, step: step)
+            }
+        }
+
+        guard let jsonLine = extractTrailingJSONObjectLine(step.output),
+              let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteAgentImportStageScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(from: step.output, fallback: "remote_agent_import_stage_failed")
+            return HubRemoteAgentImportStageResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                stagingId: nil,
+                status: nil,
+                auditRef: nil,
+                preflightStatus: nil,
+                skillId: nil,
+                policyScope: nil,
+                findingsCount: 0,
+                vetterStatus: nil,
+                vetterCriticalCount: 0,
+                vetterWarnCount: 0,
+                vetterAuditRef: nil,
+                recordPath: nil,
+                reasonCode: fallback,
+                logLines: logs
+            )
+        }
+
+        let reason = nonEmpty(decoded.errorCode)
+            ?? nonEmpty(decoded.reason)
+            ?? nonEmpty(decoded.errorMessage)
+            ?? ((decoded.ok ?? false) ? nil : "remote_agent_import_stage_failed")
+
+        return HubRemoteAgentImportStageResult(
+            ok: decoded.ok ?? false,
+            source: nonEmpty(decoded.source) ?? "hub_runtime_grpc",
+            stagingId: nonEmpty(decoded.stagingId),
+            status: nonEmpty(decoded.status),
+            auditRef: nonEmpty(decoded.auditRef),
+            preflightStatus: nonEmpty(decoded.preflightStatus),
+            skillId: nonEmpty(decoded.skillId),
+            policyScope: nonEmpty(decoded.policyScope),
+            findingsCount: max(0, decoded.findingsCount ?? 0),
+            vetterStatus: nonEmpty(decoded.vetterStatus),
+            vetterCriticalCount: max(0, decoded.vetterCriticalCount ?? 0),
+            vetterWarnCount: max(0, decoded.vetterWarnCount ?? 0),
+            vetterAuditRef: nonEmpty(decoded.vetterAuditRef),
+            recordPath: nonEmpty(decoded.recordPath),
+            reasonCode: reason?.replacingOccurrences(of: " ", with: "_"),
+            logLines: logs
+        )
+    }
+
+    func fetchRemoteAgentImportRecord(
+        options rawOptions: HubRemoteConnectOptions,
+        stagingId: String
+    ) -> HubRemoteAgentImportRecordResult {
+        let opts = sanitize(rawOptions)
+        var logs: [String] = []
+        let normalizedStagingId = stagingId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedStagingId.isEmpty else {
+            return HubRemoteAgentImportRecordResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                stagingId: nil,
+                status: nil,
+                auditRef: nil,
+                schemaVersion: nil,
+                skillId: nil,
+                recordJSON: nil,
+                reasonCode: "missing_agent_staging_id",
+                logLines: ["agent import staging id is empty"]
+            )
+        }
+
+        let stateDir = opts.stateDir ?? defaultStateDir()
+        let hubEnv = stateDir.appendingPathComponent("hub.env")
+        let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
+        let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
+        let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: hubEnv.path),
+              FileManager.default.fileExists(atPath: clientKitSrc.path) else {
+            return HubRemoteAgentImportRecordResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                stagingId: nil,
+                status: nil,
+                auditRef: nil,
+                schemaVersion: nil,
+                skillId: nil,
+                recordJSON: nil,
+                reasonCode: FileManager.default.fileExists(atPath: hubEnv.path) ? "client_kit_missing" : "hub_env_missing",
+                logLines: ["hub env or client kit missing for remote agent import record"]
+            )
+        }
+
+        let exported = readEnvExports(from: hubEnv)
+        let merged = mergedAxhubEnv(options: opts, extra: exported)
+        guard let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged) else {
+            return HubRemoteAgentImportRecordResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                stagingId: nil,
+                status: nil,
+                auditRef: nil,
+                schemaVersion: nil,
+                skillId: nil,
+                recordJSON: nil,
+                reasonCode: "node_missing",
+                logLines: ["missing node runtime for remote agent import record"]
+            )
+        }
+
+        var scriptEnv = merged
+        scriptEnv["XTERMINAL_AGENT_IMPORT_STAGING_ID"] = normalizedStagingId
+        let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
+        func runScript() -> StepOutput {
+            do {
+                let script = remoteAgentImportRecordScriptSource()
+                let result = try ProcessCapture.run(
+                    nodeBin,
+                    ["--input-type=module", "-"],
+                    cwd: clientKitHub,
+                    stdin: script.data(using: .utf8),
+                    timeoutSec: 20.0,
+                    env: scriptEnv
+                )
+                return StepOutput(exitCode: result.exitCode, output: result.combined, command: command)
+            } catch {
+                return StepOutput(exitCode: 127, output: String(describing: error), command: command)
+            }
+        }
+
+        var step = runScript()
+        appendStepLogs(into: &logs, step: step)
+        if step.exitCode != 0, shouldRetryAfterClientKitInstall(step.output) {
+            let install = runAxhubctl(args: ["install-client"], options: opts, env: [:], timeoutSec: 120.0)
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                step = runScript()
+                appendStepLogs(into: &logs, step: step)
+            }
+        }
+
+        guard let jsonLine = extractTrailingJSONObjectLine(step.output),
+              let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteAgentImportRecordScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(from: step.output, fallback: "remote_agent_import_record_failed")
+            return HubRemoteAgentImportRecordResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                stagingId: nil,
+                status: nil,
+                auditRef: nil,
+                schemaVersion: nil,
+                skillId: nil,
+                recordJSON: nil,
+                reasonCode: fallback,
+                logLines: logs
+            )
+        }
+
+        let reason = nonEmpty(decoded.errorCode)
+            ?? nonEmpty(decoded.reason)
+            ?? nonEmpty(decoded.errorMessage)
+            ?? ((decoded.ok ?? false) ? nil : "remote_agent_import_record_failed")
+
+        return HubRemoteAgentImportRecordResult(
+            ok: decoded.ok ?? false,
+            source: nonEmpty(decoded.source) ?? "hub_runtime_grpc",
+            stagingId: nonEmpty(decoded.stagingId),
+            status: nonEmpty(decoded.status),
+            auditRef: nonEmpty(decoded.auditRef),
+            schemaVersion: nonEmpty(decoded.schemaVersion),
+            skillId: nonEmpty(decoded.skillId),
+            recordJSON: nonEmpty(decoded.recordJSON),
+            reasonCode: reason?.replacingOccurrences(of: " ", with: "_"),
+            logLines: logs
+        )
+    }
+
+    func uploadRemoteSkillPackage(
+        options rawOptions: HubRemoteConnectOptions,
+        packageFileURL: URL,
+        manifestJSON: String,
+        sourceId: String,
+        requestId: String?
+    ) -> HubRemoteSkillPackageUploadResult {
+        let opts = sanitize(rawOptions)
+        var logs: [String] = []
+        let packagePath = packageFileURL.standardizedFileURL.path
+        guard FileManager.default.fileExists(atPath: packagePath) else {
+            return HubRemoteSkillPackageUploadResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                packageSHA256: nil,
+                alreadyPresent: false,
+                skillId: nil,
+                version: nil,
+                reasonCode: "skill_package_file_missing",
+                logLines: ["missing skill package file: \(packagePath)"]
+            )
+        }
+
+        let stateDir = opts.stateDir ?? defaultStateDir()
+        let hubEnv = stateDir.appendingPathComponent("hub.env")
+        let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
+        let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
+        let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: hubEnv.path),
+              FileManager.default.fileExists(atPath: clientKitSrc.path) else {
+            return HubRemoteSkillPackageUploadResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                packageSHA256: nil,
+                alreadyPresent: false,
+                skillId: nil,
+                version: nil,
+                reasonCode: FileManager.default.fileExists(atPath: hubEnv.path) ? "client_kit_missing" : "hub_env_missing",
+                logLines: ["hub env or client kit missing for remote skill upload"]
+            )
+        }
+
+        let exported = readEnvExports(from: hubEnv)
+        let merged = mergedAxhubEnv(options: opts, extra: exported)
+        guard let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged) else {
+            return HubRemoteSkillPackageUploadResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                packageSHA256: nil,
+                alreadyPresent: false,
+                skillId: nil,
+                version: nil,
+                reasonCode: "node_missing",
+                logLines: ["missing node runtime for remote skill upload"]
+            )
+        }
+
+        var scriptEnv = merged
+        scriptEnv["XTERMINAL_UPLOAD_SKILL_PACKAGE_PATH"] = packagePath
+        scriptEnv["XTERMINAL_UPLOAD_SKILL_MANIFEST_JSON"] = manifestJSON
+        scriptEnv["XTERMINAL_UPLOAD_SKILL_SOURCE_ID"] = sourceId.trimmingCharacters(in: .whitespacesAndNewlines)
+        scriptEnv["XTERMINAL_UPLOAD_SKILL_REQUEST_ID"] = requestId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
+        func runScript() -> StepOutput {
+            do {
+                let script = remoteSkillPackageUploadScriptSource()
+                let result = try ProcessCapture.run(
+                    nodeBin,
+                    ["--input-type=module", "-"],
+                    cwd: clientKitHub,
+                    stdin: script.data(using: .utf8),
+                    timeoutSec: 60.0,
+                    env: scriptEnv
+                )
+                return StepOutput(exitCode: result.exitCode, output: result.combined, command: command)
+            } catch {
+                return StepOutput(exitCode: 127, output: String(describing: error), command: command)
+            }
+        }
+
+        var step = runScript()
+        appendStepLogs(into: &logs, step: step)
+        if step.exitCode != 0, shouldRetryAfterClientKitInstall(step.output) {
+            let install = runAxhubctl(args: ["install-client"], options: opts, env: [:], timeoutSec: 120.0)
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                step = runScript()
+                appendStepLogs(into: &logs, step: step)
+            }
+        }
+
+        guard let jsonLine = extractTrailingJSONObjectLine(step.output),
+              let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteSkillPackageUploadScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(from: step.output, fallback: "remote_skill_package_upload_failed")
+            return HubRemoteSkillPackageUploadResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                packageSHA256: nil,
+                alreadyPresent: false,
+                skillId: nil,
+                version: nil,
+                reasonCode: fallback,
+                logLines: logs
+            )
+        }
+
+        let reason = nonEmpty(decoded.errorCode)
+            ?? nonEmpty(decoded.reason)
+            ?? nonEmpty(decoded.errorMessage)
+            ?? ((decoded.ok ?? false) ? nil : "remote_skill_package_upload_failed")
+
+        return HubRemoteSkillPackageUploadResult(
+            ok: decoded.ok ?? false,
+            source: nonEmpty(decoded.source) ?? "hub_runtime_grpc",
+            packageSHA256: nonEmpty(decoded.packageSHA256),
+            alreadyPresent: decoded.alreadyPresent ?? false,
+            skillId: nonEmpty(decoded.skillId),
+            version: nonEmpty(decoded.version),
+            reasonCode: reason?.replacingOccurrences(of: " ", with: "_"),
+            logLines: logs
+        )
+    }
+
+    func promoteRemoteAgentImport(
+        options rawOptions: HubRemoteConnectOptions,
+        stagingId: String,
+        packageSHA256: String,
+        note: String?,
+        requestId: String?
+    ) -> HubRemoteAgentImportPromoteResult {
+        let opts = sanitize(rawOptions)
+        var logs: [String] = []
+        let normalizedStagingId = stagingId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedPackageSHA256 = packageSHA256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalizedStagingId.isEmpty else {
+            return HubRemoteAgentImportPromoteResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                stagingId: nil,
+                status: nil,
+                auditRef: nil,
+                packageSHA256: nil,
+                scope: nil,
+                skillId: nil,
+                previousPackageSHA256: nil,
+                recordPath: nil,
+                reasonCode: "missing_agent_staging_id",
+                logLines: ["agent import staging id is empty"]
+            )
+        }
+
+        let stateDir = opts.stateDir ?? defaultStateDir()
+        let hubEnv = stateDir.appendingPathComponent("hub.env")
+        let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
+        let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
+        let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: hubEnv.path),
+              FileManager.default.fileExists(atPath: clientKitSrc.path) else {
+            return HubRemoteAgentImportPromoteResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                stagingId: nil,
+                status: nil,
+                auditRef: nil,
+                packageSHA256: nil,
+                scope: nil,
+                skillId: nil,
+                previousPackageSHA256: nil,
+                recordPath: nil,
+                reasonCode: FileManager.default.fileExists(atPath: hubEnv.path) ? "client_kit_missing" : "hub_env_missing",
+                logLines: ["hub env or client kit missing for remote agent import promote"]
+            )
+        }
+
+        let exported = readEnvExports(from: hubEnv)
+        let merged = mergedAxhubEnv(options: opts, extra: exported)
+        guard let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged) else {
+            return HubRemoteAgentImportPromoteResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                stagingId: nil,
+                status: nil,
+                auditRef: nil,
+                packageSHA256: nil,
+                scope: nil,
+                skillId: nil,
+                previousPackageSHA256: nil,
+                recordPath: nil,
+                reasonCode: "node_missing",
+                logLines: ["missing node runtime for remote agent import promote"]
+            )
+        }
+
+        var scriptEnv = merged
+        scriptEnv["XTERMINAL_AGENT_IMPORT_STAGING_ID"] = normalizedStagingId
+        scriptEnv["XTERMINAL_AGENT_IMPORT_PACKAGE_SHA256"] = normalizedPackageSHA256
+        scriptEnv["XTERMINAL_AGENT_IMPORT_NOTE"] = note?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        scriptEnv["XTERMINAL_AGENT_IMPORT_REQUEST_ID"] = requestId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
+        func runScript() -> StepOutput {
+            do {
+                let script = remoteAgentImportPromoteScriptSource()
+                let result = try ProcessCapture.run(
+                    nodeBin,
+                    ["--input-type=module", "-"],
+                    cwd: clientKitHub,
+                    stdin: script.data(using: .utf8),
+                    timeoutSec: 30.0,
+                    env: scriptEnv
+                )
+                return StepOutput(exitCode: result.exitCode, output: result.combined, command: command)
+            } catch {
+                return StepOutput(exitCode: 127, output: String(describing: error), command: command)
+            }
+        }
+
+        var step = runScript()
+        appendStepLogs(into: &logs, step: step)
+        if step.exitCode != 0, shouldRetryAfterClientKitInstall(step.output) {
+            let install = runAxhubctl(args: ["install-client"], options: opts, env: [:], timeoutSec: 120.0)
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                step = runScript()
+                appendStepLogs(into: &logs, step: step)
+            }
+        }
+
+        guard let jsonLine = extractTrailingJSONObjectLine(step.output),
+              let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteAgentImportPromoteScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(from: step.output, fallback: "remote_agent_import_promote_failed")
+            return HubRemoteAgentImportPromoteResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                stagingId: nil,
+                status: nil,
+                auditRef: nil,
+                packageSHA256: nil,
+                scope: nil,
+                skillId: nil,
+                previousPackageSHA256: nil,
+                recordPath: nil,
+                reasonCode: fallback,
+                logLines: logs
+            )
+        }
+
+        let reason = nonEmpty(decoded.errorCode)
+            ?? nonEmpty(decoded.reason)
+            ?? nonEmpty(decoded.errorMessage)
+            ?? ((decoded.ok ?? false) ? nil : "remote_agent_import_promote_failed")
+
+        return HubRemoteAgentImportPromoteResult(
+            ok: decoded.ok ?? false,
+            source: nonEmpty(decoded.source) ?? "hub_runtime_grpc",
+            stagingId: nonEmpty(decoded.stagingId),
+            status: nonEmpty(decoded.status),
+            auditRef: nonEmpty(decoded.auditRef),
+            packageSHA256: nonEmpty(decoded.packageSHA256),
+            scope: nonEmpty(decoded.scope),
+            skillId: nonEmpty(decoded.skillId),
+            previousPackageSHA256: nonEmpty(decoded.previousPackageSHA256),
+            recordPath: nonEmpty(decoded.recordPath),
+            reasonCode: reason?.replacingOccurrences(of: " ", with: "_"),
+            logLines: logs
+        )
+    }
+
     func fetchRemoteMemorySnapshot(
         options rawOptions: HubRemoteConnectOptions,
         mode rawMode: String,
@@ -2919,6 +4102,598 @@ actor HubPairingCoordinator {
             tokenCap: nil,
             note: nil,
             reason: reason
+        )
+    }
+
+    func fetchRemoteSecretVaultItems(
+        options rawOptions: HubRemoteConnectOptions,
+        scope: String?,
+        namePrefix: String?,
+        limit: Int
+    ) -> HubRemoteSecretVaultItemsResult {
+        let opts = sanitize(rawOptions)
+        var logs: [String] = []
+
+        let stateDir = opts.stateDir ?? defaultStateDir()
+        let hubEnv = stateDir.appendingPathComponent("hub.env")
+        let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
+        let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
+        let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
+
+        guard FileManager.default.fileExists(atPath: hubEnv.path) else {
+            return HubRemoteSecretVaultItemsResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                updatedAtMs: 0,
+                items: [],
+                reasonCode: "hub_env_missing",
+                logLines: ["missing hub env: \(hubEnv.path)"]
+            )
+        }
+        guard FileManager.default.fileExists(atPath: clientKitSrc.path) else {
+            return HubRemoteSecretVaultItemsResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                updatedAtMs: 0,
+                items: [],
+                reasonCode: "client_kit_missing",
+                logLines: ["missing client kit src: \(clientKitSrc.path)"]
+            )
+        }
+
+        let exported = readEnvExports(from: hubEnv)
+        let merged = mergedAxhubEnv(options: opts, extra: exported)
+        let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged)
+        guard let nodeBin else {
+            return HubRemoteSecretVaultItemsResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                updatedAtMs: 0,
+                items: [],
+                reasonCode: "node_missing",
+                logLines: ["missing node runtime for remote secret vault list"]
+            )
+        }
+
+        var scriptEnv = merged
+        scriptEnv["XTERMINAL_SECRET_VAULT_SCOPE"] = scope?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        scriptEnv["XTERMINAL_SECRET_VAULT_NAME_PREFIX"] = namePrefix?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        scriptEnv["XTERMINAL_SECRET_VAULT_LIMIT"] = String(max(1, min(500, limit)))
+
+        let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
+        func runScript() -> StepOutput {
+            do {
+                let script = remoteSecretVaultListScriptSource()
+                let result = try ProcessCapture.run(
+                    nodeBin,
+                    ["--input-type=module", "-"],
+                    cwd: clientKitHub,
+                    stdin: script.data(using: .utf8),
+                    timeoutSec: 12.0,
+                    env: scriptEnv
+                )
+                return StepOutput(exitCode: result.exitCode, output: result.combined, command: command)
+            } catch {
+                return StepOutput(exitCode: 127, output: String(describing: error), command: command)
+            }
+        }
+
+        var step = runScript()
+        appendStepLogs(into: &logs, step: step)
+        if step.exitCode != 0, shouldRetryAfterClientKitInstall(step.output) {
+            let install = runAxhubctl(args: ["install-client"], options: opts, env: [:], timeoutSec: 120.0)
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                step = runScript()
+                appendStepLogs(into: &logs, step: step)
+            }
+        }
+
+        guard let jsonLine = extractTrailingJSONObjectLine(step.output),
+              let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteSecretVaultItemsScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(from: step.output, fallback: "remote_secret_vault_list_failed")
+            return HubRemoteSecretVaultItemsResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                updatedAtMs: 0,
+                items: [],
+                reasonCode: fallback,
+                logLines: logs
+            )
+        }
+
+        let reason = nonEmpty(decoded.errorCode)
+            ?? nonEmpty(decoded.reason)
+            ?? nonEmpty(decoded.errorMessage)
+            ?? ((decoded.ok ?? false) ? nil : "remote_secret_vault_list_failed")
+
+        let items = (decoded.items ?? []).compactMap { row -> HubRemoteSecretVaultItem? in
+            let itemId = row.itemId.trimmingCharacters(in: .whitespacesAndNewlines)
+            let itemScope = row.scope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let itemName = row.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !itemId.isEmpty, !itemScope.isEmpty, !itemName.isEmpty else { return nil }
+            return HubRemoteSecretVaultItem(
+                itemId: itemId,
+                scope: itemScope,
+                name: itemName,
+                sensitivity: row.sensitivity.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                createdAtMs: max(0, row.createdAtMs ?? 0),
+                updatedAtMs: max(0, row.updatedAtMs ?? 0)
+            )
+        }
+
+        return HubRemoteSecretVaultItemsResult(
+            ok: decoded.ok ?? false,
+            source: nonEmpty(decoded.source) ?? "hub_memory_v1_grpc",
+            updatedAtMs: max(0, decoded.updatedAtMs ?? 0),
+            items: items,
+            reasonCode: reason?.replacingOccurrences(of: " ", with: "_"),
+            logLines: logs
+        )
+    }
+
+    func createRemoteSecretVaultItem(
+        options rawOptions: HubRemoteConnectOptions,
+        scope: String,
+        name: String,
+        plaintext: String,
+        sensitivity: String,
+        projectId: String?,
+        displayName: String?,
+        reason: String?
+    ) -> HubRemoteSecretVaultCreateResult {
+        let normalizedScope = scope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedPlaintext = plaintext.trimmingCharacters(in: .newlines)
+        guard !normalizedScope.isEmpty, !normalizedName.isEmpty, !normalizedPlaintext.isEmpty else {
+            return HubRemoteSecretVaultCreateResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                item: nil,
+                reasonCode: "invalid_request",
+                logLines: ["secret vault create missing scope/name/plaintext"]
+            )
+        }
+
+        let opts = sanitize(rawOptions)
+        var logs: [String] = []
+
+        let stateDir = opts.stateDir ?? defaultStateDir()
+        let hubEnv = stateDir.appendingPathComponent("hub.env")
+        let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
+        let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
+        let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
+
+        guard FileManager.default.fileExists(atPath: hubEnv.path) else {
+            return HubRemoteSecretVaultCreateResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                item: nil,
+                reasonCode: "hub_env_missing",
+                logLines: ["missing hub env: \(hubEnv.path)"]
+            )
+        }
+        guard FileManager.default.fileExists(atPath: clientKitSrc.path) else {
+            return HubRemoteSecretVaultCreateResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                item: nil,
+                reasonCode: "client_kit_missing",
+                logLines: ["missing client kit src: \(clientKitSrc.path)"]
+            )
+        }
+
+        let exported = readEnvExports(from: hubEnv)
+        let merged = mergedAxhubEnv(options: opts, extra: exported)
+        let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged)
+        guard let nodeBin else {
+            return HubRemoteSecretVaultCreateResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                item: nil,
+                reasonCode: "node_missing",
+                logLines: ["missing node runtime for remote secret vault create"]
+            )
+        }
+
+        var scriptEnv = merged
+        scriptEnv["XTERMINAL_SECRET_VAULT_SCOPE"] = normalizedScope
+        scriptEnv["XTERMINAL_SECRET_VAULT_NAME"] = normalizedName
+        scriptEnv["XTERMINAL_SECRET_VAULT_PLAINTEXT_B64"] = Data(normalizedPlaintext.utf8).base64EncodedString()
+        scriptEnv["XTERMINAL_SECRET_VAULT_SENSITIVITY"] = sensitivity.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        scriptEnv["XTERMINAL_SECRET_VAULT_DISPLAY_NAME"] = displayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        scriptEnv["XTERMINAL_SECRET_VAULT_REASON"] = reason?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if let projectId, !projectId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            scriptEnv["HUB_PROJECT_ID"] = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
+        func runScript() -> StepOutput {
+            do {
+                let script = remoteSecretVaultCreateScriptSource()
+                let result = try ProcessCapture.run(
+                    nodeBin,
+                    ["--input-type=module", "-"],
+                    cwd: clientKitHub,
+                    stdin: script.data(using: .utf8),
+                    timeoutSec: 12.0,
+                    env: scriptEnv
+                )
+                return StepOutput(exitCode: result.exitCode, output: result.combined, command: command)
+            } catch {
+                return StepOutput(exitCode: 127, output: String(describing: error), command: command)
+            }
+        }
+
+        var step = runScript()
+        appendStepLogs(into: &logs, step: step)
+        if step.exitCode != 0, shouldRetryAfterClientKitInstall(step.output) {
+            let install = runAxhubctl(args: ["install-client"], options: opts, env: [:], timeoutSec: 120.0)
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                step = runScript()
+                appendStepLogs(into: &logs, step: step)
+            }
+        }
+
+        guard let jsonLine = extractTrailingJSONObjectLine(step.output),
+              let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteSecretVaultCreateScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(from: step.output, fallback: "remote_secret_vault_create_failed")
+            return HubRemoteSecretVaultCreateResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                item: nil,
+                reasonCode: fallback,
+                logLines: logs
+            )
+        }
+
+        let reasonCode = nonEmpty(decoded.errorCode)
+            ?? nonEmpty(decoded.reason)
+            ?? nonEmpty(decoded.errorMessage)
+            ?? ((decoded.ok ?? false) ? nil : "remote_secret_vault_create_failed")
+
+        let item: HubRemoteSecretVaultItem? = {
+            guard let row = decoded.item else { return nil }
+            let itemId = row.itemId.trimmingCharacters(in: .whitespacesAndNewlines)
+            let itemScope = row.scope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let itemName = row.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !itemId.isEmpty, !itemScope.isEmpty, !itemName.isEmpty else { return nil }
+            return HubRemoteSecretVaultItem(
+                itemId: itemId,
+                scope: itemScope,
+                name: itemName,
+                sensitivity: row.sensitivity.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                createdAtMs: max(0, row.createdAtMs ?? 0),
+                updatedAtMs: max(0, row.updatedAtMs ?? 0)
+            )
+        }()
+
+        let ok = (decoded.ok ?? (item != nil)) && item != nil
+
+        return HubRemoteSecretVaultCreateResult(
+            ok: ok,
+            source: nonEmpty(decoded.source) ?? "hub_memory_v1_grpc",
+            item: item,
+            reasonCode: reasonCode?.replacingOccurrences(of: " ", with: "_"),
+            logLines: logs
+        )
+    }
+
+    func beginRemoteSecretVaultUse(
+        options rawOptions: HubRemoteConnectOptions,
+        itemId: String?,
+        scope: String?,
+        name: String?,
+        projectId: String?,
+        purpose: String,
+        target: String?,
+        ttlMs: Int
+    ) -> HubRemoteSecretVaultUseResult {
+        let normalizedItemId = itemId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedScope = scope?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedName = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedPurpose = purpose.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedPurpose.isEmpty,
+              (normalizedItemId?.isEmpty == false || ((normalizedScope?.isEmpty == false) && (normalizedName?.isEmpty == false))) else {
+            return HubRemoteSecretVaultUseResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                leaseId: nil,
+                useToken: nil,
+                itemId: normalizedItemId,
+                expiresAtMs: nil,
+                reasonCode: "invalid_request",
+                logLines: ["secret vault begin use missing item reference or purpose"]
+            )
+        }
+
+        let opts = sanitize(rawOptions)
+        var logs: [String] = []
+
+        let stateDir = opts.stateDir ?? defaultStateDir()
+        let hubEnv = stateDir.appendingPathComponent("hub.env")
+        let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
+        let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
+        let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
+
+        guard FileManager.default.fileExists(atPath: hubEnv.path) else {
+            return HubRemoteSecretVaultUseResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                leaseId: nil,
+                useToken: nil,
+                itemId: normalizedItemId,
+                expiresAtMs: nil,
+                reasonCode: "hub_env_missing",
+                logLines: ["missing hub env: \(hubEnv.path)"]
+            )
+        }
+        guard FileManager.default.fileExists(atPath: clientKitSrc.path) else {
+            return HubRemoteSecretVaultUseResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                leaseId: nil,
+                useToken: nil,
+                itemId: normalizedItemId,
+                expiresAtMs: nil,
+                reasonCode: "client_kit_missing",
+                logLines: ["missing client kit src: \(clientKitSrc.path)"]
+            )
+        }
+
+        let exported = readEnvExports(from: hubEnv)
+        let merged = mergedAxhubEnv(options: opts, extra: exported)
+        let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged)
+        guard let nodeBin else {
+            return HubRemoteSecretVaultUseResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                leaseId: nil,
+                useToken: nil,
+                itemId: normalizedItemId,
+                expiresAtMs: nil,
+                reasonCode: "node_missing",
+                logLines: ["missing node runtime for remote secret vault use"]
+            )
+        }
+
+        var scriptEnv = merged
+        scriptEnv["XTERMINAL_SECRET_VAULT_ITEM_ID"] = normalizedItemId ?? ""
+        scriptEnv["XTERMINAL_SECRET_VAULT_SCOPE"] = normalizedScope ?? ""
+        scriptEnv["XTERMINAL_SECRET_VAULT_NAME"] = normalizedName ?? ""
+        scriptEnv["XTERMINAL_SECRET_VAULT_USE_PURPOSE"] = normalizedPurpose
+        scriptEnv["XTERMINAL_SECRET_VAULT_USE_TARGET"] = target?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        scriptEnv["XTERMINAL_SECRET_VAULT_USE_TTL_MS"] = String(max(1_000, min(600_000, ttlMs)))
+        if let projectId, !projectId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            scriptEnv["HUB_PROJECT_ID"] = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
+        func runScript() -> StepOutput {
+            do {
+                let script = remoteSecretVaultBeginUseScriptSource()
+                let result = try ProcessCapture.run(
+                    nodeBin,
+                    ["--input-type=module", "-"],
+                    cwd: clientKitHub,
+                    stdin: script.data(using: .utf8),
+                    timeoutSec: 12.0,
+                    env: scriptEnv
+                )
+                return StepOutput(exitCode: result.exitCode, output: result.combined, command: command)
+            } catch {
+                return StepOutput(exitCode: 127, output: String(describing: error), command: command)
+            }
+        }
+
+        var step = runScript()
+        appendStepLogs(into: &logs, step: step)
+        if step.exitCode != 0, shouldRetryAfterClientKitInstall(step.output) {
+            let install = runAxhubctl(args: ["install-client"], options: opts, env: [:], timeoutSec: 120.0)
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                step = runScript()
+                appendStepLogs(into: &logs, step: step)
+            }
+        }
+
+        guard let jsonLine = extractTrailingJSONObjectLine(step.output),
+              let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteSecretVaultUseScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(from: step.output, fallback: "remote_secret_vault_use_failed")
+            return HubRemoteSecretVaultUseResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                leaseId: nil,
+                useToken: nil,
+                itemId: normalizedItemId,
+                expiresAtMs: nil,
+                reasonCode: fallback,
+                logLines: logs
+            )
+        }
+
+        let reasonCode = nonEmpty(decoded.errorCode)
+            ?? nonEmpty(decoded.reason)
+            ?? nonEmpty(decoded.errorMessage)
+            ?? ((decoded.ok ?? false) ? nil : "remote_secret_vault_use_failed")
+
+        let ok = decoded.ok ?? false
+        return HubRemoteSecretVaultUseResult(
+            ok: ok,
+            source: nonEmpty(decoded.source) ?? "hub_memory_v1_grpc",
+            leaseId: nonEmpty(decoded.leaseId),
+            useToken: nonEmpty(decoded.useToken),
+            itemId: nonEmpty(decoded.itemId) ?? normalizedItemId,
+            expiresAtMs: decoded.expiresAtMs.map { max(0, $0) },
+            reasonCode: reasonCode?.replacingOccurrences(of: " ", with: "_"),
+            logLines: logs
+        )
+    }
+
+    func redeemRemoteSecretVaultUse(
+        options rawOptions: HubRemoteConnectOptions,
+        useToken: String,
+        projectId: String?
+    ) -> HubRemoteSecretVaultRedeemResult {
+        let normalizedUseToken = useToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedUseToken.isEmpty else {
+            return HubRemoteSecretVaultRedeemResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                leaseId: nil,
+                itemId: nil,
+                plaintext: nil,
+                reasonCode: "invalid_request",
+                logLines: ["secret vault redeem missing use token"]
+            )
+        }
+
+        let opts = sanitize(rawOptions)
+        var logs: [String] = []
+
+        let stateDir = opts.stateDir ?? defaultStateDir()
+        let hubEnv = stateDir.appendingPathComponent("hub.env")
+        let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
+        let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
+        let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
+
+        guard FileManager.default.fileExists(atPath: hubEnv.path) else {
+            return HubRemoteSecretVaultRedeemResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                leaseId: nil,
+                itemId: nil,
+                plaintext: nil,
+                reasonCode: "hub_env_missing",
+                logLines: ["missing hub env: \(hubEnv.path)"]
+            )
+        }
+        guard FileManager.default.fileExists(atPath: clientKitSrc.path) else {
+            return HubRemoteSecretVaultRedeemResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                leaseId: nil,
+                itemId: nil,
+                plaintext: nil,
+                reasonCode: "client_kit_missing",
+                logLines: ["missing client kit src: \(clientKitSrc.path)"]
+            )
+        }
+
+        let exported = readEnvExports(from: hubEnv)
+        let merged = mergedAxhubEnv(options: opts, extra: exported)
+        let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged)
+        guard let nodeBin else {
+            return HubRemoteSecretVaultRedeemResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                leaseId: nil,
+                itemId: nil,
+                plaintext: nil,
+                reasonCode: "node_missing",
+                logLines: ["missing node runtime for remote secret vault redeem"]
+            )
+        }
+
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xt_secret_vault_redeem_\(UUID().uuidString)", isDirectory: false)
+        try? FileManager.default.removeItem(at: outputURL)
+        defer { try? FileManager.default.removeItem(at: outputURL) }
+
+        var scriptEnv = merged
+        scriptEnv["XTERMINAL_SECRET_VAULT_USE_TOKEN"] = normalizedUseToken
+        scriptEnv["XTERMINAL_SECRET_VAULT_REDEEM_OUTPUT"] = outputURL.path
+        if let projectId, !projectId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            scriptEnv["HUB_PROJECT_ID"] = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
+        func runScript() -> StepOutput {
+            do {
+                let script = remoteSecretVaultRedeemScriptSource()
+                let result = try ProcessCapture.run(
+                    nodeBin,
+                    ["--input-type=module", "-"],
+                    cwd: clientKitHub,
+                    stdin: script.data(using: .utf8),
+                    timeoutSec: 12.0,
+                    env: scriptEnv
+                )
+                return StepOutput(exitCode: result.exitCode, output: result.combined, command: command)
+            } catch {
+                return StepOutput(exitCode: 127, output: String(describing: error), command: command)
+            }
+        }
+
+        var step = runScript()
+        appendStepLogs(into: &logs, step: step)
+        if step.exitCode != 0, shouldRetryAfterClientKitInstall(step.output) {
+            let install = runAxhubctl(args: ["install-client"], options: opts, env: [:], timeoutSec: 120.0)
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                step = runScript()
+                appendStepLogs(into: &logs, step: step)
+            }
+        }
+
+        guard let jsonLine = extractTrailingJSONObjectLine(step.output),
+              let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteSecretVaultRedeemScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(from: step.output, fallback: "remote_secret_vault_redeem_failed")
+            return HubRemoteSecretVaultRedeemResult(
+                ok: false,
+                source: "hub_memory_v1_grpc",
+                leaseId: nil,
+                itemId: nil,
+                plaintext: nil,
+                reasonCode: fallback,
+                logLines: logs
+            )
+        }
+
+        let reasonCode = nonEmpty(decoded.errorCode)
+            ?? nonEmpty(decoded.reason)
+            ?? nonEmpty(decoded.errorMessage)
+            ?? ((decoded.ok ?? false) ? nil : "remote_secret_vault_redeem_failed")
+        let ok = decoded.ok ?? false
+        guard ok else {
+            return HubRemoteSecretVaultRedeemResult(
+                ok: false,
+                source: nonEmpty(decoded.source) ?? "hub_memory_v1_grpc",
+                leaseId: nonEmpty(decoded.leaseId),
+                itemId: nonEmpty(decoded.itemId),
+                plaintext: nil,
+                reasonCode: reasonCode?.replacingOccurrences(of: " ", with: "_"),
+                logLines: logs
+            )
+        }
+
+        guard let plaintextData = try? Data(contentsOf: outputURL),
+              let plaintext = String(data: plaintextData, encoding: .utf8),
+              !plaintext.isEmpty else {
+            return HubRemoteSecretVaultRedeemResult(
+                ok: false,
+                source: nonEmpty(decoded.source) ?? "hub_memory_v1_grpc",
+                leaseId: nonEmpty(decoded.leaseId),
+                itemId: nonEmpty(decoded.itemId),
+                plaintext: nil,
+                reasonCode: "secret_vault_plaintext_missing",
+                logLines: logs
+            )
+        }
+
+        return HubRemoteSecretVaultRedeemResult(
+            ok: true,
+            source: nonEmpty(decoded.source) ?? "hub_memory_v1_grpc",
+            leaseId: nonEmpty(decoded.leaseId),
+            itemId: nonEmpty(decoded.itemId),
+            plaintext: plaintext,
+            reasonCode: nil,
+            logLines: logs
         )
     }
 
@@ -3926,6 +5701,227 @@ actor HubPairingCoordinator {
         }
     }
 
+    private struct RemoteSkillCatalogEntryScriptResult: Codable {
+        var skillID: String?
+        var name: String?
+        var version: String?
+        var description: String?
+        var publisherID: String?
+        var capabilitiesRequired: [String]?
+        var sourceID: String?
+        var packageSHA256: String?
+        var installHint: String?
+
+        enum CodingKeys: String, CodingKey {
+            case skillID = "skill_id"
+            case name
+            case version
+            case description
+            case publisherID = "publisher_id"
+            case capabilitiesRequired = "capabilities_required"
+            case sourceID = "source_id"
+            case packageSHA256 = "package_sha256"
+            case installHint = "install_hint"
+        }
+    }
+
+    private struct RemoteSkillsSearchScriptResult: Codable {
+        var ok: Bool?
+        var source: String?
+        var updatedAtMs: Int64?
+        var results: [RemoteSkillCatalogEntryScriptResult]?
+        var reason: String?
+        var errorCode: String?
+        var errorMessage: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case updatedAtMs = "updated_at_ms"
+            case results
+            case reason
+            case errorCode = "error_code"
+            case errorMessage = "error_message"
+        }
+    }
+
+    private struct RemoteSkillPinScriptResult: Codable {
+        var ok: Bool?
+        var source: String?
+        var scope: String?
+        var userId: String?
+        var projectId: String?
+        var skillId: String?
+        var packageSHA256: String?
+        var previousPackageSHA256: String?
+        var updatedAtMs: Int64?
+        var reason: String?
+        var errorCode: String?
+        var errorMessage: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case scope
+            case userId = "user_id"
+            case projectId = "project_id"
+            case skillId = "skill_id"
+            case packageSHA256 = "package_sha256"
+            case previousPackageSHA256 = "previous_package_sha256"
+            case updatedAtMs = "updated_at_ms"
+            case reason
+            case errorCode = "error_code"
+            case errorMessage = "error_message"
+        }
+    }
+
+    private struct RemoteResolvedSkillEntryScriptResult: Codable {
+        var scope: String?
+        var skill: RemoteSkillCatalogEntryScriptResult?
+    }
+
+    private struct RemoteResolvedSkillsScriptResult: Codable {
+        var ok: Bool?
+        var source: String?
+        var skills: [RemoteResolvedSkillEntryScriptResult]?
+        var reason: String?
+        var errorCode: String?
+        var errorMessage: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case skills
+            case reason
+            case errorCode = "error_code"
+            case errorMessage = "error_message"
+        }
+    }
+
+    private struct RemoteAgentImportStageScriptResult: Codable {
+        var ok: Bool?
+        var source: String?
+        var stagingId: String?
+        var status: String?
+        var auditRef: String?
+        var preflightStatus: String?
+        var skillId: String?
+        var policyScope: String?
+        var findingsCount: Int?
+        var vetterStatus: String?
+        var vetterCriticalCount: Int?
+        var vetterWarnCount: Int?
+        var vetterAuditRef: String?
+        var recordPath: String?
+        var reason: String?
+        var errorCode: String?
+        var errorMessage: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case stagingId = "staging_id"
+            case status
+            case auditRef = "audit_ref"
+            case preflightStatus = "preflight_status"
+            case skillId = "skill_id"
+            case policyScope = "policy_scope"
+            case findingsCount = "findings_count"
+            case vetterStatus = "vetter_status"
+            case vetterCriticalCount = "vetter_critical_count"
+            case vetterWarnCount = "vetter_warn_count"
+            case vetterAuditRef = "vetter_audit_ref"
+            case recordPath = "record_path"
+            case reason
+            case errorCode = "error_code"
+            case errorMessage = "error_message"
+        }
+    }
+
+    private struct RemoteAgentImportRecordScriptResult: Codable {
+        var ok: Bool?
+        var source: String?
+        var stagingId: String?
+        var status: String?
+        var auditRef: String?
+        var schemaVersion: String?
+        var skillId: String?
+        var recordJSON: String?
+        var reason: String?
+        var errorCode: String?
+        var errorMessage: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case stagingId = "staging_id"
+            case status
+            case auditRef = "audit_ref"
+            case schemaVersion = "schema_version"
+            case skillId = "skill_id"
+            case recordJSON = "record_json"
+            case reason
+            case errorCode = "error_code"
+            case errorMessage = "error_message"
+        }
+    }
+
+    private struct RemoteSkillPackageUploadScriptResult: Codable {
+        var ok: Bool?
+        var source: String?
+        var packageSHA256: String?
+        var alreadyPresent: Bool?
+        var skillId: String?
+        var version: String?
+        var reason: String?
+        var errorCode: String?
+        var errorMessage: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case packageSHA256 = "package_sha256"
+            case alreadyPresent = "already_present"
+            case skillId = "skill_id"
+            case version
+            case reason
+            case errorCode = "error_code"
+            case errorMessage = "error_message"
+        }
+    }
+
+    private struct RemoteAgentImportPromoteScriptResult: Codable {
+        var ok: Bool?
+        var source: String?
+        var stagingId: String?
+        var status: String?
+        var auditRef: String?
+        var packageSHA256: String?
+        var scope: String?
+        var skillId: String?
+        var previousPackageSHA256: String?
+        var recordPath: String?
+        var reason: String?
+        var errorCode: String?
+        var errorMessage: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case stagingId = "staging_id"
+            case status
+            case auditRef = "audit_ref"
+            case packageSHA256 = "package_sha256"
+            case scope
+            case skillId = "skill_id"
+            case previousPackageSHA256 = "previous_package_sha256"
+            case recordPath = "record_path"
+            case reason
+            case errorCode = "error_code"
+            case errorMessage = "error_message"
+        }
+    }
+
     private struct RemoteMemorySnapshotScriptResult: Codable {
         var ok: Bool?
         var source: String?
@@ -4150,6 +6146,108 @@ actor HubPairingCoordinator {
             case source
             case updatedAtMs = "updated_at_ms"
             case items
+            case reason
+            case errorCode = "error_code"
+            case errorMessage = "error_message"
+        }
+    }
+
+    private struct RemoteSecretVaultItemRow: Codable {
+        var itemId: String
+        var scope: String
+        var name: String
+        var sensitivity: String
+        var createdAtMs: Double?
+        var updatedAtMs: Double?
+
+        enum CodingKeys: String, CodingKey {
+            case itemId = "item_id"
+            case scope
+            case name
+            case sensitivity
+            case createdAtMs = "created_at_ms"
+            case updatedAtMs = "updated_at_ms"
+        }
+    }
+
+    private struct RemoteSecretVaultItemsScriptResult: Codable {
+        var ok: Bool?
+        var source: String?
+        var updatedAtMs: Double?
+        var items: [RemoteSecretVaultItemRow]?
+        var reason: String?
+        var errorCode: String?
+        var errorMessage: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case updatedAtMs = "updated_at_ms"
+            case items
+            case reason
+            case errorCode = "error_code"
+            case errorMessage = "error_message"
+        }
+    }
+
+    private struct RemoteSecretVaultCreateScriptResult: Codable {
+        var ok: Bool?
+        var source: String?
+        var item: RemoteSecretVaultItemRow?
+        var reason: String?
+        var errorCode: String?
+        var errorMessage: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case item
+            case reason
+            case errorCode = "error_code"
+            case errorMessage = "error_message"
+        }
+    }
+
+    private struct RemoteSecretVaultUseScriptResult: Codable {
+        var ok: Bool?
+        var source: String?
+        var leaseId: String?
+        var useToken: String?
+        var itemId: String?
+        var expiresAtMs: Double?
+        var reason: String?
+        var errorCode: String?
+        var errorMessage: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case leaseId = "lease_id"
+            case useToken = "use_token"
+            case itemId = "item_id"
+            case expiresAtMs = "expires_at_ms"
+            case reason
+            case errorCode = "error_code"
+            case errorMessage = "error_message"
+        }
+    }
+
+    private struct RemoteSecretVaultRedeemScriptResult: Codable {
+        var ok: Bool?
+        var source: String?
+        var leaseId: String?
+        var itemId: String?
+        var plaintextBytes: Double?
+        var reason: String?
+        var errorCode: String?
+        var errorMessage: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case leaseId = "lease_id"
+            case itemId = "item_id"
+            case plaintextBytes = "plaintext_bytes"
             case reason
             case errorCode = "error_code"
             case errorMessage = "error_message"
@@ -4721,7 +6819,24 @@ function selectModelId(models, wantedModelId) {
 function modelById(models, modelId) {
   const wanted = safe(modelId);
   if (!wanted) return null;
-  return (Array.isArray(models) ? models : []).find((m) => safe(m?.model_id || '').toLowerCase() === wanted.toLowerCase()) || null;
+  const all = Array.isArray(models) ? models : [];
+  const exact = all.find((m) => safe(m?.model_id || '').toLowerCase() === wanted.toLowerCase());
+  if (exact) return exact;
+
+  const normalized = normalizeWantedModelId(all, wanted);
+  if (!normalized) return null;
+  return all.find((m) => safe(m?.model_id || '').toLowerCase() === normalized.toLowerCase()) || null;
+}
+
+function modelIdsEquivalent(lhs, rhs) {
+  const left = safe(lhs).toLowerCase();
+  const right = safe(rhs).toLowerCase();
+  if (!left || !right) return false;
+  if (left === right) return true;
+
+  const leftBase = left.includes('/') ? left.split('/').pop() : left;
+  const rightBase = right.includes('/') ? right.split('/').pop() : right;
+  return !!leftBase && leftBase === rightBase;
 }
 
 function isPaidModel(model) {
@@ -4755,7 +6870,7 @@ function buildExecutionDescriptor(models, requestedModelId, actualModelId) {
     };
   }
 
-  if (requested && actual && requested.toLowerCase() !== actual.toLowerCase() && (actualLocal || !actualPaid)) {
+  if (requested && actual && !modelIdsEquivalent(requested, actual) && (actualLocal || !actualPaid)) {
     return {
       requested_model_id: requested,
       actual_model_id: actual,
@@ -5715,6 +7830,1066 @@ async function main() {
 main().catch((err) => {
   const msg = safe(err?.message || err);
   out({ ok: false, error_code: msg || 'remote_notification_failed', error_message: msg || 'remote_notification_failed' });
+  process.exit(1);
+});
+"""#
+    }
+
+    private func remoteSkillsSearchScriptSource() -> String {
+        #"""
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
+
+const safe = (v) => String(v ?? '').trim();
+const out = (obj) => {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+};
+
+function reqClientFromEnv(projectIdOverride) {
+  const projectId = projectIdOverride === undefined || projectIdOverride === null
+    ? safe(process.env.HUB_PROJECT_ID || '')
+    : safe(projectIdOverride);
+  return {
+    device_id: safe(process.env.HUB_DEVICE_ID || 'terminal_device'),
+    user_id: safe(process.env.HUB_USER_ID || ''),
+    app_id: safe(process.env.HUB_APP_ID || 'x_terminal'),
+    project_id: projectId,
+    session_id: safe(process.env.HUB_SESSION_ID || ''),
+  };
+}
+
+function metadataFromEnv() {
+  const tok = safe(process.env.HUB_CLIENT_TOKEN || '');
+  const md = new grpc.Metadata();
+  if (tok) md.set('authorization', `Bearer ${tok}`);
+  return md;
+}
+
+async function resolveProtoPath() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'proto_path.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.resolveHubProtoPath === 'function') {
+        const p = safe(mod.resolveHubProtoPath(process.env));
+        if (p) return p;
+      }
+    } catch {}
+  }
+  const candidates = [
+    path.resolve(process.cwd(), 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', '..', 'protocol', 'hub_protocol_v1.proto'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+function loadProto(protoPath) {
+  const packageDef = protoLoader.loadSync(protoPath, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+  });
+  const loaded = grpc.loadPackageDefinition(packageDef);
+  return loaded?.ax?.hub?.v1;
+}
+
+async function makeClientCreds() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'client_credentials.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.makeClientCredentials === 'function') {
+        const built = mod.makeClientCredentials(process.env);
+        if (built?.creds) return { creds: built.creds, options: built.options || {} };
+      }
+    } catch {}
+  }
+  return { creds: grpc.credentials.createInsecure(), options: {} };
+}
+
+async function main() {
+  const protoPath = await resolveProtoPath();
+  const proto = loadProto(protoPath);
+  if (!proto?.HubSkills) throw new Error('hub_skills_missing');
+
+  const host = safe(process.env.HUB_HOST || '127.0.0.1');
+  const port = Number.parseInt(safe(process.env.HUB_PORT || '50051'), 10) || 50051;
+  const addr = `${host}:${port}`;
+  const query = safe(process.env.XTERMINAL_SKILLS_QUERY || '');
+  const sourceFilter = safe(process.env.XTERMINAL_SKILLS_SOURCE_FILTER || '');
+  const limit = Number.parseInt(safe(process.env.XTERMINAL_SKILLS_LIMIT || '20'), 10) || 20;
+  const projectId = safe(process.env.XTERMINAL_SKILLS_PROJECT_ID || '');
+
+  const { creds, options } = await makeClientCreds();
+  const skillsClient = new proto.HubSkills(addr, creds, options);
+  const md = metadataFromEnv();
+  const client = reqClientFromEnv(projectId);
+
+  const resp = await new Promise((resolve, reject) => {
+    skillsClient.SearchSkills(
+      {
+        client,
+        query,
+        source_filter: sourceFilter,
+        limit,
+      },
+      md,
+      (err, result) => {
+        if (err) reject(err);
+        else resolve(result || {});
+      }
+    );
+  });
+
+  const results = Array.isArray(resp?.results) ? resp.results : [];
+  out({
+    ok: true,
+    source: 'hub_runtime_grpc',
+    updated_at_ms: Number(resp?.updated_at_ms || 0),
+    results: results.map((row) => ({
+      skill_id: safe(row?.skill_id || ''),
+      name: safe(row?.name || ''),
+      version: safe(row?.version || ''),
+      description: safe(row?.description || ''),
+      publisher_id: safe(row?.publisher_id || ''),
+      capabilities_required: Array.isArray(row?.capabilities_required) ? row.capabilities_required.map((item) => safe(item)).filter(Boolean) : [],
+      source_id: safe(row?.source_id || ''),
+      package_sha256: safe(row?.package_sha256 || ''),
+      install_hint: safe(row?.install_hint || ''),
+    })),
+  });
+}
+
+main().catch((err) => {
+  const msg = safe(err?.message || err);
+  out({
+    ok: false,
+    source: 'hub_runtime_grpc',
+    updated_at_ms: 0,
+    results: [],
+    reason: msg || 'remote_skills_search_failed',
+    error_code: msg || 'remote_skills_search_failed',
+    error_message: msg || 'remote_skills_search_failed',
+  });
+  process.exit(1);
+});
+"""#
+    }
+
+    private func remoteSkillPinScriptSource() -> String {
+        #"""
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
+
+const safe = (v) => String(v ?? '').trim();
+const out = (obj) => {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+};
+
+function reqClientFromEnv(projectIdOverride) {
+  const projectId = projectIdOverride === undefined || projectIdOverride === null
+    ? safe(process.env.HUB_PROJECT_ID || '')
+    : safe(projectIdOverride);
+  return {
+    device_id: safe(process.env.HUB_DEVICE_ID || 'terminal_device'),
+    user_id: safe(process.env.HUB_USER_ID || ''),
+    app_id: safe(process.env.HUB_APP_ID || 'x_terminal'),
+    project_id: projectId,
+    session_id: safe(process.env.HUB_SESSION_ID || ''),
+  };
+}
+
+function metadataFromEnv() {
+  const tok = safe(process.env.HUB_CLIENT_TOKEN || '');
+  const md = new grpc.Metadata();
+  if (tok) md.set('authorization', `Bearer ${tok}`);
+  return md;
+}
+
+async function resolveProtoPath() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'proto_path.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.resolveHubProtoPath === 'function') {
+        const p = safe(mod.resolveHubProtoPath(process.env));
+        if (p) return p;
+      }
+    } catch {}
+  }
+  const candidates = [
+    path.resolve(process.cwd(), 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', '..', 'protocol', 'hub_protocol_v1.proto'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+function loadProto(protoPath) {
+  const packageDef = protoLoader.loadSync(protoPath, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+  });
+  const loaded = grpc.loadPackageDefinition(packageDef);
+  return loaded?.ax?.hub?.v1;
+}
+
+async function makeClientCreds() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'client_credentials.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.makeClientCredentials === 'function') {
+        const built = mod.makeClientCredentials(process.env);
+        if (built?.creds) return { creds: built.creds, options: built.options || {} };
+      }
+    } catch {}
+  }
+  return { creds: grpc.credentials.createInsecure(), options: {} };
+}
+
+function protoScope(scope) {
+  if (scope === 'global') return 'SKILL_PIN_SCOPE_GLOBAL';
+  if (scope === 'project') return 'SKILL_PIN_SCOPE_PROJECT';
+  throw new Error('unsupported_skill_pin_scope');
+}
+
+function normalizedScope(scope) {
+  if (scope === 'SKILL_PIN_SCOPE_GLOBAL') return 'global';
+  if (scope === 'SKILL_PIN_SCOPE_PROJECT') return 'project';
+  return safe(scope).toLowerCase();
+}
+
+async function main() {
+  const protoPath = await resolveProtoPath();
+  const proto = loadProto(protoPath);
+  if (!proto?.HubSkills) throw new Error('hub_skills_missing');
+
+  const host = safe(process.env.HUB_HOST || '127.0.0.1');
+  const port = Number.parseInt(safe(process.env.HUB_PORT || '50051'), 10) || 50051;
+  const addr = `${host}:${port}`;
+  const scope = safe(process.env.XTERMINAL_SKILLS_PIN_SCOPE || '').toLowerCase();
+  const skillId = safe(process.env.XTERMINAL_SKILLS_PIN_SKILL_ID || '');
+  const packageSha = safe(process.env.XTERMINAL_SKILLS_PIN_PACKAGE_SHA256 || '').toLowerCase();
+  const projectId = scope === 'project'
+    ? safe(process.env.XTERMINAL_SKILLS_PIN_PROJECT_ID || '')
+    : '';
+  const note = safe(process.env.XTERMINAL_SKILLS_PIN_NOTE || '');
+  const requestId = safe(process.env.XTERMINAL_SKILLS_PIN_REQUEST_ID || '');
+  if (!skillId) throw new Error('missing_skill_id');
+  if (!packageSha) throw new Error('missing_package_sha256');
+
+  const { creds, options } = await makeClientCreds();
+  const skillsClient = new proto.HubSkills(addr, creds, options);
+  const md = metadataFromEnv();
+  const client = reqClientFromEnv(projectId);
+
+  const resp = await new Promise((resolve, reject) => {
+    skillsClient.SetSkillPin(
+      {
+        client,
+        request_id: requestId,
+        scope: protoScope(scope),
+        skill_id: skillId,
+        package_sha256: packageSha,
+        note,
+        created_at_ms: Date.now(),
+      },
+      md,
+      (err, result) => {
+        if (err) reject(err);
+        else resolve(result || {});
+      }
+    );
+  });
+
+  out({
+    ok: true,
+    source: 'hub_runtime_grpc',
+    scope: normalizedScope(resp?.scope || scope),
+    user_id: safe(resp?.user_id || ''),
+    project_id: safe(resp?.project_id || projectId),
+    skill_id: safe(resp?.skill_id || skillId),
+    package_sha256: safe(resp?.package_sha256 || packageSha),
+    previous_package_sha256: safe(resp?.previous_package_sha256 || ''),
+    updated_at_ms: Number(resp?.updated_at_ms || 0),
+  });
+}
+
+main().catch((err) => {
+  const msg = safe(err?.message || err);
+  out({
+    ok: false,
+    source: 'hub_runtime_grpc',
+    scope: safe(process.env.XTERMINAL_SKILLS_PIN_SCOPE || ''),
+    user_id: '',
+    project_id: safe(process.env.XTERMINAL_SKILLS_PIN_PROJECT_ID || ''),
+    skill_id: safe(process.env.XTERMINAL_SKILLS_PIN_SKILL_ID || ''),
+    package_sha256: safe(process.env.XTERMINAL_SKILLS_PIN_PACKAGE_SHA256 || ''),
+    previous_package_sha256: '',
+    updated_at_ms: 0,
+    reason: msg || 'remote_skill_pin_failed',
+    error_code: msg || 'remote_skill_pin_failed',
+    error_message: msg || 'remote_skill_pin_failed',
+  });
+  process.exit(1);
+});
+"""#
+    }
+
+    private func remoteResolvedSkillsScriptSource() -> String {
+        #"""
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
+
+const safe = (v) => String(v ?? '').trim();
+const out = (obj) => {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+};
+
+function reqClientFromEnv(projectIdOverride) {
+  const projectId = projectIdOverride === undefined || projectIdOverride === null
+    ? safe(process.env.HUB_PROJECT_ID || '')
+    : safe(projectIdOverride);
+  return {
+    device_id: safe(process.env.HUB_DEVICE_ID || 'terminal_device'),
+    user_id: safe(process.env.HUB_USER_ID || ''),
+    app_id: safe(process.env.HUB_APP_ID || 'x_terminal'),
+    project_id: projectId,
+    session_id: safe(process.env.HUB_SESSION_ID || ''),
+  };
+}
+
+function metadataFromEnv() {
+  const tok = safe(process.env.HUB_CLIENT_TOKEN || '');
+  const md = new grpc.Metadata();
+  if (tok) md.set('authorization', `Bearer ${tok}`);
+  return md;
+}
+
+async function resolveProtoPath() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'proto_path.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.resolveHubProtoPath === 'function') {
+        const p = safe(mod.resolveHubProtoPath(process.env));
+        if (p) return p;
+      }
+    } catch {}
+  }
+  const candidates = [
+    path.resolve(process.cwd(), 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', '..', 'protocol', 'hub_protocol_v1.proto'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+function loadProto(protoPath) {
+  const packageDef = protoLoader.loadSync(protoPath, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+  });
+  const loaded = grpc.loadPackageDefinition(packageDef);
+  return loaded?.ax?.hub?.v1;
+}
+
+async function makeClientCreds() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'client_credentials.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.makeClientCredentials === 'function') {
+        const built = mod.makeClientCredentials(process.env);
+        if (built?.creds) return { creds: built.creds, options: built.options || {} };
+      }
+    } catch {}
+  }
+  return { creds: grpc.credentials.createInsecure(), options: {} };
+}
+
+function normalizedScope(scope) {
+  if (scope === 'SKILL_PIN_SCOPE_GLOBAL') return 'global';
+  if (scope === 'SKILL_PIN_SCOPE_PROJECT') return 'project';
+  return safe(scope).toLowerCase();
+}
+
+async function main() {
+  const protoPath = await resolveProtoPath();
+  const proto = loadProto(protoPath);
+  if (!proto?.HubSkills) throw new Error('hub_skills_missing');
+
+  const host = safe(process.env.HUB_HOST || '127.0.0.1');
+  const port = Number.parseInt(safe(process.env.HUB_PORT || '50051'), 10) || 50051;
+  const addr = `${host}:${port}`;
+  const projectId = safe(process.env.XTERMINAL_RESOLVED_SKILLS_PROJECT_ID || '');
+
+  const { creds, options } = await makeClientCreds();
+  const skillsClient = new proto.HubSkills(addr, creds, options);
+  const md = metadataFromEnv();
+  const client = reqClientFromEnv(projectId);
+
+  const resp = await new Promise((resolve, reject) => {
+    skillsClient.ListResolvedSkills(
+      { client },
+      md,
+      (err, result) => {
+        if (err) reject(err);
+        else resolve(result || {});
+      }
+    );
+  });
+
+  const skills = Array.isArray(resp?.skills) ? resp.skills : [];
+  out({
+    ok: true,
+    source: 'hub_runtime_grpc',
+    skills: skills.map((row) => ({
+      scope: normalizedScope(row?.scope || ''),
+      skill: {
+        skill_id: safe(row?.skill?.skill_id || ''),
+        name: safe(row?.skill?.name || ''),
+        version: safe(row?.skill?.version || ''),
+        description: safe(row?.skill?.description || ''),
+        publisher_id: safe(row?.skill?.publisher_id || ''),
+        capabilities_required: Array.isArray(row?.skill?.capabilities_required) ? row.skill.capabilities_required.map((item) => safe(item)).filter(Boolean) : [],
+        source_id: safe(row?.skill?.source_id || ''),
+        package_sha256: safe(row?.skill?.package_sha256 || ''),
+        install_hint: safe(row?.skill?.install_hint || ''),
+      },
+    })),
+  });
+}
+
+main().catch((err) => {
+  const msg = safe(err?.message || err);
+  out({
+    ok: false,
+    source: 'hub_runtime_grpc',
+    skills: [],
+    reason: msg || 'remote_resolved_skills_failed',
+    error_code: msg || 'remote_resolved_skills_failed',
+    error_message: msg || 'remote_resolved_skills_failed',
+  });
+  process.exit(1);
+});
+"""#
+    }
+
+    private func remoteAgentImportStageScriptSource() -> String {
+        #"""
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
+
+const safe = (v) => String(v ?? '').trim();
+const out = (obj) => {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+};
+
+function reqClientFromEnv() {
+  return {
+    device_id: safe(process.env.HUB_DEVICE_ID || 'terminal_device'),
+    user_id: safe(process.env.HUB_USER_ID || ''),
+    app_id: safe(process.env.HUB_APP_ID || 'x_terminal'),
+    project_id: safe(process.env.HUB_PROJECT_ID || ''),
+    session_id: safe(process.env.HUB_SESSION_ID || ''),
+  };
+}
+
+function metadataFromEnv() {
+  const tok = safe(process.env.HUB_CLIENT_TOKEN || '');
+  const md = new grpc.Metadata();
+  if (tok) md.set('authorization', `Bearer ${tok}`);
+  return md;
+}
+
+async function resolveProtoPath() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'proto_path.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.resolveHubProtoPath === 'function') {
+        const p = safe(mod.resolveHubProtoPath(process.env));
+        if (p) return p;
+      }
+    } catch {}
+  }
+  const candidates = [
+    path.resolve(process.cwd(), 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', '..', 'protocol', 'hub_protocol_v1.proto'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+function loadProto(protoPath) {
+  const packageDef = protoLoader.loadSync(protoPath, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+  });
+  const loaded = grpc.loadPackageDefinition(packageDef);
+  return loaded?.ax?.hub?.v1;
+}
+
+async function makeClientCreds() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'client_credentials.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.makeClientCredentials === 'function') {
+        const built = mod.makeClientCredentials(process.env);
+        if (built?.creds) return { creds: built.creds, options: built.options || {} };
+      }
+    } catch {}
+  }
+  return { creds: grpc.credentials.createInsecure(), options: {} };
+}
+
+async function main() {
+  const protoPath = await resolveProtoPath();
+  const proto = loadProto(protoPath);
+  if (!proto?.HubSkills) throw new Error('hub_skills_missing');
+
+  const host = safe(process.env.HUB_HOST || '127.0.0.1');
+  const port = Number.parseInt(safe(process.env.HUB_PORT || '50051'), 10) || 50051;
+  const addr = `${host}:${port}`;
+  const client = reqClientFromEnv();
+
+  const importManifestJson = safe(process.env.XTERMINAL_AGENT_IMPORT_MANIFEST_JSON || '');
+  if (!importManifestJson) throw new Error('missing_agent_import_manifest');
+  const findingsJson = safe(process.env.XTERMINAL_AGENT_IMPORT_FINDINGS_JSON || '');
+  const scanInputJson = safe(process.env.XTERMINAL_AGENT_IMPORT_SCAN_INPUT_JSON || '');
+  const requestedBy = safe(process.env.XTERMINAL_AGENT_IMPORT_REQUESTED_BY || '');
+  const note = safe(process.env.XTERMINAL_AGENT_IMPORT_NOTE || '');
+  const requestId = safe(process.env.XTERMINAL_AGENT_IMPORT_REQUEST_ID || '');
+
+  const { creds, options } = await makeClientCreds();
+  const skillsClient = new proto.HubSkills(addr, creds, options);
+  const md = metadataFromEnv();
+  if (typeof skillsClient.StageAgentImport !== 'function') {
+    throw new Error('hub_agent_import_unimplemented');
+  }
+
+  const resp = await new Promise((resolve, reject) => {
+    skillsClient.StageAgentImport(
+      {
+        client,
+        request_id: requestId,
+        import_manifest_json: importManifestJson,
+        findings_json: findingsJson,
+        scan_input_json: scanInputJson,
+        requested_by: requestedBy,
+        note,
+        created_at_ms: Date.now(),
+      },
+      md,
+      (err, out) => {
+        if (err) reject(err);
+        else resolve(out || {});
+      }
+    );
+  });
+
+  out({
+    ok: true,
+    source: 'hub_runtime_grpc',
+    staging_id: safe(resp?.staging_id || ''),
+    status: safe(resp?.status || ''),
+    audit_ref: safe(resp?.audit_ref || ''),
+    preflight_status: safe(resp?.preflight_status || ''),
+    skill_id: safe(resp?.skill_id || ''),
+    policy_scope: safe(resp?.policy_scope || ''),
+    findings_count: Number(resp?.findings_count || 0),
+    vetter_status: safe(resp?.vetter_status || ''),
+    vetter_critical_count: Number(resp?.vetter_critical_count || 0),
+    vetter_warn_count: Number(resp?.vetter_warn_count || 0),
+    vetter_audit_ref: safe(resp?.vetter_audit_ref || ''),
+    record_path: safe(resp?.record_path || ''),
+  });
+}
+
+main().catch((err) => {
+  const msg = safe(err?.message || err);
+  const lower = msg.toLowerCase();
+  const code = lower.includes('hub_agent_import_unimplemented') || lower.includes('unimplemented')
+    ? 'hub_agent_import_unimplemented'
+    : (msg || 'remote_agent_import_stage_failed');
+  out({
+    ok: false,
+    source: 'hub_runtime_grpc',
+    reason: code,
+    error_code: code,
+    error_message: msg || code,
+  });
+  process.exit(1);
+});
+"""#
+    }
+
+    private func remoteAgentImportRecordScriptSource() -> String {
+        #"""
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
+
+const safe = (v) => String(v ?? '').trim();
+const out = (obj) => {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+};
+
+function reqClientFromEnv() {
+  return {
+    device_id: safe(process.env.HUB_DEVICE_ID || 'terminal_device'),
+    user_id: safe(process.env.HUB_USER_ID || ''),
+    app_id: safe(process.env.HUB_APP_ID || 'x_terminal'),
+    project_id: safe(process.env.HUB_PROJECT_ID || ''),
+    session_id: safe(process.env.HUB_SESSION_ID || ''),
+  };
+}
+
+function metadataFromEnv() {
+  const tok = safe(process.env.HUB_CLIENT_TOKEN || '');
+  const md = new grpc.Metadata();
+  if (tok) md.set('authorization', `Bearer ${tok}`);
+  return md;
+}
+
+async function resolveProtoPath() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'proto_path.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.resolveHubProtoPath === 'function') {
+        const p = safe(mod.resolveHubProtoPath(process.env));
+        if (p) return p;
+      }
+    } catch {}
+  }
+  const candidates = [
+    path.resolve(process.cwd(), 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', '..', 'protocol', 'hub_protocol_v1.proto'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+function loadProto(protoPath) {
+  const packageDef = protoLoader.loadSync(protoPath, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+  });
+  const loaded = grpc.loadPackageDefinition(packageDef);
+  return loaded?.ax?.hub?.v1;
+}
+
+async function makeClientCreds() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'client_credentials.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.makeClientCredentials === 'function') {
+        const built = mod.makeClientCredentials(process.env);
+        if (built?.creds) return { creds: built.creds, options: built.options || {} };
+      }
+    } catch {}
+  }
+  return { creds: grpc.credentials.createInsecure(), options: {} };
+}
+
+async function main() {
+  const stagingId = safe(process.env.XTERMINAL_AGENT_IMPORT_STAGING_ID || '');
+  if (!stagingId) throw new Error('missing_agent_staging_id');
+  const protoPath = await resolveProtoPath();
+  const proto = loadProto(protoPath);
+  if (!proto?.HubSkills) throw new Error('hub_skills_missing');
+
+  const host = safe(process.env.HUB_HOST || '127.0.0.1');
+  const port = Number.parseInt(safe(process.env.HUB_PORT || '50051'), 10) || 50051;
+  const addr = `${host}:${port}`;
+  const client = reqClientFromEnv();
+  const { creds, options } = await makeClientCreds();
+  const skillsClient = new proto.HubSkills(addr, creds, options);
+  const md = metadataFromEnv();
+
+  const resp = await new Promise((resolve, reject) => {
+    skillsClient.GetAgentImportRecord(
+      {
+        client,
+        staging_id: stagingId,
+      },
+      md,
+      (err, out) => {
+        if (err) reject(err);
+        else resolve(out || {});
+      }
+    );
+  });
+
+  out({
+    ok: true,
+    source: 'hub_runtime_grpc',
+    staging_id: safe(resp?.staging_id || ''),
+    status: safe(resp?.status || ''),
+    audit_ref: safe(resp?.audit_ref || ''),
+    schema_version: safe(resp?.schema_version || ''),
+    skill_id: safe(resp?.skill_id || ''),
+    record_json: safe(resp?.record_json || ''),
+  });
+}
+
+main().catch((err) => {
+  const msg = safe(err?.message || err);
+  out({
+    ok: false,
+    source: 'hub_runtime_grpc',
+    reason: msg || 'remote_agent_import_record_failed',
+    error_code: msg || 'remote_agent_import_record_failed',
+    error_message: msg || 'remote_agent_import_record_failed',
+  });
+  process.exit(1);
+});
+"""#
+    }
+
+    private func remoteSkillPackageUploadScriptSource() -> String {
+        #"""
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
+
+const safe = (v) => String(v ?? '').trim();
+const out = (obj) => {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+};
+
+function reqClientFromEnv() {
+  return {
+    device_id: safe(process.env.HUB_DEVICE_ID || 'terminal_device'),
+    user_id: safe(process.env.HUB_USER_ID || ''),
+    app_id: safe(process.env.HUB_APP_ID || 'x_terminal'),
+    project_id: safe(process.env.HUB_PROJECT_ID || ''),
+    session_id: safe(process.env.HUB_SESSION_ID || ''),
+  };
+}
+
+function metadataFromEnv() {
+  const tok = safe(process.env.HUB_CLIENT_TOKEN || '');
+  const md = new grpc.Metadata();
+  if (tok) md.set('authorization', `Bearer ${tok}`);
+  return md;
+}
+
+async function resolveProtoPath() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'proto_path.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.resolveHubProtoPath === 'function') {
+        const p = safe(mod.resolveHubProtoPath(process.env));
+        if (p) return p;
+      }
+    } catch {}
+  }
+  const candidates = [
+    path.resolve(process.cwd(), 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', '..', 'protocol', 'hub_protocol_v1.proto'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+function loadProto(protoPath) {
+  const packageDef = protoLoader.loadSync(protoPath, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+  });
+  const loaded = grpc.loadPackageDefinition(packageDef);
+  return loaded?.ax?.hub?.v1;
+}
+
+async function makeClientCreds() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'client_credentials.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.makeClientCredentials === 'function') {
+        const built = mod.makeClientCredentials(process.env);
+        if (built?.creds) return { creds: built.creds, options: built.options || {} };
+      }
+    } catch {}
+  }
+  return { creds: grpc.credentials.createInsecure(), options: {} };
+}
+
+async function main() {
+  const packagePath = safe(process.env.XTERMINAL_UPLOAD_SKILL_PACKAGE_PATH || '');
+  const manifestJSON = safe(process.env.XTERMINAL_UPLOAD_SKILL_MANIFEST_JSON || '');
+  const sourceId = safe(process.env.XTERMINAL_UPLOAD_SKILL_SOURCE_ID || 'local:xt-import');
+  const requestId = safe(process.env.XTERMINAL_UPLOAD_SKILL_REQUEST_ID || '');
+  if (!packagePath) throw new Error('missing_package_path');
+  if (!manifestJSON) throw new Error('missing_manifest_json');
+
+  const protoPath = await resolveProtoPath();
+  const proto = loadProto(protoPath);
+  if (!proto?.HubSkills) throw new Error('hub_skills_missing');
+
+  const host = safe(process.env.HUB_HOST || '127.0.0.1');
+  const port = Number.parseInt(safe(process.env.HUB_PORT || '50051'), 10) || 50051;
+  const addr = `${host}:${port}`;
+  const client = reqClientFromEnv();
+  const { creds, options } = await makeClientCreds();
+  const skillsClient = new proto.HubSkills(addr, creds, options);
+  const md = metadataFromEnv();
+  const packageBytes = fs.readFileSync(packagePath);
+
+  const resp = await new Promise((resolve, reject) => {
+    skillsClient.UploadSkillPackage(
+      {
+        client,
+        request_id: requestId,
+        source_id: sourceId,
+        package_bytes: packageBytes,
+        manifest_json: manifestJSON,
+        created_at_ms: Date.now(),
+      },
+      md,
+      (err, out) => {
+        if (err) reject(err);
+        else resolve(out || {});
+      }
+    );
+  });
+
+  out({
+    ok: true,
+    source: 'hub_runtime_grpc',
+    package_sha256: safe(resp?.package_sha256 || ''),
+    already_present: !!resp?.already_present,
+    skill_id: safe(resp?.skill?.skill_id || ''),
+    version: safe(resp?.skill?.version || ''),
+  });
+}
+
+main().catch((err) => {
+  const msg = safe(err?.message || err);
+  out({
+    ok: false,
+    source: 'hub_runtime_grpc',
+    reason: msg || 'remote_skill_package_upload_failed',
+    error_code: msg || 'remote_skill_package_upload_failed',
+    error_message: msg || 'remote_skill_package_upload_failed',
+  });
+  process.exit(1);
+});
+"""#
+    }
+
+    private func remoteAgentImportPromoteScriptSource() -> String {
+        #"""
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
+
+const safe = (v) => String(v ?? '').trim();
+const out = (obj) => {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+};
+
+function reqClientFromEnv() {
+  return {
+    device_id: safe(process.env.HUB_DEVICE_ID || 'terminal_device'),
+    user_id: safe(process.env.HUB_USER_ID || ''),
+    app_id: safe(process.env.HUB_APP_ID || 'x_terminal'),
+    project_id: safe(process.env.HUB_PROJECT_ID || ''),
+    session_id: safe(process.env.HUB_SESSION_ID || ''),
+  };
+}
+
+function metadataFromEnv() {
+  const tok = safe(process.env.HUB_CLIENT_TOKEN || '');
+  const md = new grpc.Metadata();
+  if (tok) md.set('authorization', `Bearer ${tok}`);
+  return md;
+}
+
+async function resolveProtoPath() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'proto_path.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.resolveHubProtoPath === 'function') {
+        const p = safe(mod.resolveHubProtoPath(process.env));
+        if (p) return p;
+      }
+    } catch {}
+  }
+  const candidates = [
+    path.resolve(process.cwd(), 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', '..', 'protocol', 'hub_protocol_v1.proto'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+function loadProto(protoPath) {
+  const packageDef = protoLoader.loadSync(protoPath, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+  });
+  const loaded = grpc.loadPackageDefinition(packageDef);
+  return loaded?.ax?.hub?.v1;
+}
+
+async function makeClientCreds() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'client_credentials.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.makeClientCredentials === 'function') {
+        const built = mod.makeClientCredentials(process.env);
+        if (built?.creds) return { creds: built.creds, options: built.options || {} };
+      }
+    } catch {}
+  }
+  return { creds: grpc.credentials.createInsecure(), options: {} };
+}
+
+async function main() {
+  const stagingId = safe(process.env.XTERMINAL_AGENT_IMPORT_STAGING_ID || '');
+  const packageSHA256 = safe(process.env.XTERMINAL_AGENT_IMPORT_PACKAGE_SHA256 || '');
+  const note = safe(process.env.XTERMINAL_AGENT_IMPORT_NOTE || '');
+  const requestId = safe(process.env.XTERMINAL_AGENT_IMPORT_REQUEST_ID || '');
+  if (!stagingId) throw new Error('missing_agent_staging_id');
+  if (!packageSHA256) throw new Error('missing_package_sha256');
+
+  const protoPath = await resolveProtoPath();
+  const proto = loadProto(protoPath);
+  if (!proto?.HubSkills) throw new Error('hub_skills_missing');
+
+  const host = safe(process.env.HUB_HOST || '127.0.0.1');
+  const port = Number.parseInt(safe(process.env.HUB_PORT || '50051'), 10) || 50051;
+  const addr = `${host}:${port}`;
+  const client = reqClientFromEnv();
+  const { creds, options } = await makeClientCreds();
+  const skillsClient = new proto.HubSkills(addr, creds, options);
+  const md = metadataFromEnv();
+
+  const resp = await new Promise((resolve, reject) => {
+    skillsClient.PromoteAgentImport(
+      {
+        client,
+        request_id: requestId,
+        staging_id: stagingId,
+        package_sha256: packageSHA256,
+        note,
+        created_at_ms: Date.now(),
+      },
+      md,
+      (err, out) => {
+        if (err) reject(err);
+        else resolve(out || {});
+      }
+    );
+  });
+
+  out({
+    ok: true,
+    source: 'hub_runtime_grpc',
+    staging_id: safe(resp?.staging_id || ''),
+    status: safe(resp?.status || ''),
+    audit_ref: safe(resp?.audit_ref || ''),
+    package_sha256: safe(resp?.package_sha256 || ''),
+    scope: safe(resp?.scope || ''),
+    skill_id: safe(resp?.skill_id || ''),
+    previous_package_sha256: safe(resp?.previous_package_sha256 || ''),
+    record_path: safe(resp?.record_path || ''),
+  });
+}
+
+main().catch((err) => {
+  const msg = safe(err?.message || err);
+  out({
+    ok: false,
+    source: 'hub_runtime_grpc',
+    reason: msg || 'remote_agent_import_promote_failed',
+    error_code: msg || 'remote_agent_import_promote_failed',
+    error_message: msg || 'remote_agent_import_promote_failed',
+  });
   process.exit(1);
 });
 """#
@@ -7790,6 +10965,682 @@ main().catch((err) => {
     challenge_match: false,
     device_binding_ok: false,
     mobile_confirmed: false,
+    reason: code,
+    error_code: code,
+    error_message: msg || code,
+  });
+  process.exit(1);
+});
+"""#
+    }
+
+    private func remoteSecretVaultListScriptSource() -> String {
+        #"""
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
+
+const safe = (v) => String(v ?? '').trim();
+const out = (obj) => {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+};
+
+function reqClientFromEnv() {
+  return {
+    device_id: safe(process.env.HUB_DEVICE_ID || 'terminal_device'),
+    user_id: safe(process.env.HUB_USER_ID || ''),
+    app_id: safe(process.env.HUB_APP_ID || 'x_terminal'),
+    project_id: safe(process.env.HUB_PROJECT_ID || ''),
+    session_id: safe(process.env.HUB_SESSION_ID || ''),
+  };
+}
+
+function metadataFromEnv() {
+  const tok = safe(process.env.HUB_CLIENT_TOKEN || '');
+  const md = new grpc.Metadata();
+  if (tok) md.set('authorization', `Bearer ${tok}`);
+  return md;
+}
+
+async function resolveProtoPath() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'proto_path.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.resolveHubProtoPath === 'function') {
+        const p = safe(mod.resolveHubProtoPath(process.env));
+        if (p) return p;
+      }
+    } catch {}
+  }
+
+  const candidates = [
+    path.resolve(process.cwd(), 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', '..', 'protocol', 'hub_protocol_v1.proto'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+function loadProto(protoPath) {
+  const packageDef = protoLoader.loadSync(protoPath, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+  });
+  const loaded = grpc.loadPackageDefinition(packageDef);
+  return loaded?.ax?.hub?.v1;
+}
+
+async function makeClientCreds() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'client_credentials.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.makeClientCredentials === 'function') {
+        const built = mod.makeClientCredentials(process.env);
+        if (built?.creds) {
+          return { creds: built.creds, options: built.options || {} };
+        }
+      }
+    } catch {}
+  }
+  return { creds: grpc.credentials.createInsecure(), options: {} };
+}
+
+function asInt(v, fallback = 0) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.floor(n));
+}
+
+function asMs(v, fallback = 0) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.floor(n));
+}
+
+async function main() {
+  const protoPath = await resolveProtoPath();
+  const proto = loadProto(protoPath);
+  if (!proto?.HubMemory) throw new Error('hub_memory_missing');
+
+  const host = safe(process.env.HUB_HOST || '127.0.0.1');
+  const port = Number.parseInt(safe(process.env.HUB_PORT || '50051'), 10) || 50051;
+  const addr = `${host}:${port}`;
+  const client = reqClientFromEnv();
+  const md = metadataFromEnv();
+  const { creds, options } = await makeClientCreds();
+  const memoryClient = new proto.HubMemory(addr, creds, options);
+  if (typeof memoryClient.ListSecretVaultItems !== 'function') {
+    throw new Error('hub_secret_vault_unimplemented');
+  }
+
+  const scope = safe(process.env.XTERMINAL_SECRET_VAULT_SCOPE || '');
+  const namePrefix = safe(process.env.XTERMINAL_SECRET_VAULT_NAME_PREFIX || '');
+  const limitRaw = Number.parseInt(safe(process.env.XTERMINAL_SECRET_VAULT_LIMIT || '200'), 10);
+  const limit = Math.max(1, Math.min(500, Number.isFinite(limitRaw) ? limitRaw : 200));
+
+  const resp = await new Promise((resolve, reject) => {
+    memoryClient.ListSecretVaultItems(
+      {
+        client,
+        scope,
+        name_prefix: namePrefix,
+        limit,
+      },
+      md,
+      (err, out) => {
+        if (err) reject(err);
+        else resolve(out || {});
+      }
+    );
+  });
+
+  const items = Array.isArray(resp?.items)
+    ? resp.items.map((it) => ({
+        item_id: safe(it?.item_id || it?.id || ''),
+        scope: safe(it?.scope || '').toLowerCase(),
+        name: safe(it?.name || ''),
+        sensitivity: safe(it?.sensitivity || 'secret').toLowerCase(),
+        created_at_ms: asMs(it?.created_at_ms || 0),
+        updated_at_ms: asMs(it?.updated_at_ms || 0),
+      })).filter((it) => it.item_id && it.scope && it.name)
+    : [];
+
+  out({
+    ok: true,
+    source: 'hub_memory_v1_grpc',
+    updated_at_ms: asMs(resp?.updated_at_ms || 0),
+    items,
+  });
+}
+
+main().catch((err) => {
+  const msg = safe(err?.message || err);
+  const lower = msg.toLowerCase();
+  const code = lower.includes('hub_secret_vault_unimplemented') || lower.includes('unimplemented')
+    ? 'hub_secret_vault_unimplemented'
+    : (msg || 'remote_secret_vault_list_failed');
+  out({
+    ok: false,
+    source: 'hub_memory_v1_grpc',
+    updated_at_ms: 0,
+    items: [],
+    reason: code,
+    error_code: code,
+    error_message: msg || code,
+  });
+  process.exit(1);
+});
+"""#
+    }
+
+    private func remoteSecretVaultCreateScriptSource() -> String {
+        #"""
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
+
+const safe = (v) => String(v ?? '').trim();
+const out = (obj) => {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+};
+
+function reqClientFromEnv(projectOverride = '') {
+  const projectId = safe(projectOverride || process.env.HUB_PROJECT_ID || '');
+  return {
+    device_id: safe(process.env.HUB_DEVICE_ID || 'terminal_device'),
+    user_id: safe(process.env.HUB_USER_ID || ''),
+    app_id: safe(process.env.HUB_APP_ID || 'x_terminal'),
+    project_id: projectId,
+    session_id: safe(process.env.HUB_SESSION_ID || ''),
+  };
+}
+
+function metadataFromEnv() {
+  const tok = safe(process.env.HUB_CLIENT_TOKEN || '');
+  const md = new grpc.Metadata();
+  if (tok) md.set('authorization', `Bearer ${tok}`);
+  return md;
+}
+
+async function resolveProtoPath() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'proto_path.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.resolveHubProtoPath === 'function') {
+        const p = safe(mod.resolveHubProtoPath(process.env));
+        if (p) return p;
+      }
+    } catch {}
+  }
+
+  const candidates = [
+    path.resolve(process.cwd(), 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', '..', 'protocol', 'hub_protocol_v1.proto'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+function loadProto(protoPath) {
+  const packageDef = protoLoader.loadSync(protoPath, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+  });
+  const loaded = grpc.loadPackageDefinition(packageDef);
+  return loaded?.ax?.hub?.v1;
+}
+
+async function makeClientCreds() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'client_credentials.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.makeClientCredentials === 'function') {
+        const built = mod.makeClientCredentials(process.env);
+        if (built?.creds) {
+          return { creds: built.creds, options: built.options || {} };
+        }
+      }
+    } catch {}
+  }
+  return { creds: grpc.credentials.createInsecure(), options: {} };
+}
+
+function asMs(v, fallback = 0) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.floor(n));
+}
+
+async function main() {
+  const scope = safe(process.env.XTERMINAL_SECRET_VAULT_SCOPE || '').toLowerCase();
+  const name = safe(process.env.XTERMINAL_SECRET_VAULT_NAME || '');
+  const plaintextB64 = safe(process.env.XTERMINAL_SECRET_VAULT_PLAINTEXT_B64 || '');
+  if (!scope || !name || !plaintextB64) {
+    throw new Error('invalid_request');
+  }
+
+  const protoPath = await resolveProtoPath();
+  const proto = loadProto(protoPath);
+  if (!proto?.HubMemory) throw new Error('hub_memory_missing');
+
+  const host = safe(process.env.HUB_HOST || '127.0.0.1');
+  const port = Number.parseInt(safe(process.env.HUB_PORT || '50051'), 10) || 50051;
+  const addr = `${host}:${port}`;
+  const client = reqClientFromEnv();
+  const md = metadataFromEnv();
+  const { creds, options } = await makeClientCreds();
+  const memoryClient = new proto.HubMemory(addr, creds, options);
+  if (typeof memoryClient.CreateSecretVaultItem !== 'function') {
+    throw new Error('hub_secret_vault_unimplemented');
+  }
+
+  const req = {
+    client,
+    scope,
+    name,
+    plaintext_b64: plaintextB64,
+    plaintext_bytes: Buffer.from(plaintextB64, 'base64'),
+    sensitivity: safe(process.env.XTERMINAL_SECRET_VAULT_SENSITIVITY || 'secret').toLowerCase(),
+    display_name: safe(process.env.XTERMINAL_SECRET_VAULT_DISPLAY_NAME || ''),
+    reason: safe(process.env.XTERMINAL_SECRET_VAULT_REASON || ''),
+  };
+
+  const resp = await new Promise((resolve, reject) => {
+    memoryClient.CreateSecretVaultItem(req, md, (err, out) => {
+      if (err) reject(err);
+      else resolve(out || {});
+    });
+  });
+
+  const item = resp?.item || resp?.secret_vault_item || {};
+  const itemId = safe(item?.item_id || item?.id || '');
+  if (!itemId) {
+    out({
+      ok: false,
+      source: 'hub_memory_v1_grpc',
+      reason: 'secret_vault_item_missing',
+      error_code: 'secret_vault_item_missing',
+      error_message: 'secret_vault_item_missing',
+    });
+    process.exit(1);
+    return;
+  }
+
+  out({
+    ok: true,
+    source: 'hub_memory_v1_grpc',
+    item: {
+      item_id: itemId,
+      scope: safe(item?.scope || scope).toLowerCase(),
+      name: safe(item?.name || name),
+      sensitivity: safe(item?.sensitivity || 'secret').toLowerCase(),
+      created_at_ms: asMs(item?.created_at_ms || 0),
+      updated_at_ms: asMs(item?.updated_at_ms || 0),
+    },
+  });
+}
+
+main().catch((err) => {
+  const msg = safe(err?.message || err);
+  const lower = msg.toLowerCase();
+  const code = lower.includes('hub_secret_vault_unimplemented') || lower.includes('unimplemented')
+    ? 'hub_secret_vault_unimplemented'
+    : (msg || 'remote_secret_vault_create_failed');
+  out({
+    ok: false,
+    source: 'hub_memory_v1_grpc',
+    reason: code,
+    error_code: code,
+    error_message: msg || code,
+  });
+  process.exit(1);
+});
+"""#
+    }
+
+    private func remoteSecretVaultBeginUseScriptSource() -> String {
+        #"""
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
+
+const safe = (v) => String(v ?? '').trim();
+const out = (obj) => {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+};
+
+function reqClientFromEnv(projectOverride = '') {
+  const projectId = safe(projectOverride || process.env.HUB_PROJECT_ID || '');
+  return {
+    device_id: safe(process.env.HUB_DEVICE_ID || 'terminal_device'),
+    user_id: safe(process.env.HUB_USER_ID || ''),
+    app_id: safe(process.env.HUB_APP_ID || 'x_terminal'),
+    project_id: projectId,
+    session_id: safe(process.env.HUB_SESSION_ID || ''),
+  };
+}
+
+function metadataFromEnv() {
+  const tok = safe(process.env.HUB_CLIENT_TOKEN || '');
+  const md = new grpc.Metadata();
+  if (tok) md.set('authorization', `Bearer ${tok}`);
+  return md;
+}
+
+async function resolveProtoPath() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'proto_path.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.resolveHubProtoPath === 'function') {
+        const p = safe(mod.resolveHubProtoPath(process.env));
+        if (p) return p;
+      }
+    } catch {}
+  }
+
+  const candidates = [
+    path.resolve(process.cwd(), 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', '..', 'protocol', 'hub_protocol_v1.proto'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+function loadProto(protoPath) {
+  const packageDef = protoLoader.loadSync(protoPath, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+  });
+  const loaded = grpc.loadPackageDefinition(packageDef);
+  return loaded?.ax?.hub?.v1;
+}
+
+async function makeClientCreds() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'client_credentials.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.makeClientCredentials === 'function') {
+        const built = mod.makeClientCredentials(process.env);
+        if (built?.creds) {
+          return { creds: built.creds, options: built.options || {} };
+        }
+      }
+    } catch {}
+  }
+  return { creds: grpc.credentials.createInsecure(), options: {} };
+}
+
+function asMs(v, fallback = 0) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.floor(n));
+}
+
+async function main() {
+  const itemId = safe(process.env.XTERMINAL_SECRET_VAULT_ITEM_ID || '');
+  const scope = safe(process.env.XTERMINAL_SECRET_VAULT_SCOPE || '').toLowerCase();
+  const name = safe(process.env.XTERMINAL_SECRET_VAULT_NAME || '');
+  const purpose = safe(process.env.XTERMINAL_SECRET_VAULT_USE_PURPOSE || '');
+  if (!purpose || (!itemId && !(scope && name))) {
+    throw new Error('invalid_request');
+  }
+
+  const protoPath = await resolveProtoPath();
+  const proto = loadProto(protoPath);
+  if (!proto?.HubMemory) throw new Error('hub_memory_missing');
+
+  const host = safe(process.env.HUB_HOST || '127.0.0.1');
+  const port = Number.parseInt(safe(process.env.HUB_PORT || '50051'), 10) || 50051;
+  const addr = `${host}:${port}`;
+  const client = reqClientFromEnv();
+  const md = metadataFromEnv();
+  const { creds, options } = await makeClientCreds();
+  const memoryClient = new proto.HubMemory(addr, creds, options);
+  if (typeof memoryClient.BeginSecretVaultUse !== 'function') {
+    throw new Error('hub_secret_vault_unimplemented');
+  }
+
+  const ttlRaw = Number.parseInt(safe(process.env.XTERMINAL_SECRET_VAULT_USE_TTL_MS || '60000'), 10);
+  const req = {
+    client,
+    item_id: itemId,
+    scope,
+    name,
+    purpose,
+    target: safe(process.env.XTERMINAL_SECRET_VAULT_USE_TARGET || ''),
+    ttl_ms: Number.isFinite(ttlRaw) ? Math.max(1000, Math.min(600000, ttlRaw)) : 60000,
+  };
+
+  const resp = await new Promise((resolve, reject) => {
+    memoryClient.BeginSecretVaultUse(req, md, (err, out) => {
+      if (err) reject(err);
+      else resolve(out || {});
+    });
+  });
+
+  out({
+    ok: true,
+    source: 'hub_memory_v1_grpc',
+    lease_id: safe(resp?.lease_id || resp?.lease?.lease_id || ''),
+    use_token: safe(resp?.use_token || resp?.lease?.use_token || ''),
+    item_id: safe(resp?.item_id || itemId),
+    expires_at_ms: asMs(resp?.expires_at_ms || resp?.lease?.expires_at_ms || 0),
+  });
+}
+
+main().catch((err) => {
+  const msg = safe(err?.message || err);
+  const lower = msg.toLowerCase();
+  const code = lower.includes('hub_secret_vault_unimplemented') || lower.includes('unimplemented')
+    ? 'hub_secret_vault_unimplemented'
+    : (msg || 'remote_secret_vault_use_failed');
+  out({
+    ok: false,
+    source: 'hub_memory_v1_grpc',
+    lease_id: '',
+    use_token: '',
+    item_id: '',
+    expires_at_ms: 0,
+    reason: code,
+    error_code: code,
+    error_message: msg || code,
+  });
+  process.exit(1);
+});
+"""#
+    }
+
+    private func remoteSecretVaultRedeemScriptSource() -> String {
+        #"""
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
+
+const safe = (v) => String(v ?? '').trim();
+const out = (obj) => {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+};
+
+function reqClientFromEnv(projectOverride = '') {
+  const projectId = safe(projectOverride || process.env.HUB_PROJECT_ID || '');
+  return {
+    device_id: safe(process.env.HUB_DEVICE_ID || 'terminal_device'),
+    user_id: safe(process.env.HUB_USER_ID || ''),
+    app_id: safe(process.env.HUB_APP_ID || 'x_terminal'),
+    project_id: projectId,
+    session_id: safe(process.env.HUB_SESSION_ID || ''),
+  };
+}
+
+function metadataFromEnv() {
+  const tok = safe(process.env.HUB_CLIENT_TOKEN || '');
+  const md = new grpc.Metadata();
+  if (tok) md.set('authorization', `Bearer ${tok}`);
+  return md;
+}
+
+async function resolveProtoPath() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'proto_path.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.resolveHubProtoPath === 'function') {
+        const p = safe(mod.resolveHubProtoPath(process.env));
+        if (p) return p;
+      }
+    } catch {}
+  }
+
+  const candidates = [
+    path.resolve(process.cwd(), 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', '..', 'protocol', 'hub_protocol_v1.proto'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+function loadProto(protoPath) {
+  const packageDef = protoLoader.loadSync(protoPath, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+  });
+  const loaded = grpc.loadPackageDefinition(packageDef);
+  return loaded?.ax?.hub?.v1;
+}
+
+async function makeClientCreds() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'client_credentials.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.makeClientCredentials === 'function') {
+        const built = mod.makeClientCredentials(process.env);
+        if (built?.creds) {
+          return { creds: built.creds, options: built.options || {} };
+        }
+      }
+    } catch {}
+  }
+  return { creds: grpc.credentials.createInsecure(), options: {} };
+}
+
+function writePlaintext(outputPath, buffer) {
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  fs.writeFileSync(outputPath, buffer, { mode: 0o600 });
+}
+
+async function main() {
+  const useToken = safe(process.env.XTERMINAL_SECRET_VAULT_USE_TOKEN || '');
+  const outputPath = safe(process.env.XTERMINAL_SECRET_VAULT_REDEEM_OUTPUT || '');
+  if (!useToken || !outputPath) {
+    throw new Error('invalid_request');
+  }
+
+  const protoPath = await resolveProtoPath();
+  const proto = loadProto(protoPath);
+  if (!proto?.HubMemory) throw new Error('hub_memory_missing');
+
+  const host = safe(process.env.HUB_HOST || '127.0.0.1');
+  const port = Number.parseInt(safe(process.env.HUB_PORT || '50051'), 10) || 50051;
+  const addr = `${host}:${port}`;
+  const client = reqClientFromEnv();
+  const md = metadataFromEnv();
+  const { creds, options } = await makeClientCreds();
+  const memoryClient = new proto.HubMemory(addr, creds, options);
+  if (typeof memoryClient.RedeemSecretVaultUse !== 'function') {
+    throw new Error('hub_secret_vault_unimplemented');
+  }
+
+  const req = {
+    client,
+    use_token: useToken,
+  };
+
+  const resp = await new Promise((resolve, reject) => {
+    memoryClient.RedeemSecretVaultUse(req, md, (err, out) => {
+      if (err) reject(err);
+      else resolve(out || {});
+    });
+  });
+
+  let plaintextBuffer = Buffer.alloc(0);
+  if (Buffer.isBuffer(resp?.plaintext_bytes)) {
+    plaintextBuffer = Buffer.from(resp.plaintext_bytes);
+  } else if (resp?.plaintext_bytes != null && typeof resp.plaintext_bytes === 'object' && typeof resp.plaintext_bytes.length === 'number') {
+    plaintextBuffer = Buffer.from(resp.plaintext_bytes);
+  }
+  if (!plaintextBuffer.length) {
+    throw new Error('secret_vault_plaintext_missing');
+  }
+
+  writePlaintext(outputPath, plaintextBuffer);
+  out({
+    ok: true,
+    source: 'hub_memory_v1_grpc',
+    lease_id: safe(resp?.lease_id || resp?.lease?.lease_id || ''),
+    item_id: safe(resp?.item_id || resp?.item?.item_id || ''),
+    plaintext_bytes: plaintextBuffer.length,
+  });
+}
+
+main().catch((err) => {
+  const msg = safe(err?.message || err);
+  const lower = msg.toLowerCase();
+  const code = lower.includes('hub_secret_vault_unimplemented') || lower.includes('unimplemented')
+    ? 'hub_secret_vault_unimplemented'
+    : (msg || 'remote_secret_vault_redeem_failed');
+  out({
+    ok: false,
+    source: 'hub_memory_v1_grpc',
+    lease_id: '',
+    item_id: '',
+    plaintext_bytes: 0,
     reason: code,
     error_code: code,
     error_message: msg || code,

@@ -75,6 +75,12 @@ async function withEnvAsync(tempEnv, fn) {
 
 await runAsync('SlackHubConnectorClient wraps HubRuntime governance RPCs with connector principal', async () => {
   const calls = [];
+  const stream = {
+    on() {
+      return this;
+    },
+    cancel() {},
+  };
   const runtimeClient = {
     EvaluateChannelCommandGate(req, md, cb) {
       calls.push({ method: 'EvaluateChannelCommandGate', req, md });
@@ -97,6 +103,13 @@ await runAsync('SlackHubConnectorClient wraps HubRuntime governance RPCs with co
     },
     close() {},
   };
+  const eventsClient = {
+    Subscribe(req, md) {
+      calls.push({ method: 'Subscribe', req, md });
+      return stream;
+    },
+    close() {},
+  };
 
   await withEnvAsync(
     {
@@ -107,6 +120,7 @@ await runAsync('SlackHubConnectorClient wraps HubRuntime governance RPCs with co
     async () => {
       const client = createSlackHubConnectorClient({
         runtimeClient,
+        eventsClient,
         env: process.env,
       });
       const gate = await client.evaluateChannelCommandGate({
@@ -138,10 +152,15 @@ await runAsync('SlackHubConnectorClient wraps HubRuntime governance RPCs with co
       });
       assert.equal(!!execution.ok, true);
       assert.equal(String(execution.query?.project_id || ''), 'project_alpha');
+
+      const subscribed = client.subscribeHubEvents({
+        scopes: ['grants'],
+      });
+      assert.equal(subscribed, stream);
     }
   );
 
-  assert.equal(calls.length, 3);
+  assert.equal(calls.length, 4);
   assert.equal(String(calls[0].method || ''), 'EvaluateChannelCommandGate');
   assert.equal(String(calls[0].req.admin?.device_id || ''), 'hub_operator_channel_connector');
   assert.deepEqual(calls[0].md.get('authorization'), ['Bearer connector-token-2']);
@@ -150,4 +169,8 @@ await runAsync('SlackHubConnectorClient wraps HubRuntime governance RPCs with co
   assert.equal(String(calls[2].method || ''), 'ExecuteOperatorChannelHubCommand');
   assert.equal(String(calls[2].req.admin?.device_id || ''), 'hub_operator_channel_connector');
   assert.deepEqual(calls[2].md.get('authorization'), ['Bearer connector-token-2']);
+  assert.equal(String(calls[3].method || ''), 'Subscribe');
+  assert.equal(String(calls[3].req.client?.app_id || ''), 'slack_operator_adapter');
+  assert.deepEqual(calls[3].req.scopes, ['grants']);
+  assert.deepEqual(calls[3].md.get('authorization'), ['Bearer connector-token-2']);
 });

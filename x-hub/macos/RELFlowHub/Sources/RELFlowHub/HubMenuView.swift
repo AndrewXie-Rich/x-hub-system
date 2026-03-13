@@ -97,11 +97,8 @@ struct HubMenuView: View {
                     }
 
                     HStack(spacing: 8) {
-                        Button("Enable 30m") {
+                        Button("Re-enable") {
                             store.bridge.enable(seconds: 30 * 60)
-                        }
-                        Button("Disable") {
-                            store.bridge.disable()
                         }
                         Button("Refresh") {
                             store.bridge.refresh()
@@ -109,6 +106,10 @@ struct HubMenuView: View {
                         Spacer()
                     }
                     .font(.caption)
+
+                    Text("Bridge stays on by default. For one Terminal only, disable `web.fetch` / `ai.generate.paid` in Paired Devices.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
                 .padding(8)
                 .background(Color.gray.opacity(0.08))

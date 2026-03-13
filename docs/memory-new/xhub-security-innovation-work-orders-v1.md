@@ -13,10 +13,10 @@
   - `docs/memory-new/xhub-memory-v3-execution-plan.md`
   - `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
   - `docs/memory-new/xhub-connector-reliability-kernel-work-orders-v1.md`
-  - `docs/memory-new/xhub-kiro-spec-gates-work-orders-v1.md`
+  - `docs/memory-new/xhub-spec-gates-work-orders-v1.md`
   - `x-terminal/work-orders/xterminal-parallel-work-orders-v1.md`
   - `x-terminal/work-orders/xt-supervisor-autosplit-multilane-work-orders-v1.md`
-  - `x-terminal/work-orders/xt-openclaw-skills-compat-reliability-work-orders-v1.md`
+  - `x-terminal/work-orders/xt-skills-compat-reliability-work-orders-v1.md`
 
 ## 0) 使用方式（先看）
 

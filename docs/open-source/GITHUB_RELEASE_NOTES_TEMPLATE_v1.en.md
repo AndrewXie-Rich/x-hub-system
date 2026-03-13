@@ -98,7 +98,7 @@ Run the XT release gate:
 bash x-terminal/scripts/ci/xt_release_gate.sh
 ```
 
-Developer note: the Hub-side Swift package still uses the internal target name `RELFlowHub` under the hood, but the preferred source-run alias is `XHub` and the public product name is `X-Hub`.
+Developer note: the public Hub source-run entrypoint is `bash x-hub/tools/run_xhub_from_source.command`. The internal Swift package still lives under the historical compatibility directory `x-hub/macos/RELFlowHub/`.
 
 ## Security Posture
 

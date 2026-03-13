@@ -99,6 +99,12 @@ enum SupervisorPortfolioActionabilitySnapshotBuilder {
     private static let stalledAfterHours = 24.0
     private static let zombieAfterHours = 24.0 * 7.0
 
+    private struct RankedRecommendationItem {
+        var item: SupervisorPortfolioActionabilityItem
+        var projectState: SupervisorPortfolioProjectState
+        var criticalQueuePriority: Bool
+    }
+
     static func build(
         from snapshot: SupervisorPortfolioSnapshot,
         now: Double? = nil
@@ -124,10 +130,16 @@ enum SupervisorPortfolioActionabilitySnapshotBuilder {
         let stalled = cards.filter { isStalled($0, now: now) }
         let zombie = cards.filter { isZombie($0, now: now) }
 
-        let recommendedActions = cards.compactMap { card in
-            recommendationItem(for: card, now: now)
+        let recommendedActions = cards.compactMap { card -> RankedRecommendationItem? in
+            guard let item = recommendationItem(for: card, now: now) else { return nil }
+            return RankedRecommendationItem(
+                item: item,
+                projectState: card.projectState,
+                criticalQueuePriority: card.projectState == .blocked || card.projectState == .awaitingAuthorization
+            )
         }
         .sorted(by: compareRecommendationItems)
+        .map(\.item)
 
         let actionableToday = Set(
             recommendedActions
@@ -232,18 +244,22 @@ enum SupervisorPortfolioActionabilitySnapshotBuilder {
     }
 
     private static func compareRecommendationItems(
-        _ lhs: SupervisorPortfolioActionabilityItem,
-        _ rhs: SupervisorPortfolioActionabilityItem
+        _ lhs: RankedRecommendationItem,
+        _ rhs: RankedRecommendationItem
     ) -> Bool {
-        let priorityDelta = priorityScore(lhs.priority) - priorityScore(rhs.priority)
+        let priorityDelta = priorityScore(lhs.item.priority) - priorityScore(rhs.item.priority)
         if priorityDelta != 0 { return priorityDelta < 0 }
-        let kindDelta = kindScore(lhs.kind) - kindScore(rhs.kind)
+        let stateDelta = projectStateScore(lhs.projectState) - projectStateScore(rhs.projectState)
+        if stateDelta != 0 { return stateDelta < 0 }
+        let criticalDelta = criticalQueueScore(lhs.criticalQueuePriority) - criticalQueueScore(rhs.criticalQueuePriority)
+        if criticalDelta != 0 { return criticalDelta < 0 }
+        let kindDelta = kindScore(lhs.item.kind) - kindScore(rhs.item.kind)
         if kindDelta != 0 { return kindDelta < 0 }
 
-        let leftAge = lhs.staleAgeHours ?? -1
-        let rightAge = rhs.staleAgeHours ?? -1
+        let leftAge = lhs.item.staleAgeHours ?? -1
+        let rightAge = rhs.item.staleAgeHours ?? -1
         if leftAge != rightAge { return leftAge > rightAge }
-        return lhs.projectName.localizedCaseInsensitiveCompare(rhs.projectName) == .orderedAscending
+        return lhs.item.projectName.localizedCaseInsensitiveCompare(rhs.item.projectName) == .orderedAscending
     }
 
     private static func priorityScore(_ priority: SupervisorPortfolioActionabilityPriority) -> Int {
@@ -261,13 +277,32 @@ enum SupervisorPortfolioActionabilitySnapshotBuilder {
             return 0
         case .missingNextStep:
             return 1
-        case .zombie:
+        case .activeFollowUp:
             return 2
         case .stalled:
             return 3
-        case .activeFollowUp:
+        case .zombie:
             return 4
         }
+    }
+
+    private static func projectStateScore(_ state: SupervisorPortfolioProjectState) -> Int {
+        switch state {
+        case .blocked:
+            return 0
+        case .awaitingAuthorization:
+            return 1
+        case .active:
+            return 2
+        case .idle:
+            return 3
+        case .completed:
+            return 4
+        }
+    }
+
+    private static func criticalQueueScore(_ criticalQueuePriority: Bool) -> Int {
+        criticalQueuePriority ? 0 : 1
     }
 
     private static func changedWithinLast24Hours(
@@ -279,6 +314,7 @@ enum SupervisorPortfolioActionabilitySnapshotBuilder {
     }
 
     private static func isDecisionBlocker(_ card: SupervisorPortfolioProjectCard) -> Bool {
+        guard card.projectState != .completed else { return false }
         if card.projectState == .awaitingAuthorization { return true }
         let merged = [card.topBlocker, card.currentAction, card.nextStep].joined(separator: " ").lowercased()
         let decisionTokens = [

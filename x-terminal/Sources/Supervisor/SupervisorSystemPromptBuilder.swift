@@ -93,6 +93,8 @@ struct SupervisorSystemPromptBuilder {
         [
             "## Memory Context",
             "Use the following Memory v1 context as the primary project working set for this turn:",
+            "- If Memory Context contains [focused_project_execution_brief], inspect that section first when the user asks you to review project memory/context or propose the next execution plan.",
+            "- Ground concrete planning in the focused project's goal, current state, next step, blocker, active job/plan, pending steps, attention steps, and recent relevant messages.",
             params.memoryV1,
             ""
         ]
@@ -124,6 +126,9 @@ struct SupervisorSystemPromptBuilder {
             "## Action Protocol",
             "- If the user is asking about identity, capabilities, weather, travel, opinions, or ordinary conversation, do not emit action tags.",
             "- Only emit action tags when the user clearly wants execution such as project creation or model reassignment.",
+            "- If the user asks you to continue, advance, or push a focused project forward, and Memory Context already contains a concrete next step or active workflow for that project, treat that as execution intent instead of replying with status only.",
+            "- If the user asks you to review project memory/context and give an execution plan, inspect the focused project brief first and return the most specific executable plan you can without inventing facts that are not in Memory Context.",
+            "- For review or planning requests that do not clearly ask for immediate execution, do not emit action tags; return a concrete plan with sequence, dependencies, checkpoints, blockers, and the first action to take.",
             "- Never use action tags for examples, hypotheticals, or explanations."
         ]
 

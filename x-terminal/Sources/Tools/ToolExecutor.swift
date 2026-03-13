@@ -72,10 +72,161 @@ enum ToolExecutor {
         var snippet: String
     }
 
+    private struct LocalSkillCatalogIndexSnapshot: Decodable {
+        struct Skill: Decodable {
+            var skillID: String
+            var name: String
+            var version: String
+            var description: String
+            var publisherID: String
+            var capabilitiesRequired: [String]
+            var sourceID: String
+            var packageSHA256: String
+            var installHint: String
+
+            enum CodingKeys: String, CodingKey {
+                case skillID = "skill_id"
+                case name
+                case version
+                case description
+                case publisherID = "publisher_id"
+                case capabilitiesRequired = "capabilities_required"
+                case sourceID = "source_id"
+                case packageSHA256 = "package_sha256"
+                case installHint = "install_hint"
+            }
+        }
+
+        var updatedAtMs: Int64
+        var skills: [Skill]
+
+        enum CodingKeys: String, CodingKey {
+            case updatedAtMs = "updated_at_ms"
+            case skills
+        }
+    }
+
+    private enum SummarizeSourceKind: String {
+        case url
+        case path
+        case text
+    }
+
+    private struct SummarizeLoadedSource {
+        var kind: SummarizeSourceKind
+        var title: String
+        var text: String
+        var summary: [String: JSONValue]
+    }
+
+    private struct SelfImprovementIncidentPayload: Decodable {
+        var events: [XTReadyIncidentEvent]
+    }
+
     private struct UIObservationProof: Equatable {
         var selectorSignature: String
         var observedAt: TimeInterval
         var matchCount: Int
+    }
+
+    private struct BrowserSecretFillRequest: Equatable {
+        var secretReferenceRequested: Bool
+        var plaintextInput: String?
+        var inputChars: Int
+        var selector: String?
+        var fieldRole: String?
+        var secretItemId: String?
+        var secretScope: String?
+        var secretName: String?
+        var secretProjectId: String?
+
+        var hasSecretReference: Bool {
+            secretReferenceRequested || hasValidSecretReference
+        }
+
+        var hasValidSecretReference: Bool {
+            secretItemId != nil || (secretScope != nil && secretName != nil)
+        }
+
+        var requiresSecretRefOnly: Bool {
+            guard plaintextInput != nil else { return false }
+            if let fieldRole, Self.sensitiveFieldRoles.contains(fieldRole) {
+                return true
+            }
+            let selectorToken = selector?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+            return !selectorToken.isEmpty && Self.sensitiveSelectorTokens.contains(where: { selectorToken.contains($0) })
+        }
+
+        private static let sensitiveFieldRoles: Set<String> = [
+            "password",
+            "passcode",
+            "otp",
+            "mfa",
+            "token",
+            "secret",
+            "credential",
+            "auth_code",
+            "verification_code",
+            "payment",
+            "cvv",
+            "card_number"
+        ]
+
+        private static let sensitiveSelectorTokens: [String] = [
+            "password",
+            "passcode",
+            "otp",
+            "token",
+            "secret",
+            "auth",
+            "verification",
+            "cvv",
+            "cardnumber",
+            "card-number"
+        ]
+    }
+
+    private struct BrowserSecretResolvedValue {
+        var source: String
+        var leaseId: String?
+        var itemId: String?
+        var plaintext: String
+    }
+
+    private struct BrowserSecretResolutionFailure: Error {
+        var rejectCode: XTDeviceAutomationRejectCode
+        var detail: String
+        var body: String
+        var source: String?
+        var reasonCode: String?
+        var itemId: String?
+        var leaseId: String?
+    }
+
+    private struct BrowserSecretFillExecutionFailure: Error {
+        var rejectCode: XTDeviceAutomationRejectCode
+        var detail: String
+        var body: String
+        var reasonCode: String?
+    }
+
+    private struct BrowserSecretFillOutput {
+        var excerpt: String
+        var tagName: String?
+    }
+
+    private struct BrowserSecretDriverResponse: Decodable {
+        var ok: Bool?
+        var reason: String?
+        var selector: String?
+        var tagName: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case reason
+            case selector
+            case tagName = "tag_name"
+        }
     }
 
     private actor UIObservationProofLedger {
@@ -387,6 +538,12 @@ Please switch to Terminal mode (Chat/Terminal toggle) and run it there:
             let st = HubBridgeClient.status()
             let out = "alive=\(st.alive) enabled=\(st.enabled) enabledUntil=\(st.enabledUntil)"
             return ToolResult(id: call.id, tool: call.tool, ok: true, output: out)
+
+        case .skills_search:
+            return await executeSkillsSearch(call: call, projectRoot: projectRoot)
+
+        case .summarize:
+            return try await executeSummarize(call: call, projectRoot: projectRoot)
 
         case .need_network:
             let seconds = max(60, Int(optDoubleArg(call, "seconds") ?? 900))
@@ -739,6 +896,7 @@ content_type=\(res.contentType)
     private static func executeMemorySnapshot(call: ToolCall, projectRoot: URL) async -> ToolResult {
         let projectId = optStrArg(call, "project_id") ?? AXProjectRegistryStore.projectId(forRoot: projectRoot)
         let modeToken = optStrArg(call, "mode") ?? XTMemoryUseMode.projectChat.rawValue
+        let retrospective = optBoolArg(call, "retrospective") ?? false
         guard let useMode = XTMemoryUseMode.parse(modeToken) else {
             let summary: [String: JSONValue] = [
                 "tool": .string(call.tool.rawValue),
@@ -770,6 +928,34 @@ content_type=\(res.contentType)
             budgets: nil,
             timeoutSec: 2.0
         )
+
+        if retrospective {
+            let focus = optStrArg(call, "focus") ?? ""
+            let limit = max(1, min(8, Int(optDoubleArg(call, "limit") ?? 5)))
+            let includeDoctor = optBoolArg(call, "include_doctor") ?? true
+            let includeIncidents = optBoolArg(call, "include_incidents") ?? true
+            let includeSkillCalls = optBoolArg(call, "include_skill_calls") ?? true
+            let includePlan = optBoolArg(call, "include_plan") ?? true
+            let includeMemory = optBoolArg(call, "include_memory") ?? true
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: true,
+                output: renderSelfImprovementMemorySnapshotOutput(
+                    response: response,
+                    projectRoot: projectRoot,
+                    projectId: projectId,
+                    mode: useMode.rawValue,
+                    focus: focus,
+                    limit: limit,
+                    includeDoctor: includeDoctor,
+                    includeIncidents: includeIncidents,
+                    includeSkillCalls: includeSkillCalls,
+                    includePlan: includePlan,
+                    includeMemory: includeMemory
+                )
+            )
+        }
 
         guard let response else {
             let summary: [String: JSONValue] = [
@@ -814,6 +1000,7 @@ content_type=\(res.contentType)
             "mode": .string(mode),
             "source": .string(response.source),
             "resolved_mode": response.resolvedMode.map(JSONValue.string) ?? .null,
+            "resolved_profile": response.resolvedProfile.map(JSONValue.string) ?? .null,
             "freshness": response.freshness.map(JSONValue.string) ?? .null,
             "cache_hit": response.cacheHit.map(JSONValue.bool) ?? .null,
             "deny_code": response.denyCode.map(JSONValue.string) ?? .null,
@@ -827,6 +1014,296 @@ content_type=\(res.contentType)
         ]
         let body = response.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "(empty memory snapshot)" : response.text
         return structuredOutput(summary: summary, body: body)
+    }
+
+    private static func renderSelfImprovementMemorySnapshotOutput(
+        response: HubIPCClient.MemoryContextResponsePayload?,
+        projectRoot: URL,
+        projectId: String,
+        mode: String,
+        focus: String,
+        limit: Int,
+        includeDoctor: Bool,
+        includeIncidents: Bool,
+        includeSkillCalls: Bool,
+        includePlan: Bool,
+        includeMemory: Bool
+    ) -> String {
+        let ctx = AXProjectContext(root: projectRoot)
+        let localMemory = includeMemory ? (try? AXProjectStore.loadOrCreateMemory(for: ctx)) : nil
+
+        let jobsSnapshot = includePlan ? SupervisorProjectJobStore.load(for: ctx) : SupervisorProjectJobSnapshot(
+            schemaVersion: SupervisorProjectJobSnapshot.currentSchemaVersion,
+            updatedAtMs: 0,
+            jobs: []
+        )
+        let plansSnapshot = includePlan ? SupervisorProjectPlanStore.load(for: ctx) : SupervisorProjectPlanSnapshot(
+            schemaVersion: SupervisorProjectPlanSnapshot.currentSchemaVersion,
+            updatedAtMs: 0,
+            plans: []
+        )
+        let skillCallsSnapshot = includeSkillCalls ? SupervisorProjectSkillCallStore.load(for: ctx) : SupervisorProjectSkillCallSnapshot(
+            schemaVersion: SupervisorProjectSkillCallSnapshot.currentSchemaVersion,
+            updatedAtMs: 0,
+            calls: []
+        )
+
+        let activeJob = jobsSnapshot.jobs.first
+        let activePlan = activeJob.flatMap { job in
+            plansSnapshot.plans.first(where: { $0.planId == job.activePlanId && $0.jobId == job.jobId })
+        } ?? plansSnapshot.plans.first
+
+        let interestingSkillCalls = skillCallsSnapshot.calls.filter { call in
+            switch call.status {
+            case .awaitingAuthorization, .failed, .blocked, .running:
+                return true
+            case .queued, .completed, .canceled:
+                return false
+            }
+        }
+        let sampledSkillCalls = Array(interestingSkillCalls.prefix(limit))
+        let failedSkillCallCount = skillCallsSnapshot.calls.filter { $0.status == .failed || $0.status == .blocked }.count
+        let awaitingAuthorizationSkillCallCount = skillCallsSnapshot.calls.filter { $0.status == .awaitingAuthorization }.count
+
+        let interestingPlanSteps = (activePlan?.steps ?? []).filter { step in
+            switch step.status {
+            case .running, .blocked, .awaitingAuthorization, .failed:
+                return true
+            case .pending, .completed, .canceled:
+                return false
+            }
+        }
+        let sampledPlanSteps = Array(interestingPlanSteps.prefix(limit))
+        let blockedPlanStepCount = (activePlan?.steps ?? []).filter { $0.status == .blocked || $0.status == .failed }.count
+
+        let doctorReport = includeDoctor ? loadSelfImprovementDoctorReport(projectRoot: projectRoot) : nil
+        let incidentEvents = includeIncidents ? loadSelfImprovementIncidentEvents(projectRoot: projectRoot) : []
+        let requiredIncidentCodes = ["grant_pending", "awaiting_instruction", "runtime_error"]
+        let incidentCodesPresent = Set(incidentEvents.map(\.incidentCode))
+        let missingIncidentCodes = includeIncidents
+            ? requiredIncidentCodes.filter { !incidentCodesPresent.contains($0) }
+            : []
+
+        var signalLines: [String] = []
+        for call in sampledSkillCalls {
+            var fragments: [String] = [
+                "skill \(call.skillId) [\(call.status.rawValue)]"
+            ]
+            if let capability = call.requiredCapability?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !capability.isEmpty {
+                fragments.append("capability=\(capability)")
+            }
+            let summary = call.resultSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !summary.isEmpty {
+                fragments.append(capped(summary, maxChars: 140))
+            }
+            signalLines.append(fragments.joined(separator: " | "))
+        }
+        for step in sampledPlanSteps {
+            let detail = step.detail.trimmingCharacters(in: .whitespacesAndNewlines)
+            let suffix = detail.isEmpty ? "" : " | \(capped(detail, maxChars: 140))"
+            signalLines.append("plan_step \(step.stepId) [\(step.status.rawValue)] \(step.title)\(suffix)")
+        }
+        if let report = doctorReport {
+            for finding in report.findings.filter({ $0.severity == .blocking || $0.severity == .warning }).prefix(limit) {
+                signalLines.append("doctor \(finding.code) [\(finding.severity.rawValue)] \(capped(finding.title, maxChars: 140))")
+            }
+        } else if includeDoctor {
+            signalLines.append("doctor report missing at .axcoder/reports/supervisor_doctor_report.json")
+        }
+        if includeIncidents {
+            if incidentEvents.isEmpty {
+                signalLines.append("incident export missing or empty at .axcoder/reports/xt_ready_incident_events.runtime.json")
+            } else if !missingIncidentCodes.isEmpty {
+                signalLines.append("incident readiness missing codes: \(missingIncidentCodes.joined(separator: ", "))")
+            }
+        }
+        signalLines = Array(signalLines.prefix(limit))
+
+        var recommendations: [String] = []
+        if awaitingAuthorizationSkillCallCount > 0 {
+            let capabilities = sampledSkillCalls
+                .compactMap { $0.requiredCapability?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            let capabilityText = capabilities.isEmpty ? "required capabilities" : Array(Set(capabilities)).sorted().joined(separator: ", ")
+            recommendations.append("Preflight or pre-approve \(capabilityText) before long-running skill calls so the supervisor does not stall on authorization.")
+        }
+        if failedSkillCallCount > 0 {
+            let failingSkills = skillCallsSnapshot.calls
+                .filter { $0.status == .failed || $0.status == .blocked }
+                .map(\.skillId)
+            let skillText = Array(Set(failingSkills)).sorted().joined(separator: ", ")
+            recommendations.append("Add contract tests and payload validation for failing skills\(skillText.isEmpty ? "" : " (\(skillText))") before dispatch reaches runtime.")
+        }
+        if blockedPlanStepCount > 0 {
+            recommendations.append("Update the active plan so blocked steps carry explicit retry or fallback owners instead of remaining in an ambiguous blocked state.")
+        }
+        if let report = doctorReport,
+           report.summary.blockingCount > 0,
+           let finding = report.findings.first(where: { $0.severity == .blocking }) {
+            let action = finding.actions.first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "resolve the top blocking doctor finding"
+            recommendations.append("Fix doctor finding \(finding.code) first: \(capped(action, maxChars: 180)).")
+        }
+        if includeIncidents, !missingIncidentCodes.isEmpty {
+            recommendations.append("Restore XT-ready incident coverage for \(missingIncidentCodes.joined(separator: ", ")) so automated takeover remains observable and auditable.")
+        }
+        if recommendations.isEmpty {
+            recommendations.append("No active blocking signals were found. Capture this working recipe as a pinned Agent baseline and keep the same governance defaults.")
+        }
+        recommendations = Array(recommendations.prefix(limit))
+
+        let memoryCueLines = buildSelfImprovementMemoryCueLines(
+            localMemory: localMemory,
+            response: response,
+            limit: min(3, limit)
+        )
+
+        let memorySource = response?.source ?? (localMemory == nil ? "unavailable" : "local_overlay_only")
+        var summary: [String: JSONValue] = [
+            "tool": .string(ToolName.memory_snapshot.rawValue),
+            "ok": .bool(true),
+            "project_id": .string(projectId),
+            "mode": .string(mode),
+            "analysis_profile": .string("self_improvement"),
+            "focus": .string(focus),
+            "source": .string(memorySource),
+            "resolved_mode": response?.resolvedMode.map(JSONValue.string) ?? .null,
+            "resolved_profile": response?.resolvedProfile.map(JSONValue.string) ?? .null,
+            "freshness": response?.freshness.map(JSONValue.string) ?? .null,
+            "cache_hit": response?.cacheHit.map(JSONValue.bool) ?? .null,
+            "skill_signal_count": .number(Double(sampledSkillCalls.count)),
+            "failed_skill_call_count": .number(Double(failedSkillCallCount)),
+            "awaiting_authorization_skill_call_count": .number(Double(awaitingAuthorizationSkillCallCount)),
+            "blocked_plan_step_count": .number(Double(blockedPlanStepCount)),
+            "doctor_blocking_count": .number(Double(doctorReport?.summary.blockingCount ?? 0)),
+            "doctor_warning_count": .number(Double(doctorReport?.summary.warningCount ?? 0)),
+            "incident_event_count": .number(Double(incidentEvents.count)),
+            "incident_missing_codes": .array(missingIncidentCodes.map(JSONValue.string)),
+            "recommendation_count": .number(Double(recommendations.count)),
+            "memory_available": .bool(response != nil || localMemory != nil),
+        ]
+        if let activeJob {
+            summary["active_job_status"] = .string(activeJob.status.rawValue)
+            summary["active_job_goal"] = .string(capped(activeJob.goal, maxChars: 180))
+        }
+        if let activePlan {
+            summary["active_plan_status"] = .string(activePlan.status.rawValue)
+            summary["active_plan_id"] = .string(activePlan.planId)
+        }
+
+        var lines: [String] = ["Self Improvement Report", "project: \(projectRoot.lastPathComponent)"]
+        if !focus.isEmpty {
+            lines.append("focus: \(focus)")
+        }
+        var memoryLine = "memory: \(memorySource)"
+        if let freshness = response?.freshness?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !freshness.isEmpty {
+            memoryLine += " (freshness=\(freshness))"
+        }
+        lines.append(memoryLine)
+        if let goal = localMemory?.goal.trimmingCharacters(in: .whitespacesAndNewlines),
+           !goal.isEmpty {
+            lines.append("goal: \(capped(goal, maxChars: 180))")
+        }
+        if let activeJob {
+            lines.append("active_job: [\(activeJob.status.rawValue)] \(capped(activeJob.goal, maxChars: 180))")
+        }
+        if let activePlan {
+            lines.append("active_plan: \(activePlan.planId) [\(activePlan.status.rawValue)]")
+        }
+
+        lines.append("")
+        lines.append("Signals:")
+        if signalLines.isEmpty {
+            lines.append("- No blocking signals found in the sampled local artifacts.")
+        } else {
+            lines.append(contentsOf: signalLines.map { "- \($0)" })
+        }
+
+        lines.append("")
+        lines.append("Recommendations:")
+        for (index, item) in recommendations.enumerated() {
+            lines.append("\(index + 1). \(item)")
+        }
+
+        if !memoryCueLines.isEmpty {
+            lines.append("")
+            lines.append("Memory Cues:")
+            lines.append(contentsOf: memoryCueLines.map { "- \($0)" })
+        }
+
+        return structuredOutput(summary: summary, body: lines.joined(separator: "\n"))
+    }
+
+    private static func buildSelfImprovementMemoryCueLines(
+        localMemory: AXMemory?,
+        response: HubIPCClient.MemoryContextResponsePayload?,
+        limit: Int
+    ) -> [String] {
+        var lines: [String] = []
+        var seen = Set<String>()
+
+        func append(_ value: String) {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            guard seen.insert(trimmed).inserted else { return }
+            lines.append(trimmed)
+        }
+
+        if let localMemory {
+            let goal = localMemory.goal.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !goal.isEmpty {
+                append("local_goal: \(capped(goal, maxChars: 160))")
+            }
+            if let next = localMemory.nextSteps.first {
+                let trimmed = next.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    append("local_next: \(capped(trimmed, maxChars: 160))")
+                }
+            }
+            if let risk = localMemory.risks.first ?? localMemory.openQuestions.first {
+                let trimmed = risk.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    append("local_risk: \(capped(trimmed, maxChars: 160))")
+                }
+            }
+        }
+
+        if let text = response?.text {
+            let extracted = text
+                .split(separator: "\n", omittingEmptySubsequences: true)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .filter { !$0.hasPrefix("[") && !$0.hasPrefix("/") }
+            for item in extracted.prefix(limit) {
+                append("hub_memory: \(capped(item, maxChars: 160))")
+            }
+        }
+
+        return Array(lines.prefix(limit))
+    }
+
+    private static func loadSelfImprovementDoctorReport(projectRoot: URL) -> SupervisorDoctorReport? {
+        let reportURL = projectRoot
+            .appendingPathComponent(".axcoder", isDirectory: true)
+            .appendingPathComponent("reports", isDirectory: true)
+            .appendingPathComponent("supervisor_doctor_report.json")
+        guard let data = try? Data(contentsOf: reportURL) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(SupervisorDoctorReport.self, from: data)
+    }
+
+    private static func loadSelfImprovementIncidentEvents(projectRoot: URL) -> [XTReadyIncidentEvent] {
+        let reportURL = projectRoot
+            .appendingPathComponent(".axcoder", isDirectory: true)
+            .appendingPathComponent("reports", isDirectory: true)
+            .appendingPathComponent("xt_ready_incident_events.runtime.json")
+        guard let data = try? Data(contentsOf: reportURL),
+              let payload = try? JSONDecoder().decode(SelfImprovementIncidentPayload.self, from: data) else {
+            return []
+        }
+        return payload.events
     }
 
     private static func executeProjectSnapshot(call: ToolCall, projectRoot: URL) async -> ToolResult {
@@ -2324,6 +2801,342 @@ url=\(url.absoluteString)
                 updatedAt: now,
                 auditRef: auditRef
             )
+            let browserSecretRequest = requestedAction == .typeText
+                ? browserSecretFillRequest(for: call, defaultProjectID: projectID)
+                : BrowserSecretFillRequest(
+                    secretReferenceRequested: false,
+                    plaintextInput: nil,
+                    inputChars: 0,
+                    selector: optStrArg(call, "selector"),
+                    fieldRole: nil,
+                    secretItemId: nil,
+                    secretScope: nil,
+                    secretName: nil,
+                    secretProjectId: nil
+                )
+
+            if requestedAction == .typeText, browserSecretRequest.hasSecretReference {
+                guard browserSecretRequest.hasValidSecretReference else {
+                    let rejectCode = XTDeviceAutomationRejectCode.browserSecretReferenceInvalid
+                    recordBrowserRuntimeAction(
+                        session: attemptedSession,
+                        action: requestedAction,
+                        ok: false,
+                        url: targetURL,
+                        snapshotRef: "",
+                        detail: "secret reference requires secret_item_id or secret_scope + secret_name",
+                        rejectCode: rejectCode.rawValue,
+                        auditRef: auditRef,
+                        ctx: ctx,
+                        now: now
+                    )
+
+                    var summary = deviceAutomationSummaryBase(
+                        call: call,
+                        projectRoot: projectRoot,
+                        decision: decision,
+                        ok: false
+                    )
+                    summary["action"] = .string(requestedAction.rawValue)
+                    summary["url"] = .string(targetURL)
+                    summary["deny_code"] = .string(rejectCode.rawValue)
+                    summary["browser_runtime_driver_state"] = .string("secret_vault_resolution_invalid")
+                    if let selector = optStrArg(call, "selector")?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !selector.isEmpty {
+                        summary["selector"] = .string(selector)
+                    }
+                    appendBrowserSecretSummary(browserSecretRequest, into: &summary)
+                    summary.merge(browserRuntimeSummary(session: attemptedSession, ctx: ctx), uniquingKeysWith: { _, new in new })
+                    return ToolResult(
+                        id: call.id,
+                        tool: call.tool,
+                        ok: false,
+                        output: structuredOutput(summary: summary, body: "browser_secret_reference_invalid")
+                    )
+                }
+
+                let selector = (optStrArg(call, "selector") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !selector.isEmpty else {
+                    let rejectCode = XTDeviceAutomationRejectCode.browserSecretSelectorMissing
+                    recordBrowserRuntimeAction(
+                        session: attemptedSession,
+                        action: requestedAction,
+                        ok: false,
+                        url: targetURL,
+                        snapshotRef: "",
+                        detail: "secret-backed browser fill requires a non-empty selector",
+                        rejectCode: rejectCode.rawValue,
+                        auditRef: auditRef,
+                        ctx: ctx,
+                        now: now
+                    )
+
+                    var summary = deviceAutomationSummaryBase(
+                        call: call,
+                        projectRoot: projectRoot,
+                        decision: decision,
+                        ok: false
+                    )
+                    summary["action"] = .string(requestedAction.rawValue)
+                    summary["url"] = .string(targetURL)
+                    summary["deny_code"] = .string(rejectCode.rawValue)
+                    summary["browser_runtime_driver_state"] = .string("secret_vault_selector_required")
+                    appendBrowserSecretSummary(browserSecretRequest, into: &summary)
+                    summary.merge(browserRuntimeSummary(session: attemptedSession, ctx: ctx), uniquingKeysWith: { _, new in new })
+                    return ToolResult(
+                        id: call.id,
+                        tool: call.tool,
+                        ok: false,
+                        output: structuredOutput(summary: summary, body: "browser_secret_selector_missing")
+                    )
+                }
+
+                let secretResolution = await resolveBrowserSecretValue(
+                    request: browserSecretRequest,
+                    projectID: projectID,
+                    targetURL: targetURL
+                )
+                switch secretResolution {
+                case .failure(let failure):
+                    recordBrowserRuntimeAction(
+                        session: attemptedSession,
+                        action: requestedAction,
+                        ok: false,
+                        url: targetURL,
+                        snapshotRef: "",
+                        detail: failure.detail,
+                        rejectCode: failure.rejectCode.rawValue,
+                        auditRef: auditRef,
+                        ctx: ctx,
+                        now: now
+                    )
+
+                    var summary = deviceAutomationSummaryBase(
+                        call: call,
+                        projectRoot: projectRoot,
+                        decision: decision,
+                        ok: false
+                    )
+                    summary["action"] = .string(requestedAction.rawValue)
+                    summary["url"] = .string(targetURL)
+                    summary["deny_code"] = .string(failure.rejectCode.rawValue)
+                    summary["browser_runtime_driver_state"] = .string("secret_vault_resolution_failed")
+                    summary["selector"] = .string(selector)
+                    appendBrowserSecretSummary(browserSecretRequest, into: &summary)
+                    appendBrowserSecretResolvedSummary(
+                        leaseId: failure.leaseId,
+                        itemId: failure.itemId,
+                        source: failure.source,
+                        reasonCode: failure.reasonCode,
+                        into: &summary
+                    )
+                    summary.merge(browserRuntimeSummary(session: attemptedSession, ctx: ctx), uniquingKeysWith: { _, new in new })
+                    return ToolResult(
+                        id: call.id,
+                        tool: call.tool,
+                        ok: false,
+                        output: structuredOutput(summary: summary, body: failure.body)
+                    )
+                case .success(let resolved):
+                    let fill = await performBrowserSecretFill(
+                        selector: selector,
+                        plaintext: resolved.plaintext
+                    )
+                    switch fill {
+                    case .failure(let failure):
+                        recordBrowserRuntimeAction(
+                            session: attemptedSession,
+                            action: requestedAction,
+                            ok: false,
+                            url: targetURL,
+                            snapshotRef: "",
+                            detail: failure.detail,
+                            rejectCode: failure.rejectCode.rawValue,
+                            auditRef: auditRef,
+                            ctx: ctx,
+                            now: now
+                        )
+
+                        var summary = deviceAutomationSummaryBase(
+                            call: call,
+                            projectRoot: projectRoot,
+                            decision: decision,
+                            ok: false
+                        )
+                        summary["action"] = .string(requestedAction.rawValue)
+                        summary["url"] = .string(targetURL)
+                        summary["deny_code"] = .string(failure.rejectCode.rawValue)
+                        summary["browser_runtime_driver_state"] = .string("secret_vault_applescript_fill_failed")
+                        summary["selector"] = .string(selector)
+                        summary["input_chars"] = .number(Double(resolved.plaintext.count))
+                        appendBrowserSecretSummary(browserSecretRequest, into: &summary)
+                        appendBrowserSecretResolvedSummary(
+                            leaseId: resolved.leaseId,
+                            itemId: resolved.itemId,
+                            source: resolved.source,
+                            reasonCode: failure.reasonCode,
+                            into: &summary
+                        )
+                        summary.merge(browserRuntimeSummary(session: attemptedSession, ctx: ctx), uniquingKeysWith: { _, new in new })
+                        return ToolResult(
+                            id: call.id,
+                            tool: call.tool,
+                            ok: false,
+                            output: structuredOutput(summary: summary, body: failure.body)
+                        )
+                    case .success(let fillOutput):
+                        var session = attemptedSession
+                        do {
+                            let snapshotRef = try XTBrowserRuntimeStore.writeSnapshot(
+                                session: session,
+                                action: requestedAction,
+                                snapshotKind: "secret_fill_result",
+                                excerpt: fillOutput.excerpt,
+                                detail: "secret-backed browser fill succeeded via applescript_dom_bridge",
+                                auditRef: auditRef,
+                                for: ctx,
+                                now: now
+                            )
+                            session = session.setting(snapshotRef: snapshotRef, updatedAt: now, auditRef: auditRef)
+                            try XTBrowserRuntimeStore.saveSession(session, for: ctx)
+                            recordBrowserRuntimeAction(
+                                session: session,
+                                action: requestedAction,
+                                ok: true,
+                                url: targetURL,
+                                snapshotRef: snapshotRef,
+                                detail: "secret-backed browser fill succeeded",
+                                rejectCode: nil,
+                                auditRef: auditRef,
+                                ctx: ctx,
+                                now: now
+                            )
+
+                            var summary = deviceAutomationSummaryBase(
+                                call: call,
+                                projectRoot: projectRoot,
+                                decision: decision,
+                                ok: true
+                            )
+                            summary["action"] = .string(requestedAction.rawValue)
+                            summary["url"] = .string(targetURL)
+                            summary["selector"] = .string(selector)
+                            summary["input_chars"] = .number(Double(resolved.plaintext.count))
+                            summary["browser_runtime_driver_state"] = .string("secret_vault_applescript_fill")
+                            appendBrowserSecretSummary(browserSecretRequest, into: &summary)
+                            appendBrowserSecretResolvedSummary(
+                                leaseId: resolved.leaseId,
+                                itemId: resolved.itemId,
+                                source: resolved.source,
+                                reasonCode: nil,
+                                into: &summary
+                            )
+                            if let tagName = fillOutput.tagName {
+                                summary["browser_fill_tag_name"] = .string(tagName)
+                            }
+                            summary.merge(browserRuntimeSummary(session: session, ctx: ctx), uniquingKeysWith: { _, new in new })
+                            let body = """
+session_id=\(session.sessionID)
+profile_id=\(session.profileID)
+transport=\(session.transport)
+snapshot_ref=\(session.snapshotRef)
+selector=\(selector)
+secret_item_id=\(resolved.itemId ?? "")
+lease_id=\(resolved.leaseId ?? "")
+"""
+                            return ToolResult(
+                                id: call.id,
+                                tool: call.tool,
+                                ok: true,
+                                output: structuredOutput(summary: summary, body: body)
+                            )
+                        } catch {
+                            let rejectCode = XTDeviceAutomationRejectCode.browserSnapshotFailed
+                            recordBrowserRuntimeAction(
+                                session: attemptedSession,
+                                action: requestedAction,
+                                ok: false,
+                                url: targetURL,
+                                snapshotRef: "",
+                                detail: "browser secret fill snapshot persistence failed",
+                                rejectCode: rejectCode.rawValue,
+                                auditRef: auditRef,
+                                ctx: ctx,
+                                now: now
+                            )
+
+                            var summary = deviceAutomationSummaryBase(
+                                call: call,
+                                projectRoot: projectRoot,
+                                decision: decision,
+                                ok: false
+                            )
+                            summary["action"] = .string(requestedAction.rawValue)
+                            summary["url"] = .string(targetURL)
+                            summary["selector"] = .string(selector)
+                            summary["deny_code"] = .string(rejectCode.rawValue)
+                            summary["browser_runtime_driver_state"] = .string("secret_vault_applescript_fill")
+                            summary["input_chars"] = .number(Double(resolved.plaintext.count))
+                            appendBrowserSecretSummary(browserSecretRequest, into: &summary)
+                            appendBrowserSecretResolvedSummary(
+                                leaseId: resolved.leaseId,
+                                itemId: resolved.itemId,
+                                source: resolved.source,
+                                reasonCode: nil,
+                                into: &summary
+                            )
+                            summary.merge(browserRuntimeSummary(session: attemptedSession, ctx: ctx), uniquingKeysWith: { _, new in new })
+                            return ToolResult(
+                                id: call.id,
+                                tool: call.tool,
+                                ok: false,
+                                output: structuredOutput(summary: summary, body: "browser_snapshot_failed")
+                            )
+                        }
+                    }
+                }
+            }
+
+            if requestedAction == .typeText, browserSecretRequest.requiresSecretRefOnly {
+                let rejectCode = XTDeviceAutomationRejectCode.browserSecretPlaintextForbidden
+                recordBrowserRuntimeAction(
+                    session: attemptedSession,
+                    action: requestedAction,
+                    ok: false,
+                    url: targetURL,
+                    snapshotRef: "",
+                    detail: "sensitive browser field requires Secret Vault reference instead of plaintext input",
+                    rejectCode: rejectCode.rawValue,
+                    auditRef: auditRef,
+                    ctx: ctx,
+                    now: now
+                )
+
+                var summary = deviceAutomationSummaryBase(
+                    call: call,
+                    projectRoot: projectRoot,
+                    decision: decision,
+                    ok: false
+                )
+                summary["action"] = .string(requestedAction.rawValue)
+                summary["url"] = .string(targetURL)
+                summary["deny_code"] = .string(rejectCode.rawValue)
+                summary["browser_runtime_driver_state"] = .string("unavailable")
+                if let selector = optStrArg(call, "selector")?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !selector.isEmpty {
+                    summary["selector"] = .string(selector)
+                }
+                appendBrowserSecretSummary(browserSecretRequest, into: &summary)
+                summary["input_chars"] = .number(Double(browserSecretRequest.inputChars))
+                summary.merge(browserRuntimeSummary(session: attemptedSession, ctx: ctx), uniquingKeysWith: { _, new in new })
+                return ToolResult(
+                    id: call.id,
+                    tool: call.tool,
+                    ok: false,
+                    output: structuredOutput(summary: summary, body: "browser_secret_plaintext_forbidden")
+                )
+            }
+
             let managedDriverReject = XTDeviceAutomationRejectCode.browserManagedDriverUnavailable
             recordBrowserRuntimeAction(
                 session: attemptedSession,
@@ -2353,17 +3166,7 @@ url=\(url.absoluteString)
                 summary["selector"] = .string(selector)
             }
             if requestedAction == .typeText {
-                let inputText = [
-                    optStrArg(call, "text"),
-                    optStrArg(call, "content"),
-                    optStrArg(call, "value"),
-                ]
-                .compactMap { raw -> String? in
-                    let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                    return trimmed.isEmpty ? nil : trimmed
-                }
-                .first ?? ""
-                summary["input_chars"] = .number(Double(inputText.count))
+                summary["input_chars"] = .number(Double(browserSecretRequest.inputChars))
             }
             if requestedAction == .upload,
                let path = optStrArg(call, "path")?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -2387,6 +3190,385 @@ url=\(url.absoluteString)
             return nil
         }
         return url
+    }
+
+    private static func browserSecretFillRequest(
+        for call: ToolCall,
+        defaultProjectID: String
+    ) -> BrowserSecretFillRequest {
+        let rawSecretItemId = optStrArg(call, "secret_item_id")
+        let rawSecretScope = optStrArg(call, "secret_scope")
+        let rawSecretName = optStrArg(call, "secret_name")
+        let secretReferenceRequested = [rawSecretItemId, rawSecretScope, rawSecretName]
+            .contains { raw in
+                let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return !trimmed.isEmpty
+            }
+        let secretItemId = normalizedBrowserSecretReference(rawSecretItemId)
+        let secretScope = normalizedBrowserSecretScope(rawSecretScope)
+        let secretName = normalizedBrowserSecretReference(rawSecretName)
+        let plaintextInput = [
+            optStrArg(call, "text"),
+            optStrArg(call, "content"),
+            optStrArg(call, "value"),
+        ]
+        .compactMap { raw -> String? in
+            let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        .first
+
+        let fieldRole = normalizeBrowserFieldRole(
+            optStrArg(call, "field_role") ?? optStrArg(call, "secret_field_role")
+        )
+        let secretProjectId = secretReferenceRequested
+            ? normalizedBrowserSecretProjectID(
+                optStrArg(call, "secret_project_id"),
+                defaultProjectID: defaultProjectID
+            )
+            : nil
+
+        return BrowserSecretFillRequest(
+            secretReferenceRequested: secretReferenceRequested,
+            plaintextInput: plaintextInput,
+            inputChars: plaintextInput?.count ?? 0,
+            selector: optStrArg(call, "selector"),
+            fieldRole: fieldRole,
+            secretItemId: secretItemId,
+            secretScope: secretScope,
+            secretName: secretName,
+            secretProjectId: secretProjectId
+        )
+    }
+
+    private static func normalizedBrowserSecretReference(_ raw: String?) -> String? {
+        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func normalizedBrowserSecretScope(_ raw: String?) -> String? {
+        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        switch trimmed {
+        case "device", "user", "app", "project":
+            return trimmed
+        default:
+            return nil
+        }
+    }
+
+    private static func normalizedBrowserSecretProjectID(
+        _ raw: String?,
+        defaultProjectID: String
+    ) -> String? {
+        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmed.isEmpty {
+            return trimmed
+        }
+        let fallback = defaultProjectID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return fallback.isEmpty ? nil : fallback
+    }
+
+    private static func normalizeBrowserFieldRole(_ raw: String?) -> String? {
+        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func appendBrowserSecretSummary(
+        _ request: BrowserSecretFillRequest,
+        into summary: inout [String: JSONValue]
+    ) {
+        summary["secret_ref_only"] = .bool(request.hasSecretReference || request.requiresSecretRefOnly)
+        if let fieldRole = request.fieldRole {
+            summary["secret_field_role"] = .string(fieldRole)
+        }
+        if let secretItemId = request.secretItemId {
+            summary["secret_item_id"] = .string(secretItemId)
+        }
+        if let secretScope = request.secretScope {
+            summary["secret_scope"] = .string(secretScope)
+        }
+        if let secretName = request.secretName {
+            summary["secret_name"] = .string(secretName)
+        }
+        if let secretProjectId = request.secretProjectId {
+            summary["secret_project_id"] = .string(secretProjectId)
+        }
+    }
+
+    private static func appendBrowserSecretResolvedSummary(
+        leaseId: String?,
+        itemId: String?,
+        source: String?,
+        reasonCode: String?,
+        into summary: inout [String: JSONValue]
+    ) {
+        if let leaseId = normalized(leaseId) {
+            summary["secret_lease_id"] = .string(leaseId)
+        }
+        if summary["secret_item_id"] == nil, let itemId = normalized(itemId) {
+            summary["secret_item_id"] = .string(itemId)
+        }
+        if let source = normalized(source) {
+            summary["secret_use_source"] = .string(source)
+        }
+        if let reasonCode = normalized(reasonCode) {
+            summary["secret_reason_code"] = .string(reasonCode)
+        }
+    }
+
+    private static func resolveBrowserSecretValue(
+        request: BrowserSecretFillRequest,
+        projectID: String,
+        targetURL: String
+    ) async -> Result<BrowserSecretResolvedValue, BrowserSecretResolutionFailure> {
+        let effectiveProjectID = normalized(request.secretProjectId) ?? normalized(projectID)
+        let begin = await HubIPCClient.beginSecretUse(
+            HubIPCClient.SecretUseRequestPayload(
+                itemId: request.secretItemId,
+                scope: request.secretScope,
+                name: request.secretName,
+                projectId: effectiveProjectID,
+                purpose: "browser_secret_fill",
+                target: targetURL,
+                ttlMs: 60_000
+            )
+        )
+        guard begin.ok, let useToken = normalized(begin.useToken) else {
+            return .failure(
+                BrowserSecretResolutionFailure(
+                    rejectCode: .browserSecretBeginUseFailed,
+                    detail: "secret vault begin use failed: \(begin.reasonCode ?? "browser_secret_begin_use_failed")",
+                    body: "browser_secret_begin_use_failed",
+                    source: begin.source,
+                    reasonCode: begin.reasonCode,
+                    itemId: begin.itemId,
+                    leaseId: begin.leaseId
+                )
+            )
+        }
+
+        let redeem = await HubIPCClient.redeemSecretUse(
+            HubIPCClient.SecretRedeemRequestPayload(
+                useToken: useToken,
+                projectId: effectiveProjectID
+            )
+        )
+        guard redeem.ok, let plaintext = normalized(redeem.plaintext) else {
+            return .failure(
+                BrowserSecretResolutionFailure(
+                    rejectCode: .browserSecretRedeemFailed,
+                    detail: "secret vault redeem failed: \(redeem.reasonCode ?? "browser_secret_redeem_failed")",
+                    body: "browser_secret_redeem_failed",
+                    source: redeem.source,
+                    reasonCode: redeem.reasonCode,
+                    itemId: redeem.itemId ?? begin.itemId,
+                    leaseId: redeem.leaseId ?? begin.leaseId
+                )
+            )
+        }
+
+        let source = firstNonEmptyString(redeem.source, begin.source)
+        return .success(
+            BrowserSecretResolvedValue(
+                source: source,
+                leaseId: redeem.leaseId ?? begin.leaseId,
+                itemId: redeem.itemId ?? begin.itemId,
+                plaintext: plaintext
+            )
+        )
+    }
+
+    private static func performBrowserSecretFill(
+        selector: String,
+        plaintext: String
+    ) async -> Result<BrowserSecretFillOutput, BrowserSecretFillExecutionFailure> {
+        guard let source = browserSecretFillAppleScriptSource(selector: selector, plaintext: plaintext) else {
+            return .failure(
+                BrowserSecretFillExecutionFailure(
+                    rejectCode: .browserSecretFillUnavailable,
+                    detail: "browser secret fill script generation failed",
+                    body: "browser_secret_fill_unavailable",
+                    reasonCode: "browser_secret_fill_script_invalid"
+                )
+            )
+        }
+
+        let result = await MainActor.run {
+            DeviceAutomationTools.runAppleScript(source)
+        }
+        if !result.ok {
+            let reason = normalized(result.errorMessage) ?? "browser_secret_fill_failed"
+            let lower = reason.lowercased()
+            let unavailable = lower.contains("unsupported_frontmost_browser")
+                || lower.contains("browser_window_missing")
+                || lower.contains("front_browser_missing")
+            return .failure(
+                BrowserSecretFillExecutionFailure(
+                    rejectCode: unavailable ? .browserSecretFillUnavailable : .browserSecretFillFailed,
+                    detail: reason,
+                    body: unavailable ? "browser_secret_fill_unavailable" : "browser_secret_fill_failed",
+                    reasonCode: sanitizeReasonToken(reason)
+                )
+            )
+        }
+
+        if let decoded = parseBrowserSecretDriverResponse(result.output),
+           decoded.ok == false {
+            let reason = normalized(decoded.reason) ?? "browser_secret_fill_failed"
+            let lower = reason.lowercased()
+            let unavailable = lower.contains("unsupported_frontmost_browser")
+                || lower.contains("browser_window_missing")
+                || lower.contains("front_browser_missing")
+            return .failure(
+                BrowserSecretFillExecutionFailure(
+                    rejectCode: unavailable ? .browserSecretFillUnavailable : .browserSecretFillFailed,
+                    detail: reason,
+                    body: unavailable ? "browser_secret_fill_unavailable" : "browser_secret_fill_failed",
+                    reasonCode: sanitizeReasonToken(reason)
+                )
+            )
+        }
+
+        return .success(
+            BrowserSecretFillOutput(
+                excerpt: browserSecretFillExcerpt(from: result.output),
+                tagName: parseBrowserSecretDriverResponse(result.output)?.tagName
+            )
+        )
+    }
+
+    private static func parseBrowserSecretDriverResponse(_ output: String) -> BrowserSecretDriverResponse? {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(BrowserSecretDriverResponse.self, from: data)
+    }
+
+    private static func browserSecretFillExcerpt(from output: String) -> String {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "browser_secret_fill_ok" }
+        return capped(trimmed, maxChars: 240)
+    }
+
+    private static func browserSecretFillAppleScriptSource(
+        selector: String,
+        plaintext: String
+    ) -> String? {
+        guard let jsSource = browserSecretFillJavaScriptSource(selector: selector, plaintext: plaintext) else {
+            return nil
+        }
+        let jsLiteral = appleScriptStringLiteral(jsSource)
+        return """
+set jsSource to \(jsLiteral)
+tell application "System Events"
+    set frontAppName to name of first application process whose frontmost is true
+end tell
+if frontAppName is "Safari" then
+    tell application "Safari"
+        if (count of windows) is 0 then error "browser_window_missing"
+        set jsResult to do JavaScript jsSource in current tab of front window
+    end tell
+else if frontAppName is "Google Chrome" then
+    tell application "Google Chrome"
+        if (count of windows) is 0 then error "browser_window_missing"
+        set jsResult to execute active tab of front window javascript jsSource
+    end tell
+else if frontAppName is "Chromium" then
+    tell application "Chromium"
+        if (count of windows) is 0 then error "browser_window_missing"
+        set jsResult to execute active tab of front window javascript jsSource
+    end tell
+else if frontAppName is "Microsoft Edge" then
+    tell application "Microsoft Edge"
+        if (count of windows) is 0 then error "browser_window_missing"
+        set jsResult to execute active tab of front window javascript jsSource
+    end tell
+else if frontAppName is "Brave Browser" then
+    tell application "Brave Browser"
+        if (count of windows) is 0 then error "browser_window_missing"
+        set jsResult to execute active tab of front window javascript jsSource
+    end tell
+else if frontAppName is "Arc" then
+    tell application "Arc"
+        if (count of windows) is 0 then error "browser_window_missing"
+        set jsResult to execute active tab of front window javascript jsSource
+    end tell
+else
+    error "unsupported_frontmost_browser:" & frontAppName
+end if
+return jsResult
+"""
+    }
+
+    private static func browserSecretFillJavaScriptSource(
+        selector: String,
+        plaintext: String
+    ) -> String? {
+        guard let selectorLiteral = jsonStringLiteral(selector),
+              let valueLiteral = jsonStringLiteral(Data(plaintext.utf8).base64EncodedString()) else {
+            return nil
+        }
+        return [
+            "(() => {",
+            "const selector = \(selectorLiteral);",
+            "const encoded = \(valueLiteral);",
+            "const bytes = Uint8Array.from(atob(encoded), c => c.charCodeAt(0));",
+            "const value = new TextDecoder().decode(bytes);",
+            "const node = document.querySelector(selector);",
+            "if (!node) return JSON.stringify({ok:false,reason:'selector_not_found',selector});",
+            "if (node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement) {",
+            "const proto = node instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;",
+            "const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;",
+            "node.focus();",
+            "if (setter) setter.call(node, value); else node.value = value;",
+            "} else if (node instanceof HTMLSelectElement) {",
+            "node.value = value;",
+            "} else if (node.isContentEditable) {",
+            "node.focus(); node.textContent = value;",
+            "} else {",
+            "if ('value' in node) node.value = value; else node.textContent = value;",
+            "}",
+            "node.dispatchEvent(new Event('input', { bubbles: true }));",
+            "node.dispatchEvent(new Event('change', { bubbles: true }));",
+            "return JSON.stringify({ok:true,selector,tag_name:(node.tagName||'').toLowerCase()});",
+            "})();"
+        ].joined(separator: "")
+    }
+
+    private static func jsonStringLiteral(_ value: String) -> String? {
+        guard let data = try? JSONSerialization.data(withJSONObject: [value], options: []),
+              let text = String(data: data, encoding: .utf8),
+              text.count >= 2 else {
+            return nil
+        }
+        return String(text.dropFirst().dropLast())
+    }
+
+    private static func appleScriptStringLiteral(_ value: String) -> String {
+        let escaped = value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+        return "\"\(escaped)\""
+    }
+
+    private static func normalized(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func sanitizeReasonToken(_ raw: String) -> String {
+        var token = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+        while token.contains("__") {
+            token = token.replacingOccurrences(of: "__", with: "_")
+        }
+        return token.trimmingCharacters(in: CharacterSet(charactersIn: "_"))
     }
 
     private static func browserRuntimeActionMode(
@@ -2584,6 +3766,147 @@ url=\(url.absoluteString)
         )
     }
 
+    private static func executeSkillsSearch(call: ToolCall, projectRoot: URL) async -> ToolResult {
+        let query = (optStrArg(call, "query") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            let summary: [String: JSONValue] = [
+                "tool": .string(call.tool.rawValue),
+                "ok": .bool(false),
+                "reason": .string("missing_query"),
+            ]
+            return ToolResult(id: call.id, tool: call.tool, ok: false, output: structuredOutput(summary: summary, body: "missing_query"))
+        }
+
+        let sourceFilter = (optStrArg(call, "source_filter") ?? optStrArg(call, "source") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let projectID = (optStrArg(call, "project_id") ?? AXProjectRegistryStore.projectId(forRoot: projectRoot))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let limit = max(1, min(25, Int(optDoubleArg(call, "limit") ?? optDoubleArg(call, "max_results") ?? 8)))
+
+        let remote = await HubIPCClient.searchSkills(
+            query: query,
+            sourceFilter: sourceFilter.isEmpty ? nil : sourceFilter,
+            projectId: projectID.isEmpty ? nil : projectID,
+            limit: limit
+        )
+        let resolved: HubIPCClient.SkillsSearchResult
+        if remote.ok {
+            resolved = remote
+        } else if let local = searchLocalSkillCatalog(
+            query: query,
+            sourceFilter: sourceFilter.isEmpty ? nil : sourceFilter,
+            limit: limit,
+            hubBaseDir: HubPaths.baseDir()
+        ) {
+            resolved = local
+        } else {
+            let reason = (remote.reasonCode ?? "skills_search_unavailable").trimmingCharacters(in: .whitespacesAndNewlines)
+            let summary: [String: JSONValue] = [
+                "tool": .string(call.tool.rawValue),
+                "ok": .bool(false),
+                "query": .string(query),
+                "source_filter": sourceFilter.isEmpty ? .null : .string(sourceFilter),
+                "project_id": projectID.isEmpty ? .null : .string(projectID),
+                "reason": .string(reason.isEmpty ? "skills_search_unavailable" : reason),
+            ]
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: structuredOutput(summary: summary, body: reason.isEmpty ? "skills_search_unavailable" : reason)
+            )
+        }
+
+        let rows = resolved.results.prefix(limit).map { item -> JSONValue in
+            .object([
+                "skill_id": .string(item.skillID),
+                "name": .string(item.name),
+                "version": .string(item.version),
+                "publisher_id": .string(item.publisherID),
+                "source_id": .string(item.sourceID),
+                "package_sha256": .string(item.packageSHA256),
+                "install_hint": .string(item.installHint),
+                "capabilities_required": .array(item.capabilitiesRequired.map(JSONValue.string)),
+            ])
+        }
+        let summary: [String: JSONValue] = [
+            "tool": .string(call.tool.rawValue),
+            "ok": .bool(resolved.ok),
+            "query": .string(query),
+            "source_filter": sourceFilter.isEmpty ? .null : .string(sourceFilter),
+            "project_id": projectID.isEmpty ? .null : .string(projectID),
+            "source": .string(resolved.source),
+            "updated_at_ms": .number(Double(resolved.updatedAtMs)),
+            "results_count": .number(Double(resolved.results.count)),
+            "results": .array(rows),
+        ]
+        let body: String
+        if resolved.results.isEmpty {
+            body = "(no matching skills)"
+        } else {
+            body = resolved.results.prefix(limit).enumerated().map { index, item in
+                let caps = item.capabilitiesRequired.isEmpty ? "caps: (none)" : "caps: " + item.capabilitiesRequired.joined(separator: ", ")
+                let install = item.installHint.trimmingCharacters(in: .whitespacesAndNewlines)
+                let installLine = install.isEmpty ? "" : "\n   install: \(install)"
+                return "\(index + 1). \(item.name) [\(item.skillID)] v\(item.version)\n   publisher=\(item.publisherID) source=\(item.sourceID)\n   \(caps)\(installLine)"
+            }.joined(separator: "\n\n")
+        }
+        return ToolResult(id: call.id, tool: call.tool, ok: true, output: structuredOutput(summary: summary, body: body))
+    }
+
+    private static func executeSummarize(call: ToolCall, projectRoot: URL) async throws -> ToolResult {
+        let focus = (optStrArg(call, "focus") ?? optStrArg(call, "question") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let format = normalizedSummarizeFormat(optStrArg(call, "format"))
+        let maxChars = max(220, min(2_400, Int(optDoubleArg(call, "max_chars") ?? 900)))
+
+        let loaded: SummarizeLoadedSource
+        do {
+            loaded = try await loadSummarizeSource(call: call, projectRoot: projectRoot)
+        } catch let error as SummarizeLoadError {
+            let summary: [String: JSONValue] = [
+                "tool": .string(call.tool.rawValue),
+                "ok": .bool(false),
+                "reason": .string(error.reasonCode),
+            ]
+            return ToolResult(id: call.id, tool: call.tool, ok: false, output: structuredOutput(summary: summary, body: error.reasonCode))
+        }
+
+        let normalizedSource = normalizedSummarySourceText(loaded.text)
+        guard !normalizedSource.isEmpty else {
+            let summary: [String: JSONValue] = [
+                "tool": .string(call.tool.rawValue),
+                "ok": .bool(false),
+                "source_kind": .string(loaded.kind.rawValue),
+                "reason": .string("empty_source_text"),
+            ]
+            return ToolResult(id: call.id, tool: call.tool, ok: false, output: structuredOutput(summary: summary, body: "empty_source_text"))
+        }
+
+        let processingLimit = max(6_000, min(40_000, Int(optDoubleArg(call, "max_source_chars") ?? 20_000)))
+        let processedText = String(normalizedSource.prefix(processingLimit))
+        let summaryBody = governedSummaryBody(
+            sourceText: processedText,
+            title: loaded.title,
+            focus: focus,
+            format: format,
+            maxChars: maxChars
+        )
+        let sourceTruncated = normalizedSource.count > processedText.count
+        var summary = loaded.summary
+        summary["tool"] = .string(call.tool.rawValue)
+        summary["ok"] = .bool(true)
+        summary["source_kind"] = .string(loaded.kind.rawValue)
+        summary["source_title"] = .string(loaded.title)
+        summary["focus"] = focus.isEmpty ? .null : .string(focus)
+        summary["format"] = .string(format)
+        summary["input_chars"] = .number(Double(normalizedSource.count))
+        summary["processed_chars"] = .number(Double(processedText.count))
+        summary["summary_chars"] = .number(Double(summaryBody.count))
+        summary["source_truncated"] = .bool(sourceTruncated)
+        return ToolResult(id: call.id, tool: call.tool, ok: true, output: structuredOutput(summary: summary, body: summaryBody))
+    }
+
     private static func executeWebSearch(call: ToolCall, projectRoot: URL) async throws -> ToolResult {
         let query = (optStrArg(call, "query") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else {
@@ -2708,6 +4031,392 @@ url=\(url.absoluteString)
             "readability_applied": .bool(contentType.lowercased().contains("html")),
         ]
         return ToolResult(id: call.id, tool: call.tool, ok: true, output: structuredOutput(summary: summary, body: excerpt))
+    }
+
+    private struct SummarizeLoadError: Error {
+        var reasonCode: String
+    }
+
+    private static func loadSummarizeSource(
+        call: ToolCall,
+        projectRoot: URL
+    ) async throws -> SummarizeLoadedSource {
+        let url = (optStrArg(call, "url") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let path = (optStrArg(call, "path") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let inlineText = firstNonEmptyString(
+            optStrArg(call, "text"),
+            optStrArg(call, "content"),
+            optStrArg(call, "value")
+        )
+        let sourceCount = [!url.isEmpty, !path.isEmpty, !inlineText.isEmpty].filter { $0 }.count
+        guard sourceCount > 0 else {
+            throw SummarizeLoadError(reasonCode: "missing_source")
+        }
+        guard sourceCount == 1 else {
+            throw SummarizeLoadError(reasonCode: "multiple_sources_provided")
+        }
+
+        if !url.isEmpty {
+            let nested = ToolCall(
+                id: "\(call.id)_browser_read",
+                tool: .browser_read,
+                args: [
+                    "url": .string(url),
+                    "grant_id": call.args["grant_id"] ?? .null,
+                    "timeout_sec": call.args["timeout_sec"] ?? .number(15),
+                    "max_bytes": call.args["max_bytes"] ?? .number(900_000),
+                ]
+            )
+            let result = try await execute(call: nested, projectRoot: projectRoot)
+            guard result.ok else {
+                throw SummarizeLoadError(reasonCode: firstFailureReason(in: result.output))
+            }
+            let parsed = parseStructuredToolOutput(result.output)
+            let header = jsonObject(parsed.summary) ?? [:]
+            return SummarizeLoadedSource(
+                kind: .url,
+                title: summarizeSourceTitle(
+                    url: jsonStringValue(header["final_url"]) ?? url,
+                    fallback: url
+                ),
+                text: parsed.body,
+                summary: [
+                    "url": .string(url),
+                    "final_url": header["final_url"] ?? .null,
+                    "content_type": header["content_type"] ?? .null,
+                    "grant_id": call.args["grant_id"] ?? .null,
+                ]
+            )
+        }
+
+        if !path.isEmpty {
+            let nested = ToolCall(
+                id: "\(call.id)_read_file",
+                tool: .read_file,
+                args: [
+                    "path": .string(path),
+                ]
+            )
+            let result = try await execute(call: nested, projectRoot: projectRoot)
+            guard result.ok else {
+                throw SummarizeLoadError(reasonCode: firstFailureReason(in: result.output))
+            }
+            return SummarizeLoadedSource(
+                kind: .path,
+                title: URL(fileURLWithPath: path).lastPathComponent,
+                text: result.output,
+                summary: [
+                    "path": .string(path),
+                ]
+            )
+        }
+
+        return SummarizeLoadedSource(
+            kind: .text,
+            title: "inline_text",
+            text: inlineText,
+            summary: [:]
+        )
+    }
+
+    private static func searchLocalSkillCatalog(
+        query: String,
+        sourceFilter: String?,
+        limit: Int,
+        hubBaseDir: URL
+    ) -> HubIPCClient.SkillsSearchResult? {
+        let indexURL = hubBaseDir
+            .appendingPathComponent("skills_store", isDirectory: true)
+            .appendingPathComponent("skills_store_index.json")
+        guard let data = try? Data(contentsOf: indexURL),
+              let snapshot = try? JSONDecoder().decode(LocalSkillCatalogIndexSnapshot.self, from: data) else {
+            return nil
+        }
+
+        let normalizedSourceFilter = (sourceFilter ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let tokens = searchableTokens(query)
+        let entries = snapshot.skills
+            .compactMap { row -> (score: Int, skill: LocalSkillCatalogIndexSnapshot.Skill)? in
+                if !normalizedSourceFilter.isEmpty,
+                   !row.sourceID.lowercased().contains(normalizedSourceFilter) {
+                    return nil
+                }
+                let score = localSkillCatalogScore(skill: row, tokens: tokens, rawQuery: query)
+                guard score > 0 else { return nil }
+                return (score, row)
+            }
+            .sorted { lhs, rhs in
+                if lhs.score != rhs.score {
+                    return lhs.score > rhs.score
+                }
+                let nameOrder = lhs.skill.name.localizedCaseInsensitiveCompare(rhs.skill.name)
+                if nameOrder != .orderedSame {
+                    return nameOrder == .orderedAscending
+                }
+                return lhs.skill.skillID < rhs.skill.skillID
+            }
+            .prefix(limit)
+            .map { row in
+                HubIPCClient.SkillCatalogEntry(
+                    skillID: row.skill.skillID,
+                    name: row.skill.name,
+                    version: row.skill.version,
+                    description: row.skill.description,
+                    publisherID: row.skill.publisherID,
+                    capabilitiesRequired: row.skill.capabilitiesRequired,
+                    sourceID: row.skill.sourceID,
+                    packageSHA256: row.skill.packageSHA256,
+                    installHint: row.skill.installHint
+                )
+            }
+
+        return HubIPCClient.SkillsSearchResult(
+            ok: true,
+            source: "local_hub_index",
+            updatedAtMs: snapshot.updatedAtMs,
+            results: entries,
+            reasonCode: nil
+        )
+    }
+
+    private static func localSkillCatalogScore(
+        skill: LocalSkillCatalogIndexSnapshot.Skill,
+        tokens: [String],
+        rawQuery: String
+    ) -> Int {
+        let normalizedQuery = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalizedQuery.isEmpty {
+            return 1
+        }
+        var score = 0
+        if skill.skillID.lowercased() == normalizedQuery {
+            score += 200
+        }
+        if skill.name.lowercased() == normalizedQuery {
+            score += 180
+        }
+        if skill.skillID.lowercased().contains(normalizedQuery) {
+            score += 120
+        }
+        if skill.name.lowercased().contains(normalizedQuery) {
+            score += 100
+        }
+        for token in tokens {
+            if skill.skillID.lowercased().contains(token) {
+                score += 40
+            }
+            if skill.name.lowercased().contains(token) {
+                score += 32
+            }
+            if skill.capabilitiesRequired.contains(where: { $0.lowercased().contains(token) }) {
+                score += 24
+            }
+            if skill.description.lowercased().contains(token) {
+                score += 12
+            }
+            if skill.installHint.lowercased().contains(token) {
+                score += 6
+            }
+        }
+        if skill.publisherID == "xhub.official" {
+            score += 4
+        }
+        return score
+    }
+
+    private static func searchableTokens(_ query: String) -> [String] {
+        query
+            .lowercased()
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "-" && $0 != "_" && $0 != "." })
+            .map(String.init)
+            .filter { !$0.isEmpty }
+    }
+
+    private static func normalizedSummarizeFormat(_ raw: String?) -> String {
+        switch (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "bullets", "bullet", "list":
+            return "bullets"
+        default:
+            return "paragraph"
+        }
+    }
+
+    private static func governedSummaryBody(
+        sourceText: String,
+        title: String,
+        focus: String,
+        format: String,
+        maxChars: Int
+    ) -> String {
+        let focusTokens = searchableTokens(focus)
+        let candidates = summaryCandidates(from: sourceText)
+        let ranked = rankSummaryCandidates(candidates, focusTokens: focusTokens)
+        let selected = selectSummarySegments(
+            ranked,
+            maxChars: maxChars,
+            maxItems: format == "bullets" ? 5 : 3
+        )
+        if selected.isEmpty {
+            return String(sourceText.prefix(maxChars))
+        }
+
+        if format == "bullets" {
+            let titleLine = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? [] : ["Title: \(title)"]
+            let bodyLines = selected.map { "- \($0)" }
+            return (titleLine + bodyLines).joined(separator: "\n")
+        }
+
+        let prefix = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : "\(title): "
+        let joined = selected.joined(separator: " ")
+        let focused = focus.trimmingCharacters(in: .whitespacesAndNewlines)
+        if focused.isEmpty {
+            return capped(prefix + joined, maxChars: maxChars)
+        }
+        return capped(prefix + joined + " Focus: " + focused, maxChars: maxChars)
+    }
+
+    private static func summaryCandidates(from text: String) -> [String] {
+        let normalized = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        let lines = normalized
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        var out: [String] = []
+        for line in lines {
+            if line.count <= 240 {
+                out.append(line)
+            }
+            for segment in sentenceSegments(from: line) where segment.count > 24 {
+                out.append(segment)
+            }
+        }
+        return out
+    }
+
+    private static func sentenceSegments(from text: String) -> [String] {
+        let separators = CharacterSet(charactersIn: ".!?。！？;；")
+        let parts = text
+            .components(separatedBy: separators)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        if parts.count <= 1 {
+            return parts
+        }
+        return parts.map { segment in
+            let collapsed = segment.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            return collapsed.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
+    private static func rankSummaryCandidates(
+        _ candidates: [String],
+        focusTokens: [String]
+    ) -> [String] {
+        var seen = Set<String>()
+        let ranked = candidates.enumerated().compactMap { index, candidate -> (Int, String)? in
+            let normalized = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty else { return nil }
+            let dedupeKey = normalized.lowercased()
+            guard seen.insert(dedupeKey).inserted else { return nil }
+
+            var score = max(0, 120 - index)
+            if normalized.count >= 40 && normalized.count <= 220 {
+                score += 24
+            }
+            if normalized.hasPrefix("-") || normalized.hasPrefix("*") {
+                score += 14
+            }
+            if normalized.contains(":") {
+                score += 8
+            }
+            let lowered = normalized.lowercased()
+            for token in focusTokens where lowered.contains(token) {
+                score += 40
+            }
+            return (score, normalized)
+        }
+        return ranked
+            .sorted { lhs, rhs in
+                if lhs.0 != rhs.0 { return lhs.0 > rhs.0 }
+                if lhs.1.count != rhs.1.count { return lhs.1.count < rhs.1.count }
+                return lhs.1 < rhs.1
+            }
+            .map(\.1)
+    }
+
+    private static func selectSummarySegments(
+        _ ranked: [String],
+        maxChars: Int,
+        maxItems: Int
+    ) -> [String] {
+        var selected: [String] = []
+        var usedChars = 0
+        for segment in ranked {
+            guard selected.count < maxItems else { break }
+            let cost = segment.count + (selected.isEmpty ? 0 : 1)
+            if !selected.isEmpty && usedChars + cost > maxChars {
+                continue
+            }
+            selected.append(segment)
+            usedChars += cost
+            if usedChars >= maxChars { break }
+        }
+        return selected
+    }
+
+    private static func normalizedSummarySourceText(_ raw: String) -> String {
+        let candidate: String
+        if raw.lowercased().contains("<html") || raw.lowercased().contains("<body") {
+            candidate = htmlToReadableText(raw)
+        } else {
+            candidate = raw
+        }
+        return candidate
+            .replacingOccurrences(of: "\u{00A0}", with: " ")
+            .replacingOccurrences(of: #"[ \t]+"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func summarizeSourceTitle(url: String, fallback: String) -> String {
+        if let parsed = URL(string: url), let host = parsed.host, !host.isEmpty {
+            let path = parsed.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            if path.isEmpty {
+                return host
+            }
+            let tail = path.components(separatedBy: "/").last ?? path
+            return "\(host)/\(tail)"
+        }
+        return fallback
+    }
+
+    private static func capped(_ text: String, maxChars: Int) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > maxChars else { return trimmed }
+        let end = trimmed.index(trimmed.startIndex, offsetBy: max(0, maxChars))
+        return String(trimmed[..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func firstNonEmptyString(_ values: String?...) -> String {
+        for value in values {
+            let trimmed = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return value ?? ""
+            }
+        }
+        return ""
+    }
+
+    private static func jsonObject(_ value: JSONValue?) -> [String: JSONValue]? {
+        guard case .object(let object)? = value else { return nil }
+        return object
+    }
+
+    private static func jsonStringValue(_ value: JSONValue?) -> String? {
+        guard case .string(let text)? = value else { return nil }
+        return text
     }
 
     static func parseStructuredToolOutput(_ output: String) -> (summary: JSONValue?, body: String) {
@@ -2980,29 +4689,13 @@ url=\(url.absoluteString)
         return nil
     }
 
-    private static func hasGovernedDeviceAuthority(
-        projectRoot: URL,
-        config: AXProjectConfig,
-        effectiveAutonomy: AXProjectAutonomyEffectivePolicy
-    ) -> Bool {
-        guard effectiveAutonomy.effectiveMode == .trustedOpenClawMode else { return false }
-        guard effectiveAutonomy.allowDeviceTools else { return false }
-        guard config.automationMode == .trustedAutomation else { return false }
-        guard !config.trustedAutomationDeviceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-
-        let expectedWorkspaceBindingHash = xtTrustedAutomationWorkspaceHash(forProjectRoot: projectRoot)
-        let configuredWorkspaceBindingHash = config.workspaceBindingHash.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !configuredWorkspaceBindingHash.isEmpty else { return false }
-        return configuredWorkspaceBindingHash == expectedWorkspaceBindingHash
-    }
-
     private static func governedReadableRoots(
         projectRoot: URL,
         config: AXProjectConfig,
         effectiveAutonomy: AXProjectAutonomyEffectivePolicy
     ) -> [URL] {
         var roots: [URL] = [projectRoot]
-        guard hasGovernedDeviceAuthority(
+        guard xtProjectGovernedDeviceAuthorityEnabled(
             projectRoot: projectRoot,
             config: config,
             effectiveAutonomy: effectiveAutonomy

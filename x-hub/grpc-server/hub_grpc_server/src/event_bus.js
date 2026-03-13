@@ -88,7 +88,15 @@ export class HubEventBus {
     };
   }
 
-  killSwitchUpdated({ scope, models_disabled, network_disabled, reason, updated_at_ms }) {
+  killSwitchUpdated({
+    scope,
+    models_disabled,
+    network_disabled,
+    disabled_local_capabilities,
+    disabled_local_providers,
+    reason,
+    updated_at_ms,
+  }) {
     return {
       event_id: `evt_${uuid()}`,
       created_at_ms: nowMs(),
@@ -96,6 +104,8 @@ export class HubEventBus {
         scope: String(scope || ''),
         models_disabled: !!models_disabled,
         network_disabled: !!network_disabled,
+        disabled_local_capabilities: Array.isArray(disabled_local_capabilities) ? disabled_local_capabilities : [],
+        disabled_local_providers: Array.isArray(disabled_local_providers) ? disabled_local_providers : [],
         reason: String(reason || ''),
         updated_at_ms: Number(updated_at_ms || nowMs()),
       },

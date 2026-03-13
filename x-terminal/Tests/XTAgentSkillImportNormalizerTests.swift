@@ -4,6 +4,68 @@ import Testing
 
 struct XTAgentSkillImportNormalizerTests {
     @Test
+    func hubRecordReviewSurfacesVetterFieldsAndCounts() {
+        let review = XTAgentSkillImportReviewFormatter.formatHubRecordReview(
+            recordJSON: """
+            {
+              "staging_id": "stage-123",
+              "status": "reviewed",
+              "audit_ref": "audit-9",
+              "requested_by": "xt-ui",
+              "note": "imported from local repo",
+              "vetter_status": "blocked",
+              "vetter_audit_ref": "vet-audit-1",
+              "vetter_report_ref": "vet-report-2",
+              "vetter_critical_count": 2,
+              "vetter_warn_count": 3,
+              "promotion_blocked_reason": "vetter_blocked",
+              "enabled_package_sha256": "0123456789abcdef0123456789abcdef",
+              "enabled_scope": "device",
+              "import_manifest": {
+                "skill_id": "agent-browser",
+                "display_name": "Agent Browser",
+                "preflight_status": "passed",
+                "risk_level": "high",
+                "policy_scope": "device",
+                "requires_grant": true,
+                "normalized_capabilities": ["web.fetch", "device.browser.control"]
+              },
+              "findings": [
+                { "code": "network_access", "detail": "uses outbound browser navigation" }
+              ]
+            }
+            """,
+            fallbackStagingId: "fallback-stage",
+            fallbackSkillId: "fallback-skill"
+        )
+
+        #expect(review.contains("staging_id: stage-123"))
+        #expect(review.contains("audit_ref: audit-9"))
+        #expect(review.contains("requested_by: xt-ui"))
+        #expect(review.contains("vetter: blocked"))
+        #expect(review.contains("vetter_counts: critical=2 warn=3"))
+        #expect(review.contains("vetter_audit_ref: vet-audit-1"))
+        #expect(review.contains("vetter_report_ref: vet-report-2"))
+        #expect(review.contains("enabled_package: 0123456789ab"))
+        #expect(review.contains("enabled_scope: device"))
+        #expect(review.contains("capabilities: web.fetch, device.browser.control"))
+        #expect(review.contains("- network_access: uses outbound browser navigation"))
+    }
+
+    @Test
+    func hubRecordReviewFallsBackWhenJSONMissing() {
+        let review = XTAgentSkillImportReviewFormatter.formatHubRecordReview(
+            recordJSON: "  ",
+            fallbackStagingId: "fallback-stage",
+            fallbackSkillId: "fallback-skill"
+        )
+
+        #expect(review.contains("staging_id: fallback-stage"))
+        #expect(review.contains("skill_id: fallback-skill"))
+        #expect(review.contains("Hub did not return structured review JSON."))
+    }
+
+    @Test
     func normalizeCodingAgentSkillMapsToGovernedCoderSkill() throws {
         let fixture = ToolExecutorProjectFixture(name: "agent-import-normalize")
         defer { fixture.cleanup() }
