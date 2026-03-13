@@ -21,6 +21,16 @@ This README is implementation-facing. For repository entrypoints and product fra
 - `x-hub/README.md`
 - `x-hub/grpc-server/README.md`
 
+## Operator-Channel Boundary
+
+Slack, Telegram, Feishu, WhatsApp Cloud, and similar adapters should be read as Hub ingress workers, not independent trust anchors.
+
+That means:
+
+- remote-channel events enter Hub governance first
+- connector workers normalize ingress, enforce channel-side checks, and hand control to Hub-side authz, grants, audit, routing, and memory surfaces
+- higher-trust confirmation or continuation can then be projected to paired surfaces such as X-Terminal voice rather than letting the remote channel own final grant authority
+
 ## Run (Hub machine)
 
 1) Install deps (requires npm registry access):

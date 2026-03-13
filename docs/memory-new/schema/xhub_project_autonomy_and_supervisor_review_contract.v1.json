@@ -1,0 +1,314 @@
+{
+  "schema_version": "xhub.project_autonomy_and_supervisor_review_contract.v1",
+  "contract_version": "2026-03-13",
+  "owner_lane": "XT-L2/Hub-L5/Supervisor",
+  "top_level_user_dial": "project_autonomy_tier",
+  "fixed_decisions": [
+    "autonomy_tier_is_separate_from_memory_serving_profile",
+    "heartbeat_is_not_review_is_not_intervention",
+    "a4_openclaw_requires_supervisor_review_not_supervisor_removal",
+    "high_risk_actions_remain_governed_by_tool_policy_grant_kill_switch",
+    "all_review_and_guidance_events_must_be_structured_and_auditable",
+    "soft_guidance_defaults_to_safe_point_insertion"
+  ],
+  "autonomy_tier_enum": [
+    "a0_observe",
+    "a1_plan",
+    "a2_repo_auto",
+    "a3_deliver_auto",
+    "a4_openclaw"
+  ],
+  "review_policy_mode_enum": [
+    "off",
+    "milestone_only",
+    "periodic",
+    "hybrid",
+    "aggressive"
+  ],
+  "review_level_enum": [
+    "r1_pulse",
+    "r2_strategic",
+    "r3_rescue"
+  ],
+  "review_trigger_enum": [
+    "periodic_heartbeat",
+    "periodic_pulse",
+    "failure_streak",
+    "no_progress_window",
+    "blocker_detected",
+    "plan_drift",
+    "pre_high_risk_action",
+    "pre_done_summary",
+    "manual_request",
+    "user_override"
+  ],
+  "review_verdict_enum": [
+    "on_track",
+    "watch",
+    "better_path_found",
+    "wrong_direction",
+    "high_risk"
+  ],
+  "intervention_mode_enum": [
+    "observe_only",
+    "suggest_next_safe_point",
+    "replan_next_safe_point",
+    "stop_immediately"
+  ],
+  "safe_point_policy_enum": [
+    "next_tool_boundary",
+    "next_step_boundary",
+    "checkpoint_boundary",
+    "immediate"
+  ],
+  "ack_status_enum": [
+    "pending",
+    "accepted",
+    "deferred",
+    "rejected"
+  ],
+  "target_role_enum": [
+    "coder",
+    "supervisor",
+    "project_chat"
+  ],
+  "delivery_mode_enum": [
+    "context_append",
+    "priority_insert",
+    "replan_request",
+    "stop_signal"
+  ],
+  "memory_profile_ceiling_enum": [
+    "m0_heartbeat",
+    "m1_execute",
+    "m2_plan_review",
+    "m3_deep_dive",
+    "m4_full_scan"
+  ],
+  "hub_override_mode_enum": [
+    "none",
+    "clamp_guided",
+    "clamp_manual",
+    "kill_switch"
+  ],
+  "capability_labels": [
+    "job_plan_auto",
+    "repo_write",
+    "repo_build",
+    "repo_test",
+    "git_apply",
+    "browser_runtime",
+    "device_tools",
+    "connector_actions",
+    "extensions",
+    "auto_local_approval"
+  ],
+  "compatibility_mapping": {
+    "legacy_autonomy_level": {
+      "1": "a0_observe",
+      "2": "a1_plan",
+      "3": "a2_repo_auto",
+      "4": "a3_deliver_auto",
+      "5": "a4_openclaw"
+    },
+    "legacy_surface_mode": {
+      "manual": "surface_clamp_only_not_full_tier",
+      "guided": "surface_clamp_only_not_full_tier",
+      "trusted_openclaw_mode": "required_for_a4_device_connector_extension_surfaces"
+    }
+  },
+  "deny_code_dictionary": [
+    {
+      "deny_code": "project_autonomy_kill_switch",
+      "stage": "policy",
+      "action": "stop_immediately",
+      "retryable": true,
+      "meaning": "Hub or local override engaged kill switch for this project."
+    },
+    {
+      "deny_code": "review_before_high_risk_required",
+      "stage": "pre_high_risk_action",
+      "action": "checkpoint_boundary",
+      "retryable": true,
+      "meaning": "High-risk action is blocked until mandatory rescue review completes."
+    },
+    {
+      "deny_code": "a4_device_authority_missing",
+      "stage": "surface_gate",
+      "action": "fail_closed_or_clamp",
+      "retryable": true,
+      "meaning": "A4 requested device-level execution without valid trusted automation binding."
+    },
+    {
+      "deny_code": "guidance_ack_required",
+      "stage": "guidance_injection",
+      "action": "wait_for_ack",
+      "retryable": true,
+      "meaning": "Injected guidance requires explicit coder acknowledgement."
+    },
+    {
+      "deny_code": "soft_intervention_rate_limited",
+      "stage": "review_policy",
+      "action": "observe_only",
+      "retryable": true,
+      "meaning": "Supervisor reached the configured soft intervention limit for this window."
+    }
+  ],
+  "objects": {
+    "xhub.project_autonomy_bundle.v1": {
+      "required_fields": [
+        "schema_version",
+        "project_id",
+        "autonomy_tier",
+        "memory_profile_ceiling",
+        "review_policy_mode",
+        "capability_bundle",
+        "execution_budget",
+        "hub_override_mode",
+        "ttl_seconds",
+        "updated_at_ms",
+        "audit_ref"
+      ],
+      "nested_required_fields": {
+        "capability_bundle": [
+          "allow_job_plan_auto",
+          "allow_repo_write",
+          "allow_repo_build",
+          "allow_repo_test",
+          "allow_git_apply",
+          "allow_browser_runtime",
+          "allow_device_tools",
+          "allow_connector_actions",
+          "allow_extensions",
+          "allow_auto_local_approval"
+        ],
+        "execution_budget": [
+          "max_continuous_run_minutes",
+          "max_tool_calls_per_run",
+          "max_retry_depth",
+          "max_cost_usd_soft",
+          "pre_done_review_required",
+          "done_requires_evidence"
+        ]
+      },
+      "enum_refs": {
+        "autonomy_tier": "autonomy_tier_enum",
+        "memory_profile_ceiling": "memory_profile_ceiling_enum",
+        "review_policy_mode": "review_policy_mode_enum",
+        "hub_override_mode": "hub_override_mode_enum"
+      },
+      "rules": [
+        "User-facing project dial maps to autonomy_tier, not directly to low-level tool booleans.",
+        "A4 with device, connector, or extension surface requires trusted_openclaw_mode plus project-bound trusted automation.",
+        "hub_override_mode may clamp tier behavior downward without mutating the user's configured tier value."
+      ]
+    },
+    "xhub.supervisor_review_policy.v1": {
+      "required_fields": [
+        "schema_version",
+        "policy_id",
+        "project_id",
+        "mode",
+        "progress_heartbeat_interval_sec",
+        "pulse_review_interval_sec",
+        "enable_event_driven_review",
+        "strategic_review_triggers",
+        "rescue_review_triggers",
+        "default_review_level",
+        "intervention_default",
+        "safe_point_policy",
+        "max_soft_interventions_per_hour",
+        "mandatory_review_checkpoints",
+        "review_memory_profile_ceiling",
+        "audit_ref"
+      ],
+      "enum_refs": {
+        "mode": "review_policy_mode_enum",
+        "default_review_level": "review_level_enum",
+        "intervention_default": "intervention_mode_enum",
+        "safe_point_policy": "safe_point_policy_enum",
+        "review_memory_profile_ceiling": "memory_profile_ceiling_enum"
+      },
+      "array_enum_refs": {
+        "strategic_review_triggers": "review_trigger_enum",
+        "rescue_review_triggers": "review_trigger_enum",
+        "mandatory_review_checkpoints": "review_trigger_enum"
+      },
+      "rules": [
+        "Heartbeat cadence must remain independently configurable from review cadence.",
+        "Hybrid mode means periodic review plus event-driven review, not a merged heartbeat.",
+        "Mandatory checkpoints must block progress when the corresponding review has not completed."
+      ]
+    },
+    "xhub.supervisor_review_note.v1": {
+      "required_fields": [
+        "schema_version",
+        "review_id",
+        "policy_id",
+        "project_id",
+        "trigger",
+        "review_level",
+        "verdict",
+        "confidence",
+        "why",
+        "recommended_actions",
+        "intervention_mode",
+        "safe_point_policy",
+        "requires_ack",
+        "review_memory_profile",
+        "created_at_ms",
+        "audit_ref"
+      ],
+      "optional_fields": [
+        "job_id",
+        "plan_id",
+        "skill_request_id"
+      ],
+      "enum_refs": {
+        "trigger": "review_trigger_enum",
+        "review_level": "review_level_enum",
+        "verdict": "review_verdict_enum",
+        "intervention_mode": "intervention_mode_enum",
+        "safe_point_policy": "safe_point_policy_enum",
+        "review_memory_profile": "memory_profile_ceiling_enum"
+      },
+      "rules": [
+        "Wrong direction or high risk with high confidence may escalate intervention mode to stop_immediately.",
+        "Review notes must remain project-scoped and cannot reference raw cross-project memory dumps.",
+        "Recommended actions should be machine-digestible and not rely on prose-only interpretation."
+      ]
+    },
+    "xhub.supervisor_guidance_injection.v1": {
+      "required_fields": [
+        "schema_version",
+        "injection_id",
+        "review_id",
+        "project_id",
+        "target_role",
+        "delivery_mode",
+        "intervention_mode",
+        "safe_point_policy",
+        "guidance_text",
+        "ack_status",
+        "injected_at_ms",
+        "audit_ref"
+      ],
+      "optional_fields": [
+        "ack_note",
+        "settled_at_ms"
+      ],
+      "enum_refs": {
+        "target_role": "target_role_enum",
+        "delivery_mode": "delivery_mode_enum",
+        "intervention_mode": "intervention_mode_enum",
+        "safe_point_policy": "safe_point_policy_enum",
+        "ack_status": "ack_status_enum"
+      },
+      "rules": [
+        "Soft guidance defaults to next_tool_boundary or next_step_boundary.",
+        "Rejected guidance requires ack_note explaining why the coder did not accept it.",
+        "Observe-only injections may skip explicit ack but still require audit."
+      ]
+    }
+  }
+}

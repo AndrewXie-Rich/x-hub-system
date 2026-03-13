@@ -34,6 +34,49 @@ X-Terminal is intentionally powerful but not sovereign.
 
 It can present rich runtime state, guide the user through pairing and readiness, and execute governed flows, but trust, grants, and final policy authority remain in `x-hub/`.
 
+## Voice As A Paired Surface
+
+Active implementation context:
+X-Terminal voice is not just a TTS wrapper over a terminal session.
+It is the paired high-trust interaction surface that turns Hub-governed state into something the operator can hear, respond to, and resume safely.
+
+In the current design direction, that means:
+
+- Hub-generated Supervisor briefs can be projected through X-Terminal voice instead of being recomposed as terminal-local summaries
+- voice-driven authorization can stay attached to Hub grants, challenge lifecycle, and fail-closed behavior
+- repeat, cancel, and mobile-confirmation flows belong to the same guided authorization path rather than being treated as generic chat commands
+- post-action follow-up should return to the Hub brief path so spoken status and execution truth do not drift apart
+
+Boundary reminder:
+
+- X-Terminal can host the low-friction voice UX
+- X-Terminal does not become the final grant authority
+- trust, grant, and policy decisions still terminate in `x-hub/`
+
+## Project Autonomy And Supervisor Review
+
+Active implementation context:
+X-Terminal is also where per-project autonomy and Supervisor review start to become visible as governed runtime behavior rather than one vague "autonomy" slider.
+
+In the current design direction, that means:
+
+- project execution autonomy is being formalized as explicit tiers instead of collapsing everything into one terminal-local mode switch
+- the highest autonomy tier is still governed execution, not "remove Supervisor and hope for the best"
+- Supervisor review can operate at different depths such as pulse, strategic, and rescue review instead of one generic check-in
+- review output can be persisted as structured review notes and guidance injections rather than disappearing into chat-only commentary
+- corrective guidance can wait for a safe point, require acknowledgement, or escalate into replan / stop behavior depending on risk and confidence
+- Supervisor surfaces can span portfolio overview, focused project drill-down, and evidence-backed review context instead of one flat chat view
+
+Boundary reminder:
+
+- higher autonomy does not make the project sovereign
+- X-Terminal can host the review and correction surface
+- Hub clamps, grants, TTL, kill-switch, and audit still remain authoritative
+
+Compatibility note:
+the repository still contains older compatibility surfaces such as `manual`, `guided`, and `trusted_openclaw_mode`.
+Treat those as active implementation and migration layers, not as the full final governance contract.
+
 ## Main Surfaces
 
 | Path | Role |

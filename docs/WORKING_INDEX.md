@@ -30,6 +30,7 @@ After that, choose the relevant track below.
 - `docs/xhub-runtime-stability-and-launch-recovery-v1.md`
 - `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md`
 - `docs/memory-new/xhub-project-autonomy-tier-and-supervisor-review-protocol-v1.md`
+- `docs/memory-new/schema/xhub_project_autonomy_and_supervisor_review_contract.v1.json`
 - `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`
 - `docs/xhub-client-modes-and-connectors-v1.md`
 - `docs/xhub-hub-architecture-tradeoffs-v1.md`
@@ -66,6 +67,7 @@ If you are tracing behavior boundaries, risk controls, or fail-closed reasoning,
 ### Security, Gates, And Governance
 
 - `docs/memory-new/xhub-project-autonomy-tier-and-supervisor-review-protocol-v1.md`
+- `docs/memory-new/schema/xhub_project_autonomy_and_supervisor_review_contract.v1.json`
 - `docs/memory-new/xhub-security-innovation-work-orders-v1.md`
 - `docs/memory-new/xhub-spec-gates-work-orders-v1.md`
 - `docs/memory-new/xhub-lane-command-board-v2.md`
@@ -92,6 +94,21 @@ If you are tracing behavior boundaries, risk controls, or fail-closed reasoning,
 - `x-terminal/work-orders/xt-w3-32-supervisor-skill-orchestration-and-governed-event-loop-implementation-pack-v1.md`
 - `x-terminal/work-orders/xt-w3-33-supervisor-decision-kernel-routing-and-memory-governance-implementation-pack-v1.md`
 - `x-terminal/work-orders/xt-w3-34-openclaw-skill-reuse-and-execution-surface-implementation-pack-v1.md`
+- `x-terminal/work-orders/xt-w3-35-supervisor-memory-retrieval-progressive-disclosure-implementation-pack-v1.md`
+- `x-terminal/work-orders/xt-w3-36-project-autonomy-tier-and-supervisor-intervention-implementation-pack-v1.md`
+
+### Project Governance And Supervisor Review
+
+- `docs/memory-new/xhub-project-autonomy-tier-and-supervisor-review-protocol-v1.md`
+- `docs/memory-new/schema/xhub_project_autonomy_and_supervisor_review_contract.v1.json`
+- `x-terminal/work-orders/xt-w3-36-project-autonomy-tier-and-supervisor-intervention-implementation-pack-v1.md`
+- `x-terminal/Sources/Project/AXProjectGovernanceBundle.swift`
+- `x-terminal/Sources/Project/AXProjectExecutionTier.swift`
+- `x-terminal/Sources/Project/AXProjectSupervisorInterventionTier.swift`
+- `x-terminal/Sources/Project/AXProjectGovernanceResolver.swift`
+- `x-terminal/Sources/Supervisor/SupervisorReviewNoteStore.swift`
+- `x-terminal/Sources/Supervisor/SupervisorGuidanceInjectionStore.swift`
+- `x-terminal/Sources/Supervisor/SupervisorSafePointCoordinator.swift`
 
 ## Validated Public Mainline
 
@@ -251,6 +268,16 @@ bash x-terminal/scripts/ci/xt_release_gate.sh
 - `docs/xhub-constitution-l0-injection-v1.md`
 - `docs/xhub-constitution-l1-guidance-v1.md`
 - `docs/xhub-constitution-policy-engine-checklist-v1.md`
+
+### Project Governance, Review, And Intervention
+
+- `docs/memory-new/xhub-project-autonomy-tier-and-supervisor-review-protocol-v1.md`
+- `x-terminal/Sources/Project/AXProjectConfig.swift`
+- `x-terminal/Sources/Project/AXProjectGovernanceResolver.swift`
+- `x-terminal/Sources/UI/ProjectSettingsView.swift`
+- `x-terminal/Sources/UI/Projects/CreateProjectSheet.swift`
+- `x-terminal/Sources/UI/Projects/ProjectDetailView.swift`
+- `x-terminal/Sources/Supervisor/SupervisorManager.swift`
 
 ### Skills
 

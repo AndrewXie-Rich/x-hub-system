@@ -20,6 +20,9 @@ If you only want an Agent that can act, many tools already exist.
 If you want one that can act without making one prompt injection, one exposed runtime, one bad plugin, or one unsafe default turn into full compromise, that is the problem X-Hub-System is built to tackle.
 If you also want the trusted control plane, policy, keys, and privacy decisions to stay under operator control instead of disappearing into a vendor cloud, that is another core reason this system exists.
 
+X-Hub is also built around **governed autonomy**:
+more execution power should not mean weaker supervision, blurrier boundaries, or black-box autopilot.
+
 Repository license note: this repository is released under the **MIT License**.
 Trademark rights are not granted by the software license; see `TRADEMARKS.md`.
 
@@ -140,6 +143,34 @@ That is exactly why X-Hub-System still keeps policy, grants, readiness gates, au
 | Terminals accumulate memory and secrets | Terminals stay lightweight and untrusted by default |
 | Missing readiness often degrades silently | Missing readiness fails closed and surfaces a reason |
 
+## Governed Autonomy, Not Black-Box Autopilot
+
+Most agent systems still hide too much inside one vague autonomy mode.
+As soon as the project gets more context, more tools, and more execution power, supervision usually gets blurrier too.
+
+X-Hub takes a different approach:
+project autonomy is meant to become governable because execution rights, supervision depth, review cadence, and intervention behavior are separated instead of being fused into one ambiguous "auto mode."
+
+In practice, that means:
+
+- project execution autonomy and Supervisor intervention strength do not have to be the same dial
+- progress heartbeat is not the same thing as strategic review
+- review is not the same thing as intervention
+- corrective guidance can be inserted at safe points instead of forcing synchronous approval on every step
+- corrective guidance can require acknowledgement, so the review loop does not disappear into transient chat text
+- higher-autonomy runs can still be clamped, redirected, paused, or stopped from the Hub side
+
+| Blurry agent autonomy | Governed autonomy in X-Hub |
+|---|---|
+| More power usually means weaker supervision | Higher-autonomy runs can still be reviewed, corrected, clamped, or stopped |
+| Heartbeat, review, and intervention blur together | Progress heartbeat, review depth, and intervention mode are treated as separate controls |
+| "Auto mode" tends to become black-box autopilot | Safe-point guidance, acknowledgement, and audit preserve an intervention loop |
+| Highest autonomy often implies trust sprawl | Even high-autonomy execution still remains Hub-governed |
+
+The active governance direction in this repository is moving toward protocol-backed project execution tiers, plus explicit supervision depth and review controls, rather than one terminal-local autonomy slider.
+That still does **not** mean "unlimited agent freedom."
+Even the highest-autonomy path is intended to mean high-autonomy execution with continuing supervision, Hub clamp authority, TTL, grants, kill-switches, and audit.
+
 ## Validated Release Scope
 
 This GitHub package is intentionally narrow.
@@ -181,8 +212,11 @@ Treat these as active preview surfaces, not as a promise that every edge case or
 Even in preview form, the system direction is already broader than a thin chat wrapper:
 
 - **Supervisor as an execution layer**: the architecture is built toward multi-project supervision, module-aware decomposition, pool and lane scheduling, directed unblocks, and governed delivery progression.
+- **Project autonomy with continuing supervision**: the system direction separates per-project execution autonomy from review depth and cadence, so higher-autonomy runs can still be reviewed, clamped, corrected, or stopped instead of turning into unsupervised agent sprawl.
+- **Governed project autonomy**: the current governance direction already formalizes `A0..A4` execution tiers and is separating execution authority from supervision depth, heartbeat/review cadence, and structured safe-point guidance, so higher-autonomy runs do not collapse into one ambiguous autonomy slider.
 - **X-Constitution as a behavioral genome**: the goal is to write durable value constraints into the system's behavioral DNA, anchored to Hub memory and reinforced by policy, grants, audit, and kill-switches instead of disappearing into ad hoc prompts.
 - **High-risk workflows with explicit evidence**: the same control-plane model can support evidence-first approvals, governed payment-style flows, and future multi-party approval patterns for irreversible actions.
+- **Structured review and guidance, not chat-only commentary**: the architecture direction includes Supervisor review notes, guidance injection, acknowledgement state, and safe-point delivery so corrective advice does not disappear into one transient conversation turn.
 - **Voice as an operational interface, not just dictation**: the broader design direction includes wake, guided authorization, and progress conversations with Supervisor over auditable runtime state.
 - **Honest runtime truth**: configured route, actual route, downgrade, fallback, and readiness state are intended to stay visible instead of being silently masked from the operator.
 
@@ -192,6 +226,7 @@ These points describe the architecture-backed direction of the system. The valid
 
 - **Hub-first trust model**: pairing, grants, policies, and audit live in one place.
 - **Unified model governance**: local inference and paid APIs use the same operational guardrails.
+- **Governed autonomy**: projects can move faster without turning into unsupervised agent runs.
 - **Execution safety**: high-risk actions do not proceed on incomplete evidence.
 - **Long-horizon stability**: Hub-backed memory reduces drift across multi-step work.
 - **Multi-terminal design**: terminals can stay fast and replaceable without becoming the trust anchor.

@@ -27,6 +27,35 @@ That means keys, grants, policy checks, route selection, and execution safety st
 
 It also means long-lived behavioral constraints can be anchored on the Hub side. In this repository, that includes the X-Constitution path: memory-backed constitutional guidance, triggerable L0 constraints, and policy-engine reinforcement for high-risk behavior.
 
+## Remote Channels And Paired Surfaces
+
+The Hub is also the ingress boundary for the external world.
+
+In the current architecture direction:
+
+- remote channels such as Slack, Telegram, Feishu, and WhatsApp Cloud should enter the Hub first
+- the Hub owns ingress authorization, replay protection, grant handling, memory truth, audit, routing, and Supervisor-facing state projection
+- X-Terminal acts as a paired high-trust surface for richer local interaction, including voice-driven brief and authorization flows
+- mobile companions, wearables, robots, and other trusted runners can become execution or confirmation surfaces, but they should not bypass the Hub and hold final grant authority directly
+
+Compressed design rule:
+
+`All external-world events enter the Hub first. High-trust interaction is then projected from the Hub to X-Terminal, mobile, or runner surfaces for execution or confirmation.`
+
+## High-Autonomy Projects Still Terminate In Hub Governance
+
+Higher-autonomy project modes do not remove Hub authority.
+
+Even when a project is running in a more autonomous execution posture, the Hub should still remain the place that can:
+
+- clamp execution down to a safer mode
+- enforce TTL and expiry
+- hold final grant and policy authority
+- preserve audit and intervention truth
+- trigger kill-switch behavior when the run should not continue
+
+That is the important distinction between "more autonomy" and "sovereign terminal-local agent."
+
 ## Recommended Host Hardware
 
 For real deployments, prefer Apple silicon desktop Macs as the Hub host.
