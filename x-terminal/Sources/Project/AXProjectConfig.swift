@@ -1,7 +1,7 @@
 import Foundation
 
 struct AXProjectConfig: Codable, Equatable {
-    static let currentSchemaVersion = 9
+    static let currentSchemaVersion = 10
 
     var schemaVersion: Int
 
@@ -58,6 +58,17 @@ struct AXProjectConfig: Codable, Equatable {
     var autonomyUpdatedAtMs: Int64
     var autonomyHubOverrideMode: AXProjectAutonomyHubOverrideMode
 
+    // New project governance contract. Legacy autonomy fields remain as compatibility inputs only.
+    var executionTier: AXProjectExecutionTier
+    var supervisorInterventionTier: AXProjectSupervisorInterventionTier
+    var reviewPolicyMode: AXProjectReviewPolicyMode
+    var progressHeartbeatSeconds: Int
+    var reviewPulseSeconds: Int
+    var brainstormReviewSeconds: Int
+    var eventDrivenReviewEnabled: Bool
+    var eventReviewTriggers: [AXProjectReviewTrigger]
+    var governanceCompatSource: AXProjectGovernanceCompatSource
+
     // Governed automation recipe assets stored at the project boundary.
     var automationRecipes: [AXAutomationRecipeRuntimeBinding]
     var activeAutomationRecipeRef: String
@@ -92,6 +103,15 @@ struct AXProjectConfig: Codable, Equatable {
             autonomyTTLSeconds: 3600,
             autonomyUpdatedAtMs: 0,
             autonomyHubOverrideMode: .none,
+            executionTier: .a0Observe,
+            supervisorInterventionTier: .s0SilentAudit,
+            reviewPolicyMode: .milestoneOnly,
+            progressHeartbeatSeconds: 1800,
+            reviewPulseSeconds: 0,
+            brainstormReviewSeconds: 0,
+            eventDrivenReviewEnabled: false,
+            eventReviewTriggers: [.manualRequest],
+            governanceCompatSource: .defaultConservative,
             automationRecipes: [],
             activeAutomationRecipeRef: "",
             lastAutomationLaunchRef: ""
@@ -210,6 +230,89 @@ struct AXProjectConfig: Codable, Equatable {
     func settingGovernedAutoApproveLocalToolCalls(enabled: Bool) -> AXProjectConfig {
         var out = self
         out.governedAutoApproveLocalToolCalls = enabled
+        return out.normalizedAutomationState()
+    }
+
+    var governanceBundle: AXProjectGovernanceBundle {
+        AXProjectGovernanceBundle(
+            executionTier: executionTier,
+            supervisorInterventionTier: supervisorInterventionTier,
+            reviewPolicyMode: reviewPolicyMode,
+            schedule: AXProjectGovernanceSchedule(
+                progressHeartbeatSeconds: progressHeartbeatSeconds,
+                reviewPulseSeconds: reviewPulseSeconds,
+                brainstormReviewSeconds: brainstormReviewSeconds,
+                eventDrivenReviewEnabled: eventDrivenReviewEnabled,
+                eventReviewTriggers: eventReviewTriggers
+            )
+        ).normalized()
+    }
+
+    func settingProjectGovernance(
+        executionTier: AXProjectExecutionTier? = nil,
+        supervisorInterventionTier: AXProjectSupervisorInterventionTier? = nil,
+        reviewPolicyMode: AXProjectReviewPolicyMode? = nil,
+        progressHeartbeatSeconds: Int? = nil,
+        reviewPulseSeconds: Int? = nil,
+        brainstormReviewSeconds: Int? = nil,
+        eventDrivenReviewEnabled: Bool? = nil,
+        eventReviewTriggers: [AXProjectReviewTrigger]? = nil,
+        governanceCompatSource: AXProjectGovernanceCompatSource = .explicitDualDial
+    ) -> AXProjectConfig {
+        var out = self
+
+        if let executionTier {
+            let recommended = AXProjectGovernanceBundle.recommended(
+                for: executionTier,
+                supervisorInterventionTier: supervisorInterventionTier ?? out.supervisorInterventionTier
+            )
+            out.executionTier = executionTier
+            if supervisorInterventionTier == nil {
+                out.supervisorInterventionTier = recommended.supervisorInterventionTier
+            }
+            if reviewPolicyMode == nil {
+                out.reviewPolicyMode = recommended.reviewPolicyMode
+            }
+            if progressHeartbeatSeconds == nil {
+                out.progressHeartbeatSeconds = recommended.schedule.progressHeartbeatSeconds
+            }
+            if reviewPulseSeconds == nil {
+                out.reviewPulseSeconds = recommended.schedule.reviewPulseSeconds
+            }
+            if brainstormReviewSeconds == nil {
+                out.brainstormReviewSeconds = recommended.schedule.brainstormReviewSeconds
+            }
+            if eventDrivenReviewEnabled == nil {
+                out.eventDrivenReviewEnabled = recommended.schedule.eventDrivenReviewEnabled
+            }
+            if eventReviewTriggers == nil {
+                out.eventReviewTriggers = recommended.schedule.eventReviewTriggers
+            }
+        }
+
+        if let supervisorInterventionTier {
+            out.supervisorInterventionTier = supervisorInterventionTier
+        }
+        if let reviewPolicyMode {
+            out.reviewPolicyMode = reviewPolicyMode
+        }
+        if let progressHeartbeatSeconds {
+            out.progressHeartbeatSeconds = progressHeartbeatSeconds
+        }
+        if let reviewPulseSeconds {
+            out.reviewPulseSeconds = reviewPulseSeconds
+        }
+        if let brainstormReviewSeconds {
+            out.brainstormReviewSeconds = brainstormReviewSeconds
+        }
+        if let eventDrivenReviewEnabled {
+            out.eventDrivenReviewEnabled = eventDrivenReviewEnabled
+        }
+        if let eventReviewTriggers {
+            out.eventReviewTriggers = eventReviewTriggers
+        }
+
+        out.governanceCompatSource = governanceCompatSource
         return out.normalizedAutomationState()
     }
 
@@ -335,6 +438,15 @@ struct AXProjectConfig: Codable, Equatable {
         case autonomyTTLSeconds
         case autonomyUpdatedAtMs
         case autonomyHubOverrideMode
+        case executionTier
+        case supervisorInterventionTier
+        case reviewPolicyMode
+        case progressHeartbeatSeconds
+        case reviewPulseSeconds
+        case brainstormReviewSeconds
+        case eventDrivenReviewEnabled
+        case eventReviewTriggers
+        case governanceCompatSource
         case automationRecipes
         case activeAutomationRecipeRef
         case lastAutomationLaunchRef
@@ -365,6 +477,15 @@ struct AXProjectConfig: Codable, Equatable {
         autonomyTTLSeconds: Int,
         autonomyUpdatedAtMs: Int64,
         autonomyHubOverrideMode: AXProjectAutonomyHubOverrideMode,
+        executionTier: AXProjectExecutionTier,
+        supervisorInterventionTier: AXProjectSupervisorInterventionTier,
+        reviewPolicyMode: AXProjectReviewPolicyMode,
+        progressHeartbeatSeconds: Int,
+        reviewPulseSeconds: Int,
+        brainstormReviewSeconds: Int,
+        eventDrivenReviewEnabled: Bool,
+        eventReviewTriggers: [AXProjectReviewTrigger],
+        governanceCompatSource: AXProjectGovernanceCompatSource,
         automationRecipes: [AXAutomationRecipeRuntimeBinding],
         activeAutomationRecipeRef: String,
         lastAutomationLaunchRef: String
@@ -393,6 +514,15 @@ struct AXProjectConfig: Codable, Equatable {
         self.autonomyTTLSeconds = autonomyTTLSeconds
         self.autonomyUpdatedAtMs = autonomyUpdatedAtMs
         self.autonomyHubOverrideMode = autonomyHubOverrideMode
+        self.executionTier = executionTier
+        self.supervisorInterventionTier = supervisorInterventionTier
+        self.reviewPolicyMode = reviewPolicyMode
+        self.progressHeartbeatSeconds = progressHeartbeatSeconds
+        self.reviewPulseSeconds = reviewPulseSeconds
+        self.brainstormReviewSeconds = brainstormReviewSeconds
+        self.eventDrivenReviewEnabled = eventDrivenReviewEnabled
+        self.eventReviewTriggers = eventReviewTriggers
+        self.governanceCompatSource = governanceCompatSource
         self.automationRecipes = automationRecipes
         self.activeAutomationRecipeRef = activeAutomationRecipeRef
         self.lastAutomationLaunchRef = lastAutomationLaunchRef
@@ -401,7 +531,7 @@ struct AXProjectConfig: Codable, Equatable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        _ = (try? c.decode(Int.self, forKey: .schemaVersion)) ?? AXProjectConfig.currentSchemaVersion
+        let storedSchemaVersion = (try? c.decode(Int.self, forKey: .schemaVersion)) ?? AXProjectConfig.currentSchemaVersion
         schemaVersion = AXProjectConfig.currentSchemaVersion
         roleModelOverrides = (try? c.decode([String: String].self, forKey: .roleModelOverrides)) ?? [:]
         verifyCommands = (try? c.decode([String].self, forKey: .verifyCommands)) ?? []
@@ -427,6 +557,57 @@ struct AXProjectConfig: Codable, Equatable {
         autonomyTTLSeconds = max(60, (try? c.decode(Int.self, forKey: .autonomyTTLSeconds)) ?? 3600)
         autonomyUpdatedAtMs = max(0, (try? c.decode(Int64.self, forKey: .autonomyUpdatedAtMs)) ?? 0)
         autonomyHubOverrideMode = (try? c.decode(AXProjectAutonomyHubOverrideMode.self, forKey: .autonomyHubOverrideMode)) ?? .none
+
+        let hasExplicitGovernance =
+            c.contains(.executionTier)
+            || c.contains(.supervisorInterventionTier)
+            || c.contains(.reviewPolicyMode)
+            || c.contains(.progressHeartbeatSeconds)
+            || c.contains(.reviewPulseSeconds)
+            || c.contains(.brainstormReviewSeconds)
+            || c.contains(.eventDrivenReviewEnabled)
+            || c.contains(.eventReviewTriggers)
+        let legacyBundle = AXProjectGovernanceBundle.recommended(
+            for: AXProjectExecutionTier.fromLegacyAutonomyMode(autonomyMode)
+        )
+        executionTier = (try? c.decode(AXProjectExecutionTier.self, forKey: .executionTier))
+            ?? legacyBundle.executionTier
+        supervisorInterventionTier = (try? c.decode(
+            AXProjectSupervisorInterventionTier.self,
+            forKey: .supervisorInterventionTier
+        )) ?? legacyBundle.supervisorInterventionTier
+        reviewPolicyMode = (try? c.decode(AXProjectReviewPolicyMode.self, forKey: .reviewPolicyMode))
+            ?? legacyBundle.reviewPolicyMode
+        progressHeartbeatSeconds = max(
+            60,
+            (try? c.decode(Int.self, forKey: .progressHeartbeatSeconds))
+                ?? legacyBundle.schedule.progressHeartbeatSeconds
+        )
+        reviewPulseSeconds = max(
+            0,
+            (try? c.decode(Int.self, forKey: .reviewPulseSeconds))
+                ?? legacyBundle.schedule.reviewPulseSeconds
+        )
+        brainstormReviewSeconds = max(
+            0,
+            (try? c.decode(Int.self, forKey: .brainstormReviewSeconds))
+                ?? legacyBundle.schedule.brainstormReviewSeconds
+        )
+        eventDrivenReviewEnabled = (try? c.decode(Bool.self, forKey: .eventDrivenReviewEnabled))
+            ?? legacyBundle.schedule.eventDrivenReviewEnabled
+        eventReviewTriggers = (try? c.decode([AXProjectReviewTrigger].self, forKey: .eventReviewTriggers))
+            ?? legacyBundle.schedule.eventReviewTriggers
+        if hasExplicitGovernance {
+            governanceCompatSource = (try? c.decode(
+                AXProjectGovernanceCompatSource.self,
+                forKey: .governanceCompatSource
+            )) ?? .explicitDualDial
+        } else if storedSchemaVersion < 10 {
+            governanceCompatSource = .legacyAutonomyMode
+        } else {
+            governanceCompatSource = .defaultConservative
+        }
+
         automationRecipes = (try? c.decode([AXAutomationRecipeRuntimeBinding].self, forKey: .automationRecipes)) ?? []
         activeAutomationRecipeRef = (try? c.decode(String.self, forKey: .activeAutomationRecipeRef)) ?? ""
         lastAutomationLaunchRef = (try? c.decode(String.self, forKey: .lastAutomationLaunchRef)) ?? ""

@@ -21,6 +21,7 @@ struct SupervisorSystemPromptBuilder {
         lines.append(contentsOf: buildRuntimeSection(params, isMinimal: isMinimal))
         lines.append(contentsOf: buildConversationStyleSection(params, isMinimal: isMinimal))
         lines.append(contentsOf: buildMemorySection(params))
+        lines.append(contentsOf: buildReviewDisciplineSection(isMinimal: isMinimal))
         lines.append(contentsOf: buildTaskSection(params, isMinimal: isMinimal))
         lines.append(contentsOf: buildActionProtocolSection(isMinimal: isMinimal))
         lines.append(contentsOf: buildOutputRulesSection(isMinimal: isMinimal))
@@ -94,12 +95,37 @@ struct SupervisorSystemPromptBuilder {
             "## Memory Context",
             "Use the following Memory v1 context as the primary project working set for this turn:",
             "- If Memory Context contains [focused_project_execution_brief], inspect that section first when the user asks you to review project memory/context or propose the next execution plan.",
+            "- Treat the focused project's goal, done_definition, constraints, approved_decisions, and governance lines as the review anchor before you suggest a new path.",
             "- If Memory Context contains [focused_project_retrieval], treat it as governed drill-down snippets for the focused project and use those refs/snippets to make the plan more specific.",
             "- If Memory Context contains [cross_project_drilldown], treat it as an explicitly opened structured drill-down for that project only; do not assume any other project's full chat history is loaded.",
             "- Ground concrete planning in the focused project's goal, current state, next step, blocker, active job/plan, pending steps, attention steps, and recent relevant messages.",
             params.memoryV1,
             ""
         ]
+    }
+
+    private func buildReviewDisciplineSection(isMinimal: Bool) -> [String] {
+        var lines = [
+            "## Project Review Discipline",
+            "- For focused-project review, re-anchor on the project's goal, done/acceptance definition, constraints, and approved decisions before proposing changes.",
+            "- After that anchor, keep your review flexible: you may inspect progress, working set, and governed drill-down evidence in any order."
+        ]
+
+        if isMinimal {
+            lines.append("- Prefer low-churn guidance: if evidence strongly supports the current path, say so plainly instead of forcing a replan.")
+            lines.append("- Brainstorm alternatives when you see drift, blockers, repeated failures, no progress, pre-high-risk actions, or weak quality confidence near done.")
+            lines.append("")
+            return lines
+        }
+
+        lines.append("- Judge progress by distance to goal, not by activity volume or message count.")
+        lines.append("- Review quality, not just motion: correctness, verification coverage, rollbackability, maintainability, and side-effect safety.")
+        lines.append("- Use governed drill-down refs or concrete evidence before recommending a replan; do not pivot the project on vibes alone.")
+        lines.append("- Prefer low-churn guidance. If the current path is evidence-backed and still aligned, keep it and point out the next watchpoint.")
+        lines.append("- Brainstorm alternative paths when you see drift, blockers, repeated failures, no progress windows, pre-high-risk actions, or weak quality confidence near done.")
+        lines.append("- If you recommend a better path, explain why it is better, its switching cost, its risk, and its effect on the original goal/constraints.")
+        lines.append("")
+        return lines
     }
 
     private func buildTaskSection(

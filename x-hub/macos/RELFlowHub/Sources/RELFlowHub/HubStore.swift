@@ -198,6 +198,15 @@ private func waitForProcessExit(_ p: Process, timeoutSec: Double) -> Bool {
     return !p.isRunning
 }
 
+struct HubResolvedRoutingBinding: Equatable {
+    var taskType: String
+    var taskLabel: String
+    var effectiveModelId: String
+    var source: String
+    var hubDefaultModelId: String
+    var deviceOverrideModelId: String
+}
+
 @MainActor
 final class HubStore: ObservableObject {
     static let shared = HubStore()
@@ -268,7 +277,9 @@ final class HubStore: ObservableObject {
     @Published private(set) var aiRuntimeProviderSummaryText: String = ""
     @Published private(set) var aiRuntimeDoctorSummaryText: String = ""
 
-    // Routing defaults persisted for the python runtime (task_type -> preferred model id).
+    @Published private(set) var routingSettings: RoutingSettings = RoutingSettings()
+
+    // Legacy alias kept in sync for existing UI flows that still bind to a task -> model map.
     @Published private(set) var routingPreferredModelIdByTask: [String: String] = [:]
 
     @Published var calendarRemindMinutes: Int = 10 {
@@ -991,25 +1002,66 @@ final class HubStore: ObservableObject {
     }
 
     func loadRoutingSettings() {
-        let st = RoutingSettingsStorage.load()
-        routingPreferredModelIdByTask = st.preferredModelIdByTask
+        applyRoutingSettings(RoutingSettingsStorage.load(), persist: false)
     }
 
-    func setRoutingPreferredModel(taskType: String, modelId: String?) {
-        let k = (taskType).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !k.isEmpty else { return }
-        var cur = routingPreferredModelIdByTask
-        let mid = (modelId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if mid.isEmpty {
-            cur.removeValue(forKey: k)
-        } else {
-            cur[k] = mid
-        }
-        routingPreferredModelIdByTask = cur
+    func saveRoutingSettings(_ settings: RoutingSettings) {
+        applyRoutingSettings(settings, persist: true)
+    }
 
-        var st = RoutingSettingsStorage.load()
-        st.preferredModelIdByTask = cur
-        RoutingSettingsStorage.save(st)
+    func setRoutingPreferredModel(taskType: String, modelId: String?, deviceId: String? = nil) {
+        var updated = routingSettings
+        updated.setModelId(modelId, for: taskType, deviceId: deviceId)
+        saveRoutingSettings(updated)
+    }
+
+    func hubDefaultRoutingModelId(taskType: String) -> String {
+        routingPreferredModelIdByTask[normalizedRoutingToken(taskType)] ?? ""
+    }
+
+    func deviceRoutingModelId(taskType: String, deviceId: String) -> String {
+        let normalizedDeviceId = normalizedRoutingToken(deviceId)
+        let normalizedTaskType = normalizedRoutingToken(taskType)
+        guard !normalizedDeviceId.isEmpty, !normalizedTaskType.isEmpty else { return "" }
+        return routingSettings.devicePreferredModelIdByTaskKind[normalizedDeviceId]?[normalizedTaskType] ?? ""
+    }
+
+    func resolvedRoutingBinding(taskType: String, deviceId: String? = nil) -> HubResolvedRoutingBinding {
+        let normalizedTaskType = normalizedRoutingToken(taskType)
+        let resolved = routingSettings.resolvedModelId(taskKind: normalizedTaskType, deviceId: deviceId)
+        return HubResolvedRoutingBinding(
+            taskType: normalizedTaskType,
+            taskLabel: routingTaskLabel(normalizedTaskType),
+            effectiveModelId: resolved.modelId,
+            source: resolved.source,
+            hubDefaultModelId: hubDefaultRoutingModelId(taskType: normalizedTaskType),
+            deviceOverrideModelId: deviceRoutingModelId(taskType: normalizedTaskType, deviceId: deviceId ?? "")
+        )
+    }
+
+    func hubDefaultLocalTaskSummary(forModelId modelId: String, taskKinds: [String]) -> String {
+        let normalizedModelId = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedModelId.isEmpty else { return "" }
+        let labels = LocalTaskRoutingCatalog
+            .supportedTaskKinds(in: taskKinds)
+            .filter { hubDefaultRoutingModelId(taskType: $0) == normalizedModelId }
+            .map { LocalTaskRoutingCatalog.shortTitle(for: $0) }
+        return labels.joined(separator: ", ")
+    }
+
+    func routingSourceLabel(_ rawSource: String) -> String {
+        switch normalizedRoutingToken(rawSource) {
+        case "request_override":
+            return "Request Override"
+        case "device_override":
+            return "Device Override"
+        case "hub_default":
+            return "Hub Default"
+        case "auto_selected":
+            return "Auto Select"
+        default:
+            return rawSource.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Auto Select" : rawSource
+        }
     }
 
     func refreshNetworkRequests() {
@@ -2693,8 +2745,35 @@ INSERT OR IGNORE INTO audit_events(
 
     // -------------------- Hub AI (file IPC) --------------------
     private func preferredModelIdForTask(_ taskType: String) -> String {
-        let k = taskType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return routingPreferredModelIdByTask[k] ?? ""
+        resolvedRoutingBinding(taskType: taskType).effectiveModelId
+    }
+
+    private func applyRoutingSettings(_ settings: RoutingSettings, persist: Bool) {
+        routingSettings = settings
+        routingPreferredModelIdByTask = settings.preferredModelIdByTask
+        if persist {
+            RoutingSettingsStorage.save(settings)
+        }
+    }
+
+    private func normalizedRoutingToken(_ raw: String) -> String {
+        raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private func routingTaskLabel(_ taskType: String) -> String {
+        if let descriptor = LocalTaskRoutingCatalog.descriptor(for: taskType) {
+            return descriptor.title
+        }
+        let normalized = normalizedRoutingToken(taskType)
+        guard !normalized.isEmpty else { return "Auto Select" }
+        return normalized
+            .split(separator: "_")
+            .map { token in
+                let text = String(token)
+                guard let first = text.first else { return "" }
+                return String(first).uppercased() + text.dropFirst()
+            }
+            .joined(separator: " ")
     }
 
     /// Send a single text-generate request to the local runtime via file IPC.

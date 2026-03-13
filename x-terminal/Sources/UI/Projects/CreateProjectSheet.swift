@@ -15,11 +15,18 @@ struct CreateProjectSheet: View {
     @State private var projectName: String = ""
     @State private var taskDescription: String = ""
     @State private var selectedModel: String = "claude-opus-4.6"
-    @State private var autonomyLevel: AutonomyLevel = .auto
+    @State private var executionTier: AXProjectExecutionTier = .a3DeliverAuto
+    @State private var supervisorInterventionTier: AXProjectSupervisorInterventionTier = .s3StrategicCoach
+    @State private var reviewPolicyMode: AXProjectReviewPolicyMode = .hybrid
+    @State private var progressHeartbeatSeconds: Int = AXProjectExecutionTier.a3DeliverAuto.defaultProgressHeartbeatSeconds
+    @State private var reviewPulseSeconds: Int = AXProjectExecutionTier.a3DeliverAuto.defaultReviewPulseSeconds
+    @State private var brainstormReviewSeconds: Int = AXProjectExecutionTier.a3DeliverAuto.defaultBrainstormReviewSeconds
+    @State private var eventDrivenReviewEnabled: Bool = AXProjectExecutionTier.a3DeliverAuto.defaultEventDrivenReviewEnabled
     @State private var priority: Int = 5
     @State private var budget: Double = 10.0
     @State private var isCreating: Bool = false
     @State private var errorMessage: String?
+    @State private var governanceInlineMessage: String?
 
     // 可用模型列表
     private let availableModels = [
@@ -50,8 +57,8 @@ struct CreateProjectSheet: View {
 
                     Divider()
 
-                    // 自主性设置
-                    autonomySection
+                    // 项目治理
+                    governanceSection
 
                     Divider()
 
@@ -147,41 +154,123 @@ struct CreateProjectSheet: View {
         }
     }
 
-    private var autonomySection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("自主性级别")
+    private var governanceSection: some View {
+        let presentation = draftGovernancePresentation
+
+        return VStack(alignment: .leading, spacing: 12) {
+            Text("项目治理")
                 .font(.headline)
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text("级别 \(autonomyLevel.rawValue): \(autonomyLevel.displayName)")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
+            ProjectGovernanceBadge(presentation: presentation)
+            ProjectGovernanceInspector(presentation: presentation)
 
-                Slider(
-                    value: Binding(
-                        get: { Double(autonomyLevel.rawValue) },
-                        set: { autonomyLevel = AutonomyLevel(rawValue: Int($0)) ?? .auto }
-                    ),
-                    in: 1...5,
-                    step: 1
-                )
-
-                HStack {
-                    Text("手动")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Spacer()
-                    Text("全自动")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
+            if let governanceInlineMessage, !governanceInlineMessage.isEmpty {
+                Text(governanceInlineMessage)
+                    .font(.caption)
+                    .foregroundColor(.orange)
             }
 
-            // 自主性说明
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text("Execution Tier")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .frame(width: 120, alignment: .leading)
+
+                Picker("", selection: Binding(
+                    get: { executionTier },
+                    set: { applyExecutionTier($0) }
+                )) {
+                    ForEach(AXProjectExecutionTier.allCases, id: \.self) { tier in
+                        Text(tier.displayName).tag(tier)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(width: 280, alignment: .leading)
+
+                Spacer()
+            }
+
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text("Supervisor Tier")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .frame(width: 120, alignment: .leading)
+
+                Picker("", selection: Binding(
+                    get: { supervisorInterventionTier },
+                    set: { applySupervisorTier($0) }
+                )) {
+                    ForEach(AXProjectSupervisorInterventionTier.allCases, id: \.self) { tier in
+                        Text(tier.displayName).tag(tier)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(width: 280, alignment: .leading)
+
+                Spacer()
+            }
+
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text("Review Policy")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .frame(width: 120, alignment: .leading)
+
+                Picker("", selection: $reviewPolicyMode) {
+                    ForEach(AXProjectReviewPolicyMode.allCases, id: \.self) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(width: 280, alignment: .leading)
+
+                Spacer()
+            }
+
+            Stepper(
+                value: minutesBinding(
+                    get: { progressHeartbeatSeconds },
+                    set: { progressHeartbeatSeconds = $0 }
+                ),
+                in: 1...240,
+                step: 5
+            ) {
+                Text("Heartbeat: \(governanceDurationLabel(progressHeartbeatSeconds))")
+            }
+
+            Stepper(
+                value: minutesBinding(
+                    get: { reviewPulseSeconds },
+                    set: { reviewPulseSeconds = $0 },
+                    allowsOff: true
+                ),
+                in: 0...240,
+                step: 5
+            ) {
+                Text("Review Pulse: \(governanceDurationLabel(reviewPulseSeconds))")
+            }
+            .disabled(reviewPolicyMode == .off || reviewPolicyMode == .milestoneOnly)
+
+            Stepper(
+                value: minutesBinding(
+                    get: { brainstormReviewSeconds },
+                    set: { brainstormReviewSeconds = $0 },
+                    allowsOff: true
+                ),
+                in: 0...240,
+                step: 5
+            ) {
+                Text("Brainstorm Review: \(governanceDurationLabel(brainstormReviewSeconds))")
+            }
+            .disabled(reviewPolicyMode == .off || reviewPolicyMode == .milestoneOnly)
+
+            Toggle("Enable event-driven review", isOn: $eventDrivenReviewEnabled)
+                .disabled(reviewPolicyMode == .off)
+
             HStack(spacing: 8) {
                 Image(systemName: "info.circle")
                     .foregroundColor(.blue)
-                Text(autonomyLevel.detailedDescription)
+                Text("safe-point: \(supervisorInterventionTier.defaultInterventionMode.displayName) · \(supervisorInterventionTier.defaultAckRequired ? "guidance ack required" : "guidance ack optional")")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -286,10 +375,79 @@ struct CreateProjectSheet: View {
 
     private var isFormValid: Bool {
         !projectName.trimmingCharacters(in: .whitespaces).isEmpty &&
-        !taskDescription.trimmingCharacters(in: .whitespaces).isEmpty
+        !taskDescription.trimmingCharacters(in: .whitespaces).isEmpty &&
+        draftGovernancePresentation.invalidMessages.isEmpty
+    }
+
+    private var draftGovernancePresentation: ProjectGovernancePresentation {
+        ProjectGovernancePresentation(
+            executionTier: executionTier,
+            supervisorInterventionTier: supervisorInterventionTier,
+            reviewPolicyMode: reviewPolicyMode,
+            progressHeartbeatSeconds: progressHeartbeatSeconds,
+            reviewPulseSeconds: reviewPulseSeconds,
+            brainstormReviewSeconds: brainstormReviewSeconds,
+            eventDrivenReviewEnabled: eventDrivenReviewEnabled
+        )
     }
 
     // MARK: - Actions
+
+    private func applyExecutionTier(_ tier: AXProjectExecutionTier) {
+        let previousSupervisor = supervisorInterventionTier
+        let adjustedSupervisor = max(supervisorInterventionTier, tier.minimumSafeSupervisorTier)
+        executionTier = tier
+        supervisorInterventionTier = adjustedSupervisor
+        reviewPolicyMode = tier.defaultReviewPolicyMode
+        progressHeartbeatSeconds = tier.defaultProgressHeartbeatSeconds
+        reviewPulseSeconds = tier.defaultReviewPulseSeconds
+        brainstormReviewSeconds = tier.defaultBrainstormReviewSeconds
+        eventDrivenReviewEnabled = tier.defaultEventDrivenReviewEnabled
+
+        if adjustedSupervisor != previousSupervisor {
+            governanceInlineMessage = "\(tier.displayName) 至少需要 \(tier.minimumSafeSupervisorTier.displayName)，已自动抬升 supervisor 安全下限。"
+        } else {
+            governanceInlineMessage = nil
+        }
+    }
+
+    private func applySupervisorTier(_ tier: AXProjectSupervisorInterventionTier) {
+        let minimumSafe = executionTier.minimumSafeSupervisorTier
+        guard tier >= minimumSafe else {
+            governanceInlineMessage = "\(executionTier.displayName) 不能低于 \(minimumSafe.displayName)。"
+            return
+        }
+
+        supervisorInterventionTier = tier
+        if tier < executionTier.defaultSupervisorInterventionTier {
+            governanceInlineMessage = "\(executionTier.displayName) 推荐 \(executionTier.defaultSupervisorInterventionTier.displayName) 及以上；当前组合允许，但会放松 review 纠偏强度。"
+        } else {
+            governanceInlineMessage = nil
+        }
+    }
+
+    private func minutesBinding(
+        get: @escaping () -> Int,
+        set: @escaping (Int) -> Void,
+        allowsOff: Bool = false
+    ) -> Binding<Int> {
+        Binding(
+            get: {
+                let seconds = max(0, get())
+                if seconds == 0 && allowsOff {
+                    return 0
+                }
+                return max(1, seconds / 60)
+            },
+            set: { minutes in
+                if allowsOff && minutes <= 0 {
+                    set(0)
+                } else {
+                    set(max(1, minutes) * 60)
+                }
+            }
+        )
+    }
 
     private func createProject() {
         guard isFormValid else { return }
@@ -302,7 +460,13 @@ struct CreateProjectSheet: View {
                 name: projectName.trimmingCharacters(in: .whitespaces),
                 taskDescription: taskDescription.trimmingCharacters(in: .whitespaces),
                 modelName: selectedModel,
-                autonomyLevel: autonomyLevel
+                executionTier: executionTier,
+                supervisorInterventionTier: supervisorInterventionTier,
+                reviewPolicyMode: reviewPolicyMode,
+                progressHeartbeatSeconds: progressHeartbeatSeconds,
+                reviewPulseSeconds: reviewPulseSeconds,
+                brainstormReviewSeconds: brainstormReviewSeconds,
+                eventDrivenReviewEnabled: eventDrivenReviewEnabled
             )
 
             // 设置优先级和预算
@@ -361,35 +525,6 @@ struct ModelOptionCard: View {
             )
         }
         .buttonStyle(.plain)
-    }
-}
-
-// MARK: - AutonomyLevel Extension
-
-extension AutonomyLevel {
-    var displayName: String {
-        switch self {
-        case .manual: return "手动"
-        case .assisted: return "辅助"
-        case .semiAuto: return "半自动"
-        case .auto: return "自动"
-        case .fullAuto: return "全自动"
-        }
-    }
-
-    var detailedDescription: String {
-        switch self {
-        case .manual:
-            return "每个操作都需要你的确认"
-        case .assisted:
-            return "AI 提供建议，你做决定"
-        case .semiAuto:
-            return "AI 自动执行简单任务，复杂任务需要确认"
-        case .auto:
-            return "AI 自动执行大部分任务，关键决策需要确认"
-        case .fullAuto:
-            return "AI 完全自主执行，只在必要时通知你"
-        }
     }
 }
 

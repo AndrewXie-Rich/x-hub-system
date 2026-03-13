@@ -1523,6 +1523,24 @@ message GetAgentImportRecordResponse {
   string record_json = 6;
 }
 
+message ResolveAgentImportRecordRequest {
+  ClientIdentity client = 1;
+  string selector = 2;
+  string skill_id = 3;
+  string project_id = 4;
+}
+
+message ResolveAgentImportRecordResponse {
+  string selector = 1;
+  string staging_id = 2;
+  string status = 3;
+  string audit_ref = 4;
+  string schema_version = 5;
+  string skill_id = 6;
+  string record_json = 7;
+  string project_id = 8;
+}
+
 message PromoteAgentImportRequest {
   ClientIdentity client = 1;
   string request_id = 2;
@@ -2213,6 +2231,7 @@ service HubSkills {
   rpc GetSkillManifest(GetSkillManifestRequest) returns (GetSkillManifestResponse);
   rpc StageAgentImport(StageAgentImportRequest) returns (StageAgentImportResponse);
   rpc GetAgentImportRecord(GetAgentImportRecordRequest) returns (GetAgentImportRecordResponse);
+  rpc ResolveAgentImportRecord(ResolveAgentImportRecordRequest) returns (ResolveAgentImportRecordResponse);
   rpc PromoteAgentImport(PromoteAgentImportRequest) returns (PromoteAgentImportResponse);
   rpc DownloadSkillPackage(DownloadSkillPackageRequest) returns (stream SkillPackageChunk);
 }

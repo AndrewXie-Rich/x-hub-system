@@ -129,6 +129,7 @@ export function runtimePaths(baseDir) {
     cancelDir: path.join(base, 'ai_cancels'),
     statePath: path.join(base, 'models_state.json'),
     runtimeStatusPath: path.join(base, 'ai_runtime_status.json'),
+    routingSettingsPath: path.join(base, 'routing_settings.json'),
   };
 }
 
@@ -154,6 +155,148 @@ function parseUpdatedAtMs(obj, fallbackMs) {
   if (n > 10_000_000_000) return Math.max(0, Math.floor(n)); // already ms
   if (n > 0) return Math.max(0, Math.floor(n * 1000.0)); // seconds -> ms
   return Math.max(0, Number(fallbackMs || 0));
+}
+
+function safeString(value) {
+  return String(value ?? '').trim();
+}
+
+function normalizeTaskRoutingMap(value) {
+  const obj = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const out = {};
+  for (const [taskKind, modelId] of Object.entries(obj)) {
+    const normalizedTaskKind = safeString(taskKind).toLowerCase();
+    const normalizedModelId = safeString(modelId);
+    if (!normalizedTaskKind || !normalizedModelId) continue;
+    out[normalizedTaskKind] = normalizedModelId;
+  }
+  return out;
+}
+
+function normalizeDeviceTaskRoutingMap(value) {
+  const obj = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const out = {};
+  for (const [deviceId, rawTaskMap] of Object.entries(obj)) {
+    const normalizedDeviceId = safeString(deviceId).toLowerCase();
+    if (!normalizedDeviceId) continue;
+    const taskMap = normalizeTaskRoutingMap(rawTaskMap);
+    if (Object.keys(taskMap).length === 0) continue;
+    out[normalizedDeviceId] = taskMap;
+  }
+  return out;
+}
+
+function normalizeTaskRoutingSettings(value) {
+  const obj = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  let hubDefaultModelIdByTaskKind = normalizeTaskRoutingMap(
+    obj.hubDefaultModelIdByTaskKind
+    || obj.hub_default_model_id_by_task_kind
+    || obj.preferredModelIdByTaskKind
+    || obj.preferred_model_id_by_task_kind
+    || obj.preferredModelIdByTask
+    || obj.preferred_model_id_by_task
+  );
+  if (Object.keys(hubDefaultModelIdByTaskKind).length === 0) {
+    const rawMap = { ...obj };
+    delete rawMap.type;
+    delete rawMap.schemaVersion;
+    delete rawMap.schema_version;
+    delete rawMap.updatedAt;
+    delete rawMap.updated_at;
+    delete rawMap.updatedAtMs;
+    delete rawMap.updated_at_ms;
+    delete rawMap.hubDefaultModelIdByTaskKind;
+    delete rawMap.hub_default_model_id_by_task_kind;
+    delete rawMap.preferredModelIdByTaskKind;
+    delete rawMap.preferred_model_id_by_task_kind;
+    delete rawMap.preferredModelIdByTask;
+    delete rawMap.preferred_model_id_by_task;
+    delete rawMap.devicePreferredModelIdByTaskKind;
+    delete rawMap.device_preferred_model_id_by_task_kind;
+    delete rawMap.deviceOverrideModelIdByTaskKind;
+    delete rawMap.device_override_model_id_by_task_kind;
+    hubDefaultModelIdByTaskKind = normalizeTaskRoutingMap(rawMap);
+  }
+  const devicePreferredModelIdByTaskKind = normalizeDeviceTaskRoutingMap(
+    obj.devicePreferredModelIdByTaskKind
+    || obj.device_preferred_model_id_by_task_kind
+    || obj.deviceOverrideModelIdByTaskKind
+    || obj.device_override_model_id_by_task_kind
+  );
+  return {
+    type: safeString(obj.type) || 'routing_settings',
+    schema_version: safeString(obj.schemaVersion || obj.schema_version) || 'xhub.routing_settings.v2',
+    updated_at_ms: parseUpdatedAtMs(obj, 0),
+    hub_default_model_id_by_task_kind: hubDefaultModelIdByTaskKind,
+    device_preferred_model_id_by_task_kind: devicePreferredModelIdByTaskKind,
+  };
+}
+
+export function readTaskRoutingSettings(baseDir) {
+  const p = runtimePaths(baseDir);
+  const raw = readJsonSafe(p.routingSettingsPath);
+  if (!raw || typeof raw !== 'object') {
+    return normalizeTaskRoutingSettings({});
+  }
+  return normalizeTaskRoutingSettings(raw);
+}
+
+export function resolveTaskRoutingBinding({
+  baseDir,
+  taskKind = '',
+  deviceId = '',
+  modelId = '',
+  preferredModelId = '',
+} = {}) {
+  const explicitModelId = safeString(modelId || preferredModelId);
+  const normalizedTaskKind = safeString(taskKind).toLowerCase();
+  const normalizedDeviceId = safeString(deviceId).toLowerCase();
+  if (explicitModelId) {
+    return {
+      model_id: explicitModelId,
+      task_kind: normalizedTaskKind,
+      device_id: normalizedDeviceId,
+      source: 'request_override',
+    };
+  }
+  const settings = readTaskRoutingSettings(baseDir);
+  if (!normalizedTaskKind) {
+    return {
+      model_id: '',
+      task_kind: '',
+      device_id: normalizedDeviceId,
+      source: 'auto_selected',
+      settings,
+    };
+  }
+  const deviceTaskMap = settings.device_preferred_model_id_by_task_kind[normalizedDeviceId] || {};
+  const deviceModelId = safeString(deviceTaskMap[normalizedTaskKind]);
+  if (deviceModelId) {
+    return {
+      model_id: deviceModelId,
+      task_kind: normalizedTaskKind,
+      device_id: normalizedDeviceId,
+      source: 'device_override',
+      settings,
+    };
+  }
+  const hubDefaultModelId = safeString(settings.hub_default_model_id_by_task_kind[normalizedTaskKind]);
+  if (hubDefaultModelId) {
+    return {
+      model_id: hubDefaultModelId,
+      task_kind: normalizedTaskKind,
+      device_id: normalizedDeviceId,
+      source: 'hub_default',
+      settings,
+    };
+  }
+  return {
+    model_id: '',
+    task_kind: normalizedTaskKind,
+    device_id: normalizedDeviceId,
+    source: 'auto_selected',
+    settings,
+  };
 }
 
 export function runtimeModelMeta(baseDir, modelId) {
@@ -255,6 +398,7 @@ export function writeGenerateRequest(baseDir, req) {
     model_id: String(req?.model_id || ''),
     task_type: String(req?.task_type || ''),
     preferred_model_id: String(req?.preferred_model_id || ''),
+    device_id: String(req?.device_id || ''),
     prompt: String(req?.prompt || ''),
     max_tokens: Number(req?.max_tokens || 512),
     temperature: Number(req?.temperature ?? 0.2),

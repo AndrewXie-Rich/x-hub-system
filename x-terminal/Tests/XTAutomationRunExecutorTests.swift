@@ -133,6 +133,96 @@ struct XTAutomationRunExecutorTests {
     }
 
     @Test
+    func executorUsesHumanSummaryForSecretVaultBrowserFillSuccess() async throws {
+        try await Self.permissionGate.run {
+            let root = try makeProjectRoot()
+            defer { try? FileManager.default.removeItem(at: root) }
+
+            AXTrustedAutomationPermissionOwnerReadiness.installCurrentProviderForTesting {
+                makePermissionReadiness(
+                    accessibility: .granted,
+                    automation: .granted,
+                    screenRecording: .missing,
+                    auditRef: "audit-executor-secret-vault-browser-fill-ok"
+                )
+            }
+            defer { AXTrustedAutomationPermissionOwnerReadiness.resetCurrentProviderForTesting() }
+
+            let ctx = AXProjectContext(root: root)
+            var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+            config = config.settingTrustedAutomationBinding(
+                mode: .trustedAutomation,
+                deviceId: "device_xt_001",
+                deviceToolGroups: ["device.browser.control"],
+                workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: root)
+            )
+            config = config.settingToolPolicy(allow: ["group:device_automation"])
+            try AXProjectStore.saveConfig(config, for: ctx)
+
+            let executor = XTAutomationRunExecutor { call, _ in
+                ToolResult(
+                    id: call.id,
+                    tool: call.tool,
+                    ok: true,
+                    output: ToolExecutor.structuredOutput(
+                        summary: [
+                            "tool": .string(call.tool.rawValue),
+                            "ok": .bool(true),
+                            "action": .string("type"),
+                            "selector": .string("input[type=password]"),
+                            "browser_runtime_driver_state": .string("secret_vault_applescript_fill"),
+                        ],
+                        body: "session_id=browser_session_1"
+                    )
+                )
+            }
+
+            let report = await executor.execute(
+                runID: "run-executor-secret-vault-ok",
+                recipe: AXAutomationRecipeRuntimeBinding(
+                    recipeID: "xt-auto-executor-secret-vault-ok",
+                    recipeVersion: 1,
+                    lifecycleState: .ready,
+                    goal: "fill login field",
+                    triggerRefs: ["xt.automation_trigger_envelope.v1:manual/retry"],
+                    deliveryTargets: ["channel://telegram/project-a"],
+                    acceptancePackRef: "build/reports/acceptance.json",
+                    executionProfile: .aggressive,
+                    touchMode: .guidedTouch,
+                    innovationLevel: .l1,
+                    laneStrategy: .singleLane,
+                    requiredToolGroups: ["group:device_automation"],
+                    actionGraph: [
+                        XTAutomationRecipeAction(
+                            title: "Fill browser credential",
+                            tool: .deviceBrowserControl,
+                            args: [
+                                "action": .string("type"),
+                                "selector": .string("input[type=password]"),
+                                "secret_item_id": .string("sv_project_login")
+                            ]
+                        )
+                    ],
+                    requiresTrustedAutomation: true,
+                    trustedDeviceID: "device_xt_001",
+                    workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: root),
+                    grantPolicyRef: "policy://automation-trigger/project-a",
+                    rolloutStatus: .active,
+                    lastEditedAtMs: 1_773_300_002_000,
+                    lastEditAuditRef: "audit-xt-auto-executor-secret-vault-ok",
+                    lastLaunchRef: ""
+                ),
+                ctx: ctx,
+                now: Date(timeIntervalSince1970: 1_773_300_002)
+            )
+
+            #expect(report.finalState == .delivered)
+            #expect(report.actionResults.first?.detail.contains("Secret Vault credential") == true)
+            #expect(report.actionResults.first?.detail.contains("input[type=password]") == true)
+        }
+    }
+
+    @Test
     func executorRunsProjectVerificationAfterMutationActionAndDeliversWhenVerifyPasses() async throws {
         let root = try makeProjectRoot()
         defer { try? FileManager.default.removeItem(at: root) }

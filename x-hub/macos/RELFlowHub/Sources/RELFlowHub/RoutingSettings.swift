@@ -1,14 +1,7 @@
 import Foundation
 import RELFlowHubCore
 
-// Persisted routing defaults used by the python runtime when requests don't specify a model.
-
-struct RoutingSettings: Codable {
-    var type: String = "routing_settings"
-    var updatedAt: Double = Date().timeIntervalSince1970
-    // Lowercased task_type -> preferred model id.
-    var preferredModelIdByTask: [String: String] = [:]
-}
+typealias RoutingSettings = LocalTaskRoutingSettings
 
 enum RoutingSettingsStorage {
     static let fileName = "routing_settings.json"
@@ -38,6 +31,16 @@ enum RoutingSettingsStorage {
                     }
                 }
                 out.preferredModelIdByTask = mm
+            } else if let m = dict["preferred_model_id_by_task"] as? [String: Any] {
+                var mm: [String: String] = [:]
+                for (k, v) in m {
+                    let kk = String(k).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    let vv = String(describing: v).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !kk.isEmpty, !vv.isEmpty {
+                        mm[kk] = vv
+                    }
+                }
+                out.preferredModelIdByTask = mm
             }
             return out
         }
@@ -56,4 +59,3 @@ enum RoutingSettingsStorage {
         }
     }
 }
-

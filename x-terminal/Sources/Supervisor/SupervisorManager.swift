@@ -107,6 +107,7 @@ final class SupervisorManager: ObservableObject {
     @Published private(set) var hasFreshPendingHubGrantSnapshot: Bool = false
     @Published private(set) var pendingHubGrantActionsInFlight: Set<String> = []
     @Published private(set) var pendingSupervisorSkillApprovals: [SupervisorPendingSkillApproval] = []
+    @Published private(set) var recentSupervisorSkillActivities: [SupervisorRecentSkillActivity] = []
     @Published private(set) var voiceRuntimeState: SupervisorVoiceRuntimeState = .idle
     @Published private(set) var voiceRouteDecision: VoiceRouteDecision = .unavailable
     @Published private(set) var voiceAuthorizationStatus: VoiceTranscriberAuthorizationStatus = .undetermined
@@ -120,6 +121,7 @@ final class SupervisorManager: ObservableObject {
         route: .manualText
     )
     @Published private(set) var voiceAuthorizationResolution: SupervisorVoiceAuthorizationResolution?
+    @Published private(set) var voiceAuthorizationMobileConfirmationLatched: Bool = false
     @Published private(set) var activeVoiceChallenge: HubIPCClient.VoiceGrantChallengeSnapshot?
     @Published private(set) var supervisorIncidentLedger: [SupervisorLaneIncident] = []
     @Published private(set) var supervisorLaneHealthSnapshot: SupervisorLaneHealthSnapshot?
@@ -429,6 +431,8 @@ final class SupervisorManager: ObservableObject {
         case userTurn = "user_turn"
         case heartbeat
         case skillCallback = "skill_callback"
+        case guidanceAck = "guidance_ack"
+        case automationSafePoint = "automation_safe_point"
         case incident
         case externalTriggerIngress = "external_trigger_ingress"
         case grantResolution = "grant_resolution"
@@ -447,6 +451,10 @@ final class SupervisorManager: ObservableObject {
                 return .heartbeat
             case .skillCallback:
                 return .skillCallback
+            case .guidanceAck:
+                return .supervisor
+            case .automationSafePoint:
+                return .supervisor
             case .incident:
                 return .incident
             case .externalTriggerIngress:
@@ -968,6 +976,12 @@ final class SupervisorManager: ObservableObject {
                 forceHeartbeat = true
                 heartbeatReason = "lane_health_changed"
             }
+        case .supervisorGuidanceAck(let record):
+            let changed = handleSupervisorGuidanceAckEvent(record)
+            if changed {
+                forceHeartbeat = true
+                heartbeatReason = "guidance_ack_follow_up"
+            }
         default:
             break
         }
@@ -1008,8 +1022,19 @@ final class SupervisorManager: ObservableObject {
                 timestamp: Date().timeIntervalSince1970
             )
             messages.append(assistantMessage)
+            recordSupervisorReviewNoteIfNeeded(
+                userMessage: text,
+                response: local,
+                triggerSource: .userTurn
+            )
             let spokenOutcome = fromVoice ? speakSupervisorVoiceReply(local) : .suppressed("not_voice_triggered")
             conversationSessionController.registerAssistantTurn(spoken: spokenOutcome == .spoken)
+            return
+        }
+
+        if fromVoice,
+           await handleActiveVoiceAuthorizationVoiceInputIfApplicable(text) {
+            recordSupervisorReplyExecution(mode: .localDirectAction, actualModelId: nil)
             return
         }
 
@@ -1024,6 +1049,11 @@ final class SupervisorManager: ObservableObject {
                 timestamp: Date().timeIntervalSince1970
             )
             messages.append(assistantMessage)
+            recordSupervisorReviewNoteIfNeeded(
+                userMessage: text,
+                response: pendingGrantReply.text,
+                triggerSource: .userTurn
+            )
             conversationSessionController.registerAssistantTurn(spoken: pendingGrantReply.spokenOutcome == .spoken)
             return
         }
@@ -1039,6 +1069,11 @@ final class SupervisorManager: ObservableObject {
                 timestamp: Date().timeIntervalSince1970
             )
             messages.append(assistantMessage)
+            recordSupervisorReviewNoteIfNeeded(
+                userMessage: text,
+                response: hubProjectionReply.text,
+                triggerSource: .userTurn
+            )
             conversationSessionController.registerAssistantTurn(spoken: hubProjectionReply.spokenOutcome == .spoken)
             return
         }
@@ -1054,6 +1089,11 @@ final class SupervisorManager: ObservableObject {
         )
 
         messages.append(assistantMessage)
+        recordSupervisorReviewNoteIfNeeded(
+            userMessage: text,
+            response: response,
+            triggerSource: .userTurn
+        )
         let spokenOutcome = fromVoice ? speakSupervisorVoiceReply(response) : .suppressed("not_voice_triggered")
         conversationSessionController.registerAssistantTurn(spoken: spokenOutcome == .spoken)
     }
@@ -1202,6 +1242,433 @@ final class SupervisorManager: ObservableObject {
         startSupervisorEventLoopTurn(trigger)
     }
 
+    private func recordSupervisorReviewNoteIfNeeded(
+        userMessage: String,
+        response: String,
+        triggerSource: SupervisorCommandTriggerSource
+    ) {
+        let trimmedResponse = response.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedResponse.isEmpty else { return }
+
+        let projects = allProjects()
+        guard let selection = focusedSupervisorProjectSelection(
+            projects: projects,
+            userMessage: userMessage
+        ) else { return }
+        guard shouldCaptureSupervisorReviewNote(
+            userMessage: userMessage,
+            response: trimmedResponse,
+            triggerSource: triggerSource
+        ) else { return }
+
+        let project = selection.project
+        let ctx = supervisorMemoryContext(for: project)
+        let digest = supervisorMemoryDigest(project)
+        let governance = loadSupervisorProjectDigestGovernanceContext(projectId: project.projectId, ctx: ctx)
+        let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: ctx.root)
+        let effectiveAutonomy = config.effectiveAutonomyPolicy()
+        let resolvedGovernance = xtResolveProjectGovernance(
+            projectRoot: ctx.root,
+            config: config,
+            effectiveAutonomy: effectiveAutonomy
+        )
+        let nowMs = Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
+        let trigger = explicitSupervisorReviewTriggerHint(in: userMessage) ?? inferredSupervisorReviewTrigger(
+            userMessage: userMessage,
+            triggerSource: triggerSource
+        )
+        let requestedReviewLevel = explicitSupervisorReviewLevelHint(in: userMessage) ?? inferredSupervisorReviewLevel(
+            userMessage: userMessage,
+            response: trimmedResponse,
+            trigger: trigger
+        )
+        let runKind = explicitSupervisorReviewRunKindHint(in: userMessage)
+            ?? defaultSupervisorReviewRunKind(triggerSource: triggerSource, trigger: trigger)
+        let verdict = inferredSupervisorReviewVerdict(
+            response: trimmedResponse,
+            digest: digest
+        )
+        let routing = inferredSupervisorReviewDelivery(verdict: verdict)
+        let policy = SupervisorReviewPolicyEngine.resolve(
+            governance: resolvedGovernance,
+            trigger: trigger,
+            requestedReviewLevel: requestedReviewLevel,
+            verdict: verdict,
+            requestedDeliveryMode: routing.deliveryMode,
+            requestedAckRequired: routing.ackRequired,
+            runKind: runKind
+        )
+        guard policy.shouldReview else { return }
+        let reviewId = "review-\(String(project.projectId.prefix(8)).lowercased())-\(nowMs)"
+        let auditRef = "audit-supervisor-review-\(String(project.projectId.prefix(8)).lowercased())-\(nowMs)"
+        let doneDefinition = firstMeaningfulDigestValue([
+            governance.specCapsule?.mvpDefinition,
+            digest.nextStep
+        ])
+        let constraints = focusedSupervisorReviewConstraintItems(
+            specCapsule: governance.specCapsule,
+            config: config,
+            effectiveAutonomy: effectiveAutonomy
+        )
+        let note = SupervisorReviewNoteBuilder.build(
+            reviewId: reviewId,
+            projectId: project.projectId,
+            trigger: trigger,
+            reviewLevel: policy.reviewLevel,
+            verdict: verdict,
+            targetRole: routing.targetRole,
+            deliveryMode: routing.deliveryMode,
+            ackRequired: policy.ackRequired,
+            summary: supervisorReviewSummary(trimmedResponse),
+            recommendedActions: supervisorReviewRecommendedActions(
+                from: trimmedResponse,
+                fallbackNextStep: digest.nextStep
+            ),
+            anchorGoal: digest.goal,
+            anchorDoneDefinition: doneDefinition,
+            anchorConstraints: constraints,
+            currentState: digest.currentState,
+            nextStep: digest.nextStep,
+            blocker: digest.blocker,
+            createdAtMs: nowMs,
+            auditRef: auditRef
+        )
+        let guidance = supervisorGuidanceInjection(
+            from: note,
+            policy: policy,
+            injectedAtMs: nowMs
+        )
+
+        do {
+            try SupervisorReviewNoteStore.upsert(note, for: ctx)
+            try SupervisorGuidanceInjectionStore.upsert(guidance, for: ctx)
+            try SupervisorReviewScheduleStore.markReview(
+                for: ctx,
+                config: config,
+                trigger: trigger,
+                runKind: runKind,
+                nowMs: nowMs
+            )
+            AXProjectStore.appendRawLog(
+                [
+                    "type": "supervisor_review_note",
+                    "action": "create",
+                    "project_id": project.projectId,
+                    "review_id": note.reviewId,
+                    "trigger": note.trigger.rawValue,
+                    "review_level": note.reviewLevel.rawValue,
+                    "verdict": note.verdict.rawValue,
+                    "target_role": note.targetRole.rawValue,
+                    "delivery_mode": note.deliveryMode.rawValue,
+                    "ack_required": note.ackRequired,
+                    "audit_ref": note.auditRef,
+                    "summary": note.summary,
+                    "recommended_actions": note.recommendedActions,
+                    "review_run_kind": runKind.rawValue,
+                    "policy_reason": policy.policyReason,
+                    "timestamp_ms": nowMs
+                ],
+                for: ctx
+            )
+            AXProjectStore.appendRawLog(
+                [
+                    "type": "supervisor_guidance_injection",
+                    "action": "create",
+                    "project_id": project.projectId,
+                    "review_id": note.reviewId,
+                    "injection_id": guidance.injectionId,
+                    "target_role": guidance.targetRole.rawValue,
+                    "delivery_mode": guidance.deliveryMode.rawValue,
+                    "intervention_mode": guidance.interventionMode.rawValue,
+                    "safe_point_policy": guidance.safePointPolicy.rawValue,
+                    "ack_status": guidance.ackStatus.rawValue,
+                    "ack_required": guidance.ackRequired,
+                    "policy_reason": policy.policyReason,
+                    "audit_ref": guidance.auditRef,
+                    "guidance_text": guidance.guidanceText,
+                    "timestamp_ms": nowMs
+                ],
+                for: ctx
+            )
+        } catch {
+            print("Supervisor review note save failed: \(error)")
+        }
+    }
+
+    private func shouldCaptureSupervisorReviewNote(
+        userMessage: String,
+        response: String,
+        triggerSource: SupervisorCommandTriggerSource
+    ) -> Bool {
+        if triggerSource != .userTurn {
+            return true
+        }
+        let normalizedUser = normalizedSupervisorIntentText(userMessage)
+        let normalizedResponse = normalizedSupervisorIntentText(response)
+        let reviewTokens = [
+            "审查", "审阅", "review", "上下文", "记忆", "执行方案", "计划", "plan",
+            "下一步", "next step", "重构建议", "架构", "brainstorm", "方向", "跑偏",
+            "blocker", "阻塞", "质量", "方法", "方案"
+        ]
+        return reviewTokens.contains { normalizedUser.contains($0) || normalizedResponse.contains($0) }
+    }
+
+    private func explicitSupervisorReviewTriggerHint(
+        in userMessage: String
+    ) -> SupervisorReviewTrigger? {
+        explicitSupervisorReviewTokenValue(
+            key: "review_trigger",
+            in: userMessage
+        ).flatMap(SupervisorReviewTrigger.init(rawValue:))
+    }
+
+    private func explicitSupervisorReviewLevelHint(
+        in userMessage: String
+    ) -> SupervisorReviewLevel? {
+        explicitSupervisorReviewTokenValue(
+            key: "review_level_hint",
+            in: userMessage
+        ).flatMap(SupervisorReviewLevel.init(rawValue:))
+    }
+
+    private func explicitSupervisorReviewRunKindHint(
+        in userMessage: String
+    ) -> SupervisorReviewRunKind? {
+        explicitSupervisorReviewTokenValue(
+            key: "review_run_kind",
+            in: userMessage
+        ).flatMap(SupervisorReviewRunKind.init(rawValue:))
+    }
+
+    private func explicitSupervisorReviewTokenValue(
+        key: String,
+        in text: String
+    ) -> String? {
+        let needle = "\(key)="
+        for rawLine in text.split(whereSeparator: \.isNewline) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard line.hasPrefix(needle) else { continue }
+            let value = String(line.dropFirst(needle.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.isEmpty ? nil : value
+        }
+        return nil
+    }
+
+    private func defaultSupervisorReviewRunKind(
+        triggerSource: SupervisorCommandTriggerSource,
+        trigger: SupervisorReviewTrigger
+    ) -> SupervisorReviewRunKind {
+        switch triggerSource {
+        case .userTurn:
+            return .manual
+        case .heartbeat:
+            return trigger == .noProgressWindow ? .brainstorm : .pulse
+        case .guidanceAck, .automationSafePoint, .incident, .skillCallback, .externalTriggerIngress, .grantResolution, .approvalResolution:
+            return .eventDriven
+        }
+    }
+
+    private func inferredSupervisorReviewTrigger(
+        userMessage: String,
+        triggerSource: SupervisorCommandTriggerSource
+    ) -> SupervisorReviewTrigger {
+        let normalized = normalizedSupervisorIntentText(userMessage)
+        switch triggerSource {
+        case .heartbeat:
+            return .periodicPulse
+        case .incident:
+            return .blockerDetected
+        case .skillCallback:
+            return .periodicPulse
+        case .guidanceAck:
+            if containsAny(normalized, ["ack_status=rejected", "status=rejected", "rejected"]) {
+                return .planDrift
+            }
+            if containsAny(normalized, ["ack_status=deferred", "status=deferred", "deferred"]) {
+                return .blockerDetected
+            }
+            return .manualRequest
+        case .automationSafePoint:
+            return .blockerDetected
+        case .grantResolution, .approvalResolution:
+            return .userOverride
+        case .externalTriggerIngress:
+            return .manualRequest
+        case .userTurn:
+            if isExplicitSupervisorReviewRequest(normalized) {
+                return .manualRequest
+            }
+            if containsAny(normalized, ["blocker", "阻塞", "卡住"]) {
+                return .blockerDetected
+            }
+            if containsAny(normalized, ["跑偏", "偏离", "方向", "drift"]) {
+                return .planDrift
+            }
+            if containsAny(normalized, ["高风险", "上线", "发布", "验收"]) {
+                return .preHighRiskAction
+            }
+            if containsAny(normalized, ["完成", "done", "交付"]) {
+                return .preDoneSummary
+            }
+            return .manualRequest
+        }
+    }
+
+    private func isExplicitSupervisorReviewRequest(_ normalized: String) -> Bool {
+        containsAny(
+            normalized,
+            [
+                "review",
+                "审查",
+                "审阅",
+                "评审",
+                "brainstorm",
+                "上下文记忆",
+                "context memory",
+                "执行方案",
+                "执行计划",
+                "具体方案",
+                "最具体的执行方案",
+                "下一步方案",
+                "给出方案"
+            ]
+        )
+    }
+
+    private func inferredSupervisorReviewLevel(
+        userMessage: String,
+        response: String,
+        trigger: SupervisorReviewTrigger
+    ) -> SupervisorReviewLevel {
+        let normalized = normalizedSupervisorIntentText("\(userMessage)\n\(response)")
+        switch trigger {
+        case .preHighRiskAction, .preDoneSummary:
+            return .r3Rescue
+        case .blockerDetected, .planDrift, .failureStreak, .noProgressWindow:
+            return .r2Strategic
+        default:
+            break
+        }
+        if containsAny(normalized, ["高风险", "停止", "暂停", "验收", "上线", "交付"]) {
+            return .r3Rescue
+        }
+        if containsAny(normalized, ["brainstorm", "重构", "架构", "方向", "跑偏", "阻塞", "质量", "更好的"]) {
+            return .r2Strategic
+        }
+        return .r1Pulse
+    }
+
+    private func inferredSupervisorReviewVerdict(
+        response: String,
+        digest: SupervisorMemoryProjectDigest
+    ) -> SupervisorReviewVerdict {
+        let normalized = normalizedSupervisorIntentText(response)
+        if containsAny(normalized, ["高风险", "停止", "暂停", "越界", "kill switch", "fail closed"]) {
+            return .highRisk
+        }
+        if containsAny(normalized, ["跑偏", "偏离", "错误方向", "wrong direction"]) {
+            return .wrongDirection
+        }
+        if containsAny(normalized, ["更好的路径", "更优", "更稳", "建议改", "重规划", "replan", "替代路径"]) {
+            return .betterPathFound
+        }
+        if containsAny(normalized, ["注意", "留意", "观察点", "风险"]) || !isDigestPlaceholder(digest.blocker, treatNoValueAsPlaceholder: true) {
+            return .watch
+        }
+        return .onTrack
+    }
+
+    private func inferredSupervisorReviewDelivery(
+        verdict: SupervisorReviewVerdict
+    ) -> (targetRole: SupervisorGuidanceTargetRole, deliveryMode: SupervisorGuidanceDeliveryMode, ackRequired: Bool) {
+        switch verdict {
+        case .highRisk:
+            return (.coder, .stopSignal, true)
+        case .betterPathFound, .wrongDirection:
+            return (.coder, .replanRequest, true)
+        case .watch:
+            return (.coder, .priorityInsert, false)
+        case .onTrack:
+            return (.coder, .contextAppend, false)
+        }
+    }
+
+    private func supervisorReviewSummary(_ response: String) -> String {
+        let lines = response
+            .split(whereSeparator: \.isNewline)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return capped(lines.first ?? response, maxChars: 220)
+    }
+
+    private func supervisorReviewRecommendedActions(
+        from response: String,
+        fallbackNextStep: String
+    ) -> [String] {
+        let parsed = response
+            .split(whereSeparator: \.isNewline)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .compactMap { line -> (value: String, structured: Bool)? in
+                guard !line.isEmpty else { return nil }
+                let normalized = line
+                    .replacingOccurrences(of: #"^\d+\.\s*"#, with: "", options: .regularExpression)
+                    .replacingOccurrences(of: #"^[-*•]\s*"#, with: "", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !normalized.isEmpty else { return nil }
+                guard normalized != line || normalized.count <= 160 else { return nil }
+                return (capped(normalized, maxChars: 160), normalized != line)
+            }
+
+        let filtered = parsed.filter {
+            let lowered = $0.value.lowercased()
+            return !lowered.hasPrefix("##") && !lowered.hasPrefix("[")
+        }
+        let structured = filtered
+            .filter(\.structured)
+            .map(\.value)
+        if !structured.isEmpty {
+            return Array(structured.prefix(4))
+        }
+
+        let candidates = filtered.map(\.value)
+        let unstructured = candidates.filter {
+            let lowered = $0.lowercased()
+            return !lowered.hasPrefix("##") && !lowered.hasPrefix("[")
+        }
+        if !unstructured.isEmpty {
+            return Array(unstructured.prefix(4))
+        }
+
+        let fallback = fallbackNextStep.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !fallback.isEmpty, !isDigestPlaceholder(fallback, treatContinueCurrentTaskAsPlaceholder: true) else {
+            return ["继续当前路径，并在下一观察点重新评估质量与偏航风险"]
+        }
+        return [capped(fallback, maxChars: 160)]
+    }
+
+    private func focusedSupervisorReviewConstraintItems(
+        specCapsule: SupervisorProjectSpecCapsule?,
+        config: AXProjectConfig,
+        effectiveAutonomy: AXProjectAutonomyEffectivePolicy
+    ) -> [String] {
+        var items: [String] = []
+        if let specCapsule {
+            items.append(contentsOf: specCapsule.nonGoals.prefix(3).map { "non_goal=\($0)" })
+            items.append(contentsOf: specCapsule.techStackBlacklist.prefix(2).map { "tech_stack_blacklist=\($0)" })
+            if !specCapsule.approvedTechStack.isEmpty {
+                items.append("approved_tech_stack=\(specCapsule.approvedTechStack.prefix(3).joined(separator: " | "))")
+            }
+        }
+        items.append("autonomy=\(config.autonomyMode.rawValue)->\(effectiveAutonomy.effectiveMode.rawValue)")
+        items.append("override=\(effectiveAutonomy.hubOverrideMode.rawValue)")
+        if effectiveAutonomy.killSwitchEngaged {
+            items.append("kill_switch=on")
+        }
+        return items
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
     private func startSupervisorEventLoopTurn(_ trigger: SupervisorEventLoopTrigger) {
         supervisorEventLoopTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -1228,6 +1695,11 @@ final class SupervisorManager: ObservableObject {
         let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
             addAssistantMessage(trimmed)
+            recordSupervisorReviewNoteIfNeeded(
+                userMessage: trigger.userMessage,
+                response: trimmed,
+                triggerSource: trigger.triggerSource
+            )
         }
 
         supervisorEventLoopTask = nil
@@ -1356,6 +1828,175 @@ final class SupervisorManager: ObservableObject {
             triggerSource: .approvalResolution,
             dedupeKey: "approval_resolution:\(record.requestId):\(reasonCode)"
         )
+    }
+
+    private func scheduleSupervisorAutomationSafePointFollowUp(
+        project: AXProjectEntry,
+        runID: String,
+        requestedState: XTAutomationRunState,
+        guidance: SupervisorGuidanceInjectionRecord,
+        executionDetail: String
+    ) {
+        let normalizedGuidance = capped(
+            guidance.guidanceText
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "\n", with: " "),
+            maxChars: 220
+        )
+        let normalizedDetail = capped(
+            executionDetail
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "\n", with: " "),
+            maxChars: 220
+        )
+        let workflowContext = supervisorEventLoopWorkflowContext(
+            project: project,
+            preferredJobId: nil,
+            preferredPlanId: nil,
+            preferredRequestId: nil,
+            excludingStepId: nil
+        )
+        var lines = [
+            "自动审查 automation safe point hold。",
+            "trigger=\(SupervisorCommandTriggerSource.automationSafePoint.rawValue)",
+            "project_ref=\(project.displayName)",
+            "project_id=\(project.projectId)",
+            "run_id=\(runID)",
+            "requested_state=\(requestedState.rawValue)",
+            "result_state=\(XTAutomationRunState.blocked.rawValue)",
+            "review_id=\(guidance.reviewId)",
+            "injection_id=\(guidance.injectionId)",
+            "delivery_mode=\(guidance.deliveryMode.rawValue)",
+            "intervention_mode=\(guidance.interventionMode.rawValue)",
+            "safe_point_policy=\(guidance.safePointPolicy.rawValue)",
+            "ack_required=\(guidance.ackRequired)",
+            "guidance_text=\(normalizedGuidance.isEmpty ? "(none)" : normalizedGuidance)",
+            "execution_detail=\(normalizedDetail.isEmpty ? "(none)" : normalizedDetail)"
+        ]
+        if !workflowContext.isEmpty {
+            lines.append(workflowContext.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        queueSupervisorEventLoopTurn(
+            userMessage: lines.joined(separator: "\n"),
+            triggerSource: .automationSafePoint,
+            dedupeKey: "automation_safe_point:\(runID):\(guidance.injectionId):\(requestedState.rawValue)"
+        )
+    }
+
+    @discardableResult
+    private func handleAutomationSafePointHoldIfNeeded(
+        runID: String,
+        requestedState: XTAutomationRunState,
+        ctx: AXProjectContext,
+        emitSystemMessage: Bool,
+        executionDetail: String
+    ) -> Bool {
+        guard let guidance = try? automationRunCoordinator.safePointGuidanceForBlockedTransition(
+            runID,
+            requestedState: requestedState,
+            in: ctx
+        ) else {
+            return false
+        }
+
+        let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+        let project = allProjects().first(where: { $0.projectId == projectId }) ?? automationProjectEntry(for: ctx)
+        let normalizedDetail = capped(
+            executionDetail
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "\n", with: " "),
+            maxChars: 220
+        )
+        appendRecentEvent("automation safe point hold: \(project.displayName) -> \(guidance.safePointPolicy.rawValue)")
+        if emitSystemMessage {
+            let guidanceSummary = capped(
+                guidance.guidanceText
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .replacingOccurrences(of: "\n", with: " "),
+                maxChars: 220
+            )
+            addSystemMessage(
+                """
+automation 在 safe point 暂停
+项目: \(project.displayName)
+run_id: \(runID)
+requested_state: \(requestedState.rawValue)
+review_id: \(guidance.reviewId)
+injection_id: \(guidance.injectionId)
+safe_point_policy: \(guidance.safePointPolicy.rawValue)
+intervention_mode: \(guidance.interventionMode.rawValue)
+detail: \(normalizedDetail.isEmpty ? "(none)" : normalizedDetail)
+guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
+"""
+            )
+        }
+        scheduleSupervisorAutomationSafePointFollowUp(
+            project: project,
+            runID: runID,
+            requestedState: requestedState,
+            guidance: guidance,
+            executionDetail: normalizedDetail
+        )
+        Task { @MainActor in
+            await refreshSupervisorMemorySnapshot(reason: "automation_safe_point_hold")
+        }
+        return true
+    }
+
+    @discardableResult
+    private func handleSupervisorGuidanceAckEvent(
+        _ record: SupervisorGuidanceInjectionRecord
+    ) -> Bool {
+        let projectName = allProjects().first(where: { $0.projectId == record.projectId })?.displayName
+            ?? record.projectId
+        appendRecentEvent("项目 \(projectName) guidance ack：\(record.ackStatus.rawValue)")
+        Task { @MainActor in
+            await refreshSupervisorMemorySnapshot(reason: "guidance_ack")
+        }
+
+        guard record.ackStatus == .deferred || record.ackStatus == .rejected else {
+            return false
+        }
+        guard let project = allProjects().first(where: { $0.projectId == record.projectId }) else {
+            return false
+        }
+
+        let normalizedNote = capped(
+            record.ackNote
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "\n", with: " "),
+            maxChars: 220
+        )
+        let workflowContext = supervisorEventLoopWorkflowContext(
+            project: project,
+            preferredJobId: nil,
+            preferredPlanId: nil,
+            preferredRequestId: nil,
+            excludingStepId: nil
+        )
+        var lines = [
+            "自动审查 coder 对 supervisor guidance 的反馈。",
+            "trigger=\(SupervisorCommandTriggerSource.guidanceAck.rawValue)",
+            "project_ref=\(project.displayName)",
+            "project_id=\(project.projectId)",
+            "review_id=\(record.reviewId)",
+            "injection_id=\(record.injectionId)",
+            "ack_status=\(record.ackStatus.rawValue)",
+            "ack_note=\(normalizedNote.isEmpty ? "(none)" : normalizedNote)",
+            "delivery_mode=\(record.deliveryMode.rawValue)",
+            "intervention_mode=\(record.interventionMode.rawValue)",
+            "safe_point_policy=\(record.safePointPolicy.rawValue)",
+            "ack_required=\(record.ackRequired)"
+        ]
+        if !workflowContext.isEmpty {
+            lines.append(workflowContext.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        queueSupervisorEventLoopTurn(
+            userMessage: lines.joined(separator: "\n"),
+            triggerSource: .guidanceAck,
+            dedupeKey: "guidance_ack:\(record.injectionId):\(record.ackStatus.rawValue)"
+        )
+        return true
     }
 
     func refreshSupervisorMemorySnapshotNow() {
@@ -3583,6 +4224,12 @@ final class SupervisorManager: ObservableObject {
         if isCapabilityQuestion(normalized) {
             return generateCapabilitySummary(projects)
         }
+        if let naturalBrief = directSupervisorNaturalBriefReplyIfApplicable(
+            userMessage,
+            projects: projects
+        ) {
+            return naturalBrief
+        }
         return nil
     }
 
@@ -3696,6 +4343,24 @@ final class SupervisorManager: ObservableObject {
         projects: [AXProjectEntry]
     ) -> String? {
         let normalized = normalizedSupervisorIntentText(userMessage)
+        if let guidanceAck = directSupervisorPendingGuidanceAckIfApplicable(
+            userMessage,
+            projects: projects
+        ) {
+            return guidanceAck
+        }
+        if let pendingGrantAction = directSupervisorPendingGrantActionIfApplicable(
+            userMessage,
+            projects: projects
+        ) {
+            return pendingGrantAction
+        }
+        if let automationAction = directSupervisorNaturalAutomationActionIfApplicable(
+            userMessage,
+            projects: projects
+        ) {
+            return automationAction
+        }
         if !isExplicitModelAssignmentRequest(normalized) {
             return localSupervisorWorkflowBootstrapIfApplicable(
                 userMessage,
@@ -3781,6 +4446,410 @@ final class SupervisorManager: ObservableObject {
         }
 
         return naturalizeModelAssignmentResponse(result: result, intent: intent)
+    }
+
+    private func directSupervisorNaturalBriefReplyIfApplicable(
+        _ userMessage: String,
+        projects: [AXProjectEntry]
+    ) -> String? {
+        let normalized = normalizedLookupKey(userMessage)
+        guard !normalized.isEmpty else { return nil }
+        guard !hasNaturalAutomationSubject(normalized) else { return nil }
+        guard isNaturalSupervisorBriefRequest(normalized) else { return nil }
+
+        if normalizedContainsAny(normalized, ["优先", "优先级", "先做哪个", "排序", "priority"]) {
+            return generatePriorityRecommendation(projects)
+        }
+
+        if let selection = focusedSupervisorProjectSelection(
+            projects: projects,
+            userMessage: userMessage
+        ) {
+            return renderFocusedSupervisorNaturalBrief(selection.project)
+        }
+
+        if normalizedContainsAny(normalized, ["卡点", "卡在哪", "阻塞", "blocker"]) {
+            return generateBlockerReport(projects)
+        }
+        if normalizedContainsAny(normalized, ["下一步", "建议", "next step", "next"]) {
+            return generateNextStepSuggestions(projects)
+        }
+        return generateProgressReport(projects)
+    }
+
+    private func isNaturalSupervisorBriefRequest(_ normalized: String) -> Bool {
+        normalizedContainsAny(
+            normalized,
+            [
+                "汇报",
+                "简报",
+                "brief",
+                "summary",
+                "状态",
+                "进度",
+                "怎么样",
+                "到哪了",
+                "卡点",
+                "卡在哪",
+                "阻塞",
+                "下一步",
+                "建议",
+                "先做哪个",
+                "优先级",
+                "priority"
+            ]
+        )
+    }
+
+    private func renderFocusedSupervisorNaturalBrief(_ project: AXProjectEntry) -> String {
+        let runtime = runtimeStatus(for: project)
+        let blocker = (project.blockerSummary ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let next = (project.nextStepSummary ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let pendingGrantCount = pendingHubGrants.filter { $0.projectId == project.projectId }.count
+
+        var lines = [
+            "我来简短说一下《\(project.displayName)》。",
+            "现在状态：\(runtime.text)。"
+        ]
+
+        if !blocker.isEmpty {
+            lines.append("当前卡点：\(capped(blocker, maxChars: 72))。")
+        }
+        if pendingGrantCount > 0 {
+            lines.append("还有 \(pendingGrantCount) 个待授权项卡在路上。")
+        }
+        if !next.isEmpty && !isDigestPlaceholder(next, treatContinueCurrentTaskAsPlaceholder: true) {
+            lines.append("我建议下一步先\(capped(next, maxChars: 72))。")
+        } else {
+            lines.append("下一步还不够具体，我建议先补一条更明确的执行动作。")
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    private func directSupervisorPendingGuidanceAckIfApplicable(
+        _ userMessage: String,
+        projects: [AXProjectEntry]
+    ) -> String? {
+        guard let status = naturalSupervisorGuidanceAckStatus(in: userMessage) else { return nil }
+
+        let candidates = pendingSupervisorGuidanceCandidates(projects: projects)
+        guard !candidates.isEmpty else { return nil }
+
+        var filtered = candidates
+        if let requestedInjectionID = supervisorTriggerContextValue(
+            "injection_id",
+            userMessage: userMessage
+        )?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !requestedInjectionID.isEmpty {
+            let lowered = requestedInjectionID.lowercased()
+            filtered = filtered.filter { candidate in
+                let injectionId = candidate.guidance.injectionId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                return injectionId == lowered ||
+                    injectionId.contains(lowered) ||
+                    lowered.contains(injectionId)
+            }
+            guard !filtered.isEmpty else {
+                return "我没找到 injection_id=\(requestedInjectionID) 对应的待确认 guidance。"
+            }
+        }
+
+        if let focus = focusedSupervisorProjectSelection(
+            projects: projects,
+            userMessage: userMessage
+        ) {
+            let projectMatches = filtered.filter { $0.project.projectId == focus.project.projectId }
+            guard !projectMatches.isEmpty else {
+                return "项目 \(focus.project.displayName) 当前没有待确认 guidance。"
+            }
+            filtered = projectMatches
+        }
+
+        guard filtered.count == 1, let resolved = filtered.first else {
+            return renderPendingSupervisorGuidanceAckAmbiguityReply(filtered)
+        }
+
+        return acknowledgePendingSupervisorGuidanceDirectly(
+            guidance: resolved.guidance,
+            status: status,
+            project: resolved.project,
+            ctx: resolved.ctx,
+            sourceText: userMessage
+        )
+    }
+
+    private func naturalSupervisorGuidanceAckStatus(
+        in userMessage: String
+    ) -> SupervisorGuidanceAckStatus? {
+        let normalized = normalizedLookupKey(userMessage)
+        guard !normalized.isEmpty else { return nil }
+
+        let hasGuidanceSubject = normalizedContainsAny(
+            normalized,
+            ["建议", "方案", "方向", "guidance", "review"]
+        )
+        let hasGuidanceContext = hasRecentSupervisorGuidanceContext(
+            currentUserMessage: userMessage
+        )
+        let hasGuidanceReference = hasGuidanceSubject ||
+            normalizedContainsAny(normalized, ["这个", "这条"]) ||
+            hasGuidanceContext
+
+        if normalizedContainsAny(
+            normalized,
+            [
+                "按这个做",
+                "照这个做",
+                "按这个推进",
+                "照这个推进",
+                "就这么做",
+                "就这么办",
+                "那就按这个来",
+                "就按这个来",
+                "按你说的来",
+                "照这个方案走",
+                "按这个方案走"
+            ]
+        ) || (hasGuidanceReference && normalizedContainsAny(normalized, ["接受", "采用", "可以", "同意", "行", "好"])) {
+            return .accepted
+        }
+
+        if normalizedContainsAny(
+            normalized,
+            [
+                "先放一下",
+                "先搁置",
+                "稍后",
+                "晚点",
+                "回头",
+                "之后再",
+                "defer",
+                "延后",
+                "先缓一缓",
+                "先缓缓",
+                "先挂着",
+                "先挂起",
+                "先别动这个",
+                "等我再看",
+                "先等等"
+            ]
+        ) && hasGuidanceReference {
+            return .deferred
+        }
+
+        if normalizedContainsAny(
+            normalized,
+            [
+                "别按这个做",
+                "换个方向",
+                "重新想方案",
+                "不要这个方案",
+                "别走这条",
+                "这个路子不对",
+                "这条先别走",
+                "换条路",
+                "推翻这个方案"
+            ]
+        ) || (hasGuidanceReference && normalizedContainsAny(normalized, ["不行", "不对", "驳回", "否掉", "reject", "不要"])) {
+            return .rejected
+        }
+
+        return nil
+    }
+
+    private func pendingSupervisorGuidanceCandidates(
+        projects: [AXProjectEntry]
+    ) -> [(project: AXProjectEntry, ctx: AXProjectContext, guidance: SupervisorGuidanceInjectionRecord)] {
+        projects.compactMap { project in
+            let ctx = supervisorMemoryContext(for: project)
+            guard let guidance = SupervisorGuidanceInjectionStore.latestPendingAck(for: ctx) else {
+                return nil
+            }
+            return (project, ctx, guidance)
+        }
+    }
+
+    private func renderPendingSupervisorGuidanceAckAmbiguityReply(
+        _ candidates: [(project: AXProjectEntry, ctx: AXProjectContext, guidance: SupervisorGuidanceInjectionRecord)]
+    ) -> String {
+        let lines = candidates.prefix(3).enumerated().map { offset, candidate in
+            "\(offset + 1). \(candidate.project.displayName) / \(capped(candidate.guidance.guidanceText, maxChars: 56)) / injection=\(candidate.guidance.injectionId)"
+        }
+        return ([
+            "当前有多条待确认 guidance，我不想替你盲选。",
+        ] + lines + [
+            "补一句项目名，或者直接给 `injection_id=...`。"
+        ]).joined(separator: "\n")
+    }
+
+    private func acknowledgePendingSupervisorGuidanceDirectly(
+        guidance: SupervisorGuidanceInjectionRecord,
+        status: SupervisorGuidanceAckStatus,
+        project: AXProjectEntry,
+        ctx: AXProjectContext,
+        sourceText: String
+    ) -> String {
+        let normalizedNote = naturalSupervisorGuidanceAckNote(
+            sourceText: sourceText,
+            status: status
+        )
+        let nowMs = Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
+
+        do {
+            try SupervisorGuidanceInjectionStore.acknowledge(
+                injectionId: guidance.injectionId,
+                status: status,
+                note: normalizedNote,
+                atMs: nowMs,
+                for: ctx
+            )
+            AXProjectStore.appendRawLog(
+                [
+                    "type": "supervisor_guidance_ack",
+                    "action": "manual_ack",
+                    "source": "supervisor_direct_natural_language",
+                    "project_id": guidance.projectId,
+                    "review_id": guidance.reviewId,
+                    "injection_id": guidance.injectionId,
+                    "ack_status": status.rawValue,
+                    "ack_note": normalizedNote,
+                    "ack_required": guidance.ackRequired,
+                    "timestamp_ms": nowMs
+                ],
+                for: ctx
+            )
+
+            if let updated = SupervisorGuidanceInjectionStore.load(for: ctx).items.first(where: {
+                $0.injectionId == guidance.injectionId
+            }) {
+                handleEvent(.supervisorGuidanceAck(updated))
+            }
+
+            let guidanceSummary = capped(guidance.guidanceText, maxChars: 60)
+            switch status {
+            case .accepted:
+                return "收到，我会按《\(project.displayName)》这条 guidance 继续推进：\(guidanceSummary)"
+            case .deferred:
+                return "收到，我先把《\(project.displayName)》这条 guidance 标成暂缓，后面再接回来：\(guidanceSummary)"
+            case .rejected:
+                return "收到，我先把《\(project.displayName)》这条 guidance 标成拒绝，并重新评估方向：\(guidanceSummary)"
+            case .pending:
+                return "《\(project.displayName)》这条 guidance 仍保持待确认。"
+            }
+        } catch {
+            return "更新《\(project.displayName)》的 guidance ack 失败：\(String(describing: error))"
+        }
+    }
+
+    private func naturalSupervisorGuidanceAckNote(
+        sourceText: String,
+        status: SupervisorGuidanceAckStatus
+    ) -> String {
+        let trimmed = capped(
+            sourceText.trimmingCharacters(in: .whitespacesAndNewlines),
+            maxChars: 180
+        )
+        guard !trimmed.isEmpty else {
+            switch status {
+            case .accepted:
+                return "natural_accept_from_supervisor"
+            case .deferred:
+                return "natural_defer_from_supervisor"
+            case .rejected:
+                return "natural_reject_from_supervisor"
+            case .pending:
+                return "natural_pending_from_supervisor"
+            }
+        }
+        return trimmed
+    }
+
+    private func directSupervisorPendingGrantActionIfApplicable(
+        _ userMessage: String,
+        projects: [AXProjectEntry]
+    ) -> String? {
+        guard let approve = pendingGrantTextDecision(in: userMessage) else { return nil }
+        guard !pendingHubGrants.isEmpty else {
+            return "当前没有待处理的 Hub grant。"
+        }
+
+        let selection = resolvePendingHubGrantForVoiceAction(userMessage, projects: projects)
+        if let reply = selection.reply {
+            return reply
+        }
+        guard let grant = selection.grant else { return nil }
+
+        let grantId = grant.grantRequestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !grantId.isEmpty, pendingHubGrantActionsInFlight.contains(grantId) {
+            return "这笔 Hub grant 正在处理中：\(grant.projectName)（grant=\(grantId)）。"
+        }
+
+        performPendingHubGrantAction(grant, approve: approve)
+        let capabilityText = grantCapabilityText(
+            capability: grant.capability,
+            modelId: grant.modelId
+        )
+        if approve {
+            return "收到，我开始处理《\(grant.projectName)》这笔\(capabilityText) Hub 授权了。结果回来后我继续汇报。"
+        }
+        return "收到，我先拦下《\(grant.projectName)》这笔\(capabilityText) Hub 授权，并把结果回写到系统。"
+    }
+
+    private func pendingGrantTextDecision(in text: String) -> Bool? {
+        pendingGrantDecision(
+            in: text,
+            excludeGuidanceLikeTexts: true
+        )
+    }
+
+    private func directSupervisorNaturalAutomationActionIfApplicable(
+        _ userMessage: String,
+        projects: [AXProjectEntry]
+    ) -> String? {
+        let normalized = normalizedLookupKey(userMessage)
+        guard hasNaturalAutomationSubject(normalized) else { return nil }
+
+        let action: String
+        if normalizedContainsAny(normalized, ["暂停", "停掉", "停一下", "先停", "停止", "取消", "别跑了"]) {
+            action = "cancel"
+        } else if normalizedContainsAny(
+            normalized,
+            ["恢复", "继续跑", "接着跑", "继续这个自动流程", "恢复自动流程", "重试"]
+        ) {
+            action = "recover"
+        } else if normalizedContainsAny(normalized, ["启动", "开始", "跑起来", "开跑", "拉起来"]) {
+            action = "start"
+        } else if normalizedContainsAny(
+            normalized,
+            ["状态", "进度", "怎么样", "到哪了", "卡在哪", "简报", "汇报", "brief", "summary"]
+        ) {
+            action = "status"
+        } else {
+            return nil
+        }
+
+        var command = "/automation \(action)"
+        if let selection = focusedSupervisorProjectSelection(
+            projects: projects,
+            userMessage: userMessage
+        ) {
+            command += " \(selection.project.displayName)"
+        }
+        return performAutomationRuntimeCommand(command, emitSystemMessage: false)
+    }
+
+    private func hasNaturalAutomationSubject(_ normalized: String) -> Bool {
+        normalizedContainsAny(
+            normalized,
+            [
+                "automation",
+                "自动化",
+                "自动流程",
+                "自动运行",
+                "自动执行",
+                "自动跑"
+            ]
+        )
     }
 
     private func localSupervisorWorkflowBootstrapIfApplicable(
@@ -4876,7 +5945,7 @@ final class SupervisorManager: ObservableObject {
             )
         }
 
-        let projects = allProjects()
+        let projects = triggerSource == .userTurn ? allProjects() : knownProjects()
         let lookup = resolvedSupervisorProjectLookup(
             projectRef: projectRef,
             projects: projects,
@@ -5366,7 +6435,7 @@ final class SupervisorManager: ObservableObject {
 
             let message: String
             if let requiredCapability, !requiredCapability.isEmpty {
-                message = "⏸️ 已登记技能调用：\(skillId)（request_id=\(requestId)），当前需要 Hub 授权后才能继续。"
+                message = "⏸️ 已登记技能调用：\(skillId)（request_id=\(requestId)），正在向 Hub 申请 \(requiredCapability) 授权。"
             } else {
                 message = "⏸️ 已登记技能调用：\(skillId)（request_id=\(requestId)），当前需要本地审批后才能继续。"
             }
@@ -7194,6 +8263,18 @@ final class SupervisorManager: ObservableObject {
     ) -> String {
         let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
         if let toolCall {
+            let toolResult = ToolResult(
+                id: toolCall.id,
+                tool: toolCall.tool,
+                ok: ok,
+                output: output
+            )
+            if let specialized = ToolResultHumanSummary.specializedSummary(for: toolResult) {
+                return capped(
+                    "\(toolCall.tool.rawValue) \(ok ? "completed" : "failed"): \(specialized)",
+                    maxChars: 320
+                )
+            }
             switch toolCall.tool {
             case .write_file:
                 let path = toolCall.args["path"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "(none)"
@@ -7228,6 +8309,31 @@ final class SupervisorManager: ObservableObject {
                 }
                 if !trimmed.isEmpty {
                     return capped("skills.search \(ok ? "completed" : "failed"): \(query)\n\(trimmed)", maxChars: 320)
+                }
+            case .agentImportRecord:
+                let stagingId = toolCall.args["staging_id"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "(none)"
+                let parsed = ToolExecutor.parseStructuredToolOutput(output)
+                if case .object(let summary)? = parsed.summary,
+                   case .string(let vetterStatus)? = summary["vetter_status"] {
+                    let warnCount = {
+                        if case .number(let value)? = summary["vetter_warn_count"] {
+                            return Int(value)
+                        }
+                        return 0
+                    }()
+                    let criticalCount = {
+                        if case .number(let value)? = summary["vetter_critical_count"] {
+                            return Int(value)
+                        }
+                        return 0
+                    }()
+                    return capped(
+                        "agent.import.record \(ok ? "completed" : "failed"): \(stagingId) vetter=\(vetterStatus) c\(criticalCount)/w\(warnCount)",
+                        maxChars: 320
+                    )
+                }
+                if !trimmed.isEmpty {
+                    return capped("agent.import.record \(ok ? "completed" : "failed"): \(stagingId)\n\(trimmed)", maxChars: 320)
                 }
             case .summarize:
                 let source = firstNonEmptyString(
@@ -8404,6 +9510,10 @@ reason_code=no_response
             supervisorMemoryDigest(project)
         let ctx = supervisorMemoryContext(for: project)
         let recent = AXRecentContextStore.load(for: ctx)
+        let governance = loadSupervisorProjectDigestGovernanceContext(projectId: project.projectId, ctx: ctx)
+        let specCapsule = governance.specCapsule
+        let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: ctx.root)
+        let effectiveAutonomy = config.effectiveAutonomyPolicy()
         let state = supervisorWorkflowState(
             project: project,
             ctx: ctx,
@@ -8431,6 +9541,32 @@ reason_code=no_response
         )
         let activeJobGoal = activeJob?.goal.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let activeSkillResult = activeSkillCall?.resultSummary.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let doneDefinition = firstMeaningfulDigestValue([
+            specCapsule?.mvpDefinition,
+            activeJobGoal
+        ])
+        let reviewConstraints = focusedSupervisorReviewConstraintDigest(
+            specCapsule: specCapsule,
+            config: config,
+            effectiveAutonomy: effectiveAutonomy
+        )
+        let approvedDecisions = focusedSupervisorApprovedDecisionDigest(governance.hardDecisions)
+        let backgroundHint = governance.backgroundShadowHint.trimmingCharacters(in: .whitespacesAndNewlines)
+        let latestReview = SupervisorReviewNoteStore.latest(for: ctx)
+        let latestReviewCanonical = focusedSupervisorLatestReviewCanonical(note: latestReview)
+        let latestReviewInline = focusedSupervisorLatestReviewInline(note: latestReview)
+        let latestGuidance = SupervisorGuidanceInjectionStore.latest(for: ctx)
+        let latestGuidanceCanonical = focusedSupervisorLatestGuidanceCanonical(item: latestGuidance)
+        let latestGuidanceInline = focusedSupervisorLatestGuidanceInline(item: latestGuidance)
+        let pendingAckGuidance = SupervisorGuidanceInjectionStore.latestPendingAck(for: ctx)
+        let pendingAckGuidanceCanonical = focusedSupervisorLatestGuidanceCanonical(item: pendingAckGuidance)
+        let pendingAckGuidanceInline = focusedSupervisorLatestGuidanceInline(item: pendingAckGuidance)
+        let governanceSummary = """
+configured=\(config.autonomyMode.rawValue) effective=\(effectiveAutonomy.effectiveMode.rawValue) override=\(effectiveAutonomy.hubOverrideMode.rawValue) ttl_remaining_sec=\(effectiveAutonomy.remainingSeconds)
+"""
+        let missingAnchorFields = governance.missingSpecFields.isEmpty
+            ? "(none)"
+            : governance.missingSpecFields.map(\.rawValue).joined(separator: ", ")
 
         let canonical = """
 [focused_project_execution_brief]
@@ -8439,6 +9575,22 @@ project: \(project.displayName) (\(project.projectId))
 memory_source: \(digest.source)
 runtime_state: \(digest.runtimeState)
 goal: \(digest.goal)
+done_definition: \(doneDefinition.isEmpty ? "(none)" : doneDefinition)
+constraints:
+\(reviewConstraints)
+approved_decisions:
+\(approvedDecisions)
+background_hints:
+\(backgroundHint.isEmpty ? "(none)" : backgroundHint)
+governance:
+\(governanceSummary)
+latest_review_note:
+\(latestReviewCanonical)
+latest_guidance_injection:
+\(latestGuidanceCanonical)
+pending_ack_guidance:
+\(pendingAckGuidanceCanonical)
+missing_anchor_fields: \(missingAnchorFields)
 current_state: \(digest.currentState)
 next_step: \(digest.nextStep)
 blocker: \(digest.blocker)
@@ -8466,6 +9618,13 @@ recent_relevant_messages:
 focus_source=\(selection.source)
 project=\(project.displayName) (\(project.projectId))
 goal=\(digest.goal)
+done_definition=\(doneDefinition.isEmpty ? "(none)" : capped(doneDefinition, maxChars: 160))
+constraints=\(focusedSupervisorInlineConstraintDigest(specCapsule: specCapsule, config: config, effectiveAutonomy: effectiveAutonomy))
+approved_decisions=\(focusedSupervisorInlineDecisionDigest(governance.hardDecisions))
+background_hints=\(backgroundHint.isEmpty ? "(none)" : backgroundHint)
+latest_review_note=\(latestReviewInline)
+latest_guidance_injection=\(latestGuidanceInline)
+pending_ack_guidance=\(pendingAckGuidanceInline)
 current_state=\(digest.currentState)
 next_step=\(digest.nextStep)
 blocker=\(digest.blocker)
@@ -8483,6 +9642,184 @@ recent_relevant_messages:
             observation: observation,
             workingSet: workingSet
         )
+    }
+
+    private func focusedSupervisorLatestReviewCanonical(
+        note: SupervisorReviewNoteRecord?
+    ) -> String {
+        guard let note else { return "(none)" }
+        let actions = note.recommendedActions.isEmpty
+            ? "(none)"
+            : note.recommendedActions.prefix(3).joined(separator: " | ")
+        return """
+review_id: \(note.reviewId)
+trigger: \(note.trigger.rawValue)
+review_level: \(note.reviewLevel.rawValue)
+verdict: \(note.verdict.rawValue)
+delivery: \(note.targetRole.rawValue)/\(note.deliveryMode.rawValue) ack_required=\(note.ackRequired)
+summary: \(note.summary)
+recommended_actions: \(actions)
+"""
+    }
+
+    private func focusedSupervisorLatestReviewInline(
+        note: SupervisorReviewNoteRecord?
+    ) -> String {
+        guard let note else { return "(none)" }
+        let action = note.recommendedActions.first ?? "(none)"
+        return "verdict=\(note.verdict.rawValue) level=\(note.reviewLevel.rawValue) delivery=\(note.deliveryMode.rawValue) ack_required=\(note.ackRequired) summary=\(capped(note.summary, maxChars: 120)) next_action=\(capped(action, maxChars: 80))"
+    }
+
+    private func focusedSupervisorLatestGuidanceCanonical(
+        item: SupervisorGuidanceInjectionRecord?
+    ) -> String {
+        guard let item else { return "(none)" }
+        return """
+injection_id: \(item.injectionId)
+review_id: \(item.reviewId)
+delivery: \(item.targetRole.rawValue)/\(item.deliveryMode.rawValue)
+intervention_mode: \(item.interventionMode.rawValue)
+safe_point_policy: \(item.safePointPolicy.rawValue)
+ack_status: \(item.ackStatus.rawValue)
+ack_required: \(item.ackRequired)
+ack_note: \(item.ackNote.isEmpty ? "(none)" : item.ackNote)
+guidance_text: \(item.guidanceText)
+"""
+    }
+
+    private func focusedSupervisorLatestGuidanceInline(
+        item: SupervisorGuidanceInjectionRecord?
+    ) -> String {
+        guard let item else { return "(none)" }
+        let ackNote = item.ackNote.isEmpty ? "(none)" : capped(item.ackNote, maxChars: 80)
+        return "ack_status=\(item.ackStatus.rawValue) ack_required=\(item.ackRequired) ack_note=\(ackNote) delivery=\(item.deliveryMode.rawValue) intervention=\(item.interventionMode.rawValue) safe_point=\(item.safePointPolicy.rawValue)"
+    }
+
+    private func supervisorGuidanceInjection(
+        from note: SupervisorReviewNoteRecord,
+        policy: SupervisorReviewPolicyDecision,
+        injectedAtMs: Int64
+    ) -> SupervisorGuidanceInjectionRecord {
+        let guidanceText = supervisorGuidanceText(for: note)
+        return SupervisorGuidanceInjectionBuilder.build(
+            injectionId: "guidance-\(note.reviewId)",
+            reviewId: note.reviewId,
+            projectId: note.projectId,
+            targetRole: note.targetRole,
+            deliveryMode: note.deliveryMode,
+            interventionMode: policy.interventionMode,
+            safePointPolicy: policy.safePointPolicy,
+            guidanceText: guidanceText,
+            ackStatus: .pending,
+            ackRequired: policy.ackRequired,
+            ackNote: "",
+            injectedAtMs: injectedAtMs,
+            ackUpdatedAtMs: 0,
+            auditRef: "audit-guidance-\(note.reviewId)"
+        )
+    }
+
+    private func supervisorGuidanceText(
+        for note: SupervisorReviewNoteRecord
+    ) -> String {
+        var lines: [String] = [
+            "verdict=\(note.verdict.rawValue)",
+            "summary=\(note.summary)"
+        ]
+        if !note.recommendedActions.isEmpty {
+            lines.append("actions=\(note.recommendedActions.joined(separator: " | "))")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func focusedSupervisorReviewConstraintDigest(
+        specCapsule: SupervisorProjectSpecCapsule?,
+        config: AXProjectConfig,
+        effectiveAutonomy: AXProjectAutonomyEffectivePolicy
+    ) -> String {
+        var lines: [String] = []
+        if let specCapsule {
+            if !specCapsule.nonGoals.isEmpty {
+                lines.append("- non_goals: \(focusedSupervisorJoinedValueList(specCapsule.nonGoals, maxItems: 3, maxChars: 72))")
+            }
+            if !specCapsule.techStackBlacklist.isEmpty {
+                lines.append("- tech_stack_blacklist: \(focusedSupervisorJoinedValueList(specCapsule.techStackBlacklist, maxItems: 3, maxChars: 72))")
+            }
+            if !specCapsule.approvedTechStack.isEmpty {
+                lines.append("- approved_tech_stack: \(focusedSupervisorJoinedValueList(specCapsule.approvedTechStack, maxItems: 3, maxChars: 72))")
+            }
+        }
+        lines.append(
+            "- autonomy_guard: configured=\(config.autonomyMode.rawValue), effective=\(effectiveAutonomy.effectiveMode.rawValue), override=\(effectiveAutonomy.hubOverrideMode.rawValue), kill_switch=\(effectiveAutonomy.killSwitchEngaged ? "yes" : "no")"
+        )
+        return lines.isEmpty ? "(none)" : lines.joined(separator: "\n")
+    }
+
+    private func focusedSupervisorInlineConstraintDigest(
+        specCapsule: SupervisorProjectSpecCapsule?,
+        config: AXProjectConfig,
+        effectiveAutonomy: AXProjectAutonomyEffectivePolicy
+    ) -> String {
+        var items: [String] = []
+        if let specCapsule, !specCapsule.nonGoals.isEmpty {
+            items.append("non_goals=\(focusedSupervisorJoinedValueList(specCapsule.nonGoals, maxItems: 2, maxChars: 48))")
+        }
+        if let specCapsule, !specCapsule.techStackBlacklist.isEmpty {
+            items.append("blacklist=\(focusedSupervisorJoinedValueList(specCapsule.techStackBlacklist, maxItems: 2, maxChars: 48))")
+        }
+        if let specCapsule, !specCapsule.approvedTechStack.isEmpty {
+            items.append("stack=\(focusedSupervisorJoinedValueList(specCapsule.approvedTechStack, maxItems: 2, maxChars: 48))")
+        }
+        items.append("autonomy=\(config.autonomyMode.rawValue)->\(effectiveAutonomy.effectiveMode.rawValue)")
+        items.append("override=\(effectiveAutonomy.hubOverrideMode.rawValue)")
+        return items.joined(separator: " | ")
+    }
+
+    private func focusedSupervisorApprovedDecisionDigest(
+        _ hardDecisions: [SupervisorDecisionCategory: SupervisorDecisionTrackEvent]
+    ) -> String {
+        let rows = hardDecisions.values
+            .sorted { lhs, rhs in
+                if lhs.updatedAtMs != rhs.updatedAtMs {
+                    return lhs.updatedAtMs > rhs.updatedAtMs
+                }
+                return lhs.category.rawValue < rhs.category.rawValue
+            }
+            .prefix(4)
+            .map { decision in
+                "- \(decision.category.rawValue)=\(capped(firstNonEmptyLine(in: decision.statement), maxChars: 140))"
+            }
+        return rows.isEmpty ? "(none)" : rows.joined(separator: "\n")
+    }
+
+    private func focusedSupervisorInlineDecisionDigest(
+        _ hardDecisions: [SupervisorDecisionCategory: SupervisorDecisionTrackEvent]
+    ) -> String {
+        let items = hardDecisions.values
+            .sorted { lhs, rhs in
+                if lhs.updatedAtMs != rhs.updatedAtMs {
+                    return lhs.updatedAtMs > rhs.updatedAtMs
+                }
+                return lhs.category.rawValue < rhs.category.rawValue
+            }
+            .prefix(3)
+            .map { decision in
+                "\(decision.category.rawValue)=\(capped(firstNonEmptyLine(in: decision.statement), maxChars: 64))"
+            }
+        return items.isEmpty ? "(none)" : items.joined(separator: " | ")
+    }
+
+    private func focusedSupervisorJoinedValueList(
+        _ values: [String],
+        maxItems: Int,
+        maxChars: Int
+    ) -> String {
+        let normalized = values
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .prefix(maxItems)
+            .map { capped($0, maxChars: maxChars) }
+        return normalized.isEmpty ? "(none)" : normalized.joined(separator: " | ")
     }
 
     private func focusedSupervisorRecentMessagesDigest(
@@ -8641,13 +9978,29 @@ active_skill:
         project: AXProjectEntry,
         record: SupervisorSkillCallRecord
     ) -> String {
+        supervisorEventLoopWorkflowContext(
+            project: project,
+            preferredJobId: record.jobId,
+            preferredPlanId: record.planId,
+            preferredRequestId: record.requestId,
+            excludingStepId: record.stepId
+        )
+    }
+
+    private func supervisorEventLoopWorkflowContext(
+        project: AXProjectEntry,
+        preferredJobId: String?,
+        preferredPlanId: String?,
+        preferredRequestId: String?,
+        excludingStepId: String?
+    ) -> String {
         guard let ctx = appModel?.projectContext(for: project.projectId),
               let state = supervisorWorkflowState(
                 project: project,
                 ctx: ctx,
-                preferredJobId: record.jobId,
-                preferredPlanId: record.planId,
-                preferredRequestId: record.requestId
+                preferredJobId: preferredJobId,
+                preferredPlanId: preferredPlanId,
+                preferredRequestId: preferredRequestId
               ) else {
             return ""
         }
@@ -8656,7 +10009,7 @@ active_skill:
             workflowPlanFilteredStepsDigest(
                 $0,
                 statuses: [.pending],
-                excludingStepId: record.stepId
+                excludingStepId: excludingStepId
             )
         } ?? "(none)"
         let attentionSteps = state.plan.map {
@@ -9487,6 +10840,85 @@ Coder 下一步建议：
             progressActions: progressActions,
             nextStepSummary: nextStepSummary
         )
+        scheduleGovernedReviewFromHeartbeat(
+            projects: projects,
+            blockerProjects: blockerProjects,
+            now: Date(timeIntervalSince1970: now)
+        )
+    }
+
+    private func scheduleGovernedReviewFromHeartbeat(
+        projects: [AXProjectEntry],
+        blockerProjects: [(projectId: String, blocker: String)],
+        now: Date
+    ) {
+        let nowMs = Int64((now.timeIntervalSince1970 * 1000.0).rounded())
+        let blockerIDs = Set(blockerProjects.map(\.projectId))
+        let candidates = projects.compactMap { project -> (project: AXProjectEntry, candidate: SupervisorHeartbeatReviewCandidate)? in
+            let ctx = supervisorMemoryContext(for: project)
+            let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: ctx.root)
+            let effectiveAutonomy = config.effectiveAutonomyPolicy()
+            let governance = xtResolveProjectGovernance(
+                projectRoot: ctx.root,
+                config: config,
+                effectiveAutonomy: effectiveAutonomy
+            )
+            guard governance.effectiveBundle.supervisorInterventionTier != .s0SilentAudit else {
+                _ = try? SupervisorReviewScheduleStore.touchHeartbeat(for: ctx, config: config, nowMs: nowMs)
+                return nil
+            }
+            let schedule = (try? SupervisorReviewScheduleStore.touchHeartbeat(for: ctx, config: config, nowMs: nowMs))
+                ?? SupervisorReviewScheduleStore.load(for: ctx)
+            guard let candidate = SupervisorReviewPolicyEngine.heartbeatCandidate(
+                governance: governance,
+                schedule: schedule,
+                blockerDetected: blockerIDs.contains(project.projectId),
+                nowMs: nowMs
+            ) else {
+                return nil
+            }
+            return (project, candidate)
+        }
+
+        guard let selected = candidates.max(by: governedReviewCandidateSort(lhs:rhs:)) else { return }
+        let workflowContext = supervisorEventLoopWorkflowContext(
+            project: selected.project,
+            preferredJobId: nil,
+            preferredPlanId: nil,
+            preferredRequestId: nil,
+            excludingStepId: nil
+        )
+        var lines = [
+            "自动按 project governance 执行周期 review。",
+            "trigger=\(SupervisorCommandTriggerSource.heartbeat.rawValue)",
+            "project_ref=\(selected.project.displayName)",
+            "project_id=\(selected.project.projectId)",
+            "review_trigger=\(selected.candidate.trigger.rawValue)",
+            "review_level_hint=\(selected.candidate.reviewLevel.rawValue)",
+            "review_run_kind=\(selected.candidate.runKind.rawValue)",
+            "policy_reason=\(selected.candidate.policyReason)"
+        ]
+        if !workflowContext.isEmpty {
+            lines.append(workflowContext.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        queueSupervisorEventLoopTurn(
+            userMessage: lines.joined(separator: "\n"),
+            triggerSource: .heartbeat,
+            dedupeKey: "governed_review:\(selected.project.projectId):\(selected.candidate.trigger.rawValue):\(selected.candidate.runKind.rawValue)"
+        )
+    }
+
+    private func governedReviewCandidateSort(
+        lhs: (project: AXProjectEntry, candidate: SupervisorHeartbeatReviewCandidate),
+        rhs: (project: AXProjectEntry, candidate: SupervisorHeartbeatReviewCandidate)
+    ) -> Bool {
+        if lhs.candidate.priority != rhs.candidate.priority {
+            return lhs.candidate.priority < rhs.candidate.priority
+        }
+        if lhs.candidate.reviewLevel != rhs.candidate.reviewLevel {
+            return lhs.candidate.reviewLevel < rhs.candidate.reviewLevel
+        }
+        return lhs.project.projectId < rhs.project.projectId
     }
 
     private struct BlockerSignal {
@@ -9681,6 +11113,42 @@ Coder 下一步建议：
         var reason: String
         var createdAt: TimeInterval?
         var actionURL: String?
+    }
+
+    struct SupervisorRecentSkillActivity: Identifiable, Equatable {
+        var projectId: String
+        var projectName: String
+        var record: SupervisorSkillCallRecord
+        var tool: ToolName?
+        var toolCall: ToolCall?
+        var toolSummary: String
+        var actionURL: String?
+
+        var id: String { "skill:\(projectId):\(record.requestId)" }
+        var requestId: String { record.requestId }
+        var skillId: String { record.skillId }
+        var toolName: String { record.toolName }
+        var status: String { record.status.rawValue }
+        var requiredCapability: String {
+            record.requiredCapability?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
+        var resultSummary: String { record.resultSummary }
+        var denyCode: String { record.denyCode }
+        var createdAt: TimeInterval? {
+            record.createdAtMs > 0 ? Double(record.createdAtMs) / 1000.0 : nil
+        }
+        var updatedAt: TimeInterval? {
+            record.updatedAtMs > 0 ? Double(record.updatedAtMs) / 1000.0 : nil
+        }
+        var grantRequestId: String {
+            record.grantRequestId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
+        var grantId: String {
+            record.grantId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
+        var resultEvidenceRef: String {
+            record.resultEvidenceRef?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
     }
 
     struct XTReadyIncidentEventsExportResult {
@@ -9893,7 +11361,9 @@ Coder 下一步建议：
     }
 
     private func rebuildPendingSupervisorSkillApprovalViewState() {
-        pendingSupervisorSkillApprovals = normalizedPendingSupervisorSkillApprovals(projects: allProjects())
+        let projects = allProjects()
+        pendingSupervisorSkillApprovals = normalizedPendingSupervisorSkillApprovals(projects: projects)
+        recentSupervisorSkillActivities = normalizedRecentSupervisorSkillActivities(projects: projects)
     }
 
     private func normalizedPendingSupervisorSkillApprovals(
@@ -9949,6 +11419,53 @@ Coder 下一步建议：
         }
     }
 
+    private func normalizedRecentSupervisorSkillActivities(
+        projects: [AXProjectEntry],
+        limit: Int = 8
+    ) -> [SupervisorRecentSkillActivity] {
+        guard let appModel, limit > 0 else { return [] }
+        var activities: [SupervisorRecentSkillActivity] = []
+
+        for project in projects {
+            guard let ctx = appModel.projectContext(for: project.projectId) else { continue }
+            let snapshot = SupervisorProjectSkillCallStore.load(for: ctx)
+            for record in snapshot.calls {
+                let toolCall = resolvedSupervisorToolCallForRecord(record)
+                activities.append(
+                    SupervisorRecentSkillActivity(
+                        projectId: project.projectId,
+                        projectName: project.displayName,
+                        record: record,
+                        tool: toolCall?.tool,
+                        toolCall: toolCall,
+                        toolSummary: pendingSupervisorSkillToolSummary(record: record, toolCall: toolCall),
+                        actionURL: supervisorActionURL(projectId: project.projectId)
+                    )
+                )
+            }
+        }
+
+        return activities.sorted { lhs, rhs in
+            let leftUpdated = lhs.updatedAt ?? 0
+            let rightUpdated = rhs.updatedAt ?? 0
+            if leftUpdated != rightUpdated { return leftUpdated > rightUpdated }
+
+            let leftCreated = lhs.createdAt ?? 0
+            let rightCreated = rhs.createdAt ?? 0
+            if leftCreated != rightCreated { return leftCreated > rightCreated }
+
+            if lhs.projectName != rhs.projectName {
+                return lhs.projectName.localizedCaseInsensitiveCompare(rhs.projectName) == .orderedAscending
+            }
+            if lhs.skillId != rhs.skillId {
+                return lhs.skillId.localizedCaseInsensitiveCompare(rhs.skillId) == .orderedAscending
+            }
+            return lhs.requestId.localizedCaseInsensitiveCompare(rhs.requestId) == .orderedAscending
+        }
+        .prefix(limit)
+        .map { $0 }
+    }
+
     private func supervisorPendingSkillApprovalSignals(
         for projects: [AXProjectEntry]
     ) -> [ProjectPermissionSignal] {
@@ -9991,6 +11508,11 @@ Coder 下一步建议：
             if let pattern = toolCall.args["pattern"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
                !pattern.isEmpty {
                 return pattern
+            }
+        case .agentImportRecord:
+            if let stagingId = toolCall.args["staging_id"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !stagingId.isEmpty {
+                return stagingId
             }
         case .skills_search:
             if let query = toolCall.args["query"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -10462,6 +11984,26 @@ Coder 下一步建议：
     func buildSupervisorLocalMemoryV1ForTesting(_ userMessage: String) async -> String {
         let composition = await composeSupervisorMemoryV1(userMessage: userMessage)
         return composition.localText
+    }
+
+    func summarizedSupervisorSkillOutputForTesting(
+        _ output: String,
+        ok: Bool,
+        toolCall: ToolCall? = nil
+    ) -> String {
+        summarizedSupervisorSkillOutput(output, ok: ok, toolCall: toolCall)
+    }
+
+    func captureSupervisorReviewNoteForTesting(
+        userMessage: String,
+        response: String,
+        triggerSource: String = SupervisorCommandTriggerSource.userTurn.rawValue
+    ) {
+        recordSupervisorReviewNoteIfNeeded(
+            userMessage: userMessage,
+            response: response,
+            triggerSource: SupervisorCommandTriggerSource.parse(triggerSource)
+        )
     }
 
     func supervisorSkillRegistrySnapshotForTesting(_ userMessage: String) async -> SupervisorSkillRegistrySnapshot? {
@@ -11504,6 +13046,12 @@ XT 当前 transport 是 grpc-only，这不属于 XT 本地 auto fallback；更�
         needles.contains { text.contains($0) }
     }
 
+    private func normalizedContainsAny(_ normalized: String, _ needles: [String]) -> Bool {
+        needles.contains { needle in
+            normalized.contains(normalizedLookupKey(needle))
+        }
+    }
+
     private func idleDurationText(_ seconds: TimeInterval) -> String {
         if seconds < 90 { return "刚刚无更新" }
         let mins = Int(seconds / 60)
@@ -12107,7 +13655,7 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
     func retryVoiceAuthorizationVerification(
         transcript: String,
         semanticMatchScore: Double = 0.99,
-        mobileConfirmed: Bool = false
+        mobileConfirmed: Bool? = nil
     ) async -> SupervisorVoiceAuthorizationResolution {
         let requestId = activeVoiceAuthorizationRequest?.requestId
             ?? voiceAuthorizationResolution?.requestId
@@ -12118,6 +13666,7 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
             return token.isEmpty ? nil : token
         }()
         let clippedScore = max(0, min(1, semanticMatchScore))
+        let effectiveMobileConfirmed = mobileConfirmed ?? voiceAuthorizationMobileConfirmationLatched
 
         return await confirmVoiceAuthorization(
             SupervisorVoiceAuthorizationVerificationInput(
@@ -12130,9 +13679,30 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
                 amountText: activeVoiceAuthorizationRequest?.amountText,
                 verifyNonce: UUID().uuidString.lowercased(),
                 boundDeviceId: boundDeviceId,
-                mobileConfirmed: mobileConfirmed
+                mobileConfirmed: effectiveMobileConfirmed
             )
         )
+    }
+
+    func setVoiceAuthorizationMobileConfirmed(
+        _ confirmed: Bool,
+        source: String,
+        emitSystemMessage: Bool = false
+    ) {
+        let sourceToken = source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "unspecified"
+            : source.trimmingCharacters(in: .whitespacesAndNewlines)
+        let changed = voiceAuthorizationMobileConfirmationLatched != confirmed
+        if changed {
+            voiceAuthorizationMobileConfirmationLatched = confirmed
+            let stateText = confirmed ? "latched" : "cleared"
+            appendRecentEvent("voice authorization mobile confirmation \(stateText): \(sourceToken)")
+        }
+        guard emitSystemMessage else { return }
+        let messageText = confirmed
+            ? "已记录移动端确认；现在继续说授权短语即可。"
+            : "已清除移动端确认记录。"
+        addSystemMessage(messageText)
     }
 
     func cancelVoiceAuthorization() {
@@ -12243,12 +13813,63 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
         rebuildPendingSupervisorSkillApprovalViewState()
     }
 
+    func refreshRecentSupervisorSkillActivitiesNow() {
+        rebuildPendingSupervisorSkillApprovalViewState()
+    }
+
     func approvePendingSupervisorSkillApproval(_ approval: SupervisorPendingSkillApproval) {
         performPendingSupervisorSkillApprovalAction(approval, approve: true)
     }
 
     func denyPendingSupervisorSkillApproval(_ approval: SupervisorPendingSkillApproval) {
         performPendingSupervisorSkillApprovalAction(approval, approve: false)
+    }
+
+    func approveSupervisorSkillActivity(_ activity: SupervisorRecentSkillActivity) {
+        performLocalSupervisorSkillAuthorizationAction(
+            requestId: activity.requestId,
+            projectRef: activity.projectId,
+            approve: true,
+            commandName: "APPROVE_SUPERVISOR_SKILL_ACTIVITY"
+        )
+    }
+
+    func denySupervisorSkillActivity(_ activity: SupervisorRecentSkillActivity) {
+        performLocalSupervisorSkillAuthorizationAction(
+            requestId: activity.requestId,
+            projectRef: activity.projectId,
+            approve: false,
+            commandName: "DENY_SUPERVISOR_SKILL_ACTIVITY"
+        )
+    }
+
+    func retrySupervisorSkillActivity(_ activity: SupervisorRecentSkillActivity) {
+        let requestId = activity.requestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !requestId.isEmpty else { return }
+
+        let resolution: SupervisorSkillCallResolution
+        switch locateSupervisorSkillCall(
+            requestId: requestId,
+            projectRef: activity.projectId,
+            commandName: "RETRY_SUPERVISOR_SKILL"
+        ) {
+        case .failure(let failure):
+            addSystemMessage(failure.message)
+            rebuildPendingSupervisorSkillApprovalViewState()
+            return
+        case .success(let resolved):
+            resolution = resolved
+        }
+
+        guard [.failed, .blocked, .canceled].contains(resolution.record.status) else {
+            addSystemMessage(
+                "ℹ️ request_id=\(requestId) 当前状态为 \(resolution.record.status.rawValue)，暂不需要重试。"
+            )
+            rebuildPendingSupervisorSkillApprovalViewState()
+            return
+        }
+
+        enqueueSupervisorSkillRetry(resolution)
     }
 
     func approvePendingHubGrant(_ grant: SupervisorPendingGrant) {
@@ -12275,14 +13896,28 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
         _ approval: SupervisorPendingSkillApproval,
         approve: Bool
     ) {
-        let requestId = approval.requestId.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !requestId.isEmpty else { return }
+        performLocalSupervisorSkillAuthorizationAction(
+            requestId: approval.requestId,
+            projectRef: approval.projectId,
+            approve: approve,
+            commandName: approve ? "APPROVE_SUPERVISOR_SKILL" : "DENY_SUPERVISOR_SKILL"
+        )
+    }
+
+    private func performLocalSupervisorSkillAuthorizationAction(
+        requestId: String,
+        projectRef: String,
+        approve: Bool,
+        commandName: String
+    ) {
+        let normalizedRequestId = requestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedRequestId.isEmpty else { return }
 
         let resolution: SupervisorSkillCallResolution
         switch locateSupervisorSkillCall(
-            requestId: requestId,
-            projectRef: approval.projectId,
-            commandName: approve ? "APPROVE_SUPERVISOR_SKILL" : "DENY_SUPERVISOR_SKILL"
+            requestId: normalizedRequestId,
+            projectRef: projectRef,
+            commandName: commandName
         ) {
         case .failure(let failure):
             addSystemMessage(failure.message)
@@ -12299,7 +13934,7 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
 
         let capability = resolution.record.requiredCapability?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard capability.isEmpty else {
-            addSystemMessage("ℹ️ request_id=\(requestId) 当前是 Hub 授权等待态，请在 Hub 授权面板处理。")
+            addSystemMessage("ℹ️ request_id=\(normalizedRequestId) 当前是 Hub 授权等待态，请在 Hub 授权面板处理。")
             rebuildPendingSupervisorSkillApprovalViewState()
             return
         }
@@ -12309,6 +13944,199 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
         } else {
             blockSupervisorSkillCallAfterLocalApprovalDenial(resolution)
         }
+    }
+
+    private func enqueueSupervisorSkillRetry(
+        _ resolution: SupervisorSkillCallResolution
+    ) {
+        let nowMs = Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
+        let retryRequestId = "retry-\(nowMs)-\(String(UUID().uuidString.lowercased().prefix(8)))"
+        var retried = resolution.record
+        retried.requestId = retryRequestId
+        retried.status = .queued
+        retried.resultSummary = ""
+        retried.denyCode = ""
+        retried.resultEvidenceRef = nil
+        retried.grantRequestId = nil
+        retried.grantId = nil
+        retried.createdAtMs = nowMs
+        retried.updatedAtMs = nowMs
+        retried.auditRef = "audit-xt-supervisor-skill-\(String(retryRequestId.suffix(12)))"
+
+        guard let toolCall = resolvedSupervisorToolCallForRecord(retried) else {
+            retried.status = .blocked
+            retried.resultSummary = "retry failed: skill mapping unavailable"
+            retried.denyCode = "skill_mapping_missing"
+            retried.resultEvidenceRef = SupervisorSkillResultEvidenceStore.write(
+                record: retried,
+                toolCall: nil,
+                rawOutput: nil,
+                triggerSource: SupervisorCommandTriggerSource.userTurn.rawValue,
+                ctx: resolution.ctx
+            )
+            try? SupervisorProjectSkillCallStore.upsert(retried, for: resolution.ctx)
+            _ = updateSupervisorWorkflowStepState(
+                ctx: resolution.ctx,
+                project: resolution.project,
+                jobId: retried.jobId,
+                planId: retried.planId,
+                stepId: retried.stepId,
+                status: .blocked,
+                detail: retried.resultSummary,
+                owner: retried.currentOwner,
+                updatedAtMs: nowMs
+            )
+            appendSupervisorSkillCallRawLog(
+                action: "blocked",
+                record: retried,
+                toolCall: nil,
+                triggerSource: .userTurn,
+                ctx: resolution.ctx
+            )
+            appendSupervisorSkillResultRawLog(
+                record: retried,
+                toolCall: nil,
+                rawOutput: nil,
+                triggerSource: .userTurn,
+                ctx: resolution.ctx
+            )
+            scheduleSupervisorSkillCallbackFollowUp(
+                record: retried,
+                project: resolution.project,
+                status: .blocked,
+                reason: retried.resultSummary
+            )
+            addSystemMessage("❌ 无法重试技能调用：\(resolution.record.skillId)（request_id=\(resolution.record.requestId)）")
+            return
+        }
+
+        let registryItem = resolvedSupervisorRegistryItem(
+            skillId: retried.skillId,
+            projectId: resolution.project.projectId,
+            projectName: resolution.project.displayName
+        )
+        let requiredCapability = supervisorRequiredHubCapability(for: toolCall)
+        let projectConfig = (try? AXProjectStore.loadOrCreateConfig(for: resolution.ctx))
+            ?? .default(forProjectRoot: resolution.ctx.root)
+        let requiresGrant = registryItem?.requiresGrant == true || requiredCapability != nil
+        let canBypassLocalGrantWait =
+            requiredCapability == nil &&
+            xtProjectGovernedAutoApprovalConfigured(
+                projectRoot: resolution.ctx.root,
+                config: projectConfig
+            ) &&
+            !ToolPolicy.isAlwaysConfirm(call: toolCall)
+        let requiresWaitingAuthorization =
+            requiresGrant &&
+            !supervisorToolCallHasExplicitGrant(toolCall) &&
+            !canBypassLocalGrantWait
+        let awaitingResultSummary: String = {
+            guard requiresWaitingAuthorization else { return "queued governed dispatch" }
+            if let requiredCapability, !requiredCapability.isEmpty {
+                return "waiting for Hub grant approval"
+            }
+            return "waiting for local governed approval"
+        }()
+        let awaitingDenyCode: String = {
+            guard requiresWaitingAuthorization else { return "" }
+            if let requiredCapability, !requiredCapability.isEmpty {
+                return "grant_required"
+            }
+            return "local_approval_required"
+        }()
+
+        retried.requiredCapability = requiredCapability
+        retried.status = requiresWaitingAuthorization ? .awaitingAuthorization : .queued
+        retried.resultSummary = awaitingResultSummary
+        retried.denyCode = awaitingDenyCode
+        retried.resultEvidenceRef = SupervisorSkillResultEvidenceStore.write(
+            record: retried,
+            toolCall: toolCall,
+            rawOutput: nil,
+            triggerSource: SupervisorCommandTriggerSource.userTurn.rawValue,
+            ctx: resolution.ctx
+        )
+
+        do {
+            try SupervisorProjectSkillCallStore.upsert(retried, for: resolution.ctx)
+        } catch {
+            addSystemMessage(
+                "❌ 重试技能调用落盘失败（skill_call_store_write_failed: \(error.localizedDescription)）"
+            )
+            return
+        }
+
+        _ = updateSupervisorWorkflowStepState(
+            ctx: resolution.ctx,
+            project: resolution.project,
+            jobId: retried.jobId,
+            planId: retried.planId,
+            stepId: retried.stepId,
+            status: requiresWaitingAuthorization ? .awaitingAuthorization : .pending,
+            detail: retried.resultSummary,
+            owner: retried.currentOwner,
+            updatedAtMs: nowMs
+        )
+        appendSupervisorSkillCallRawLog(
+            action: requiresWaitingAuthorization ? "awaiting_authorization" : "dispatch",
+            record: retried,
+            toolCall: toolCall,
+            triggerSource: .userTurn,
+            ctx: resolution.ctx
+        )
+        appendSupervisorSkillResultRawLog(
+            record: retried,
+            toolCall: toolCall,
+            rawOutput: nil,
+            triggerSource: .userTurn,
+            ctx: resolution.ctx
+        )
+
+        if requiresWaitingAuthorization {
+            appendRecentEvent("skill_result: \(resolution.project.displayName) -> \(retried.skillId) \(retried.status.rawValue)")
+            if let requiredCapability,
+               supervisorHubGrantPreflightEnabled {
+                let requestedSeconds = supervisorRequestedGrantWindowSeconds(payload: retried.payload)
+                let reason = "retry supervisor skill \(retried.skillId) for project \(resolution.project.displayName) requires \(requiredCapability)"
+                let task = Task { [weak self] in
+                    guard let self else { return }
+                    await self.requestSupervisorHubGrantForSkillCall(
+                        requestId: retryRequestId,
+                        project: resolution.project,
+                        ctx: resolution.ctx,
+                        toolCall: toolCall,
+                        requiredCapability: requiredCapability,
+                        requestedSeconds: requestedSeconds,
+                        reason: reason
+                    )
+                }
+                supervisorSkillExecutionTasks[retryRequestId] = task
+                addSystemMessage("⏸️ 已重新登记技能调用：\(retried.skillId)（request_id=\(retryRequestId)），正在向 Hub 申请 \(requiredCapability) 授权。")
+                return
+            }
+
+            let message: String
+            if let requiredCapability, !requiredCapability.isEmpty {
+                message = "⏸️ 已重新登记技能调用：\(retried.skillId)（request_id=\(retryRequestId)），正在向 Hub 申请 \(requiredCapability) 授权。"
+            } else {
+                message = "⏸️ 已重新登记技能调用：\(retried.skillId)（request_id=\(retryRequestId)），当前需要本地审批后才能继续。"
+            }
+            addSystemMessage(message)
+            return
+        }
+
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.executeSupervisorSkillCall(
+                requestId: retryRequestId,
+                project: resolution.project,
+                ctx: resolution.ctx,
+                toolCall: toolCall,
+                triggerSource: .userTurn
+            )
+        }
+        supervisorSkillExecutionTasks[retryRequestId] = task
+        addSystemMessage("✅ 已重新排队技能调用：\(retried.skillId)（request_id=\(retryRequestId), tool=\(toolCall.tool.rawValue)）")
     }
 
     private func resumeSupervisorSkillCallAfterLocalApproval(
@@ -12513,16 +14341,45 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
         preserveActiveChallengeOnFailClosed: Bool,
         forceCancel: Bool = false
     ) {
+        let previousChallengeId = activeVoiceChallenge?.challengeId
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let previousRequestId = activeVoiceAuthorizationRequest?.requestId
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         voiceAuthorizationResolution = resolution
+        let preserveMobileConfirmation = shouldPreserveVoiceAuthorizationMobileConfirmationLatch(
+            resolution: resolution,
+            request: request,
+            previousChallengeId: previousChallengeId,
+            previousRequestId: previousRequestId
+        )
 
         switch resolution.state {
         case .pending, .escalatedToMobile:
+            if resolution.state == .pending || !preserveMobileConfirmation {
+                setVoiceAuthorizationMobileConfirmed(
+                    false,
+                    source: resolution.state == .pending ? "voice_authorization_pending" : "voice_authorization_escalated",
+                    emitSystemMessage: false
+                )
+            }
             activeVoiceAuthorizationRequest = request
             activeVoiceChallenge = resolution.challenge
         case .verified, .denied:
+            setVoiceAuthorizationMobileConfirmed(
+                false,
+                source: resolution.state == .verified ? "voice_authorization_verified" : "voice_authorization_denied",
+                emitSystemMessage: false
+            )
             activeVoiceAuthorizationRequest = nil
             activeVoiceChallenge = nil
         case .failClosed:
+            if forceCancel || !preserveActiveChallengeOnFailClosed || !preserveMobileConfirmation {
+                setVoiceAuthorizationMobileConfirmed(
+                    false,
+                    source: forceCancel ? "voice_authorization_cancelled" : "voice_authorization_fail_closed",
+                    emitSystemMessage: false
+                )
+            }
             if forceCancel || !preserveActiveChallengeOnFailClosed {
                 activeVoiceAuthorizationRequest = nil
                 activeVoiceChallenge = nil
@@ -12569,6 +14426,25 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
             resolution: resolution,
             challengeToken: challengeToken
         )
+    }
+
+    private func shouldPreserveVoiceAuthorizationMobileConfirmationLatch(
+        resolution: SupervisorVoiceAuthorizationResolution,
+        request: SupervisorVoiceAuthorizationRequest?,
+        previousChallengeId: String,
+        previousRequestId: String
+    ) -> Bool {
+        let nextChallengeId = (resolution.challengeId ?? resolution.challenge?.challengeId ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let nextRequestId = (request?.requestId ?? resolution.requestId)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !previousChallengeId.isEmpty,
+              !nextChallengeId.isEmpty,
+              !previousRequestId.isEmpty,
+              !nextRequestId.isEmpty else {
+            return false
+        }
+        return previousChallengeId == nextChallengeId && previousRequestId == nextRequestId
     }
 
     private func applyVoiceAuthorizationRuntimeSideEffects(
@@ -13334,27 +15210,329 @@ Coder 下一步建议：
         )
     }
 
+    private func handleActiveVoiceAuthorizationVoiceInputIfApplicable(
+        _ text: String
+    ) async -> Bool {
+        guard activeVoiceChallenge != nil,
+              let request = activeVoiceAuthorizationRequest else {
+            return false
+        }
+
+        if shouldCancelActiveVoiceAuthorization(from: text) {
+            cancelVoiceAuthorization()
+            let replyText = "已取消当前语音授权。"
+            appendSupervisorAssistantMessage(replyText)
+            conversationSessionController.registerAssistantTurn(spoken: true)
+            return true
+        }
+
+        if shouldRepeatActiveVoiceAuthorizationPrompt(for: text) {
+            let replyText = renderActiveVoiceAuthorizationPrompt(request: request)
+            appendSupervisorAssistantMessage(replyText)
+            let spokenOutcome = speakSupervisorVoiceReply(replyText)
+            conversationSessionController.registerAssistantTurn(spoken: spokenOutcome == .spoken)
+            return true
+        }
+
+        let requiresMobileConfirm = voiceAuthorizationResolution?.requiresMobileConfirm ?? false
+        let isPendingGrantVerification = isCurrentPendingGrantVoiceAuthorization(request)
+        let mobileConfirmed = inferredMobileConfirmationState(
+            from: text,
+            requiresMobileConfirm: requiresMobileConfirm
+        )
+        if mobileConfirmed {
+            setVoiceAuthorizationMobileConfirmed(
+                true,
+                source: "voice_input",
+                emitSystemMessage: false
+            )
+            if isStandaloneMobileConfirmationUtterance(
+                text,
+                requiresMobileConfirm: requiresMobileConfirm
+            ) {
+                let replyText = "已记录移动端确认；现在继续说授权短语即可。"
+                appendSupervisorAssistantMessage(replyText)
+                let spokenOutcome = speakSupervisorVoiceReply(replyText)
+                conversationSessionController.registerAssistantTurn(spoken: spokenOutcome == .spoken)
+                return true
+            }
+        }
+        let semanticMatchScore = inferredVoiceAuthorizationSemanticMatchScore(
+            from: text,
+            mobileConfirmed: voiceAuthorizationMobileConfirmationLatched
+        )
+        let resolution = await retryVoiceAuthorizationVerification(
+            transcript: text,
+            semanticMatchScore: semanticMatchScore
+        )
+
+        if isPendingGrantVerification, resolution.state == .verified {
+            return true
+        }
+
+        let replyText = renderActiveVoiceAuthorizationVerificationReply(
+            resolution: resolution,
+            request: request
+        )
+        appendSupervisorAssistantMessage(replyText)
+        conversationSessionController.registerAssistantTurn(spoken: true)
+        return true
+    }
+
+    private func shouldCancelActiveVoiceAuthorization(from text: String) -> Bool {
+        let normalized = normalizedLookupKey(text)
+        guard !normalized.isEmpty else { return false }
+        let cancelTokens = [
+            "取消",
+            "取消授权",
+            "停止授权",
+            "cancel",
+            "abort",
+            "stop"
+        ]
+        return cancelTokens.contains { normalized.contains(normalizedLookupKey($0)) }
+    }
+
+    private func shouldRepeatActiveVoiceAuthorizationPrompt(for text: String) -> Bool {
+        let normalized = normalizedLookupKey(text)
+        guard !normalized.isEmpty else { return false }
+        let tokens = [
+            "再说一遍",
+            "重复一下",
+            "怎么说",
+            "提示",
+            "help",
+            "repeat",
+            "challenge",
+            "状态",
+            "status",
+            "what do i say"
+        ]
+        return tokens.contains { normalized.contains(normalizedLookupKey($0)) }
+    }
+
+    private func renderActiveVoiceAuthorizationPrompt(
+        request: SupervisorVoiceAuthorizationRequest
+    ) -> String {
+        let actionText = request.actionText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let challengeToken = activeVoiceChallenge?.challengeId.trimmingCharacters(in: .whitespacesAndNewlines) ?? "n/a"
+        let challengeCode = activeVoiceChallenge?.challengeCode.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let requiresMobileConfirm = voiceAuthorizationResolution?.requiresMobileConfirm ?? false
+
+        var lines: [String] = []
+        if requiresMobileConfirm {
+            if voiceAuthorizationMobileConfirmationLatched {
+                lines.append("当前语音授权已记录移动端确认（challenge=\(challengeToken)）。")
+            } else {
+                lines.append("当前语音授权仍在等待移动端确认（challenge=\(challengeToken)）。")
+            }
+        } else {
+            lines.append("当前语音授权挑战已激活（challenge=\(challengeToken)）。")
+        }
+        if !actionText.isEmpty {
+            lines.append("目标动作：\(actionText)")
+        }
+        if !challengeCode.isEmpty {
+            lines.append("challenge code：\(challengeCode)")
+        }
+        if requiresMobileConfirm {
+            if voiceAuthorizationMobileConfirmationLatched {
+                lines.append("直接继续说授权短语即可，我会立刻执行校验。")
+            } else {
+                lines.append("完成移动端确认后，直接继续说授权短语即可。")
+            }
+        } else {
+            lines.append("直接继续说授权短语即可，我会立刻执行校验。")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func inferredMobileConfirmationState(
+        from text: String,
+        requiresMobileConfirm: Bool
+    ) -> Bool {
+        guard requiresMobileConfirm else { return false }
+        let normalized = normalizedLookupKey(text)
+        guard !normalized.isEmpty else { return false }
+        let tokens = [
+            "手机已确认",
+            "移动端已确认",
+            "已经确认",
+            "已确认",
+            "mobile confirmed",
+            "confirmed on phone",
+            "phone confirmed"
+        ]
+        return tokens.contains { normalized.contains(normalizedLookupKey($0)) }
+    }
+
+    private func isStandaloneMobileConfirmationUtterance(
+        _ text: String,
+        requiresMobileConfirm: Bool
+    ) -> Bool {
+        guard requiresMobileConfirm else { return false }
+        var remainder = normalizedLookupKey(text)
+        guard !remainder.isEmpty else { return false }
+
+        let fragments = [
+            "手机已确认",
+            "移动端已确认",
+            "mobile confirmed",
+            "confirmed on phone",
+            "phone confirmed",
+            "paired mobile confirmation",
+            "手机",
+            "移动端",
+            "mobile",
+            "phone",
+            "paired",
+            "terminal",
+            "确认",
+            "已确认",
+            "已经确认",
+            "confirmed",
+            "confirm",
+            "already",
+            "done",
+            "ok",
+            "okay",
+            "好了",
+            "已经",
+            "已",
+            "了",
+            "在",
+            "上",
+            "我",
+            "现在"
+        ]
+
+        for fragment in fragments.sorted(by: { $0.count > $1.count }) {
+            let normalizedFragment = normalizedLookupKey(fragment)
+            guard !normalizedFragment.isEmpty else { continue }
+            remainder = remainder.replacingOccurrences(of: normalizedFragment, with: "")
+        }
+
+        return remainder.isEmpty
+    }
+
+    private func inferredVoiceAuthorizationSemanticMatchScore(
+        from text: String,
+        mobileConfirmed: Bool
+    ) -> Double {
+        let normalized = normalizedLookupKey(text)
+        guard !normalized.isEmpty else { return 0.95 }
+        if mobileConfirmed {
+            return 0.99
+        }
+        if normalized.count >= 20 {
+            return 0.99
+        }
+        return 0.97
+    }
+
+    private func isCurrentPendingGrantVoiceAuthorization(
+        _ request: SupervisorVoiceAuthorizationRequest
+    ) -> Bool {
+        guard let context = activeVoicePendingGrantAction else { return false }
+        return context.requestId == request.requestId
+    }
+
+    private func renderActiveVoiceAuthorizationVerificationReply(
+        resolution: SupervisorVoiceAuthorizationResolution,
+        request: SupervisorVoiceAuthorizationRequest
+    ) -> String {
+        let actionText = request.actionText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let challengeToken = resolution.challengeId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "n/a"
+
+        switch resolution.state {
+        case .pending:
+            return "语音授权挑战仍在等待校验（challenge=\(challengeToken)）。"
+        case .escalatedToMobile:
+            return "语音授权仍需移动端确认（challenge=\(challengeToken)）。完成确认后继续口述授权短语。"
+        case .verified:
+            if actionText.isEmpty {
+                return "语音授权已验证通过。"
+            }
+            return "语音授权已验证通过，正在继续执行：\(actionText)"
+        case .denied:
+            let deny = resolution.denyCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "denied"
+            return "语音授权被拒绝（challenge=\(challengeToken)，deny=\(deny)）。"
+        case .failClosed:
+            let reason = resolution.reasonCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
+            return "语音授权已失败闭锁（challenge=\(challengeToken)，reason=\(reason)）。"
+        }
+    }
+
     private func pendingGrantVoiceDecision(in text: String) -> Bool? {
         let normalized = normalizedLookupKey(text)
         guard !normalized.isEmpty else { return nil }
+        return pendingGrantDecision(
+            in: text,
+            excludeGuidanceLikeTexts: false
+        )
+    }
 
-        let approveTokens = [
+    private func pendingGrantDecision(
+        in text: String,
+        excludeGuidanceLikeTexts: Bool
+    ) -> Bool? {
+        let normalized = normalizedLookupKey(text)
+        guard !normalized.isEmpty else { return nil }
+        if excludeGuidanceLikeTexts,
+           normalizedContainsAny(normalized, ["建议", "方案", "方向", "guidance"]) {
+            return nil
+        }
+
+        let hasApprove = normalizedContainsAny(normalized, pendingGrantApproveTokens())
+        let hasDeny = normalizedContainsAny(normalized, pendingGrantDenyTokens())
+        guard hasApprove != hasDeny else { return nil }
+
+        let explicitGrantID = explicitPendingGrantRequestId(in: text) != nil
+        let hasSubject = normalizedContainsAny(normalized, pendingGrantSubjectTokens())
+        let hasDemonstrative = normalizedContainsAny(normalized, pendingGrantDemonstrativeTokens())
+        let hasGrantContext = hasRecentSupervisorPendingGrantContext(
+            currentUserMessage: text
+        )
+        guard explicitGrantID || hasSubject || hasDemonstrative || hasGrantContext else { return nil }
+        return hasApprove
+    }
+
+    private func pendingGrantApproveTokens() -> [String] {
+        [
             "批准",
             "通过",
             "准了",
             "approve",
             "allow",
-            "authorize"
+            "authorize",
+            "批了",
+            "批一下",
+            "放行",
+            "给过",
+            "放过去"
         ]
-        let denyTokens = [
+    }
+
+    private func pendingGrantDenyTokens() -> [String] {
+        [
             "拒绝",
             "驳回",
             "否决",
             "deny",
             "reject",
-            "block"
+            "block",
+            "别批",
+            "先别批",
+            "不要批",
+            "别给过",
+            "先别放行",
+            "拦下",
+            "拦一下"
         ]
-        let subjectTokens = [
+    }
+
+    private func pendingGrantSubjectTokens() -> [String] {
+        [
             "grant",
             "授权",
             "权限",
@@ -13364,23 +15542,83 @@ Coder 下一步建议：
             "上线",
             "生产"
         ]
-        let demonstratives = [
+    }
+
+    private func pendingGrantDemonstrativeTokens() -> [String] {
+        [
             "this",
             "这个",
             "当前",
             "这项",
             "这笔"
         ]
+    }
 
-        let hasApprove = approveTokens.contains { normalized.contains(normalizedLookupKey($0)) }
-        let hasDeny = denyTokens.contains { normalized.contains(normalizedLookupKey($0)) }
-        guard hasApprove != hasDeny else { return nil }
+    private func hasRecentSupervisorGuidanceContext(
+        currentUserMessage: String
+    ) -> Bool {
+        recentSupervisorContextMatches(
+            [
+                "待确认 guidance",
+                "这条 guidance",
+                "guidance",
+                "injection=",
+                "review guidance"
+            ],
+            currentUserMessage: currentUserMessage
+        )
+    }
 
-        let hasSubject = subjectTokens.contains { normalized.contains(normalizedLookupKey($0)) }
-        let hasDemonstrative = demonstratives.contains { normalized.contains(normalizedLookupKey($0)) }
-        guard hasSubject || hasDemonstrative else { return nil }
+    private func hasRecentSupervisorPendingGrantContext(
+        currentUserMessage: String
+    ) -> Bool {
+        recentSupervisorContextMatches(
+            [
+                "Hub grant",
+                "待授权",
+                "grant=",
+                "grant_request_id",
+                "联网访问",
+                "web.fetch",
+                "web_fetch",
+                "付费生成"
+            ],
+            currentUserMessage: currentUserMessage
+        )
+    }
 
-        return hasApprove
+    private func recentSupervisorContextMatches(
+        _ needles: [String],
+        currentUserMessage: String,
+        maxMessages: Int = 4
+    ) -> Bool {
+        let currentNormalized = normalizedLookupKey(currentUserMessage)
+        var skippedCurrentUserMessage = false
+        var inspected = 0
+
+        for message in messages.reversed() {
+            let messageNormalized = normalizedLookupKey(message.content)
+            if messageNormalized.isEmpty {
+                continue
+            }
+            if !skippedCurrentUserMessage,
+               message.role == .user,
+               messageNormalized == currentNormalized {
+                skippedCurrentUserMessage = true
+                continue
+            }
+            guard message.role == .assistant || message.role == .system else {
+                continue
+            }
+            inspected += 1
+            if normalizedContainsAny(messageNormalized, needles) {
+                return true
+            }
+            if inspected >= maxMessages {
+                break
+            }
+        }
+        return false
     }
 
     private func resolvePendingHubGrantForVoiceAction(
@@ -14728,11 +16966,6 @@ Coder 下一步建议：
             ) {
                 continue
             }
-            if automationProjectHasBlockingRun(ctx) {
-                blockedProjects.insert(projectId)
-                continue
-            }
-
             let resolution = resolveHubConnectorIngressReceipt(receipt, ctx: ctx, fallbackNow: now)
             switch resolution {
             case .route(let ingress):
@@ -14748,6 +16981,11 @@ Coder 下一步建议：
                     emitSystemMessage: emitSystemMessage
                 )
                 results.append(result)
+                announceHubConnectorIngressReceiptResult(
+                    receipt,
+                    result: result,
+                    projectName: project.displayName
+                )
                 if result.decision == .run || result.decision == .hold {
                     blockedProjects.insert(projectId)
                 }
@@ -14766,6 +17004,11 @@ Coder 下一步建议：
                     emitSystemMessage: emitSystemMessage
                 )
                 results.append(result)
+                announceHubConnectorIngressReceiptResult(
+                    receipt,
+                    result: result,
+                    projectName: project.displayName
+                )
             }
         }
 
@@ -14887,20 +17130,32 @@ Coder 下一步建议：
         }
 
         guard actionName == "deploy.plan" else {
-            return finalize(
+            let result = finalize(
                 status: "failed",
                 denyCode: "xt_command_action_not_supported_yet",
                 detail: "xt command action not supported yet"
             )
+            announceOperatorChannelXTCommandResult(
+                command,
+                result: result,
+                projectName: nil
+            )
+            return result
         }
 
         guard let project = projectMap[projectID],
               let ctx = projectContext(from: project) else {
-            return finalize(
+            let result = finalize(
                 status: "failed",
                 denyCode: "project_context_missing",
                 detail: "project context missing"
             )
+            announceOperatorChannelXTCommandResult(
+                command,
+                result: result,
+                projectName: nil
+            )
+            return result
         }
 
         do {
@@ -14931,6 +17186,11 @@ Coder 下一步建议：
                     for: ctx
                 )
                 appendRecentEvent("operator channel xt command failed: \(project.projectId) -> \(actionName) (\(result.denyCode))")
+                announceOperatorChannelXTCommandResult(
+                    command,
+                    result: result,
+                    projectName: project.displayName
+                )
                 return result
             }
 
@@ -14967,6 +17227,11 @@ Coder 下一步建议：
                 for: ctx
             )
             appendRecentEvent("operator channel xt command prepared: \(project.projectId) -> \(prepared.launchRef)")
+            announceOperatorChannelXTCommandResult(
+                command,
+                result: result,
+                projectName: project.displayName
+            )
             return result
         } catch {
             let denyCode = operatorChannelXTCommandReasonCode(from: error)
@@ -14994,7 +17259,334 @@ Coder 下一步建议：
                 for: ctx
             )
             appendRecentEvent("operator channel xt command failed: \(project.projectId) -> \(actionName) (\(denyCode))")
+            announceOperatorChannelXTCommandResult(
+                command,
+                result: result,
+                projectName: project.displayName
+            )
             return result
+        }
+    }
+
+    private func announceOperatorChannelXTCommandResult(
+        _ command: HubIPCClient.OperatorChannelXTCommandItem,
+        result: HubIPCClient.OperatorChannelXTCommandResultItem,
+        projectName: String?
+    ) {
+        let provider = operatorChannelProviderDisplayName(command.provider)
+        let action = operatorChannelActionDisplayName(command.actionName)
+        let projectToken = operatorChannelProjectDisplayName(projectName, projectID: result.projectId)
+        let denyDisplay = operatorChannelXTCommandReasonDisplayName(
+            result.denyCode.isEmpty ? result.detail : result.denyCode
+        )
+
+        let systemMessage: String
+        let voiceText: String
+        let title: String
+        let body: String
+        let voiceTrigger: SupervisorVoiceJobTrigger
+        let voicePriority: SupervisorVoiceJobPriority
+
+        switch result.status {
+        case "prepared":
+            let runToken = result.runId.trimmingCharacters(in: .whitespacesAndNewlines)
+            systemMessage = "已接收来自 \(provider) 的 XT 指令：\(projectToken) -> \(action) 已准备执行（run=\(runToken.isEmpty ? "n/a" : runToken)）。"
+            voiceText = "\(provider) 的 XT 指令我已经备好了。\(projectToken) 的\(action)马上就能接着跑。"
+            title = "🛰️ \(provider) 指令已在 XT 准备"
+            body = """
+project=\(projectToken)
+action=\(action)
+status=\(result.status)
+run=\(runToken.isEmpty ? "n/a" : runToken)
+audit=\(result.auditRef)
+"""
+            voiceTrigger = .completed
+            voicePriority = .normal
+        default:
+            let denyToken = result.denyCode.trimmingCharacters(in: .whitespacesAndNewlines)
+            systemMessage = "来自 \(provider) 的 XT 指令失败闭锁：\(projectToken) -> \(action)（deny=\(denyToken.isEmpty ? "unknown" : denyToken)）。"
+            voiceText = "\(provider) 的 XT 指令我先按失败闭锁拦下了。\(projectToken) 暂时不能做\(action)。原因：\(denyDisplay)。"
+            title = "⛔️ \(provider) 指令在 XT 失败闭锁"
+            body = """
+project=\(projectToken)
+action=\(action)
+status=\(result.status)
+deny=\(denyToken.isEmpty ? "unknown" : denyToken)
+detail=\(result.detail)
+audit=\(result.auditRef)
+"""
+            voiceTrigger = .blocked
+            voicePriority = .interrupt
+        }
+
+        addSystemMessage(systemMessage)
+        _ = speakOperatorChannelXTCommandUpdate(
+            text: voiceText,
+            trigger: voiceTrigger,
+            priority: voicePriority,
+            commandId: result.commandId,
+            detailToken: result.status == "prepared"
+                ? result.runId
+                : (result.denyCode.isEmpty ? result.detail : result.denyCode)
+        )
+
+        guard backgroundSupervisorServicesEnabled else { return }
+        HubIPCClient.pushNotification(
+            source: "X-Terminal",
+            title: title,
+            body: body,
+            dedupeKey: "x_terminal_operator_channel_xt_command_\(result.commandId)_\(result.status)_\(result.denyCode)",
+            actionURL: supervisorActionURL(projectId: result.projectId),
+            unread: true
+        )
+    }
+
+    @discardableResult
+    private func speakOperatorChannelXTCommandUpdate(
+        text: String,
+        trigger: SupervisorVoiceJobTrigger,
+        priority: SupervisorVoiceJobPriority,
+        commandId: String,
+        detailToken: String
+    ) -> SupervisorSpeechSynthesizer.Outcome {
+        let script = conciseVoiceReplyScript(text)
+        guard !script.isEmpty else { return .suppressed("empty_script") }
+        let detail = detailToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        let dedupeKey = "operator-xt-command:\(commandId):\(trigger.rawValue):\(detail.isEmpty ? "none" : detail)"
+        let job = SupervisorVoiceTTSJob(
+            trigger: trigger,
+            priority: priority,
+            script: script,
+            dedupeKey: dedupeKey
+        )
+        return supervisorSpeechSynthesizer.speak(
+            job: job,
+            preferences: currentVoicePreferences()
+        )
+    }
+
+    private func announceHubConnectorIngressReceiptResult(
+        _ receipt: HubIPCClient.ConnectorIngressReceipt,
+        result: SupervisorAutomationExternalTriggerResult,
+        projectName: String
+    ) {
+        let provider = remoteChannelProviderDisplayName(receipt.connector)
+        let projectToken = operatorChannelProjectDisplayName(projectName, projectID: result.projectId)
+        let ingress = hubConnectorIngressDisplayName(receipt, triggerType: result.triggerType)
+        let reasonToken = result.reasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let reasonDisplay = hubConnectorIngressReasonDisplayName(reasonToken)
+
+        let systemMessage: String
+        let voiceText: String
+        let title: String
+        let body: String
+        let voiceTrigger: SupervisorVoiceJobTrigger
+        let voicePriority: SupervisorVoiceJobPriority
+
+        switch result.decision {
+        case .run:
+            let runToken = result.runId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            systemMessage = "已接收来自 \(provider) 的 Hub 入口：\(projectToken) -> \(ingress) 已转入 XT automation（run=\(runToken.isEmpty ? "n/a" : runToken)）。"
+            voiceText = "\(provider) 的远程入口我已经接进 XT 继续处理了。项目是 \(projectToken)，入口是\(ingress)。"
+            title = "🛰️ \(provider) 入口已转入 XT"
+            body = """
+project=\(projectToken)
+ingress=\(ingress)
+decision=\(result.decision.rawValue)
+run=\(runToken.isEmpty ? "n/a" : runToken)
+audit=\(result.auditRef)
+"""
+            voiceTrigger = .completed
+            voicePriority = .normal
+        case .hold:
+            let reasonSummary = reasonDisplay.isEmpty ? "项目已有进行中的 automation" : reasonDisplay
+            systemMessage = "来自 \(provider) 的 Hub 入口暂缓：\(projectToken) -> \(ingress)（reason=\(reasonToken.isEmpty ? "unknown" : reasonToken)）。"
+            voiceText = "\(provider) 的远程入口我先暂缓了。\(projectToken) 这边还有自动流程在跑。原因：\(reasonSummary)。"
+            title = "⏸️ \(provider) 入口在 XT 暂缓"
+            body = """
+project=\(projectToken)
+ingress=\(ingress)
+decision=\(result.decision.rawValue)
+reason=\(reasonToken.isEmpty ? "unknown" : reasonToken)
+audit=\(result.auditRef)
+"""
+            voiceTrigger = .blocked
+            voicePriority = .interrupt
+        case .failClosed:
+            systemMessage = "来自 \(provider) 的 Hub 入口失败闭锁：\(projectToken) -> \(ingress)（reason=\(reasonToken.isEmpty ? "unknown" : reasonToken)）。"
+            voiceText = "\(provider) 的远程入口我先按失败闭锁拦下了。\(projectToken) 暂时不能接这个\(ingress)。原因：\(reasonDisplay)。"
+            title = "⛔️ \(provider) 入口在 XT 失败闭锁"
+            body = """
+project=\(projectToken)
+ingress=\(ingress)
+decision=\(result.decision.rawValue)
+reason=\(reasonToken.isEmpty ? "unknown" : reasonToken)
+audit=\(result.auditRef)
+"""
+            voiceTrigger = .blocked
+            voicePriority = .interrupt
+        case .drop:
+            return
+        }
+
+        addSystemMessage(systemMessage)
+        _ = speakHubConnectorIngressUpdate(
+            text: voiceText,
+            trigger: voiceTrigger,
+            priority: voicePriority,
+            receiptId: receipt.receiptId,
+            detailToken: result.runId ?? reasonToken
+        )
+
+        guard backgroundSupervisorServicesEnabled else { return }
+        HubIPCClient.pushNotification(
+            source: "X-Terminal",
+            title: title,
+            body: body,
+            dedupeKey: "x_terminal_hub_connector_ingress_\(receipt.receiptId)_\(result.decision.rawValue)_\(reasonToken)",
+            actionURL: supervisorActionURL(projectId: result.projectId),
+            unread: true
+        )
+    }
+
+    @discardableResult
+    private func speakHubConnectorIngressUpdate(
+        text: String,
+        trigger: SupervisorVoiceJobTrigger,
+        priority: SupervisorVoiceJobPriority,
+        receiptId: String,
+        detailToken: String
+    ) -> SupervisorSpeechSynthesizer.Outcome {
+        let script = conciseVoiceReplyScript(text)
+        guard !script.isEmpty else { return .suppressed("empty_script") }
+        let detail = detailToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        let dedupeKey = "connector-ingress:\(receiptId):\(trigger.rawValue):\(detail.isEmpty ? "none" : detail)"
+        let job = SupervisorVoiceTTSJob(
+            trigger: trigger,
+            priority: priority,
+            script: script,
+            dedupeKey: dedupeKey
+        )
+        return supervisorSpeechSynthesizer.speak(
+            job: job,
+            preferences: currentVoicePreferences()
+        )
+    }
+
+    private func hubConnectorIngressDisplayName(
+        _ receipt: HubIPCClient.ConnectorIngressReceipt,
+        triggerType: XTAutomationTriggerType
+    ) -> String {
+        switch triggerType {
+        case .webhook:
+            return "webhook"
+        default:
+            switch normalizedLookupKey(receipt.channelScope) {
+            case "dm":
+                return "私聊消息入口"
+            case "group":
+                return "群聊消息入口"
+            case "channel":
+                return "频道消息入口"
+            case "repo":
+                return "仓库入口"
+            default:
+                return "消息入口"
+            }
+        }
+    }
+
+    private func hubConnectorIngressReasonDisplayName(_ token: String) -> String {
+        switch normalizedLookupKey(token) {
+        case "hubingresssourceunsupported":
+            return "该远程来源暂未接入 XT"
+        case "hubingressrecipeunavailable":
+            return "项目缺少可运行的自动化配方"
+        case "hubingresstriggerunresolved":
+            return "入口未映射到已声明 trigger"
+        case "automationactiverunpresent":
+            return "项目已有进行中的 automation"
+        case "triggercooldownactive":
+            return "该入口仍在冷却窗口内"
+        case "externaltriggerreplaydetected":
+            return "重复入口已被抑制"
+        case "triggeridmissing":
+            return "trigger 标识缺失"
+        case "externaltriggerdedupekeymissing":
+            return "dedupe key 缺失"
+        case "triggeringressnotallowed":
+            return "该入口未被允许"
+        default:
+            let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return "未知原因" }
+            return trimmed.replacingOccurrences(of: "_", with: " ")
+        }
+    }
+
+    private func remoteChannelProviderDisplayName(_ provider: String) -> String {
+        switch normalizedLookupKey(provider) {
+        case "slack":
+            return "Slack"
+        case "telegram":
+            return "Telegram"
+        case "feishu":
+            return "Feishu"
+        case "github":
+            return "GitHub"
+        case "discord":
+            return "Discord"
+        case "whatsappcloudapi":
+            return "WhatsApp Cloud"
+        case "whatsapppersonalqr", "whatsapppersonalrunner":
+            return "WhatsApp Personal"
+        default:
+            let trimmed = provider.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? "Hub" : trimmed
+        }
+    }
+
+    private func operatorChannelProviderDisplayName(_ provider: String) -> String {
+        remoteChannelProviderDisplayName(provider)
+    }
+
+    private func operatorChannelActionDisplayName(_ actionName: String) -> String {
+        switch normalizedLookupKey(actionName) {
+        case "deployplan":
+            return "部署计划"
+        default:
+            let trimmed = actionName.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? "XT 指令" : trimmed
+        }
+    }
+
+    private func operatorChannelProjectDisplayName(
+        _ projectName: String?,
+        projectID: String
+    ) -> String {
+        let name = projectName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !name.isEmpty {
+            return name
+        }
+        let projectToken = projectID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return projectToken.isEmpty ? "当前项目" : projectToken
+    }
+
+    private func operatorChannelXTCommandReasonDisplayName(_ token: String) -> String {
+        switch normalizedLookupKey(token) {
+        case "trustedautomationprojectnotbound":
+            return "项目未绑定到当前设备"
+        case "projectcontextmissing":
+            return "项目上下文缺失"
+        case "xtcommandactionnotsupportedyet":
+            return "该动作尚未支持"
+        case "activerecipemissing":
+            return "项目缺少可执行自动化配方"
+        case "triggeringressnotallowed":
+            return "该入口未被允许"
+        default:
+            let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return "未知原因" }
+            return trimmed.replacingOccurrences(of: "_", with: " ")
         }
     }
 
@@ -15207,11 +17799,13 @@ Coder 下一步建议：
                 automationExternalTriggerAcceptedLedger[acceptedKey] ?? 0
             )
             appendRecentEvent("automation trigger run: \(ctx.projectName()) -> \(triggerId)")
+        } else if decision == .hold {
+            appendRecentEvent("automation trigger hold: \(ctx.projectName()) -> \(triggerId) (\(reasonCode))")
         } else if decision == .failClosed {
             appendRecentEvent("automation trigger fail-closed: \(ctx.projectName()) -> \(triggerId) (\(reasonCode))")
         }
 
-        if emitSystemMessage && decision != .run {
+        if emitSystemMessage && decision != .run && ingress.ingressChannel != "hub_connector_receipt_snapshot" {
             addSystemMessage("automation 外部触发未执行：\(ctx.projectName()) -> \(triggerId) (\(reasonCode))")
         }
 
@@ -17682,6 +20276,7 @@ extension SupervisorManager {
 
     func resetVoiceAuthorizationState() {
         voiceAuthorizationResolution = nil
+        voiceAuthorizationMobileConfirmationLatched = false
         activeVoiceChallenge = nil
         activeVoiceAuthorizationRequest = nil
         activeVoicePendingGrantAction = nil
@@ -17867,6 +20462,15 @@ extension SupervisorManager {
                 state: runningCheckpoint.state,
                 detail: "action_graph_started"
             )
+            if handleAutomationSafePointHoldIfNeeded(
+                runID: prepared.launchRef,
+                requestedState: .running,
+                ctx: ctx,
+                emitSystemMessage: emitSystemMessage,
+                executionDetail: "before executing action graph"
+            ) {
+                return
+            }
 
             let report = await automationRunExecutor.execute(
                 runID: prepared.launchRef,
@@ -17892,17 +20496,26 @@ extension SupervisorManager {
                 state: finalCheckpoint.state,
                 detail: report.detail
             )
-            appendRecentEvent("automation executed: \(ctx.projectName()) -> \(report.detail)")
-            if emitSystemMessage {
-                addSystemMessage(renderAutomationExecutionSummary(projectName: ctx.projectName(), report: report))
-            }
-            scheduleAutomaticSelfIterationIfNeeded(
-                prepared: prepared,
-                report: report,
-                finalCheckpoint: finalCheckpoint,
+            let heldAtSafePoint = handleAutomationSafePointHoldIfNeeded(
+                runID: prepared.launchRef,
+                requestedState: report.finalState,
                 ctx: ctx,
-                emitSystemMessage: emitSystemMessage
+                emitSystemMessage: emitSystemMessage,
+                executionDetail: report.detail
             )
+            if !heldAtSafePoint {
+                appendRecentEvent("automation executed: \(ctx.projectName()) -> \(report.detail)")
+                if emitSystemMessage {
+                    addSystemMessage(renderAutomationExecutionSummary(projectName: ctx.projectName(), report: report))
+                }
+                scheduleAutomaticSelfIterationIfNeeded(
+                    prepared: prepared,
+                    report: report,
+                    finalCheckpoint: finalCheckpoint,
+                    ctx: ctx,
+                    emitSystemMessage: emitSystemMessage
+                )
+            }
         } catch {
             automationStatusLine = "automation runtime: \(prepared.launchRef) -> failed (\(error.localizedDescription))"
             appendRecentEvent("automation execution failed: \(ctx.projectName()) -> \(error.localizedDescription)")
@@ -17961,6 +20574,15 @@ extension SupervisorManager {
             state: checkpoint.state,
             detail: checkpoint.lastTransition
         )
+        if handleAutomationSafePointHoldIfNeeded(
+            runID: checkpoint.runID,
+            requestedState: nextState,
+            ctx: ctx,
+            emitSystemMessage: emitSystemMessage,
+            executionDetail: checkpoint.lastTransition
+        ) {
+            return checkpoint
+        }
         appendRecentEvent("automation advanced: \(ctx.projectName()) -> \(checkpoint.state.rawValue)")
         if emitSystemMessage {
             addSystemMessage("automation 状态更新：\(ctx.projectName()) -> \(checkpoint.state.rawValue)")

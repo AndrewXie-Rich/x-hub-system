@@ -89,6 +89,13 @@ class ProjectModel: ObservableObject, Identifiable {
 
     @Published var currentModel: ModelInfo
     @Published var autonomyLevel: AutonomyLevel
+    @Published var executionTier: AXProjectExecutionTier
+    @Published var supervisorInterventionTier: AXProjectSupervisorInterventionTier
+    @Published var reviewPolicyMode: AXProjectReviewPolicyMode
+    @Published var progressHeartbeatSeconds: Int
+    @Published var reviewPulseSeconds: Int
+    @Published var brainstormReviewSeconds: Int
+    @Published var eventDrivenReviewEnabled: Bool
     @Published var priority: Int = 0
 
     // MARK: - Budget & Cost
@@ -177,8 +184,20 @@ class ProjectModel: ObservableObject, Identifiable {
         modelName: String,
         isLocalModel: Bool = false,
         autonomyLevel: AutonomyLevel = .assisted,
+        executionTier: AXProjectExecutionTier? = nil,
+        supervisorInterventionTier: AXProjectSupervisorInterventionTier? = nil,
+        reviewPolicyMode: AXProjectReviewPolicyMode? = nil,
+        progressHeartbeatSeconds: Int? = nil,
+        reviewPulseSeconds: Int? = nil,
+        brainstormReviewSeconds: Int? = nil,
+        eventDrivenReviewEnabled: Bool? = nil,
         budget: Budget = Budget(daily: 10.0, monthly: 300.0)
     ) {
+        let resolvedExecutionTier = executionTier ?? AXProjectExecutionTier.fromLegacyAutonomyLevel(autonomyLevel)
+        let recommendedGovernance = AXProjectGovernanceBundle.recommended(
+            for: resolvedExecutionTier,
+            supervisorInterventionTier: supervisorInterventionTier
+        )
         self.id = id
         self.name = name
         self.taskDescription = taskDescription
@@ -198,6 +217,13 @@ class ProjectModel: ObservableObject, Identifiable {
             badgeColor: nil
         )
         self.autonomyLevel = autonomyLevel
+        self.executionTier = resolvedExecutionTier
+        self.supervisorInterventionTier = recommendedGovernance.supervisorInterventionTier
+        self.reviewPolicyMode = reviewPolicyMode ?? recommendedGovernance.reviewPolicyMode
+        self.progressHeartbeatSeconds = progressHeartbeatSeconds ?? recommendedGovernance.schedule.progressHeartbeatSeconds
+        self.reviewPulseSeconds = reviewPulseSeconds ?? recommendedGovernance.schedule.reviewPulseSeconds
+        self.brainstormReviewSeconds = brainstormReviewSeconds ?? recommendedGovernance.schedule.brainstormReviewSeconds
+        self.eventDrivenReviewEnabled = eventDrivenReviewEnabled ?? recommendedGovernance.schedule.eventDrivenReviewEnabled
         self.budget = budget
         self.costTracker = CostTracker()
         self.session = ChatSessionModel()
@@ -255,6 +281,25 @@ class ProjectModel: ObservableObject, Identifiable {
         priority = newPriority
     }
 
+    func updateGovernance(
+        executionTier: AXProjectExecutionTier,
+        supervisorInterventionTier: AXProjectSupervisorInterventionTier,
+        reviewPolicyMode: AXProjectReviewPolicyMode,
+        progressHeartbeatSeconds: Int,
+        reviewPulseSeconds: Int,
+        brainstormReviewSeconds: Int,
+        eventDrivenReviewEnabled: Bool
+    ) {
+        self.executionTier = executionTier
+        self.supervisorInterventionTier = supervisorInterventionTier
+        self.reviewPolicyMode = reviewPolicyMode
+        self.progressHeartbeatSeconds = progressHeartbeatSeconds
+        self.reviewPulseSeconds = reviewPulseSeconds
+        self.brainstormReviewSeconds = brainstormReviewSeconds
+        self.eventDrivenReviewEnabled = eventDrivenReviewEnabled
+        self.autonomyLevel = .fromExecutionTier(executionTier)
+    }
+
     func addDependency(_ projectId: UUID) {
         if !dependencies.contains(projectId) {
             dependencies.append(projectId)
@@ -287,6 +332,23 @@ class ProjectModel: ObservableObject, Identifiable {
 
     func endCollaboration(with projectId: UUID) {
         collaboratingProjects.removeAll { $0 == projectId }
+    }
+}
+
+extension AutonomyLevel {
+    static func fromExecutionTier(_ tier: AXProjectExecutionTier) -> AutonomyLevel {
+        switch tier {
+        case .a0Observe:
+            return .manual
+        case .a1Plan:
+            return .assisted
+        case .a2RepoAuto:
+            return .semiAuto
+        case .a3DeliverAuto:
+            return .auto
+        case .a4OpenClaw:
+            return .fullAuto
+        }
     }
 }
 

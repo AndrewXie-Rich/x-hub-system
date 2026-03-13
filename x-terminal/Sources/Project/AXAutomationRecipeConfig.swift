@@ -358,6 +358,10 @@ extension AXProjectConfig {
         out.deviceToolGroups = xtNormalizedTrustedAutomationDeviceToolGroups(out.deviceToolGroups)
         out.autonomyTTLSeconds = max(60, out.autonomyTTLSeconds)
         out.autonomyUpdatedAtMs = max(0, out.autonomyUpdatedAtMs)
+        out.progressHeartbeatSeconds = max(60, out.progressHeartbeatSeconds)
+        out.reviewPulseSeconds = max(0, out.reviewPulseSeconds)
+        out.brainstormReviewSeconds = max(0, out.brainstormReviewSeconds)
+        out.eventReviewTriggers = AXProjectReviewTrigger.normalizedList(out.eventReviewTriggers)
         if out.automationMode == .trustedAutomation, out.deviceToolGroups.isEmpty {
             out.deviceToolGroups = xtTrustedAutomationDefaultDeviceToolGroups()
         }

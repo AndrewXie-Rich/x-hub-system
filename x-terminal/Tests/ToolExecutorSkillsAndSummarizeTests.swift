@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import XTerminal
 
+@Suite(.serialized)
 struct ToolExecutorSkillsAndSummarizeTests {
 
     @Test
@@ -35,6 +36,148 @@ struct ToolExecutorSkillsAndSummarizeTests {
         #expect(jsonString(summary["source"]) == "local_hub_index")
         #expect(jsonNumber(summary["results_count"]) == 1)
         #expect(toolBody(result.output).contains("Summarize [summarize]"))
+    }
+
+    @Test
+    func agentImportRecordReturnsStructuredHubReview() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "agent-import-record-review")
+        defer { fixture.cleanup() }
+
+        HubIPCClient.installAgentImportRecordOverrideForTesting { lookup in
+            #expect(lookup.stagingId == "stage-123")
+            #expect(lookup.selector == nil)
+            #expect(lookup.skillId == nil)
+            #expect(lookup.projectId == nil)
+            return HubIPCClient.AgentImportRecordResult(
+                ok: true,
+                source: "hub_runtime_grpc",
+                selector: nil,
+                stagingId: lookup.stagingId,
+                status: "staged_with_warnings",
+                auditRef: "audit-stage-123",
+                schemaVersion: "xhub.agent_import_record.v1",
+                skillId: "agent-browser",
+                projectId: nil,
+                recordJSON: #"""
+                {
+                  "staging_id": "stage-123",
+                  "status": "staged_with_warnings",
+                  "audit_ref": "audit-stage-123",
+                  "requested_by": "xt-ui",
+                  "note": "ui_import:agent-browser",
+                  "vetter_status": "warn_only",
+                  "vetter_critical_count": 0,
+                  "vetter_warn_count": 2,
+                  "vetter_audit_ref": "vet-audit-123",
+                  "vetter_report_ref": "skills_store/agent_imports/reports/stage-123.json",
+                  "promotion_blocked_reason": "",
+                  "findings": [
+                    { "code": "warn-dynamic", "detail": "dynamic dispatch requires review" }
+                  ],
+                  "import_manifest": {
+                    "skill_id": "agent-browser",
+                    "display_name": "Agent Browser",
+                    "preflight_status": "passed",
+                    "risk_level": "high",
+                    "policy_scope": "project",
+                    "requires_grant": true,
+                    "normalized_capabilities": ["browser.read", "browser.write"]
+                  }
+                }
+                """#,
+                reasonCode: nil
+            )
+        }
+        defer { HubIPCClient.resetAgentImportRecordOverrideForTesting() }
+
+        let result = try await ToolExecutor.execute(
+            call: ToolCall(
+                tool: .agentImportRecord,
+                args: [
+                    "staging_id": .string("stage-123"),
+                ]
+            ),
+            projectRoot: fixture.root
+        )
+
+        #expect(result.ok)
+        let summary = try #require(toolSummaryObject(result.output))
+        #expect(jsonString(summary["tool"]) == ToolName.agentImportRecord.rawValue)
+        #expect(jsonString(summary["source"]) == "hub_runtime_grpc")
+        #expect(jsonString(summary["staging_id"]) == "stage-123")
+        #expect(jsonString(summary["skill_id"]) == "agent-browser")
+        #expect(jsonString(summary["vetter_status"]) == "warn_only")
+        #expect(jsonNumber(summary["vetter_warn_count"]) == 2)
+        #expect(jsonString(summary["vetter_report_ref"]) == "skills_store/agent_imports/reports/stage-123.json")
+
+        let body = toolBody(result.output)
+        #expect(body.contains("vetter: warn_only"))
+        #expect(body.contains("vetter_report_ref: skills_store/agent_imports/reports/stage-123.json"))
+        #expect(body.contains("findings (1):"))
+    }
+
+    @Test
+    func agentImportRecordDefaultsToLatestProjectSelector() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "agent-import-record-selector")
+        defer { fixture.cleanup() }
+
+        let projectID = AXProjectRegistryStore.projectId(forRoot: fixture.root)
+        #expect(!projectID.isEmpty)
+
+        HubIPCClient.installAgentImportRecordOverrideForTesting { lookup in
+            #expect(lookup.stagingId == nil)
+            #expect(lookup.selector == "latest_for_project")
+            #expect(lookup.skillId == nil)
+            #expect(lookup.projectId == projectID)
+            return HubIPCClient.AgentImportRecordResult(
+                ok: true,
+                source: "hub_runtime_grpc",
+                selector: lookup.selector,
+                stagingId: "stage-latest-project",
+                status: "staged",
+                auditRef: "audit-stage-latest-project",
+                schemaVersion: "xhub.agent_import_record.v1",
+                skillId: "summarize",
+                projectId: lookup.projectId,
+                recordJSON: """
+                {
+                  "staging_id": "stage-latest-project",
+                  "status": "staged",
+                  "audit_ref": "audit-stage-latest-project",
+                  "project_id": "\(projectID)",
+                  "vetter_status": "passed",
+                  "vetter_critical_count": 0,
+                  "vetter_warn_count": 0,
+                  "import_manifest": {
+                    "skill_id": "summarize",
+                    "display_name": "Summarize",
+                    "preflight_status": "passed",
+                    "risk_level": "low",
+                    "policy_scope": "project",
+                    "requires_grant": false,
+                    "normalized_capabilities": ["document.summarize"]
+                  }
+                }
+                """,
+                reasonCode: nil
+            )
+        }
+        defer { HubIPCClient.resetAgentImportRecordOverrideForTesting() }
+
+        let result = try await ToolExecutor.execute(
+            call: ToolCall(
+                tool: .agentImportRecord,
+                args: [:]
+            ),
+            projectRoot: fixture.root
+        )
+
+        #expect(result.ok)
+        let summary = try #require(toolSummaryObject(result.output))
+        #expect(jsonString(summary["selector"]) == "latest_for_project")
+        #expect(jsonString(summary["project_id"]) == projectID)
+        #expect(jsonString(summary["skill_id"]) == "summarize")
+        #expect(jsonString(summary["staging_id"]) == "stage-latest-project")
     }
 
     @Test

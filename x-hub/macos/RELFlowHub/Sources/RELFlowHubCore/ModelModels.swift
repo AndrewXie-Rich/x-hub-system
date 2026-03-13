@@ -125,6 +125,18 @@ public struct ModelProcessorRequirements: Codable, Equatable, Sendable {
 }
 
 public enum LocalModelCapabilityDefaults {
+    public static func defaultLoadProfile(contextLength: Int) -> LocalModelLoadProfile {
+        LocalModelLoadProfile(contextLength: max(512, contextLength))
+    }
+
+    public static func defaultMaxContextLength(
+        contextLength: Int,
+        defaultLoadProfile: LocalModelLoadProfile? = nil
+    ) -> Int {
+        let defaultContextLength = defaultLoadProfile?.contextLength ?? contextLength
+        return max(512, max(contextLength, defaultContextLength))
+    }
+
     public static func defaultModelFormat(forBackend backend: String) -> String {
         switch backend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "mlx":
@@ -306,6 +318,7 @@ public struct HubModel: Identifiable, Codable, Equatable, Sendable {
     public var backend: String
     public var quant: String
     public var contextLength: Int
+    public var maxContextLength: Int
     public var paramsB: Double
     public var roles: [String]?
     public var state: HubModelState
@@ -314,6 +327,7 @@ public struct HubModel: Identifiable, Codable, Equatable, Sendable {
     public var modelPath: String?
     public var note: String?
     public var modelFormat: String
+    public var defaultLoadProfile: LocalModelLoadProfile
     public var taskKinds: [String]
     public var inputModalities: [String]
     public var outputModalities: [String]
@@ -328,6 +342,7 @@ public struct HubModel: Identifiable, Codable, Equatable, Sendable {
         backend: String,
         quant: String,
         contextLength: Int,
+        maxContextLength: Int? = nil,
         paramsB: Double,
         roles: [String]? = nil,
         state: HubModelState,
@@ -336,6 +351,7 @@ public struct HubModel: Identifiable, Codable, Equatable, Sendable {
         modelPath: String? = nil,
         note: String? = nil,
         modelFormat: String? = nil,
+        defaultLoadProfile: LocalModelLoadProfile? = nil,
         taskKinds: [String]? = nil,
         inputModalities: [String]? = nil,
         outputModalities: [String]? = nil,
@@ -348,7 +364,15 @@ public struct HubModel: Identifiable, Codable, Equatable, Sendable {
         self.name = name
         self.backend = backend
         self.quant = quant
-        self.contextLength = contextLength
+        let resolvedModelFormat = modelFormat ?? LocalModelCapabilityDefaults.defaultModelFormat(forBackend: backend)
+        let resolvedDefaultLoadProfile = (defaultLoadProfile ?? LocalModelCapabilityDefaults.defaultLoadProfile(contextLength: contextLength))
+        let resolvedMaxContextLength = LocalModelCapabilityDefaults.defaultMaxContextLength(
+            contextLength: maxContextLength ?? contextLength,
+            defaultLoadProfile: resolvedDefaultLoadProfile
+        )
+        self.defaultLoadProfile = resolvedDefaultLoadProfile.normalized(maxContextLength: resolvedMaxContextLength)
+        self.contextLength = self.defaultLoadProfile.contextLength
+        self.maxContextLength = max(self.contextLength, resolvedMaxContextLength)
         self.paramsB = paramsB
         self.roles = roles
         self.state = state
@@ -356,7 +380,6 @@ public struct HubModel: Identifiable, Codable, Equatable, Sendable {
         self.tokensPerSec = tokensPerSec
         self.modelPath = modelPath
         self.note = note
-        let resolvedModelFormat = modelFormat ?? LocalModelCapabilityDefaults.defaultModelFormat(forBackend: backend)
         let resolvedTaskKinds = LocalModelCapabilityDefaults.normalizedStringList(
             taskKinds ?? LocalModelCapabilityDefaults.defaultTaskKinds(forBackend: backend, roles: roles),
             fallback: LocalModelCapabilityDefaults.defaultTaskKinds(forBackend: backend, roles: roles)
@@ -391,6 +414,7 @@ public struct HubModel: Identifiable, Codable, Equatable, Sendable {
         case backend
         case quant
         case contextLength
+        case maxContextLength
         case paramsB
         case roles
         case state
@@ -399,6 +423,7 @@ public struct HubModel: Identifiable, Codable, Equatable, Sendable {
         case modelPath
         case note
         case modelFormat
+        case defaultLoadProfile
         case taskKinds
         case inputModalities
         case outputModalities
@@ -408,13 +433,19 @@ public struct HubModel: Identifiable, Codable, Equatable, Sendable {
         case processorRequirements
     }
 
+    enum SnakeCodingKeys: String, CodingKey {
+        case maxContextLength = "max_context_length"
+        case defaultLoadProfile = "default_load_profile"
+    }
+
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        let s = try decoder.container(keyedBy: SnakeCodingKeys.self)
         id = (try? c.decode(String.self, forKey: .id)) ?? ""
         name = (try? c.decode(String.self, forKey: .name)) ?? id
         backend = (try? c.decode(String.self, forKey: .backend)) ?? "mlx"
         quant = (try? c.decode(String.self, forKey: .quant)) ?? "bf16"
-        contextLength = (try? c.decode(Int.self, forKey: .contextLength)) ?? 8192
+        let legacyContextLength = (try? c.decode(Int.self, forKey: .contextLength)) ?? 8192
         paramsB = (try? c.decode(Double.self, forKey: .paramsB)) ?? 0.0
         roles = try? c.decodeIfPresent([String].self, forKey: .roles)
         state = (try? c.decode(HubModelState.self, forKey: .state)) ?? .available
@@ -424,6 +455,18 @@ public struct HubModel: Identifiable, Codable, Equatable, Sendable {
         note = try? c.decodeIfPresent(String.self, forKey: .note)
         let defaultTaskKinds = LocalModelCapabilityDefaults.defaultTaskKinds(forBackend: backend, roles: roles)
         modelFormat = (try? c.decode(String.self, forKey: .modelFormat)) ?? LocalModelCapabilityDefaults.defaultModelFormat(forBackend: backend)
+        let decodedDefaultLoadProfile = (try? c.decode(LocalModelLoadProfile.self, forKey: .defaultLoadProfile))
+            ?? (try? s.decode(LocalModelLoadProfile.self, forKey: .defaultLoadProfile))
+        let decodedMaxContextLength = (try? c.decode(Int.self, forKey: .maxContextLength))
+            ?? (try? s.decode(Int.self, forKey: .maxContextLength))
+            ?? LocalModelCapabilityDefaults.defaultMaxContextLength(
+                contextLength: legacyContextLength,
+                defaultLoadProfile: decodedDefaultLoadProfile
+            )
+        defaultLoadProfile = (decodedDefaultLoadProfile ?? LocalModelCapabilityDefaults.defaultLoadProfile(contextLength: legacyContextLength))
+            .normalized(maxContextLength: decodedMaxContextLength)
+        contextLength = defaultLoadProfile.contextLength
+        maxContextLength = max(contextLength, decodedMaxContextLength)
         taskKinds = LocalModelCapabilityDefaults.normalizedStringList(
             (try? c.decode([String].self, forKey: .taskKinds)) ?? defaultTaskKinds,
             fallback: defaultTaskKinds
@@ -453,11 +496,13 @@ public struct ModelCatalogEntry: Identifiable, Codable, Equatable, Sendable {
     public var backend: String
     public var quant: String
     public var contextLength: Int
+    public var maxContextLength: Int
     public var paramsB: Double
     public var modelPath: String
     public var roles: [String]?
     public var note: String?
     public var modelFormat: String
+    public var defaultLoadProfile: LocalModelLoadProfile
     public var taskKinds: [String]
     public var inputModalities: [String]
     public var outputModalities: [String]
@@ -472,11 +517,13 @@ public struct ModelCatalogEntry: Identifiable, Codable, Equatable, Sendable {
         backend: String = "mlx",
         quant: String = "bf16",
         contextLength: Int = 8192,
+        maxContextLength: Int? = nil,
         paramsB: Double = 0.0,
         modelPath: String,
         roles: [String]? = nil,
         note: String? = nil,
         modelFormat: String? = nil,
+        defaultLoadProfile: LocalModelLoadProfile? = nil,
         taskKinds: [String]? = nil,
         inputModalities: [String]? = nil,
         outputModalities: [String]? = nil,
@@ -489,12 +536,19 @@ public struct ModelCatalogEntry: Identifiable, Codable, Equatable, Sendable {
         self.name = name
         self.backend = backend
         self.quant = quant
-        self.contextLength = contextLength
+        let resolvedModelFormat = modelFormat ?? LocalModelCapabilityDefaults.defaultModelFormat(forBackend: backend)
+        let resolvedDefaultLoadProfile = (defaultLoadProfile ?? LocalModelCapabilityDefaults.defaultLoadProfile(contextLength: contextLength))
+        let resolvedMaxContextLength = LocalModelCapabilityDefaults.defaultMaxContextLength(
+            contextLength: maxContextLength ?? contextLength,
+            defaultLoadProfile: resolvedDefaultLoadProfile
+        )
+        self.defaultLoadProfile = resolvedDefaultLoadProfile.normalized(maxContextLength: resolvedMaxContextLength)
+        self.contextLength = self.defaultLoadProfile.contextLength
+        self.maxContextLength = max(self.contextLength, resolvedMaxContextLength)
         self.paramsB = paramsB
         self.modelPath = modelPath
         self.roles = roles
         self.note = note
-        let resolvedModelFormat = modelFormat ?? LocalModelCapabilityDefaults.defaultModelFormat(forBackend: backend)
         let resolvedTaskKinds = LocalModelCapabilityDefaults.normalizedStringList(
             taskKinds ?? LocalModelCapabilityDefaults.defaultTaskKinds(forBackend: backend, roles: roles),
             fallback: LocalModelCapabilityDefaults.defaultTaskKinds(forBackend: backend, roles: roles)
@@ -529,11 +583,13 @@ public struct ModelCatalogEntry: Identifiable, Codable, Equatable, Sendable {
         case backend
         case quant
         case contextLength
+        case maxContextLength
         case paramsB
         case modelPath
         case roles
         case note
         case modelFormat
+        case defaultLoadProfile
         case taskKinds
         case inputModalities
         case outputModalities
@@ -543,19 +599,37 @@ public struct ModelCatalogEntry: Identifiable, Codable, Equatable, Sendable {
         case processorRequirements
     }
 
+    enum SnakeCodingKeys: String, CodingKey {
+        case maxContextLength = "max_context_length"
+        case defaultLoadProfile = "default_load_profile"
+    }
+
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        let s = try decoder.container(keyedBy: SnakeCodingKeys.self)
         id = (try? c.decode(String.self, forKey: .id)) ?? ""
         name = (try? c.decode(String.self, forKey: .name)) ?? id
         backend = (try? c.decode(String.self, forKey: .backend)) ?? "mlx"
         quant = (try? c.decode(String.self, forKey: .quant)) ?? "bf16"
-        contextLength = (try? c.decode(Int.self, forKey: .contextLength)) ?? 8192
+        let legacyContextLength = (try? c.decode(Int.self, forKey: .contextLength)) ?? 8192
         paramsB = (try? c.decode(Double.self, forKey: .paramsB)) ?? 0.0
         modelPath = (try? c.decode(String.self, forKey: .modelPath)) ?? ""
         roles = try? c.decodeIfPresent([String].self, forKey: .roles)
         note = try? c.decodeIfPresent(String.self, forKey: .note)
         let defaultTaskKinds = LocalModelCapabilityDefaults.defaultTaskKinds(forBackend: backend, roles: roles)
         modelFormat = (try? c.decode(String.self, forKey: .modelFormat)) ?? LocalModelCapabilityDefaults.defaultModelFormat(forBackend: backend)
+        let decodedDefaultLoadProfile = (try? c.decode(LocalModelLoadProfile.self, forKey: .defaultLoadProfile))
+            ?? (try? s.decode(LocalModelLoadProfile.self, forKey: .defaultLoadProfile))
+        let decodedMaxContextLength = (try? c.decode(Int.self, forKey: .maxContextLength))
+            ?? (try? s.decode(Int.self, forKey: .maxContextLength))
+            ?? LocalModelCapabilityDefaults.defaultMaxContextLength(
+                contextLength: legacyContextLength,
+                defaultLoadProfile: decodedDefaultLoadProfile
+            )
+        defaultLoadProfile = (decodedDefaultLoadProfile ?? LocalModelCapabilityDefaults.defaultLoadProfile(contextLength: legacyContextLength))
+            .normalized(maxContextLength: decodedMaxContextLength)
+        contextLength = defaultLoadProfile.contextLength
+        maxContextLength = max(contextLength, decodedMaxContextLength)
         taskKinds = LocalModelCapabilityDefaults.normalizedStringList(
             (try? c.decode([String].self, forKey: .taskKinds)) ?? defaultTaskKinds,
             fallback: defaultTaskKinds

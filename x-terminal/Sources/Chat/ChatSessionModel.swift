@@ -39,11 +39,16 @@ final class ChatSessionModel: ObservableObject {
     private let projectMemoryRetrievalMaxSnippets: Int = 3
     private let projectMemoryRetrievalMaxSnippetChars: Int = 360
 
+    private func currentEpochMs() -> Int64 {
+        Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
+    }
+
     private struct ToolFlowState {
         var ctx: AXProjectContext
         var memory: AXMemory?
         var config: AXProjectConfig?
         var userText: String
+        var runStartedAtMs: Int64
         var step: Int
         var toolResults: [ToolResult]
         var assistantIndex: Int
@@ -81,6 +86,26 @@ final class ChatSessionModel: ObservableObject {
         case envelope(ToolActionEnvelope)
         case invalidJSONEnvelope
         case none
+    }
+
+    struct ProjectSkillToolCallMappingError: Error, Equatable, Sendable {
+        var message: String
+    }
+
+    struct ProjectSkillDispatchResolution: Equatable, Sendable {
+        var dispatches: [XTProjectMappedSkillDispatch]
+
+        var toolCalls: [ToolCall] {
+            dispatches.map(\.toolCall)
+        }
+
+        var dispatchesByToolCallID: [String: XTProjectMappedSkillDispatch] {
+            var out: [String: XTProjectMappedSkillDispatch] = [:]
+            for dispatch in dispatches {
+                out[dispatch.toolCall.id] = dispatch
+            }
+            return out
+        }
     }
 
     private enum VisibleLLMStreamMode {
@@ -347,6 +372,7 @@ final class ChatSessionModel: ObservableObject {
         let state = AXPendingToolFlowState(
             step: flow.step,
             toolResults: cappedResults,
+            runStartedAtMs: flow.runStartedAtMs,
             dirtySinceVerify: flow.dirtySinceVerify,
             verifyRunIndex: flow.verifyRunIndex,
             repairAttemptsUsed: flow.repairAttemptsUsed,
@@ -398,6 +424,7 @@ final class ChatSessionModel: ObservableObject {
             memory: mem,
             config: cfg,
             userText: userText,
+            runStartedAtMs: state.runStartedAtMs,
             step: state.step,
             toolResults: state.toolResults,
             assistantIndex: assistantIndex,
@@ -422,6 +449,18 @@ final class ChatSessionModel: ObservableObject {
         if t.count <= max { return t }
         let idx = t.index(t.startIndex, offsetBy: max)
         return String(t[..<idx]) + "\n\n[x-terminal] truncated"
+    }
+
+    private func safePointExecutionState(
+        for flow: ToolFlowState
+    ) -> SupervisorSafePointExecutionState {
+        SupervisorSafePointExecutionState(
+            runStartedAtMs: flow.runStartedAtMs,
+            flowStep: flow.step,
+            toolResultsCount: flow.toolResults.count,
+            verifyRunIndex: flow.verifyRunIndex,
+            finalizeOnly: flow.finalizeOnly
+        )
     }
 
     func send(ctx: AXProjectContext, memory: AXMemory?, config: AXProjectConfig?, router: LLMRouter) {
@@ -502,6 +541,7 @@ final class ChatSessionModel: ObservableObject {
                 memory: memory,
                 config: config,
                 userText: userText,
+                runStartedAtMs: currentEpochMs(),
                 step: 0,
                 toolResults: [],
                 assistantIndex: assistantIndex,
@@ -532,6 +572,10 @@ final class ChatSessionModel: ObservableObject {
             let resolvedConfig = resolvedToolRuntimeConfig(ctx: flow.ctx, config: flow.config)
             updated.config = resolvedConfig
             activeConfig = resolvedConfig
+            let projectSkillDispatchesByCallID = projectSkillDispatchesForToolCalls(
+                ctx: flow.ctx,
+                toolCalls: calls
+            )
 
             let plan = await xtApprovedToolExecutionPlan(
                 calls: calls,
@@ -539,6 +583,13 @@ final class ChatSessionModel: ObservableObject {
                 projectRoot: flow.ctx.root
             )
             for blocked in plan.blockedCalls {
+                if let dispatch = projectSkillDispatchesByCallID[blocked.call.id] {
+                    recordProjectSkillAuthorizationOutcome(
+                        ctx: flow.ctx,
+                        dispatch: dispatch,
+                        decision: blocked.decision
+                    )
+                }
                 appendBlockedToolResult(
                     call: blocked.call,
                     ctx: flow.ctx,
@@ -548,9 +599,102 @@ final class ChatSessionModel: ObservableObject {
                 )
             }
             if !plan.runnableCalls.isEmpty {
-                updated = await executeTools(flow: updated, toolCalls: plan.runnableCalls)
+                updated = await executeTools(
+                    flow: updated,
+                    toolCalls: plan.runnableCalls,
+                    projectSkillDispatchesByCallID: projectSkillDispatchesByCallID
+                )
             }
             await runToolLoop(flow: updated, router: router)
+        }
+    }
+
+    func approvePendingTool(requestID: String, router: LLMRouter) {
+        let normalizedRequestID = requestID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedRequestID.isEmpty else {
+            approvePendingTools(router: router)
+            return
+        }
+        guard let flow = pendingFlow else { return }
+
+        let approvedCalls = pendingToolCalls.filter { $0.id == normalizedRequestID }
+        guard !approvedCalls.isEmpty else { return }
+        let remainingCalls = pendingToolCalls.filter { $0.id != normalizedRequestID }
+
+        pendingToolCalls = remainingCalls
+        pendingFlow = remainingCalls.isEmpty ? nil : flow
+        activeRouter = router
+        activeConfig = flow.config
+        isSending = true
+
+        Task {
+            var updated = flow
+            let resolvedConfig = resolvedToolRuntimeConfig(ctx: flow.ctx, config: flow.config)
+            updated.config = resolvedConfig
+            activeConfig = resolvedConfig
+
+            let projectSkillDispatchesByCallID = projectSkillDispatchesForToolCalls(
+                ctx: flow.ctx,
+                toolCalls: approvedCalls
+            )
+
+            let plan = await xtApprovedToolExecutionPlan(
+                calls: approvedCalls,
+                config: resolvedConfig,
+                projectRoot: flow.ctx.root
+            )
+            for blocked in plan.blockedCalls {
+                if let dispatch = projectSkillDispatchesByCallID[blocked.call.id] {
+                    recordProjectSkillAuthorizationOutcome(
+                        ctx: flow.ctx,
+                        dispatch: dispatch,
+                        decision: blocked.decision
+                    )
+                }
+                appendBlockedToolResult(
+                    call: blocked.call,
+                    ctx: flow.ctx,
+                    flow: &updated,
+                    config: resolvedConfig,
+                    decision: blocked.decision
+                )
+            }
+            if !plan.runnableCalls.isEmpty {
+                updated = await executeTools(
+                    flow: updated,
+                    toolCalls: plan.runnableCalls,
+                    projectSkillDispatchesByCallID: projectSkillDispatchesByCallID
+                )
+            }
+
+            clearAssistantProgress(assistantIndex: updated.assistantIndex)
+
+            if remainingCalls.isEmpty {
+                AXPendingActionsStore.clearToolApproval(for: flow.ctx)
+                await runToolLoop(flow: updated, router: router)
+                return
+            }
+
+            let assistantStub = "仍有待审批的工具操作（本页或 Home 可处理）。"
+            pendingToolCalls = remainingCalls
+            pendingFlow = updated
+            if updated.assistantIndex < messages.count {
+                messages[updated.assistantIndex].content = assistantStub
+            }
+            persistPendingToolApproval(
+                ctx: flow.ctx,
+                flow: updated,
+                calls: remainingCalls,
+                assistantStub: assistantStub,
+                reason: "tools"
+            )
+            recordAwaitingToolApproval(
+                ctx: flow.ctx,
+                calls: remainingCalls,
+                reason: "awaiting_tool_approval_remaining"
+            )
+            isSending = false
+            currentReqId = nil
         }
     }
 
@@ -577,6 +721,277 @@ final class ChatSessionModel: ObservableObject {
         activeConfig = flow.config
         let msg = "已拒绝执行待审批的工具操作。你可以修改要求后再试。"
         finalizeTurn(ctx: ctx, userText: userText, assistantText: msg, assistantIndex: assistantIndex)
+    }
+
+    func rejectPendingTool(requestID: String) {
+        let normalizedRequestID = requestID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedRequestID.isEmpty else {
+            rejectPendingTools()
+            return
+        }
+        guard var flow = pendingFlow else { return }
+
+        let rejectedCalls = pendingToolCalls.filter { $0.id == normalizedRequestID }
+        guard !rejectedCalls.isEmpty else { return }
+        let remainingCalls = pendingToolCalls.filter { $0.id != normalizedRequestID }
+        let projectSkillDispatchesByCallID = projectSkillDispatchesForToolCalls(
+            ctx: flow.ctx,
+            toolCalls: rejectedCalls
+        )
+
+        for call in rejectedCalls {
+            if let dispatch = projectSkillDispatchesByCallID[call.id] {
+                recordProjectSkillManualRejection(
+                    ctx: flow.ctx,
+                    dispatch: dispatch
+                )
+            }
+            appendRejectedPendingToolResult(
+                call: call,
+                ctx: flow.ctx,
+                flow: &flow
+            )
+        }
+
+        clearAssistantProgress(assistantIndex: flow.assistantIndex)
+
+        pendingToolCalls = remainingCalls
+        pendingFlow = remainingCalls.isEmpty ? nil : flow
+        isSending = false
+        currentReqId = nil
+
+        if remainingCalls.isEmpty {
+            AXPendingActionsStore.clearToolApproval(for: flow.ctx)
+            activeConfig = flow.config
+            let msg = rejectedCalls.count == 1
+                ? "已拒绝执行这条待审批的工具操作。你可以修改要求后再试。"
+                : "已拒绝执行选中的待审批工具操作。你可以修改要求后再试。"
+            finalizeTurn(
+                ctx: flow.ctx,
+                userText: flow.userText,
+                assistantText: msg,
+                assistantIndex: flow.assistantIndex
+            )
+            return
+        }
+
+        let assistantStub = "仍有待审批的工具操作（本页或 Home 可处理）。"
+        if flow.assistantIndex < messages.count {
+            messages[flow.assistantIndex].content = assistantStub
+        }
+        persistPendingToolApproval(
+            ctx: flow.ctx,
+            flow: flow,
+            calls: remainingCalls,
+            assistantStub: assistantStub,
+            reason: "tools"
+        )
+        recordAwaitingToolApproval(
+            ctx: flow.ctx,
+            calls: remainingCalls,
+            reason: "awaiting_tool_approval_remaining"
+        )
+    }
+
+    func retryProjectSkillActivity(
+        _ item: ProjectSkillActivityItem,
+        router: LLMRouter
+    ) {
+        guard pendingToolCalls.isEmpty else {
+            lastError = "当前还有待审批的工具操作，先完成审批后再重试该技能。"
+            return
+        }
+        guard let ctx = currentProjectContextForLLM() else {
+            lastError = "当前 project 上下文不可用，无法重试该技能。"
+            return
+        }
+        let retryRequestID = "retry_\(item.requestID)_\(Int((Date().timeIntervalSince1970 * 1000.0).rounded()))"
+        guard let call = AXProjectSkillActivityStore.toolCall(
+            for: item,
+            requestID: retryRequestID
+        ) else {
+            lastError = "无法从这条技能活动恢复可执行的 governed dispatch。"
+            return
+        }
+
+        activeRouter = router
+        let memory = try? AXProjectStore.loadOrCreateMemory(for: ctx)
+        let config = try? AXProjectStore.loadOrCreateConfig(for: ctx)
+        activeConfig = config
+        isSending = true
+        lastError = nil
+        currentReqId = nil
+
+        let assistantIndex = messages.count
+        messages.append(
+            AXChatMessage(
+                role: .assistant,
+                tag: lastCoderProviderTag.isEmpty ? nil : lastCoderProviderTag,
+                content: ""
+            )
+        )
+        recordRunStart(
+            ctx: ctx,
+            userText: "retry skill activity \(item.skillID.isEmpty ? item.requestID : item.skillID)"
+        )
+
+        let dispatch = XTProjectMappedSkillDispatch(
+            skillId: item.skillID,
+            toolCall: call,
+            toolName: item.toolName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? call.tool.rawValue
+                : item.toolName
+        )
+        recordProjectSkillResolvedDispatches(
+            ctx: ctx,
+            dispatches: [dispatch],
+            resolutionSource: "manual_retry"
+        )
+
+        Task {
+            var flow = ToolFlowState(
+                ctx: ctx,
+                memory: memory,
+                config: config,
+                userText: "retry skill activity \(item.skillID.isEmpty ? item.requestID : item.skillID)",
+                runStartedAtMs: currentEpochMs(),
+                step: 0,
+                toolResults: [],
+                assistantIndex: assistantIndex,
+                dirtySinceVerify: false,
+                verifyRunIndex: 0,
+                repairAttemptsUsed: 0,
+                deferredFinal: nil,
+                finalizeOnly: false,
+                formatRetryUsed: false,
+                executionRetryUsed: false
+            )
+
+            let resolvedConfig = resolvedToolRuntimeConfig(ctx: ctx, config: config)
+            flow.config = resolvedConfig
+            activeConfig = resolvedConfig
+
+            let authorization = await xtToolAuthorizationDecision(
+                call: call,
+                config: resolvedConfig,
+                projectRoot: ctx.root
+            )
+            if authorization.isDenied {
+                recordProjectSkillAuthorizationOutcome(
+                    ctx: ctx,
+                    dispatch: dispatch,
+                    decision: authorization
+                )
+                appendBlockedToolResult(
+                    call: call,
+                    ctx: ctx,
+                    flow: &flow,
+                    config: resolvedConfig,
+                    decision: authorization
+                )
+                let summary = "技能 \(dispatch.skillId.isEmpty ? dispatch.toolName : dispatch.skillId) 的重试被当前治理策略拦截。"
+                if assistantIndex < messages.count {
+                    messages[assistantIndex].content = summary
+                }
+                recordRunFailure(ctx: ctx, message: summary)
+                isSending = false
+                currentReqId = nil
+                return
+            }
+
+            switch authorization.risk {
+            case .safe:
+                break
+            case .needsConfirm:
+                if !autoRunTools {
+                    recordProjectSkillAwaitingApproval(
+                        ctx: ctx,
+                        dispatchesByCallID: [call.id: dispatch],
+                        toolCalls: [call]
+                    )
+                    let assistantStub = "该技能重试需要你的审批（本页或 Home 可处理）。"
+                    pendingToolCalls = [call]
+                    pendingFlow = flow
+                    if assistantIndex < messages.count {
+                        messages[assistantIndex].content = assistantStub
+                    }
+                    persistPendingToolApproval(
+                        ctx: ctx,
+                        flow: flow,
+                        calls: [call],
+                        assistantStub: assistantStub,
+                        reason: "skill_retry"
+                    )
+                    recordAwaitingToolApproval(
+                        ctx: ctx,
+                        calls: [call],
+                        reason: "awaiting_tool_approval_retry"
+                    )
+                    isSending = false
+                    currentReqId = nil
+                    return
+                }
+            case .alwaysConfirm:
+                recordProjectSkillAwaitingApproval(
+                    ctx: ctx,
+                    dispatchesByCallID: [call.id: dispatch],
+                    toolCalls: [call]
+                )
+                let assistantStub = "该技能重试需要你的审批（本页或 Home 可处理）。"
+                pendingToolCalls = [call]
+                pendingFlow = flow
+                if assistantIndex < messages.count {
+                    messages[assistantIndex].content = assistantStub
+                }
+                persistPendingToolApproval(
+                    ctx: ctx,
+                    flow: flow,
+                    calls: [call],
+                    assistantStub: assistantStub,
+                    reason: "skill_retry"
+                )
+                recordAwaitingToolApproval(
+                    ctx: ctx,
+                    calls: [call],
+                    reason: "awaiting_tool_approval_retry"
+                )
+                isSending = false
+                currentReqId = nil
+                return
+            }
+
+            appendAssistantProgress(
+                assistantIndex: assistantIndex,
+                line: projectSkillProgressLine(for: dispatch)
+            )
+            flow = await executeTools(
+                flow: flow,
+                toolCalls: [call],
+                projectSkillDispatchesByCallID: [call.id: dispatch]
+            )
+            clearAssistantProgress(assistantIndex: assistantIndex)
+
+            let result = flow.toolResults.last(where: { $0.id == call.id })
+            let summary: String
+            if let result {
+                if result.ok {
+                    summary = "已重试技能 \(dispatch.skillId.isEmpty ? dispatch.toolName : dispatch.skillId)。"
+                    recordRunCompletion(ctx: ctx, assistantText: summary)
+                } else {
+                    summary = "技能 \(dispatch.skillId.isEmpty ? dispatch.toolName : dispatch.skillId) 重试失败。"
+                    recordRunFailure(ctx: ctx, message: summary)
+                }
+            } else {
+                summary = "已重新触发技能 \(dispatch.skillId.isEmpty ? dispatch.toolName : dispatch.skillId)。"
+                recordRunCompletion(ctx: ctx, assistantText: summary)
+            }
+
+            if assistantIndex < messages.count {
+                messages[assistantIndex].content = summary
+            }
+            isSending = false
+            currentReqId = nil
+        }
     }
 
     private func runToolLoop(flow initial: ToolFlowState, router: LLMRouter) async {
@@ -611,7 +1026,8 @@ final class ChatSessionModel: ObservableObject {
                         memory: memory,
                         config: flow.config,
                         userText: userText,
-                        toolResults: flow.toolResults
+                        toolResults: flow.toolResults,
+                        safePointState: safePointExecutionState(for: flow)
                     )
                     recordAwaitingModel(ctx: ctx, detail: "awaiting finalize_only response")
                     let out = try await llmGenerate(
@@ -726,7 +1142,8 @@ final class ChatSessionModel: ObservableObject {
                     memory: memory,
                     config: flow.config,
                     userText: userText,
-                    toolResults: flow.toolResults
+                    toolResults: flow.toolResults,
+                    safePointState: safePointExecutionState(for: flow)
                 )
                 let prompt = promptBuild.prompt
                 let (out, usage) = try await llmGenerateWithUsage(
@@ -848,6 +1265,11 @@ final class ChatSessionModel: ObservableObject {
                     }
                 }
 
+                persistSupervisorGuidanceAckIfNeeded(
+                    env: env,
+                    ctx: ctx
+                )
+
                 if let final = env.final, !final.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     // Gate final behind verification when we have pending changes.
                     if requiresVerify(flow: flow) {
@@ -858,7 +1280,26 @@ final class ChatSessionModel: ObservableObject {
                     return
                 }
 
-                let calls = env.tool_calls ?? []
+                let mappedSkillResolutionResult = await resolvedProjectSkillDispatches(
+                    skillCalls: env.skill_calls ?? [],
+                    ctx: ctx
+                )
+                let mappedSkillResolution: ProjectSkillDispatchResolution
+                switch mappedSkillResolutionResult {
+                case .success(let resolution):
+                    mappedSkillResolution = resolution
+                case .failure(let error):
+                    finalizeToolFlowTurn(flow: flow, assistantText: error.message)
+                    return
+                }
+                recordProjectSkillResolvedDispatches(
+                    ctx: ctx,
+                    dispatches: mappedSkillResolution.dispatches,
+                    resolutionSource: "primary"
+                )
+
+                let mappedSkillCalls = mappedSkillResolution.toolCalls
+                let calls = mappedSkillCalls + (env.tool_calls ?? [])
                 if calls.isEmpty {
                     if shouldRepairImmediateExecution(flow: flow, assistantText: "(no action)") {
                         flow.executionRetryUsed = true
@@ -876,10 +1317,30 @@ final class ChatSessionModel: ObservableObject {
                                 finalizeToolFlowTurn(flow: flow, assistantText: final)
                                 return
                             }
-                            let repairedCalls = repairedEnv.tool_calls ?? []
+                            let repairedMappedSkillResolutionResult = await resolvedProjectSkillDispatches(
+                                skillCalls: repairedEnv.skill_calls ?? [],
+                                ctx: ctx
+                            )
+                            let repairedMappedSkillResolution: ProjectSkillDispatchResolution
+                            switch repairedMappedSkillResolutionResult {
+                            case .success(let resolution):
+                                repairedMappedSkillResolution = resolution
+                            case .failure(let error):
+                                finalizeToolFlowTurn(flow: flow, assistantText: error.message)
+                                return
+                            }
+                            recordProjectSkillResolvedDispatches(
+                                ctx: ctx,
+                                dispatches: repairedMappedSkillResolution.dispatches,
+                                resolutionSource: "repair"
+                            )
+                            let repairedMappedSkillCalls = repairedMappedSkillResolution.toolCalls
+                            let repairedCalls = repairedMappedSkillCalls + (repairedEnv.tool_calls ?? [])
                             if !repairedCalls.isEmpty {
                                 let resolvedConfig = resolvedToolRuntimeConfig(ctx: ctx, config: flow.config)
                                 flow.config = resolvedConfig
+                                let repairedProjectSkillDispatchesByCallID =
+                                    repairedMappedSkillResolution.dispatchesByToolCallID
                                 var authorizedRepairedCalls: [(ToolCall, XTToolAuthorizationDecision)] = []
                                 for call in repairedCalls {
                                     let authorization = await xtToolAuthorizationDecision(
@@ -888,6 +1349,13 @@ final class ChatSessionModel: ObservableObject {
                                         projectRoot: ctx.root
                                     )
                                     guard !authorization.isDenied else {
+                                        if let dispatch = repairedProjectSkillDispatchesByCallID[call.id] {
+                                            recordProjectSkillAuthorizationOutcome(
+                                                ctx: ctx,
+                                                dispatch: dispatch,
+                                                decision: authorization
+                                            )
+                                        }
                                         appendBlockedToolResult(
                                             call: call,
                                             ctx: ctx,
@@ -919,9 +1387,18 @@ final class ChatSessionModel: ObservableObject {
 
                                     if !repairedToRun.isEmpty {
                                         appendAssistantProgress(assistantIndex: assistantIndex, line: "我在执行修正后的工具方案。")
-                                        flow = await executeTools(flow: flow, toolCalls: repairedToRun)
+                                        flow = await executeTools(
+                                            flow: flow,
+                                            toolCalls: repairedToRun,
+                                            projectSkillDispatchesByCallID: repairedProjectSkillDispatchesByCallID
+                                        )
                                     }
                                     if !repairedToConfirm.isEmpty {
+                                        recordProjectSkillAwaitingApproval(
+                                            ctx: ctx,
+                                            dispatchesByCallID: repairedProjectSkillDispatchesByCallID,
+                                            toolCalls: repairedToConfirm
+                                        )
                                         clearAssistantProgress(assistantIndex: assistantIndex)
                                         pendingToolCalls = repairedToConfirm
                                         pendingFlow = flow
@@ -959,6 +1436,7 @@ final class ChatSessionModel: ObservableObject {
 
                 let resolvedConfig = resolvedToolRuntimeConfig(ctx: ctx, config: flow.config)
                 flow.config = resolvedConfig
+                let projectSkillDispatchesByCallID = mappedSkillResolution.dispatchesByToolCallID
                 var authorizedCalls: [(ToolCall, XTToolAuthorizationDecision)] = []
                 for call in calls {
                     let authorization = await xtToolAuthorizationDecision(
@@ -967,6 +1445,13 @@ final class ChatSessionModel: ObservableObject {
                         projectRoot: ctx.root
                     )
                     guard !authorization.isDenied else {
+                        if let dispatch = projectSkillDispatchesByCallID[call.id] {
+                            recordProjectSkillAuthorizationOutcome(
+                                ctx: ctx,
+                                dispatch: dispatch,
+                                decision: authorization
+                            )
+                        }
                         appendBlockedToolResult(
                             call: call,
                             ctx: ctx,
@@ -1003,10 +1488,19 @@ final class ChatSessionModel: ObservableObject {
 
                 if !toRun.isEmpty {
                     appendAssistantProgress(assistantIndex: assistantIndex, line: "我在执行当前工具步骤。")
-                    flow = await executeTools(flow: flow, toolCalls: toRun)
+                    flow = await executeTools(
+                        flow: flow,
+                        toolCalls: toRun,
+                        projectSkillDispatchesByCallID: projectSkillDispatchesByCallID
+                    )
                 }
 
                 if !toConfirm.isEmpty {
+                    recordProjectSkillAwaitingApproval(
+                        ctx: ctx,
+                        dispatchesByCallID: projectSkillDispatchesByCallID,
+                        toolCalls: toConfirm
+                    )
                     // If git_apply is pending, run a dry-run check automatically to help the user approve safely.
                     let gitApplyCalls = toConfirm.filter { $0.tool == .git_apply }
                     if !gitApplyCalls.isEmpty {
@@ -1090,6 +1584,11 @@ final class ChatSessionModel: ObservableObject {
         case "tools":
             let args = Array(tokens.dropFirst())
             let reply = handleSlashTools(args: args, ctx: ctx, config: config)
+            finalizeTurn(ctx: ctx, userText: text, assistantText: reply, assistantIndex: assistantIndex)
+            return true
+        case "guidance":
+            let args = Array(tokens.dropFirst())
+            let reply = handleSlashGuidance(args: args, ctx: ctx)
             finalizeTurn(ctx: ctx, userText: text, assistantText: reply, assistantIndex: assistantIndex)
             return true
         case "models":
@@ -1794,6 +2293,31 @@ Memory routing:
         AXProjectStore.appendToolLog(action: call.tool.rawValue, input: jsonArgs(call.args), output: output, ok: false, for: ctx)
     }
 
+    private func appendRejectedPendingToolResult(
+        call: ToolCall,
+        ctx: AXProjectContext,
+        flow: inout ToolFlowState
+    ) {
+        let output = """
+        {
+          "tool": "\(call.tool.rawValue)",
+          "ok": false,
+          "deny_code": "user_rejected_pending_tool_approval",
+          "detail": "user rejected the pending approval before execution",
+          "request_id": "\(call.id)"
+        }
+        """
+        let blocked = ToolResult(id: call.id, tool: call.tool, ok: false, output: output)
+        flow.toolResults.append(blocked)
+        AXProjectStore.appendToolLog(
+            action: call.tool.rawValue,
+            input: jsonArgs(call.args),
+            output: output,
+            ok: false,
+            for: ctx
+        )
+    }
+
     private func handleSlashTools(args: [String], ctx: AXProjectContext, config: AXProjectConfig?) -> String {
         guard var cfg = (config ?? (try? AXProjectStore.loadOrCreateConfig(for: ctx))) else {
             return "无法读取 project config，未修改。"
@@ -1875,6 +2399,134 @@ Tool policy:
 """
     }
 
+    private func handleSlashGuidance(args: [String], ctx: AXProjectContext) -> String {
+        let head = args.first?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "status"
+        switch head {
+        case "status", "show", "list":
+            return slashGuidanceText(ctx: ctx)
+        case "accept", "accepted":
+            return acknowledgePendingGuidance(
+                ctx: ctx,
+                status: .accepted,
+                note: args.dropFirst().joined(separator: " ")
+            )
+        case "defer", "deferred":
+            return acknowledgePendingGuidance(
+                ctx: ctx,
+                status: .deferred,
+                note: args.dropFirst().joined(separator: " ")
+            )
+        case "reject", "rejected":
+            let note = args.dropFirst().joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !note.isEmpty else {
+                return "用法：/guidance reject <reason>"
+            }
+            return acknowledgePendingGuidance(
+                ctx: ctx,
+                status: .rejected,
+                note: note
+            )
+        default:
+            return slashGuidanceUsageText()
+        }
+    }
+
+    private func slashGuidanceText(ctx: AXProjectContext) -> String {
+        let latest = SupervisorGuidanceInjectionStore.latest(for: ctx)
+        let pending = SupervisorGuidanceInjectionStore.latestPendingAck(for: ctx)
+        guard latest != nil || pending != nil else {
+            return "当前项目没有 supervisor guidance。\n\n" + slashGuidanceUsageText()
+        }
+
+        var lines: [String] = []
+        if let pending {
+            lines.append("pending guidance:")
+            lines.append("- injection_id: \(pending.injectionId)")
+            lines.append("- delivery_mode: \(pending.deliveryMode.rawValue)")
+            lines.append("- intervention_mode: \(pending.interventionMode.rawValue)")
+            lines.append("- safe_point_policy: \(pending.safePointPolicy.rawValue)")
+            lines.append("- ack_required: \(pending.ackRequired ? "yes" : "no")")
+            lines.append("- guidance_text: \(pending.guidanceText)")
+        }
+        if let latest {
+            if !lines.isEmpty { lines.append("") }
+            lines.append("latest guidance:")
+            lines.append("- injection_id: \(latest.injectionId)")
+            lines.append("- ack_status: \(latest.ackStatus.rawValue)")
+            lines.append("- ack_note: \(latest.ackNote.isEmpty ? "(none)" : latest.ackNote)")
+            lines.append("- delivery_mode: \(latest.deliveryMode.rawValue)")
+            lines.append("- intervention_mode: \(latest.interventionMode.rawValue)")
+        }
+        lines.append("")
+        lines.append(slashGuidanceUsageText())
+        return lines.joined(separator: "\n")
+    }
+
+    private func slashGuidanceUsageText() -> String {
+        """
+命令：
+- /guidance
+- /guidance status
+- /guidance accept [note]
+- /guidance defer [note]
+- /guidance reject <reason>
+"""
+    }
+
+    private func acknowledgePendingGuidance(
+        ctx: AXProjectContext,
+        status: SupervisorGuidanceAckStatus,
+        note: String
+    ) -> String {
+        guard let pending = SupervisorGuidanceInjectionStore.latestPendingAck(for: ctx) else {
+            return "当前没有待确认的 supervisor guidance。\n\n" + slashGuidanceUsageText()
+        }
+        let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedNote: String
+        switch status {
+        case .accepted:
+            normalizedNote = trimmedNote.isEmpty ? "manual_accept_from_slash_guidance" : trimmedNote
+        case .deferred:
+            normalizedNote = trimmedNote.isEmpty ? "manual_defer_from_slash_guidance" : trimmedNote
+        case .rejected:
+            normalizedNote = trimmedNote
+        case .pending:
+            normalizedNote = trimmedNote
+        }
+
+        let nowMs = Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
+        do {
+            try SupervisorGuidanceInjectionStore.acknowledge(
+                injectionId: pending.injectionId,
+                status: status,
+                note: normalizedNote,
+                atMs: nowMs,
+                for: ctx
+            )
+            AXProjectStore.appendRawLog(
+                [
+                    "type": "supervisor_guidance_ack",
+                    "action": "manual_ack",
+                    "source": "slash_guidance",
+                    "project_id": pending.projectId,
+                    "review_id": pending.reviewId,
+                    "injection_id": pending.injectionId,
+                    "ack_status": status.rawValue,
+                    "ack_note": normalizedNote,
+                    "timestamp_ms": nowMs
+                ],
+                for: ctx
+            )
+            publishSupervisorGuidanceAckEvent(
+                ctx: ctx,
+                injectionId: pending.injectionId
+            )
+            return "已更新 guidance ack：\(pending.injectionId) -> \(status.rawValue)"
+        } catch {
+            return "更新 guidance ack 失败：\(String(describing: error))"
+        }
+    }
+
     private func performDirectNetworkRequest(
         ctx: AXProjectContext,
         memory: AXMemory?,
@@ -1891,6 +2543,7 @@ Tool policy:
                 memory: memory,
                 config: config,
                 userText: userText,
+                runStartedAtMs: currentEpochMs(),
                 step: 0,
                 toolResults: [],
                 assistantIndex: assistantIndex,
@@ -2350,6 +3003,10 @@ Tool policy:
 - /memory off             当前 project 只使用本地 memory
 - /memory default         恢复默认 Hub memory 优先模式
 - /tools                  查看当前工具策略与有效工具
+- /guidance               查看当前 project 的 supervisor guidance / ack 状态
+- /guidance accept [note]
+- /guidance defer [note]
+- /guidance reject <reason>
 - /tools profile <p>      切换工具 profile（minimal/coding/full）
 - /tools allow <tokens>   设置工具 allow（覆盖式）
 - /tools deny <tokens>    设置工具 deny（覆盖式）
@@ -2600,6 +3257,9 @@ Previous non-executing response:
 
     private func immediateExecutionRepairProducedExecutableResult(_ envelope: ToolActionEnvelope) -> Bool {
         if let calls = envelope.tool_calls, !calls.isEmpty {
+            return true
+        }
+        if let skillCalls = envelope.skill_calls, !skillCalls.isEmpty {
             return true
         }
         guard let final = envelope.final?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -3091,6 +3751,45 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         )
     }
 
+    func projectMemoryBlockForTesting(
+        ctx: AXProjectContext,
+        canonicalMemory: String,
+        recentText: String,
+        userText: String,
+        safePointState: SupervisorSafePointExecutionState? = nil
+    ) -> String {
+        let guidanceBlock = projectSupervisorGuidancePromptBlock(
+            ctx: ctx,
+            safePointState: safePointState
+        )
+        let workingSetText = mergeProjectWorkingSetGuidance(
+            recentText: recentText,
+            guidanceBlock: guidanceBlock
+        )
+        return buildProjectMemoryV1Block(
+            ctx: ctx,
+            canonicalMemory: canonicalMemory,
+            recentText: workingSetText,
+            toolResults: [],
+            userText: userText,
+            servingProfile: preferredProjectMemoryServingProfile(userText: userText)
+        )
+    }
+
+    func applySupervisorGuidanceAckForTesting(
+        ctx: AXProjectContext,
+        envelope: ToolActionEnvelope
+    ) {
+        persistSupervisorGuidanceAckIfNeeded(env: envelope, ctx: ctx, source: "testing")
+    }
+
+    func handleSlashGuidanceForTesting(
+        args: [String],
+        ctx: AXProjectContext
+    ) -> String {
+        handleSlashGuidance(args: args, ctx: ctx)
+    }
+
     func shouldRepairImmediateExecutionForTesting(
         userText: String,
         toolResults: [ToolResult],
@@ -3101,6 +3800,7 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
             memory: nil,
             config: nil,
             userText: userText,
+            runStartedAtMs: 0,
             step: 2,
             toolResults: toolResults,
             assistantIndex: 0,
@@ -3113,6 +3813,33 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
             executionRetryUsed: false
         )
         return shouldRepairImmediateExecution(flow: flow, assistantText: assistantText)
+    }
+
+    func assistantToolOutcomeLinesForTesting(toolResults: [ToolResult]) -> [String] {
+        assistantToolOutcomeLines(toolResults: toolResults)
+    }
+
+    func toolHistoryForPromptForTesting(toolResults: [ToolResult]) -> String {
+        toolHistoryForPrompt(toolResults)
+    }
+
+    func projectSkillRoutingPromptGuidanceForTesting(
+        snapshot: SupervisorSkillRegistrySnapshot?
+    ) -> String {
+        projectSkillRoutingPromptGuidance(snapshot: snapshot)
+    }
+
+    func projectSkillProgressLineForTesting(
+        dispatch: XTProjectMappedSkillDispatch
+    ) -> String {
+        projectSkillProgressLine(for: dispatch)
+    }
+
+    func mappedProjectSkillToolCallsForTesting(
+        skillCalls: [GovernedSkillCall],
+        ctx: AXProjectContext
+    ) async -> Result<[ToolCall], ProjectSkillToolCallMappingError> {
+        await mappedProjectSkillToolCalls(skillCalls: skillCalls, ctx: ctx)
     }
 
     private func llmGenerate(
@@ -3227,16 +3954,96 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         boundSessionId
     }
 
-    private func executeTools(flow: ToolFlowState, toolCalls: [ToolCall]) async -> ToolFlowState {
+    private func mappedProjectSkillToolCalls(
+        skillCalls: [GovernedSkillCall],
+        ctx: AXProjectContext
+    ) async -> Result<[ToolCall], ProjectSkillToolCallMappingError> {
+        switch await resolvedProjectSkillDispatches(skillCalls: skillCalls, ctx: ctx) {
+        case .success(let resolution):
+            return .success(resolution.toolCalls)
+        case .failure(let error):
+            return .failure(error)
+        }
+    }
+
+    private func resolvedProjectSkillDispatches(
+        skillCalls: [GovernedSkillCall],
+        ctx: AXProjectContext
+    ) async -> Result<ProjectSkillDispatchResolution, ProjectSkillToolCallMappingError> {
+        guard !skillCalls.isEmpty else { return .success(ProjectSkillDispatchResolution(dispatches: [])) }
+
+        let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+        let projectName = currentProjectDisplayName(ctx: ctx)
+        let snapshot = await currentProjectSkillRegistrySnapshot(
+            ctx: ctx,
+            projectId: projectId,
+            projectName: projectName
+        )
+
+        var mapped: [XTProjectMappedSkillDispatch] = []
+        var failures: [String] = []
+        for skillCall in skillCalls {
+            switch XTProjectSkillRouter.map(
+                call: skillCall,
+                projectId: projectId,
+                projectName: projectName,
+                registrySnapshot: snapshot
+            ) {
+            case .success(let dispatch):
+                mapped.append(dispatch)
+            case .failure(let failure):
+                failures.append(
+                    XTProjectSkillRouter.failureMessage(
+                        skillId: skillCall.skill_id,
+                        failure: failure
+                    )
+                )
+            }
+        }
+
+        guard failures.isEmpty else {
+            let registryHint: String
+            if let snapshot, !snapshot.items.isEmpty {
+                registryHint = "\n\n当前 project 可用 skills：\(snapshot.items.map(\.skillId).joined(separator: ", "))"
+            } else {
+                registryHint = "\n\n当前 project 没有可用的 governed skills registry。"
+            }
+            let detail = failures.joined(separator: "\n")
+            return .failure(
+                ProjectSkillToolCallMappingError(
+                    message: "❌ Project AI 本轮请求的 skill_calls 无法安全映射到当前 project runtime。\n\(detail)\(registryHint)"
+                )
+            )
+        }
+
+        return .success(ProjectSkillDispatchResolution(dispatches: mapped))
+    }
+
+    private func projectSkillDispatchesForToolCalls(
+        ctx: AXProjectContext,
+        toolCalls: [ToolCall]
+    ) -> [String: XTProjectMappedSkillDispatch] {
+        AXProjectSkillActivityStore.dispatchesByRequestID(
+            ctx: ctx,
+            toolCalls: toolCalls
+        )
+    }
+
+    private func executeTools(
+        flow: ToolFlowState,
+        toolCalls: [ToolCall],
+        projectSkillDispatchesByCallID: [String: XTProjectMappedSkillDispatch] = [:]
+    ) async -> ToolFlowState {
         var f = flow
         let root = f.ctx.root
         touchProjectActivity(ctx: f.ctx)
         recordRunningTools(ctx: f.ctx, toolCalls: toolCalls)
 
-        for call in toolCalls {
+        for (index, call) in toolCalls.enumerated() {
+            let projectSkillDispatch = projectSkillDispatchesByCallID[call.id]
             appendAssistantProgress(
                 assistantIndex: f.assistantIndex,
-                line: assistantProgressLine(for: call)
+                line: projectSkillDispatch.map(projectSkillProgressLine(for:)) ?? assistantProgressLine(for: call)
             )
             var streamId: String? = nil
             var streamHandler: (@MainActor @Sendable (String) -> Void)? = nil
@@ -3252,6 +4059,13 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
             do {
                 let res = try await ToolExecutor.execute(call: call, projectRoot: root, stream: streamHandler)
                 f.toolResults.append(res)
+                if let projectSkillDispatch {
+                    recordProjectSkillExecutionResult(
+                        ctx: f.ctx,
+                        dispatch: projectSkillDispatch,
+                        result: res
+                    )
+                }
                 AXProjectStore.appendToolLog(action: call.tool.rawValue, input: jsonArgs(call.args), output: res.output, ok: res.ok, for: f.ctx)
                 if call.tool == .run_command, let id = streamId {
                     finishToolStream(id: id, result: res)
@@ -3288,10 +4102,42 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
                 let msg = String(describing: error)
                 let res = ToolResult(id: call.id, tool: call.tool, ok: false, output: msg)
                 f.toolResults.append(res)
+                if let projectSkillDispatch {
+                    recordProjectSkillExecutionResult(
+                        ctx: f.ctx,
+                        dispatch: projectSkillDispatch,
+                        result: res
+                    )
+                }
                 AXProjectStore.appendToolLog(action: call.tool.rawValue, input: jsonArgs(call.args), output: msg, ok: false, for: f.ctx)
                 if call.tool == .run_command, let id = streamId {
                     finishToolStreamWithError(id: id, error: msg)
                 }
+            }
+
+            if index < toolCalls.count - 1,
+               let pending = SupervisorSafePointCoordinator.shouldPauseToolBatchAfterBoundary(
+                for: f.ctx,
+                state: safePointExecutionState(for: f)
+               ) {
+                appendAssistantProgress(
+                    assistantIndex: f.assistantIndex,
+                    line: "supervisor guidance 命中 tool boundary，先暂停剩余工具。"
+                )
+                AXProjectStore.appendRawLog(
+                    [
+                        "type": "supervisor_safe_point_pause",
+                        "action": "pause_remaining_tool_batch",
+                        "project_id": pending.projectId,
+                        "review_id": pending.reviewId,
+                        "injection_id": pending.injectionId,
+                        "safe_point_policy": pending.safePointPolicy.rawValue,
+                        "remaining_tool_count": toolCalls.count - index - 1,
+                        "timestamp_ms": currentEpochMs()
+                    ],
+                    for: f.ctx
+                )
+                break
             }
         }
         return f
@@ -3447,6 +4293,11 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
             return "我在恢复当前会话。"
         case .session_compact:
             return "我在压缩会话上下文。"
+        case .agentImportRecord:
+            let stagingId = strArgValue(call.args["staging_id"])
+            return stagingId.isEmpty
+                ? "我在读取 Hub 导入审计记录。"
+                : "我在读取 Hub 导入审计记录 \(truncateProgressToken(stagingId, max: 36))。"
         case .memory_snapshot:
             return "我在整理记忆快照。"
         case .project_snapshot:
@@ -3479,6 +4330,140 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         case .web_search:
             return "我在搜索网络信息。"
         }
+    }
+
+    private func projectSkillProgressLine(for dispatch: XTProjectMappedSkillDispatch) -> String {
+        let skillId = truncateProgressToken(dispatch.skillId, max: 40)
+        switch dispatch.toolCall.tool {
+        case .browser_read:
+            return "我在通过技能 \(skillId) 读取网页内容。"
+        case .skills_search:
+            return "我在通过技能 \(skillId) 查询技能目录。"
+        case .summarize:
+            return "我在通过技能 \(skillId) 总结内容。"
+        case .deviceBrowserControl:
+            return "我在通过技能 \(skillId) 操作浏览器。"
+        case .web_fetch, .web_search:
+            return "我在通过技能 \(skillId) 获取联网信息。"
+        default:
+            return "我在通过技能 \(skillId) 调用 \(dispatch.toolName)。"
+        }
+    }
+
+    private func recordProjectSkillResolvedDispatches(
+        ctx: AXProjectContext,
+        dispatches: [XTProjectMappedSkillDispatch],
+        resolutionSource: String
+    ) {
+        guard !dispatches.isEmpty else { return }
+        let now = Date().timeIntervalSince1970
+        for dispatch in dispatches {
+            AXProjectStore.appendRawLog(
+                [
+                    "type": "project_skill_call",
+                    "created_at": now,
+                    "status": "resolved",
+                    "resolution_source": resolutionSource,
+                    "request_id": dispatch.toolCall.id,
+                    "skill_id": dispatch.skillId,
+                    "tool_name": dispatch.toolName,
+                    "tool_args": jsonArgs(dispatch.toolCall.args)
+                ],
+                for: ctx
+            )
+        }
+    }
+
+    private func recordProjectSkillAuthorizationOutcome(
+        ctx: AXProjectContext,
+        dispatch: XTProjectMappedSkillDispatch,
+        decision: XTToolAuthorizationDecision
+    ) {
+        AXProjectStore.appendRawLog(
+            [
+                "type": "project_skill_call",
+                "created_at": Date().timeIntervalSince1970,
+                "status": "blocked",
+                "request_id": dispatch.toolCall.id,
+                "skill_id": dispatch.skillId,
+                "tool_name": dispatch.toolName,
+                "tool_args": jsonArgs(dispatch.toolCall.args),
+                "authorization_disposition": decision.disposition.rawValue,
+                "deny_code": decision.denyCode,
+                "detail": decision.detail,
+                "policy_source": decision.policySource,
+                "policy_reason": decision.policyReason
+            ],
+            for: ctx
+        )
+    }
+
+    private func recordProjectSkillManualRejection(
+        ctx: AXProjectContext,
+        dispatch: XTProjectMappedSkillDispatch
+    ) {
+        AXProjectStore.appendRawLog(
+            [
+                "type": "project_skill_call",
+                "created_at": Date().timeIntervalSince1970,
+                "status": "blocked",
+                "request_id": dispatch.toolCall.id,
+                "skill_id": dispatch.skillId,
+                "tool_name": dispatch.toolName,
+                "tool_args": jsonArgs(dispatch.toolCall.args),
+                "authorization_disposition": XTToolAuthorizationDisposition.deny.rawValue,
+                "deny_code": "user_rejected_pending_tool_approval",
+                "detail": "User rejected the pending approval before execution.",
+                "policy_source": "user_decision",
+                "policy_reason": "manual_reject"
+            ],
+            for: ctx
+        )
+    }
+
+    private func recordProjectSkillAwaitingApproval(
+        ctx: AXProjectContext,
+        dispatchesByCallID: [String: XTProjectMappedSkillDispatch],
+        toolCalls: [ToolCall]
+    ) {
+        let now = Date().timeIntervalSince1970
+        for call in toolCalls {
+            guard let dispatch = dispatchesByCallID[call.id] else { continue }
+            AXProjectStore.appendRawLog(
+                [
+                    "type": "project_skill_call",
+                    "created_at": now,
+                    "status": "awaiting_approval",
+                    "request_id": dispatch.toolCall.id,
+                    "skill_id": dispatch.skillId,
+                    "tool_name": dispatch.toolName,
+                    "tool_args": jsonArgs(dispatch.toolCall.args)
+                ],
+                for: ctx
+            )
+        }
+    }
+
+    private func recordProjectSkillExecutionResult(
+        ctx: AXProjectContext,
+        dispatch: XTProjectMappedSkillDispatch,
+        result: ToolResult
+    ) {
+        var entry: [String: Any] = [
+            "type": "project_skill_call",
+            "created_at": Date().timeIntervalSince1970,
+            "status": result.ok ? "completed" : "failed",
+            "request_id": dispatch.toolCall.id,
+            "skill_id": dispatch.skillId,
+            "tool_name": dispatch.toolName,
+            "tool_args": jsonArgs(dispatch.toolCall.args),
+            "ok": result.ok,
+            "result_summary": ToolResultHumanSummary.body(for: result)
+        ]
+        if let structured = ToolResultHumanSummary.structuredSummary(for: result) {
+            entry["result_structured_summary"] = jsonArgs(structured)
+        }
+        AXProjectStore.appendRawLog(entry, for: ctx)
     }
 
     private func strArgValue(_ value: JSONValue?) -> String {
@@ -3666,14 +4651,16 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         memory: AXMemory?,
         config: AXProjectConfig?,
         userText: String,
-        toolResults: [ToolResult]
+        toolResults: [ToolResult],
+        safePointState: SupervisorSafePointExecutionState? = nil
     ) async -> String {
         let base = await buildToolLoopPrompt(
             ctx: ctx,
             memory: memory,
             config: config,
             userText: userText,
-            toolResults: toolResults
+            toolResults: toolResults,
+            safePointState: safePointState
         ).prompt
         return base + "\n\nFINALIZE ONLY:\n- Verification is still failing after one auto-repair attempt.\n- Do NOT call tools. Output {\"final\": ...} only.\n- Include: what failed, likely cause, and the next 1-3 actions for the user.\n"
     }
@@ -3684,6 +4671,7 @@ You produced output that is not valid JSON.
 
 Return ONLY one valid JSON object in this exact schema:
 - If you need tools: {"tool_calls":[{"id":"1","tool":"need_network","args":{"seconds":900}}]}
+- If you need an installed governed skill: {"skill_calls":[{"id":"1","skill_id":"find-skills","payload":{"query":"browser automation"}}]}
 - If done: {"final":"..."}
 
 If the user request requires file changes, prefer tool_calls (create/edit files) over returning a plan in final.
@@ -3771,7 +4759,7 @@ Original output:
         config: AXProjectConfig?
     ) -> String {
         let trimmed = assistantText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let notes = assistantToolFailureLines(toolResults: toolResults)
+        let notes = assistantToolOutcomeLines(toolResults: toolResults)
         let configuredModelId = activeRouter.map { configuredProjectModelID(for: .coder, config: config, router: $0) } ?? ""
         let executionNote = projectExecutionDisclosureNote(
             configuredModelId: configuredModelId,
@@ -3809,17 +4797,24 @@ Original output:
         return trimmed + "\n\n执行备注：\n" + groupedNotes
     }
 
-    private func assistantToolFailureLines(toolResults: [ToolResult]) -> [String] {
+    private func assistantToolOutcomeLines(toolResults: [ToolResult]) -> [String] {
         var seen: Set<String> = []
         var lines: [String] = []
 
         for result in toolResults {
-            guard shouldIncludeToolFailureInAssistant(result) else { continue }
-            let summary = assistantToolFailureSummary(for: result)
+            let summary: String
+            if shouldIncludeToolFailureInAssistant(result) {
+                summary = assistantToolFailureSummary(for: result)
+            } else if shouldIncludeToolSuccessInAssistant(result) {
+                summary = assistantToolSuccessSummary(for: result)
+            } else {
+                continue
+            }
+            let trimmedSummary = summary
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !summary.isEmpty else { continue }
-            if seen.insert(summary).inserted {
-                lines.append(summary)
+            guard !trimmedSummary.isEmpty else { continue }
+            if seen.insert(trimmedSummary).inserted {
+                lines.append(trimmedSummary)
             }
         }
 
@@ -3844,6 +4839,14 @@ Original output:
         case diagnostic
     }
 
+    private func shouldIncludeToolSuccessInAssistant(_ result: ToolResult) -> Bool {
+        guard result.ok else { return false }
+        if result.id.hasPrefix("bootstrap_") || result.id.hasPrefix("auto_diff_after_") {
+            return false
+        }
+        return !assistantToolSuccessSummary(for: result).isEmpty
+    }
+
     private func assistantToolFailureImpact(for result: ToolResult) -> AssistantToolFailureImpact {
         switch result.tool {
         case .git_status,
@@ -3851,6 +4854,7 @@ Original output:
              .session_list,
              .session_resume,
              .session_compact,
+             .agentImportRecord,
              .memory_snapshot,
              .project_snapshot,
              .bridge_status:
@@ -3920,6 +4924,18 @@ Original output:
         default:
             return detail.isEmpty ? "\(result.tool.rawValue) 执行失败。" : "\(result.tool.rawValue) 执行失败：\(detail)"
         }
+    }
+
+    private func assistantToolSuccessSummary(for result: ToolResult) -> String {
+        guard result.tool == .deviceBrowserControl else { return "" }
+        let parsed = ToolExecutor.parseStructuredToolOutput(result.output)
+        guard case .object(let summary)? = parsed.summary else { return "" }
+        let driverState = jsonStringValue(summary["browser_runtime_driver_state"]) ?? ""
+        guard driverState == "secret_vault_applescript_fill" else { return "" }
+        if let selector = jsonStringValue(summary["selector"]), !selector.isEmpty {
+            return "已通过 Hub Secret Vault 将凭据填入当前浏览器字段（\(selector)）。"
+        }
+        return "已通过 Hub Secret Vault 将凭据填入当前浏览器字段。"
     }
 
     private func normalizedAssistantToolDiagnostic(_ raw: String) -> String {
@@ -4039,14 +5055,16 @@ Instructions:
         ctx: AXProjectContext,
         memory: AXMemory?,
         userText: String,
-        toolResults: [ToolResult]
+        toolResults: [ToolResult],
+        safePointState: SupervisorSafePointExecutionState? = nil
     ) async -> PromptBuildOutput {
         return await buildToolLoopPrompt(
             ctx: ctx,
             memory: memory,
             config: nil,
             userText: userText,
-            toolResults: toolResults
+            toolResults: toolResults,
+            safePointState: safePointState
         )
     }
 
@@ -4055,7 +5073,8 @@ Instructions:
         memory: AXMemory?,
         config: AXProjectConfig?,
         userText: String,
-        toolResults: [ToolResult]
+        toolResults: [ToolResult],
+        safePointState: SupervisorSafePointExecutionState? = nil
     ) async -> PromptBuildOutput {
         var memText = ""
         if let memory {
@@ -4063,6 +5082,14 @@ Instructions:
         } else if FileManager.default.fileExists(atPath: ctx.memoryMarkdownURL.path) {
             memText = (try? String(contentsOf: ctx.memoryMarkdownURL, encoding: .utf8)) ?? ""
         }
+
+        let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+        let projectName = currentProjectDisplayName(ctx: ctx)
+        let skillRegistrySnapshot = await currentProjectSkillRegistrySnapshot(
+            ctx: ctx,
+            projectId: projectId,
+            projectName: projectName
+        )
 
         let stack = AXProjectStackDetector.detect(forProjectRoot: ctx.root)
         let stackText = "swift=\(stack.swiftPackage) node=\(stack.node) python=\(stack.python) rust=\(stack.rust) go=\(stack.go) dotnet=\(stack.dotnet) maven=\(stack.maven) gradle=\(stack.gradle)"
@@ -4080,7 +5107,9 @@ Instructions:
             canonicalMemory: memText,
             recentText: recentText,
             toolResults: toolResults,
-            userText: userText
+            userText: userText,
+            skillRegistrySnapshot: skillRegistrySnapshot,
+            safePointState: safePointState
         )
         let memoryV1 = memoryInfo.text
         let toolPolicy = effectiveToolPolicy(config: config)
@@ -4115,21 +5144,7 @@ Networking:
 """
         }()
 
-        let toolHistory: String = {
-            if toolResults.isEmpty { return "(none)" }
-            return toolResults.map { r in
-                let head = "id=\(r.id) tool=\(r.tool.rawValue) ok=\(r.ok)"
-                var body = sanitizedPromptContextText(r.output)
-                // Keep verify output compact to avoid drowning context.
-                if r.id.hasPrefix("verify") {
-                    body = tailLines(body, maxLines: 120)
-                }
-                if body.count > 1800 {
-                    body = String(body.prefix(1800)) + "\n[truncated]"
-                }
-                return head + "\n" + body
-            }.joined(separator: "\n\n")
-        }()
+        let toolHistory = toolHistoryForPrompt(toolResults)
 
         let verifyText: String = {
             guard let config, config.verifyAfterChanges else { return "(disabled)" }
@@ -4137,6 +5152,10 @@ Networking:
             if cmds.isEmpty { return "(not configured)" }
             return cmds.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
         }()
+
+        let skillRoutingGuidance = projectSkillRoutingPromptGuidance(
+            snapshot: skillRegistrySnapshot
+        )
 
         let prompt = """
 You are X-Terminal.
@@ -4162,6 +5181,15 @@ Tool policy:
 - deny=\(toolPolicy.denyTokens.isEmpty ? "(none)" : toolPolicy.denyTokens.joined(separator: ","))
 - Tools outside this allowlist will be rejected by runtime.
 
+Supervisor guidance (IMPORTANT):
+- If Memory v1 contains [pending_supervisor_guidance], treat it as active governed guidance for this project.
+- When that block is present and you emit tool_calls or final, include `guidance_ack` in the same JSON object whenever possible.
+- `guidance_ack` format:
+  {"guidance_ack":{"injection_id":"guidance-id","status":"accepted|deferred|rejected","note":"brief reason"}}
+- Use `accepted` when you are following the guidance now.
+- Use `deferred` when you need a safe point, missing evidence, or another prerequisite before applying it.
+- Use `rejected` only with a concrete reason tied to goal, constraints, or evidence.
+
 Patch-first workflow (IMPORTANT):
 - Prefer producing a unified diff and using git_apply_check + git_apply for edits.
 - Avoid write_file for modifying existing files when the project is a git repo.
@@ -4169,6 +5197,8 @@ Patch-first workflow (IMPORTANT):
 - If no stack is detected yet and the user asks to build something, choose a stack and scaffold minimal runnable files first (e.g., web: index.html; python: main.py; node: package.json; swift: Package.swift).
 - After applying changes, use git_diff to show what changed before returning final.
 - If verify commands are configured, run them (run_command) after changes and include output.
+
+\(skillRoutingGuidance)
 
 \(networkingGuidance)
 
@@ -4180,10 +5210,16 @@ User request:
 
 Response rules (STRICT):
 - Output ONLY valid JSON.
+- If the current project has installed governed skills, you may use:
+  {"skill_calls":[{"id":"1","skill_id":"find-skills","payload":{"query":"browser automation"}}]}
 - If you need to use tools, output:
-  {"tool_calls":[{"id":"1","tool":"read_file","args":{"path":"..."}}]}
+  {"guidance_ack":{"injection_id":"guidance-id","status":"accepted","note":"Applying at next step boundary"},"tool_calls":[{"id":"1","tool":"read_file","args":{"path":"..."}}]}
 - If you are done, output:
-  {"final":"..."}
+  {"guidance_ack":{"injection_id":"guidance-id","status":"deferred","note":"Need extra evidence before replan"},"final":"..."}
+- `skill_calls` and `tool_calls` are both allowed. Prefer `skill_calls` when the work matches an installed governed skill in `skills_registry`.
+- Only use `skill_id` values that appear in the current project's `skills_registry` snapshot.
+- Put variant selection inside `payload.action` when a skill exposes multiple actions.
+- If no pending supervisor guidance is present, `guidance_ack` may be omitted.
 - Do not include markdown. Do not include extra keys.
 """
         return PromptBuildOutput(prompt: prompt, memory: memoryInfo)
@@ -4249,15 +5285,77 @@ Response rules (STRICT):
         }.joined(separator: "\n")
     }
 
+    private func currentProjectDisplayName(ctx: AXProjectContext) -> String {
+        let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+        let registry = AXProjectRegistryStore.load()
+        return registry.projects.first(where: { $0.projectId == projectId })?.displayName ?? ctx.projectName()
+    }
+
+    private func capped(_ text: String, maxChars: Int) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > maxChars else { return trimmed }
+        let idx = trimmed.index(trimmed.startIndex, offsetBy: maxChars)
+        return String(trimmed[..<idx]) + "…"
+    }
+
+    private func currentProjectSkillRegistrySnapshot(
+        ctx: AXProjectContext,
+        projectId: String,
+        projectName: String
+    ) async -> SupervisorSkillRegistrySnapshot? {
+        let normalizedProjectId = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedProjectId.isEmpty else { return nil }
+        _ = XTResolvedSkillsCacheStore.refreshFromHub(
+            projectId: normalizedProjectId,
+            projectName: projectName,
+            context: ctx,
+            hubBaseDir: HubPaths.baseDir()
+        )
+        return await HubIPCClient.requestSupervisorSkillRegistrySnapshot(
+            projectId: normalizedProjectId,
+            projectName: projectName
+        )
+    }
+
+    private func projectSkillRoutingPromptGuidance(
+        snapshot: SupervisorSkillRegistrySnapshot?
+    ) -> String {
+        let summary = sanitizeSupervisorPromptIdentifiers(
+            capped(snapshot?.memorySummary(maxItems: 6, maxChars: 1_200) ?? "", maxChars: 1_200)
+        )
+        guard let snapshot, !snapshot.items.isEmpty, !summary.isEmpty else {
+            return """
+Skills registry:
+- No governed project skill registry is available right now.
+- Do not emit `skill_calls` unless the current project's `skills_registry` block is present.
+"""
+        }
+
+        return """
+Skills registry (IMPORTANT):
+- This project currently has \(snapshot.items.count) governed skill(s) available.
+- When a matching installed skill exists, prefer `skill_calls` over raw `tool_calls`.
+- Use each skills_registry item's risk, grant, caps, dispatch, variant, and payload hints to shape `payload`.
+- High-risk or grant-gated skills may still pause on approval even when routed through `skill_calls`.
+
+skills_registry:
+\(summary)
+"""
+    }
+
     private func buildProjectMemoryV1Block(
         ctx: AXProjectContext,
         canonicalMemory: String,
         recentText: String,
         toolResults: [ToolResult],
         userText: String,
+        skillRegistrySnapshot: SupervisorSkillRegistrySnapshot? = nil,
         servingProfile: XTMemoryServingProfile? = nil
     ) -> String {
         let constitution = constitutionOneLinerForMemoryV1(userText: userText)
+        let skillRegistryEvidence = sanitizeSupervisorPromptIdentifiers(
+            capped(skillRegistrySnapshot?.memorySummary(maxItems: 6, maxChars: 1_200) ?? "", maxChars: 1_200)
+        )
         let rawPayload = HubIPCClient.MemoryContextPayload(
             mode: XTMemoryUseMode.projectChat.rawValue,
             projectId: AXProjectRegistryStore.projectId(forRoot: ctx.root),
@@ -4268,7 +5366,16 @@ Response rules (STRICT):
             canonicalText: sanitizedPromptContextText(canonicalMemory),
             observationsText: sanitizedPromptContextText(projectObservationDigest(ctx: ctx)),
             workingSetText: sanitizedPromptContextText(recentText),
-            rawEvidenceText: sanitizedPromptContextText(toolEvidenceForMemoryV1(toolResults)),
+            rawEvidenceText: sanitizedPromptContextText(
+                {
+                    let toolEvidence = toolEvidenceForMemoryV1(toolResults).trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !skillRegistryEvidence.isEmpty else { return toolEvidence }
+                    if toolEvidence.isEmpty || toolEvidence == "(none)" {
+                        return "skills_registry:\n\(skillRegistryEvidence)"
+                    }
+                    return "\(toolEvidence)\n\nskills_registry:\n\(skillRegistryEvidence)"
+                }()
+            ),
             servingProfile: servingProfile?.rawValue,
             budgets: nil
         )
@@ -4328,7 +5435,9 @@ latest_user:
         canonicalMemory: String,
         recentText: String,
         toolResults: [ToolResult],
-        userText: String
+        userText: String,
+        skillRegistrySnapshot: SupervisorSkillRegistrySnapshot? = nil,
+        safePointState: SupervisorSafePointExecutionState? = nil
     ) async -> MemoryV1BuildInfo {
         let preferHubMemory = XTProjectMemoryGovernance.prefersHubMemory(config)
         let observationsText = projectObservationDigest(ctx: ctx)
@@ -4353,12 +5462,21 @@ latest_user:
             recentText: recentText,
             retrievalBlock: retrievalBlock
         )
+        let guidanceBlock = projectSupervisorGuidancePromptBlock(
+            ctx: ctx,
+            safePointState: safePointState
+        )
+        let workingSetText = mergeProjectWorkingSetGuidance(
+            recentText: mergedRecentText,
+            guidanceBlock: guidanceBlock
+        )
         let local = buildProjectMemoryV1Block(
             ctx: ctx,
             canonicalMemory: canonicalMemory,
-            recentText: mergedRecentText,
+            recentText: workingSetText,
             toolResults: toolResults,
             userText: userText,
+            skillRegistrySnapshot: skillRegistrySnapshot,
             servingProfile: servingProfile
         )
 
@@ -4387,7 +5505,7 @@ latest_user:
             constitutionHint: constitutionHint,
             canonicalText: sanitizedPromptContextText(canonicalMemory),
             observationsText: sanitizedPromptContextText(observationsText),
-            workingSetText: sanitizedPromptContextText(mergedRecentText),
+            workingSetText: sanitizedPromptContextText(workingSetText),
             rawEvidenceText: rawEvidence,
             servingProfile: servingProfile,
             progressiveDisclosure: true,
@@ -4528,6 +5646,17 @@ latest_user:
 
     private func preferredProjectMemoryServingProfile(userText: String) -> XTMemoryServingProfile? {
         XTMemoryServingProfileSelector.preferredProjectChatProfile(userMessage: userText)
+    }
+
+    private func mergeProjectWorkingSetGuidance(
+        recentText: String,
+        guidanceBlock: String
+    ) -> String {
+        let recent = recentText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let guidance = guidanceBlock.trimmingCharacters(in: .whitespacesAndNewlines)
+        if guidance.isEmpty { return recentText }
+        if recent.isEmpty || recent == "(none)" { return guidanceBlock }
+        return "\(guidanceBlock)\n\n\(recentText)"
     }
 
     private func shouldRequestProjectMemoryRetrieval(userText: String) -> Bool {
@@ -4676,12 +5805,194 @@ blocker: \(blocker.isEmpty ? "(none)" : blocker)
 """
     }
 
+    private func projectSupervisorGuidancePromptBlock(
+        ctx: AXProjectContext,
+        safePointState: SupervisorSafePointExecutionState? = nil
+    ) -> String {
+        let latest = SupervisorGuidanceInjectionStore.latest(for: ctx)
+        let pending = SupervisorSafePointCoordinator.deliverablePendingGuidance(
+            for: ctx,
+            state: safePointState
+        )
+        guard latest != nil || pending != nil else { return "" }
+
+        var sections: [String] = []
+        if let pending {
+            sections.append(
+                """
+[pending_supervisor_guidance]
+injection_id: \(pending.injectionId)
+review_id: \(pending.reviewId)
+delivery_mode: \(pending.deliveryMode.rawValue)
+intervention_mode: \(pending.interventionMode.rawValue)
+safe_point_policy: \(pending.safePointPolicy.rawValue)
+ack_status: \(pending.ackStatus.rawValue)
+ack_required: \(pending.ackRequired)
+guidance_text:
+\(pending.guidanceText)
+[/pending_supervisor_guidance]
+"""
+            )
+        }
+        if let latest {
+            sections.append(
+                """
+[latest_supervisor_guidance]
+injection_id: \(latest.injectionId)
+ack_status: \(latest.ackStatus.rawValue)
+ack_note: \(latest.ackNote.isEmpty ? "(none)" : latest.ackNote)
+delivery_mode: \(latest.deliveryMode.rawValue)
+intervention_mode: \(latest.interventionMode.rawValue)
+[/latest_supervisor_guidance]
+"""
+            )
+        }
+        return sections.joined(separator: "\n\n")
+    }
+
+    private func persistSupervisorGuidanceAckIfNeeded(
+        env: ToolActionEnvelope,
+        ctx: AXProjectContext,
+        source: String = "coder_envelope"
+    ) {
+        guard let pending = SupervisorGuidanceInjectionStore.latestPendingAck(for: ctx) else { return }
+        let hasExecutableResult = !(env.tool_calls ?? []).isEmpty
+            || !(env.skill_calls ?? []).isEmpty
+            || !(env.final?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+
+        let nowMs = Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
+        var ackStatus: SupervisorGuidanceAckStatus
+        var ackNote: String
+        var requestedInjectionId = pending.injectionId
+
+        if let explicit = env.guidance_ack {
+            ackStatus = supervisorGuidanceAckStatus(from: explicit.status)
+            ackNote = (explicit.note ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let requested = (explicit.injection_id ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !requested.isEmpty {
+                requestedInjectionId = requested
+            }
+            if ackStatus == .rejected && ackNote.isEmpty {
+                ackNote = "rejected_without_reason_from_model"
+            }
+            if ackStatus == .accepted && ackNote.isEmpty {
+                ackNote = "accepted_from_model_response"
+            }
+            if ackStatus == .deferred && ackNote.isEmpty {
+                ackNote = "deferred_from_model_response"
+            }
+        } else {
+            guard hasExecutableResult else { return }
+            ackStatus = .accepted
+            ackNote = "auto_accepted_from_executable_result"
+        }
+
+        do {
+            try SupervisorGuidanceInjectionStore.acknowledge(
+                injectionId: pending.injectionId,
+                status: ackStatus,
+                note: ackNote,
+                atMs: nowMs,
+                for: ctx
+            )
+            AXProjectStore.appendRawLog(
+                [
+                    "type": "supervisor_guidance_ack",
+                    "action": "ack",
+                    "source": source,
+                    "project_id": pending.projectId,
+                    "review_id": pending.reviewId,
+                    "injection_id": pending.injectionId,
+                    "requested_injection_id": requestedInjectionId,
+                    "ack_status": ackStatus.rawValue,
+                    "ack_note": ackNote,
+                    "ack_required": pending.ackRequired,
+                    "timestamp_ms": nowMs
+                ],
+                for: ctx
+            )
+            publishSupervisorGuidanceAckEvent(
+                ctx: ctx,
+                injectionId: pending.injectionId
+            )
+        } catch {
+            AXProjectStore.appendRawLog(
+                [
+                    "type": "supervisor_guidance_ack",
+                    "action": "ack_failed",
+                    "source": source,
+                    "project_id": pending.projectId,
+                    "review_id": pending.reviewId,
+                    "injection_id": pending.injectionId,
+                    "requested_injection_id": requestedInjectionId,
+                    "reason": String(describing: error),
+                    "timestamp_ms": nowMs
+                ],
+                for: ctx
+            )
+        }
+    }
+
+    private func publishSupervisorGuidanceAckEvent(
+        ctx: AXProjectContext,
+        injectionId: String
+    ) {
+        let normalized = injectionId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+        guard let record = SupervisorGuidanceInjectionStore.load(for: ctx).items.first(where: {
+            $0.injectionId == normalized
+        }) else { return }
+        AXEventBus.shared.publish(.supervisorGuidanceAck(record))
+    }
+
+    private func supervisorGuidanceAckStatus(
+        from status: ToolGuidanceAckStatus
+    ) -> SupervisorGuidanceAckStatus {
+        switch status {
+        case .accepted:
+            return .accepted
+        case .deferred:
+            return .deferred
+        case .rejected:
+            return .rejected
+        }
+    }
+
     private func toolEvidenceForMemoryV1(_ toolResults: [ToolResult]) -> String {
         guard !toolResults.isEmpty else { return "" }
         return toolResults.suffix(6).map { r in
             let out = cappedForMemoryV1(sanitizedPromptContextText(r.output), maxChars: 260)
             return "id=\(r.id) tool=\(r.tool.rawValue) ok=\(r.ok)\n\(out)"
         }.joined(separator: "\n\n")
+    }
+
+    private func toolHistoryForPrompt(_ toolResults: [ToolResult]) -> String {
+        guard !toolResults.isEmpty else { return "(none)" }
+        return toolResults.map(toolHistoryEntryForPrompt).joined(separator: "\n\n")
+    }
+
+    private func toolHistoryEntryForPrompt(_ result: ToolResult) -> String {
+        var lines: [String] = ["id=\(result.id) tool=\(result.tool.rawValue) ok=\(result.ok)"]
+        let promptSummary = sanitizedPromptContextText(ToolResultHumanSummary.specializedSummary(for: result) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !promptSummary.isEmpty {
+            let cappedSummary = promptSummary.count > 260
+                ? String(promptSummary.prefix(260)) + "..."
+                : promptSummary
+            lines.append("summary=\(cappedSummary)")
+        }
+
+        var body = sanitizedPromptContextText(result.output)
+        if result.id.hasPrefix("verify") {
+            body = tailLines(body, maxLines: 120)
+        }
+        if body.count > 1800 {
+            body = String(body.prefix(1800)) + "\n[truncated]"
+        }
+        if !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.append(body)
+        }
+        return lines.joined(separator: "\n")
     }
 
     private func sanitizedPromptContextText(_ text: String) -> String {
@@ -4743,5 +6054,11 @@ blocker: \(blocker.isEmpty ? "(none)" : blocker)
             for (k, vv) in o { out[k] = jsonValueToAny(vv) }
             return out
         }
+    }
+
+    private func jsonStringValue(_ value: JSONValue?) -> String? {
+        guard case .string(let text)? = value else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }

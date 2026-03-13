@@ -228,6 +228,23 @@ extension AXProjectConfig {
             out.autonomyAllowBrowserRuntime = preset.allowBrowserRuntime
             out.autonomyAllowConnectorActions = preset.allowConnectorActions
             out.autonomyAllowExtensions = preset.allowExtensions
+
+            // Legacy autonomy mode remains a compatibility input until the user
+            // explicitly switches the project onto the dual-dial governance model.
+            if out.governanceCompatSource != .explicitDualDial {
+                let recommended = AXProjectGovernanceBundle.recommended(
+                    for: AXProjectExecutionTier.fromLegacyAutonomyMode(mode)
+                )
+                out.executionTier = recommended.executionTier
+                out.supervisorInterventionTier = recommended.supervisorInterventionTier
+                out.reviewPolicyMode = recommended.reviewPolicyMode
+                out.progressHeartbeatSeconds = recommended.schedule.progressHeartbeatSeconds
+                out.reviewPulseSeconds = recommended.schedule.reviewPulseSeconds
+                out.brainstormReviewSeconds = recommended.schedule.brainstormReviewSeconds
+                out.eventDrivenReviewEnabled = recommended.schedule.eventDrivenReviewEnabled
+                out.eventReviewTriggers = recommended.schedule.eventReviewTriggers
+                out.governanceCompatSource = .legacyAutonomyMode
+            }
         }
         if let allowDeviceTools {
             out.autonomyAllowDeviceTools = allowDeviceTools

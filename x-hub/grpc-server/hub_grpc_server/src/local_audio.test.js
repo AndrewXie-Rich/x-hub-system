@@ -138,12 +138,14 @@ await run('transcribeLocalAudio normalizes successful runtime output', async () 
   let executorCalls = 0;
   const out = await transcribeLocalAudio({
     runtimeBaseDir,
+    deviceId: 'terminal_device',
     audioPath,
     language: 'en',
     timestamps: true,
     executor: async ({ request }) => {
       executorCalls += 1;
       assert.equal(String(request?.task_kind || ''), 'speech_to_text');
+      assert.equal(String(request?.device_id || ''), 'terminal_device');
       assert.equal(String(request?.options?.language || ''), 'en');
       assert.equal(!!request?.options?.timestamps, true);
       return {

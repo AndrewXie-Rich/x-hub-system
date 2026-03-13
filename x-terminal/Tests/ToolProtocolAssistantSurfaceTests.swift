@@ -6,6 +6,8 @@ struct ToolProtocolAssistantSurfaceTests {
     @Test
     func assistantSurfaceSpecsExposeSkillAlignedTools() {
         #expect(ToolPolicy.toolSpec(.session_list).contains("project_id"))
+        #expect(ToolPolicy.toolSpec(.agentImportRecord).contains("staging_id"))
+        #expect(ToolPolicy.toolSpec(.agentImportRecord).contains("selector"))
         #expect(ToolPolicy.toolSpec(.memory_snapshot).contains("mode"))
         #expect(ToolPolicy.toolSpec(.skills_search).contains("source_filter"))
         #expect(ToolPolicy.toolSpec(.summarize).contains("url?|path?|text"))
@@ -41,6 +43,7 @@ struct ToolProtocolAssistantSurfaceTests {
         #expect(allowed.contains(.session_list))
         #expect(allowed.contains(.session_resume))
         #expect(allowed.contains(.session_compact))
+        #expect(allowed.contains(.agentImportRecord))
         #expect(allowed.contains(.memory_snapshot))
         #expect(allowed.contains(.project_snapshot))
         #expect(allowed.contains(.skills_search))
@@ -87,6 +90,8 @@ struct ToolProtocolAssistantSurfaceTests {
         )
         #expect(completeStep.contains(.deviceUIStep))
         #expect(ToolPolicy.risk(for: ToolCall(tool: .session_resume, args: [:])) == .safe)
+        #expect(ToolPolicy.risk(for: ToolCall(tool: .agentImportRecord, args: ["staging_id": .string("stage-1")])) == .safe)
+        #expect(ToolPolicy.risk(for: ToolCall(tool: .agentImportRecord, args: ["selector": .string("latest_for_project")])) == .safe)
         #expect(ToolPolicy.risk(for: ToolCall(tool: .memory_snapshot, args: [:])) == .safe)
         #expect(ToolPolicy.risk(for: ToolCall(tool: .skills_search, args: ["query": .string("browser")])) == .safe)
         #expect(ToolPolicy.risk(for: ToolCall(tool: .summarize, args: ["text": .string("hello")])) == .safe)

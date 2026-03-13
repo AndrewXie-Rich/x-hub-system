@@ -20,6 +20,8 @@ private enum LocalBackendOption: String, CaseIterable, Identifiable {
 
 private struct DetectedLocalModelMetadata {
     var modelFormat: String
+    var maxContextLength: Int?
+    var defaultLoadProfile: LocalModelLoadProfile?
     var taskKinds: [String]
     var inputModalities: [String]
     var outputModalities: [String]
@@ -34,6 +36,8 @@ private struct DetectedLocalModelMetadata {
         let modelFormat = LocalModelCapabilityDefaults.defaultModelFormat(forBackend: backend)
         return DetectedLocalModelMetadata(
             modelFormat: modelFormat,
+            maxContextLength: nil,
+            defaultLoadProfile: nil,
             taskKinds: defaultTaskKinds,
             inputModalities: LocalModelCapabilityDefaults.defaultInputModalities(forTaskKinds: defaultTaskKinds),
             outputModalities: LocalModelCapabilityDefaults.defaultOutputModalities(forTaskKinds: defaultTaskKinds),
@@ -241,7 +245,9 @@ struct AddModelSheet: View {
             return
         }
 
-        if let c = detectContextLength(config: config), c > 0 {
+        if let manifestDefaultContext = manifest?.defaultLoadProfile?.contextLength, manifestDefaultContext > 0 {
+            ctx = manifestDefaultContext
+        } else if let c = detectContextLength(config: config), c > 0 {
             ctx = c
         } else {
             ctx = 8192
@@ -280,6 +286,17 @@ struct AddModelSheet: View {
 
     private func detectContextLength(config: [String: Any]?) -> Int? {
         guard let c = config else { return nil }
+        if let detected = detectContextLength(in: c) {
+            return detected
+        }
+        if let textConfig = c["text_config"] as? [String: Any],
+           let detected = detectContextLength(in: textConfig) {
+            return detected
+        }
+        return nil
+    }
+
+    private func detectContextLength(in object: [String: Any]) -> Int? {
         let keys = [
             "max_position_embeddings",
             "model_max_length",
@@ -288,9 +305,9 @@ struct AddModelSheet: View {
             "max_seq_len",
         ]
         for k in keys {
-            if let v = c[k] as? Int { return v }
-            if let v = c[k] as? Double { return Int(v) }
-            if let v = c[k] as? String, let i = Int(v) { return i }
+            if let v = object[k] as? Int { return v }
+            if let v = object[k] as? Double { return Int(v) }
+            if let v = object[k] as? String, let i = Int(v) { return i }
         }
         return nil
     }
@@ -410,6 +427,8 @@ struct AddModelSheet: View {
             return (
                 DetectedLocalModelMetadata(
                     modelFormat: manifest?.modelFormat ?? "mlx",
+                    maxContextLength: manifest?.maxContextLength ?? detectContextLength(config: config),
+                    defaultLoadProfile: manifest?.defaultLoadProfile ?? LocalModelLoadProfile(contextLength: max(512, ctx)),
                     taskKinds: manifest?.taskKinds ?? ["text_generate"],
                     inputModalities: manifest?.inputModalities ?? ["text"],
                     outputModalities: manifest?.outputModalities ?? ["text"],
@@ -440,6 +459,8 @@ struct AddModelSheet: View {
             return (
                 DetectedLocalModelMetadata(
                     modelFormat: manifest.modelFormat,
+                    maxContextLength: manifest.maxContextLength ?? detectContextLength(config: config),
+                    defaultLoadProfile: manifest.defaultLoadProfile ?? LocalModelLoadProfile(contextLength: max(512, ctx)),
                     taskKinds: manifest.taskKinds,
                     inputModalities: manifest.inputModalities,
                     outputModalities: manifest.outputModalities,
@@ -477,10 +498,14 @@ struct AddModelSheet: View {
             quant: quant,
             paramsB: paramsB
         )
+        let maxContextLength = detectContextLength(config: config)
+        let defaultLoadProfile = LocalModelLoadProfile(contextLength: max(512, maxContextLength ?? ctx))
 
         if containsAny(haystack, keywords: ["whisper", "wav2vec", "hubert", "speech", "asr", "ctc"]) {
             return DetectedLocalModelMetadata(
                 modelFormat: modelFormat,
+                maxContextLength: maxContextLength,
+                defaultLoadProfile: defaultLoadProfile,
                 taskKinds: ["speech_to_text"],
                 inputModalities: ["audio"],
                 outputModalities: ["text", "segments"],
@@ -499,6 +524,8 @@ struct AddModelSheet: View {
         if containsAny(haystack, keywords: ["trocr", "donut", "ocr"]) {
             return DetectedLocalModelMetadata(
                 modelFormat: modelFormat,
+                maxContextLength: maxContextLength,
+                defaultLoadProfile: defaultLoadProfile,
                 taskKinds: ["ocr"],
                 inputModalities: ["image"],
                 outputModalities: ["text", "spans"],
@@ -514,9 +541,11 @@ struct AddModelSheet: View {
             )
         }
 
-        if containsAny(haystack, keywords: ["llava", "blip", "siglip", "clip", "florence", "pix2struct", "vision"]) {
+        if containsAny(haystack, keywords: ["llava", "blip", "siglip", "clip", "florence", "pix2struct", "vision", "glm4v", "qwen3_vl", "qwen2_vl", "pixtral", "mistral3"]) {
             return DetectedLocalModelMetadata(
                 modelFormat: modelFormat,
+                maxContextLength: maxContextLength,
+                defaultLoadProfile: defaultLoadProfile,
                 taskKinds: ["vision_understand"],
                 inputModalities: ["image"],
                 outputModalities: ["text"],
@@ -535,6 +564,8 @@ struct AddModelSheet: View {
         if containsAny(haystack, keywords: ["bge", "gte", "e5", "mpnet", "sentence", "jina", "embed"]) {
             return DetectedLocalModelMetadata(
                 modelFormat: modelFormat,
+                maxContextLength: maxContextLength,
+                defaultLoadProfile: defaultLoadProfile,
                 taskKinds: ["embedding"],
                 inputModalities: ["text"],
                 outputModalities: ["embedding"],
@@ -614,11 +645,13 @@ struct AddModelSheet: View {
             backend: backend.rawValue,
             quant: q.isEmpty ? inferQuant(modelURL.lastPathComponent) : q,
             contextLength: max(512, ctx),
+            maxContextLength: resolved.maxContextLength,
             paramsB: max(0.0, pb),
             modelPath: modelPath,
             roles: uniq,
             note: "catalog",
             modelFormat: resolved.modelFormat,
+            defaultLoadProfile: resolved.defaultLoadProfile,
             taskKinds: resolved.taskKinds,
             inputModalities: resolved.inputModalities,
             outputModalities: resolved.outputModalities,

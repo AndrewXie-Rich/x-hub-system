@@ -11,6 +11,7 @@ enum AXPendingActionType: String, Codable {
 struct AXPendingToolFlowState: Codable, Equatable {
     var step: Int
     var toolResults: [ToolResult]
+    var runStartedAtMs: Int64
 
     var dirtySinceVerify: Bool
     var verifyRunIndex: Int
@@ -23,6 +24,7 @@ struct AXPendingToolFlowState: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case step
         case toolResults
+        case runStartedAtMs = "run_started_at_ms"
         case dirtySinceVerify
         case verifyRunIndex
         case repairAttemptsUsed
@@ -35,6 +37,7 @@ struct AXPendingToolFlowState: Codable, Equatable {
     init(
         step: Int,
         toolResults: [ToolResult],
+        runStartedAtMs: Int64 = 0,
         dirtySinceVerify: Bool,
         verifyRunIndex: Int,
         repairAttemptsUsed: Int,
@@ -45,6 +48,7 @@ struct AXPendingToolFlowState: Codable, Equatable {
     ) {
         self.step = step
         self.toolResults = toolResults
+        self.runStartedAtMs = max(0, runStartedAtMs)
         self.dirtySinceVerify = dirtySinceVerify
         self.verifyRunIndex = verifyRunIndex
         self.repairAttemptsUsed = repairAttemptsUsed
@@ -58,6 +62,7 @@ struct AXPendingToolFlowState: Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         step = try container.decode(Int.self, forKey: .step)
         toolResults = try container.decode([ToolResult].self, forKey: .toolResults)
+        runStartedAtMs = try container.decodeIfPresent(Int64.self, forKey: .runStartedAtMs) ?? 0
         dirtySinceVerify = try container.decode(Bool.self, forKey: .dirtySinceVerify)
         verifyRunIndex = try container.decode(Int.self, forKey: .verifyRunIndex)
         repairAttemptsUsed = try container.decode(Int.self, forKey: .repairAttemptsUsed)

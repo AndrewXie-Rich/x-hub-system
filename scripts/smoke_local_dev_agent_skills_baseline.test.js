@@ -30,6 +30,7 @@ run("local dev baseline smoke resolves all default Agent baseline skills", () =>
     const metaPath = path.join(tempRoot, "release.json");
     const runtimeBaseDir = path.join(tempRoot, "runtime");
     const smokeOutPath = path.join(tempRoot, "smoke.json");
+    const optionalSmokeOutPath = path.join(tempRoot, "optional-smoke.json");
 
     const release = childProcess.spawnSync(process.execPath, [
       releaseScript,
@@ -46,6 +47,16 @@ run("local dev baseline smoke resolves all default Agent baseline skills", () =>
       encoding: "utf8",
     });
     assert.equal(release.status, 0, release.stderr || release.stdout);
+
+    const distIndex = JSON.parse(fs.readFileSync(path.join(outputRoot, "index.json"), "utf8"));
+    const distSkillIDs = Array.isArray(distIndex.skills)
+      ? distIndex.skills.map((row) => row.skill_id)
+      : [];
+    assert.equal(distSkillIDs.includes("agent-backup"), true);
+    assert.equal(distSkillIDs.includes("code-review"), true);
+    assert.equal(distSkillIDs.includes("skill-creator"), true);
+    assert.equal(distSkillIDs.includes("skill-vetter"), true);
+    assert.equal(distSkillIDs.includes("tavily-websearch"), true);
 
     const smoke = childProcess.spawnSync(process.execPath, [
       smokeScript,
@@ -80,6 +91,35 @@ run("local dev baseline smoke resolves all default Agent baseline skills", () =>
 
     const deniedGate = payload.gates.find((row) => !row.allowed);
     assert.equal(deniedGate, undefined);
+
+    const optionalSmoke = childProcess.spawnSync(process.execPath, [
+      smokeScript,
+      "--scope", "project",
+      "--project-id", "project-optional-smoke",
+      "--user-id", "user-optional-smoke",
+      "--runtime-base-dir", path.join(tempRoot, "runtime-optional"),
+      "--skills", "agent-backup,code-review,skill-creator,skill-vetter,tavily-websearch",
+      "--json-out", optionalSmokeOutPath,
+    ], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        XHUB_OFFICIAL_AGENT_SKILLS_DIR: stagingRoot,
+        XHUB_OFFICIAL_AGENT_SKILLS_DIST_DIR: outputRoot,
+      },
+    });
+    assert.equal(optionalSmoke.status, 0, optionalSmoke.stderr || optionalSmoke.stdout);
+
+    const optionalPayload = JSON.parse(fs.readFileSync(optionalSmokeOutPath, "utf8"));
+    assert.equal(optionalPayload.ok, true);
+    assert.deepEqual(optionalPayload.missing, []);
+    assert.equal(Array.isArray(optionalPayload.blocked), true);
+    assert.equal(optionalPayload.blocked.length, 0);
+    assert.deepEqual(
+      optionalPayload.resolved.map((row) => row.skill_id).sort(),
+      ["agent-backup", "code-review", "skill-creator", "skill-vetter", "tavily-websearch"]
+    );
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }

@@ -341,6 +341,62 @@ struct ChatSessionModelDirectReplyTests {
         #expect(message.contains("fail-closed"))
     }
 
+    @Test
+    func secretVaultBrowserFillSuccessProducesAssistantOutcomeLine() {
+        let session = ChatSessionModel()
+        let lines = session.assistantToolOutcomeLinesForTesting(
+            toolResults: [
+                ToolResult(
+                    id: "browser_secret_fill_ok",
+                    tool: .deviceBrowserControl,
+                    ok: true,
+                    output: ToolExecutor.structuredOutput(
+                        summary: [
+                            "tool": .string(ToolName.deviceBrowserControl.rawValue),
+                            "ok": .bool(true),
+                            "action": .string("type"),
+                            "selector": .string("input[type=password]"),
+                            "browser_runtime_driver_state": .string("secret_vault_applescript_fill")
+                        ],
+                        body: "session_id=browser_session_1"
+                    )
+                )
+            ]
+        )
+
+        #expect(lines.count == 1)
+        #expect(lines[0].contains("Hub Secret Vault"))
+        #expect(lines[0].contains("input[type=password]"))
+    }
+
+    @Test
+    func toolHistoryForPromptIncludesHumanReadableSummaryLine() {
+        let session = ChatSessionModel()
+        let history = session.toolHistoryForPromptForTesting(
+            toolResults: [
+                ToolResult(
+                    id: "browser_secret_fill_ok",
+                    tool: .deviceBrowserControl,
+                    ok: true,
+                    output: ToolExecutor.structuredOutput(
+                        summary: [
+                            "tool": .string(ToolName.deviceBrowserControl.rawValue),
+                            "ok": .bool(true),
+                            "action": .string("type"),
+                            "selector": .string("input[type=password]"),
+                            "browser_runtime_driver_state": .string("secret_vault_applescript_fill")
+                        ],
+                        body: "session_id=browser_session_1"
+                    )
+                )
+            ]
+        )
+
+        #expect(history.contains("summary="))
+        #expect(history.contains("Secret Vault credential"))
+        #expect(history.contains("browser_runtime_driver_state"))
+    }
+
     private func makeProjectRoot(named name: String) throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "xt_chat_direct_reply_\(name)_\(UUID().uuidString)",

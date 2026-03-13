@@ -41,6 +41,7 @@ import {
   normalizeSkillStoreError,
   promoteAgentImport,
   readSkillPackage,
+  resolveLatestAgentImportRecord,
   resolveSkillsWithTrace,
   searchSkills,
   setSkillPin,
@@ -4723,6 +4724,7 @@ export function makeServices({ db, bus }) {
           localEmbeddingOutcome = await prepareLocalMemoryEmbeddings({
             runtimeBaseDir,
             requestId: request_id,
+            deviceId: device_id,
             preferredModelId: String(process.env.HUB_MEMORY_LOCAL_EMBED_MODEL_ID || '').trim(),
             query: retrievalQuery,
             documents: routeResult.documents,
@@ -15116,6 +15118,8 @@ export function makeServices({ db, bus }) {
         scanInputJson: scan_input_json,
         requestedBy: requested_by,
         note,
+        userId: user_id,
+        projectId: project_id,
       });
     } catch (e) {
       const normalized = normalizeSkillStoreError(e, 'agent_import_stage_failed');
@@ -15263,6 +15267,109 @@ export function makeServices({ db, bus }) {
       schema_version: String(record.schema_version || ''),
       skill_id: String(record?.import_manifest?.skill_id || ''),
       record_json,
+    });
+  }
+
+  function ResolveAgentImportRecord(call, callback) {
+    const auth = requireClientAuth(call);
+    if (!auth.ok) {
+      callback(new Error(auth.message));
+      return;
+    }
+    if (!clientAllows(auth, 'skills')) {
+      callback(new Error(capabilityDenyCode(auth)));
+      return;
+    }
+
+    const req = call.request || {};
+    const identity = skillsIdentityFromRequest(req, auth);
+    const {
+      device_id,
+      user_id,
+      app_id,
+      project_id,
+      workspace_root,
+      session_id,
+    } = identity;
+    const selector = String(req.selector || '').trim();
+    const skill_id = String(req.skill_id || '').trim();
+    const selector_token = selector.toLowerCase().replace(/-/g, '_');
+    const requested_project_id = String(req.project_id || '').trim();
+    const effective_project_id = requested_project_id || (
+      selector_token === 'project'
+      || selector_token === 'latest_project'
+      || selector_token === 'project_latest'
+      || selector_token === 'latest_for_project'
+        ? String(project_id || '').trim()
+        : ''
+    );
+    if (!device_id || !app_id) {
+      callback(new Error('invalid client identity: missing device_id/app_id'));
+      return;
+    }
+    if (!trustedAutomationAllows(auth, { project_id, workspace_root })) {
+      callback(new Error(capabilityDenyCode(auth)));
+      return;
+    }
+
+    let resolved;
+    try {
+      resolved = resolveLatestAgentImportRecord(resolveRuntimeBaseDir(), {
+        selector,
+        skillId: skill_id,
+        projectId: effective_project_id,
+      });
+    } catch (e) {
+      const normalized = normalizeSkillStoreError(e, 'agent_import_record_resolve_failed');
+      appendSkillsAudit({
+        event_type: 'skills.agent_import.record.resolved',
+        device_id,
+        user_id,
+        app_id,
+        project_id,
+        session_id,
+        request_id: '',
+        ok: false,
+        error_code: normalized.code,
+        ext: {
+          selector,
+          skill_id,
+          project_id: effective_project_id,
+          deny_detail: normalized.detail,
+        },
+        severity: 'warn',
+      });
+      callback(new Error(normalized.code));
+      return;
+    }
+
+    appendSkillsAudit({
+      event_type: 'skills.agent_import.record.resolved',
+      device_id,
+      user_id,
+      app_id,
+      project_id,
+      session_id,
+      request_id: '',
+      ok: true,
+      ext: {
+        selector: String(resolved.selector || ''),
+        staging_id: String(resolved.staging_id || ''),
+        status: String(resolved.status || ''),
+        skill_id: String(resolved.skill_id || ''),
+        project_id: String(resolved.project_id || ''),
+      },
+    });
+
+    callback(null, {
+      selector: String(resolved.selector || ''),
+      staging_id: String(resolved.staging_id || ''),
+      status: String(resolved.status || ''),
+      audit_ref: String(resolved.audit_ref || ''),
+      schema_version: String(resolved.schema_version || ''),
+      skill_id: String(resolved.skill_id || ''),
+      record_json: String(resolved.record_json || '{}'),
+      project_id: String(resolved.project_id || ''),
     });
   }
 
@@ -15801,6 +15908,7 @@ export function makeServices({ db, bus }) {
       SetSkillPin,
       StageAgentImport,
       GetAgentImportRecord,
+      ResolveAgentImportRecord,
       PromoteAgentImport,
       ListResolvedSkills,
       GetSkillManifest,

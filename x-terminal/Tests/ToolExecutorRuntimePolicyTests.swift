@@ -13,6 +13,10 @@ struct ToolExecutorRuntimePolicyTests {
         let ctx = AXProjectContext(root: fixture.root)
         var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
         config = config.settingToolPolicy(deny: ["write_file"])
+        config = config.settingProjectGovernance(
+            executionTier: .a2RepoAuto,
+            supervisorInterventionTier: .s2PeriodicReview
+        )
         try AXProjectStore.saveConfig(config, for: ctx)
 
         let result = try await ToolExecutor.execute(
@@ -36,6 +40,39 @@ struct ToolExecutorRuntimePolicyTests {
     }
 
     @Test
+    func writeFileFailsClosedWhenExecutionTierIsPlanOnly() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "runtime-policy-governance-write-deny")
+        defer { fixture.cleanup() }
+
+        let ctx = AXProjectContext(root: fixture.root)
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config = config.settingProjectGovernance(
+            executionTier: .a1Plan,
+            supervisorInterventionTier: .s1MilestoneReview
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let result = try await ToolExecutor.execute(
+            call: ToolCall(
+                tool: .write_file,
+                args: [
+                    "path": .string("README.md"),
+                    "content": .string("hello")
+                ]
+            ),
+            projectRoot: fixture.root
+        )
+
+        #expect(!result.ok)
+        let summary = try #require(toolSummaryObject(result.output))
+        #expect(jsonString(summary["deny_code"]) == "governance_capability_denied")
+        #expect(jsonString(summary["policy_source"]) == "project_governance")
+        #expect(jsonString(summary["policy_reason"]) == "execution_tier_missing_repo_write")
+        #expect(jsonString(summary["effective_execution_tier"]) == AXProjectExecutionTier.a1Plan.rawValue)
+        #expect(toolBody(result.output).contains("write_file"))
+    }
+
+    @Test
     func deviceUIStepFailsClosedWhenCompositeRuntimeDependenciesAreMissing() async throws {
         try await Self.permissionGate.run {
             let fixture = ToolExecutorProjectFixture(name: "runtime-policy-device-step-deny")
@@ -53,6 +90,7 @@ struct ToolExecutorRuntimePolicyTests {
 
             let ctx = AXProjectContext(root: fixture.root)
             var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+            config = config.settingHubMemoryPreference(enabled: false)
             config = config.settingTrustedAutomationBinding(
                 mode: .trustedAutomation,
                 deviceId: "device_xt_001",
@@ -61,9 +99,13 @@ struct ToolExecutorRuntimePolicyTests {
             )
             config = config.settingAutonomyPolicy(
                 mode: .trustedOpenClawMode,
-                updatedAt: Date(timeIntervalSince1970: 1_773_300_100)
+                updatedAt: Date()
             )
             config = config.settingToolPolicy(deny: ["device.ui.observe", "device.ui.act"])
+            config = config.settingProjectGovernance(
+                executionTier: .a4OpenClaw,
+                supervisorInterventionTier: .s2PeriodicReview
+            )
             try AXProjectStore.saveConfig(config, for: ctx)
 
             let result = try await ToolExecutor.execute(
@@ -109,6 +151,7 @@ struct ToolExecutorRuntimePolicyTests {
 
             let ctx = AXProjectContext(root: fixture.root)
             var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+            config = config.settingHubMemoryPreference(enabled: false)
             config = config.settingTrustedAutomationBinding(
                 mode: .trustedAutomation,
                 deviceId: "device_xt_001",
@@ -118,7 +161,11 @@ struct ToolExecutorRuntimePolicyTests {
             config = config.settingAutonomyPolicy(
                 mode: .guided,
                 allowBrowserRuntime: false,
-                updatedAt: Date(timeIntervalSince1970: 1_773_300_000)
+                updatedAt: Date()
+            )
+            config = config.settingProjectGovernance(
+                executionTier: .a4OpenClaw,
+                supervisorInterventionTier: .s2PeriodicReview
             )
             try AXProjectStore.saveConfig(config, for: ctx)
 
@@ -160,6 +207,10 @@ struct ToolExecutorRuntimePolicyTests {
             mode: .trustedOpenClawMode,
             ttlSeconds: 60,
             updatedAt: Date(timeIntervalSince1970: 1)
+        )
+        config = config.settingProjectGovernance(
+            executionTier: .a4OpenClaw,
+            supervisorInterventionTier: .s2PeriodicReview
         )
         try AXProjectStore.saveConfig(config, for: ctx)
 
@@ -237,7 +288,11 @@ struct ToolExecutorRuntimePolicyTests {
             config = config.settingAutonomyPolicy(
                 mode: .trustedOpenClawMode,
                 ttlSeconds: 600,
-                updatedAt: Date(timeIntervalSince1970: 1_773_320_000)
+                updatedAt: Date()
+            )
+            config = config.settingProjectGovernance(
+                executionTier: .a4OpenClaw,
+                supervisorInterventionTier: .s2PeriodicReview
             )
             try AXProjectStore.saveConfig(config, for: ctx)
 
@@ -256,6 +311,55 @@ struct ToolExecutorRuntimePolicyTests {
             #expect(jsonString(summary["autonomy_local_override_mode"]) == AXProjectAutonomyHubOverrideMode.none.rawValue)
             #expect(jsonString(summary["autonomy_remote_override_mode"]) == AXProjectAutonomyHubOverrideMode.clampGuided.rawValue)
             #expect(jsonString(summary["autonomy_remote_override_source"]) == "hub_autonomy_policy_overrides_file")
+        }
+    }
+
+    @Test
+    func deviceClipboardReadFailsClosedWhenExecutionTierIsBelowOpenClaw() async throws {
+        try await Self.permissionGate.run {
+            let fixture = ToolExecutorProjectFixture(name: "runtime-policy-governance-device-deny")
+            defer { fixture.cleanup() }
+
+            AXTrustedAutomationPermissionOwnerReadiness.installCurrentProviderForTesting {
+                makePermissionReadiness(
+                    accessibility: .granted,
+                    automation: .granted,
+                    screenRecording: .granted,
+                    auditRef: "audit-runtime-policy-governance-device-deny"
+                )
+            }
+            defer { AXTrustedAutomationPermissionOwnerReadiness.resetCurrentProviderForTesting() }
+
+            let ctx = AXProjectContext(root: fixture.root)
+            var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+            config = config.settingTrustedAutomationBinding(
+                mode: .trustedAutomation,
+                deviceId: "device_xt_001",
+                deviceToolGroups: ["device.clipboard.read"],
+                workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
+            )
+            config = config.settingAutonomyPolicy(
+                mode: .trustedOpenClawMode,
+                ttlSeconds: 600,
+                updatedAt: Date()
+            )
+            config = config.settingProjectGovernance(
+                executionTier: .a3DeliverAuto,
+                supervisorInterventionTier: .s3StrategicCoach
+            )
+            try AXProjectStore.saveConfig(config, for: ctx)
+
+            let result = try await ToolExecutor.execute(
+                call: ToolCall(tool: .deviceClipboardRead, args: [:]),
+                projectRoot: fixture.root
+            )
+
+            #expect(!result.ok)
+            let summary = try #require(toolSummaryObject(result.output))
+            #expect(jsonString(summary["deny_code"]) == "governance_capability_denied")
+            #expect(jsonString(summary["policy_source"]) == "project_governance")
+            #expect(jsonString(summary["policy_reason"]) == "execution_tier_missing_device_tools")
+            #expect(jsonString(summary["effective_execution_tier"]) == AXProjectExecutionTier.a3DeliverAuto.rawValue)
         }
     }
 }

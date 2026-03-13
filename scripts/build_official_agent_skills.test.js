@@ -218,3 +218,112 @@ description: Discover governed skills.
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+run("repo official agent skill source tree includes agent-backup, code-review, skill-creator, skill-vetter, and tavily-websearch", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "official-agent-skills-repo-source-"));
+  try {
+    const sourceRoot = path.resolve(__dirname, "..", "official-agent-skills");
+    const outputRoot = path.join(root, "dist");
+    const index = buildOfficialAgentSkills({
+      sourceRoot,
+      outputRoot,
+      generatedAtMs: 1710000000000,
+      publisherTrustFile: path.join(sourceRoot, "publisher", "trusted_publishers.json"),
+    });
+
+    const skillIDs = index.skills.map((skill) => skill.skill_id).sort();
+    assert.equal(skillIDs.includes("agent-backup"), true);
+    assert.equal(skillIDs.includes("code-review"), true);
+    assert.equal(skillIDs.includes("skill-creator"), true);
+    assert.equal(skillIDs.includes("skill-vetter"), true);
+    assert.equal(skillIDs.includes("tavily-websearch"), true);
+
+    const agentBackup = index.skills.find((skill) => skill.skill_id === "agent-backup");
+    const codeReview = index.skills.find((skill) => skill.skill_id === "code-review");
+    const skillCreator = index.skills.find((skill) => skill.skill_id === "skill-creator");
+    const skillVetter = index.skills.find((skill) => skill.skill_id === "skill-vetter");
+    const tavily = index.skills.find((skill) => skill.skill_id === "tavily-websearch");
+    assert.ok(agentBackup);
+    assert.ok(codeReview);
+    assert.ok(skillCreator);
+    assert.ok(skillVetter);
+    assert.ok(tavily);
+
+    const agentBackupManifest = JSON.parse(
+      fs.readFileSync(path.join(outputRoot, agentBackup.manifest_path), "utf8")
+    );
+    assert.equal(agentBackupManifest.skill_id, "agent-backup");
+    assert.equal(agentBackupManifest.governed_dispatch_variants.length, 3);
+    assert.equal(
+      agentBackupManifest.governed_dispatch_variants.some(
+        (variant) => Array.isArray(variant.actions) && variant.actions.includes("create")
+      ),
+      true
+    );
+
+    const codeReviewManifest = JSON.parse(
+      fs.readFileSync(path.join(outputRoot, codeReview.manifest_path), "utf8")
+    );
+    assert.equal(codeReviewManifest.skill_id, "code-review");
+    assert.equal(codeReviewManifest.governed_dispatch_variants.length, 5);
+    assert.equal(
+      codeReviewManifest.governed_dispatch_variants.some(
+        (variant) => Array.isArray(variant.actions) && variant.actions.includes("staged_diff")
+      ),
+      true
+    );
+
+    const skillCreatorManifest = JSON.parse(
+      fs.readFileSync(path.join(outputRoot, skillCreator.manifest_path), "utf8")
+    );
+    assert.equal(skillCreatorManifest.skill_id, "skill-creator");
+    assert.equal(skillCreatorManifest.governed_dispatch_variants.length, 5);
+    assert.equal(
+      skillCreatorManifest.governed_dispatch_variants.some(
+        (variant) => Array.isArray(variant.actions) && variant.actions.includes("write")
+      ),
+      true
+    );
+
+    const skillVetterManifest = JSON.parse(
+      fs.readFileSync(path.join(outputRoot, skillVetter.manifest_path), "utf8")
+    );
+    assert.equal(skillVetterManifest.skill_id, "skill-vetter");
+    assert.equal(skillVetterManifest.governed_dispatch_variants.length, 11);
+    assert.equal(
+      skillVetterManifest.governed_dispatch_variants.some(
+        (variant) => Array.isArray(variant.actions) && variant.actions.includes("scan_exec")
+      ),
+      true
+    );
+    assert.equal(
+      skillVetterManifest.governed_dispatch_variants.some(
+        (variant) => Array.isArray(variant.actions) && variant.actions.includes("review_record")
+      ),
+      true
+    );
+    const reviewRecord = skillVetterManifest.governed_dispatch_variants.find(
+      (variant) => Array.isArray(variant.actions) && variant.actions.includes("review_record")
+    );
+    assert.ok(reviewRecord);
+    assert.equal(
+      Array.isArray(reviewRecord.dispatch?.passthrough_args)
+      && reviewRecord.dispatch.passthrough_args.includes("selector"),
+      true
+    );
+    assert.equal(
+      Array.isArray(reviewRecord.dispatch?.passthrough_args)
+      && reviewRecord.dispatch.passthrough_args.includes("project_id"),
+      true
+    );
+
+    const tavilyManifest = JSON.parse(
+      fs.readFileSync(path.join(outputRoot, tavily.manifest_path), "utf8")
+    );
+    assert.equal(tavilyManifest.skill_id, "tavily-websearch");
+    assert.equal(String(tavilyManifest.governed_dispatch?.tool || ""), "web_search");
+    assert.equal(Boolean(tavilyManifest.requires_grant), true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

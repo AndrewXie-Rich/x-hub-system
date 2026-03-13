@@ -274,11 +274,13 @@ struct HubRemoteAgentImportStageResult: Sendable {
 struct HubRemoteAgentImportRecordResult: Sendable {
     var ok: Bool
     var source: String
+    var selector: String?
     var stagingId: String?
     var status: String?
     var auditRef: String?
     var schemaVersion: String?
     var skillId: String?
+    var projectId: String?
     var recordJSON: String?
     var reasonCode: String?
     var logLines: [String]
@@ -3041,11 +3043,13 @@ actor HubPairingCoordinator {
             return HubRemoteAgentImportRecordResult(
                 ok: false,
                 source: "hub_runtime_grpc",
+                selector: nil,
                 stagingId: nil,
                 status: nil,
                 auditRef: nil,
                 schemaVersion: nil,
                 skillId: nil,
+                projectId: nil,
                 recordJSON: nil,
                 reasonCode: "missing_agent_staging_id",
                 logLines: ["agent import staging id is empty"]
@@ -3062,11 +3066,13 @@ actor HubPairingCoordinator {
             return HubRemoteAgentImportRecordResult(
                 ok: false,
                 source: "hub_runtime_grpc",
+                selector: nil,
                 stagingId: nil,
                 status: nil,
                 auditRef: nil,
                 schemaVersion: nil,
                 skillId: nil,
+                projectId: nil,
                 recordJSON: nil,
                 reasonCode: FileManager.default.fileExists(atPath: hubEnv.path) ? "client_kit_missing" : "hub_env_missing",
                 logLines: ["hub env or client kit missing for remote agent import record"]
@@ -3079,11 +3085,13 @@ actor HubPairingCoordinator {
             return HubRemoteAgentImportRecordResult(
                 ok: false,
                 source: "hub_runtime_grpc",
+                selector: nil,
                 stagingId: nil,
                 status: nil,
                 auditRef: nil,
                 schemaVersion: nil,
                 skillId: nil,
+                projectId: nil,
                 recordJSON: nil,
                 reasonCode: "node_missing",
                 logLines: ["missing node runtime for remote agent import record"]
@@ -3128,11 +3136,13 @@ actor HubPairingCoordinator {
             return HubRemoteAgentImportRecordResult(
                 ok: false,
                 source: "hub_runtime_grpc",
+                selector: nil,
                 stagingId: nil,
                 status: nil,
                 auditRef: nil,
                 schemaVersion: nil,
                 skillId: nil,
+                projectId: nil,
                 recordJSON: nil,
                 reasonCode: fallback,
                 logLines: logs
@@ -3147,11 +3157,161 @@ actor HubPairingCoordinator {
         return HubRemoteAgentImportRecordResult(
             ok: decoded.ok ?? false,
             source: nonEmpty(decoded.source) ?? "hub_runtime_grpc",
+            selector: nonEmpty(decoded.selector),
             stagingId: nonEmpty(decoded.stagingId),
             status: nonEmpty(decoded.status),
             auditRef: nonEmpty(decoded.auditRef),
             schemaVersion: nonEmpty(decoded.schemaVersion),
             skillId: nonEmpty(decoded.skillId),
+            projectId: nonEmpty(decoded.projectId),
+            recordJSON: nonEmpty(decoded.recordJSON),
+            reasonCode: reason?.replacingOccurrences(of: " ", with: "_"),
+            logLines: logs
+        )
+    }
+
+    func fetchRemoteResolvedAgentImportRecord(
+        options rawOptions: HubRemoteConnectOptions,
+        selector: String,
+        skillId: String?,
+        projectId: String?
+    ) -> HubRemoteAgentImportRecordResult {
+        let opts = sanitize(rawOptions)
+        var logs: [String] = []
+        let normalizedSelector = selector.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedSkillId = skillId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let normalizedProjectId = projectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !normalizedSelector.isEmpty else {
+            return HubRemoteAgentImportRecordResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                selector: nil,
+                stagingId: nil,
+                status: nil,
+                auditRef: nil,
+                schemaVersion: nil,
+                skillId: nil,
+                projectId: nil,
+                recordJSON: nil,
+                reasonCode: "missing_agent_import_selector",
+                logLines: ["agent import selector is empty"]
+            )
+        }
+
+        let stateDir = opts.stateDir ?? defaultStateDir()
+        let hubEnv = stateDir.appendingPathComponent("hub.env")
+        let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
+        let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
+        let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: hubEnv.path),
+              FileManager.default.fileExists(atPath: clientKitSrc.path) else {
+            return HubRemoteAgentImportRecordResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                selector: normalizedSelector,
+                stagingId: nil,
+                status: nil,
+                auditRef: nil,
+                schemaVersion: nil,
+                skillId: nil,
+                projectId: nil,
+                recordJSON: nil,
+                reasonCode: FileManager.default.fileExists(atPath: hubEnv.path) ? "client_kit_missing" : "hub_env_missing",
+                logLines: ["hub env or client kit missing for remote agent import resolve"]
+            )
+        }
+
+        let exported = readEnvExports(from: hubEnv)
+        let merged = mergedAxhubEnv(options: opts, extra: exported)
+        guard let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged) else {
+            return HubRemoteAgentImportRecordResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                selector: normalizedSelector,
+                stagingId: nil,
+                status: nil,
+                auditRef: nil,
+                schemaVersion: nil,
+                skillId: nil,
+                projectId: nil,
+                recordJSON: nil,
+                reasonCode: "node_missing",
+                logLines: ["missing node runtime for remote agent import resolve"]
+            )
+        }
+
+        var scriptEnv = merged
+        scriptEnv["XTERMINAL_AGENT_IMPORT_SELECTOR"] = normalizedSelector
+        if !normalizedSkillId.isEmpty {
+            scriptEnv["XTERMINAL_AGENT_IMPORT_SKILL_ID"] = normalizedSkillId
+        }
+        if !normalizedProjectId.isEmpty {
+            scriptEnv["XTERMINAL_AGENT_IMPORT_PROJECT_ID"] = normalizedProjectId
+        }
+        let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
+        func runScript() -> StepOutput {
+            do {
+                let script = remoteResolvedAgentImportRecordScriptSource()
+                let result = try ProcessCapture.run(
+                    nodeBin,
+                    ["--input-type=module", "-"],
+                    cwd: clientKitHub,
+                    stdin: script.data(using: .utf8),
+                    timeoutSec: 20.0,
+                    env: scriptEnv
+                )
+                return StepOutput(exitCode: result.exitCode, output: result.combined, command: command)
+            } catch {
+                return StepOutput(exitCode: 127, output: String(describing: error), command: command)
+            }
+        }
+
+        var step = runScript()
+        appendStepLogs(into: &logs, step: step)
+        if step.exitCode != 0, shouldRetryAfterClientKitInstall(step.output) {
+            let install = runAxhubctl(args: ["install-client"], options: opts, env: [:], timeoutSec: 120.0)
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                step = runScript()
+                appendStepLogs(into: &logs, step: step)
+            }
+        }
+
+        guard let jsonLine = extractTrailingJSONObjectLine(step.output),
+              let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteAgentImportRecordScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(from: step.output, fallback: "remote_agent_import_record_resolve_failed")
+            return HubRemoteAgentImportRecordResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                selector: normalizedSelector,
+                stagingId: nil,
+                status: nil,
+                auditRef: nil,
+                schemaVersion: nil,
+                skillId: nil,
+                projectId: nil,
+                recordJSON: nil,
+                reasonCode: fallback,
+                logLines: logs
+            )
+        }
+
+        let reason = nonEmpty(decoded.errorCode)
+            ?? nonEmpty(decoded.reason)
+            ?? nonEmpty(decoded.errorMessage)
+            ?? ((decoded.ok ?? false) ? nil : "remote_agent_import_record_resolve_failed")
+
+        return HubRemoteAgentImportRecordResult(
+            ok: decoded.ok ?? false,
+            source: nonEmpty(decoded.source) ?? "hub_runtime_grpc",
+            selector: nonEmpty(decoded.selector) ?? normalizedSelector,
+            stagingId: nonEmpty(decoded.stagingId),
+            status: nonEmpty(decoded.status),
+            auditRef: nonEmpty(decoded.auditRef),
+            schemaVersion: nonEmpty(decoded.schemaVersion),
+            skillId: nonEmpty(decoded.skillId),
+            projectId: nonEmpty(decoded.projectId),
             recordJSON: nonEmpty(decoded.recordJSON),
             reasonCode: reason?.replacingOccurrences(of: " ", with: "_"),
             logLines: logs
@@ -6049,11 +6209,13 @@ actor HubPairingCoordinator {
     private struct RemoteAgentImportRecordScriptResult: Codable {
         var ok: Bool?
         var source: String?
+        var selector: String?
         var stagingId: String?
         var status: String?
         var auditRef: String?
         var schemaVersion: String?
         var skillId: String?
+        var projectId: String?
         var recordJSON: String?
         var reason: String?
         var errorCode: String?
@@ -6062,11 +6224,13 @@ actor HubPairingCoordinator {
         enum CodingKeys: String, CodingKey {
             case ok
             case source
+            case selector
             case stagingId = "staging_id"
             case status
             case auditRef = "audit_ref"
             case schemaVersion = "schema_version"
             case skillId = "skill_id"
+            case projectId = "project_id"
             case recordJSON = "record_json"
             case reason
             case errorCode = "error_code"
@@ -8868,6 +9032,148 @@ main().catch((err) => {
     reason: msg || 'remote_agent_import_record_failed',
     error_code: msg || 'remote_agent_import_record_failed',
     error_message: msg || 'remote_agent_import_record_failed',
+  });
+  process.exit(1);
+});
+"""#
+    }
+
+    private func remoteResolvedAgentImportRecordScriptSource() -> String {
+        #"""
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
+
+const safe = (v) => String(v ?? '').trim();
+const out = (obj) => {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+};
+
+function reqClientFromEnv() {
+  return {
+    device_id: safe(process.env.HUB_DEVICE_ID || 'terminal_device'),
+    user_id: safe(process.env.HUB_USER_ID || ''),
+    app_id: safe(process.env.HUB_APP_ID || 'x_terminal'),
+    project_id: safe(process.env.HUB_PROJECT_ID || ''),
+    session_id: safe(process.env.HUB_SESSION_ID || ''),
+  };
+}
+
+function metadataFromEnv() {
+  const tok = safe(process.env.HUB_CLIENT_TOKEN || '');
+  const md = new grpc.Metadata();
+  if (tok) md.set('authorization', `Bearer ${tok}`);
+  return md;
+}
+
+async function resolveProtoPath() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'proto_path.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.resolveHubProtoPath === 'function') {
+        const p = safe(mod.resolveHubProtoPath(process.env));
+        if (p) return p;
+      }
+    } catch {}
+  }
+  const candidates = [
+    path.resolve(process.cwd(), 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', '..', 'protocol', 'hub_protocol_v1.proto'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+function loadProto(protoPath) {
+  const packageDef = protoLoader.loadSync(protoPath, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+  });
+  const loaded = grpc.loadPackageDefinition(packageDef);
+  return loaded?.ax?.hub?.v1;
+}
+
+async function makeClientCreds() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'client_credentials.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.makeClientCredentials === 'function') {
+        const built = mod.makeClientCredentials(process.env);
+        if (built?.creds) return { creds: built.creds, options: built.options || {} };
+      }
+    } catch {}
+  }
+  return { creds: grpc.credentials.createInsecure(), options: {} };
+}
+
+async function main() {
+  const selector = safe(process.env.XTERMINAL_AGENT_IMPORT_SELECTOR || '');
+  const skillId = safe(process.env.XTERMINAL_AGENT_IMPORT_SKILL_ID || '');
+  const projectId = safe(process.env.XTERMINAL_AGENT_IMPORT_PROJECT_ID || '');
+  if (!selector) throw new Error('missing_agent_import_selector');
+  const protoPath = await resolveProtoPath();
+  const proto = loadProto(protoPath);
+  if (!proto?.HubSkills) throw new Error('hub_skills_missing');
+
+  const host = safe(process.env.HUB_HOST || '127.0.0.1');
+  const port = Number.parseInt(safe(process.env.HUB_PORT || '50051'), 10) || 50051;
+  const addr = `${host}:${port}`;
+  const client = reqClientFromEnv();
+  const { creds, options } = await makeClientCreds();
+  const skillsClient = new proto.HubSkills(addr, creds, options);
+  const md = metadataFromEnv();
+
+  const resp = await new Promise((resolve, reject) => {
+    skillsClient.ResolveAgentImportRecord(
+      {
+        client,
+        selector,
+        skill_id: skillId,
+        project_id: projectId,
+      },
+      md,
+      (err, out) => {
+        if (err) reject(err);
+        else resolve(out || {});
+      }
+    );
+  });
+
+  out({
+    ok: true,
+    source: 'hub_runtime_grpc',
+    selector: safe(resp?.selector || ''),
+    staging_id: safe(resp?.staging_id || ''),
+    status: safe(resp?.status || ''),
+    audit_ref: safe(resp?.audit_ref || ''),
+    schema_version: safe(resp?.schema_version || ''),
+    skill_id: safe(resp?.skill_id || ''),
+    project_id: safe(resp?.project_id || ''),
+    record_json: safe(resp?.record_json || ''),
+  });
+}
+
+main().catch((err) => {
+  const msg = safe(err?.message || err);
+  out({
+    ok: false,
+    source: 'hub_runtime_grpc',
+    selector: safe(process.env.XTERMINAL_AGENT_IMPORT_SELECTOR || ''),
+    reason: msg || 'remote_agent_import_record_resolve_failed',
+    error_code: msg || 'remote_agent_import_record_resolve_failed',
+    error_message: msg || 'remote_agent_import_record_resolve_failed',
   });
   process.exit(1);
 });

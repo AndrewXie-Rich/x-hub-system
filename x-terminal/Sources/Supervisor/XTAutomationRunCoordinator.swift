@@ -222,6 +222,41 @@ final class XTAutomationRunCoordinator {
         now: Date = Date()
     ) throws -> XTAutomationRunCheckpoint {
         let store = try resolvedStore(for: runID, ctx: ctx)
+        if nextState != .blocked,
+           let guidance = pendingAutomationSafePointGuidance(
+            for: ctx,
+            runID: runID,
+            store: store
+           ),
+           !hasAutomationSafePointHold(
+            runID: runID,
+            injectionId: guidance.injectionId,
+            in: ctx
+           ) {
+            let checkpoint = store.transition(
+                to: .blocked,
+                retryAfterSeconds: max(retryAfterSeconds, 0),
+                auditRef: auditRef
+            )
+            AXProjectStore.appendRawLog(
+                [
+                    "type": "automation_safe_point_hold",
+                    "created_at": now.timeIntervalSince1970,
+                    "run_id": runID,
+                    "requested_state": nextState.rawValue,
+                    "result_state": XTAutomationRunState.blocked.rawValue,
+                    "review_id": guidance.reviewId,
+                    "injection_id": guidance.injectionId,
+                    "safe_point_policy": guidance.safePointPolicy.rawValue,
+                    "intervention_mode": guidance.interventionMode.rawValue,
+                    "delivery_mode": guidance.deliveryMode.rawValue,
+                    "audit_ref": auditRef
+                ],
+                for: ctx
+            )
+            persistCheckpoint(checkpoint, createdAt: now, for: ctx)
+            return checkpoint
+        }
         let checkpoint = store.transition(
             to: nextState,
             retryAfterSeconds: retryAfterSeconds,
@@ -281,6 +316,21 @@ final class XTAutomationRunCoordinator {
         let reconstruction = try loadCheckpointReconstruction(for: runID, ctx: ctx)
         checkpointStores[runID] = reconstruction.store
         return reconstruction.latestCheckpoint
+    }
+
+    func safePointGuidanceForBlockedTransition(
+        _ runID: String,
+        requestedState: XTAutomationRunState,
+        in ctx: AXProjectContext
+    ) throws -> SupervisorGuidanceInjectionRecord? {
+        guard requestedState != .blocked else { return nil }
+        let store = try resolvedStore(for: runID, ctx: ctx)
+        guard store.current?.state == .blocked else { return nil }
+        return pendingAutomationSafePointGuidance(
+            for: ctx,
+            runID: runID,
+            store: store
+        )
     }
 
     private func resolvedStore(for runID: String, ctx: AXProjectContext) throws -> XTAutomationRunCheckpointStore {
@@ -362,6 +412,52 @@ final class XTAutomationRunCoordinator {
             ],
             for: ctx
         )
+    }
+
+    private func pendingAutomationSafePointGuidance(
+        for ctx: AXProjectContext,
+        runID: String,
+        store: XTAutomationRunCheckpointStore
+    ) -> SupervisorGuidanceInjectionRecord? {
+        let runStartedAtMs = automationRunStartedAtMs(runID: runID, ctx: ctx)
+        return SupervisorSafePointCoordinator.deliverablePendingAutomationGuidance(
+            for: ctx,
+            runStartedAtMs: runStartedAtMs,
+            checkpointCount: store.history.count
+        )
+    }
+
+    private func automationRunStartedAtMs(runID: String, ctx: AXProjectContext) -> Int64 {
+        let log = xtAutomationReadRawLogEntries(for: ctx)
+        let launchSec = log.first(where: {
+            ($0["type"] as? String) == "automation_run_launch" &&
+            ($0["run_id"] as? String) == runID
+        })?["created_at"] as? Double
+        if let launchSec {
+            return Int64((launchSec * 1000.0).rounded())
+        }
+        let checkpointSec = log.first(where: {
+            ($0["type"] as? String) == "automation_checkpoint" &&
+            ($0["run_id"] as? String) == runID
+        })?["created_at"] as? Double
+        if let checkpointSec {
+            return Int64((checkpointSec * 1000.0).rounded())
+        }
+        return 0
+    }
+
+    private func hasAutomationSafePointHold(
+        runID: String,
+        injectionId: String,
+        in ctx: AXProjectContext
+    ) -> Bool {
+        let normalizedInjectionId = injectionId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedInjectionId.isEmpty else { return false }
+        return xtAutomationReadRawLogEntries(for: ctx).contains {
+            ($0["type"] as? String) == "automation_safe_point_hold" &&
+            ($0["run_id"] as? String) == runID &&
+            ($0["injection_id"] as? String) == normalizedInjectionId
+        }
     }
 }
 

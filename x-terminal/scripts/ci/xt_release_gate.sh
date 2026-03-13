@@ -24,8 +24,10 @@ warn_lines=()
 fail_lines=()
 
 coverage_xt_w3_08_status="PASS"
+coverage_xt_w3_36_status="SKIP"
 coverage_crk_w1_08_status="PASS"
 coverage_cm_w5_20_status="PASS"
+coverage_xt_w3_36_required=0
 coverage_doctor_report_path="(not checked)"
 coverage_secrets_report_path="(not checked)"
 coverage_rollback_report_path="(not checked)"
@@ -51,6 +53,9 @@ coverage_split_flow_runtime_policy_regression_log_path="(not checked)"
 coverage_release_evidence_matrix_log_path="(not checked)"
 coverage_release_evidence_matrix_summary_path="(not checked)"
 coverage_release_evidence_matrix_validator_regression_log_path="(not checked)"
+coverage_project_governance_evidence_report_path="(not checked)"
+coverage_project_governance_evidence_log_dir="(not checked)"
+coverage_project_governance_metrics_summary="(not checked)"
 
 note_pass() {
   pass_count=$((pass_count + 1))
@@ -1119,6 +1124,107 @@ run_gate_release_evidence_matrix_regression() {
   fi
 }
 
+run_gate_project_governance_evidence() {
+  local gate_name="XT-W3-36 / Project Governance Evidence"
+  local release_preset="${XT_GATE_RELEASE_PRESET:-0}"
+  local enabled_default="0"
+  local enabled
+  local checker="${ROOT_DIR}/scripts/ci/xt_w3_36_project_governance_evidence.sh"
+  local report_json="${REPORT_DIR}/xt_w3_36_project_governance_evidence.v1.json"
+  local report_log_dir="${REPORT_DIR}/xt_w3_36_project_governance_logs"
+  local log_file="/tmp/xt_gate_project_governance_evidence.log"
+  local validate_log="/tmp/xt_gate_project_governance_evidence_validate.log"
+  local metrics_summary
+
+  if [[ "${release_preset}" == "1" ]]; then
+    enabled_default="1"
+  fi
+  enabled="${XT_GATE_VALIDATE_PROJECT_GOVERNANCE:-${enabled_default}}"
+
+  if [[ "${enabled}" != "0" && "${enabled}" != "1" ]]; then
+    note_fail "${gate_name}: invalid XT_GATE_VALIDATE_PROJECT_GOVERNANCE=${enabled} (expected 0|1)"
+    mark_status_fail coverage_xt_w3_36_status
+    return
+  fi
+
+  if [[ "${enabled}" != "1" ]]; then
+    return
+  fi
+
+  coverage_xt_w3_36_required=1
+
+  if [[ ! -f "${checker}" ]]; then
+    note_fail "${gate_name}: checker script missing (${checker})"
+    mark_status_fail coverage_xt_w3_36_status
+    return
+  fi
+
+  coverage_project_governance_evidence_report_path="${report_json}"
+  coverage_project_governance_evidence_log_dir="${report_log_dir}"
+
+  if (
+    cd "${ROOT_DIR}" \
+      && XT_W3_36_REPORT_DIR="${REPORT_DIR}" \
+      XT_W3_36_REPORT_FILE="${report_json}" \
+      XT_W3_36_LOG_DIR="${report_log_dir}" \
+      bash "${checker}" >"${log_file}" 2>&1
+  ); then
+    coverage_xt_w3_36_status="PASS"
+    note_pass "${gate_name}: governance evidence passed (${report_json})"
+  else
+    mark_status_fail coverage_xt_w3_36_status
+    note_fail "${gate_name}: governance evidence failed (see ${log_file})"
+    return
+  fi
+
+  if [[ ! -f "${report_json}" ]]; then
+    mark_status_fail coverage_xt_w3_36_status
+    note_fail "${gate_name}: governance evidence report missing (${report_json})"
+    return
+  fi
+
+  if node - "${report_json}" >"${validate_log}" 2>&1 <<'NODE'
+const fs = require("fs");
+const reportPath = process.argv[2];
+const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
+if (report.schema_version !== "xt_w3_36_project_governance_evidence.v1") {
+  throw new Error(`unexpected schema_version=${report.schema_version}`);
+}
+if (report.ok !== true) {
+  throw new Error("governance evidence ok must be true");
+}
+const summary = report.summary || {};
+if (Number(summary.failed_case_count || 0) !== 0) {
+  throw new Error(`failed_case_count must be 0, got ${summary.failed_case_count}`);
+}
+const metrics = report.metrics || {};
+for (const [key, value] of Object.entries(metrics)) {
+  if (Number(value) !== 0) {
+    throw new Error(`${key} must be 0, got ${value}`);
+  }
+}
+NODE
+  then
+    metrics_summary="$(node - "${report_json}" <<'NODE'
+const fs = require("fs");
+const report = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const metrics = report.metrics || {};
+console.log(
+  `invalid_combo=${Number(metrics.invalid_governance_combo_execution_count || 0)}, ` +
+  `guidance_ack=${Number(metrics.guidance_without_ack_tracking || 0)}, ` +
+  `device_under_subminimum=${Number(metrics.device_action_under_subminimum_supervision || 0)}, ` +
+  `legacy_overgrant=${Number(metrics.legacy_project_overgrant_after_migration || 0)}`
+);
+NODE
+)"
+    coverage_project_governance_metrics_summary="${metrics_summary}"
+    note_pass "${gate_name}: governance evidence schema validated (${report_json})"
+  else
+    mark_status_fail coverage_xt_w3_36_status
+    note_fail "${gate_name}: governance evidence schema invalid (see ${validate_log})"
+  fi
+}
+
 run_gate_split_flow_runtime_policy_regression() {
   local gate_name="XT-W2-09/XT-W2-11 / Split Flow Runtime Policy Regression"
   local release_preset="${XT_GATE_RELEASE_PRESET:-0}"
@@ -1259,15 +1365,19 @@ run_gate_g5() {
   local supervisor_doctor_report="${XT_SUPERVISOR_DOCTOR_REPORT:-${REPORT_DIR}/supervisor_doctor_report.json}"
   local cm_validator="${ROOT_DIR}/scripts/ci/cm_w5_20_report_validator.js"
   local cm_regression_script="${ROOT_DIR}/scripts/ci/cm_w5_20_gate_regression.js"
+  local project_reports_dir="${ROOT_DIR}/.axcoder/reports"
 
   local doctor_report
   doctor_report="$(resolve_first_existing_file "${XT_DOCTOR_REPORT:-${REPORT_DIR}/doctor-report.json}" \
     "${REPORT_DIR}/doctor-risk-report.json" \
-    "${REPORT_DIR}/xt-doctor-report.json")"
+    "${REPORT_DIR}/xt-doctor-report.json" \
+    "${project_reports_dir}/doctor-report.json" \
+    "${project_reports_dir}/supervisor_doctor_report.json")"
   local secrets_report
   secrets_report="$(resolve_first_existing_file "${XT_SECRETS_DRY_RUN_REPORT:-${REPORT_DIR}/secrets-dry-run-report.json}" \
     "${REPORT_DIR}/secrets-apply-dry-run-report.json" \
-    "${REPORT_DIR}/xt-secrets-dry-run-report.json")"
+    "${REPORT_DIR}/xt-secrets-dry-run-report.json" \
+    "${project_reports_dir}/secrets-dry-run-report.json")"
 
   coverage_doctor_report_path="${doctor_report}"
   coverage_secrets_report_path="${secrets_report}"
@@ -1417,9 +1527,20 @@ run_gate_g5() {
 render_report() {
   local release_decision="NO_GO"
   local generated_at
+  local xt_w3_36_required_clause="XT-W3-36 optional"
+  local xt_w3_36_observed_suffix="optional"
   generated_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
-  if (( fail_count == 0 )) && [[ "${coverage_xt_w3_08_status}" == "PASS" ]] && [[ "${coverage_crk_w1_08_status}" == "PASS" ]] && [[ "${coverage_cm_w5_20_status}" == "PASS" ]]; then
+  if [[ "${coverage_xt_w3_36_required}" == "1" ]]; then
+    xt_w3_36_required_clause="XT-W3-36 PASS"
+    xt_w3_36_observed_suffix="required"
+  fi
+
+  if (( fail_count == 0 )) \
+    && [[ "${coverage_xt_w3_08_status}" == "PASS" ]] \
+    && [[ "${coverage_crk_w1_08_status}" == "PASS" ]] \
+    && [[ "${coverage_cm_w5_20_status}" == "PASS" ]] \
+    && [[ "${coverage_xt_w3_36_required}" != "1" || "${coverage_xt_w3_36_status}" == "PASS" ]]; then
     release_decision="GO"
   elif (( fail_count == 0 )); then
     release_decision="GO_WITH_RISK"
@@ -1442,12 +1563,13 @@ render_report() {
     echo "## Release Decision"
     echo
     echo "- decision: ${release_decision}"
-    echo "- criteria: fail_count=0 and XT-W3-08/CRK-W1-08/CM-W5-20 all PASS"
-    echo "- observed: fail_count=${fail_count}, XT-W3-08=${coverage_xt_w3_08_status}, CRK-W1-08=${coverage_crk_w1_08_status}, CM-W5-20=${coverage_cm_w5_20_status}"
+    echo "- criteria: fail_count=0 and XT-W3-08/CRK-W1-08/CM-W5-20 all PASS and ${xt_w3_36_required_clause}"
+    echo "- observed: fail_count=${fail_count}, XT-W3-08=${coverage_xt_w3_08_status}, XT-W3-36=${coverage_xt_w3_36_status} (${xt_w3_36_observed_suffix}), CRK-W1-08=${coverage_crk_w1_08_status}, CM-W5-20=${coverage_cm_w5_20_status}"
     echo
     echo "## 新增工单ID覆盖区块"
     echo
     echo "- XT-W3-08: ${coverage_xt_w3_08_status}"
+    echo "- XT-W3-36: ${coverage_xt_w3_36_status}"
     echo "- CRK-W1-08: ${coverage_crk_w1_08_status}"
     echo "- CM-W5-20: ${coverage_cm_w5_20_status}"
     echo "- evidence.doctor_report: ${coverage_doctor_report_path}"
@@ -1472,6 +1594,9 @@ render_report() {
     echo "- evidence.release_evidence_matrix_log: ${coverage_release_evidence_matrix_log_path}"
     echo "- evidence.release_evidence_matrix_summary: ${coverage_release_evidence_matrix_summary_path}"
     echo "- evidence.release_evidence_matrix_validator_regression_log: ${coverage_release_evidence_matrix_validator_regression_log_path}"
+    echo "- evidence.project_governance_report: ${coverage_project_governance_evidence_report_path}"
+    echo "- evidence.project_governance_log_dir: ${coverage_project_governance_evidence_log_dir}"
+    echo "- evidence.project_governance_metrics: ${coverage_project_governance_metrics_summary}"
     echo "- evidence.report_index: ${REPORT_INDEX_FILE}"
     echo
     if (( ${#fail_lines[@]} > 0 )); then
@@ -1501,6 +1626,8 @@ render_report() {
   WARN_COUNT="${warn_count}" \
   FAIL_COUNT="${fail_count}" \
   COVERAGE_XT_W3_08="${coverage_xt_w3_08_status}" \
+  COVERAGE_XT_W3_36="${coverage_xt_w3_36_status}" \
+  COVERAGE_XT_W3_36_REQUIRED="${coverage_xt_w3_36_required}" \
   COVERAGE_CRK_W1_08="${coverage_crk_w1_08_status}" \
   COVERAGE_CM_W5_20="${coverage_cm_w5_20_status}" \
   EVIDENCE_DOCTOR_REPORT="${coverage_doctor_report_path}" \
@@ -1525,6 +1652,9 @@ render_report() {
   EVIDENCE_RELEASE_EVIDENCE_MATRIX_LOG="${coverage_release_evidence_matrix_log_path}" \
   EVIDENCE_RELEASE_EVIDENCE_MATRIX_SUMMARY="${coverage_release_evidence_matrix_summary_path}" \
   EVIDENCE_RELEASE_EVIDENCE_MATRIX_VALIDATOR_REGRESSION_LOG="${coverage_release_evidence_matrix_validator_regression_log_path}" \
+  EVIDENCE_PROJECT_GOVERNANCE_REPORT="${coverage_project_governance_evidence_report_path}" \
+  EVIDENCE_PROJECT_GOVERNANCE_LOG_DIR="${coverage_project_governance_evidence_log_dir}" \
+  EVIDENCE_PROJECT_GOVERNANCE_METRICS="${coverage_project_governance_metrics_summary}" \
   node - <<'NODE'
 const fs = require("fs");
 const path = require("path");
@@ -1543,6 +1673,7 @@ const report = {
   },
   coverage: {
     "XT-W3-08": process.env.COVERAGE_XT_W3_08 || "",
+    "XT-W3-36": process.env.COVERAGE_XT_W3_36 || "",
     "CRK-W1-08": process.env.COVERAGE_CRK_W1_08 || "",
     "CM-W5-20": process.env.COVERAGE_CM_W5_20 || ""
   },
@@ -1560,7 +1691,14 @@ const report = {
     release_evidence_matrix_log: process.env.EVIDENCE_RELEASE_EVIDENCE_MATRIX_LOG || "",
     release_evidence_matrix_summary: process.env.EVIDENCE_RELEASE_EVIDENCE_MATRIX_SUMMARY || "",
     release_evidence_matrix_validator_regression_log:
-      process.env.EVIDENCE_RELEASE_EVIDENCE_MATRIX_VALIDATOR_REGRESSION_LOG || ""
+      process.env.EVIDENCE_RELEASE_EVIDENCE_MATRIX_VALIDATOR_REGRESSION_LOG || "",
+    project_governance_report: process.env.EVIDENCE_PROJECT_GOVERNANCE_REPORT || "",
+    project_governance_log_dir: process.env.EVIDENCE_PROJECT_GOVERNANCE_LOG_DIR || ""
+  },
+  project_governance_regression: {
+    required: process.env.COVERAGE_XT_W3_36_REQUIRED === "1",
+    status: process.env.COVERAGE_XT_W3_36 || "",
+    metrics_summary: process.env.EVIDENCE_PROJECT_GOVERNANCE_METRICS || ""
   },
   split_audit_summary: {
     overridden_events: Number(process.env.EVIDENCE_SPLIT_AUDIT_OVERRIDDEN_EVENTS || "0"),
@@ -1604,6 +1742,7 @@ main() {
   run_gate_g5
   run_gate_split_flow_runtime_policy_regression
   run_gate_release_evidence_matrix_regression
+  run_gate_project_governance_evidence
   render_report
 
   echo "[xt-gate] report: ${REPORT_FILE}"

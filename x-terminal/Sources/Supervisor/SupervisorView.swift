@@ -9,6 +9,7 @@ struct SupervisorView: View {
     @State private var focusedSplitLaneID: String?
     @State private var selectedPortfolioProjectID: String?
     @State private var selectedPortfolioDrillDownScope: SupervisorProjectDrillDownScope = .capsuleOnly
+    @State private var selectedSupervisorSkillRecord: SupervisorSkillRecordSheetState?
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openURL) private var openURL
     @EnvironmentObject private var appModel: AppModel
@@ -107,6 +108,9 @@ struct SupervisorView: View {
         .onChange(of: supervisor.supervisorPortfolioSnapshot.updatedAt) { _ in
             refreshSelectedPortfolioDrillDown()
         }
+        .sheet(item: $selectedSupervisorSkillRecord) { record in
+            SupervisorSkillRecordSheet(record: record)
+        }
     }
 
     @ViewBuilder
@@ -119,6 +123,8 @@ struct SupervisorView: View {
             supervisorMemoryBoard
             Divider()
             pendingSupervisorSkillApprovalBoard
+            Divider()
+            recentSupervisorSkillActivityBoard
             Divider()
             pendingHubGrantBoard
             Divider()
@@ -384,6 +390,48 @@ struct SupervisorView: View {
                     .padding(.vertical, 2)
                 }
                 .frame(maxHeight: 178)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(Color(NSColor.windowBackgroundColor))
+    }
+
+    private var recentSupervisorSkillActivityBoard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Image(systemName: supervisor.recentSupervisorSkillActivities.isEmpty ? "sparkles.rectangle.stack" : "sparkles.rectangle.stack.fill")
+                    .foregroundColor(supervisor.recentSupervisorSkillActivities.isEmpty ? .secondary : .accentColor)
+                Text("Supervisor 最近技能活动：\(supervisor.recentSupervisorSkillActivities.count)")
+                    .font(.headline)
+
+                Spacer()
+
+                Text("recent activity")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Button(action: supervisor.refreshRecentSupervisorSkillActivitiesNow) {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .help("刷新 Supervisor 最近技能活动")
+            }
+
+            if supervisor.recentSupervisorSkillActivities.isEmpty {
+                Text("当前还没有 Supervisor skill activity 记录。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(supervisor.recentSupervisorSkillActivities) { item in
+                            supervisorSkillActivityCard(item)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                .frame(maxHeight: 220)
             }
         }
         .padding(.horizontal, 16)
@@ -1761,6 +1809,46 @@ struct SupervisorView: View {
     }
 
     @ViewBuilder
+    private func supervisorSkillActivityCard(
+        _ item: SupervisorManager.SupervisorRecentSkillActivity
+    ) -> some View {
+        SupervisorSkillActivityCard(
+            item: item,
+            onApprove: {
+                supervisor.approveSupervisorSkillActivity(item)
+            },
+            onDeny: {
+                supervisor.denySupervisorSkillActivity(item)
+            },
+            onRetry: {
+                supervisor.retrySupervisorSkillActivity(item)
+            },
+            onViewFullRecord: {
+                showSupervisorSkillFullRecord(item)
+            },
+            onOpenActionURL: {
+                guard let action = item.actionURL,
+                      let actionURL = URL(string: action) else { return }
+                openURL(actionURL)
+            }
+        )
+    }
+
+    private func showSupervisorSkillFullRecord(
+        _ item: SupervisorManager.SupervisorRecentSkillActivity
+    ) {
+        guard let ctx = appModel.projectContext(for: item.projectId),
+              let record = SupervisorSkillActivityPresentation.fullRecord(
+                ctx: ctx,
+                projectName: item.projectName,
+                requestID: item.requestId
+              ) else {
+            return
+        }
+        selectedSupervisorSkillRecord = SupervisorSkillRecordSheetState(record: record)
+    }
+
+    @ViewBuilder
     private func pendingHubGrantRow(_ grant: SupervisorManager.SupervisorPendingGrant) -> some View {
         let grantId = grant.grantRequestId.trimmingCharacters(in: .whitespacesAndNewlines)
         let inFlight = !grantId.isEmpty && supervisor.pendingHubGrantActionsInFlight.contains(grantId)
@@ -1895,6 +1983,8 @@ struct SupervisorView: View {
             return "network"
         case .some(.project_snapshot):
             return "folder.badge.gearshape"
+        case .some(.agentImportRecord):
+            return "checklist"
         case .some(.memory_snapshot):
             return "memorychip"
         default:
@@ -2733,6 +2823,362 @@ private struct SplitProposalPanel: View {
                 )
             ],
             reason: "ui_lane_materialization_override"
+        )
+    }
+}
+
+private struct SupervisorSkillRecordSheetState: Identifiable {
+    let record: SupervisorSkillFullRecord
+
+    var id: String { record.id }
+}
+
+private struct SupervisorSkillActivityCard: View {
+    let item: SupervisorManager.SupervisorRecentSkillActivity
+    let onApprove: () -> Void
+    let onDeny: () -> Void
+    let onRetry: () -> Void
+    let onViewFullRecord: () -> Void
+    let onOpenActionURL: () -> Void
+    @State private var showDiagnostics = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 8) {
+                Image(systemName: SupervisorSkillActivityPresentation.iconName(for: item))
+                    .foregroundStyle(iconColor)
+                    .font(.system(size: 14))
+
+                Text(SupervisorSkillActivityPresentation.title(for: item))
+                    .font(.system(.body, design: .rounded))
+                    .fontWeight(.semibold)
+
+                Spacer()
+
+                Text(SupervisorSkillActivityPresentation.statusLabel(for: item))
+                    .font(.system(.caption2, design: .rounded))
+                    .fontWeight(.semibold)
+                    .foregroundStyle(iconColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(iconColor.opacity(0.12))
+                    .clipShape(Capsule())
+            }
+
+            HStack(spacing: 8) {
+                Text(item.projectName)
+                    .font(.system(.caption, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Color.secondary.opacity(0.08))
+                    .cornerRadius(6)
+
+                if !item.skillId.isEmpty {
+                    Text(item.skillId)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+
+                Text(SupervisorSkillActivityPresentation.toolBadge(for: item))
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Text(timeLabel)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Text(SupervisorSkillActivityPresentation.body(for: item))
+                .font(.system(.subheadline, design: .default))
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !item.toolSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text("目标：\(item.toolSummary)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            HStack(spacing: 8) {
+                if SupervisorSkillActivityPresentation.isAwaitingLocalApproval(item) {
+                    Button("Approve") {
+                        onApprove()
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button("Deny") {
+                        onDeny()
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                if SupervisorSkillActivityPresentation.canRetry(item) {
+                    Button("Retry") {
+                        onRetry()
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                if !item.requiredCapability.isEmpty,
+                   item.actionURL?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+                    Button("Open") {
+                        onOpenActionURL()
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                Button("View Full Record") {
+                    onViewFullRecord()
+                }
+                .buttonStyle(.bordered)
+
+                Spacer()
+            }
+
+            DisclosureGroup("Diagnostics", isExpanded: $showDiagnostics) {
+                ScrollView {
+                    Text(SupervisorSkillActivityPresentation.diagnostics(for: item))
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 180)
+                .padding(.top, 6)
+            }
+            .font(.caption)
+            .tint(.secondary)
+        }
+        .padding(12)
+        .background(iconColor.opacity(0.06))
+        .cornerRadius(10)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(iconColor.opacity(0.18), lineWidth: 1)
+        )
+    }
+
+    private var iconColor: Color {
+        switch item.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "queued":
+            return .blue
+        case "running":
+            return .mint
+        case "awaiting_authorization":
+            return item.requiredCapability.isEmpty ? .yellow : .orange
+        case "completed":
+            return .green
+        case "failed":
+            return .red
+        case "blocked":
+            return .orange
+        case "canceled":
+            return .secondary
+        default:
+            return .secondary
+        }
+    }
+
+    private var timeLabel: String {
+        let timestamp = item.updatedAt ?? item.createdAt ?? 0
+        let date = Date(timeIntervalSince1970: timestamp)
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        return formatter.string(from: date)
+    }
+}
+
+private struct SupervisorSkillRecordSheet: View {
+    let record: SupervisorSkillRecordSheetState
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(record.record.title)
+                        .font(.system(.headline, design: .rounded))
+                    HStack(spacing: 8) {
+                        Text(record.record.requestID)
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                        ProjectSkillRecordStatusBadge(statusLabel: record.record.latestStatusLabel)
+                    }
+                    Text(record.record.projectName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Button("Copy") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(
+                        SupervisorSkillActivityPresentation.fullRecordText(record.record),
+                        forType: .string
+                    )
+                }
+                .buttonStyle(.bordered)
+
+                Button("Close") {
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if !record.record.requestMetadata.isEmpty {
+                        ProjectSkillRecordFieldSection(
+                            title: "Request Metadata",
+                            fields: record.record.requestMetadata
+                        )
+                    }
+
+                    if !record.record.approvalFields.isEmpty {
+                        ProjectSkillRecordFieldSection(
+                            title: "Approval Status",
+                            fields: record.record.approvalFields
+                        )
+                    }
+
+                    if let payload = record.record.skillPayloadText,
+                       !payload.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        ProjectSkillRecordCodeSection(
+                            title: "Skill Payload",
+                            text: payload,
+                            initiallyExpanded: false
+                        )
+                    }
+
+                    if let toolArgs = record.record.toolArgumentsText,
+                       !toolArgs.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        ProjectSkillRecordCodeSection(
+                            title: "Tool Arguments",
+                            text: toolArgs,
+                            initiallyExpanded: true
+                        )
+                    }
+
+                    if !record.record.resultFields.isEmpty
+                        || !(record.record.rawOutputPreview ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || !(record.record.rawOutput ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        SupervisorSkillRecordResultSection(record: record.record)
+                    }
+
+                    if !record.record.evidenceFields.isEmpty {
+                        ProjectSkillRecordFieldSection(
+                            title: "Evidence Refs",
+                            fields: record.record.evidenceFields
+                        )
+                    }
+
+                    if !record.record.approvalHistory.isEmpty {
+                        ProjectSkillRecordTimelineSection(
+                            title: "Approval History",
+                            entries: record.record.approvalHistory
+                        )
+                    }
+
+                    if !record.record.timeline.isEmpty {
+                        ProjectSkillRecordTimelineSection(
+                            title: "Event Timeline",
+                            entries: record.record.timeline
+                        )
+                    }
+
+                    if let evidenceJSON = record.record.supervisorEvidenceJSON,
+                       !evidenceJSON.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        ProjectSkillRecordCodeSection(
+                            title: "Supervisor Evidence JSON",
+                            text: evidenceJSON,
+                            initiallyExpanded: false
+                        )
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 720, minHeight: 520)
+    }
+}
+
+private struct SupervisorSkillRecordResultSection: View {
+    let record: SupervisorSkillFullRecord
+    @State private var showFullRawOutput = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Text("Result Summary")
+                    .font(.system(.subheadline, design: .rounded))
+                    .fontWeight(.semibold)
+                Spacer()
+            }
+
+            if !record.resultFields.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(record.resultFields) { field in
+                        HStack(alignment: .top, spacing: 12) {
+                            Text(field.label)
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 150, alignment: .leading)
+
+                            Text(field.value)
+                                .font(.system(.subheadline, design: .default))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+            }
+
+            if let preview = record.rawOutputPreview,
+               !preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Raw Output Preview")
+                        .font(.system(.caption, design: .rounded))
+                        .foregroundStyle(.secondary)
+                    ScrollView {
+                        Text(preview)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 180)
+                }
+            }
+
+            if let rawOutput = record.rawOutput,
+               !rawOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                DisclosureGroup("Full Raw Output", isExpanded: $showFullRawOutput) {
+                    ScrollView {
+                        Text(rawOutput)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 6)
+                    }
+                    .frame(maxHeight: 220)
+                }
+                .font(.caption)
+                .tint(.secondary)
+            }
+        }
+        .padding(14)
+        .background(Color.secondary.opacity(0.04))
+        .cornerRadius(12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.secondary.opacity(0.08), lineWidth: 1)
         )
     }
 }

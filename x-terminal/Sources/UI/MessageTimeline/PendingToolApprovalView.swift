@@ -174,6 +174,8 @@ struct PendingToolCallChip: View {
             return "play.circle"
         case .session_compact:
             return "archivebox"
+        case .agentImportRecord:
+            return "checklist"
         case .memory_snapshot:
             return "memorychip"
         case .project_snapshot:
@@ -215,6 +217,10 @@ struct PendingToolCallChip: View {
         case .session_resume, .session_compact:
             if case .string(let sessionID)? = toolCall.args["session_id"] {
                 return sessionID
+            }
+        case .agentImportRecord:
+            if case .string(let stagingID)? = toolCall.args["staging_id"] {
+                return stagingID
             }
         case .memory_snapshot:
             if case .string(let mode)? = toolCall.args["mode"] {
@@ -318,6 +324,8 @@ struct ToolCallDetailsPopover: View {
             return "play.circle"
         case .session_compact:
             return "archivebox"
+        case .agentImportRecord:
+            return "checklist"
         case .memory_snapshot:
             return "memorychip"
         case .project_snapshot:

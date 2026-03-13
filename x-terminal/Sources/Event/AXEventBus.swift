@@ -42,6 +42,8 @@ enum AXEvent: Equatable {
     case supervisorLaneHealth(SupervisorLaneHealthSnapshot)
     // Completion adapter machine event stream (XT-W2-26-A)
     case supervisorLaneCompletionDetected(SupervisorLaneCompletionDetectedEvent)
+    // Coder/project chat acknowledgement of supervisor guidance
+    case supervisorGuidanceAck(SupervisorGuidanceInjectionRecord)
 }
 
 struct SupervisorLaneCompletionDetectedEvent: Codable, Equatable, Sendable {

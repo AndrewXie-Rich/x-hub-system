@@ -4,6 +4,8 @@ public struct XHubLocalModelManifest: Codable, Equatable, Sendable {
     public var schemaVersion: String
     public var backend: String
     public var modelFormat: String
+    public var maxContextLength: Int?
+    public var defaultLoadProfile: LocalModelLoadProfile?
     public var taskKinds: [String]
     public var inputModalities: [String]
     public var outputModalities: [String]
@@ -16,6 +18,8 @@ public struct XHubLocalModelManifest: Codable, Equatable, Sendable {
         schemaVersion: String = "xhub_model_manifest.v1",
         backend: String,
         modelFormat: String,
+        maxContextLength: Int? = nil,
+        defaultLoadProfile: LocalModelLoadProfile? = nil,
         taskKinds: [String],
         inputModalities: [String],
         outputModalities: [String],
@@ -27,6 +31,12 @@ public struct XHubLocalModelManifest: Codable, Equatable, Sendable {
         self.schemaVersion = schemaVersion
         self.backend = backend
         self.modelFormat = modelFormat
+        self.maxContextLength = maxContextLength
+        if let defaultLoadProfile {
+            self.defaultLoadProfile = defaultLoadProfile.normalized(maxContextLength: maxContextLength)
+        } else {
+            self.defaultLoadProfile = nil
+        }
         self.taskKinds = LocalModelCapabilityDefaults.normalizedStringList(
             taskKinds,
             fallback: LocalModelCapabilityDefaults.defaultTaskKinds(forBackend: backend)
@@ -49,6 +59,8 @@ public struct XHubLocalModelManifest: Codable, Equatable, Sendable {
         case schemaVersion = "schema_version"
         case backend
         case modelFormat = "model_format"
+        case maxContextLength = "max_context_length"
+        case defaultLoadProfile = "default_load_profile"
         case taskKinds = "task_kinds"
         case inputModalities = "input_modalities"
         case outputModalities = "output_modalities"
@@ -64,6 +76,9 @@ public struct XHubLocalModelManifest: Codable, Equatable, Sendable {
         let fallbackTaskKinds = LocalModelCapabilityDefaults.defaultTaskKinds(forBackend: backend)
         schemaVersion = (try? c.decode(String.self, forKey: .schemaVersion)) ?? "xhub_model_manifest.v1"
         modelFormat = (try? c.decode(String.self, forKey: .modelFormat)) ?? LocalModelCapabilityDefaults.defaultModelFormat(forBackend: backend)
+        maxContextLength = try? c.decodeIfPresent(Int.self, forKey: .maxContextLength)
+        defaultLoadProfile = (try? c.decodeIfPresent(LocalModelLoadProfile.self, forKey: .defaultLoadProfile))?
+            .normalized(maxContextLength: maxContextLength)
         taskKinds = LocalModelCapabilityDefaults.normalizedStringList(
             (try? c.decode([String].self, forKey: .taskKinds)) ?? fallbackTaskKinds,
             fallback: fallbackTaskKinds

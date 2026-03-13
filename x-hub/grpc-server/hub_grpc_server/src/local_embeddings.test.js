@@ -112,6 +112,7 @@ await run('prepareLocalMemoryEmbeddings returns vectors and reuses cache across 
   const executor = async ({ request }) => {
     executorCalls += 1;
     const texts = Array.isArray(request?.texts) ? request.texts : [];
+    assert.equal(String(request?.device_id || ''), 'terminal_device');
     return {
       ok: true,
       provider: 'transformers',
@@ -128,6 +129,7 @@ await run('prepareLocalMemoryEmbeddings returns vectors and reuses cache across 
   const input = {
     runtimeBaseDir,
     requestId: 'req-local-embed',
+    deviceId: 'terminal_device',
     query: 'water purchase',
     documents: [
       {

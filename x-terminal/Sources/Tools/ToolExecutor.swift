@@ -283,6 +283,7 @@ enum ToolExecutor {
         if !isDeviceAutomationTool(call.tool) {
             let runtimePolicyDecision = xtToolRuntimePolicyDecision(
                 call: call,
+                projectRoot: projectRoot,
                 config: config,
                 effectiveAutonomy: autonomyState.effectivePolicy
             )
@@ -503,6 +504,9 @@ Please switch to Terminal mode (Chat/Terminal toggle) and run it there:
 
         case .session_compact:
             return await executeSessionCompact(call: call, projectRoot: projectRoot)
+
+        case .agentImportRecord:
+            return await executeAgentImportRecord(call: call, projectRoot: projectRoot)
 
         case .memory_snapshot:
             return await executeMemorySnapshot(call: call, projectRoot: projectRoot)
@@ -1522,6 +1526,7 @@ git=\(isGitRepo ? (gitSummary.isEmpty ? "clean" : gitSummary) : "not_git_repo")
         )
         let runtimePolicyDecision = xtToolRuntimePolicyDecision(
             call: call,
+            projectRoot: projectRoot,
             config: config,
             effectiveAutonomy: autonomyState.effectivePolicy
         )
@@ -1571,6 +1576,7 @@ git=\(isGitRepo ? (gitSummary.isEmpty ? "clean" : gitSummary) : "not_git_repo")
         )
         let runtimePolicyDecision = xtToolRuntimePolicyDecision(
             call: call,
+            projectRoot: projectRoot,
             config: config,
             effectiveAutonomy: autonomyState.effectivePolicy
         )
@@ -1749,6 +1755,7 @@ git=\(isGitRepo ? (gitSummary.isEmpty ? "clean" : gitSummary) : "not_git_repo")
         )
         let runtimePolicyDecision = xtToolRuntimePolicyDecision(
             call: call,
+            projectRoot: projectRoot,
             config: config,
             effectiveAutonomy: autonomyState.effectivePolicy
         )
@@ -2029,6 +2036,7 @@ git=\(isGitRepo ? (gitSummary.isEmpty ? "clean" : gitSummary) : "not_git_repo")
         )
         let runtimePolicyDecision = xtToolRuntimePolicyDecision(
             call: call,
+            projectRoot: projectRoot,
             config: config,
             effectiveAutonomy: autonomyState.effectivePolicy
         )
@@ -2228,6 +2236,7 @@ VERIFY
         )
         let runtimePolicyDecision = xtToolRuntimePolicyDecision(
             call: call,
+            projectRoot: projectRoot,
             config: config,
             effectiveAutonomy: autonomyState.effectivePolicy
         )
@@ -2308,6 +2317,7 @@ VERIFY
         )
         let runtimePolicyDecision = xtToolRuntimePolicyDecision(
             call: call,
+            projectRoot: projectRoot,
             config: config,
             effectiveAutonomy: autonomyState.effectivePolicy
         )
@@ -2401,6 +2411,7 @@ VERIFY
         )
         let runtimePolicyDecision = xtToolRuntimePolicyDecision(
             call: call,
+            projectRoot: projectRoot,
             config: config,
             effectiveAutonomy: autonomyState.effectivePolicy
         )
@@ -3715,6 +3726,7 @@ return jsResult
         )
         let runtimePolicyDecision = xtToolRuntimePolicyDecision(
             call: call,
+            projectRoot: projectRoot,
             config: config,
             effectiveAutonomy: autonomyState.effectivePolicy
         )
@@ -3861,6 +3873,125 @@ return jsResult
                 return "\(index + 1). \(item.name) [\(item.skillID)] v\(item.version)\n   publisher=\(item.publisherID) source=\(item.sourceID)\n   \(caps)\(installLine)"
             }.joined(separator: "\n\n")
         }
+        return ToolResult(id: call.id, tool: call.tool, ok: true, output: structuredOutput(summary: summary, body: body))
+    }
+
+    private static func executeAgentImportRecord(call: ToolCall, projectRoot: URL) async -> ToolResult {
+        let stagingId = firstNonEmptyString(
+            optStrArg(call, "staging_id"),
+            optStrArg(call, "id"),
+            optStrArg(call, "import_id")
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        let selector = firstNonEmptyString(
+            optStrArg(call, "selector"),
+            optStrArg(call, "locator"),
+            optStrArg(call, "mode")
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        let skillId = firstNonEmptyString(
+            optStrArg(call, "skill_id"),
+            optStrArg(call, "skill")
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        let currentProjectID = AXProjectRegistryStore.projectId(forRoot: projectRoot)
+        let projectID = firstNonEmptyString(
+            optStrArg(call, "project_id"),
+            optStrArg(call, "project"),
+            currentProjectID
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedSelector: String? = {
+            guard stagingId.isEmpty else { return nil }
+            if !selector.isEmpty { return selector }
+            if !skillId.isEmpty { return "latest_for_skill" }
+            if !projectID.isEmpty { return "latest_for_project" }
+            return "last_import"
+        }()
+
+        let record = await HubIPCClient.getAgentImportRecord(
+            stagingId: stagingId.isEmpty ? nil : stagingId,
+            selector: resolvedSelector,
+            skillId: skillId.isEmpty ? nil : skillId,
+            projectId: stagingId.isEmpty ? (projectID.isEmpty ? nil : projectID) : nil
+        )
+        guard record.ok else {
+            var summary: [String: JSONValue] = [
+                "tool": .string(call.tool.rawValue),
+                "ok": .bool(false),
+                "source": .string(record.source),
+                "staging_id": .string(record.stagingId ?? stagingId),
+                "reason": .string(record.reasonCode ?? "agent_import_record_failed"),
+            ]
+            if let selector = record.selector ?? resolvedSelector, !selector.isEmpty {
+                summary["selector"] = .string(selector)
+            }
+            if let project = record.projectId ?? (projectID.isEmpty ? nil : projectID), !project.isEmpty {
+                summary["project_id"] = .string(project)
+            }
+            if let skill = record.skillId ?? (skillId.isEmpty ? nil : skillId), !skill.isEmpty {
+                summary["skill_id"] = .string(skill)
+            }
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: structuredOutput(summary: summary, body: record.reasonCode ?? "agent_import_record_failed")
+            )
+        }
+
+        var summary: [String: JSONValue] = [
+            "tool": .string(call.tool.rawValue),
+            "ok": .bool(true),
+            "source": .string(record.source),
+            "staging_id": .string(record.stagingId ?? stagingId),
+        ]
+        let summarySelector = firstNonEmptyString(record.selector, resolvedSelector)
+        if !summarySelector.isEmpty {
+            summary["selector"] = .string(summarySelector)
+        }
+        let status = firstNonEmptyString(record.status)
+        if !status.isEmpty {
+            summary["status"] = .string(status)
+        }
+        let auditRef = firstNonEmptyString(record.auditRef)
+        if !auditRef.isEmpty {
+            summary["audit_ref"] = .string(auditRef)
+        }
+        let schemaVersion = firstNonEmptyString(record.schemaVersion)
+        if !schemaVersion.isEmpty {
+            summary["schema_version"] = .string(schemaVersion)
+        }
+        let resolvedSkillID = firstNonEmptyString(record.skillId)
+        if !resolvedSkillID.isEmpty {
+            summary["skill_id"] = .string(resolvedSkillID)
+        }
+        let projectIDSummary = firstNonEmptyString(record.projectId, projectID)
+        if !projectIDSummary.isEmpty {
+            summary["project_id"] = .string(projectIDSummary)
+        }
+        if let recordRoot = jsonObject(from: record.recordJSON) {
+            if let vetterStatus = jsonStringValue(recordRoot["vetter_status"]) {
+                summary["vetter_status"] = .string(vetterStatus)
+            }
+            if let criticalCount = jsonNumberValue(recordRoot["vetter_critical_count"]) {
+                summary["vetter_critical_count"] = .number(criticalCount)
+            }
+            if let warnCount = jsonNumberValue(recordRoot["vetter_warn_count"]) {
+                summary["vetter_warn_count"] = .number(warnCount)
+            }
+            if let blockedReason = jsonStringValue(recordRoot["promotion_blocked_reason"]) {
+                summary["blocked_reason"] = .string(blockedReason)
+            }
+            if let reportRef = jsonStringValue(recordRoot["vetter_report_ref"]) {
+                summary["vetter_report_ref"] = .string(reportRef)
+            }
+            if let findings = recordRoot["findings"] as? [Any] {
+                summary["findings_count"] = .number(Double(findings.count))
+            }
+        }
+
+        let body = XTAgentSkillImportReviewFormatter.formatHubRecordReview(
+            recordJSON: record.recordJSON,
+            fallbackStagingId: record.stagingId ?? stagingId,
+            fallbackSkillId: record.skillId ?? (skillId.isEmpty ? "skill" : skillId)
+        )
         return ToolResult(id: call.id, tool: call.tool, ok: true, output: structuredOutput(summary: summary, body: body))
     }
 
@@ -4476,6 +4607,39 @@ return jsResult
             .map(String.init)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return firstLine?.isEmpty == false ? firstLine! : "tool_failed"
+    }
+
+    private static func jsonObject(from text: String?) -> [String: Any]? {
+        let raw = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty,
+              let data = raw.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return object
+    }
+
+    private static func jsonStringValue(_ value: Any?) -> String? {
+        switch value {
+        case let string as String:
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        case let number as NSNumber:
+            return number.stringValue
+        default:
+            return nil
+        }
+    }
+
+    private static func jsonNumberValue(_ value: Any?) -> Double? {
+        switch value {
+        case let number as NSNumber:
+            return number.doubleValue
+        case let string as String:
+            return Double(string.trimmingCharacters(in: .whitespacesAndNewlines))
+        default:
+            return nil
+        }
     }
 
     private static func structuredHeaderBoundary(in text: String) -> String.Index? {

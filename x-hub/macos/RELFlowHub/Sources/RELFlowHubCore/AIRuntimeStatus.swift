@@ -34,6 +34,118 @@ public struct AIRuntimeLocalCapabilityDiagnosis: Codable, Sendable, Equatable {
     public var detail: String
 }
 
+public enum AIRuntimeProviderHubControlMode: String, Codable, Sendable {
+    case mlxLegacy = "mlx_legacy"
+    case warmable = "warmable"
+    case ephemeralOnDemand = "ephemeral_on_demand"
+}
+
+public enum AIRuntimeProviderLifecycleAction: String, Codable, Sendable {
+    case warmupLocalModel = "warmup_local_model"
+    case unloadLocalModel = "unload_local_model"
+    case evictLocalInstance = "evict_local_instance"
+}
+
+public struct AIRuntimeLoadedInstance: Codable, Sendable, Equatable {
+    public var instanceKey: String
+    public var modelId: String
+    public var taskKinds: [String]
+    public var loadProfileHash: String
+    public var effectiveContextLength: Int
+    public var loadedAt: Double
+    public var lastUsedAt: Double
+    public var residency: String
+    public var residencyScope: String
+    public var deviceBackend: String
+
+    public init(
+        instanceKey: String,
+        modelId: String,
+        taskKinds: [String] = [],
+        loadProfileHash: String = "",
+        effectiveContextLength: Int = 0,
+        loadedAt: Double = 0,
+        lastUsedAt: Double = 0,
+        residency: String = "",
+        residencyScope: String = "",
+        deviceBackend: String = ""
+    ) {
+        self.instanceKey = instanceKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.modelId = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.taskKinds = LocalModelCapabilityDefaults.normalizedStringList(taskKinds, fallback: [])
+        self.loadProfileHash = loadProfileHash.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.effectiveContextLength = max(0, effectiveContextLength)
+        self.loadedAt = max(0, loadedAt)
+        self.lastUsedAt = max(0, lastUsedAt)
+        self.residency = residency.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        self.residencyScope = residencyScope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        self.deviceBackend = deviceBackend.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case instanceKey
+        case modelId
+        case taskKinds
+        case loadProfileHash
+        case effectiveContextLength
+        case loadedAt
+        case lastUsedAt
+        case residency
+        case residencyScope
+        case deviceBackend
+    }
+
+    enum SnakeCodingKeys: String, CodingKey {
+        case instanceKey = "instance_key"
+        case modelId = "model_id"
+        case taskKinds = "task_kinds"
+        case loadProfileHash = "load_profile_hash"
+        case effectiveContextLength = "effective_context_length"
+        case loadedAt = "loaded_at"
+        case lastUsedAt = "last_used_at"
+        case residency
+        case residencyScope = "residency_scope"
+        case deviceBackend = "device_backend"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let s = try decoder.container(keyedBy: SnakeCodingKeys.self)
+        self.init(
+            instanceKey: (try? c.decode(String.self, forKey: .instanceKey))
+                ?? (try? s.decode(String.self, forKey: .instanceKey))
+                ?? "",
+            modelId: (try? c.decode(String.self, forKey: .modelId))
+                ?? (try? s.decode(String.self, forKey: .modelId))
+                ?? "",
+            taskKinds: (try? c.decode([String].self, forKey: .taskKinds))
+                ?? (try? s.decode([String].self, forKey: .taskKinds))
+                ?? [],
+            loadProfileHash: (try? c.decode(String.self, forKey: .loadProfileHash))
+                ?? (try? s.decode(String.self, forKey: .loadProfileHash))
+                ?? "",
+            effectiveContextLength: (try? c.decode(Int.self, forKey: .effectiveContextLength))
+                ?? (try? s.decode(Int.self, forKey: .effectiveContextLength))
+                ?? 0,
+            loadedAt: (try? c.decode(Double.self, forKey: .loadedAt))
+                ?? (try? s.decode(Double.self, forKey: .loadedAt))
+                ?? 0,
+            lastUsedAt: (try? c.decode(Double.self, forKey: .lastUsedAt))
+                ?? (try? s.decode(Double.self, forKey: .lastUsedAt))
+                ?? 0,
+            residency: (try? c.decode(String.self, forKey: .residency))
+                ?? (try? s.decode(String.self, forKey: .residency))
+                ?? "",
+            residencyScope: (try? c.decode(String.self, forKey: .residencyScope))
+                ?? (try? s.decode(String.self, forKey: .residencyScope))
+                ?? "",
+            deviceBackend: (try? c.decode(String.self, forKey: .deviceBackend))
+                ?? (try? s.decode(String.self, forKey: .deviceBackend))
+                ?? ""
+        )
+    }
+}
+
 public struct AIRuntimeProviderStatus: Codable, Sendable, Equatable {
     public var provider: String
     public var ok: Bool
@@ -47,6 +159,11 @@ public struct AIRuntimeProviderStatus: Codable, Sendable, Equatable {
     public var activeMemoryBytes: Int64?
     public var peakMemoryBytes: Int64?
     public var loadedModelCount: Int?
+    public var lifecycleMode: String
+    public var supportedLifecycleActions: [String]
+    public var warmupTaskKinds: [String]
+    public var residencyScope: String
+    public var loadedInstances: [AIRuntimeLoadedInstance]
 
     public init(
         provider: String,
@@ -60,7 +177,12 @@ public struct AIRuntimeProviderStatus: Codable, Sendable, Equatable {
         importError: String? = nil,
         activeMemoryBytes: Int64? = nil,
         peakMemoryBytes: Int64? = nil,
-        loadedModelCount: Int? = nil
+        loadedModelCount: Int? = nil,
+        lifecycleMode: String = "",
+        supportedLifecycleActions: [String] = [],
+        warmupTaskKinds: [String] = [],
+        residencyScope: String = "",
+        loadedInstances: [AIRuntimeLoadedInstance] = []
     ) {
         self.provider = provider
         self.ok = ok
@@ -77,6 +199,17 @@ public struct AIRuntimeProviderStatus: Codable, Sendable, Equatable {
         self.activeMemoryBytes = activeMemoryBytes
         self.peakMemoryBytes = peakMemoryBytes
         self.loadedModelCount = loadedModelCount
+        self.lifecycleMode = lifecycleMode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        self.supportedLifecycleActions = LocalModelCapabilityDefaults.normalizedStringList(
+            supportedLifecycleActions,
+            fallback: []
+        )
+        self.warmupTaskKinds = LocalModelCapabilityDefaults.normalizedStringList(
+            warmupTaskKinds,
+            fallback: []
+        )
+        self.residencyScope = residencyScope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        self.loadedInstances = AIRuntimeProviderStatus.normalizedLoadedInstances(loadedInstances)
     }
 
     enum CodingKeys: String, CodingKey {
@@ -92,27 +225,34 @@ public struct AIRuntimeProviderStatus: Codable, Sendable, Equatable {
         case activeMemoryBytes
         case peakMemoryBytes
         case loadedModelCount
+        case lifecycleMode
+        case supportedLifecycleActions
+        case warmupTaskKinds
+        case residencyScope
+        case loadedInstances
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        provider = (try? c.decode(String.self, forKey: .provider)) ?? "unknown"
-        ok = (try? c.decode(Bool.self, forKey: .ok)) ?? false
-        reasonCode = try? c.decodeIfPresent(String.self, forKey: .reasonCode)
-        runtimeVersion = try? c.decodeIfPresent(String.self, forKey: .runtimeVersion)
-        availableTaskKinds = LocalModelCapabilityDefaults.normalizedStringList(
-            (try? c.decode([String].self, forKey: .availableTaskKinds)) ?? [],
-            fallback: []
+        self.init(
+            provider: (try? c.decode(String.self, forKey: .provider)) ?? "unknown",
+            ok: (try? c.decode(Bool.self, forKey: .ok)) ?? false,
+            reasonCode: try? c.decodeIfPresent(String.self, forKey: .reasonCode),
+            runtimeVersion: try? c.decodeIfPresent(String.self, forKey: .runtimeVersion),
+            availableTaskKinds: (try? c.decode([String].self, forKey: .availableTaskKinds)) ?? [],
+            loadedModels: (try? c.decode([String].self, forKey: .loadedModels)) ?? [],
+            deviceBackend: try? c.decodeIfPresent(String.self, forKey: .deviceBackend),
+            updatedAt: (try? c.decode(Double.self, forKey: .updatedAt)) ?? 0,
+            importError: try? c.decodeIfPresent(String.self, forKey: .importError),
+            activeMemoryBytes: try? c.decodeIfPresent(Int64.self, forKey: .activeMemoryBytes),
+            peakMemoryBytes: try? c.decodeIfPresent(Int64.self, forKey: .peakMemoryBytes),
+            loadedModelCount: try? c.decodeIfPresent(Int.self, forKey: .loadedModelCount),
+            lifecycleMode: (try? c.decode(String.self, forKey: .lifecycleMode)) ?? "",
+            supportedLifecycleActions: (try? c.decode([String].self, forKey: .supportedLifecycleActions)) ?? [],
+            warmupTaskKinds: (try? c.decode([String].self, forKey: .warmupTaskKinds)) ?? [],
+            residencyScope: (try? c.decode(String.self, forKey: .residencyScope)) ?? "",
+            loadedInstances: (try? c.decode([AIRuntimeLoadedInstance].self, forKey: .loadedInstances)) ?? []
         )
-        loadedModels = AIRuntimeProviderStatus.normalizedLoadedModels(
-            (try? c.decode([String].self, forKey: .loadedModels)) ?? []
-        )
-        deviceBackend = try? c.decodeIfPresent(String.self, forKey: .deviceBackend)
-        updatedAt = (try? c.decode(Double.self, forKey: .updatedAt)) ?? 0
-        importError = try? c.decodeIfPresent(String.self, forKey: .importError)
-        activeMemoryBytes = try? c.decodeIfPresent(Int64.self, forKey: .activeMemoryBytes)
-        peakMemoryBytes = try? c.decodeIfPresent(Int64.self, forKey: .peakMemoryBytes)
-        loadedModelCount = try? c.decodeIfPresent(Int.self, forKey: .loadedModelCount)
     }
 
     private static func normalizedLoadedModels(_ values: [String]) -> [String] {
@@ -127,6 +267,61 @@ public struct AIRuntimeProviderStatus: Codable, Sendable, Equatable {
             out.append(token)
         }
         return out
+    }
+
+    private static func normalizedLoadedInstances(_ values: [AIRuntimeLoadedInstance]) -> [AIRuntimeLoadedInstance] {
+        var out: [AIRuntimeLoadedInstance] = []
+        var seen: Set<String> = []
+        for value in values {
+            if value.instanceKey.isEmpty || seen.contains(value.instanceKey) {
+                continue
+            }
+            seen.insert(value.instanceKey)
+            out.append(value)
+        }
+        return out.sorted {
+            if $0.modelId == $1.modelId {
+                return $0.instanceKey < $1.instanceKey
+            }
+            return $0.modelId < $1.modelId
+        }
+    }
+
+    public func supportsLifecycleAction(_ action: AIRuntimeProviderLifecycleAction) -> Bool {
+        let supported = Set(
+            supportedLifecycleActions
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                .filter { !$0.isEmpty }
+        )
+        switch action {
+        case .warmupLocalModel:
+            return supported.contains(action.rawValue) || supported.contains("warmup")
+        case .unloadLocalModel:
+            return supported.contains(action.rawValue) || supported.contains("unload")
+        case .evictLocalInstance:
+            return supported.contains(action.rawValue) || supported.contains("evict")
+        }
+    }
+
+    public func supportsWarmup(forModelTaskKinds taskKinds: [String]) -> Bool {
+        guard supportsLifecycleAction(.warmupLocalModel) else { return false }
+        if warmupTaskKinds.isEmpty {
+            return true
+        }
+        return !Set(warmupTaskKinds).isDisjoint(with: Set(LocalModelCapabilityDefaults.normalizedStringList(taskKinds, fallback: [])))
+    }
+
+    public func hubControlMode(forModelTaskKinds taskKinds: [String]) -> AIRuntimeProviderHubControlMode {
+        if lifecycleMode == AIRuntimeProviderHubControlMode.mlxLegacy.rawValue || provider == "mlx" {
+            return .mlxLegacy
+        }
+        if residencyScope == "process_local" || lifecycleMode == AIRuntimeProviderHubControlMode.ephemeralOnDemand.rawValue {
+            return .ephemeralOnDemand
+        }
+        if supportsWarmup(forModelTaskKinds: taskKinds) {
+            return .warmable
+        }
+        return .ephemeralOnDemand
     }
 }
 
@@ -563,7 +758,12 @@ public struct AIRuntimeStatus: Codable, Sendable, Equatable {
                 importError: rawValue.importError,
                 activeMemoryBytes: rawValue.activeMemoryBytes,
                 peakMemoryBytes: rawValue.peakMemoryBytes,
-                loadedModelCount: rawValue.loadedModelCount
+                loadedModelCount: rawValue.loadedModelCount,
+                lifecycleMode: rawValue.lifecycleMode,
+                supportedLifecycleActions: rawValue.supportedLifecycleActions,
+                warmupTaskKinds: rawValue.warmupTaskKinds,
+                residencyScope: rawValue.residencyScope,
+                loadedInstances: rawValue.loadedInstances
             )
         }
 
@@ -580,7 +780,12 @@ public struct AIRuntimeStatus: Codable, Sendable, Equatable {
                 importError: legacyImportError,
                 activeMemoryBytes: legacyActiveMemoryBytes,
                 peakMemoryBytes: legacyPeakMemoryBytes,
-                loadedModelCount: legacyLoadedModelCount
+                loadedModelCount: legacyLoadedModelCount,
+                lifecycleMode: AIRuntimeProviderHubControlMode.mlxLegacy.rawValue,
+                supportedLifecycleActions: [],
+                warmupTaskKinds: [],
+                residencyScope: "runtime_process",
+                loadedInstances: []
             )
         }
 

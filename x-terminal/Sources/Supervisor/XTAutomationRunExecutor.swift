@@ -223,13 +223,13 @@ final class XTAutomationRunExecutor {
                     || body.localizedCaseInsensitiveContains(action.successBodyContains)
                 let denyCode = xtAutomationJSONString(summaryObject?["deny_code"]) ?? ""
                 let ok = result.ok && expectationMet
-                let detail = ok
-                    ? (body.isEmpty ? "ok" : xtAutomationTruncate(body, maxChars: 240))
-                    : xtAutomationFailureDetail(
-                        body: body,
-                        denyCode: denyCode,
-                        expectationToken: action.successBodyContains
-                    )
+                let detail = xtAutomationActionDetail(
+                    result: result,
+                    body: body,
+                    denyCode: denyCode,
+                    expectationToken: action.successBodyContains,
+                    ok: ok
+                )
                 let outcome = XTAutomationActionExecutionOutcome(
                     actionID: action.actionID,
                     title: action.title,
@@ -1004,6 +1004,33 @@ private func xtAutomationFailureDetail(
     }
     let trimmed = xtAutomationTrimmedBody(body)
     return trimmed.isEmpty ? "tool_failed" : xtAutomationTruncate(trimmed, maxChars: 240)
+}
+
+private func xtAutomationActionDetail(
+    result: ToolResult,
+    body: String,
+    denyCode: String,
+    expectationToken: String,
+    ok: Bool
+) -> String {
+    if ok, let specialized = ToolResultHumanSummary.specializedSummary(for: result) {
+        return xtAutomationTruncate(specialized, maxChars: 240)
+    }
+    if !ok, !expectationToken.isEmpty,
+       !body.localizedCaseInsensitiveContains(expectationToken) {
+        return "expected_body_missing:\(expectationToken)"
+    }
+    if !ok, let specialized = ToolResultHumanSummary.specializedSummary(for: result) {
+        return xtAutomationTruncate(specialized, maxChars: 240)
+    }
+    if ok {
+        return body.isEmpty ? "ok" : xtAutomationTruncate(body, maxChars: 240)
+    }
+    return xtAutomationFailureDetail(
+        body: body,
+        denyCode: denyCode,
+        expectationToken: expectationToken
+    )
 }
 
 private func xtAutomationExecutionDetail(

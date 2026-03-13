@@ -9,8 +9,9 @@ CASE_TABLE="${LOG_DIR}/cases.tsv"
 BUILD_LOG="${LOG_DIR}/swift-build.log"
 SWIFT_CHECK_HOME="${XT_W3_36_SWIFT_HOME:-${ROOT_DIR}/.axcoder/swift-home}"
 SWIFT_CLANG_CACHE="${XT_W3_36_CLANG_MODULE_CACHE:-${ROOT_DIR}/.build/clang-module-cache}"
+SWIFT_SCRATCH_PATH="${XT_W3_36_SWIFT_SCRATCH_PATH:-${ROOT_DIR}/.build/xt_w3_36_gate}"
 
-mkdir -p "${REPORT_DIR}" "${LOG_DIR}" "${SWIFT_CHECK_HOME}" "${SWIFT_CLANG_CACHE}"
+mkdir -p "${REPORT_DIR}" "${LOG_DIR}" "${SWIFT_CHECK_HOME}" "${SWIFT_CLANG_CACHE}" "${SWIFT_SCRATCH_PATH}"
 : > "${CASE_TABLE}"
 
 overall_ok=1
@@ -66,7 +67,7 @@ run_case() {
     cd "${ROOT_DIR}"
     HOME="${SWIFT_CHECK_HOME}" \
     CLANG_MODULE_CACHE_PATH="${SWIFT_CLANG_CACHE}" \
-      swift test --disable-sandbox --filter "${filter}" >"${log_file}" 2>&1
+      swift test --disable-sandbox --scratch-path "${SWIFT_SCRATCH_PATH}" --filter "${filter}" >"${log_file}" 2>&1
   ); then
     :
   else
@@ -92,7 +93,7 @@ if (
   cd "${ROOT_DIR}"
   HOME="${SWIFT_CHECK_HOME}" \
   CLANG_MODULE_CACHE_PATH="${SWIFT_CLANG_CACHE}" \
-    swift build --disable-sandbox >"${BUILD_LOG}" 2>&1
+    swift build --disable-sandbox --scratch-path "${SWIFT_SCRATCH_PATH}" >"${BUILD_LOG}" 2>&1
 ); then
   :
 else
@@ -198,3 +199,7 @@ fs.writeFileSync(reportFile, `${JSON.stringify(report, null, 2)}\n`, "utf8");
 NODE
 
 echo "[xt-w3-36] report=${REPORT_FILE}"
+if [[ "${overall_ok}" != "1" ]]; then
+  echo "[xt-w3-36] governance evidence failed" >&2
+  exit 1
+fi

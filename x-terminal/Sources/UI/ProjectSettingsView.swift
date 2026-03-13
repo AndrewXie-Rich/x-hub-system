@@ -8,6 +8,8 @@ struct ProjectSettingsView: View {
     @StateObject private var modelManager = HubModelManager.shared
     @State private var trustedAutomationDeviceIdDraft: String = ""
     @State private var governedReadableRootsDraft: String = ""
+    @State private var governanceInlineMessage: String = ""
+    @State private var governanceInlineMessageIsError = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -82,7 +84,7 @@ struct ProjectSettingsView: View {
 
             hubMemorySection
             automationSelfIterateSection
-            autonomyPolicySection
+            governanceSection
             trustedAutomationSection
 
             Spacer(minLength: 0)
@@ -164,9 +166,16 @@ struct ProjectSettingsView: View {
 
     private var trustedAutomationSection: some View {
         let config = appModel.projectConfig ?? .default(forProjectRoot: ctx.root)
+        let effective = appModel.resolvedProjectAutonomyPolicy(config: config)
         let readiness = AXTrustedAutomationPermissionOwnerReadiness.current()
         let status = config.trustedAutomationStatus(forProjectRoot: ctx.root, permissionReadiness: readiness)
         let expectedHash = xtTrustedAutomationWorkspaceHash(forProjectRoot: ctx.root)
+        let configuredAutoApprove = config.governedAutoApproveLocalToolCalls
+        let effectiveAutoApprove = xtProjectGovernedAutoApprovalEnabled(
+            projectRoot: ctx.root,
+            config: config,
+            effectiveAutonomy: effective
+        )
         let deviceGroups = status.deviceToolGroups.isEmpty
             ? (status.mode == .trustedAutomation ? xtTrustedAutomationDefaultDeviceToolGroups() : [])
             : status.deviceToolGroups
@@ -275,226 +284,23 @@ struct ProjectSettingsView: View {
                         .textSelection(.enabled)
                 }
 
-                HStack(spacing: 8) {
-                    ForEach(repairActions, id: \.self) { action in
-                        Button(XTSystemSettingsLinks.label(forOpenSettingsAction: action)) {
-                            XTSystemSettingsLinks.openPrivacyAction(action)
-                        }
-                    }
-
-                    Button("Open System Settings") {
-                        XTSystemSettingsLinks.openSystemSettings()
-                    }
-
-                    Spacer()
-                }
-            }
-            .padding(8)
-        }
-    }
-
-    private var autonomyPolicySection: some View {
-        let config = appModel.projectConfig ?? .default(forProjectRoot: ctx.root)
-        let effective = appModel.resolvedProjectAutonomyPolicy(config: config)
-        let selectedMode = config.autonomyMode
-        let configuredDeviceAuthority = config.automationMode == .trustedAutomation
-            && config.autonomyMode == .trustedOpenClawMode
-            && config.autonomyAllowDeviceTools
-        let effectiveDeviceAuthority = xtProjectGovernedDeviceAuthorityEnabled(
-            projectRoot: ctx.root,
-            config: config,
-            effectiveAutonomy: effective
-        )
-        let configuredAutoApprove = config.governedAutoApproveLocalToolCalls
-        let effectiveAutoApprove = xtProjectGovernedAutoApprovalEnabled(
-            projectRoot: ctx.root,
-            config: config,
-            effectiveAutonomy: effective
-        )
-        let configuredSurfaceText = configuredAutonomySurfaceText(config)
-        let effectiveSurfaceText = effective.allowedSurfaceLabels.isEmpty ? "(none)" : effective.allowedSurfaceLabels.joined(separator: ", ")
-        let updatedAtText = config.autonomyUpdatedAtDate.map { autonomyTimestampFormatter.string(from: $0) } ?? "(never armed)"
-        let hubOverrideUpdatedAtText: String = {
-            guard effective.remoteOverrideUpdatedAtMs > 0 else { return "(none)" }
-            let date = Date(timeIntervalSince1970: TimeInterval(effective.remoteOverrideUpdatedAtMs) / 1000.0)
-            return autonomyTimestampFormatter.string(from: date)
-        }()
-
-        return GroupBox("Autonomy Policy") {
-            VStack(alignment: .leading, spacing: 10) {
-                Toggle(
-                    "Enable governed device authority for this project",
-                    isOn: Binding(
-                        get: { configuredDeviceAuthority },
-                        set: { setGovernedDeviceAuthority(enabled: $0) }
-                    )
-                )
-                .toggleStyle(.switch)
-
-                Text(configuredDeviceAuthority
-                     ? "开启后：当前 project 会进入 trusted_openclaw_mode，并尝试 arm trusted automation。Supervisor 会继承同一个 project 的 governed device authority。"
-                     : "关闭后：当前 project 会回到 manual，并停用 trusted automation 绑定；浏览器/device/connector/extension 四类自治面全部回收。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Text("device_authority: configured=\(configuredDeviceAuthority ? "on" : "off") · effective=\(effectiveDeviceAuthority ? "on" : "off") · paired_device=\(trustedAutomationDeviceIdDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "(missing)" : trustedAutomationDeviceIdDraft)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-
                 Toggle(
                     "Allow autonomous local tool execution without local approval",
                     isOn: Binding(
-                        get: { configuredAutoApprove },
+                        get: { appModel.projectConfig?.governedAutoApproveLocalToolCalls ?? false },
                         set: { appModel.setProjectGovernedAutoApproveLocalToolCalls(enabled: $0) }
                     )
                 )
                 .toggleStyle(.switch)
-                .disabled(!configuredDeviceAuthority)
+                .disabled(status.mode != .trustedAutomation)
 
                 Text(configuredAutoApprove
-                     ? "开启后：当前 project 下的 needs-confirm 本地工具会直接执行，不再等待本地审批。适用于 Supervisor、Coder 和项目聊天回合。"
+                     ? "开启后：当前 project 下的 needs-confirm 本地工具会直接执行，不再等待本地审批。高风险 shell 和网络 grant 仍保留人工/Hub 门禁。"
                      : "关闭后：write_file / run_command / device browser / UI act 等高风险本地工具仍会停在本地审批。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Text("local_auto_approve: configured=\(configuredAutoApprove ? "on" : "off") · effective=\(effectiveAutoApprove ? "on" : "off") · dangerous_shell=manual · hub_network_grant=still_required")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Text("Preset")
-                        .font(.system(.body, design: .monospaced))
-                        .frame(width: 120, alignment: .leading)
-
-                    Picker(
-                        "",
-                        selection: Binding(
-                            get: { appModel.projectConfig?.autonomyMode ?? .manual },
-                            set: { appModel.setProjectAutonomyPolicy(mode: $0) }
-                        )
-                    ) {
-                        ForEach(AXProjectAutonomyMode.allCases, id: \.self) { mode in
-                            Text(mode.displayName).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .frame(width: 260, alignment: .leading)
-
-                    Spacer()
-
-                    Text("effective: \(effective.effectiveMode.rawValue)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                }
-
-                HStack(alignment: .top, spacing: 16) {
-                    Toggle(
-                        "Allow browser runtime",
-                        isOn: Binding(
-                            get: { appModel.projectConfig?.autonomyAllowBrowserRuntime ?? false },
-                            set: { appModel.setProjectAutonomyPolicy(allowBrowserRuntime: $0) }
-                        )
-                    )
-                    .toggleStyle(.switch)
-                    .disabled(selectedMode == .manual)
-
-                    Toggle(
-                        "Allow device tools",
-                        isOn: Binding(
-                            get: { appModel.projectConfig?.autonomyAllowDeviceTools ?? false },
-                            set: { appModel.setProjectAutonomyPolicy(allowDeviceTools: $0) }
-                        )
-                    )
-                    .toggleStyle(.switch)
-                    .disabled(selectedMode != .trustedOpenClawMode)
-                }
-
-                HStack(alignment: .top, spacing: 16) {
-                    Toggle(
-                        "Allow connector actions",
-                        isOn: Binding(
-                            get: { appModel.projectConfig?.autonomyAllowConnectorActions ?? false },
-                            set: { appModel.setProjectAutonomyPolicy(allowConnectorActions: $0) }
-                        )
-                    )
-                    .toggleStyle(.switch)
-                    .disabled(selectedMode != .trustedOpenClawMode)
-
-                    Toggle(
-                        "Allow extensions",
-                        isOn: Binding(
-                            get: { appModel.projectConfig?.autonomyAllowExtensions ?? false },
-                            set: { appModel.setProjectAutonomyPolicy(allowExtensions: $0) }
-                        )
-                    )
-                    .toggleStyle(.switch)
-                    .disabled(selectedMode != .trustedOpenClawMode)
-                }
-
-                Stepper(
-                    value: Binding(
-                        get: { max(5, (appModel.projectConfig?.autonomyTTLSeconds ?? 3600) / 60) },
-                        set: { appModel.setProjectAutonomyPolicy(ttlSeconds: max(5, $0) * 60) }
-                    ),
-                    in: 5...1440,
-                    step: 5
-                ) {
-                    Text("Autonomy TTL: \((config.autonomyTTLSeconds / 60)) min")
-                }
-
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Text("Terminal Clamp")
-                        .font(.system(.body, design: .monospaced))
-                        .frame(width: 120, alignment: .leading)
-
-                    Picker(
-                        "",
-                        selection: Binding(
-                            get: { appModel.projectConfig?.autonomyHubOverrideMode ?? AXProjectAutonomyHubOverrideMode.none },
-                            set: { appModel.setProjectAutonomyPolicy(hubOverrideMode: $0) }
-                        )
-                    ) {
-                        ForEach(AXProjectAutonomyHubOverrideMode.allCases, id: \.self) { mode in
-                            Text(mode.displayName).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .frame(width: 260, alignment: .leading)
-
-                    Spacer()
-                }
-
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Text("Hub Clamp")
-                        .font(.system(.body, design: .monospaced))
-                        .frame(width: 120, alignment: .leading)
-
-                    Text(effective.remoteOverrideMode.displayName)
-                        .font(.system(.body, design: .monospaced))
-                        .textSelection(.enabled)
-
-                    Spacer()
-                }
-
-                Text("configured_surfaces: \(configuredSurfaceText)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-
-                Text("effective_surfaces: \(effectiveSurfaceText)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-
-                Text("ttl_remaining: \(autonomyRemainingText(config: config, effective: effective)) · updated_at: \(updatedAtText)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-
-                Text("hub_override_source: \(effective.remoteOverrideSource.isEmpty ? "(none)" : effective.remoteOverrideSource) · hub_override_updated_at: \(hubOverrideUpdatedAtText)")
+                Text("local_auto_approve: configured=\(configuredAutoApprove ? "on" : "off") · effective=\(effectiveAutoApprove ? "on" : "off")")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
@@ -542,7 +348,257 @@ struct ProjectSettingsView: View {
                         .textSelection(.enabled)
                 }
 
-                Text("Terminal Clamp 和 Hub Clamp 会按更严格的一侧合并，最终执行面始终 fail-closed。")
+                HStack(spacing: 8) {
+                    ForEach(repairActions, id: \.self) { action in
+                        Button(XTSystemSettingsLinks.label(forOpenSettingsAction: action)) {
+                            XTSystemSettingsLinks.openPrivacyAction(action)
+                        }
+                    }
+
+                    Button("Open System Settings") {
+                        XTSystemSettingsLinks.openSystemSettings()
+                    }
+
+                    Spacer()
+                }
+            }
+            .padding(8)
+        }
+    }
+
+    private var governanceSection: some View {
+        let config = appModel.projectConfig ?? .default(forProjectRoot: ctx.root)
+        let resolved = appModel.resolvedProjectGovernance(config: config)
+        let presentation = ProjectGovernancePresentation(resolved: resolved)
+        let effective = resolved.effectiveAutonomy
+        let configuredSurfaceText = configuredAutonomySurfaceText(config)
+        let effectiveSurfaceText = effective.allowedSurfaceLabels.isEmpty ? "(none)" : effective.allowedSurfaceLabels.joined(separator: ", ")
+        let updatedAtText = config.autonomyUpdatedAtDate.map { autonomyTimestampFormatter.string(from: $0) } ?? "(never armed)"
+        let hubOverrideUpdatedAtText: String = {
+            guard effective.remoteOverrideUpdatedAtMs > 0 else { return "(none)" }
+            let date = Date(timeIntervalSince1970: TimeInterval(effective.remoteOverrideUpdatedAtMs) / 1000.0)
+            return autonomyTimestampFormatter.string(from: date)
+        }()
+        let reviewMode = config.reviewPolicyMode
+
+        return GroupBox("Project Governance") {
+            VStack(alignment: .leading, spacing: 12) {
+                ProjectGovernanceBadge(presentation: presentation)
+                ProjectGovernanceInspector(presentation: presentation)
+
+                if !governanceInlineMessage.isEmpty {
+                    Text(governanceInlineMessage)
+                        .font(.caption)
+                        .foregroundStyle(governanceInlineMessageIsError ? .red : .orange)
+                }
+
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text("Execution Tier")
+                        .font(.system(.body, design: .monospaced))
+                        .frame(width: 140, alignment: .leading)
+
+                    Picker(
+                        "",
+                        selection: Binding(
+                            get: { appModel.projectConfig?.executionTier ?? .a0Observe },
+                            set: { updateExecutionTier($0) }
+                        )
+                    ) {
+                        ForEach(AXProjectExecutionTier.allCases, id: \.self) { tier in
+                            Text(tier.displayName).tag(tier)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 260, alignment: .leading)
+
+                    Spacer()
+
+                    Text("surface preset: \(config.autonomyMode.displayName)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text("Supervisor Tier")
+                        .font(.system(.body, design: .monospaced))
+                        .frame(width: 140, alignment: .leading)
+
+                    Picker(
+                        "",
+                        selection: Binding(
+                            get: { appModel.projectConfig?.supervisorInterventionTier ?? .s0SilentAudit },
+                            set: { updateSupervisorTier($0) }
+                        )
+                    ) {
+                        ForEach(AXProjectSupervisorInterventionTier.allCases, id: \.self) { tier in
+                            Text(tier.displayName).tag(tier)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 260, alignment: .leading)
+
+                    Spacer()
+
+                    Text("minimum safe: \(config.executionTier.minimumSafeSupervisorTier.displayName)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text("Review Policy")
+                        .font(.system(.body, design: .monospaced))
+                        .frame(width: 140, alignment: .leading)
+
+                    Picker(
+                        "",
+                        selection: Binding(
+                            get: { appModel.projectConfig?.reviewPolicyMode ?? .milestoneOnly },
+                            set: { appModel.setProjectGovernance(reviewPolicyMode: $0) }
+                        )
+                    ) {
+                        ForEach(AXProjectReviewPolicyMode.allCases, id: \.self) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 260, alignment: .leading)
+
+                    Spacer()
+
+                    Text("compat: \(presentation.compatSource)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+
+                Stepper(
+                    value: governanceMinutesBinding(
+                        get: { appModel.projectConfig?.progressHeartbeatSeconds ?? config.progressHeartbeatSeconds },
+                        set: { appModel.setProjectGovernance(progressHeartbeatSeconds: $0) }
+                    ),
+                    in: 1...240,
+                    step: 5
+                ) {
+                    Text("Heartbeat: \(governanceDurationLabel(config.progressHeartbeatSeconds))")
+                }
+
+                Stepper(
+                    value: governanceMinutesBinding(
+                        get: { appModel.projectConfig?.reviewPulseSeconds ?? config.reviewPulseSeconds },
+                        set: { appModel.setProjectGovernance(reviewPulseSeconds: $0) },
+                        allowsOff: true
+                    ),
+                    in: 0...240,
+                    step: 5,
+                    onEditingChanged: { _ in }
+                ) {
+                    Text("Review Pulse: \(governanceDurationLabel(config.reviewPulseSeconds))")
+                }
+                .disabled(reviewMode == .off || reviewMode == .milestoneOnly)
+
+                Stepper(
+                    value: governanceMinutesBinding(
+                        get: { appModel.projectConfig?.brainstormReviewSeconds ?? config.brainstormReviewSeconds },
+                        set: { appModel.setProjectGovernance(brainstormReviewSeconds: $0) },
+                        allowsOff: true
+                    ),
+                    in: 0...240,
+                    step: 5,
+                    onEditingChanged: { _ in }
+                ) {
+                    Text("Brainstorm Review: \(governanceDurationLabel(config.brainstormReviewSeconds))")
+                }
+                .disabled(reviewMode == .off || reviewMode == .milestoneOnly)
+
+                Toggle(
+                    "Enable event-driven review",
+                    isOn: Binding(
+                        get: { appModel.projectConfig?.eventDrivenReviewEnabled ?? config.eventDrivenReviewEnabled },
+                        set: { appModel.setProjectGovernance(eventDrivenReviewEnabled: $0) }
+                    )
+                )
+                .toggleStyle(.switch)
+                .disabled(reviewMode == .off)
+
+                Text("guidance: \(config.supervisorInterventionTier.defaultInterventionMode.displayName) · \(config.supervisorInterventionTier.defaultAckRequired ? "ack required" : "ack optional")")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+
+                Text("event_triggers: \(config.eventReviewTriggers.isEmpty ? "(none)" : config.eventReviewTriggers.map(\.displayName).joined(separator: ", "))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+
+                Divider()
+
+                Stepper(
+                    value: Binding(
+                        get: { max(5, (appModel.projectConfig?.autonomyTTLSeconds ?? 3600) / 60) },
+                        set: { appModel.setProjectAutonomyPolicy(ttlSeconds: max(5, $0) * 60) }
+                    ),
+                    in: 5...1440,
+                    step: 5
+                ) {
+                    Text("Runtime Surface TTL: \((config.autonomyTTLSeconds / 60)) min")
+                }
+
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text("Terminal Clamp")
+                        .font(.system(.body, design: .monospaced))
+                        .frame(width: 140, alignment: .leading)
+
+                    Picker(
+                        "",
+                        selection: Binding(
+                            get: { appModel.projectConfig?.autonomyHubOverrideMode ?? AXProjectAutonomyHubOverrideMode.none },
+                            set: { appModel.setProjectAutonomyPolicy(hubOverrideMode: $0) }
+                        )
+                    ) {
+                        ForEach(AXProjectAutonomyHubOverrideMode.allCases, id: \.self) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 260, alignment: .leading)
+
+                    Spacer()
+                }
+
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text("Hub Clamp")
+                        .font(.system(.body, design: .monospaced))
+                        .frame(width: 140, alignment: .leading)
+
+                    Text(effective.remoteOverrideMode.displayName)
+                        .font(.system(.body, design: .monospaced))
+                        .textSelection(.enabled)
+
+                    Spacer()
+                }
+
+                Text("configured_surfaces: \(configuredSurfaceText)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+
+                Text("effective_surfaces: \(effectiveSurfaceText)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+
+                Text("ttl_remaining: \(autonomyRemainingText(config: config, effective: effective)) · updated_at: \(updatedAtText)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+
+                Text("hub_override_source: \(effective.remoteOverrideSource.isEmpty ? "(none)" : effective.remoteOverrideSource) · hub_override_updated_at: \(hubOverrideUpdatedAtText)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+
+                Text("Execution Tier 会同步 runtime surface preset，但真正放行动作仍继续受 TTL / clamp / trusted automation / permission owner / kill-switch 共同约束。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
 
@@ -701,21 +757,66 @@ struct ProjectSettingsView: View {
         )
     }
 
-    private func setGovernedDeviceAuthority(enabled: Bool) {
-        if enabled {
-            if (appModel.projectConfig?.governedReadableRoots ?? []).isEmpty {
-                let bootstrapRoots = bootstrapGovernedReadableRoots()
-                if !bootstrapRoots.isEmpty {
-                    appModel.setProjectGovernedReadableRoots(paths: bootstrapRoots)
-                    governedReadableRootsDraft = governedReadableRootsText(bootstrapRoots)
+    private func updateExecutionTier(_ tier: AXProjectExecutionTier) {
+        let currentSupervisor = appModel.projectConfig?.supervisorInterventionTier ?? tier.defaultSupervisorInterventionTier
+        let minimumSafe = tier.minimumSafeSupervisorTier
+        let adjustedSupervisor = max(currentSupervisor, minimumSafe)
+        appModel.setProjectGovernance(
+            executionTier: tier,
+            supervisorInterventionTier: adjustedSupervisor
+        )
+        if adjustedSupervisor != currentSupervisor {
+            governanceInlineMessage = "\(tier.displayName) 至少需要 \(minimumSafe.displayName)，已自动把 supervisor 提升到安全下限。"
+            governanceInlineMessageIsError = false
+        } else {
+            clearGovernanceInlineMessage()
+        }
+    }
+
+    private func updateSupervisorTier(_ tier: AXProjectSupervisorInterventionTier) {
+        let executionTier = appModel.projectConfig?.executionTier ?? .a0Observe
+        let minimumSafe = executionTier.minimumSafeSupervisorTier
+        guard tier >= minimumSafe else {
+            governanceInlineMessage = "\(executionTier.displayName) 不能低于 \(minimumSafe.displayName)。当前更低组合会进入 fail-closed。"
+            governanceInlineMessageIsError = true
+            return
+        }
+
+        appModel.setProjectGovernance(supervisorInterventionTier: tier)
+        if tier < executionTier.defaultSupervisorInterventionTier {
+            governanceInlineMessage = "\(executionTier.displayName) 推荐 \(executionTier.defaultSupervisorInterventionTier.displayName) 及以上；当前配置允许，但 supervisor 纠偏窗口会更松。"
+            governanceInlineMessageIsError = false
+        } else {
+            clearGovernanceInlineMessage()
+        }
+    }
+
+    private func governanceMinutesBinding(
+        get: @escaping () -> Int,
+        set: @escaping (Int) -> Void,
+        allowsOff: Bool = false
+    ) -> Binding<Int> {
+        Binding(
+            get: {
+                let seconds = max(0, get())
+                if seconds == 0 && allowsOff {
+                    return 0
+                }
+                return max(1, seconds / 60)
+            },
+            set: { minutes in
+                if allowsOff && minutes <= 0 {
+                    set(0)
+                } else {
+                    set(max(1, minutes) * 60)
                 }
             }
-            appModel.setProjectAutonomyPolicy(mode: .trustedOpenClawMode)
-            saveTrustedAutomationBinding(armed: true)
-        } else {
-            appModel.setProjectAutonomyPolicy(mode: .manual)
-            saveTrustedAutomationBinding(armed: false)
-        }
+        )
+    }
+
+    private func clearGovernanceInlineMessage() {
+        governanceInlineMessage = ""
+        governanceInlineMessageIsError = false
     }
 
     private func saveGovernedReadableRoots() {
@@ -738,21 +839,6 @@ struct ProjectSettingsView: View {
             lines.append(path)
             governedReadableRootsDraft = governedReadableRootsText(lines)
         }
-    }
-
-    private func bootstrapGovernedReadableRoots() -> [String] {
-        var roots: [String] = []
-        appendBootstrapRoot(ctx.root.deletingLastPathComponent(), into: &roots)
-        appendBootstrapRoot(ctx.root.deletingLastPathComponent().deletingLastPathComponent(), into: &roots)
-        return roots
-    }
-
-    private func appendBootstrapRoot(_ url: URL, into roots: inout [String]) {
-        let path = PathGuard.resolve(url).path
-        guard path != PathGuard.resolve(ctx.root).path else { return }
-        guard path != "/" else { return }
-        guard !roots.contains(path) else { return }
-        roots.append(path)
     }
 
     private func trustedAutomationIcon(_ state: AXTrustedAutomationProjectState) -> String {

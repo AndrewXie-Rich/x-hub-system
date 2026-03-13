@@ -63,6 +63,7 @@ func xtAutomationRuntimePolicyDecision(
             tool: action.tool,
             args: action.args
         ),
+        projectRoot: projectRoot,
         config: config,
         effectiveAutonomy: autonomyState.effectivePolicy
     )

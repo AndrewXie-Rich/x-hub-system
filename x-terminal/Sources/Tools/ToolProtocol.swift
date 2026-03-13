@@ -14,6 +14,7 @@ enum ToolName: String, Codable, CaseIterable, Sendable {
     case session_list
     case session_resume
     case session_compact
+    case agentImportRecord = "agent.import.record"
     case memory_snapshot
     case project_snapshot
 
@@ -71,7 +72,58 @@ struct ToolCall: Codable, Equatable, Identifiable, Sendable {
 struct ToolActionEnvelope: Codable, Equatable, Sendable {
     // Either tool_calls or final must be present.
     var tool_calls: [ToolCall]?
+    var skill_calls: [GovernedSkillCall]? = nil
     var final: String?
+    var guidance_ack: ToolGuidanceAckPayload?
+
+    init(
+        tool_calls: [ToolCall]? = nil,
+        skill_calls: [GovernedSkillCall]? = nil,
+        final: String? = nil,
+        guidance_ack: ToolGuidanceAckPayload? = nil
+    ) {
+        self.tool_calls = tool_calls
+        self.skill_calls = skill_calls
+        self.final = final
+        self.guidance_ack = guidance_ack
+    }
+}
+
+struct GovernedSkillCall: Codable, Equatable, Sendable {
+    var id: String
+    var skill_id: String
+    var payload: [String: JSONValue]
+
+    init(id: String = UUID().uuidString, skill_id: String, payload: [String: JSONValue] = [:]) {
+        self.id = id
+        self.skill_id = skill_id
+        self.payload = payload
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? container.decode(String.self, forKey: .id)) ?? UUID().uuidString
+        skill_id = try container.decode(String.self, forKey: .skill_id)
+        payload = (try? container.decode([String: JSONValue].self, forKey: .payload)) ?? [:]
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case skill_id
+        case payload
+    }
+}
+
+enum ToolGuidanceAckStatus: String, Codable, Equatable, Sendable {
+    case accepted
+    case deferred
+    case rejected
+}
+
+struct ToolGuidanceAckPayload: Codable, Equatable, Sendable {
+    var injection_id: String?
+    var status: ToolGuidanceAckStatus
+    var note: String?
 }
 
 struct ToolResult: Codable, Equatable, Sendable {
@@ -113,6 +165,7 @@ enum ToolPolicy {
                 .session_list,
                 .session_resume,
                 .session_compact,
+                .agentImportRecord,
                 .memory_snapshot,
                 .project_snapshot,
                 .bridge_status,
@@ -133,6 +186,7 @@ enum ToolPolicy {
                 .session_list,
                 .session_resume,
                 .session_compact,
+                .agentImportRecord,
                 .memory_snapshot,
                 .project_snapshot,
                 .bridge_status,
@@ -153,6 +207,7 @@ enum ToolPolicy {
                 .session_list,
                 .session_resume,
                 .session_compact,
+                .agentImportRecord,
                 .memory_snapshot,
                 .project_snapshot,
                 .need_network,
@@ -241,6 +296,8 @@ enum ToolPolicy {
             return "- session_resume {session_id?}"
         case .session_compact:
             return "- session_compact {session_id?}"
+        case .agentImportRecord:
+            return "- agent.import.record {staging_id?|id?|import_id?|selector?|skill_id?|project_id?}"
         case .memory_snapshot:
             return "- memory_snapshot {mode?, project_id?}"
         case .project_snapshot:
@@ -292,6 +349,7 @@ enum ToolPolicy {
                     .git_status,
                     .git_diff,
                     .session_list,
+                    .agentImportRecord,
                     .memory_snapshot,
                     .project_snapshot,
                     .bridge_status,
@@ -329,7 +387,7 @@ enum ToolPolicy {
             return .safe
         case .git_apply_check:
             return .safe
-        case .session_list, .session_resume, .session_compact, .memory_snapshot, .project_snapshot:
+        case .session_list, .session_resume, .session_compact, .agentImportRecord, .memory_snapshot, .project_snapshot:
             return .safe
         case .deviceUIObserve:
             return .needsConfirm

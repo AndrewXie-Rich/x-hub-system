@@ -161,8 +161,18 @@ def _routing_settings_path(base: str) -> str:
     return os.path.join(base, 'routing_settings.json')
 
 
-_routing_settings_cache: dict[str, str] = {}
+def _default_routing_settings_snapshot() -> dict[str, Any]:
+    return {
+        "schemaVersion": "xhub.routing_settings.v2",
+        "updatedAt": 0.0,
+        "hubDefaultModelIdByTaskKind": {},
+        "devicePreferredModelIdByTaskKind": {},
+    }
+
+
+_routing_settings_cache: dict[str, Any] = _default_routing_settings_snapshot()
 _routing_settings_mtime: float = 0.0
+_routing_settings_cache_path: str = ""
 
 
 def _parse_routing_map(obj: Any) -> dict[str, str]:
@@ -179,50 +189,122 @@ def _parse_routing_map(obj: Any) -> dict[str, str]:
     return out
 
 
-def _load_routing_settings(base: str) -> dict[str, str]:
+def _parse_device_routing_map(obj: Any) -> dict[str, dict[str, str]]:
+    out: dict[str, dict[str, str]] = {}
+    if not isinstance(obj, dict):
+        return out
+    for device_id, raw_task_map in obj.items():
+        normalized_device_id = str(device_id or '').strip().lower()
+        if not normalized_device_id:
+            continue
+        task_map = _parse_routing_map(raw_task_map)
+        if task_map:
+            out[normalized_device_id] = task_map
+    return out
+
+
+def _normalize_routing_settings(obj: Any) -> dict[str, Any]:
+    row = obj if isinstance(obj, dict) else {}
+    mapping = _parse_routing_map(
+        row.get('hubDefaultModelIdByTaskKind')
+        or row.get('hub_default_model_id_by_task_kind')
+        or row.get('preferredModelIdByTaskKind')
+        or row.get('preferred_model_id_by_task_kind')
+        or row.get('preferredModelIdByTask')
+        or row.get('preferred_model_id_by_task')
+    )
+    if not mapping:
+        raw = dict(row)
+        for key in [
+            'type',
+            'schemaVersion',
+            'schema_version',
+            'updatedAt',
+            'updated_at',
+            'updatedAtMs',
+            'updated_at_ms',
+            'hubDefaultModelIdByTaskKind',
+            'hub_default_model_id_by_task_kind',
+            'preferredModelIdByTaskKind',
+            'preferred_model_id_by_task_kind',
+            'preferredModelIdByTask',
+            'preferred_model_id_by_task',
+            'devicePreferredModelIdByTaskKind',
+            'device_preferred_model_id_by_task_kind',
+            'deviceOverrideModelIdByTaskKind',
+            'device_override_model_id_by_task_kind',
+        ]:
+            raw.pop(key, None)
+        mapping = _parse_routing_map(raw)
+    device_mapping = _parse_device_routing_map(
+        row.get('devicePreferredModelIdByTaskKind')
+        or row.get('device_preferred_model_id_by_task_kind')
+        or row.get('deviceOverrideModelIdByTaskKind')
+        or row.get('device_override_model_id_by_task_kind')
+    )
+    updated_at = float(row.get('updatedAt') or row.get('updated_at') or 0.0)
+    updated_at_ms = float(row.get('updatedAtMs') or row.get('updated_at_ms') or 0.0)
+    if updated_at <= 0.0 and updated_at_ms > 0.0:
+        updated_at = updated_at_ms / 1000.0 if updated_at_ms > 10_000_000_000 else updated_at_ms
+    return {
+        "schemaVersion": str(row.get('schemaVersion') or row.get('schema_version') or "xhub.routing_settings.v2"),
+        "updatedAt": updated_at,
+        "hubDefaultModelIdByTaskKind": mapping,
+        "devicePreferredModelIdByTaskKind": device_mapping,
+    }
+
+
+def _load_routing_settings(base: str) -> dict[str, Any]:
     """Load routing_settings.json with a lightweight mtime cache."""
-    global _routing_settings_cache, _routing_settings_mtime
+    global _routing_settings_cache, _routing_settings_mtime, _routing_settings_cache_path
     path = _routing_settings_path(base)
     try:
         st = os.stat(path)
         mtime = float(st.st_mtime)
-        if mtime == _routing_settings_mtime:
+        if path == _routing_settings_cache_path and mtime == _routing_settings_mtime:
             return _routing_settings_cache
     except FileNotFoundError:
-        _routing_settings_cache = {}
+        _routing_settings_cache = _default_routing_settings_snapshot()
         _routing_settings_mtime = 0.0
-        return {}
+        _routing_settings_cache_path = ""
+        return _default_routing_settings_snapshot()
     except Exception:
         return _routing_settings_cache
 
     try:
         obj = _read_json(path)
-        mapping: dict[str, str] = {}
-        if isinstance(obj, dict):
-            if isinstance(obj.get('preferredModelIdByTask'), dict):
-                mapping = _parse_routing_map(obj.get('preferredModelIdByTask'))
-            elif isinstance(obj.get('preferred_model_id_by_task'), dict):
-                mapping = _parse_routing_map(obj.get('preferred_model_id_by_task'))
-            else:
-                # Back-compat: treat the object itself as the map, skipping meta keys.
-                raw = dict(obj)
-                raw.pop('type', None)
-                raw.pop('updatedAt', None)
-                raw.pop('updated_at', None)
-                mapping = _parse_routing_map(raw)
-        _routing_settings_cache = mapping
+        _routing_settings_cache = _normalize_routing_settings(obj)
         _routing_settings_mtime = mtime
-        return mapping
+        _routing_settings_cache_path = path
+        return _routing_settings_cache
     except Exception:
         return _routing_settings_cache
 
 
-def _routing_preferred_model_id(base: str, task_type: str) -> str:
+def _resolve_routing_preferred_model_id(base: str, task_type: str, device_id: str = "") -> tuple[str, str]:
     tt = str(task_type or '').strip().lower()
     if not tt:
-        return ""
-    mapping = _load_routing_settings(base)
-    return str(mapping.get(tt) or '').strip()
+        return "", ""
+    settings = _load_routing_settings(base)
+    normalized_device_id = str(device_id or '').strip().lower()
+    if normalized_device_id:
+        device_mapping = settings.get("devicePreferredModelIdByTaskKind")
+        if isinstance(device_mapping, dict):
+            device_task_map = device_mapping.get(normalized_device_id)
+            if isinstance(device_task_map, dict):
+                model_id = str(device_task_map.get(tt) or '').strip()
+                if model_id:
+                    return model_id, "device_override"
+    mapping = settings.get("hubDefaultModelIdByTaskKind")
+    if isinstance(mapping, dict):
+        model_id = str(mapping.get(tt) or '').strip()
+        if model_id:
+            return model_id, "hub_default"
+    return "", ""
+
+
+def _routing_preferred_model_id(base: str, task_type: str, device_id: str = "") -> str:
+    return _resolve_routing_preferred_model_id(base, task_type, device_id)[0]
 
 
 def _write_cmd_result(base: str, *, req_id: str, action: str, model_id: str, ok: bool, msg: str) -> None:
@@ -343,12 +425,45 @@ def _write_runtime_status(
     if "mlx" not in merged_providers:
         merged_providers["mlx"] = dict(provider_obj)
 
+    loaded_instances: list[dict[str, Any]] = []
+    idle_eviction_by_provider: dict[str, dict[str, Any]] = {}
+    seen_instances: set[str] = set()
+    for provider_id, status_obj in merged_providers.items():
+        if not isinstance(status_obj, dict):
+            continue
+        idle_eviction = status_obj.get("idleEviction") or status_obj.get("idle_eviction")
+        if isinstance(idle_eviction, dict):
+            idle_eviction_by_provider[str(provider_id).strip().lower()] = dict(idle_eviction)
+        for raw_entry in status_obj.get("loadedInstances") or status_obj.get("loaded_instances") or []:
+            if not isinstance(raw_entry, dict):
+                continue
+            instance_key = str(raw_entry.get("instanceKey") or raw_entry.get("instance_key") or "").strip()
+            dedupe_key = f"{provider_id}:{instance_key}"
+            if not instance_key or dedupe_key in seen_instances:
+                continue
+            seen_instances.add(dedupe_key)
+            row = dict(raw_entry)
+            row.setdefault("provider", str(provider_id).strip().lower())
+            if not str(row.get("residencyScope") or row.get("residency_scope") or "").strip():
+                row["residencyScope"] = str(status_obj.get("residencyScope") or status_obj.get("residency_scope") or "").strip()
+            loaded_instances.append(row)
+    loaded_instances.sort(
+        key=lambda item: (
+            str(item.get("provider") or "").strip(),
+            str(item.get("modelId") or item.get("model_id") or "").strip(),
+            str(item.get("instanceKey") or item.get("instance_key") or "").strip(),
+        )
+    )
+
     obj = {
         'schema_version': str(RUNTIME_STATUS_SCHEMA_VERSION),
         'pid': int(os.getpid()),
         'updatedAt': updated_at,
         'mlxOk': bool(mlx_ok),
         'runtimeVersion': str(RUNTIME_VERSION),
+        'loadedInstances': loaded_instances,
+        'loadedInstanceCount': len(loaded_instances),
+        'idleEvictionByProvider': idle_eviction_by_provider,
         'providers': merged_providers,
     }
     if active_memory_bytes is not None:
@@ -1479,6 +1594,7 @@ class AIRequest:
     model_id: str
     task_type: str
     preferred_model_id: str
+    device_id: str
     prompt: str
     max_tokens: int
     temperature: float
@@ -1511,6 +1627,7 @@ def _scan_ai_requests(base: str) -> list[AIRequest]:
                     model_id=str(obj.get('model_id') or ''),
                     task_type=str(obj.get('task_type') or ''),
                     preferred_model_id=str(obj.get('preferred_model_id') or ''),
+                    device_id=str(obj.get('device_id') or ''),
                     prompt=str(obj.get('prompt') or ''),
                     max_tokens=int(obj.get('max_tokens') or 512),
                     temperature=float(obj.get('temperature') or 0.2),
@@ -2547,15 +2664,16 @@ def main() -> int:
         reqs = _scan_ai_requests(base)
         for r in reqs:
             # Apply routing_settings.json when the request doesn't specify a preferred model.
+            request_override_present = bool(str(r.model_id or '').strip() or str(r.preferred_model_id or '').strip())
             routing_source = ''
             if not str(r.preferred_model_id or '').strip():
-                pmid = _routing_preferred_model_id(base, r.task_type)
+                pmid, routing_source = _resolve_routing_preferred_model_id(base, r.task_type, r.device_id)
                 if pmid:
                     r.preferred_model_id = pmid
-                    routing_source = 'routing_settings'
 
             # Route model_id based on task type when not explicitly specified.
             route_reason = 'explicit_model'
+            route_source = 'request_override' if request_override_present else 'auto_selected'
             try:
                 mid, reason = _route_model_id(
                     state,
@@ -2567,8 +2685,12 @@ def main() -> int:
                 if mid:
                     r.model_id = mid
                 route_reason = reason
-                if routing_source and route_reason == 'preferred_model':
-                    route_reason = routing_source
+                if route_reason == 'explicit_model':
+                    route_source = 'request_override'
+                elif route_reason == 'preferred_model':
+                    route_source = 'request_override' if request_override_present else (routing_source or 'request_override')
+                else:
+                    route_source = 'auto_selected'
             except Exception:
                 pass
 
@@ -2589,6 +2711,7 @@ def main() -> int:
                         'app_id': r.app_id,
                         'model_id': r.model_id,
                         'route_reason': route_reason,
+                        'route_source': route_source,
                         'task_type': str(r.task_type or ''),
                         'ok': True,
                         'started_at': _now(),
@@ -2693,7 +2816,7 @@ def main() -> int:
 
             # Ensure model is loaded.
             if not str(r.model_id or '').strip():
-                _append_jsonl(rp, {'type': 'done', 'req_id': r.req_id, 'ok': False, 'reason': route_reason or 'no_model_routed'})
+                _append_jsonl(rp, {'type': 'done', 'req_id': r.req_id, 'ok': False, 'reason': route_reason or 'no_model_routed', 'route_source': route_source})
                 _audit_ai(base, phase='done', req=r, ok=False, reason=route_reason or 'no_model_routed')
                 continue
             if not rt.is_loaded(r.model_id):

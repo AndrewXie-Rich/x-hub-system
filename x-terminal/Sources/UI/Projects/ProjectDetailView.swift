@@ -86,24 +86,28 @@ struct ProjectDetailView: View {
     // MARK: - Subviews
 
     private var titleBar: some View {
-        HStack {
-            // 状态指示器
-            Circle()
-                .fill(project.statusColor)
-                .frame(width: 12, height: 12)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                // 状态指示器
+                Circle()
+                    .fill(project.statusColor)
+                    .frame(width: 12, height: 12)
 
-            Text(project.name)
-                .font(.title2)
-                .fontWeight(.semibold)
+                Text(project.name)
+                    .font(.title2)
+                    .fontWeight(.semibold)
 
-            Spacer()
+                Spacer()
 
-            Button(action: { dismiss() }) {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundColor(.secondary)
-                    .font(.system(size: 18))
+                Button(action: { dismiss() }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(.secondary)
+                        .font(.system(size: 18))
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
+
+            ProjectGovernanceBadge(presentation: governancePresentation, compact: true)
         }
         .padding()
     }
@@ -169,24 +173,24 @@ struct ProjectDetailView: View {
 
     private var modelSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("模型和配置")
+            Text("模型和治理")
                 .font(.headline)
 
             InfoRow(label: "当前模型", value: project.currentModel.displayName)
             InfoRow(label: "模型 ID", value: project.currentModel.id)
+            InfoRow(label: "Execution", value: project.executionTier.displayName)
+            InfoRow(label: "Supervisor", value: project.supervisorInterventionTier.displayName)
+            InfoRow(label: "Review", value: project.reviewPolicyMode.displayName)
+            InfoRow(
+                label: "Cadence",
+                value: "heartbeat \(governanceDurationLabel(project.progressHeartbeatSeconds)) · pulse \(governanceDurationLabel(project.reviewPulseSeconds)) · brainstorm \(governanceDurationLabel(project.brainstormReviewSeconds))"
+            )
+            InfoRow(
+                label: "Guidance",
+                value: "\(project.supervisorInterventionTier.defaultInterventionMode.displayName) · \(project.supervisorInterventionTier.defaultAckRequired ? "ack required" : "ack optional")"
+            )
 
-            // 自主性级别
-            HStack {
-                Text("自主性级别")
-                    .foregroundColor(.secondary)
-                Spacer()
-                HStack(spacing: 4) {
-                    Text(project.autonomyLevel.description)
-                        .foregroundColor(.primary)
-                    Text(project.autonomyLevel.stars)
-                        .foregroundColor(.blue)
-                }
-            }
+            ProjectGovernanceInspector(presentation: governancePresentation)
         }
     }
 
@@ -442,6 +446,19 @@ struct ProjectDetailView: View {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
         return formatter.string(from: NSNumber(value: number)) ?? "\(number)"
+    }
+
+    private var governancePresentation: ProjectGovernancePresentation {
+        ProjectGovernancePresentation(
+            executionTier: project.executionTier,
+            supervisorInterventionTier: project.supervisorInterventionTier,
+            reviewPolicyMode: project.reviewPolicyMode,
+            progressHeartbeatSeconds: project.progressHeartbeatSeconds,
+            reviewPulseSeconds: project.reviewPulseSeconds,
+            brainstormReviewSeconds: project.brainstormReviewSeconds,
+            eventDrivenReviewEnabled: project.eventDrivenReviewEnabled,
+            compatSource: "multi_project_detail"
+        )
     }
 }
 

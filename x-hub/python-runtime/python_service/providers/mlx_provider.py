@@ -34,6 +34,12 @@ class MLXProvider(LocalProvider):
     def supported_output_modalities(self) -> list[str]:
         return ["text"]
 
+    def lifecycle_mode(self) -> str:
+        return "mlx_legacy"
+
+    def residency_scope(self) -> str:
+        return "legacy_runtime"
+
     def healthcheck(self, *, base_dir: str, catalog_models: list[dict[str, Any]]) -> ProviderHealth:
         runtime = self._runtime
         import_error = ""
@@ -101,6 +107,10 @@ class MLXProvider(LocalProvider):
             registered_models=registered_models,
             resource_policy=resource_policy,
             scheduler_state=scheduler_state,
+            lifecycle_mode=self.lifecycle_mode(),
+            supported_lifecycle_actions=self.supported_lifecycle_actions(),
+            warmup_task_kinds=self.warmup_task_kinds(),
+            residency_scope=self.residency_scope(),
         )
 
     def run_task(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -118,6 +128,45 @@ class MLXProvider(LocalProvider):
             "provider": self.provider_id(),
             "taskKind": task_kind or "text_generate",
             "error": "delegate_to_runtime_loop:mlx",
+            "request": dict(request or {}),
+        }
+
+    def warmup_model(self, request: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "provider": self.provider_id(),
+            "action": "warmup_local_model",
+            "lifecycleMode": self.lifecycle_mode(),
+            "residencyScope": self.residency_scope(),
+            "supportedLifecycleActions": self.supported_lifecycle_actions(),
+            "warmupTaskKinds": self.warmup_task_kinds(),
+            "error": "unsupported_lifecycle:mlx_legacy",
+            "request": dict(request or {}),
+        }
+
+    def unload_model(self, request: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "provider": self.provider_id(),
+            "action": "unload_local_model",
+            "lifecycleMode": self.lifecycle_mode(),
+            "residencyScope": self.residency_scope(),
+            "supportedLifecycleActions": self.supported_lifecycle_actions(),
+            "warmupTaskKinds": self.warmup_task_kinds(),
+            "error": "unsupported_lifecycle:mlx_legacy",
+            "request": dict(request or {}),
+        }
+
+    def evict_instance(self, request: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "provider": self.provider_id(),
+            "action": "evict_local_instance",
+            "lifecycleMode": self.lifecycle_mode(),
+            "residencyScope": self.residency_scope(),
+            "supportedLifecycleActions": self.supported_lifecycle_actions(),
+            "warmupTaskKinds": self.warmup_task_kinds(),
+            "error": "unsupported_lifecycle:mlx_legacy",
             "request": dict(request or {}),
         }
 

@@ -2,6 +2,197 @@ import Foundation
 import SwiftUI
 import RELFlowHubCore
 
+enum LocalModelRuntimeActionRoute: Equatable {
+    case legacyModelCommand(action: String)
+    case immediateFailure(message: String)
+}
+
+struct LocalModelRuntimePresentation: Equatable {
+    var providerID: String
+    var controlMode: AIRuntimeProviderHubControlMode
+    var lifecycleMode: String
+    var residencyScope: String
+    var providerReady: Bool
+    var supportsWarmup: Bool
+    var supportsUnload: Bool
+    var supportsBench: Bool
+
+    var badgeTitle: String {
+        switch controlMode {
+        case .mlxLegacy:
+            return "MLX Legacy"
+        case .warmable:
+            return "Warmable"
+        case .ephemeralOnDemand:
+            return "On-Demand"
+        }
+    }
+
+    var badgeSystemName: String {
+        switch controlMode {
+        case .mlxLegacy:
+            return "cpu"
+        case .warmable:
+            return "flame"
+        case .ephemeralOnDemand:
+            return "bolt.horizontal"
+        }
+    }
+}
+
+enum LocalModelRuntimeActionPlanner {
+    static let runtimeStartMessage = "AI runtime is not running. Open Settings -> AI Runtime -> Start."
+
+    static func isRemoteModel(_ model: HubModel) -> Bool {
+        let modelPath = (model.modelPath ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !modelPath.isEmpty {
+            return false
+        }
+        return providerID(for: model) != "mlx"
+    }
+
+    static func providerID(for model: HubModel) -> String {
+        let token = model.backend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return token.isEmpty ? "unknown" : token
+    }
+
+    static func presentation(
+        for model: HubModel,
+        runtimeStatus: AIRuntimeStatus? = nil
+    ) -> LocalModelRuntimePresentation? {
+        guard !isRemoteModel(model) else { return nil }
+        let providerID = providerID(for: model)
+        let providerStatus = runtimeStatus?.providerStatus(providerID)
+        let controlMode = providerStatus?.hubControlMode(forModelTaskKinds: model.taskKinds)
+            ?? (providerID == "mlx" ? .mlxLegacy : .ephemeralOnDemand)
+        let providerReady = runtimeStatus?.isProviderReady(providerID, ttl: 3.0) ?? false
+        let supportsWarmup = controlMode == .warmable && (providerStatus?.supportsWarmup(forModelTaskKinds: model.taskKinds) ?? false)
+        let supportsUnload = controlMode == .mlxLegacy
+            || (controlMode == .warmable && (providerStatus?.supportsLifecycleAction(.unloadLocalModel) ?? false))
+        let supportsBench = controlMode == .mlxLegacy
+        return LocalModelRuntimePresentation(
+            providerID: providerID,
+            controlMode: controlMode,
+            lifecycleMode: providerStatus?.lifecycleMode ?? "",
+            residencyScope: providerStatus?.residencyScope ?? "",
+            providerReady: providerReady,
+            supportsWarmup: supportsWarmup,
+            supportsUnload: supportsUnload,
+            supportsBench: supportsBench
+        )
+    }
+
+    static func plan(
+        action: String,
+        model: HubModel,
+        runtimeStatus: AIRuntimeStatus?
+    ) -> LocalModelRuntimeActionRoute {
+        guard !isRemoteModel(model) else {
+            return .immediateFailure(message: "Remote models do not use the local runtime model controls.")
+        }
+        guard let runtimeStatus else {
+            return .immediateFailure(message: runtimeStartMessage)
+        }
+        guard runtimeStatus.isAlive(ttl: 3.0) else {
+            return .immediateFailure(message: runtimeStartMessage)
+        }
+
+        let providerID = providerID(for: model)
+        let presentation = presentation(for: model, runtimeStatus: runtimeStatus)
+            ?? LocalModelRuntimePresentation(
+                providerID: providerID,
+                controlMode: providerID == "mlx" ? .mlxLegacy : .ephemeralOnDemand,
+                lifecycleMode: "",
+                residencyScope: "",
+                providerReady: false,
+                supportsWarmup: false,
+                supportsUnload: providerID == "mlx",
+                supportsBench: providerID == "mlx"
+            )
+
+        guard runtimeStatus.isProviderReady(providerID, ttl: 3.0) else {
+            return .immediateFailure(message: providerUnavailableMessage(providerID: providerID, runtimeStatus: runtimeStatus))
+        }
+
+        switch presentation.controlMode {
+        case .mlxLegacy:
+            return .legacyModelCommand(action: legacyCommandAction(for: action))
+        case .warmable:
+            return .immediateFailure(message: warmableActionBlockedMessage(action: action, providerID: providerID))
+        case .ephemeralOnDemand:
+            return .immediateFailure(
+                message: onDemandActionBlockedMessage(
+                    action: action,
+                    providerID: providerID,
+                    residencyScope: presentation.residencyScope,
+                    lifecycleMode: presentation.lifecycleMode
+                )
+            )
+        }
+    }
+
+    private static func legacyCommandAction(for action: String) -> String {
+        let normalized = action.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized == "warmup" {
+            return "load"
+        }
+        return normalized
+    }
+
+    private static func actionDisplayName(_ action: String, providerID: String) -> String {
+        let normalized = action.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch normalized {
+        case "load":
+            return providerID == "mlx" ? "Load" : "Warmup"
+        case "warmup":
+            return "Warmup"
+        case "sleep":
+            return "Sleep"
+        case "unload":
+            return "Unload"
+        case "bench":
+            return "Bench"
+        default:
+            return normalized.isEmpty ? "Action" : normalized.capitalized
+        }
+    }
+
+    private static func providerUnavailableMessage(
+        providerID: String,
+        runtimeStatus: AIRuntimeStatus
+    ) -> String {
+        let providerStatus = runtimeStatus.providerStatus(providerID)
+        let reason = (providerStatus?.reasonCode ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let importError = (providerStatus?.importError ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let detail = !importError.isEmpty ? importError : reason
+        let extra = detail.isEmpty ? "" : " (\(detail))"
+        return
+            "AI runtime is running but the \(providerID) provider is unavailable\(extra).\n\n" +
+            "Fix: open Settings -> AI Runtime (it will show provider import errors and install hints)."
+    }
+
+    private static func warmableActionBlockedMessage(action: String, providerID: String) -> String {
+        let displayAction = actionDisplayName(action, providerID: providerID)
+        return
+            "Provider '\(providerID)' advertises a resident lifecycle, but Hub's model list is not yet wired to a resident transport for this provider.\n\n" +
+            "\(displayAction) is intentionally blocked here so the UI does not fake persistence before the runtime loop can actually keep the instance warm."
+    }
+
+    private static func onDemandActionBlockedMessage(
+        action: String,
+        providerID: String,
+        residencyScope: String,
+        lifecycleMode: String
+    ) -> String {
+        let displayAction = actionDisplayName(action, providerID: providerID)
+        let scope = residencyScope.isEmpty ? "process_local" : residencyScope
+        let lifecycle = lifecycleMode.isEmpty ? "ephemeral_on_demand" : lifecycleMode
+        return
+            "Provider '\(providerID)' is available, but this model currently runs on demand (`\(lifecycle)` / `\(scope)`).\n\n" +
+            "Hub does not keep it resident between requests yet, so \(displayAction) is not available from the model list. Use task routing or direct execution instead."
+    }
+}
+
 @MainActor
 final class ModelStore: ObservableObject {
     static let shared = ModelStore()
@@ -96,9 +287,7 @@ final class ModelStore: ObservableObject {
     }
 
     private func isRemoteModel(_ m: HubModel) -> Bool {
-        let mp = (m.modelPath ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if !mp.isEmpty { return false }
-        return m.backend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "mlx"
+        LocalModelRuntimeActionPlanner.isRemoteModel(m)
     }
 
     // MVP "explainable" capacity: sum model costs (paramsB + ctx + quant) normalized to 100.
@@ -168,41 +357,22 @@ final class ModelStore: ObservableObject {
     }
 
     func enqueue(action: String, modelId: String) {
-        if let model = snapshot.models.first(where: { $0.id == modelId }),
-           !isRemoteModel(model),
-           model.backend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "mlx" {
-            recordImmediateFailure(
-                action: action,
-                modelId: modelId,
-                msg: "Local backend '\(model.backend)' is registered, but load/unload still routes to the legacy MLX command path. Finish Local Provider Runtime wiring before executing this model."
-            )
+        guard let model = snapshot.models.first(where: { $0.id == modelId }) else { return }
+        let runtimeStatus = AIRuntimeStatusStorage.load()
+        switch LocalModelRuntimeActionPlanner.plan(action: action, model: model, runtimeStatus: runtimeStatus) {
+        case .immediateFailure(let message):
+            recordImmediateFailure(action: action, modelId: modelId, msg: message)
             return
+        case .legacyModelCommand(let routedAction):
+            enqueueLegacyModelCommand(action: routedAction, modelId: modelId)
         }
+    }
 
-        // If the runtime isn't alive, don't enqueue a command that will never be consumed.
-        // This prevents the UI from showing an infinite spinner with no explanation.
-        if let st = AIRuntimeStatusStorage.load() {
-            if !st.isAlive(ttl: 3.0) {
-                recordImmediateFailure(action: action, modelId: modelId, msg: "AI runtime is not running. Open Settings -> AI Runtime -> Start.")
-                return
-            }
-            if !st.isProviderReady("mlx", ttl: 3.0) {
-                let mlxError = st.providerStatus("mlx")?.importError ?? st.importError ?? ""
-                let extra = mlxError.isEmpty ? "" : " (\(mlxError))"
-                recordImmediateFailure(
-                    action: action,
-                    modelId: modelId,
-                    msg:
-                        "AI runtime is running but the MLX provider is unavailable\(extra).\n\n" +
-                            "Fix: open Settings -> AI Runtime (it will show the import error + install hints)."
-                )
-                return
-            }
-        } else {
-            recordImmediateFailure(action: action, modelId: modelId, msg: "AI runtime is not running. Open Settings -> AI Runtime -> Start.")
-            return
-        }
+    func localModelRuntimePresentation(for model: HubModel) -> LocalModelRuntimePresentation? {
+        LocalModelRuntimeActionPlanner.presentation(for: model, runtimeStatus: AIRuntimeStatusStorage.load())
+    }
 
+    private func enqueueLegacyModelCommand(action: String, modelId: String) {
         let base = SharedPaths.ensureHubDirectory()
         let dir = base.appendingPathComponent("model_commands", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

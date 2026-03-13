@@ -262,6 +262,116 @@ struct XTAutomationRunCoordinatorTests {
         #expect(prepared.verticalSlice.eventRunner.launchDecision.decision == .run)
     }
 
+    @Test
+    func advanceRunHoldsAtSafePointWhenPendingGuidanceExists() throws {
+        let root = try makeProjectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+        let coordinator = XTAutomationRunCoordinator()
+
+        let prepared = try coordinator.prepareActiveRun(
+            for: ctx,
+            request: makeRequest(now: Date(timeIntervalSince1970: 1_773_100_500))
+        )
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-automation-safe-point-1",
+                reviewId: "review-automation-safe-point-1",
+                projectId: AXProjectRegistryStore.projectId(forRoot: ctx.root),
+                targetRole: .coder,
+                deliveryMode: .replanRequest,
+                interventionMode: .replanNextSafePoint,
+                safePointPolicy: .checkpointBoundary,
+                guidanceText: "在 automation checkpoint 先暂停，重新评估。",
+                ackStatus: .pending,
+                ackRequired: true,
+                ackNote: "",
+                injectedAtMs: 1_773_100_500_500,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-guidance-automation-safe-point-1"
+            ),
+            for: ctx
+        )
+
+        let checkpoint = try coordinator.advanceRun(
+            prepared.launchRef,
+            to: .running,
+            for: ctx,
+            auditRef: "audit-xt-auto-safe-point-hold-001",
+            now: Date(timeIntervalSince1970: 1_773_100_501)
+        )
+        let rawLog = try rawLogEntries(for: ctx)
+
+        #expect(checkpoint.state == .blocked)
+        #expect(rawLog.contains {
+            ($0["type"] as? String) == "automation_safe_point_hold" &&
+            ($0["run_id"] as? String) == prepared.launchRef &&
+            ($0["requested_state"] as? String) == XTAutomationRunState.running.rawValue &&
+            ($0["injection_id"] as? String) == "guidance-automation-safe-point-1"
+        })
+    }
+
+    @Test
+    func automationSafePointHoldDoesNotLoopForeverForSameGuidance() throws {
+        let root = try makeProjectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+        let coordinator = XTAutomationRunCoordinator()
+
+        let prepared = try coordinator.prepareActiveRun(
+            for: ctx,
+            request: makeRequest(now: Date(timeIntervalSince1970: 1_773_100_600))
+        )
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-automation-safe-point-2",
+                reviewId: "review-automation-safe-point-2",
+                projectId: AXProjectRegistryStore.projectId(forRoot: ctx.root),
+                targetRole: .coder,
+                deliveryMode: .priorityInsert,
+                interventionMode: .suggestNextSafePoint,
+                safePointPolicy: .nextStepBoundary,
+                guidanceText: "下一 automation step 再切换方向。",
+                ackStatus: .pending,
+                ackRequired: true,
+                ackNote: "",
+                injectedAtMs: 1_773_100_600_500,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-guidance-automation-safe-point-2"
+            ),
+            for: ctx
+        )
+
+        let first = try coordinator.advanceRun(
+            prepared.launchRef,
+            to: .running,
+            for: ctx,
+            auditRef: "audit-xt-auto-safe-point-hold-002a",
+            now: Date(timeIntervalSince1970: 1_773_100_601)
+        )
+        let second = try coordinator.advanceRun(
+            prepared.launchRef,
+            to: .running,
+            for: ctx,
+            auditRef: "audit-xt-auto-safe-point-hold-002b",
+            now: Date(timeIntervalSince1970: 1_773_100_602)
+        )
+        let rawLog = try rawLogEntries(for: ctx)
+        let holdCount = rawLog.filter {
+            ($0["type"] as? String) == "automation_safe_point_hold" &&
+            ($0["run_id"] as? String) == prepared.launchRef &&
+            ($0["injection_id"] as? String) == "guidance-automation-safe-point-2"
+        }.count
+
+        #expect(first.state == .blocked)
+        #expect(second.state == .running)
+        #expect(holdCount == 1)
+    }
+
     private func makeProjectRoot() throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("xterminal-automation-run-coordinator-\(UUID().uuidString)", isDirectory: true)

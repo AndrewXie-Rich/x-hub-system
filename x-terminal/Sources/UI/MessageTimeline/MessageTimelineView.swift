@@ -4,8 +4,15 @@ import SwiftUI
 struct MessageTimelineView: View {
     let ctx: AXProjectContext
     @ObservedObject var session: ChatSessionModel
+    let hubConnected: Bool
+    let onApproveSkillActivity: (String) -> Void
+    let onRetrySkillActivity: (ProjectSkillActivityItem) -> Void
     var bottomPadding: CGFloat = 24
     @Namespace private var bottomID
+    @State private var recentSkillActivities: [ProjectSkillActivityItem] = []
+    @State private var selectedSkillRecord: ProjectSkillRecordSheetState?
+
+    private let recentSkillActivityLimit = 8
 
     private var visibleMessages: [AXChatMessage] {
         session.messages.filter { message in
@@ -26,6 +33,22 @@ struct MessageTimelineView: View {
                             ))
                     }
 
+                    if !recentSkillActivities.isEmpty {
+                        ProjectSkillActivitySection(
+                            items: recentSkillActivities,
+                            pendingRequestIDs: Set(session.pendingToolCalls.map(\.id)),
+                            hubConnected: hubConnected,
+                            isBusy: session.isSending,
+                            onApprove: onApproveSkillActivity,
+                            onReject: { requestID in
+                                session.rejectPendingTool(requestID: requestID)
+                            },
+                            onRetry: onRetrySkillActivity,
+                            onViewFullRecord: showFullRecord
+                        )
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    }
+
                     // 加载指示器
                     if session.shouldShowThinkingIndicator {
                         ThinkingIndicator()
@@ -41,11 +64,13 @@ struct MessageTimelineView: View {
                 .padding(.bottom, bottomPadding)
             }
             .onChange(of: session.messages.count) { _ in
+                refreshRecentSkillActivities()
                 withAnimation(.easeOut(duration: 0.3)) {
                     proxy.scrollTo(bottomID, anchor: .bottom)
                 }
             }
             .onChange(of: session.isSending) { sending in
+                refreshRecentSkillActivities()
                 if sending {
                     withAnimation(.easeOut(duration: 0.3)) {
                         proxy.scrollTo(bottomID, anchor: .bottom)
@@ -53,10 +78,40 @@ struct MessageTimelineView: View {
                 }
             }
             .onChange(of: session.messages.last?.content ?? "") { _ in
+                refreshRecentSkillActivities()
                 proxy.scrollTo(bottomID, anchor: .bottom)
+            }
+            .onChange(of: session.pendingToolCalls.map(\.id).joined(separator: ",")) { _ in
+                refreshRecentSkillActivities()
+            }
+            .onChange(of: recentSkillActivities.count) { _ in
+                proxy.scrollTo(bottomID, anchor: .bottom)
+            }
+            .onAppear {
+                refreshRecentSkillActivities()
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .sheet(item: $selectedSkillRecord) { record in
+            ProjectSkillRecordSheet(record: record)
+        }
+    }
+
+    private func refreshRecentSkillActivities() {
+        recentSkillActivities = ProjectSkillActivityPresentation.loadRecentActivities(
+            ctx: ctx,
+            limit: recentSkillActivityLimit
+        )
+    }
+
+    private func showFullRecord(for item: ProjectSkillActivityItem) {
+        guard let record = ProjectSkillActivityPresentation.fullRecord(
+            ctx: ctx,
+            requestID: item.requestID
+        ) else {
+            return
+        }
+        selectedSkillRecord = ProjectSkillRecordSheetState(record: record)
     }
 }
 
@@ -270,6 +325,616 @@ struct MessageContentView: View {
                 .font(.body)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+struct ProjectSkillActivitySection: View {
+    let items: [ProjectSkillActivityItem]
+    let pendingRequestIDs: Set<String>
+    let hubConnected: Bool
+    let isBusy: Bool
+    let onApprove: (String) -> Void
+    let onReject: (String) -> Void
+    let onRetry: (ProjectSkillActivityItem) -> Void
+    let onViewFullRecord: (ProjectSkillActivityItem) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles.rectangle.stack")
+                    .foregroundStyle(.secondary)
+                Text("Recent Skill Activity")
+                    .font(.system(.subheadline, design: .rounded))
+                    .fontWeight(.semibold)
+                Spacer()
+                Text("\(items.count)")
+                    .font(.system(.caption, design: .rounded))
+                    .foregroundStyle(.secondary)
+            }
+
+            ForEach(items) { item in
+                ProjectSkillActivityCard(
+                    item: item,
+                    isPendingApproval: pendingRequestIDs.contains(item.requestID),
+                    hubConnected: hubConnected,
+                    isBusy: isBusy,
+                    onApprove: {
+                        onApprove(item.requestID)
+                    },
+                    onReject: {
+                        onReject(item.requestID)
+                    },
+                    onRetry: {
+                        onRetry(item)
+                    },
+                    onViewFullRecord: {
+                        onViewFullRecord(item)
+                    }
+                )
+            }
+        }
+        .padding(16)
+        .background(Color.secondary.opacity(0.04))
+        .cornerRadius(12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.secondary.opacity(0.08), lineWidth: 1)
+        )
+    }
+}
+
+struct ProjectSkillActivityCard: View {
+    let item: ProjectSkillActivityItem
+    let isPendingApproval: Bool
+    let hubConnected: Bool
+    let isBusy: Bool
+    let onApprove: () -> Void
+    let onReject: () -> Void
+    let onRetry: () -> Void
+    let onViewFullRecord: () -> Void
+    @State private var showDiagnostics = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 8) {
+                Image(systemName: ProjectSkillActivityPresentation.iconName(for: item))
+                    .foregroundStyle(iconColor)
+                    .font(.system(size: 14))
+
+                Text(ProjectSkillActivityPresentation.title(for: item))
+                    .font(.system(.body, design: .rounded))
+                    .fontWeight(.semibold)
+
+                Spacer()
+
+                Text(ProjectSkillActivityPresentation.statusLabel(for: item))
+                    .font(.system(.caption2, design: .rounded))
+                    .fontWeight(.semibold)
+                    .foregroundStyle(iconColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(iconColor.opacity(0.12))
+                    .clipShape(Capsule())
+            }
+
+            HStack(spacing: 8) {
+                if !item.skillID.isEmpty {
+                    Text(item.skillID)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color.secondary.opacity(0.08))
+                        .cornerRadius(6)
+                }
+
+                Text(ProjectSkillActivityPresentation.toolBadge(for: item))
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Text(timeLabel)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Text(ProjectSkillActivityPresentation.body(for: item))
+                .font(.system(.subheadline, design: .default))
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                if ProjectSkillActivityPresentation.isAwaitingApproval(item), isPendingApproval {
+                    Button("Approve") {
+                        onApprove()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isBusy || !hubConnected)
+                    .help(hubConnected ? "Approve and run this governed skill dispatch" : "Connect Hub before approving")
+
+                    Button("Reject") {
+                        onReject()
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isBusy)
+                    .help("Reject this pending governed skill dispatch without running it")
+                }
+
+                if ProjectSkillActivityPresentation.canRetry(item) {
+                    Button("Retry") {
+                        onRetry()
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isBusy || isPendingApproval)
+                    .help(isPendingApproval ? "This request is already waiting for approval" : "Replay the last governed dispatch with the same guarded tool arguments")
+                }
+
+                Button("View Full Record") {
+                    onViewFullRecord()
+                }
+                .buttonStyle(.bordered)
+
+                Spacer()
+            }
+
+            DisclosureGroup("Diagnostics", isExpanded: $showDiagnostics) {
+                ScrollView {
+                    Text(ProjectSkillActivityPresentation.diagnostics(for: item))
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 180)
+                .padding(.top, 6)
+            }
+            .font(.caption)
+            .tint(.secondary)
+        }
+        .padding(12)
+        .background(iconColor.opacity(0.06))
+        .cornerRadius(10)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(iconColor.opacity(0.18), lineWidth: 1)
+        )
+    }
+
+    private var iconColor: Color {
+        switch item.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "completed":
+            return .green
+        case "failed":
+            return .red
+        case "blocked":
+            return .orange
+        case "awaiting_approval":
+            return .yellow
+        case "resolved":
+            return .blue
+        default:
+            return .secondary
+        }
+    }
+
+    private var timeLabel: String {
+        let date = Date(timeIntervalSince1970: item.createdAt)
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        return formatter.string(from: date)
+    }
+}
+
+private struct ProjectSkillRecordSheetState: Identifiable {
+    let record: ProjectSkillFullRecord
+
+    var id: String { record.id }
+}
+
+private struct ProjectSkillRecordSheet: View {
+    let record: ProjectSkillRecordSheetState
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(record.record.title)
+                        .font(.system(.headline, design: .rounded))
+                    HStack(spacing: 8) {
+                        Text(record.record.requestID)
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                        ProjectSkillRecordStatusBadge(statusLabel: record.record.latestStatusLabel)
+                    }
+                }
+
+                Spacer()
+
+                Button("Copy") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(
+                        ProjectSkillActivityPresentation.fullRecordText(record.record),
+                        forType: .string
+                    )
+                }
+                .buttonStyle(.bordered)
+
+                Button("Close") {
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if !record.record.requestMetadata.isEmpty {
+                        ProjectSkillRecordFieldSection(
+                            title: "Request Metadata",
+                            fields: record.record.requestMetadata
+                        )
+                    }
+
+                    if !record.record.approvalFields.isEmpty {
+                        ProjectSkillRecordFieldSection(
+                            title: "Approval Status",
+                            fields: record.record.approvalFields
+                        )
+                    }
+
+                    if let toolArgs = record.record.toolArgumentsText,
+                       !toolArgs.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        ProjectSkillRecordCodeSection(
+                            title: "Tool Arguments",
+                            text: toolArgs,
+                            initiallyExpanded: true
+                        )
+                    }
+
+                    if !record.record.resultFields.isEmpty
+                        || !(record.record.rawOutputPreview ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || !(record.record.rawOutput ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        ProjectSkillRecordResultSection(record: record.record)
+                    }
+
+                    if !record.record.evidenceFields.isEmpty {
+                        ProjectSkillRecordFieldSection(
+                            title: "Evidence Refs",
+                            fields: record.record.evidenceFields
+                        )
+                    }
+
+                    if !record.record.approvalHistory.isEmpty {
+                        ProjectSkillRecordTimelineSection(
+                            title: "Approval History",
+                            entries: record.record.approvalHistory
+                        )
+                    }
+
+                    if !record.record.timeline.isEmpty {
+                        ProjectSkillRecordTimelineSection(
+                            title: "Event Timeline",
+                            entries: record.record.timeline
+                        )
+                    }
+
+                    if let evidenceJSON = record.record.supervisorEvidenceJSON,
+                       !evidenceJSON.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        ProjectSkillRecordCodeSection(
+                            title: "Supervisor Evidence JSON",
+                            text: evidenceJSON,
+                            initiallyExpanded: false
+                        )
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 720, minHeight: 520)
+    }
+}
+
+struct ProjectSkillRecordStatusBadge: View {
+    let statusLabel: String
+
+    var body: some View {
+        if !statusLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           statusLabel != "Unknown" {
+            Text(statusLabel)
+                .font(.system(.caption2, design: .rounded))
+                .fontWeight(.semibold)
+                .foregroundStyle(color)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(color.opacity(0.12))
+                .clipShape(Capsule())
+        }
+    }
+
+    private var color: Color {
+        switch statusLabel.lowercased() {
+        case "completed":
+            return .green
+        case "failed":
+            return .red
+        case "blocked":
+            return .orange
+        case "awaiting approval":
+            return .yellow
+        case "resolved":
+            return .blue
+        default:
+            return .secondary
+        }
+    }
+}
+
+struct ProjectSkillRecordFieldSection: View {
+    let title: String
+    let fields: [ProjectSkillRecordField]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionTitle
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(fields) { field in
+                    HStack(alignment: .top, spacing: 12) {
+                        Text(field.label)
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 150, alignment: .leading)
+
+                        Text(field.value)
+                            .font(.system(.subheadline, design: .default))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .background(Color.secondary.opacity(0.04))
+        .cornerRadius(12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.secondary.opacity(0.08), lineWidth: 1)
+        )
+    }
+
+    private var sectionTitle: some View {
+        HStack(spacing: 8) {
+            Text(title)
+                .font(.system(.subheadline, design: .rounded))
+                .fontWeight(.semibold)
+            Spacer()
+            Text("\(fields.count)")
+                .font(.system(.caption2, design: .rounded))
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+struct ProjectSkillRecordCodeSection: View {
+    let title: String
+    let text: String
+    let initiallyExpanded: Bool
+    @State private var isExpanded: Bool
+
+    init(title: String, text: String, initiallyExpanded: Bool) {
+        self.title = title
+        self.text = text
+        self.initiallyExpanded = initiallyExpanded
+        _isExpanded = State(initialValue: initiallyExpanded)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            DisclosureGroup(isExpanded: $isExpanded) {
+                ScrollView {
+                    Text(text)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, 6)
+                }
+                .frame(maxHeight: 220)
+            } label: {
+                Text(title)
+                    .font(.system(.subheadline, design: .rounded))
+                    .fontWeight(.semibold)
+            }
+        }
+        .padding(14)
+        .background(Color.secondary.opacity(0.04))
+        .cornerRadius(12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.secondary.opacity(0.08), lineWidth: 1)
+        )
+        .tint(.secondary)
+    }
+}
+
+private struct ProjectSkillRecordResultSection: View {
+    let record: ProjectSkillFullRecord
+    @State private var showFullRawOutput = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Text("Result Summary")
+                    .font(.system(.subheadline, design: .rounded))
+                    .fontWeight(.semibold)
+                Spacer()
+            }
+
+            if !record.resultFields.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(record.resultFields) { field in
+                        HStack(alignment: .top, spacing: 12) {
+                            Text(field.label)
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 150, alignment: .leading)
+
+                            Text(field.value)
+                                .font(.system(.subheadline, design: .default))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+            }
+
+            if let preview = record.rawOutputPreview,
+               !preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Raw Output Preview")
+                        .font(.system(.caption, design: .rounded))
+                        .foregroundStyle(.secondary)
+                    ScrollView {
+                        Text(preview)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 180)
+                }
+            }
+
+            if let rawOutput = record.rawOutput,
+               !rawOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                DisclosureGroup("Full Raw Output", isExpanded: $showFullRawOutput) {
+                    ScrollView {
+                        Text(rawOutput)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 6)
+                    }
+                    .frame(maxHeight: 220)
+                }
+                .font(.caption)
+                .tint(.secondary)
+            }
+        }
+        .padding(14)
+        .background(Color.secondary.opacity(0.04))
+        .cornerRadius(12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.secondary.opacity(0.08), lineWidth: 1)
+        )
+    }
+}
+
+struct ProjectSkillRecordTimelineSection: View {
+    let title: String
+    let entries: [ProjectSkillRecordTimelineEntry]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(.system(.subheadline, design: .rounded))
+                    .fontWeight(.semibold)
+                Spacer()
+                Text("\(entries.count)")
+                    .font(.system(.caption2, design: .rounded))
+                    .foregroundStyle(.secondary)
+            }
+
+            ForEach(entries) { entry in
+                ProjectSkillRecordTimelineCard(entry: entry)
+            }
+        }
+        .padding(14)
+        .background(Color.secondary.opacity(0.04))
+        .cornerRadius(12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.secondary.opacity(0.08), lineWidth: 1)
+        )
+    }
+}
+
+private struct ProjectSkillRecordTimelineCard: View {
+    let entry: ProjectSkillRecordTimelineEntry
+    @State private var showRawJSON = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                Text(entry.statusLabel)
+                    .font(.system(.caption2, design: .rounded))
+                    .fontWeight(.semibold)
+                    .foregroundStyle(statusColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(statusColor.opacity(0.12))
+                    .clipShape(Capsule())
+
+                Spacer()
+
+                Text(entry.timestamp)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            }
+
+            Text(entry.summary)
+                .font(.system(.subheadline, design: .default))
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let detail = entry.detail,
+               !detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(detail)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            DisclosureGroup("Raw Event JSON", isExpanded: $showRawJSON) {
+                ScrollView {
+                    Text(entry.rawJSON)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, 6)
+                }
+                .frame(maxHeight: 180)
+            }
+            .font(.caption)
+            .tint(.secondary)
+        }
+        .padding(12)
+        .background(statusColor.opacity(0.05))
+        .cornerRadius(10)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(statusColor.opacity(0.14), lineWidth: 1)
+        )
+    }
+
+    private var statusColor: Color {
+        switch entry.status.lowercased() {
+        case "completed":
+            return .green
+        case "failed":
+            return .red
+        case "blocked":
+            return .orange
+        case "awaiting_approval":
+            return .yellow
+        case "resolved":
+            return .blue
+        default:
+            return .secondary
         }
     }
 }
@@ -527,6 +1192,8 @@ struct ToolCallCard: View {
             return "play.circle"
         case .session_compact:
             return "archivebox"
+        case .agentImportRecord:
+            return "checklist"
         case .memory_snapshot:
             return "memorychip"
         case .project_snapshot:

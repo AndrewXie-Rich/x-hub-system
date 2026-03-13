@@ -9,6 +9,7 @@ import {
   getAgentImportRecord,
   normalizeSkillStoreError,
   promoteAgentImport,
+  resolveLatestAgentImportRecord,
   setSkillPin,
   skillsGovernanceSnapshotPaths,
   stageAgentImport,
@@ -44,6 +45,13 @@ function withEnv(tempEnv, fn) {
 
 function tmpDir(label) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `hub_agent_${label}_`));
+}
+
+function waitNextTickMs() {
+  const deadline = Date.now() + 2;
+  while (Date.now() < deadline) {
+    // Keep timestamps monotonic in sync tests that depend on latest-record ordering.
+  }
 }
 
 function sha256Hex(buf) {
@@ -194,6 +202,54 @@ run('agent staged import writes staged record and governance paths expose dirs',
   assert.ok(fs.existsSync(String(paths.agent_imports.reports_dir || '')));
   assert.ok(fs.existsSync(String(result.record_path || '')));
   assert.ok(fs.existsSync(String(record.vetter_report_ref || '')));
+});
+
+run('agent import resolver returns latest record by project and skill selectors', () => {
+  const runtime = tmpDir('resolve');
+  const first = stageAgentImport(runtime, {
+    importManifestJson: JSON.stringify(sampleImportManifest({ skillId: 'agent-browser' })),
+    scanInputJson: JSON.stringify(sampleScanInput()),
+    requestedBy: 'xt-supervisor',
+    projectId: 'project-alpha',
+  });
+  waitNextTickMs();
+  const second = stageAgentImport(runtime, {
+    importManifestJson: JSON.stringify(sampleImportManifest({ skillId: 'summarize' })),
+    scanInputJson: JSON.stringify(sampleScanInput()),
+    requestedBy: 'xt-supervisor',
+    projectId: 'project-beta',
+  });
+  waitNextTickMs();
+  const third = stageAgentImport(runtime, {
+    importManifestJson: JSON.stringify(sampleImportManifest({ skillId: 'agent-browser', riskLevel: 'high' })),
+    scanInputJson: JSON.stringify(sampleScanInput()),
+    requestedBy: 'xt-supervisor',
+    projectId: 'project-alpha',
+  });
+
+  const byProject = resolveLatestAgentImportRecord(runtime, {
+    selector: 'latest_for_project',
+    projectId: 'project-alpha',
+  });
+  assert.equal(String(byProject.selector || ''), 'latest_for_project');
+  assert.equal(String(byProject.staging_id || ''), String(third.staging_id || ''));
+  assert.equal(String(byProject.skill_id || ''), 'agent-browser');
+  assert.equal(String(byProject.project_id || ''), 'project-alpha');
+
+  const bySkill = resolveLatestAgentImportRecord(runtime, {
+    selector: 'latest_for_skill',
+    skillId: 'summarize',
+  });
+  assert.equal(String(bySkill.selector || ''), 'latest_for_skill');
+  assert.equal(String(bySkill.staging_id || ''), String(second.staging_id || ''));
+  assert.equal(String(bySkill.project_id || ''), 'project-beta');
+
+  const fallback = resolveLatestAgentImportRecord(runtime, {
+    projectId: 'project-alpha',
+  });
+  assert.equal(String(fallback.selector || ''), 'latest_for_project');
+  assert.equal(String(fallback.staging_id || ''), String(third.staging_id || ''));
+  assert.notEqual(String(first.staging_id || ''), String(third.staging_id || ''));
 });
 
 run('legacy upstream import manifest is normalized into agent staging', () => {

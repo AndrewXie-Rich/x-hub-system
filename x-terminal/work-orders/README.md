@@ -1,6 +1,6 @@
 # X-Terminal Work Orders Index
 
-- updatedAt: 2026-03-12
+- updatedAt: 2026-03-13
 - scope: `x-terminal/` module only
 
 This page is an internal execution index for X-Terminal delivery packs.
@@ -85,6 +85,10 @@ Use the repository root `README.md` and module READMEs for product overview and 
   - Purpose: Hub / X-Terminal UI 产品化 R1 包（把工程控制面板收敛为主路径清晰、排障可达、视觉一致的产品界面）
   - Includes: `XT-W3-27/XT-W3-27-A/B/C/D/E/F/G/H`、IA freeze、design tokens、Global Home、Supervisor cockpit、Hub setup wizard、Hub/XT settings center
   - Release condition: must satisfy `xt-w3-26-supervisor-one-shot-intake-adaptive-pool-planner-implementation-pack-v1.md`, `xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, and `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
+- `xt-w3-28-paired-terminal-trust-profile-and-budget-visibility-implementation-pack-v1.md`
+  - Purpose: 配对即设备级信任档案 / 付费模型策略 / 额度可视化实现包（把配对批准升级为带设备级策略的治理入口）
+  - Includes: `XT-W3-28/XT-W3-28-A/B/C/D/E/F/G/H`、Approve with Policy、paired terminal trust profile、paid model policy、default web policy、daily budget visibility、device/model usage accounting、fail-closed over-budget / over-scope deny
+  - Release condition: must satisfy `xt-w3-27-hub-xt-ui-productization-r1-implementation-pack-v1.md`, `xt-w1-03-pending-grants-source-of-truth.md`, `docs/memory-new/xhub-security-innovation-work-orders-v1.md`, and `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
 - `xt-w3-29-supervisor-voice-progress-and-guided-authorization-implementation-pack-v1.md`
   - Purpose: Supervisor 语音进度汇报与语音指导授权产品化包（主动播报 + 主动问答 + 方向指导 + 语音授权）
   - Includes: `XT-W3-29/XT-W3-29-A/B/C/D/E/F`、wake phrase / prompt phrase、heartbeat 驱动语音简报、TTS 播报、voice directive 绑定、Hub voice challenge 授权桥、voice timeline / quiet hours / replay
@@ -129,6 +133,14 @@ Use the repository root `README.md` and module READMEs for product overview and 
   - Purpose: 吸收 OpenClaw 可复用 skills/plugins/执行面，但继续保持 Hub-first grant、memory、audit、kill-switch 主链不变
   - Includes: `XT-W3-34/A/B/C/D/E/F/G/H`、OpenClaw skill import normalization、repo.write.file、repo.test.run、repo.build.run、repo.git.apply、structured skill result writeback、plan graph richer semantics、connector/external action reuse
   - Release condition: must satisfy `xt-w3-30-openclaw-mode-capability-gap-closure-implementation-pack-v1.md`, `xt-w3-32-supervisor-skill-orchestration-and-governed-event-loop-implementation-pack-v1.md`, and `docs/memory-new/xhub-trusted-automation-device-execution-plane-implementation-pack-v1.md`
+- `xt-w3-35-supervisor-memory-retrieval-progressive-disclosure-implementation-pack-v1.md`
+  - Purpose: 把 Supervisor / project chat 的记忆面升级为“摘要优先 + 受控检索 + 渐进展开 + turn 后生命周期维护”，让高档位项目和高介入 review 都能拿到更完整但仍受治理的背景信息
+  - Includes: `XT-W3-35/A/B/C/D`、memory retrieval plane、progressive disclosure、cross-project drilldown、after-turn memory lifecycle
+  - Release condition: must satisfy `xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, `xt-w3-31-supervisor-portfolio-awareness-and-project-action-feed-implementation-pack-v1.md`, `xt-w3-33-supervisor-decision-kernel-routing-and-memory-governance-implementation-pack-v1.md`, and `docs/memory-new/xhub-terminal-hub-memory-governance-work-orders-v1.md`
+- `xt-w3-36-project-autonomy-tier-and-supervisor-intervention-implementation-pack-v1.md`
+  - Purpose: 把 project 治理正式拆成 `A0..A4` 执行档位、`S0..S4` supervisor 介入档位和独立 heartbeat/review 调度，解决“能做什么”和“supervisor 盯多紧”长期混在一起的问题
+  - Includes: `XT-W3-36/A/B/C/D/E/F/G/H`、dual-dial governance contract、top bar/settings UI、execution capability resolver、review scheduler、guidance injection、safe-point coordinator、migration/clamp、require-real regression
+  - Release condition: must satisfy `docs/memory-new/xhub-project-autonomy-tier-and-supervisor-review-protocol-v1.md`, `xt-w3-32-supervisor-skill-orchestration-and-governed-event-loop-implementation-pack-v1.md`, `xt-w3-33-supervisor-decision-kernel-routing-and-memory-governance-implementation-pack-v1.md`, `xt-w3-35-supervisor-memory-retrieval-progressive-disclosure-implementation-pack-v1.md`, and `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
 - `xt-w1-02-route-state-machine.md`
   - Purpose: XT-W1-02 delivery doc for route-state convergence (`auto|grpc|file`)
   - Includes: state machine matrix, fallback/error mapping, regression samples, manual verification commands

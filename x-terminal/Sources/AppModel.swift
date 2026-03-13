@@ -1703,6 +1703,81 @@ final class AppModel: ObservableObject {
         )
     }
 
+    func setProjectGovernance(
+        executionTier: AXProjectExecutionTier? = nil,
+        supervisorInterventionTier: AXProjectSupervisorInterventionTier? = nil,
+        reviewPolicyMode: AXProjectReviewPolicyMode? = nil,
+        progressHeartbeatSeconds: Int? = nil,
+        reviewPulseSeconds: Int? = nil,
+        brainstormReviewSeconds: Int? = nil,
+        eventDrivenReviewEnabled: Bool? = nil,
+        eventReviewTriggers: [AXProjectReviewTrigger]? = nil
+    ) {
+        guard let ctx = projectContext else { return }
+        guard var cfg = projectConfig else { return }
+
+        cfg = cfg.settingProjectGovernance(
+            executionTier: executionTier,
+            supervisorInterventionTier: supervisorInterventionTier,
+            reviewPolicyMode: reviewPolicyMode,
+            progressHeartbeatSeconds: progressHeartbeatSeconds,
+            reviewPulseSeconds: reviewPulseSeconds,
+            brainstormReviewSeconds: brainstormReviewSeconds,
+            eventDrivenReviewEnabled: eventDrivenReviewEnabled,
+            eventReviewTriggers: eventReviewTriggers
+        )
+        if let executionTier {
+            cfg = cfg.settingAutonomyPolicy(
+                mode: executionTier.defaultSurfacePreset,
+                updatedAt: Date()
+            )
+        }
+        let resolved = xtResolveProjectGovernance(
+            projectRoot: ctx.root,
+            config: cfg,
+            remoteOverride: projectRemoteAutonomyOverride
+        )
+
+        projectConfig = cfg
+        try? AXProjectStore.saveConfig(cfg, for: ctx)
+        AXProjectStore.appendRawLog(
+            [
+                "type": "project_governance_bundle",
+                "action": "update",
+                "created_at": Date().timeIntervalSince1970,
+                "project_id": AXProjectRegistryStore.projectId(forRoot: ctx.root),
+                "execution_tier": cfg.executionTier.rawValue,
+                "supervisor_intervention_tier": cfg.supervisorInterventionTier.rawValue,
+                "review_policy_mode": cfg.reviewPolicyMode.rawValue,
+                "progress_heartbeat_sec": cfg.progressHeartbeatSeconds,
+                "review_pulse_sec": cfg.reviewPulseSeconds,
+                "brainstorm_review_sec": cfg.brainstormReviewSeconds,
+                "event_driven_review_enabled": cfg.eventDrivenReviewEnabled,
+                "event_review_triggers": cfg.eventReviewTriggers.map(\.rawValue),
+                "compat_source": cfg.governanceCompatSource.rawValue,
+                "surface_preset": cfg.autonomyMode.rawValue,
+                "invalid_reasons": resolved.validation.invalidReasons,
+                "warning_reasons": resolved.validation.warningReasons,
+                "should_fail_closed": resolved.validation.shouldFailClosed
+            ],
+            for: ctx
+        )
+    }
+
+    func resolvedProjectGovernance(
+        config: AXProjectConfig? = nil,
+        legacyAutonomyLevel: AutonomyLevel? = nil
+    ) -> AXProjectResolvedGovernanceState {
+        let root = projectContext?.root ?? URL(fileURLWithPath: "/")
+        let resolvedConfig = config ?? projectConfig ?? .default(forProjectRoot: root)
+        return xtResolveProjectGovernance(
+            projectRoot: root,
+            config: resolvedConfig,
+            legacyAutonomyLevel: legacyAutonomyLevel,
+            remoteOverride: projectRemoteAutonomyOverride
+        )
+    }
+
     func governedAuthorityPresentation(for project: AXProjectEntry) -> AXProjectGovernedAuthorityPresentation {
         let root = URL(fileURLWithPath: project.rootPath, isDirectory: true)
         let config: AXProjectConfig

@@ -1707,6 +1707,8 @@ function buildAgentImportRecord({
   requestedBy,
   note,
   auditRef,
+  userId,
+  projectId,
   createdAtMs,
   status,
 }) {
@@ -1734,8 +1736,8 @@ function buildAgentImportRecord({
     promotion_blocked_reason: resolvedStatus === 'quarantined' ? 'preflight_quarantined' : 'vetter_pending',
     enabled_package_sha256: '',
     enabled_scope: '',
-    user_id: '',
-    project_id: '',
+    user_id: safeString(userId),
+    project_id: safeString(projectId),
     pin_note: '',
   };
 }
@@ -1900,6 +1902,133 @@ export function getAgentImportRecord(runtimeBaseDir, stagingId) {
   return null;
 }
 
+function normalizeAgentImportRecordSelector(raw, {
+  hasSkillId = false,
+  hasProjectId = false,
+} = {}) {
+  const text = safeString(raw).toLowerCase().replace(/-/g, '_');
+  if (!text) {
+    if (hasSkillId) return 'latest_for_skill';
+    if (hasProjectId) return 'latest_for_project';
+    return 'last_import';
+  }
+  if (text === 'last'
+      || text === 'latest'
+      || text === 'last_import'
+      || text === 'latest_import') {
+    return 'last_import';
+  }
+  if (text === 'skill'
+      || text === 'latest_skill'
+      || text === 'skill_latest'
+      || text === 'latest_for_skill') {
+    return 'latest_for_skill';
+  }
+  if (text === 'project'
+      || text === 'latest_project'
+      || text === 'project_latest'
+      || text === 'latest_for_project') {
+    return 'latest_for_project';
+  }
+  throw new SkillStoreDenyError('invalid_agent_import_selector', {
+    selector: safeString(raw),
+  });
+}
+
+function agentImportRecordSortScore(record) {
+  return Math.max(
+    Number(record?.updated_at_ms || 0),
+    Number(record?.created_at_ms || 0),
+    Number(record?.pin_result?.updated_at_ms || 0)
+  );
+}
+
+function listAgentImportRecords(runtimeBaseDir) {
+  const dirs = [
+    agentStagingDir(runtimeBaseDir),
+    agentQuarantineDir(runtimeBaseDir),
+    legacyOpenClawStagingDir(runtimeBaseDir),
+    legacyOpenClawQuarantineDir(runtimeBaseDir),
+  ].filter(Boolean);
+  const byStagingId = new Map();
+  for (const dir of dirs) {
+    if (!fs.existsSync(dir)) continue;
+    let names = [];
+    try {
+      names = fs.readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (!String(name).toLowerCase().endsWith('.json')) continue;
+      const record = readJsonSafe(path.join(dir, name));
+      if (!isObject(record)) continue;
+      const stagingId = safeString(record.staging_id);
+      if (!stagingId) continue;
+      const prev = byStagingId.get(stagingId);
+      if (!prev || agentImportRecordSortScore(record) >= agentImportRecordSortScore(prev)) {
+        byStagingId.set(stagingId, record);
+      }
+    }
+  }
+  return Array.from(byStagingId.values());
+}
+
+export function resolveLatestAgentImportRecord(runtimeBaseDir, {
+  selector,
+  skillId,
+  projectId,
+} = {}) {
+  const skill_id = safeString(skillId);
+  const project_id = safeString(projectId);
+  const normalizedSelector = normalizeAgentImportRecordSelector(selector, {
+    hasSkillId: !!skill_id,
+    hasProjectId: !!project_id,
+  });
+
+  if (normalizedSelector === 'latest_for_skill' && !skill_id) {
+    throw new SkillStoreDenyError('missing_agent_skill_id');
+  }
+  if (normalizedSelector === 'latest_for_project' && !project_id) {
+    throw new SkillStoreDenyError('missing_agent_project_id');
+  }
+
+  const matched = listAgentImportRecords(runtimeBaseDir)
+    .filter((record) => {
+      const recordSkillId = safeString(record?.import_manifest?.skill_id);
+      const recordProjectId = safeString(record?.project_id);
+      if (skill_id && recordSkillId !== skill_id) return false;
+      if (project_id && recordProjectId !== project_id) return false;
+      if (normalizedSelector === 'latest_for_skill' && recordSkillId !== skill_id) return false;
+      if (normalizedSelector === 'latest_for_project' && recordProjectId !== project_id) return false;
+      return true;
+    })
+    .sort((left, right) => {
+      const delta = agentImportRecordSortScore(right) - agentImportRecordSortScore(left);
+      if (delta !== 0) return delta;
+      return safeString(right?.staging_id).localeCompare(safeString(left?.staging_id));
+    });
+
+  const record = matched[0];
+  if (!isObject(record)) {
+    throw new SkillStoreDenyError('agent_import_not_found', {
+      selector: normalizedSelector,
+      skill_id,
+      project_id,
+    });
+  }
+  return {
+    selector: normalizedSelector,
+    staging_id: safeString(record.staging_id),
+    status: safeString(record.status),
+    audit_ref: safeString(record.audit_ref),
+    schema_version: safeString(record.schema_version),
+    skill_id: safeString(record?.import_manifest?.skill_id),
+    record_json: JSON.stringify(record),
+    project_id: safeString(record.project_id),
+  };
+}
+
 export function stageAgentImport(runtimeBaseDir, {
   importManifestJson,
   findingsJson,
@@ -1907,6 +2036,8 @@ export function stageAgentImport(runtimeBaseDir, {
   requestedBy,
   note,
   auditRef,
+  userId,
+  projectId,
 } = {}) {
   if (!ensureSkillsStoreDirs(runtimeBaseDir)) {
     throw new SkillStoreDenyError('skills_store_unavailable');
@@ -1939,6 +2070,8 @@ export function stageAgentImport(runtimeBaseDir, {
     requestedBy,
     note,
     auditRef,
+    userId,
+    projectId,
     createdAtMs: nowMs(),
   });
   const vetter = evaluateAgentImportVetter(runtimeBaseDir, record, scanInputJson);

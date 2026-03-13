@@ -5,6 +5,7 @@ enum HubIPCClient {
     private static let remoteMemorySnapshotCache = HubRemoteMemorySnapshotCache(ttlSeconds: 15.0)
     private static let remoteAutonomyPolicyOverrideCache = HubRemoteAutonomyPolicyOverrideCache(ttlSeconds: 3.0)
     private static let testingOverrideLock = NSLock()
+    private static var agentImportRecordOverrideForTesting: (@Sendable (AgentImportRecordLookupPayload) async -> AgentImportRecordResult)?
     private static var secretUseOverrideForTesting: (@Sendable (SecretUseRequestPayload) async -> SecretUseResult)?
     private static var secretRedeemOverrideForTesting: (@Sendable (SecretRedeemRequestPayload) async -> SecretRedeemResult)?
     private static var memoryContextResolutionOverrideForTesting: (@Sendable (XTMemoryRouteDecision, XTMemoryUseMode, Double) async -> MemoryContextResolutionResult)?
@@ -60,25 +61,36 @@ enum HubIPCClient {
         }
     }
 
+    struct AgentImportRecordLookupPayload: Equatable, Sendable {
+        var stagingId: String?
+        var selector: String?
+        var skillId: String?
+        var projectId: String?
+    }
+
     struct AgentImportRecordResult: Codable, Equatable, Sendable {
         var ok: Bool
         var source: String
+        var selector: String?
         var stagingId: String?
         var status: String?
         var auditRef: String?
         var schemaVersion: String?
         var skillId: String?
+        var projectId: String?
         var recordJSON: String?
         var reasonCode: String?
 
         enum CodingKeys: String, CodingKey {
             case ok
             case source
+            case selector
             case stagingId = "staging_id"
             case status
             case auditRef = "audit_ref"
             case schemaVersion = "schema_version"
             case skillId = "skill_id"
+            case projectId = "project_id"
             case recordJSON = "record_json"
             case reasonCode = "reason_code"
         }
@@ -3498,37 +3510,68 @@ fulltext_not_loaded=\(disclosure.fulltextNotLoaded ? "true" : "false")
     }
 
     static func getAgentImportRecord(
-        stagingId: String
+        stagingId: String? = nil,
+        selector: String? = nil,
+        skillId: String? = nil,
+        projectId: String? = nil
     ) async -> AgentImportRecordResult {
-        let normalized = stagingId.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalized.isEmpty else {
+        let normalizedStagingId = stagingId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let normalizedSelector = selector?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let normalizedSkillId = skillId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let normalizedProjectId = projectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let lookup = AgentImportRecordLookupPayload(
+            stagingId: normalizedStagingId.isEmpty ? nil : normalizedStagingId,
+            selector: normalizedSelector.isEmpty ? nil : normalizedSelector,
+            skillId: normalizedSkillId.isEmpty ? nil : normalizedSkillId,
+            projectId: normalizedProjectId.isEmpty ? nil : normalizedProjectId
+        )
+
+        guard lookup.stagingId != nil || lookup.selector != nil else {
             return AgentImportRecordResult(
                 ok: false,
                 source: "hub_runtime_grpc",
+                selector: lookup.selector,
                 stagingId: nil,
                 status: nil,
                 auditRef: nil,
                 schemaVersion: nil,
-                skillId: nil,
+                skillId: lookup.skillId,
+                projectId: lookup.projectId,
                 recordJSON: nil,
-                reasonCode: "missing_agent_staging_id"
+                reasonCode: "missing_agent_import_locator"
             )
+        }
+
+        if let override = agentImportRecordOverrideSnapshotForTesting() {
+            return await override(lookup)
         }
 
         let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
         if hasRemote {
-            let remote = await HubPairingCoordinator.shared.fetchRemoteAgentImportRecord(
-                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
-                stagingId: normalized
-            )
+            let remote: HubRemoteAgentImportRecordResult
+            if let normalizedStagingId = lookup.stagingId {
+                remote = await HubPairingCoordinator.shared.fetchRemoteAgentImportRecord(
+                    options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                    stagingId: normalizedStagingId
+                )
+            } else {
+                remote = await HubPairingCoordinator.shared.fetchRemoteResolvedAgentImportRecord(
+                    options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                    selector: lookup.selector ?? "last_import",
+                    skillId: lookup.skillId,
+                    projectId: lookup.projectId
+                )
+            }
             return AgentImportRecordResult(
                 ok: remote.ok,
                 source: remote.source,
+                selector: remote.selector ?? lookup.selector,
                 stagingId: remote.stagingId,
                 status: remote.status,
                 auditRef: remote.auditRef,
                 schemaVersion: remote.schemaVersion,
-                skillId: remote.skillId,
+                skillId: remote.skillId ?? lookup.skillId,
+                projectId: remote.projectId ?? lookup.projectId,
                 recordJSON: remote.recordJSON,
                 reasonCode: remote.reasonCode
             )
@@ -3537,14 +3580,23 @@ fulltext_not_loaded=\(disclosure.fulltextNotLoaded ? "true" : "false")
         return AgentImportRecordResult(
             ok: false,
             source: "file_ipc",
+            selector: lookup.selector,
             stagingId: nil,
             status: nil,
             auditRef: nil,
             schemaVersion: nil,
-            skillId: nil,
+            skillId: lookup.skillId,
+            projectId: lookup.projectId,
             recordJSON: nil,
             reasonCode: "skills_record_file_ipc_not_supported"
         )
+    }
+
+    private static func agentImportRecordOverrideSnapshotForTesting() -> (@Sendable (AgentImportRecordLookupPayload) async -> AgentImportRecordResult)? {
+        testingOverrideLock.lock()
+        let override = agentImportRecordOverrideForTesting
+        testingOverrideLock.unlock()
+        return override
     }
 
     static func uploadSkillPackage(
@@ -6406,6 +6458,14 @@ profile_id: \(normalizedProfile)
         testingOverrideLock.unlock()
     }
 
+    static func installAgentImportRecordOverrideForTesting(
+        _ override: (@Sendable (AgentImportRecordLookupPayload) async -> AgentImportRecordResult)?
+    ) {
+        testingOverrideLock.lock()
+        agentImportRecordOverrideForTesting = override
+        testingOverrideLock.unlock()
+    }
+
     static func installSecretVaultRedeemOverrideForTesting(
         _ override: (@Sendable (SecretRedeemRequestPayload) async -> SecretRedeemResult)?
     ) {
@@ -6441,6 +6501,12 @@ profile_id: \(normalizedProfile)
         testingOverrideLock.lock()
         memoryContextResolutionOverrideForTesting = nil
         memoryRetrievalOverrideForTesting = nil
+        testingOverrideLock.unlock()
+    }
+
+    static func resetAgentImportRecordOverrideForTesting() {
+        testingOverrideLock.lock()
+        agentImportRecordOverrideForTesting = nil
         testingOverrideLock.unlock()
     }
 }

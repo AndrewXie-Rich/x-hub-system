@@ -52,6 +52,10 @@ struct ModelSettingsView: View {
             Text("Supervisor 和 Coding 的 AI 都来自于 X-Hub。如果 X-Hub 有默认设置，X-Terminal 没有设置就用 Hub 默认设置。如果没有，可以在 X-Terminal 选择使用哪个模型作为 Supervisor，哪个模型作为主要编程角色。Supervisor 也可以建议或自己指派每个 project 的编程模型。")
                 .font(.body)
                 .foregroundStyle(.secondary)
+
+            Text("本页展示的是 Hub catalog 的模型信息。若某个 paired Terminal 需要独立的本地 context length，请到 Hub 的 Pairing / Edit Device 里设置每设备 local model override。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
     
@@ -180,9 +184,15 @@ struct ModelSettingsView: View {
                             .lineLimit(2)
                     }
                     
-                    Text("上下文长度：\(model.contextLength) tokens")
+                    Text("Hub 默认上下文：\(model.hubDefaultContextLength) tokens")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+
+                    if model.isLocalModel {
+                        Text("本地上限：\(model.hubMaxContextLength) tokens")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     
                     if let roles = model.roles, !roles.isEmpty {
                         Text("角色：\(roles.joined(separator: ", "))")

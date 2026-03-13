@@ -71,6 +71,39 @@ struct ProjectGovernanceResolverTests {
         #expect(snapshot["supervisor_intervention_tier"] == .string("s2_periodic_review"))
         #expect(snapshot["should_fail_closed"] == .bool(false))
     }
+
+    @Test
+    func autonomyModeSyncsGovernanceBundleWhileStillInCompatMode() {
+        let root = URL(fileURLWithPath: "/tmp/project-governance-autonomy-sync-\(UUID().uuidString)", isDirectory: true)
+        let config = AXProjectConfig.default(forProjectRoot: root).settingAutonomyPolicy(
+            mode: .trustedOpenClawMode,
+            updatedAt: Date(timeIntervalSince1970: 1_773_900_000)
+        )
+
+        #expect(config.governanceCompatSource == .legacyAutonomyMode)
+        #expect(config.executionTier == .a4OpenClaw)
+        #expect(config.supervisorInterventionTier == .s3StrategicCoach)
+        #expect(config.reviewPolicyMode == .hybrid)
+    }
+
+    @Test
+    func explicitGovernanceRemainsAuthoritativeWhenAutonomyModeChanges() {
+        let root = URL(fileURLWithPath: "/tmp/project-governance-autonomy-explicit-\(UUID().uuidString)", isDirectory: true)
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingProjectGovernance(
+            executionTier: .a4OpenClaw,
+            supervisorInterventionTier: .s2PeriodicReview
+        )
+        config = config.settingAutonomyPolicy(
+            mode: .guided,
+            updatedAt: Date(timeIntervalSince1970: 1_773_900_100)
+        )
+
+        #expect(config.governanceCompatSource == .explicitDualDial)
+        #expect(config.executionTier == .a4OpenClaw)
+        #expect(config.supervisorInterventionTier == .s2PeriodicReview)
+        #expect(config.autonomyMode == .guided)
+    }
 }
 
 private func makeGovernancePermissionReadiness() -> AXTrustedAutomationPermissionOwnerReadiness {

@@ -259,6 +259,130 @@ struct AXSkillsCompatibilityTests {
     }
 
     @Test
+    func projectSkillRouterMapsInstalledAgentBrowserVariantToToolCall() throws {
+        let fixture = SkillsCompatibilityFixture()
+        defer { fixture.cleanup() }
+        try fixture.writeHubSkillsStoreForSupervisorRegistry()
+
+        let snapshot = try #require(
+            AXSkillsLibrary.supervisorSkillRegistrySnapshot(
+                projectId: fixture.projectID,
+                projectName: fixture.projectName,
+                hubBaseDir: fixture.hubBaseDir
+            )
+        )
+
+        let result = XTProjectSkillRouter.map(
+            call: GovernedSkillCall(
+                id: "skill-read-1",
+                skill_id: "agent-browser",
+                payload: [
+                    "action": .string("read"),
+                    "url": .string("https://example.com"),
+                    "grant_id": .string("grant-123")
+                ]
+            ),
+            projectId: fixture.projectID,
+            projectName: fixture.projectName,
+            registrySnapshot: snapshot
+        )
+
+        let mapped: XTProjectMappedSkillDispatch
+        switch result {
+        case .success(let dispatch):
+            mapped = dispatch
+        case .failure(let failure):
+            Issue.record("unexpected failure: \(failure.reasonCode)")
+            throw failure
+        }
+
+        #expect(mapped.skillId == "agent-browser")
+        #expect(mapped.toolCall.id == "skill-read-1")
+        #expect(mapped.toolCall.tool == .browser_read)
+        #expect(mapped.toolCall.args["url"]?.stringValue == "https://example.com")
+        #expect(mapped.toolCall.args["grant_id"]?.stringValue == "grant-123")
+    }
+
+    @Test
+    func projectSkillRouterFailsClosedForUnregisteredSkill() throws {
+        let fixture = SkillsCompatibilityFixture()
+        defer { fixture.cleanup() }
+        try fixture.writeHubSkillsStoreForSupervisorRegistry()
+
+        let snapshot = try #require(
+            AXSkillsLibrary.supervisorSkillRegistrySnapshot(
+                projectId: fixture.projectID,
+                projectName: fixture.projectName,
+                hubBaseDir: fixture.hubBaseDir
+            )
+        )
+
+        let result = XTProjectSkillRouter.map(
+            call: GovernedSkillCall(
+                id: "skill-missing-1",
+                skill_id: "skill-does-not-exist",
+                payload: [:]
+            ),
+            projectId: fixture.projectID,
+            projectName: fixture.projectName,
+            registrySnapshot: snapshot
+        )
+
+        switch result {
+        case .success(let dispatch):
+            Issue.record("unexpected dispatch: \(dispatch.toolName)")
+        case .failure(let failure):
+            #expect(failure.reasonCode == "skill_not_registered")
+        }
+    }
+
+    @MainActor
+    @Test
+    func projectSkillRoutingPromptGuidanceMentionsInstalledSkillsAndSkillCalls() throws {
+        let fixture = SkillsCompatibilityFixture()
+        defer { fixture.cleanup() }
+        try fixture.writeHubSkillsStoreForSupervisorRegistry()
+
+        let snapshot = try #require(
+            AXSkillsLibrary.supervisorSkillRegistrySnapshot(
+                projectId: fixture.projectID,
+                projectName: fixture.projectName,
+                hubBaseDir: fixture.hubBaseDir
+            )
+        )
+        let session = ChatSessionModel()
+        let guidance = session.projectSkillRoutingPromptGuidanceForTesting(
+            snapshot: snapshot
+        )
+
+        #expect(guidance.contains("prefer `skill_calls` over raw `tool_calls`"))
+        #expect(guidance.contains("skills_registry:"))
+        #expect(guidance.contains("repo.git.status"))
+        #expect(guidance.contains("agent-browser"))
+        #expect(guidance.contains("grant=yes"))
+    }
+
+    @MainActor
+    @Test
+    func projectSkillProgressLineMentionsSkillContext() throws {
+        let session = ChatSessionModel()
+        let line = session.projectSkillProgressLineForTesting(
+            dispatch: XTProjectMappedSkillDispatch(
+                skillId: "agent-browser",
+                toolCall: ToolCall(
+                    id: "skill-progress-1",
+                    tool: .browser_read,
+                    args: ["url": .string("https://example.com")]
+                ),
+                toolName: ToolName.browser_read.rawValue
+            )
+        )
+
+        #expect(line.contains("agent-browser"))
+        #expect(line.contains("读取网页内容"))
+    }
+
+    @Test
     func resolvedSkillsCacheStorePersistsAndExpiresFailClosed() throws {
         let fixture = SkillsCompatibilityFixture()
         defer { fixture.cleanup() }

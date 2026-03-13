@@ -22,6 +22,12 @@ class ProviderHealth:
     registered_models: list[str] | None = None
     resource_policy: dict[str, Any] | None = None
     scheduler_state: dict[str, Any] | None = None
+    lifecycle_mode: str | None = None
+    supported_lifecycle_actions: list[str] | None = None
+    warmup_task_kinds: list[str] | None = None
+    residency_scope: str | None = None
+    loaded_instances: list[dict[str, Any]] | None = None
+    idle_eviction: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -48,6 +54,24 @@ class ProviderHealth:
             data["resourcePolicy"] = dict(self.resource_policy)
         if self.scheduler_state is not None:
             data["schedulerState"] = dict(self.scheduler_state)
+        if self.lifecycle_mode is not None:
+            data["lifecycleMode"] = str(self.lifecycle_mode)
+        if self.supported_lifecycle_actions is not None:
+            data["supportedLifecycleActions"] = [
+                str(action) for action in self.supported_lifecycle_actions if str(action or "").strip()
+            ]
+        if self.warmup_task_kinds is not None:
+            data["warmupTaskKinds"] = [
+                str(task_kind) for task_kind in self.warmup_task_kinds if str(task_kind or "").strip()
+            ]
+        if self.residency_scope is not None:
+            data["residencyScope"] = str(self.residency_scope)
+        if self.loaded_instances is not None:
+            data["loadedInstances"] = [
+                dict(item) for item in self.loaded_instances if isinstance(item, dict)
+            ]
+        if self.idle_eviction is not None:
+            data["idleEviction"] = dict(self.idle_eviction)
         return data
 
 
@@ -89,6 +113,57 @@ class LocalProvider(ABC):
             "ok": False,
             "provider": self.provider_id(),
             "error": f"task_not_implemented:{self.provider_id()}",
+            "request": dict(request or {}),
+        }
+
+    def lifecycle_mode(self) -> str:
+        return "unsupported"
+
+    def supported_lifecycle_actions(self) -> list[str]:
+        return []
+
+    def warmup_task_kinds(self) -> list[str]:
+        return []
+
+    def residency_scope(self) -> str:
+        return "none"
+
+    def loaded_instances(self) -> list[dict[str, Any]]:
+        return []
+
+    def warmup_model(self, request: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "provider": self.provider_id(),
+            "action": "warmup_local_model",
+            "lifecycleMode": self.lifecycle_mode(),
+            "supportedLifecycleActions": self.supported_lifecycle_actions(),
+            "warmupTaskKinds": self.warmup_task_kinds(),
+            "error": f"unsupported_lifecycle:{self.provider_id()}",
+            "request": dict(request or {}),
+        }
+
+    def unload_model(self, request: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "provider": self.provider_id(),
+            "action": "unload_local_model",
+            "lifecycleMode": self.lifecycle_mode(),
+            "supportedLifecycleActions": self.supported_lifecycle_actions(),
+            "warmupTaskKinds": self.warmup_task_kinds(),
+            "error": f"unsupported_lifecycle:{self.provider_id()}",
+            "request": dict(request or {}),
+        }
+
+    def evict_instance(self, request: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "provider": self.provider_id(),
+            "action": "evict_local_instance",
+            "lifecycleMode": self.lifecycle_mode(),
+            "supportedLifecycleActions": self.supported_lifecycle_actions(),
+            "warmupTaskKinds": self.warmup_task_kinds(),
+            "error": f"unsupported_lifecycle:{self.provider_id()}",
             "request": dict(request or {}),
         }
 

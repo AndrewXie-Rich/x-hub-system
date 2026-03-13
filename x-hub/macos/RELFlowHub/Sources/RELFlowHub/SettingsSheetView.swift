@@ -110,11 +110,27 @@ struct SettingsSheetView: View {
             }
         }
         .sheet(item: $editingGRPCClient) { client in
+            let localModels = pairedTerminalLocalModels()
             EditGRPCClientSheet(
                 client: client,
                 serverPort: grpc.port,
+                localModels: localModels,
+                routingSettings: store.routingSettings,
+                existingLocalModelProfiles: pairedTerminalLocalModelProfiles(
+                    deviceId: client.deviceId,
+                    localModels: localModels
+                ),
                 onSave: { updated in
                     grpc.upsertClient(updated)
+                },
+                onSaveRoutingSettings: { settings in
+                    store.saveRoutingSettings(settings)
+                },
+                onUpsertLocalModelProfile: { profile in
+                    grpc.upsertPairedTerminalLocalModelProfile(profile)
+                },
+                onRemoveLocalModelProfile: { deviceId, modelId in
+                    grpc.removePairedTerminalLocalModelProfile(deviceId: deviceId, modelId: modelId)
                 },
                 onRotateToken: { deviceId in
                     grpc.rotateClientToken(deviceId: deviceId)
@@ -125,6 +141,33 @@ struct SettingsSheetView: View {
                 }
             )
         }
+    }
+
+    private func pairedTerminalLocalModels() -> [ModelCatalogEntry] {
+        ModelCatalogStorage.load().models
+            .filter { !$0.modelPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .sorted { lhs, rhs in
+                let lhsKey = (lhs.name.isEmpty ? lhs.id : lhs.name).localizedLowercase
+                let rhsKey = (rhs.name.isEmpty ? rhs.id : rhs.name).localizedLowercase
+                if lhsKey != rhsKey {
+                    return lhsKey < rhsKey
+                }
+                return lhs.id.localizedLowercase < rhs.id.localizedLowercase
+            }
+    }
+
+    private func pairedTerminalLocalModelProfiles(
+        deviceId: String,
+        localModels: [ModelCatalogEntry]
+    ) -> [String: HubPairedTerminalLocalModelProfile] {
+        var profiles: [String: HubPairedTerminalLocalModelProfile] = [:]
+        for model in localModels {
+            guard let profile = grpc.pairedTerminalLocalModelProfile(deviceId: deviceId, modelId: model.id) else {
+                continue
+            }
+            profiles[model.id] = profile
+        }
+        return profiles
     }
 
     private var header: some View {
@@ -4225,7 +4268,13 @@ private struct AddGRPCClientSheet: View {
 private struct EditGRPCClientSheet: View {
     let client: HubGRPCClientEntry
     let serverPort: Int
+    let localModels: [ModelCatalogEntry]
+    let routingSettings: RoutingSettings
+    let existingLocalModelProfiles: [String: HubPairedTerminalLocalModelProfile]
     let onSave: (HubGRPCClientEntry) -> Void
+    let onSaveRoutingSettings: (RoutingSettings) -> Void
+    let onUpsertLocalModelProfile: (HubPairedTerminalLocalModelProfile) -> Void
+    let onRemoveLocalModelProfile: (String, String) -> Void
     let onRotateToken: (String) -> String?
     let onCopyVars: (String) -> Void
 
@@ -4247,17 +4296,34 @@ private struct EditGRPCClientSheet: View {
     @State private var allowedPaidModelsText: String
     @State private var defaultWebFetchEnabled: Bool
     @State private var dailyTokenLimitText: String
+    @State private var localTaskRoutingExpanded: Bool
+    @State private var localModelOverridesExpanded: Bool
+    @State private var routingSettingsDraft: RoutingSettings
+    @State private var localModelContextOverrideTextById: [String: String]
+    @State private var localModelNoteById: [String: String]
 
     init(
         client: HubGRPCClientEntry,
         serverPort: Int,
+        localModels: [ModelCatalogEntry],
+        routingSettings: RoutingSettings,
+        existingLocalModelProfiles: [String: HubPairedTerminalLocalModelProfile],
         onSave: @escaping (HubGRPCClientEntry) -> Void,
+        onSaveRoutingSettings: @escaping (RoutingSettings) -> Void,
+        onUpsertLocalModelProfile: @escaping (HubPairedTerminalLocalModelProfile) -> Void,
+        onRemoveLocalModelProfile: @escaping (String, String) -> Void,
         onRotateToken: @escaping (String) -> String?,
         onCopyVars: @escaping (String) -> Void
     ) {
         self.client = client
         self.serverPort = serverPort
+        self.localModels = localModels
+        self.routingSettings = routingSettings
+        self.existingLocalModelProfiles = existingLocalModelProfiles
         self.onSave = onSave
+        self.onSaveRoutingSettings = onSaveRoutingSettings
+        self.onUpsertLocalModelProfile = onUpsertLocalModelProfile
+        self.onRemoveLocalModelProfile = onRemoveLocalModelProfile
         self.onRotateToken = onRotateToken
         self.onCopyVars = onCopyVars
 
@@ -4285,6 +4351,19 @@ private struct EditGRPCClientSheet: View {
         _defaultWebFetchEnabled = State(initialValue: profile?.networkPolicy.defaultWebFetchEnabled ?? legacyWebFetchEnabled)
         let initialDailyTokenLimit = profile?.budgetPolicy.dailyTokenLimit ?? HubTrustProfileDefaults.dailyTokenLimit
         _dailyTokenLimitText = State(initialValue: String(max(1, initialDailyTokenLimit)))
+        _localTaskRoutingExpanded = State(initialValue: true)
+        _localModelOverridesExpanded = State(initialValue: !localModels.isEmpty)
+        _routingSettingsDraft = State(initialValue: routingSettings)
+
+        var contextOverrideTextById: [String: String] = [:]
+        var noteById: [String: String] = [:]
+        for model in localModels {
+            let existingProfile = existingLocalModelProfiles[model.id]
+            contextOverrideTextById[model.id] = existingProfile?.overrideProfile.contextLength.map(String.init) ?? ""
+            noteById[model.id] = existingProfile?.note ?? ""
+        }
+        _localModelContextOverrideTextById = State(initialValue: contextOverrideTextById)
+        _localModelNoteById = State(initialValue: noteById)
     }
 
     private struct CapSpec: Identifiable {
@@ -4305,50 +4384,52 @@ private struct EditGRPCClientSheet: View {
     ]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Edit Paired Device")
-                    .font(.headline)
-                Spacer()
-                Button("Cancel") { dismiss() }
-                Button("Save") {
-                    var out = client
-                    let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let effectiveName = trimmedName.isEmpty ? client.deviceId : trimmedName
-                    out.name = effectiveName
-                    out.userId = userId.trimmingCharacters(in: .whitespacesAndNewlines)
-                    out.enabled = enabled
-                    out.token = token.trimmingCharacters(in: .whitespacesAndNewlines)
-                    out.createdAtMs = createdAtMs
-                    out.allowedCidrs = allowAnySourceIP ? [] : orderedAllowedCidrs(allowedCidrs)
-                    out.certSha256 = certSha256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                    if policyMode == .newProfile {
-                        let profile = HubGRPCClientEntry.buildApprovedTrustProfile(
-                            deviceId: client.deviceId,
-                            deviceName: effectiveName,
-                            requestedCapabilities: orderedCaps(Array(caps)),
-                            paidModelSelectionMode: paidModelSelectionMode,
-                            allowedPaidModels: parseList(allowedPaidModelsText),
-                            defaultWebFetchEnabled: defaultWebFetchEnabled,
-                            dailyTokenLimit: parsedDailyTokenLimit ?? HubTrustProfileDefaults.dailyTokenLimit,
-                            auditRef: client.deviceId
-                        )
-                        out.policyMode = .newProfile
-                        out.approvedTrustProfile = profile
-                        out.capabilities = profile.capabilities
-                    } else {
-                        out.policyMode = .legacyGrant
-                        out.approvedTrustProfile = nil
-                        out.capabilities = orderedCaps(Array(caps))
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("Edit Paired Device")
+                        .font(.headline)
+                    Spacer()
+                    Button("Cancel") { dismiss() }
+                    Button("Save") {
+                        var out = client
+                        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let effectiveName = trimmedName.isEmpty ? client.deviceId : trimmedName
+                        out.name = effectiveName
+                        out.userId = userId.trimmingCharacters(in: .whitespacesAndNewlines)
+                        out.enabled = enabled
+                        out.token = token.trimmingCharacters(in: .whitespacesAndNewlines)
+                        out.createdAtMs = createdAtMs
+                        out.allowedCidrs = allowAnySourceIP ? [] : orderedAllowedCidrs(allowedCidrs)
+                        out.certSha256 = certSha256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                        if policyMode == .newProfile {
+                            let profile = HubGRPCClientEntry.buildApprovedTrustProfile(
+                                deviceId: client.deviceId,
+                                deviceName: effectiveName,
+                                requestedCapabilities: orderedCaps(Array(caps)),
+                                paidModelSelectionMode: paidModelSelectionMode,
+                                allowedPaidModels: parseList(allowedPaidModelsText),
+                                defaultWebFetchEnabled: defaultWebFetchEnabled,
+                                dailyTokenLimit: parsedDailyTokenLimit ?? HubTrustProfileDefaults.dailyTokenLimit,
+                                auditRef: client.deviceId
+                            )
+                            out.policyMode = .newProfile
+                            out.approvedTrustProfile = profile
+                            out.capabilities = profile.capabilities
+                        } else {
+                            out.policyMode = .legacyGrant
+                            out.approvedTrustProfile = nil
+                            out.capabilities = orderedCaps(Array(caps))
+                        }
+                        persistLocalModelProfiles()
+                        onSave(out)
+                        dismiss()
                     }
-                    onSave(out)
-                    dismiss()
+                    .disabled(!allowedCidrsConfigIsValid || !policyProfileIsValid || !localModelOverridesAreValid)
+                    .keyboardShortcut(.defaultAction)
                 }
-                .disabled(!allowedCidrsConfigIsValid || !policyProfileIsValid)
-                .keyboardShortcut(.defaultAction)
-            }
 
-            VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text("Device ID")
                     Spacer()
@@ -4364,9 +4445,9 @@ private struct EditGRPCClientSheet: View {
                     .textFieldStyle(.roundedBorder)
             }
 
-            Divider()
+                Divider()
 
-            VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 8) {
                 Text("Policy Mode")
                     .font(.callout.weight(.semibold))
                 Picker("Policy Mode", selection: $policyMode) {
@@ -4414,9 +4495,9 @@ private struct EditGRPCClientSheet: View {
                 }
             }
 
-            Divider()
+                Divider()
 
-            VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text("Capabilities")
                         .font(.callout.weight(.semibold))
@@ -4460,9 +4541,9 @@ private struct EditGRPCClientSheet: View {
                 }
             }
 
-            Divider()
+                Divider()
 
-            VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text("Allowed CIDRs (Source IP)")
                         .font(.callout.weight(.semibold))
@@ -4542,9 +4623,41 @@ private struct EditGRPCClientSheet: View {
                 }
             }
 
-            Divider()
+                if !localModels.isEmpty {
+                    Divider()
 
-            VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Per-Device Local Model Context")
+                                .font(.callout.weight(.semibold))
+                            Spacer()
+                            Button(localModelOverridesExpanded ? "Collapse" : "Expand") {
+                                localModelOverridesExpanded.toggle()
+                            }
+                            .font(.caption)
+                        }
+
+                        Text("Local model identity stays in the Hub catalog. Only device-scoped load overrides land in `hub_paired_terminal_local_model_profiles.json`.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+
+                        if localModelOverridesExpanded {
+                            VStack(alignment: .leading, spacing: 10) {
+                                ForEach(localModels) { model in
+                                    pairedTerminalLocalModelOverrideCard(model)
+                                }
+                            }
+                        } else {
+                            Text("\(localModels.count) local models available for this Terminal.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text("mTLS Cert Pin (sha256)")
                         .font(.callout.weight(.semibold))
@@ -4560,9 +4673,9 @@ private struct EditGRPCClientSheet: View {
                     .foregroundStyle(.secondary)
             }
 
-            Divider()
+                Divider()
 
-            HStack(spacing: 10) {
+                HStack(spacing: 10) {
                 Button("Copy Vars (LAN)") { onCopyVars(token) }
                     .font(.caption)
                 Button("Copy Vars (Remote)") {
@@ -4584,12 +4697,13 @@ HUB_CLIENT_TOKEN='\(token)'
                 }
                 .font(.caption)
                 Spacer()
-            }
+                }
 
-            Spacer(minLength: 0)
+                Spacer(minLength: 0)
+            }
         }
         .padding(16)
-        .frame(width: 520)
+        .frame(width: 560, height: 760)
     }
 
     private func bindingCap(_ key: String) -> Binding<Bool> {
@@ -4621,6 +4735,10 @@ HUB_CLIENT_TOKEN='\(token)'
         // allowAnySourceIP is enabled. In restricted mode, enforce at least one rule so the UI intent matches reality.
         if allowAnySourceIP { return true }
         return !orderedAllowedCidrs(allowedCidrs).isEmpty
+    }
+
+    private var localModelOverridesAreValid: Bool {
+        localModels.allSatisfy { localModelContextValidationError(for: $0) == nil }
     }
 
     private var allowedCidrsCustomItems: [String] {
@@ -4763,6 +4881,194 @@ HUB_CLIENT_TOKEN='\(token)'
             uniq.append(c)
         }
         return uniq
+    }
+
+    private func pairedTerminalLocalModelOverrideCard(_ model: ModelCatalogEntry) -> some View {
+        let effective = localModelEffectiveLoadProfile(for: model)
+        let source = localModelEffectiveContextSource(for: model)
+        let validationError = localModelContextValidationError(for: model)
+        let draftText = localModelContextOverrideDraftText(for: model.id)
+        let hasHiddenFields = localModelHasHiddenNonContextFields(model.id)
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(model.name.isEmpty ? model.id : model.name)
+                        .font(.caption.weight(.semibold))
+                    Text(model.id)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                Spacer()
+                Text(model.backend.uppercased())
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 10) {
+                Text("max \(model.maxContextLength)")
+                Text("default \(model.defaultLoadProfile.contextLength)")
+                Text("effective \(effective.contextLength)")
+                Spacer()
+                Text("source \(source)")
+            }
+            .font(.caption2.monospaced())
+            .foregroundStyle(.secondary)
+
+            HStack(spacing: 8) {
+                TextField(
+                    "Override context length (empty = Hub default)",
+                    text: localModelContextOverrideBinding(for: model.id)
+                )
+                .textFieldStyle(.roundedBorder)
+
+                Button("Hub Default") {
+                    localModelContextOverrideTextById[model.id] = ""
+                }
+                .font(.caption)
+
+                Button("Use Max") {
+                    localModelContextOverrideTextById[model.id] = String(model.maxContextLength)
+                }
+                .font(.caption)
+            }
+
+            TextField("Note (optional)", text: localModelNoteBinding(for: model.id))
+                .textFieldStyle(.roundedBorder)
+
+            if let validationError {
+                Text(validationError)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+            } else if source == "runtime_clamped", let requested = Int(draftText) {
+                Text("Requested context \(requested) is being clamped to effective \(effective.contextLength). Fix the value before saving.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            } else {
+                Text("Effective context is resolved as provider-safe default -> Hub default -> device override.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            if hasHiddenFields {
+                Text("This profile already has non-context load fields in JSON. They stay preserved when you save from this sheet.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(10)
+        .background(Color.secondary.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func localModelContextOverrideBinding(for modelId: String) -> Binding<String> {
+        Binding(
+            get: { localModelContextOverrideDraftText(for: modelId) },
+            set: { localModelContextOverrideTextById[modelId] = $0 }
+        )
+    }
+
+    private func localModelNoteBinding(for modelId: String) -> Binding<String> {
+        Binding(
+            get: { localModelNoteById[modelId] ?? "" },
+            set: { localModelNoteById[modelId] = $0 }
+        )
+    }
+
+    private func localModelContextOverrideDraftText(for modelId: String) -> String {
+        localModelContextOverrideTextById[modelId] ?? ""
+    }
+
+    private func localModelContextValidationError(for model: ModelCatalogEntry) -> String? {
+        let trimmed = localModelContextOverrideDraftText(for: model.id)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard let value = Int(trimmed) else {
+            return "Context length must be an integer."
+        }
+        if value < 512 {
+            return "Context length must be at least 512."
+        }
+        if value > model.maxContextLength {
+            return "Context length exceeds model max \(model.maxContextLength)."
+        }
+        return nil
+    }
+
+    private func localModelDraftOverrideProfile(for model: ModelCatalogEntry) -> LocalModelLoadProfileOverride? {
+        var draft = existingLocalModelProfiles[model.id]?.overrideProfile ?? LocalModelLoadProfileOverride()
+        let trimmed = localModelContextOverrideDraftText(for: model.id)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if trimmed.isEmpty {
+            draft.contextLength = nil
+        } else if let value = Int(trimmed) {
+            draft.contextLength = value
+        }
+
+        return draft.isEmpty ? nil : draft
+    }
+
+    private func localModelEffectiveLoadProfile(for model: ModelCatalogEntry) -> LocalModelLoadProfile {
+        model.defaultLoadProfile.merged(
+            with: localModelDraftOverrideProfile(for: model),
+            maxContextLength: model.maxContextLength
+        )
+    }
+
+    private func localModelEffectiveContextSource(for model: ModelCatalogEntry) -> String {
+        let trimmed = localModelContextOverrideDraftText(for: model.id)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "hub_default" }
+        guard let requested = Int(trimmed) else { return "device_override" }
+        let effective = localModelEffectiveLoadProfile(for: model)
+        if effective.contextLength != requested {
+            return "runtime_clamped"
+        }
+        return "device_override"
+    }
+
+    private func localModelHasHiddenNonContextFields(_ modelId: String) -> Bool {
+        guard let overrideProfile = existingLocalModelProfiles[modelId]?.overrideProfile else { return false }
+        return overrideProfile.gpuOffloadRatio != nil
+            || overrideProfile.ropeFrequencyBase != nil
+            || overrideProfile.ropeFrequencyScale != nil
+            || overrideProfile.evalBatchSize != nil
+    }
+
+    private func persistLocalModelProfiles() {
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000.0)
+        for model in localModels {
+            var overrideProfile = existingLocalModelProfiles[model.id]?.overrideProfile ?? LocalModelLoadProfileOverride()
+            let contextText = localModelContextOverrideDraftText(for: model.id)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            overrideProfile.contextLength = Int(contextText)
+
+            let note = (localModelNoteById[model.id] ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let existing = existingLocalModelProfiles[model.id]
+            let normalizedProfile = overrideProfile.isEmpty ? nil : overrideProfile
+
+            if let normalizedProfile {
+                let next = HubPairedTerminalLocalModelProfile(
+                    deviceId: client.deviceId,
+                    modelId: model.id,
+                    overrideProfile: normalizedProfile,
+                    updatedAtMs: nowMs,
+                    updatedBy: "hub_settings",
+                    note: note
+                )
+                let needsUpsert = existing?.overrideProfile != normalizedProfile
+                    || existing?.note != note
+                    || existing == nil
+                if needsUpsert {
+                    onUpsertLocalModelProfile(next)
+                }
+            } else if existing != nil {
+                onRemoveLocalModelProfile(client.deviceId, model.id)
+            }
+        }
     }
 
     private func parseList(_ text: String) -> [String] {

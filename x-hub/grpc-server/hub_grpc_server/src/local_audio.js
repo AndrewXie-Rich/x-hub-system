@@ -177,6 +177,7 @@ function resolveLocalASRModel(runtimeBaseDir, preferredModelId = '') {
 export async function transcribeLocalAudio({
   runtimeBaseDir,
   requestId = '',
+  deviceId = '',
   audioPath = '',
   preferredModelId = '',
   language = '',
@@ -290,6 +291,7 @@ export async function transcribeLocalAudio({
         task_kind: ASR_TASK_KIND,
         model_id: safeString(model.model_id),
         model_path: safeString(model.model_path),
+        device_id: safeString(deviceId),
         audio_path: filePath,
         request_id: safeString(requestId),
         options: {

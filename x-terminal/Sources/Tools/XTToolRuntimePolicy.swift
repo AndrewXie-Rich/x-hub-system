@@ -35,9 +35,24 @@ struct XTToolRuntimePolicyDecision: Equatable, Sendable {
 
 func xtToolRuntimePolicyDecision(
     call: ToolCall,
+    projectRoot: URL? = nil,
     config: AXProjectConfig,
-    effectiveAutonomy: AXProjectAutonomyEffectivePolicy? = nil
+    effectiveAutonomy: AXProjectAutonomyEffectivePolicy? = nil,
+    resolvedGovernance: AXProjectResolvedGovernanceState? = nil
 ) -> XTToolRuntimePolicyDecision {
+    let governanceState = xtRuntimeGovernanceState(
+        projectRoot: projectRoot,
+        config: config,
+        effectiveAutonomy: effectiveAutonomy,
+        resolvedGovernance: resolvedGovernance
+    )
+    if let deny = xtGovernanceCapabilityDenyDecision(
+        for: call.tool,
+        governance: governanceState
+    ) {
+        return deny
+    }
+
     if let autonomySurface = xtAutonomySurface(for: call.tool) {
         let effective = effectiveAutonomy ?? config.effectiveAutonomyPolicy()
         if let deny = xtAutonomyPolicyDenyDecision(
@@ -89,6 +104,12 @@ func xtToolRuntimePolicyDeniedSummary(
 ) -> [String: JSONValue] {
     let requiredTools = ToolPolicy.sortedTools(ToolPolicy.runtimeRequiredTools(for: call.tool)).map(\.rawValue)
     let autonomy = effectiveAutonomy ?? config.effectiveAutonomyPolicy()
+    let governance = xtRuntimeGovernanceState(
+        projectRoot: projectRoot,
+        config: config,
+        effectiveAutonomy: effectiveAutonomy,
+        resolvedGovernance: nil
+    )
     return [
         "tool": .string(call.tool.rawValue),
         "ok": .bool(false),
@@ -109,6 +130,11 @@ func xtToolRuntimePolicyDeniedSummary(
         "autonomy_remote_override_updated_at_ms": .number(Double(autonomy.remoteOverrideUpdatedAtMs)),
         "autonomy_ttl_sec": .number(Double(config.autonomyTTLSeconds)),
         "autonomy_remaining_sec": .number(Double(autonomy.remainingSeconds)),
+        "execution_tier": .string(governance.configuredBundle.executionTier.rawValue),
+        "effective_execution_tier": .string(governance.effectiveBundle.executionTier.rawValue),
+        "supervisor_intervention_tier": .string(governance.configuredBundle.supervisorInterventionTier.rawValue),
+        "effective_supervisor_intervention_tier": .string(governance.effectiveBundle.supervisorInterventionTier.rawValue),
+        "governance_allowed_capabilities": .array(governance.capabilityBundle.allowedCapabilityLabels.map(JSONValue.string)),
     ]
 }
 
@@ -117,6 +143,14 @@ private enum XTAutonomySurface: String {
     case browserRuntime = "browser_runtime"
     case connectorActions = "connector_actions"
     case extensions = "extensions"
+}
+
+private enum XTGovernanceCapabilityKind: String {
+    case repoWrite = "repo_write"
+    case repoBuildTest = "repo_build_test"
+    case gitApply = "git_apply"
+    case browserRuntime = "browser_runtime"
+    case deviceTools = "device_tools"
 }
 
 private func xtAutonomySurface(for tool: ToolName) -> XTAutonomySurface? {
@@ -134,6 +168,87 @@ private func xtAutonomySurface(for tool: ToolName) -> XTAutonomySurface? {
     default:
         return nil
     }
+}
+
+private func xtGovernanceCapability(for tool: ToolName) -> XTGovernanceCapabilityKind? {
+    switch tool {
+    case .write_file:
+        return .repoWrite
+    case .run_command:
+        return .repoBuildTest
+    case .git_apply, .git_apply_check:
+        return .gitApply
+    case .deviceBrowserControl:
+        return .browserRuntime
+    case .deviceUIObserve,
+            .deviceUIAct,
+            .deviceUIStep,
+            .deviceClipboardRead,
+            .deviceClipboardWrite,
+            .deviceScreenCapture,
+            .deviceAppleScript:
+        return .deviceTools
+    default:
+        return nil
+    }
+}
+
+private func xtRuntimeGovernanceState(
+    projectRoot: URL?,
+    config: AXProjectConfig,
+    effectiveAutonomy: AXProjectAutonomyEffectivePolicy?,
+    resolvedGovernance: AXProjectResolvedGovernanceState?
+) -> AXProjectResolvedGovernanceState {
+    if let resolvedGovernance {
+        return resolvedGovernance
+    }
+    let root = projectRoot ?? URL(fileURLWithPath: "/")
+    if let effectiveAutonomy {
+        return xtResolveProjectGovernance(
+            projectRoot: root,
+            config: config,
+            effectiveAutonomy: effectiveAutonomy
+        )
+    }
+    return xtResolveProjectGovernance(
+        projectRoot: root,
+        config: config
+    )
+}
+
+private func xtGovernanceCapabilityDenyDecision(
+    for tool: ToolName,
+    governance: AXProjectResolvedGovernanceState
+) -> XTToolRuntimePolicyDecision? {
+    guard let capability = xtGovernanceCapability(for: tool) else { return nil }
+
+    let allowed: Bool
+    let reason: String
+    switch capability {
+    case .repoWrite:
+        allowed = governance.capabilityBundle.allowRepoWrite
+        reason = "execution_tier_missing_repo_write"
+    case .repoBuildTest:
+        allowed = governance.capabilityBundle.allowRepoBuild || governance.capabilityBundle.allowRepoTest
+        reason = "execution_tier_missing_repo_build_test"
+    case .gitApply:
+        allowed = governance.capabilityBundle.allowGitApply
+        reason = "execution_tier_missing_git_apply"
+    case .browserRuntime:
+        allowed = governance.capabilityBundle.allowBrowserRuntime
+        reason = "execution_tier_missing_browser_runtime"
+    case .deviceTools:
+        allowed = governance.capabilityBundle.allowDeviceTools
+        reason = "execution_tier_missing_device_tools"
+    }
+    guard !allowed else { return nil }
+
+    return .deny(
+        code: "governance_capability_denied",
+        detail: "project governance blocks \(tool.rawValue) under execution tier \(governance.effectiveBundle.executionTier.rawValue)",
+        policySource: "project_governance",
+        policyReason: reason
+    )
 }
 
 private func xtAutonomyPolicyDenyDecision(

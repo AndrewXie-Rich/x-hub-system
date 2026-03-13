@@ -807,6 +807,10 @@ curl -fsSL "http://${HUB_HOST}:${PAIRING_PORT}/install/axhubctl" -o "$AXHUBCTL" 
         SharedPaths.ensureHubDirectory().appendingPathComponent("hub_grpc_clients.json")
     }
 
+    func pairedTerminalLocalModelProfilesConfigURL() -> URL {
+        HubPairedTerminalLocalModelProfilesStorage.url()
+    }
+
     func createQuotaTemplateIfMissing() {
         let url = quotaConfigURL()
         if FileManager.default.fileExists(atPath: url.path) {
@@ -878,6 +882,35 @@ curl -fsSL "http://${HUB_HOST}:${PAIRING_PORT}/install/axhubctl" -o "$AXHUBCTL" 
     func openClientsConfig() {
         createClientsTemplateIfMissing()
         NSWorkspace.shared.open(clientsConfigURL())
+    }
+
+    func createPairedTerminalLocalModelProfilesTemplateIfMissing() {
+        let url = pairedTerminalLocalModelProfilesConfigURL()
+        if let data = try? Data(contentsOf: url),
+           let decoded = try? JSONDecoder().decode(HubPairedTerminalLocalModelProfilesSnapshot.self, from: data),
+           decoded.schemaVersion == "hub.paired_terminal_local_model_profiles.v1" {
+            return
+        }
+        HubPairedTerminalLocalModelProfilesStorage.save(.empty())
+    }
+
+    func openPairedTerminalLocalModelProfilesConfig() {
+        createPairedTerminalLocalModelProfilesTemplateIfMissing()
+        NSWorkspace.shared.open(pairedTerminalLocalModelProfilesConfigURL())
+    }
+
+    func pairedTerminalLocalModelProfile(deviceId: String, modelId: String) -> HubPairedTerminalLocalModelProfile? {
+        HubPairedTerminalLocalModelProfilesStorage.profile(deviceId: deviceId, modelId: modelId)
+    }
+
+    func upsertPairedTerminalLocalModelProfile(_ profile: HubPairedTerminalLocalModelProfile) {
+        HubPairedTerminalLocalModelProfilesStorage.upsert(profile)
+        refresh()
+    }
+
+    func removePairedTerminalLocalModelProfile(deviceId: String, modelId: String) {
+        HubPairedTerminalLocalModelProfilesStorage.remove(deviceId: deviceId, modelId: modelId)
+        refresh()
     }
 
     @discardableResult

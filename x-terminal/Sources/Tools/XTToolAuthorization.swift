@@ -176,6 +176,7 @@ func xtToolAuthorizationDecision(
     )
     let runtimePolicyDecision = xtToolRuntimePolicyDecision(
         call: call,
+        projectRoot: projectRoot,
         config: config,
         effectiveAutonomy: autonomyState.effectivePolicy
     )

@@ -62,6 +62,13 @@ class MultiProjectManager: ObservableObject {
             modelName: config.modelName,
             isLocalModel: config.isLocalModel,
             autonomyLevel: config.autonomyLevel,
+            executionTier: config.executionTier,
+            supervisorInterventionTier: config.supervisorInterventionTier,
+            reviewPolicyMode: config.reviewPolicyMode,
+            progressHeartbeatSeconds: config.progressHeartbeatSeconds,
+            reviewPulseSeconds: config.reviewPulseSeconds,
+            brainstormReviewSeconds: config.brainstormReviewSeconds,
+            eventDrivenReviewEnabled: config.eventDrivenReviewEnabled,
             budget: config.budget
         )
 
@@ -329,6 +336,13 @@ struct ProjectConfig {
     let modelName: String
     let isLocalModel: Bool
     let autonomyLevel: AutonomyLevel
+    let executionTier: AXProjectExecutionTier
+    let supervisorInterventionTier: AXProjectSupervisorInterventionTier
+    let reviewPolicyMode: AXProjectReviewPolicyMode
+    let progressHeartbeatSeconds: Int
+    let reviewPulseSeconds: Int
+    let brainstormReviewSeconds: Int
+    let eventDrivenReviewEnabled: Bool
     let budget: Budget
     let autoStart: Bool
 
@@ -339,15 +353,34 @@ struct ProjectConfig {
         modelName: String = "llama-3-70b-local",
         isLocalModel: Bool = true,
         autonomyLevel: AutonomyLevel = .assisted,
+        executionTier: AXProjectExecutionTier? = nil,
+        supervisorInterventionTier: AXProjectSupervisorInterventionTier? = nil,
+        reviewPolicyMode: AXProjectReviewPolicyMode? = nil,
+        progressHeartbeatSeconds: Int? = nil,
+        reviewPulseSeconds: Int? = nil,
+        brainstormReviewSeconds: Int? = nil,
+        eventDrivenReviewEnabled: Bool? = nil,
         budget: Budget = Budget(daily: 10.0, monthly: 300.0),
         autoStart: Bool = false
     ) {
+        let resolvedExecutionTier = executionTier ?? AXProjectExecutionTier.fromLegacyAutonomyLevel(autonomyLevel)
+        let governance = AXProjectGovernanceBundle.recommended(
+            for: resolvedExecutionTier,
+            supervisorInterventionTier: supervisorInterventionTier
+        )
         self.name = name
         self.taskDescription = taskDescription
         self.taskIcon = taskIcon
         self.modelName = modelName
         self.isLocalModel = isLocalModel
-        self.autonomyLevel = autonomyLevel
+        self.autonomyLevel = .fromExecutionTier(resolvedExecutionTier)
+        self.executionTier = resolvedExecutionTier
+        self.supervisorInterventionTier = governance.supervisorInterventionTier
+        self.reviewPolicyMode = reviewPolicyMode ?? governance.reviewPolicyMode
+        self.progressHeartbeatSeconds = progressHeartbeatSeconds ?? governance.schedule.progressHeartbeatSeconds
+        self.reviewPulseSeconds = reviewPulseSeconds ?? governance.schedule.reviewPulseSeconds
+        self.brainstormReviewSeconds = brainstormReviewSeconds ?? governance.schedule.brainstormReviewSeconds
+        self.eventDrivenReviewEnabled = eventDrivenReviewEnabled ?? governance.schedule.eventDrivenReviewEnabled
         self.budget = budget
         self.autoStart = autoStart
     }

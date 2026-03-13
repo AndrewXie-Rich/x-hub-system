@@ -1036,23 +1036,32 @@ private struct ModelRow: View {
 
     @State private var showEditRoles: Bool = false
     @State private var showRemoveDialog: Bool = false
+    @EnvironmentObject private var store: HubStore
     @ObservedObject private var modelStore = ModelStore.shared
 
     var body: some View {
         let pending = modelStore.pendingAction(for: m.id)
         let lastErr = modelStore.lastError(for: m.id)
         let bench = modelStore.benchByModelId[m.id]
+        let runtimePresentation = modelStore.localModelRuntimePresentation(for: m)
         let isRemote: Bool = {
             let mp = (m.modelPath ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             if !mp.isEmpty { return false }
             return m.backend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "mlx"
         }()
+        let canBench = (runtimePresentation?.supportsBench ?? false) && m.state == .loaded
+        let canUnloadBeforeRemove = isRemote ? false : (runtimePresentation?.supportsUnload ?? false)
         let canDeleteFiles: Bool = {
             guard let p = m.modelPath, !p.isEmpty else { return false }
             let base = SharedPaths.ensureHubDirectory()
             let managedRoot = base.appendingPathComponent("models", isDirectory: true).path
             return (m.note ?? "") == "managed_copy" || p.hasPrefix(managedRoot + "/")
         }()
+        let supportedLocalRoutingDescriptors = LocalTaskRoutingCatalog.supportedDescriptors(in: m.taskKinds)
+        let hubDefaultLocalTaskSummary = store.hubDefaultLocalTaskSummary(
+            forModelId: m.id,
+            taskKinds: supportedLocalRoutingDescriptors.map(\.taskKind)
+        )
 
         HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
@@ -1075,6 +1084,21 @@ private struct ModelRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+
+                if !isRemote, !supportedLocalRoutingDescriptors.isEmpty {
+                    HStack(spacing: 8) {
+                        localTaskRoutingMenu(supportedLocalRoutingDescriptors)
+
+                        Text(hubDefaultLocalTaskSummary.isEmpty ? "Supports: \(supportedTaskSummary(supportedLocalRoutingDescriptors))" : "Hub default: \(hubDefaultLocalTaskSummary)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+
+                if let runtimePresentation, !isRemote {
+                    lifecycleBadge(runtimePresentation)
+                }
 
                 if let b = bench {
                     Text(benchLine(b))
@@ -1105,13 +1129,26 @@ private struct ModelRow: View {
                     .foregroundStyle(.secondary)
                 } else {
                     HStack(spacing: 8) {
-                        if m.state == .loaded {
-                            // Icon-only keeps the row compact so actions never clip in the drawer.
-                            miniIconButton("Sleep", systemName: "zzz", disabled: pending != nil) { act("sleep") }
-                            miniIconButton("Unload", systemName: "eject", disabled: pending != nil) { act("unload") }
-                            miniIconButton("Bench", systemName: "speedometer", disabled: pending != nil) { act("bench") }
-                        } else {
-                            miniIconButton("Load", systemName: "arrow.down.circle", disabled: pending != nil) { act("load") }
+                        switch runtimePresentation?.controlMode ?? .mlxLegacy {
+                        case .mlxLegacy:
+                            if m.state == .loaded {
+                                // Icon-only keeps the row compact so actions never clip in the drawer.
+                                miniIconButton("Sleep", systemName: "zzz", disabled: pending != nil) { act("sleep") }
+                                miniIconButton("Unload", systemName: "eject", disabled: pending != nil) { act("unload") }
+                                miniIconButton("Bench", systemName: "speedometer", disabled: pending != nil) { act("bench") }
+                            } else {
+                                miniIconButton("Load", systemName: "arrow.down.circle", disabled: pending != nil) { act("load") }
+                            }
+                        case .warmable:
+                            if m.state == .loaded, runtimePresentation?.supportsUnload == true {
+                                miniIconButton("Unload", systemName: "eject", disabled: pending != nil) { act("unload") }
+                            } else if runtimePresentation?.supportsWarmup == true {
+                                miniIconButton("Warmup", systemName: "flame", disabled: pending != nil) { act("warmup") }
+                            } else {
+                                lifecycleSummary(runtimePresentation)
+                            }
+                        case .ephemeralOnDemand:
+                            lifecycleSummary(runtimePresentation)
                         }
 
                         if pending != nil {
@@ -1146,7 +1183,7 @@ private struct ModelRow: View {
             Button("Set Role: Classify") {
                 ModelStore.shared.updateRoles(modelId: m.id, roles: ["classify"])
             }
-            if m.state == .loaded {
+            if canBench {
                 Divider()
                 Button("Bench") { act("bench") }
             }
@@ -1155,14 +1192,14 @@ private struct ModelRow: View {
         }
         .confirmationDialog("Remove model", isPresented: $showRemoveDialog, titleVisibility: .visible) {
             Button("Remove from Hub", role: .destructive) {
-                if m.state == .loaded {
+                if m.state == .loaded, canUnloadBeforeRemove {
                     ModelStore.shared.enqueue(action: "unload", modelId: m.id)
                 }
                 ModelStore.shared.removeModel(modelId: m.id, deleteLocalFiles: false)
             }
             if canDeleteFiles {
                 Button("Remove and Delete Local Copy", role: .destructive) {
-                    if m.state == .loaded {
+                    if m.state == .loaded, canUnloadBeforeRemove {
                         ModelStore.shared.enqueue(action: "unload", modelId: m.id)
                     }
                     ModelStore.shared.removeModel(modelId: m.id, deleteLocalFiles: true)
@@ -1189,6 +1226,28 @@ private struct ModelRow: View {
         return Array(raw.prefix(3))
     }
 
+    private func supportedTaskSummary(_ descriptors: [LocalTaskRoutingDescriptor]) -> String {
+        descriptors.map(\.shortTitle).joined(separator: ", ")
+    }
+
+    private func localTaskRoutingMenu(_ descriptors: [LocalTaskRoutingDescriptor]) -> some View {
+        Menu {
+            ForEach(descriptors) { descriptor in
+                let currentlyBound = store.hubDefaultRoutingModelId(taskType: descriptor.taskKind) == m.id
+                Button(currentlyBound ? "Stop using for \(descriptor.title)" : "Use for \(descriptor.title)") {
+                    store.setRoutingPreferredModel(
+                        taskType: descriptor.taskKind,
+                        modelId: currentlyBound ? nil : m.id
+                    )
+                }
+            }
+        } label: {
+            Text("Use For…")
+                .font(.caption2)
+        }
+        .controlSize(.mini)
+    }
+
     private func miniIconButton(_ title: String, systemName: String, disabled: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
@@ -1200,6 +1259,55 @@ private struct ModelRow: View {
         .help(title)
         .accessibilityLabel(Text(title))
         .disabled(disabled)
+    }
+
+    private func lifecycleBadge(_ runtimePresentation: LocalModelRuntimePresentation) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: runtimePresentation.badgeSystemName)
+            Text(runtimePresentation.badgeTitle)
+        }
+        .font(.caption2)
+        .foregroundStyle(lifecycleBadgeColor(runtimePresentation))
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(.ultraThinMaterial)
+        .clipShape(Capsule())
+        .help(lifecycleHelp(runtimePresentation))
+    }
+
+    @ViewBuilder
+    private func lifecycleSummary(_ runtimePresentation: LocalModelRuntimePresentation?) -> some View {
+        if let runtimePresentation {
+            HStack(spacing: 6) {
+                Image(systemName: runtimePresentation.badgeSystemName)
+                Text(runtimePresentation.badgeTitle)
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .help(lifecycleHelp(runtimePresentation))
+        }
+    }
+
+    private func lifecycleBadgeColor(_ runtimePresentation: LocalModelRuntimePresentation) -> Color {
+        switch runtimePresentation.controlMode {
+        case .mlxLegacy:
+            return .secondary
+        case .warmable:
+            return .orange
+        case .ephemeralOnDemand:
+            return .secondary
+        }
+    }
+
+    private func lifecycleHelp(_ runtimePresentation: LocalModelRuntimePresentation) -> String {
+        switch runtimePresentation.controlMode {
+        case .mlxLegacy:
+            return "Legacy MLX runtime controls are wired to resident load/sleep/unload/bench actions."
+        case .warmable:
+            return "This provider advertises explicit warmup/unload lifecycle semantics. Hub will only expose resident actions after the provider is wired to a real resident transport."
+        case .ephemeralOnDemand:
+            return "This provider runs on demand per request. Hub does not keep the model resident between requests yet."
+        }
     }
 
     private func subtitle() -> String {

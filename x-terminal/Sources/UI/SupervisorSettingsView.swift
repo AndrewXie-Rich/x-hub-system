@@ -70,6 +70,10 @@ struct SupervisorSettingsView: View {
             Text("在这里可以为各个项目分配不同的 AI 模型。Supervisor 可以根据项目需求为不同角色（编程助手、代码审查等）指定合适的模型。")
                 .font(.body)
                 .foregroundStyle(.secondary)
+
+            Text("如果某台 paired Terminal 需要更大的或更小的本地 context length，请在 Hub 的设备编辑页调整该设备的 local model override；这里显示的是 Hub catalog 默认值。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
     
@@ -654,9 +658,15 @@ struct SupervisorSettingsView: View {
                             .lineLimit(2)
                     }
                     
-                    Text("上下文长度：\(model.contextLength) tokens")
+                    Text("Hub 默认上下文：\(model.hubDefaultContextLength) tokens")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+
+                    if model.isLocalModel {
+                        Text("本地上限：\(model.hubMaxContextLength) tokens")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     
                     if let roles = model.roles, !roles.isEmpty {
                         Text("角色：\(roles.joined(separator: ", "))")

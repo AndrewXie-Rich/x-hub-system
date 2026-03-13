@@ -32,6 +32,39 @@ struct SupervisorCommandGuardTests {
     }
 
     @Test
+    func supervisorSkillSummaryUsesHumanSummaryForSecretVaultBrowserFill() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let toolCall = ToolCall(
+            id: "skill-browser-secret-fill",
+            tool: .deviceBrowserControl,
+            args: [
+                "action": .string("type"),
+                "selector": .string("input[type=password]"),
+                "secret_item_id": .string("sv_project_login")
+            ]
+        )
+
+        let summary = manager.summarizedSupervisorSkillOutputForTesting(
+            ToolExecutor.structuredOutput(
+                summary: [
+                    "tool": .string(ToolName.deviceBrowserControl.rawValue),
+                    "ok": .bool(true),
+                    "action": .string("type"),
+                    "selector": .string("input[type=password]"),
+                    "browser_runtime_driver_state": .string("secret_vault_applescript_fill"),
+                ],
+                body: "session_id=browser_session_1"
+            ),
+            ok: true,
+            toolCall: toolCall
+        )
+
+        #expect(summary.contains("device.browser.control completed"))
+        #expect(summary.contains("Secret Vault credential"))
+        #expect(summary.contains("input[type=password]"))
+    }
+
+    @Test
     func executionIntakeDoesNotAutoCreateProjectFromHallucinatedTag() throws {
         let manager = SupervisorManager.makeForTesting()
 
@@ -246,6 +279,251 @@ struct SupervisorCommandGuardTests {
         #expect(localMemory.contains("recent_relevant_messages:"))
         #expect(localMemory.contains("先梳理模块边界"))
         #expect(localMemory.contains("随后输出重构分层方案"))
+    }
+
+    @Test
+    func localMemoryFocusedProjectBriefIncludesReviewAnchors() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-memory-review-anchor")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let ctx = AXProjectContext(root: root)
+        let spec = SupervisorProjectSpecCapsuleBuilder.build(
+            projectId: project.projectId,
+            goal: "把 supervisor 的 review 机制做成高质量但保留自由度",
+            mvpDefinition: "review 必须能防跑偏、看质量，并在需要时提出更好的路径",
+            nonGoals: ["不要把 supervisor 做成僵硬 checklist agent"],
+            approvedTechStack: ["SwiftUI", "Hub-governed memory"],
+            milestoneMap: [
+                SupervisorProjectSpecMilestone(
+                    milestoneId: "m1",
+                    title: "落协议与 prompt",
+                    status: .active
+                )
+            ]
+        )
+        try SupervisorProjectSpecCapsuleStore.save(spec, for: ctx)
+
+        let decision = SupervisorDecisionTrackBuilder.build(
+            decisionId: "decision-review-style",
+            projectId: project.projectId,
+            category: .scopeFreeze,
+            status: .approved,
+            statement: "Supervisor review 必须保留自由度，但不能牺牲 goal alignment 和 evidence-based judgement.",
+            source: "user_confirmed_protocol",
+            reversible: true,
+            approvalRequired: false,
+            auditRef: "audit-review-style",
+            createdAtMs: 1_773_700_000_000
+        )
+        _ = try SupervisorDecisionTrackStore.upsert(decision, for: ctx)
+
+        let localMemory = await manager.buildSupervisorLocalMemoryV1ForTesting(
+            "审查亮亮项目的上下文记忆，给出最具体的执行方案"
+        )
+
+        #expect(localMemory.contains("[focused_project_execution_brief]"))
+        #expect(localMemory.contains("done_definition: review 必须能防跑偏、看质量，并在需要时提出更好的路径"))
+        #expect(localMemory.contains("constraints:"))
+        #expect(localMemory.contains("non_goals: 不要把 supervisor 做成僵硬 checklist agent"))
+        #expect(localMemory.contains("approved_decisions:"))
+        #expect(localMemory.contains("scope_freeze=Supervisor review 必须保留自由度"))
+        #expect(localMemory.contains("governance:"))
+        #expect(localMemory.contains("latest_review_note:"))
+        #expect(localMemory.contains("latest_review_note=(none)"))
+        #expect(localMemory.contains("latest_guidance_injection:"))
+        #expect(localMemory.contains("latest_guidance_injection=(none)"))
+        #expect(localMemory.contains("pending_ack_guidance:"))
+        #expect(localMemory.contains("pending_ack_guidance=(none)"))
+        #expect(localMemory.contains("constraints=non_goals=不要把 supervisor 做成僵硬 checklist agent"))
+        #expect(localMemory.contains("approved_decisions=scope_freeze=Supervisor review 必须保留自由度"))
+    }
+
+    @Test
+    func captureSupervisorReviewNotePersistsAnchoredStrategicReview() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-review-note-capture")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let ctx = AXProjectContext(root: root)
+        let spec = SupervisorProjectSpecCapsuleBuilder.build(
+            projectId: project.projectId,
+            goal: "让 supervisor review 既高质量又保留自由度",
+            mvpDefinition: "review 时先锚定目标/约束，再基于证据判断，并且只在必要时 brainstorm 新路径",
+            nonGoals: ["不要把 review 做成僵硬 checklist"],
+            approvedTechStack: ["SwiftUI", "Hub memory"],
+            milestoneMap: [
+                SupervisorProjectSpecMilestone(
+                    milestoneId: "m1",
+                    title: "落 review note 主链",
+                    status: .active
+                )
+            ]
+        )
+        try SupervisorProjectSpecCapsuleStore.save(spec, for: ctx)
+
+        let decision = SupervisorDecisionTrackBuilder.build(
+            decisionId: "decision-review-note-style",
+            projectId: project.projectId,
+            category: .scopeFreeze,
+            status: .approved,
+            statement: "如果当前路径证据充分且仍对齐目标，优先低 churn 继续推进；若发现更优路径，再做有理由的 replan。",
+            source: "user_confirmed_protocol",
+            reversible: true,
+            approvalRequired: false,
+            auditRef: "audit-review-note-style",
+            createdAtMs: 1_773_710_000_000
+        )
+        _ = try SupervisorDecisionTrackStore.upsert(decision, for: ctx)
+
+        manager.captureSupervisorReviewNoteForTesting(
+            userMessage: "审查亮亮项目的上下文记忆，brainstorm 更好的执行方案，但不要跑偏",
+            response: """
+            当前路径基本成立，但有一条更稳的推进方式。
+            1. 先冻结目标、done 定义和约束，避免 review 过程中 scope creep。
+            2. 再把 focused brief 里的 approved decisions 和 constraints 提升为 review anchor。
+            3. 最后再补轻量 brainstorm，而不是直接推翻现有路径。
+            """,
+            triggerSource: "user_turn"
+        )
+
+        let snapshot = SupervisorReviewNoteStore.load(for: ctx)
+        let note = try #require(snapshot.notes.first)
+        #expect(note.projectId == project.projectId)
+        #expect(note.trigger == .manualRequest)
+        #expect(note.reviewLevel == .r2Strategic)
+        #expect(note.verdict == .betterPathFound)
+        #expect(note.targetRole == .coder)
+        #expect(note.deliveryMode == .replanRequest)
+        #expect(note.ackRequired)
+        #expect(note.anchorGoal == "让 supervisor review 既高质量又保留自由度")
+        #expect(note.anchorDoneDefinition == "review 时先锚定目标/约束，再基于证据判断，并且只在必要时 brainstorm 新路径")
+        #expect(note.anchorConstraints.contains(where: { $0.contains("non_goal=不要把 review 做成僵硬 checklist") }))
+        #expect(note.recommendedActions.count >= 3)
+        #expect(note.summary.contains("当前路径基本成立"))
+
+        let guidanceSnapshot = SupervisorGuidanceInjectionStore.load(for: ctx)
+        let guidance = try #require(guidanceSnapshot.items.first)
+        #expect(guidance.reviewId == note.reviewId)
+        #expect(guidance.projectId == project.projectId)
+        #expect(guidance.targetRole == .coder)
+        #expect(guidance.deliveryMode == .replanRequest)
+        #expect(guidance.interventionMode == .replanNextSafePoint)
+        #expect(guidance.safePointPolicy == .nextStepBoundary)
+        #expect(guidance.ackStatus == .pending)
+        #expect(guidance.ackRequired)
+        #expect(guidance.guidanceText.contains("verdict=better_path_found"))
+    }
+
+    @Test
+    func localMemoryFocusedProjectBriefIncludesLatestReviewNoteDigest() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-memory-latest-review-note")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let ctx = AXProjectContext(root: root)
+        let spec = SupervisorProjectSpecCapsuleBuilder.build(
+            projectId: project.projectId,
+            goal: "让 supervisor review note 进入 focused brief",
+            mvpDefinition: "latest review note 要能被后续 supervisor/coder 直接消费",
+            nonGoals: ["不要让 review note 只存在 raw log"],
+            approvedTechStack: ["SwiftUI", "Hub memory"],
+            milestoneMap: [
+                SupervisorProjectSpecMilestone(
+                    milestoneId: "m1",
+                    title: "接入 latest review note",
+                    status: .active
+                )
+            ]
+        )
+        try SupervisorProjectSpecCapsuleStore.save(spec, for: ctx)
+
+        manager.captureSupervisorReviewNoteForTesting(
+            userMessage: "审查亮亮项目的上下文记忆，给出具体执行方案，但不要跑偏",
+            response: """
+            当前路径成立，但有一条更稳的推进方式。
+            1. 先把 latest review note 放进 focused brief。
+            2. 再让 coder 默认读取最新 verdict 和 recommended actions。
+            """,
+            triggerSource: "user_turn"
+        )
+
+        let localMemory = await manager.buildSupervisorLocalMemoryV1ForTesting(
+            "继续审查亮亮项目的上下文记忆，并输出下一步执行方案"
+        )
+
+        #expect(localMemory.contains("latest_review_note:"))
+        #expect(localMemory.contains("trigger: manual_request"))
+        #expect(localMemory.contains("verdict: better_path_found"))
+        #expect(localMemory.contains("delivery: coder/replan_request ack_required=true"))
+        #expect(localMemory.contains("recommended_actions: 先把 latest review note 放进 focused brief。 | 再让 coder 默认读取最新 verdict 和 recommended actions。"))
+        #expect(localMemory.contains("latest_review_note=verdict=better_path_found level=r2_strategic delivery=replan_request ack_required=true"))
+        #expect(localMemory.contains("latest_guidance_injection:"))
+        #expect(localMemory.contains("intervention_mode: replan_next_safe_point"))
+        #expect(localMemory.contains("safe_point_policy: next_step_boundary"))
+        #expect(localMemory.contains("ack_status: pending"))
+        #expect(localMemory.contains("pending_ack_guidance:"))
+        #expect(localMemory.contains("pending_ack_guidance=ack_status=pending ack_required=true ack_note=(none) delivery=replan_request intervention=replan_next_safe_point safe_point=next_step_boundary"))
+    }
+
+    @Test
+    func localMemoryFocusedProjectBriefIncludesGuidanceAckNoteDigest() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-memory-guidance-ack-note")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let ctx = AXProjectContext(root: root)
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-brief-ack-note-1",
+                reviewId: "review-brief-ack-note-1",
+                projectId: project.projectId,
+                targetRole: .coder,
+                deliveryMode: .replanRequest,
+                interventionMode: .replanNextSafePoint,
+                safePointPolicy: .nextStepBoundary,
+                guidanceText: "改成更稳的 replan 路线。",
+                ackStatus: .rejected,
+                ackRequired: true,
+                ackNote: "Need extra evidence before moving the migration boundary.",
+                injectedAtMs: 1_773_384_100_000,
+                ackUpdatedAtMs: 1_773_384_100_100,
+                auditRef: "audit-guidance-brief-ack-note-1"
+            ),
+            for: ctx
+        )
+
+        let localMemory = await manager.buildSupervisorLocalMemoryV1ForTesting(
+            "继续审查亮亮项目的上下文记忆，并输出下一步执行方案"
+        )
+
+        #expect(localMemory.contains("latest_guidance_injection:"))
+        #expect(localMemory.contains("ack_note: Need extra evidence before moving the migration boundary."))
+        #expect(localMemory.contains("latest_guidance_injection=ack_status=rejected ack_required=true ack_note=Need extra evidence before moving the migration boundary."))
     }
 
     @Test
@@ -1795,6 +2073,811 @@ struct SupervisorCommandGuardTests {
     }
 
     @Test
+    func officialCodeReviewSkillStatusVariantMapsToGitStatus() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let fixture = SupervisorSkillRegistryFixture()
+        defer { fixture.cleanup() }
+
+        let root = try makeProjectRoot(named: "supervisor-call-code-review-status")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "我的世界还原项目")
+        try fixture.writeHubSkillsStore(projectID: project.projectId)
+        try appendManifestDrivenSkillFixture(
+            hubBaseDir: fixture.hubBaseDir,
+            projectID: project.projectId,
+            skillID: "code-review",
+            packageSHA256: "2020202020202020202020202020202020202020202020202020202020202020",
+            canonicalManifestSHA256: "2121212121212121212121212121212121212121212121212121212121212121",
+            manifest: try loadOfficialAgentSkillManifestFixture(skillID: "code-review")
+        )
+        HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+
+        manager.setSupervisorToolExecutorOverrideForTesting { call, _ in
+            #expect(call.tool == .git_status)
+            #expect(call.args.isEmpty)
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: true,
+                output: "code review status completed"
+            )
+        }
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"查看仓库当前改动","priority":"normal"}[/CREATE_JOB]"#,
+            userMessage: "请创建任务"
+        )
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [UPSERT_PLAN]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","plan_id":"plan-code-review-status-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"查看仓库状态","kind":"call_skill","status":"pending","skill_id":"code-review"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划"
+        )
+
+        let rendered = manager.processSupervisorResponseForTesting(
+            #"""
+            [CALL_SKILL]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","step_id":"step-001","skill_id":"code-review","payload":{"action":"status"}}[/CALL_SKILL]
+            """#,
+            userMessage: "请执行 code-review status"
+        )
+
+        #expect(rendered.contains("✅ 已为项目 \(project.displayName) 排队技能调用：code-review"))
+        await manager.waitForSupervisorSkillDispatchForTesting()
+
+        let call = try #require(SupervisorProjectSkillCallStore.load(for: ctx).calls.first)
+        #expect(call.skillId == "code-review")
+        #expect(call.toolName == ToolName.git_status.rawValue)
+        #expect(call.status == .completed)
+        #expect(call.resultSummary.contains("code review status completed"))
+    }
+
+    @Test
+    func officialCodeReviewSkillStagedDiffVariantMapsToGitDiffCached() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let fixture = SupervisorSkillRegistryFixture()
+        defer { fixture.cleanup() }
+
+        let root = try makeProjectRoot(named: "supervisor-call-code-review-staged-diff")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "我的世界还原项目")
+        try fixture.writeHubSkillsStore(projectID: project.projectId)
+        try appendManifestDrivenSkillFixture(
+            hubBaseDir: fixture.hubBaseDir,
+            projectID: project.projectId,
+            skillID: "code-review",
+            packageSHA256: "2222222022222220222222202222222022222220222222202222222022222220",
+            canonicalManifestSHA256: "2323232023232320232323202323232023232320232323202323232023232320",
+            manifest: try loadOfficialAgentSkillManifestFixture(skillID: "code-review")
+        )
+        HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+
+        manager.setSupervisorToolExecutorOverrideForTesting { call, _ in
+            #expect(call.tool == .git_diff)
+            let cached: Bool
+            if case .bool(let value)? = call.args["cached"] {
+                cached = value
+            } else {
+                cached = false
+            }
+            #expect(cached)
+            #expect(call.args["action"] == nil)
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: true,
+                output: "code review staged diff completed"
+            )
+        }
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"查看 staged diff","priority":"normal"}[/CREATE_JOB]"#,
+            userMessage: "请创建任务"
+        )
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [UPSERT_PLAN]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","plan_id":"plan-code-review-staged-diff-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"查看 staged diff","kind":"call_skill","status":"pending","skill_id":"code-review"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划"
+        )
+
+        let rendered = manager.processSupervisorResponseForTesting(
+            #"""
+            [CALL_SKILL]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","step_id":"step-001","skill_id":"code-review","payload":{"action":"staged_diff"}}[/CALL_SKILL]
+            """#,
+            userMessage: "请执行 code-review staged_diff"
+        )
+
+        #expect(rendered.contains("✅ 已为项目 \(project.displayName) 排队技能调用：code-review"))
+        await manager.waitForSupervisorSkillDispatchForTesting()
+
+        let call = try #require(SupervisorProjectSkillCallStore.load(for: ctx).calls.first)
+        #expect(call.skillId == "code-review")
+        #expect(call.toolName == ToolName.git_diff.rawValue)
+        #expect(call.status == .completed)
+        #expect(call.resultSummary.contains("code review staged diff completed"))
+    }
+
+    @Test
+    func officialCodeReviewSkillReadVariantMapsToReadFile() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let fixture = SupervisorSkillRegistryFixture()
+        defer { fixture.cleanup() }
+
+        let root = try makeProjectRoot(named: "supervisor-call-code-review-read")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "我的世界还原项目")
+        try fixture.writeHubSkillsStore(projectID: project.projectId)
+        try appendManifestDrivenSkillFixture(
+            hubBaseDir: fixture.hubBaseDir,
+            projectID: project.projectId,
+            skillID: "code-review",
+            packageSHA256: "2424242024242420242424202424242024242420242424202424242024242420",
+            canonicalManifestSHA256: "2525252025252520252525202525252025252520252525202525252025252520",
+            manifest: try loadOfficialAgentSkillManifestFixture(skillID: "code-review")
+        )
+        HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+
+        manager.setSupervisorToolExecutorOverrideForTesting { call, _ in
+            #expect(call.tool == .read_file)
+            #expect(call.args["path"]?.stringValue == "Sources/App.swift")
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: true,
+                output: "code review read completed"
+            )
+        }
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"读取关键文件","priority":"normal"}[/CREATE_JOB]"#,
+            userMessage: "请创建任务"
+        )
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [UPSERT_PLAN]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","plan_id":"plan-code-review-read-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"读取关键文件","kind":"call_skill","status":"pending","skill_id":"code-review"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划"
+        )
+
+        let rendered = manager.processSupervisorResponseForTesting(
+            #"""
+            [CALL_SKILL]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","step_id":"step-001","skill_id":"code-review","payload":{"action":"read","file":"Sources/App.swift"}}[/CALL_SKILL]
+            """#,
+            userMessage: "请执行 code-review read"
+        )
+
+        #expect(rendered.contains("✅ 已为项目 \(project.displayName) 排队技能调用：code-review"))
+        await manager.waitForSupervisorSkillDispatchForTesting()
+
+        let call = try #require(SupervisorProjectSkillCallStore.load(for: ctx).calls.first)
+        #expect(call.skillId == "code-review")
+        #expect(call.toolName == ToolName.read_file.rawValue)
+        #expect(call.status == .completed)
+        #expect(call.resultSummary.contains("code review read completed"))
+    }
+
+    @Test
+    func officialTavilyWebsearchSkillMapsToGovernedWebSearch() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let fixture = SupervisorSkillRegistryFixture()
+        defer { fixture.cleanup() }
+
+        let root = try makeProjectRoot(named: "supervisor-call-tavily-websearch")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "我的世界还原项目")
+        try fixture.writeHubSkillsStore(projectID: project.projectId)
+        try appendManifestDrivenSkillFixture(
+            hubBaseDir: fixture.hubBaseDir,
+            projectID: project.projectId,
+            skillID: "tavily-websearch",
+            packageSHA256: "2626262026262620262626202626262026262620262626202626262026262620",
+            canonicalManifestSHA256: "2727272027272720272727202727272027272720272727202727272027272720",
+            manifest: try loadOfficialAgentSkillManifestFixture(skillID: "tavily-websearch")
+        )
+        HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+
+        manager.setSupervisorToolExecutorOverrideForTesting { call, _ in
+            #expect(call.tool == .web_search)
+            #expect(call.args["query"]?.stringValue == "latest swift macros")
+            #expect(call.args["grant_id"]?.stringValue == "grant-search-1")
+            #expect(call.args["max_results"]?.stringValue == "5")
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: true,
+                output: "tavily websearch completed"
+            )
+        }
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"联网搜索最新 Swift 宏资料","priority":"high"}[/CREATE_JOB]"#,
+            userMessage: "请创建任务"
+        )
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [UPSERT_PLAN]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","plan_id":"plan-tavily-websearch-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"联网搜索最新 Swift 宏资料","kind":"call_skill","status":"pending","skill_id":"tavily-websearch"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划"
+        )
+
+        let rendered = manager.processSupervisorResponseForTesting(
+            #"""
+            [CALL_SKILL]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","step_id":"step-001","skill_id":"tavily-websearch","payload":{"q":"latest swift macros","grant_id":"grant-search-1","limit":5}}[/CALL_SKILL]
+            """#,
+            userMessage: "请执行 tavily-websearch"
+        )
+
+        #expect(rendered.contains("✅ 已为项目 \(project.displayName) 排队技能调用：tavily-websearch"))
+        await manager.waitForSupervisorSkillDispatchForTesting()
+
+        let call = try #require(SupervisorProjectSkillCallStore.load(for: ctx).calls.first)
+        #expect(call.skillId == "tavily-websearch")
+        #expect(call.toolName == ToolName.web_search.rawValue)
+        #expect(call.status == .completed)
+        #expect(call.resultSummary.contains("tavily websearch completed"))
+    }
+
+    @Test
+    func officialSkillCreatorListVariantMapsToListDir() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let fixture = SupervisorSkillRegistryFixture()
+        defer { fixture.cleanup() }
+
+        let root = try makeProjectRoot(named: "supervisor-call-skill-creator-list")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "我的世界还原项目")
+        try fixture.writeHubSkillsStore(projectID: project.projectId)
+        try appendManifestDrivenSkillFixture(
+            hubBaseDir: fixture.hubBaseDir,
+            projectID: project.projectId,
+            skillID: "skill-creator",
+            packageSHA256: "2828282028282820282828202828282028282820282828202828282028282820",
+            canonicalManifestSHA256: "2929292029292920292929202929292029292920292929202929292029292920",
+            manifest: try loadOfficialAgentSkillManifestFixture(skillID: "skill-creator")
+        )
+        HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+
+        manager.setSupervisorToolExecutorOverrideForTesting { call, _ in
+            #expect(call.tool == .list_dir)
+            #expect(call.args["path"]?.stringValue == "official-agent-skills")
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: true,
+                output: "skill creator list completed"
+            )
+        }
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"查看当前 skill 目录","priority":"normal"}[/CREATE_JOB]"#,
+            userMessage: "请创建任务"
+        )
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [UPSERT_PLAN]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","plan_id":"plan-skill-creator-list-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"查看 skill 目录","kind":"call_skill","status":"pending","skill_id":"skill-creator"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划"
+        )
+
+        let rendered = manager.processSupervisorResponseForTesting(
+            #"""
+            [CALL_SKILL]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","step_id":"step-001","skill_id":"skill-creator","payload":{"action":"list","dir":"official-agent-skills"}}[/CALL_SKILL]
+            """#,
+            userMessage: "请执行 skill-creator list"
+        )
+
+        #expect(rendered.contains("✅ 已为项目 \(project.displayName) 排队技能调用：skill-creator"))
+        await manager.waitForSupervisorSkillDispatchForTesting()
+
+        let call = try #require(SupervisorProjectSkillCallStore.load(for: ctx).calls.first)
+        #expect(call.skillId == "skill-creator")
+        #expect(call.toolName == ToolName.list_dir.rawValue)
+        #expect(call.status == .completed)
+        #expect(call.resultSummary.contains("skill creator list completed"))
+    }
+
+    @Test
+    func officialSkillCreatorWriteVariantMapsToWriteFile() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let fixture = SupervisorSkillRegistryFixture()
+        defer { fixture.cleanup() }
+
+        let root = try makeProjectRoot(named: "supervisor-call-skill-creator-write")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "我的世界还原项目")
+        try fixture.writeHubSkillsStore(projectID: project.projectId)
+        try appendManifestDrivenSkillFixture(
+            hubBaseDir: fixture.hubBaseDir,
+            projectID: project.projectId,
+            skillID: "skill-creator",
+            packageSHA256: "3030302030303020303030203030302030303020303030203030302030303020",
+            canonicalManifestSHA256: "3131312031313120313131203131312031313120313131203131312031313120",
+            manifest: try loadOfficialAgentSkillManifestFixture(skillID: "skill-creator")
+        )
+        HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+
+        manager.setSupervisorToolExecutorOverrideForTesting { call, _ in
+            #expect(call.tool == .write_file)
+            #expect(call.args["path"]?.stringValue == "official-agent-skills/demo-skill/SKILL.md")
+            #expect(call.args["content"]?.stringValue == "# Demo Skill")
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: true,
+                output: "skill creator write completed"
+            )
+        }
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"写入 skill 源文件","priority":"normal"}[/CREATE_JOB]"#,
+            userMessage: "请创建任务"
+        )
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config = config
+            .settingTrustedAutomationBinding(
+                mode: .trustedAutomation,
+                deviceId: "device_xt_001",
+                workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: root)
+            )
+            .settingAutonomyPolicy(
+                mode: .trustedOpenClawMode,
+                updatedAt: Date(timeIntervalSince1970: 1_773_800_500)
+            )
+            .settingGovernedAutoApproveLocalToolCalls(enabled: true)
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [UPSERT_PLAN]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","plan_id":"plan-skill-creator-write-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"写入 skill 源文件","kind":"call_skill","status":"pending","skill_id":"skill-creator"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划"
+        )
+
+        let rendered = manager.processSupervisorResponseForTesting(
+            #"""
+            [CALL_SKILL]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","step_id":"step-001","skill_id":"skill-creator","payload":{"action":"write","path":"official-agent-skills/demo-skill/SKILL.md","text":"# Demo Skill"}}[/CALL_SKILL]
+            """#,
+            userMessage: "请执行 skill-creator write"
+        )
+
+        #expect(!rendered.contains("当前需要本地审批后才能继续"))
+        await manager.waitForSupervisorSkillDispatchForTesting()
+
+        let call = try #require(SupervisorProjectSkillCallStore.load(for: ctx).calls.first)
+        #expect(call.skillId == "skill-creator")
+        #expect(call.toolName == ToolName.write_file.rawValue)
+        #expect(call.status == .completed)
+        #expect(call.resultSummary.contains("skill creator write completed"))
+    }
+
+    @Test
+    func officialAgentBackupCreateVariantMapsToGovernedRunCommand() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let fixture = SupervisorSkillRegistryFixture()
+        defer { fixture.cleanup() }
+
+        let root = try makeProjectRoot(named: "supervisor-call-agent-backup-create")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "我的世界还原项目")
+        try fixture.writeHubSkillsStore(projectID: project.projectId)
+        try appendManifestDrivenSkillFixture(
+            hubBaseDir: fixture.hubBaseDir,
+            projectID: project.projectId,
+            skillID: "agent-backup",
+            packageSHA256: "3232322032323220323232203232322032323220323232203232322032323220",
+            canonicalManifestSHA256: "3333332033333320333333203333332033333320333333203333332033333320",
+            manifest: try loadOfficialAgentSkillManifestFixture(skillID: "agent-backup")
+        )
+        HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+
+        manager.setSupervisorToolExecutorOverrideForTesting { call, _ in
+            #expect(call.tool == .run_command)
+            let command = call.args["command"]?.stringValue ?? ""
+            #expect(command.contains("mkdir -p .ax-backups"))
+            #expect(command.contains("/usr/bin/tar -czf"))
+            #expect(command.contains("--exclude .git"))
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: true,
+                output: "agent backup create completed"
+            )
+        }
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"创建本地项目备份","priority":"high"}[/CREATE_JOB]"#,
+            userMessage: "请创建任务"
+        )
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config = config
+            .settingTrustedAutomationBinding(
+                mode: .trustedAutomation,
+                deviceId: "device_xt_001",
+                workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: root)
+            )
+            .settingAutonomyPolicy(
+                mode: .trustedOpenClawMode,
+                updatedAt: Date(timeIntervalSince1970: 1_773_800_700)
+            )
+            .settingGovernedAutoApproveLocalToolCalls(enabled: true)
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [UPSERT_PLAN]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","plan_id":"plan-agent-backup-create-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"创建本地项目备份","kind":"call_skill","status":"pending","skill_id":"agent-backup"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划"
+        )
+
+        let rendered = manager.processSupervisorResponseForTesting(
+            #"""
+            [CALL_SKILL]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","step_id":"step-001","skill_id":"agent-backup","payload":{"action":"create"}}[/CALL_SKILL]
+            """#,
+            userMessage: "请执行 agent-backup create"
+        )
+
+        #expect(!rendered.contains("当前需要本地审批后才能继续"))
+        await manager.waitForSupervisorSkillDispatchForTesting()
+
+        let call = try #require(SupervisorProjectSkillCallStore.load(for: ctx).calls.first)
+        #expect(call.skillId == "agent-backup")
+        #expect(call.toolName == ToolName.run_command.rawValue)
+        #expect(call.status == .completed)
+        #expect(call.resultSummary.contains("agent backup create completed"))
+    }
+
+    @Test
+    func officialSkillVetterManifestVariantMapsToReadFile() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let fixture = SupervisorSkillRegistryFixture()
+        defer { fixture.cleanup() }
+
+        let root = try makeProjectRoot(named: "supervisor-call-skill-vetter-manifest")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "我的世界还原项目")
+        try fixture.writeHubSkillsStore(projectID: project.projectId)
+        try appendManifestDrivenSkillFixture(
+            hubBaseDir: fixture.hubBaseDir,
+            projectID: project.projectId,
+            skillID: "skill-vetter",
+            packageSHA256: "3434342034343420343434203434342034343420343434203434342034343420",
+            canonicalManifestSHA256: "3535352035353520353535203535352035353520353535203535352035353520",
+            manifest: try loadOfficialAgentSkillManifestFixture(skillID: "skill-vetter")
+        )
+        HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+
+        manager.setSupervisorToolExecutorOverrideForTesting { call, _ in
+            #expect(call.tool == .read_file)
+            #expect(call.args["path"]?.stringValue == "official-agent-skills/agent-browser/skill.json")
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: true,
+                output: "skill vetter manifest read completed"
+            )
+        }
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"读取 skill manifest","priority":"normal"}[/CREATE_JOB]"#,
+            userMessage: "请创建任务"
+        )
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [UPSERT_PLAN]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","plan_id":"plan-skill-vetter-manifest-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"读取目标 skill manifest","kind":"call_skill","status":"pending","skill_id":"skill-vetter"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划"
+        )
+
+        let rendered = manager.processSupervisorResponseForTesting(
+            #"""
+            [CALL_SKILL]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","step_id":"step-001","skill_id":"skill-vetter","payload":{"action":"manifest","manifest_path":"official-agent-skills/agent-browser/skill.json"}}[/CALL_SKILL]
+            """#,
+            userMessage: "请执行 skill-vetter manifest"
+        )
+
+        #expect(rendered.contains("✅ 已为项目 \(project.displayName) 排队技能调用：skill-vetter"))
+        await manager.waitForSupervisorSkillDispatchForTesting()
+
+        let call = try #require(SupervisorProjectSkillCallStore.load(for: ctx).calls.first)
+        #expect(call.skillId == "skill-vetter")
+        #expect(call.toolName == ToolName.read_file.rawValue)
+        #expect(call.status == .completed)
+        #expect(call.resultSummary.contains("skill vetter manifest read completed"))
+    }
+
+    @Test
+    func officialSkillVetterExecScanVariantMapsToSearch() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let fixture = SupervisorSkillRegistryFixture()
+        defer { fixture.cleanup() }
+
+        let root = try makeProjectRoot(named: "supervisor-call-skill-vetter-scan-exec")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "我的世界还原项目")
+        try fixture.writeHubSkillsStore(projectID: project.projectId)
+        try appendManifestDrivenSkillFixture(
+            hubBaseDir: fixture.hubBaseDir,
+            projectID: project.projectId,
+            skillID: "skill-vetter",
+            packageSHA256: "3636362036363620363636203636362036363620363636203636362036363620",
+            canonicalManifestSHA256: "3737372037373720373737203737372037373720373737203737372037373720",
+            manifest: try loadOfficialAgentSkillManifestFixture(skillID: "skill-vetter")
+        )
+        HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+
+        manager.setSupervisorToolExecutorOverrideForTesting { call, _ in
+            #expect(call.tool == .search)
+            #expect(call.args["path"]?.stringValue == "official-agent-skills")
+            let pattern = call.args["pattern"]?.stringValue ?? ""
+            #expect(pattern.contains("child_process"))
+            #expect(pattern.contains("subprocess"))
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: true,
+                output: "skill vetter scan exec completed"
+            )
+        }
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"扫描 skill 执行风险","priority":"high"}[/CREATE_JOB]"#,
+            userMessage: "请创建任务"
+        )
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [UPSERT_PLAN]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","plan_id":"plan-skill-vetter-scan-exec-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"扫描命令执行风险模式","kind":"call_skill","status":"pending","skill_id":"skill-vetter"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划"
+        )
+
+        let rendered = manager.processSupervisorResponseForTesting(
+            #"""
+            [CALL_SKILL]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","step_id":"step-001","skill_id":"skill-vetter","payload":{"action":"scan_exec","dir":"official-agent-skills","glob":"**/*.{js,ts,py,swift,md,json}"}}[/CALL_SKILL]
+            """#,
+            userMessage: "请执行 skill-vetter scan_exec"
+        )
+
+        #expect(rendered.contains("✅ 已为项目 \(project.displayName) 排队技能调用：skill-vetter"))
+        await manager.waitForSupervisorSkillDispatchForTesting()
+
+        let call = try #require(SupervisorProjectSkillCallStore.load(for: ctx).calls.first)
+        #expect(call.skillId == "skill-vetter")
+        #expect(call.toolName == ToolName.search.rawValue)
+        #expect(call.status == .completed)
+        #expect(call.resultSummary.contains("skill vetter scan exec completed"))
+    }
+
+    @Test
+    func officialSkillVetterReviewRecordVariantMapsToAgentImportRecord() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let fixture = SupervisorSkillRegistryFixture()
+        defer { fixture.cleanup() }
+
+        let root = try makeProjectRoot(named: "supervisor-call-skill-vetter-review-record")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "我的世界还原项目")
+        try fixture.writeHubSkillsStore(projectID: project.projectId)
+        try appendManifestDrivenSkillFixture(
+            hubBaseDir: fixture.hubBaseDir,
+            projectID: project.projectId,
+            skillID: "skill-vetter",
+            packageSHA256: "3838382038383820383838203838382038383820383838203838382038383820",
+            canonicalManifestSHA256: "3939392039393920393939203939392039393920393939203939392039393920",
+            manifest: try loadOfficialAgentSkillManifestFixture(skillID: "skill-vetter")
+        )
+        HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+
+        manager.setSupervisorToolExecutorOverrideForTesting { call, _ in
+            #expect(call.tool == .agentImportRecord)
+            #expect(call.args["staging_id"]?.stringValue == "stage-123")
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: true,
+                output: "skill vetter review record completed"
+            )
+        }
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"读取 Hub 导入审计记录","priority":"high"}[/CREATE_JOB]"#,
+            userMessage: "请创建任务"
+        )
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [UPSERT_PLAN]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","plan_id":"plan-skill-vetter-review-record-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"读取 Hub 导入审计记录","kind":"call_skill","status":"pending","skill_id":"skill-vetter"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划"
+        )
+
+        let rendered = manager.processSupervisorResponseForTesting(
+            #"""
+            [CALL_SKILL]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","step_id":"step-001","skill_id":"skill-vetter","payload":{"action":"review_record","staging_id":"stage-123"}}[/CALL_SKILL]
+            """#,
+            userMessage: "请执行 skill-vetter review_record"
+        )
+
+        #expect(rendered.contains("✅ 已为项目 \(project.displayName) 排队技能调用：skill-vetter"))
+        await manager.waitForSupervisorSkillDispatchForTesting()
+
+        let call = try #require(SupervisorProjectSkillCallStore.load(for: ctx).calls.first)
+        #expect(call.skillId == "skill-vetter")
+        #expect(call.toolName == ToolName.agentImportRecord.rawValue)
+        #expect(call.status == .completed)
+        #expect(call.resultSummary.contains("skill vetter review record completed"))
+    }
+
+    @Test
+    func officialSkillVetterReviewRecordVariantPassesSelectorAndSkillScope() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let fixture = SupervisorSkillRegistryFixture()
+        defer { fixture.cleanup() }
+
+        let root = try makeProjectRoot(named: "supervisor-call-skill-vetter-review-selector")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "我的世界还原项目")
+        try fixture.writeHubSkillsStore(projectID: project.projectId)
+        try appendManifestDrivenSkillFixture(
+            hubBaseDir: fixture.hubBaseDir,
+            projectID: project.projectId,
+            skillID: "skill-vetter",
+            packageSHA256: "4138382038383820383838203838382038383820383838203838382038383820",
+            canonicalManifestSHA256: "4239392039393920393939203939392039393920393939203939392039393920",
+            manifest: try loadOfficialAgentSkillManifestFixture(skillID: "skill-vetter")
+        )
+        HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+
+        manager.setSupervisorToolExecutorOverrideForTesting { call, _ in
+            #expect(call.tool == .agentImportRecord)
+            #expect(call.args["selector"]?.stringValue == "latest_for_skill")
+            #expect(call.args["skill_id"]?.stringValue == "agent-browser")
+            #expect(call.args["project_id"]?.stringValue == project.projectId)
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: true,
+                output: "skill vetter review latest record completed"
+            )
+        }
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"读取最新技能导入审计记录","priority":"high"}[/CREATE_JOB]"#,
+            userMessage: "请创建任务"
+        )
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [UPSERT_PLAN]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","plan_id":"plan-skill-vetter-review-selector-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"读取最新技能导入审计记录","kind":"call_skill","status":"pending","skill_id":"skill-vetter"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划"
+        )
+
+        let rendered = manager.processSupervisorResponseForTesting(
+            #"""
+            [CALL_SKILL]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","step_id":"step-001","skill_id":"skill-vetter","payload":{"action":"review_record","selector":"latest_for_skill","skill_id":"agent-browser","project_id":"\#(project.projectId)"}}[/CALL_SKILL]
+            """#,
+            userMessage: "请执行 skill-vetter review_record latest_for_skill"
+        )
+
+        #expect(rendered.contains("✅ 已为项目 \(project.displayName) 排队技能调用：skill-vetter"))
+        await manager.waitForSupervisorSkillDispatchForTesting()
+
+        let call = try #require(SupervisorProjectSkillCallStore.load(for: ctx).calls.first)
+        #expect(call.skillId == "skill-vetter")
+        #expect(call.toolName == ToolName.agentImportRecord.rawValue)
+        #expect(call.status == .completed)
+        #expect(call.resultSummary.contains("skill vetter review latest record completed"))
+    }
+
+    @Test
     func approvedHubGrantResumesAwaitingSupervisorNetworkSkill() async throws {
         let manager = SupervisorManager.makeForTesting(enableSupervisorHubGrantPreflight: true)
         let fixture = SupervisorSkillRegistryFixture()
@@ -2230,6 +3313,802 @@ struct SupervisorCommandGuardTests {
         let followUp = try #require(jobs.first(where: { $0.goal == "处理 approval resolution 后的下一步" }))
         #expect(followUp.source == .approvalResolution)
         #expect(followUp.priority == .high)
+    }
+
+    @Test
+    func guidanceAckRejectedAutoFollowUpRunsSupervisorTurn() async throws {
+        let manager = SupervisorManager.makeForTesting(enableSupervisorEventLoopAutoFollowUp: true)
+        let root = try makeProjectRoot(named: "supervisor-guidance-ack-event-loop")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        manager.setSupervisorEventLoopResponseOverrideForTesting { userMessage, triggerSource in
+            #expect(triggerSource == "guidance_ack")
+            #expect(userMessage.contains("trigger=guidance_ack"))
+            #expect(userMessage.contains("ack_status=rejected"))
+            #expect(userMessage.contains("ack_note=Conflicts with the approved migration boundary."))
+            #expect(userMessage.contains("attention_steps:"))
+            #expect(userMessage.contains("step-001"))
+            return #"[CREATE_JOB]{"project_ref":"亮亮","goal":"处理 guidance ack follow-up","priority":"high","current_owner":"supervisor"}[/CREATE_JOB]"#
+        }
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"亮亮","goal":"推进 review guidance 闭环","priority":"normal"}[/CREATE_JOB]"#,
+            userMessage: "请创建任务"
+        )
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [UPSERT_PLAN]{"project_ref":"亮亮","job_id":"\#(job.jobId)","plan_id":"plan-guidance-ack-loop-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"消化 supervisor guidance","kind":"write_memory","status":"running"},{"step_id":"step-002","title":"按 guidance 调整计划","kind":"write_memory","status":"pending"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划"
+        )
+
+        let rejected = SupervisorGuidanceInjectionBuilder.build(
+            injectionId: "guidance-ack-rejected-loop-1",
+            reviewId: "review-ack-rejected-loop-1",
+            projectId: project.projectId,
+            targetRole: .coder,
+            deliveryMode: .replanRequest,
+            interventionMode: .replanNextSafePoint,
+            safePointPolicy: .nextStepBoundary,
+            guidanceText: "改成更稳的 replan 路线。",
+            ackStatus: .rejected,
+            ackRequired: true,
+            ackNote: "Conflicts with the approved migration boundary.",
+            injectedAtMs: 1_773_385_000_000,
+            ackUpdatedAtMs: 1_773_385_000_100,
+            auditRef: "audit-guidance-ack-rejected-loop-1"
+        )
+        try SupervisorGuidanceInjectionStore.upsert(rejected, for: ctx)
+
+        manager.handleEvent(.supervisorGuidanceAck(rejected))
+        await manager.waitForSupervisorEventLoopForTesting()
+
+        let jobs = SupervisorProjectJobStore.load(for: ctx).jobs
+        #expect(jobs.count == 2)
+        let followUp = try #require(jobs.first(where: { $0.goal == "处理 guidance ack follow-up" }))
+        #expect(followUp.priority == .high)
+
+        let rawEntries = try readRawLogEntries(at: ctx.rawLogURL)
+        let rawJob = try #require(rawEntries.last(where: {
+            ($0["type"] as? String) == "supervisor_job" &&
+            ($0["goal"] as? String) == "处理 guidance ack follow-up"
+        }))
+        #expect(rawJob["trigger_source"] as? String == "guidance_ack")
+    }
+
+    @Test
+    func guidanceAckAcceptedDoesNotRunSupervisorTurn() async throws {
+        let manager = SupervisorManager.makeForTesting(enableSupervisorEventLoopAutoFollowUp: true)
+        let root = try makeProjectRoot(named: "supervisor-guidance-ack-accepted")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        manager.setSupervisorEventLoopResponseOverrideForTesting { _, _ in
+            #"[CREATE_JOB]{"project_ref":"亮亮","goal":"unexpected guidance ack follow-up","priority":"high","current_owner":"supervisor"}[/CREATE_JOB]"#
+        }
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"亮亮","goal":"推进 review guidance 闭环","priority":"normal"}[/CREATE_JOB]"#,
+            userMessage: "请创建任务"
+        )
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let accepted = SupervisorGuidanceInjectionBuilder.build(
+            injectionId: "guidance-ack-accepted-loop-1",
+            reviewId: "review-ack-accepted-loop-1",
+            projectId: project.projectId,
+            targetRole: .coder,
+            deliveryMode: .priorityInsert,
+            interventionMode: .suggestNextSafePoint,
+            safePointPolicy: .nextToolBoundary,
+            guidanceText: "先读 diff 再继续。",
+            ackStatus: .accepted,
+            ackRequired: true,
+            ackNote: "Applying at next tool boundary.",
+            injectedAtMs: 1_773_386_000_000,
+            ackUpdatedAtMs: 1_773_386_000_100,
+            auditRef: "audit-guidance-ack-accepted-loop-1"
+        )
+        try SupervisorGuidanceInjectionStore.upsert(accepted, for: ctx)
+
+        manager.handleEvent(.supervisorGuidanceAck(accepted))
+        await manager.waitForSupervisorEventLoopForTesting()
+
+        let jobs = SupervisorProjectJobStore.load(for: ctx).jobs
+        #expect(jobs.count == 1)
+        #expect(!jobs.contains(where: { $0.goal == "unexpected guidance ack follow-up" }))
+    }
+
+    @Test
+    func naturalBriefReplyUsesFocusedProjectStatusAndNextStep() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-natural-brief")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var project = makeProjectEntry(root: root, displayName: "亮亮")
+        project.currentStateSummary = "自动流程正在等待 staging 验证结果"
+        project.blockerSummary = "staging 回执还没回来"
+        project.nextStepSummary = "确认 staging 结果后推进 release 决策"
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+        manager.setPendingHubGrantsForTesting(
+            [
+                SupervisorManager.SupervisorPendingGrant(
+                    id: "grant-brief-1",
+                    dedupeKey: "grant-brief-1",
+                    grantRequestId: "grant-brief-1",
+                    requestId: "req-brief-1",
+                    projectId: project.projectId,
+                    projectName: project.displayName,
+                    capability: "web.fetch",
+                    modelId: "",
+                    reason: "need fetch approval",
+                    requestedTtlSec: 900,
+                    requestedTokenCap: 0,
+                    createdAt: Date().timeIntervalSince1970,
+                    actionURL: nil,
+                    priorityRank: 1,
+                    priorityReason: "network",
+                    nextAction: "approve"
+                )
+            ]
+        )
+
+        let rendered = try #require(
+            manager.directSupervisorReplyIfApplicableForTesting("简单说下亮亮现在怎么样，卡在哪，下一步怎么走")
+        )
+
+        #expect(rendered.contains("我来简短说一下《亮亮》"))
+        #expect(rendered.contains("现在状态：阻塞中。"))
+        #expect(rendered.contains("当前卡点：staging 回执还没回来。"))
+        #expect(rendered.contains("还有 1 个待授权项卡在路上。"))
+        #expect(rendered.contains("我建议下一步先确认 staging 结果后推进 release 决策。"))
+    }
+
+    @Test
+    func naturalLanguageGuidanceAckAcceptsFocusedPendingGuidance() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-natural-guidance-ack")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-natural-ack-1",
+                reviewId: "review-natural-ack-1",
+                projectId: project.projectId,
+                targetRole: .coder,
+                deliveryMode: .replanRequest,
+                interventionMode: .replanNextSafePoint,
+                safePointPolicy: .nextStepBoundary,
+                guidanceText: "先把 release 风险和 staging 证据对齐，再决定是否推进。",
+                ackStatus: .pending,
+                ackRequired: true,
+                ackNote: "",
+                injectedAtMs: 1_773_386_100_000,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-guidance-natural-ack-1"
+            ),
+            for: ctx
+        )
+
+        let rendered = try #require(
+            manager.directSupervisorActionIfApplicableForTesting("这个建议可以，就按这个做")
+        )
+
+        #expect(rendered.contains("继续推进"))
+        let updated = try #require(SupervisorGuidanceInjectionStore.latest(for: ctx))
+        #expect(updated.injectionId == "guidance-natural-ack-1")
+        #expect(updated.ackStatus == .accepted)
+        #expect(updated.ackNote.contains("这个建议可以，就按这个做"))
+    }
+
+    @Test
+    func naturalLanguageGuidanceAckDefersFocusedPendingGuidanceFromColloquialPhrase() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-natural-guidance-defer")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-natural-defer-1",
+                reviewId: "review-natural-defer-1",
+                projectId: project.projectId,
+                targetRole: .coder,
+                deliveryMode: .replanRequest,
+                interventionMode: .replanNextSafePoint,
+                safePointPolicy: .nextStepBoundary,
+                guidanceText: "先把发版窗口和监控噪音拆开，再决定是否继续推进。",
+                ackStatus: .pending,
+                ackRequired: true,
+                ackNote: "",
+                injectedAtMs: 1_773_386_200_000,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-guidance-natural-defer-1"
+            ),
+            for: ctx
+        )
+
+        let rendered = try #require(
+            manager.directSupervisorActionIfApplicableForTesting("这个方案先缓一缓，晚点再说")
+        )
+
+        #expect(rendered.contains("标成暂缓"))
+        let updated = try #require(SupervisorGuidanceInjectionStore.latest(for: ctx))
+        #expect(updated.injectionId == "guidance-natural-defer-1")
+        #expect(updated.ackStatus == .deferred)
+        #expect(updated.ackNote.contains("这个方案先缓一缓，晚点再说"))
+    }
+
+    @Test
+    func naturalLanguageGuidanceAckRejectsFocusedPendingGuidanceFromColloquialPhrase() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-natural-guidance-reject")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-natural-reject-1",
+                reviewId: "review-natural-reject-1",
+                projectId: project.projectId,
+                targetRole: .coder,
+                deliveryMode: .replanRequest,
+                interventionMode: .replanNextSafePoint,
+                safePointPolicy: .nextStepBoundary,
+                guidanceText: "先按现在的迁移边界推进，然后再补证据。",
+                ackStatus: .pending,
+                ackRequired: true,
+                ackNote: "",
+                injectedAtMs: 1_773_386_300_000,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-guidance-natural-reject-1"
+            ),
+            for: ctx
+        )
+
+        let rendered = try #require(
+            manager.directSupervisorActionIfApplicableForTesting("这个路子不对，换条路重新想方案")
+        )
+
+        #expect(rendered.contains("标成拒绝"))
+        let updated = try #require(SupervisorGuidanceInjectionStore.latest(for: ctx))
+        #expect(updated.injectionId == "guidance-natural-reject-1")
+        #expect(updated.ackStatus == .rejected)
+        #expect(updated.ackNote.contains("这个路子不对，换条路重新想方案"))
+    }
+
+    @Test
+    func naturalLanguageGuidanceAckAcceptsContextualEllipsisAfterRecentGuidanceReply() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-natural-guidance-context-accept")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+        manager.messages = [
+            SupervisorMessage(
+                id: "assistant-guidance-context-1",
+                role: .assistant,
+                content: "当前有一条待确认 guidance：先把 release 风险和 staging 证据对齐，再决定是否推进。",
+                isVoice: false,
+                timestamp: Date().timeIntervalSince1970
+            )
+        ]
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-natural-context-accept-1",
+                reviewId: "review-natural-context-accept-1",
+                projectId: project.projectId,
+                targetRole: .coder,
+                deliveryMode: .replanRequest,
+                interventionMode: .replanNextSafePoint,
+                safePointPolicy: .nextStepBoundary,
+                guidanceText: "先把 release 风险和 staging 证据对齐，再决定是否推进。",
+                ackStatus: .pending,
+                ackRequired: true,
+                ackNote: "",
+                injectedAtMs: 1_773_386_350_000,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-guidance-natural-context-accept-1"
+            ),
+            for: ctx
+        )
+
+        let rendered = try #require(
+            manager.directSupervisorActionIfApplicableForTesting("可以")
+        )
+
+        #expect(rendered.contains("继续推进"))
+        let updated = try #require(SupervisorGuidanceInjectionStore.latest(for: ctx))
+        #expect(updated.ackStatus == .accepted)
+        #expect(updated.ackNote == "可以")
+    }
+
+    @Test
+    func naturalLanguageGuidanceAckDefersContextualEllipsisAfterRecentGuidanceReply() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-natural-guidance-context-defer")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+        manager.messages = [
+            SupervisorMessage(
+                id: "assistant-guidance-context-2",
+                role: .assistant,
+                content: "这条 guidance 需要你确认一下：先把发版窗口和监控噪音拆开，再决定是否继续推进。",
+                isVoice: false,
+                timestamp: Date().timeIntervalSince1970
+            )
+        ]
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-natural-context-defer-1",
+                reviewId: "review-natural-context-defer-1",
+                projectId: project.projectId,
+                targetRole: .coder,
+                deliveryMode: .replanRequest,
+                interventionMode: .replanNextSafePoint,
+                safePointPolicy: .nextStepBoundary,
+                guidanceText: "先把发版窗口和监控噪音拆开，再决定是否继续推进。",
+                ackStatus: .pending,
+                ackRequired: true,
+                ackNote: "",
+                injectedAtMs: 1_773_386_360_000,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-guidance-natural-context-defer-1"
+            ),
+            for: ctx
+        )
+
+        let rendered = try #require(
+            manager.directSupervisorActionIfApplicableForTesting("先缓一缓")
+        )
+
+        #expect(rendered.contains("标成暂缓"))
+        let updated = try #require(SupervisorGuidanceInjectionStore.latest(for: ctx))
+        #expect(updated.ackStatus == .deferred)
+        #expect(updated.ackNote == "先缓一缓")
+    }
+
+    @Test
+    func naturalLanguageGrantApprovalStartsHubGrantAction() async throws {
+        actor ApprovalCapture {
+            private(set) var grantIDs: [String] = []
+
+            func record(_ grantID: String) {
+                grantIDs.append(grantID)
+            }
+
+            func count() -> Int {
+                grantIDs.count
+            }
+        }
+
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-natural-grant-approve")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let capture = ApprovalCapture()
+        manager.installPendingHubGrantApproveOverrideForTesting { grantRequestId, _, _, _, _ in
+            await capture.record(grantRequestId)
+            return HubIPCClient.PendingGrantActionResult(
+                ok: true,
+                decision: .approved,
+                source: "test",
+                grantRequestId: grantRequestId,
+                grantId: "grant-live-1",
+                expiresAtMs: nil,
+                reasonCode: nil
+            )
+        }
+        manager.installSchedulerSnapshotRefreshOverrideForTesting { _ in }
+        manager.setPendingHubGrantsForTesting(
+            [
+                SupervisorManager.SupervisorPendingGrant(
+                    id: "grant-natural-1",
+                    dedupeKey: "grant-natural-1",
+                    grantRequestId: "grant-natural-1",
+                    requestId: "req-natural-1",
+                    projectId: project.projectId,
+                    projectName: project.displayName,
+                    capability: "web.fetch",
+                    modelId: "",
+                    reason: "need web access",
+                    requestedTtlSec: 900,
+                    requestedTokenCap: 0,
+                    createdAt: Date().timeIntervalSince1970,
+                    actionURL: nil,
+                    priorityRank: 1,
+                    priorityReason: "network",
+                    nextAction: "approve"
+                )
+            ]
+        )
+
+        let rendered = try #require(
+            manager.directSupervisorActionIfApplicableForTesting("批准这个授权")
+        )
+
+        #expect(rendered.contains("开始处理《亮亮》这笔联网访问（web_fetch） Hub 授权"))
+        for _ in 0..<40 {
+            if await capture.count() == 1 {
+                break
+            }
+            await Task.yield()
+        }
+        #expect(await capture.count() == 1)
+    }
+
+    @Test
+    func naturalLanguageGrantApprovalUsesRecentGrantContextForEllipsis() async throws {
+        actor ApprovalCapture {
+            private(set) var grantIDs: [String] = []
+
+            func record(_ grantID: String) {
+                grantIDs.append(grantID)
+            }
+
+            func count() -> Int {
+                grantIDs.count
+            }
+        }
+
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-natural-grant-context-approve")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+        manager.messages = [
+            SupervisorMessage(
+                id: "system-grant-context-1",
+                role: .system,
+                content: "当前有一笔待授权的 Hub grant：亮亮 / 联网访问（web_fetch）。",
+                isVoice: false,
+                timestamp: Date().timeIntervalSince1970
+            )
+        ]
+
+        let capture = ApprovalCapture()
+        manager.installPendingHubGrantApproveOverrideForTesting { grantRequestId, _, _, _, _ in
+            await capture.record(grantRequestId)
+            return HubIPCClient.PendingGrantActionResult(
+                ok: true,
+                decision: .approved,
+                source: "test",
+                grantRequestId: grantRequestId,
+                grantId: "grant-live-context-1",
+                expiresAtMs: nil,
+                reasonCode: nil
+            )
+        }
+        manager.installSchedulerSnapshotRefreshOverrideForTesting { _ in }
+        manager.setPendingHubGrantsForTesting(
+            [
+                SupervisorManager.SupervisorPendingGrant(
+                    id: "grant-natural-context-1",
+                    dedupeKey: "grant-natural-context-1",
+                    grantRequestId: "grant-natural-context-1",
+                    requestId: "req-natural-context-1",
+                    projectId: project.projectId,
+                    projectName: project.displayName,
+                    capability: "web.fetch",
+                    modelId: "",
+                    reason: "need web access",
+                    requestedTtlSec: 900,
+                    requestedTokenCap: 0,
+                    createdAt: Date().timeIntervalSince1970,
+                    actionURL: nil,
+                    priorityRank: 1,
+                    priorityReason: "network",
+                    nextAction: "approve"
+                )
+            ]
+        )
+
+        let rendered = try #require(
+            manager.directSupervisorActionIfApplicableForTesting("批了吧")
+        )
+
+        #expect(rendered.contains("开始处理《亮亮》这笔联网访问（web_fetch） Hub 授权"))
+        for _ in 0..<40 {
+            if await capture.count() == 1 {
+                break
+            }
+            await Task.yield()
+        }
+        #expect(await capture.count() == 1)
+    }
+
+    @Test
+    func naturalLanguageGrantDenialUsesRecentGrantContextForEllipsis() async throws {
+        actor DenialCapture {
+            private(set) var grantIDs: [String] = []
+
+            func record(_ grantID: String) {
+                grantIDs.append(grantID)
+            }
+
+            func count() -> Int {
+                grantIDs.count
+            }
+        }
+
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-natural-grant-context-deny")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+        manager.messages = [
+            SupervisorMessage(
+                id: "system-grant-context-2",
+                role: .system,
+                content: "当前有一笔待授权的 Hub grant：亮亮 / 联网访问（web_fetch）。",
+                isVoice: false,
+                timestamp: Date().timeIntervalSince1970
+            )
+        ]
+
+        let capture = DenialCapture()
+        manager.installPendingHubGrantDenyOverrideForTesting { grantRequestId, _, _ in
+            await capture.record(grantRequestId)
+            return HubIPCClient.PendingGrantActionResult(
+                ok: true,
+                decision: .denied,
+                source: "test",
+                grantRequestId: grantRequestId,
+                grantId: "grant-live-context-2",
+                expiresAtMs: nil,
+                reasonCode: nil
+            )
+        }
+        manager.installSchedulerSnapshotRefreshOverrideForTesting { _ in }
+        manager.setPendingHubGrantsForTesting(
+            [
+                SupervisorManager.SupervisorPendingGrant(
+                    id: "grant-natural-context-2",
+                    dedupeKey: "grant-natural-context-2",
+                    grantRequestId: "grant-natural-context-2",
+                    requestId: "req-natural-context-2",
+                    projectId: project.projectId,
+                    projectName: project.displayName,
+                    capability: "web.fetch",
+                    modelId: "",
+                    reason: "need web access",
+                    requestedTtlSec: 900,
+                    requestedTokenCap: 0,
+                    createdAt: Date().timeIntervalSince1970,
+                    actionURL: nil,
+                    priorityRank: 1,
+                    priorityReason: "network",
+                    nextAction: "approve"
+                )
+            ]
+        )
+
+        let rendered = try #require(
+            manager.directSupervisorActionIfApplicableForTesting("先别批")
+        )
+
+        #expect(rendered.contains("先拦下《亮亮》这笔联网访问（web_fetch） Hub 授权"))
+        for _ in 0..<40 {
+            if await capture.count() == 1 {
+                break
+            }
+            await Task.yield()
+        }
+        #expect(await capture.count() == 1)
+    }
+
+    @Test
+    func naturalLanguageGrantApprovalAcceptsDemonstrativeColloquialPhrase() async throws {
+        actor ApprovalCapture {
+            private(set) var grantIDs: [String] = []
+
+            func record(_ grantID: String) {
+                grantIDs.append(grantID)
+            }
+
+            func count() -> Int {
+                grantIDs.count
+            }
+        }
+
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-natural-grant-approve-demonstrative")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let capture = ApprovalCapture()
+        manager.installPendingHubGrantApproveOverrideForTesting { grantRequestId, _, _, _, _ in
+            await capture.record(grantRequestId)
+            return HubIPCClient.PendingGrantActionResult(
+                ok: true,
+                decision: .approved,
+                source: "test",
+                grantRequestId: grantRequestId,
+                grantId: "grant-live-2",
+                expiresAtMs: nil,
+                reasonCode: nil
+            )
+        }
+        manager.installSchedulerSnapshotRefreshOverrideForTesting { _ in }
+        manager.setPendingHubGrantsForTesting(
+            [
+                SupervisorManager.SupervisorPendingGrant(
+                    id: "grant-natural-2",
+                    dedupeKey: "grant-natural-2",
+                    grantRequestId: "grant-natural-2",
+                    requestId: "req-natural-2",
+                    projectId: project.projectId,
+                    projectName: project.displayName,
+                    capability: "web.fetch",
+                    modelId: "",
+                    reason: "need web access",
+                    requestedTtlSec: 900,
+                    requestedTokenCap: 0,
+                    createdAt: Date().timeIntervalSince1970,
+                    actionURL: nil,
+                    priorityRank: 1,
+                    priorityReason: "network",
+                    nextAction: "approve"
+                )
+            ]
+        )
+
+        let rendered = try #require(
+            manager.directSupervisorActionIfApplicableForTesting("这个你直接批了吧")
+        )
+
+        #expect(rendered.contains("开始处理《亮亮》这笔联网访问（web_fetch） Hub 授权"))
+        for _ in 0..<40 {
+            if await capture.count() == 1 {
+                break
+            }
+            await Task.yield()
+        }
+        #expect(await capture.count() == 1)
+    }
+
+    @Test
+    func naturalLanguageGrantDenialAcceptsColloquialPhrase() async throws {
+        actor DenialCapture {
+            private(set) var grantIDs: [String] = []
+
+            func record(_ grantID: String) {
+                grantIDs.append(grantID)
+            }
+
+            func count() -> Int {
+                grantIDs.count
+            }
+        }
+
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-natural-grant-deny")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let capture = DenialCapture()
+        manager.installPendingHubGrantDenyOverrideForTesting { grantRequestId, _, _ in
+            await capture.record(grantRequestId)
+            return HubIPCClient.PendingGrantActionResult(
+                ok: true,
+                decision: .denied,
+                source: "test",
+                grantRequestId: grantRequestId,
+                grantId: "grant-live-3",
+                expiresAtMs: nil,
+                reasonCode: nil
+            )
+        }
+        manager.installSchedulerSnapshotRefreshOverrideForTesting { _ in }
+        manager.setPendingHubGrantsForTesting(
+            [
+                SupervisorManager.SupervisorPendingGrant(
+                    id: "grant-natural-3",
+                    dedupeKey: "grant-natural-3",
+                    grantRequestId: "grant-natural-3",
+                    requestId: "req-natural-3",
+                    projectId: project.projectId,
+                    projectName: project.displayName,
+                    capability: "web.fetch",
+                    modelId: "",
+                    reason: "need web access",
+                    requestedTtlSec: 900,
+                    requestedTokenCap: 0,
+                    createdAt: Date().timeIntervalSince1970,
+                    actionURL: nil,
+                    priorityRank: 1,
+                    priorityReason: "network",
+                    nextAction: "approve"
+                )
+            ]
+        )
+
+        let rendered = try #require(
+            manager.directSupervisorActionIfApplicableForTesting("这个联网权限先别批，先拦下")
+        )
+
+        #expect(rendered.contains("先拦下《亮亮》这笔联网访问（web_fetch） Hub 授权"))
+        for _ in 0..<40 {
+            if await capture.count() == 1 {
+                break
+            }
+            await Task.yield()
+        }
+        #expect(await capture.count() == 1)
     }
 
     @Test
@@ -2945,6 +4824,18 @@ private func appendManifestDrivenSkillFixture(
     ])
     pinsRoot["project_pins"] = projectPins
     try writeJSONObject(pinsRoot, to: pinsURL)
+}
+
+private func loadOfficialAgentSkillManifestFixture(skillID: String) throws -> [String: Any] {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let url = repoRoot
+        .appendingPathComponent("official-agent-skills", isDirectory: true)
+        .appendingPathComponent(skillID, isDirectory: true)
+        .appendingPathComponent("skill.json")
+    return try loadJSONObject(at: url)
 }
 
 private func loadJSONObject(at url: URL) throws -> [String: Any] {

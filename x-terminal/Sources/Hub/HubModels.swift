@@ -21,12 +21,21 @@ enum HubModelState: String, Codable {
     case sleeping
 }
 
+struct HubLocalModelLoadProfile: Codable, Equatable {
+    var contextLength: Int
+    var gpuOffloadRatio: Double?
+    var ropeFrequencyBase: Double?
+    var ropeFrequencyScale: Double?
+    var evalBatchSize: Int?
+}
+
 struct HubModel: Codable, Identifiable, Equatable {
     var id: String
     var name: String
     var backend: String
     var quant: String
     var contextLength: Int
+    var maxContextLength: Int?
     var paramsB: Double
     var roles: [String]?
     var state: HubModelState
@@ -34,6 +43,21 @@ struct HubModel: Codable, Identifiable, Equatable {
     var tokensPerSec: Double?
     var modelPath: String?
     var note: String?
+    var defaultLoadProfile: HubLocalModelLoadProfile?
+}
+
+extension HubModel {
+    var hubDefaultContextLength: Int {
+        defaultLoadProfile?.contextLength ?? contextLength
+    }
+
+    var hubMaxContextLength: Int {
+        max(maxContextLength ?? hubDefaultContextLength, hubDefaultContextLength)
+    }
+
+    var isLocalModel: Bool {
+        modelPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
 }
 
 struct ModelStateSnapshot: Codable, Equatable {

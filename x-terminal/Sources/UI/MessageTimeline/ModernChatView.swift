@@ -24,6 +24,13 @@ struct ModernChatView: View {
                 MessageTimelineView(
                     ctx: ctx,
                     session: session,
+                    hubConnected: hubConnected,
+                    onApproveSkillActivity: { requestID in
+                        session.approvePendingTool(requestID: requestID, router: appModel.llmRouter)
+                    },
+                    onRetrySkillActivity: { item in
+                        session.retryProjectSkillActivity(item, router: appModel.llmRouter)
+                    },
                     bottomPadding: session.pendingToolCalls.isEmpty ? 24 : 160
                 )
 

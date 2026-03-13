@@ -162,11 +162,13 @@ await run('understandLocalImage normalizes successful runtime preview output', a
   let executorCalls = 0;
   const out = await understandLocalImage({
     runtimeBaseDir,
+    deviceId: 'terminal_device',
     imagePath,
     prompt: 'describe the scene',
     executor: async ({ request }) => {
       executorCalls += 1;
       assert.equal(String(request?.task_kind || ''), 'vision_understand');
+      assert.equal(String(request?.device_id || ''), 'terminal_device');
       assert.equal(String(request?.prompt || ''), 'describe the scene');
       return {
         ok: true,
@@ -202,10 +204,12 @@ await run('ocrLocalImage normalizes successful runtime preview output with spans
   writePng(imagePath, { width: 96, height: 40 });
   const out = await ocrLocalImage({
     runtimeBaseDir,
+    deviceId: 'terminal_device',
     imagePath,
     language: 'en',
     executor: async ({ request }) => {
       assert.equal(String(request?.task_kind || ''), 'ocr');
+      assert.equal(String(request?.device_id || ''), 'terminal_device');
       assert.equal(String(request?.options?.language || ''), 'en');
       return {
         ok: true,

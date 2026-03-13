@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import atexit
 import array
 import hashlib
 import importlib.util
+import json
 import math
 import os
 import re
@@ -51,6 +53,8 @@ SECRET_TEXT_PATTERNS = [
     re.compile(r"\b(password|passcode|payment[_\s-]*(pin|code)|authorization[_\s-]*code)\b", re.IGNORECASE),
     re.compile(r"[0-9a-f]{32,}", re.IGNORECASE),
 ]
+PROCESS_LOCAL_STATE_SCHEMA_VERSION = "xhub.transformers.process_local_state.v1"
+PROCESS_LOCAL_STATE_FILENAME = "xhub_transformers_process_local_state.v1.json"
 
 
 def _safe_str(value: Any) -> str:
@@ -111,9 +115,33 @@ def _vision_fallback_enabled(request: dict[str, Any] | None = None) -> bool:
 
 
 def _has_transformers_runtime() -> tuple[bool, bool]:
-    has_transformers = importlib.util.find_spec("transformers") is not None
-    has_torch = importlib.util.find_spec("torch") is not None
+    has_transformers = "transformers" in sys.modules or importlib.util.find_spec("transformers") is not None
+    has_torch = "torch" in sys.modules or importlib.util.find_spec("torch") is not None
     return has_transformers, has_torch
+
+def _write_json_atomic(path: str, payload: dict[str, Any]) -> None:
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def _process_local_state_path(base_dir: str) -> str:
+    return os.path.join(os.path.abspath(str(base_dir or "")), PROCESS_LOCAL_STATE_FILENAME)
+
+
+def _pid_is_alive(pid: int) -> bool:
+    candidate = max(0, int(pid or 0))
+    if candidate <= 1:
+        return False
+    try:
+        os.kill(candidate, 0)
+    except OSError:
+        return False
+    return True
 
 
 def _contains_sensitive_text(text: str) -> bool:
@@ -158,6 +186,22 @@ def _safe_bool(value: Any, fallback: bool = False) -> bool:
     if token in {"0", "false", "no", "off"}:
         return False
     return bool(fallback)
+
+
+def _request_load_profile_hash(request: dict[str, Any]) -> str:
+    return _safe_str(request.get("load_profile_hash") or request.get("loadProfileHash"))
+
+
+def _request_instance_key(request: dict[str, Any]) -> str:
+    return _safe_str(request.get("instance_key") or request.get("instanceKey"))
+
+
+def _request_base_dir(request: dict[str, Any]) -> str:
+    return _safe_str(request.get("_base_dir") or request.get("base_dir") or request.get("baseDir"))
+
+
+def _request_effective_context_length(request: dict[str, Any]) -> int:
+    return max(0, _safe_int(request.get("effective_context_length") or request.get("effectiveContextLength"), 0))
 
 
 def _normalize_audio_extension(audio_path: str) -> str:
@@ -311,6 +355,8 @@ class TransformersProvider(LocalProvider):
     def __init__(self) -> None:
         self._embedding_model_cache: dict[str, dict[str, Any]] = {}
         self._asr_pipeline_cache: dict[str, dict[str, Any]] = {}
+        self._tracked_base_dirs: set[str] = set()
+        self._exit_hook_registered = False
 
     def provider_id(self) -> str:
         return "transformers"
@@ -329,11 +375,342 @@ class TransformersProvider(LocalProvider):
     def supported_output_modalities(self) -> list[str]:
         return ["embedding", "text", "segments", "spans"]
 
+    def lifecycle_mode(self) -> str:
+        return "warmable"
+
+    def supported_lifecycle_actions(self) -> list[str]:
+        return [
+            "warmup_local_model",
+            "unload_local_model",
+            "evict_local_instance",
+        ]
+
+    def warmup_task_kinds(self) -> list[str]:
+        return [EMBED_TASK_KIND, ASR_TASK_KIND]
+
+    def residency_scope(self) -> str:
+        return "process_local"
+
+    def _default_idle_eviction_state(self, *, owner_pid: int = 0) -> dict[str, Any]:
+        return {
+            "policy": "manual_or_process_exit",
+            "automaticIdleEvictionEnabled": False,
+            "idleTimeoutSec": 0,
+            "processScoped": True,
+            "lastEvictionReason": "none",
+            "lastEvictionAt": 0.0,
+            "lastEvictedInstanceKeys": [],
+            "lastEvictedModelIds": [],
+            "lastEvictedCount": 0,
+            "totalEvictedInstanceCount": 0,
+            "updatedAt": 0.0,
+            "ownerPid": max(0, int(owner_pid or 0)),
+        }
+
+    def _normalize_loaded_instance_rows(self, rows: Any) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for entry in rows if isinstance(rows, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            instance_key = _safe_str(entry.get("instanceKey") or entry.get("instance_key"))
+            if not instance_key or instance_key in seen:
+                continue
+            seen.add(instance_key)
+            out.append(
+                {
+                    "instanceKey": instance_key,
+                    "modelId": _safe_str(entry.get("modelId") or entry.get("model_id")),
+                    "taskKinds": _string_list(entry.get("taskKinds") or entry.get("task_kinds")),
+                    "loadProfileHash": _safe_str(entry.get("loadProfileHash") or entry.get("load_profile_hash")),
+                    "effectiveContextLength": max(0, _safe_int(entry.get("effectiveContextLength") or entry.get("effective_context_length"), 0)),
+                    "loadedAt": _safe_float(entry.get("loadedAt") or entry.get("loaded_at"), 0.0),
+                    "lastUsedAt": _safe_float(entry.get("lastUsedAt") or entry.get("last_used_at"), 0.0),
+                    "residency": _safe_str(entry.get("residency")) or "resident",
+                    "residencyScope": _safe_str(entry.get("residencyScope") or entry.get("residency_scope")) or self.residency_scope(),
+                    "deviceBackend": _safe_str(entry.get("deviceBackend") or entry.get("device_backend") or entry.get("device")) or "cpu",
+                }
+            )
+        out.sort(key=lambda item: (item.get("modelId") or "", item.get("instanceKey") or ""))
+        return out
+
+    def _normalize_idle_eviction_state(self, raw: Any) -> dict[str, Any]:
+        row = raw if isinstance(raw, dict) else {}
+        return {
+            "policy": _safe_str(row.get("policy")) or "manual_or_process_exit",
+            "automaticIdleEvictionEnabled": _safe_bool(
+                row.get("automaticIdleEvictionEnabled", row.get("automatic_idle_eviction_enabled")),
+                False,
+            ),
+            "idleTimeoutSec": max(0, _safe_int(row.get("idleTimeoutSec") or row.get("idle_timeout_sec"), 0)),
+            "processScoped": _safe_bool(row.get("processScoped", row.get("process_scoped")), True),
+            "lastEvictionReason": _safe_str(row.get("lastEvictionReason") or row.get("last_eviction_reason")) or "none",
+            "lastEvictionAt": _safe_float(row.get("lastEvictionAt") or row.get("last_eviction_at"), 0.0),
+            "lastEvictedInstanceKeys": [
+                _safe_str(value)
+                for value in (row.get("lastEvictedInstanceKeys") or row.get("last_evicted_instance_keys") or [])
+                if _safe_str(value)
+            ],
+            "lastEvictedModelIds": [
+                _safe_str(value)
+                for value in (row.get("lastEvictedModelIds") or row.get("last_evicted_model_ids") or [])
+                if _safe_str(value)
+            ],
+            "lastEvictedCount": max(0, _safe_int(row.get("lastEvictedCount") or row.get("last_evicted_count"), 0)),
+            "totalEvictedInstanceCount": max(
+                0,
+                _safe_int(row.get("totalEvictedInstanceCount") or row.get("total_evicted_instance_count"), 0),
+            ),
+            "updatedAt": _safe_float(row.get("updatedAt") or row.get("updated_at"), 0.0),
+            "ownerPid": max(0, _safe_int(row.get("ownerPid") or row.get("owner_pid"), 0)),
+        }
+
+    def _read_process_local_state(self, *, base_dir: str) -> dict[str, Any]:
+        path = _process_local_state_path(base_dir)
+        default_state = {
+            "schemaVersion": PROCESS_LOCAL_STATE_SCHEMA_VERSION,
+            "provider": self.provider_id(),
+            "updatedAt": 0.0,
+            "ownerPid": 0,
+            "loadedInstances": [],
+            "loadedInstanceCount": 0,
+            "idleEviction": self._default_idle_eviction_state(),
+        }
+        if not os.path.exists(path):
+            return dict(default_state)
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                raw = json.load(handle)
+        except Exception:
+            return dict(default_state)
+        row = raw if isinstance(raw, dict) else {}
+        loaded_instances = self._normalize_loaded_instance_rows(
+            row.get("loadedInstances") if isinstance(row.get("loadedInstances"), list) else row.get("loaded_instances")
+        )
+        owner_pid = max(0, _safe_int(row.get("ownerPid") or row.get("owner_pid"), 0))
+        idle_eviction = self._normalize_idle_eviction_state(row.get("idleEviction") or row.get("idle_eviction"))
+        if owner_pid > 0 and idle_eviction.get("ownerPid", 0) == 0:
+            idle_eviction["ownerPid"] = owner_pid
+        return {
+            "schemaVersion": _safe_str(row.get("schemaVersion") or row.get("schema_version")) or PROCESS_LOCAL_STATE_SCHEMA_VERSION,
+            "provider": self.provider_id(),
+            "updatedAt": _safe_float(row.get("updatedAt") or row.get("updated_at"), 0.0),
+            "ownerPid": owner_pid,
+            "loadedInstances": loaded_instances,
+            "loadedInstanceCount": len(loaded_instances),
+            "idleEviction": idle_eviction,
+        }
+
+    def _write_process_local_state(
+        self,
+        *,
+        base_dir: str,
+        loaded_instances: list[dict[str, Any]],
+        idle_eviction: dict[str, Any],
+        owner_pid: int,
+    ) -> None:
+        payload = {
+            "schemaVersion": PROCESS_LOCAL_STATE_SCHEMA_VERSION,
+            "provider": self.provider_id(),
+            "updatedAt": time.time(),
+            "ownerPid": max(0, int(owner_pid or 0)),
+            "loadedInstances": self._normalize_loaded_instance_rows(loaded_instances),
+            "loadedInstanceCount": len(self._normalize_loaded_instance_rows(loaded_instances)),
+            "idleEviction": self._normalize_idle_eviction_state(idle_eviction),
+        }
+        _write_json_atomic(_process_local_state_path(base_dir), payload)
+
+    def _ensure_process_local_tracking(self, *, base_dir: str) -> str:
+        normalized = os.path.abspath(str(base_dir or ""))
+        if not normalized:
+            return ""
+        self._tracked_base_dirs.add(normalized)
+        if not self._exit_hook_registered:
+            atexit.register(self._handle_process_exit)
+            self._exit_hook_registered = True
+        return normalized
+
+    def _sync_process_local_state(
+        self,
+        *,
+        base_dir: str,
+        eviction_reason: str = "",
+        evicted_instances: list[dict[str, Any]] | None = None,
+    ) -> None:
+        normalized_base_dir = self._ensure_process_local_tracking(base_dir=base_dir)
+        if not normalized_base_dir:
+            return
+        previous = self._read_process_local_state(base_dir=normalized_base_dir)
+        idle_eviction = self._normalize_idle_eviction_state(previous.get("idleEviction"))
+        if eviction_reason:
+            evicted_rows = self._normalize_loaded_instance_rows(evicted_instances or [])
+            evicted_instance_keys = [row["instanceKey"] for row in evicted_rows if _safe_str(row.get("instanceKey"))]
+            evicted_model_ids = sorted({_safe_str(row.get("modelId")) for row in evicted_rows if _safe_str(row.get("modelId"))})
+            evicted_count = len(evicted_instance_keys)
+            idle_eviction["lastEvictionReason"] = eviction_reason
+            idle_eviction["lastEvictionAt"] = time.time()
+            idle_eviction["lastEvictedInstanceKeys"] = evicted_instance_keys
+            idle_eviction["lastEvictedModelIds"] = evicted_model_ids
+            idle_eviction["lastEvictedCount"] = evicted_count
+            idle_eviction["totalEvictedInstanceCount"] = max(
+                0,
+                _safe_int(idle_eviction.get("totalEvictedInstanceCount"), 0) + evicted_count,
+            )
+        idle_eviction["updatedAt"] = time.time()
+        loaded_instances = self.loaded_instances()
+        owner_pid = os.getpid() if loaded_instances else 0
+        idle_eviction["ownerPid"] = owner_pid
+        self._write_process_local_state(
+            base_dir=normalized_base_dir,
+            loaded_instances=loaded_instances,
+            idle_eviction=idle_eviction,
+            owner_pid=owner_pid,
+        )
+
+    def _reconcile_process_local_state(self, *, base_dir: str) -> dict[str, Any]:
+        state = self._read_process_local_state(base_dir=base_dir)
+        loaded_instances = self._normalize_loaded_instance_rows(state.get("loadedInstances"))
+        owner_pid = max(0, _safe_int(state.get("ownerPid"), 0))
+        idle_eviction = self._normalize_idle_eviction_state(state.get("idleEviction"))
+        if loaded_instances and owner_pid > 1 and owner_pid != os.getpid() and not _pid_is_alive(owner_pid):
+            idle_eviction["lastEvictionReason"] = "process_exit_reconciled"
+            idle_eviction["lastEvictionAt"] = time.time()
+            idle_eviction["lastEvictedInstanceKeys"] = [
+                row["instanceKey"] for row in loaded_instances if _safe_str(row.get("instanceKey"))
+            ]
+            idle_eviction["lastEvictedModelIds"] = sorted(
+                {_safe_str(row.get("modelId")) for row in loaded_instances if _safe_str(row.get("modelId"))}
+            )
+            idle_eviction["lastEvictedCount"] = len(idle_eviction["lastEvictedInstanceKeys"])
+            idle_eviction["totalEvictedInstanceCount"] = max(
+                0,
+                _safe_int(idle_eviction.get("totalEvictedInstanceCount"), 0) + idle_eviction["lastEvictedCount"],
+            )
+            idle_eviction["updatedAt"] = time.time()
+            idle_eviction["ownerPid"] = 0
+            self._write_process_local_state(
+                base_dir=base_dir,
+                loaded_instances=[],
+                idle_eviction=idle_eviction,
+                owner_pid=0,
+            )
+            return self._read_process_local_state(base_dir=base_dir)
+        return state
+
+    def _handle_process_exit(self) -> None:
+        if not self._tracked_base_dirs:
+            return
+        evicted_instances = self.loaded_instances()
+        if evicted_instances:
+            self._embedding_model_cache.clear()
+            self._asr_pipeline_cache.clear()
+        for base_dir in list(self._tracked_base_dirs):
+            if evicted_instances:
+                self._sync_process_local_state(
+                    base_dir=base_dir,
+                    eviction_reason="process_exit",
+                    evicted_instances=evicted_instances,
+                )
+            elif os.path.exists(_process_local_state_path(base_dir)):
+                reconciled = self._reconcile_process_local_state(base_dir=base_dir)
+                idle_eviction = self._normalize_idle_eviction_state(reconciled.get("idleEviction"))
+                idle_eviction["ownerPid"] = 0
+                self._write_process_local_state(
+                    base_dir=base_dir,
+                    loaded_instances=[],
+                    idle_eviction=idle_eviction,
+                    owner_pid=0,
+                )
+
+    def loaded_instances(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for entry in list(self._embedding_model_cache.values()) + list(self._asr_pipeline_cache.values()):
+            if not isinstance(entry, dict):
+                continue
+            row = {
+                "instanceKey": _safe_str(entry.get("instance_key")),
+                "modelId": _safe_str(entry.get("model_id")),
+                "taskKinds": _string_list(entry.get("task_kinds")),
+                "loadProfileHash": _safe_str(entry.get("load_profile_hash")),
+                "effectiveContextLength": max(0, _safe_int(entry.get("effective_context_length"), 0)),
+                "loadedAt": _safe_float(entry.get("loaded_at"), 0.0),
+                "lastUsedAt": _safe_float(entry.get("last_used_at"), 0.0),
+                "residency": _safe_str(entry.get("residency")) or "resident",
+                "residencyScope": _safe_str(entry.get("residency_scope")) or self.residency_scope(),
+                "deviceBackend": _safe_str(entry.get("device") or entry.get("device_backend")) or "cpu",
+            }
+            if not row["instanceKey"]:
+                continue
+            rows.append(row)
+        rows.sort(key=lambda item: (item.get("modelId") or "", item.get("instanceKey") or ""))
+        return rows
+
     def _implemented_task_kinds(self) -> list[str]:
         task_kinds = [EMBED_TASK_KIND, ASR_TASK_KIND]
         if _vision_fallback_enabled():
             task_kinds.extend([VISION_TASK_KIND, OCR_TASK_KIND])
         return task_kinds
+
+    def _warmup_eligible_task_kinds(self, *, model_info: dict[str, Any]) -> list[str]:
+        model_path = _safe_str(model_info.get("model_path"))
+        if not model_path:
+            return []
+        task_kinds = _string_list(model_info.get("task_kinds"))
+        if not task_kinds:
+            return []
+        has_transformers, has_torch = _has_transformers_runtime()
+        if not has_transformers or not has_torch:
+            return []
+        return [
+            task_kind
+            for task_kind in task_kinds
+            if task_kind in self.warmup_task_kinds()
+        ]
+
+    def _touch_cache_entry(
+        self,
+        entry: dict[str, Any],
+        *,
+        task_kinds: list[str],
+        effective_context_length: int = 0,
+    ) -> dict[str, Any]:
+        now = time.time()
+        if not isinstance(entry, dict):
+            return {}
+        normalized_task_kinds = _string_list(task_kinds)
+        entry.setdefault("loaded_at", now)
+        entry["last_used_at"] = now
+        if normalized_task_kinds:
+            entry["task_kinds"] = normalized_task_kinds
+        if effective_context_length > 0:
+            entry["effective_context_length"] = max(0, int(effective_context_length))
+        entry.setdefault("residency", "resident")
+        entry.setdefault("residency_scope", self.residency_scope())
+        return entry
+
+    def _collect_matching_cache_entries(
+        self,
+        *,
+        model_id: str = "",
+        instance_key: str = "",
+    ) -> list[tuple[str, str, dict[str, Any]]]:
+        wanted_model_id = _safe_str(model_id)
+        wanted_instance_key = _safe_str(instance_key)
+        out: list[tuple[str, str, dict[str, Any]]] = []
+        caches = (
+            ("embedding", self._embedding_model_cache),
+            ("speech_to_text", self._asr_pipeline_cache),
+        )
+        for cache_name, cache in caches:
+            for cache_key, entry in list(cache.items()):
+                if not isinstance(entry, dict):
+                    continue
+                if wanted_instance_key and _safe_str(entry.get("instance_key")) != wanted_instance_key:
+                    continue
+                if wanted_model_id and _safe_str(entry.get("model_id")) != wanted_model_id:
+                    continue
+                out.append((cache_name, cache_key, entry))
+        return out
 
     def healthcheck(self, *, base_dir: str, catalog_models: list[dict[str, Any]]) -> ProviderHealth:
         has_transformers, has_torch = _has_transformers_runtime()
@@ -435,16 +812,37 @@ class TransformersProvider(LocalProvider):
             ok = False
             reason_code = "no_registered_models"
 
+        current_loaded_instances = self.loaded_instances()
+        if current_loaded_instances:
+            self._sync_process_local_state(base_dir=base_dir)
+        process_local_state = self._reconcile_process_local_state(base_dir=base_dir)
+        loaded_instances = self._normalize_loaded_instance_rows(
+            current_loaded_instances or process_local_state.get("loadedInstances")
+        )
         loaded_models = sorted(
             {
-                _safe_str(entry.get("model_id")) or cache_key
-                for cache_key, entry in {
-                    **self._embedding_model_cache,
-                    **self._asr_pipeline_cache,
-                }.items()
-                if isinstance(entry, dict)
+                _safe_str(row.get("modelId"))
+                for row in loaded_instances
+                if _safe_str(row.get("modelId"))
             }
         )
+        idle_eviction = self._normalize_idle_eviction_state(process_local_state.get("idleEviction"))
+        warmup_task_kinds = sorted(
+            {
+                task_kind
+                for model in registered_model_rows
+                for task_kind in self._warmup_eligible_task_kinds(
+                    model_info={
+                        "model_id": _safe_str(model.get("id")),
+                        "model_path": _safe_str(model.get("modelPath") or model.get("model_path")),
+                        "task_kinds": _normalize_task_kinds(model.get("taskKinds") or model.get("task_kinds")),
+                    }
+                )
+            }
+        )
+        lifecycle_mode = self.lifecycle_mode() if warmup_task_kinds else "ephemeral_on_demand"
+        supported_lifecycle_actions = self.supported_lifecycle_actions() if warmup_task_kinds else []
+        residency_scope = self.residency_scope() if warmup_task_kinds else "ephemeral"
         resource_policy = build_provider_resource_policy(
             self.provider_id(),
             catalog_models=catalog_models,
@@ -469,6 +867,12 @@ class TransformersProvider(LocalProvider):
             registered_models=registered_models,
             resource_policy=resource_policy,
             scheduler_state=scheduler_state,
+            lifecycle_mode=lifecycle_mode,
+            supported_lifecycle_actions=supported_lifecycle_actions,
+            warmup_task_kinds=warmup_task_kinds,
+            residency_scope=residency_scope,
+            loaded_instances=loaded_instances,
+            idle_eviction=idle_eviction,
         )
 
     def run_task(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -501,6 +905,286 @@ class TransformersProvider(LocalProvider):
             "taskKind": "unknown",
             "error": "missing_task_kind",
             "request": dict(request or {}),
+        }
+
+    def warmup_model(self, request: dict[str, Any]) -> dict[str, Any]:
+        started_at = time.time()
+        base_dir = _request_base_dir(request)
+        if base_dir:
+            self._ensure_process_local_tracking(base_dir=base_dir)
+        model_info = self._resolve_model_info(request)
+        model_id = _safe_str(model_info.get("model_id"))
+        model_path = _safe_str(model_info.get("model_path"))
+        requested_task_kind = _safe_str(request.get("task_kind") or request.get("taskKind")).lower()
+        model_task_kinds = _string_list(model_info.get("task_kinds"))
+        if not model_id:
+            return {
+                "ok": False,
+                "provider": self.provider_id(),
+                "action": "warmup_local_model",
+                "error": "missing_model_id",
+                "request": dict(request or {}),
+            }
+        if requested_task_kind and model_task_kinds and requested_task_kind not in model_task_kinds:
+            return {
+                "ok": False,
+                "provider": self.provider_id(),
+                "action": "warmup_local_model",
+                "modelId": model_id,
+                "taskKind": requested_task_kind,
+                "error": f"model_task_unsupported:{requested_task_kind}",
+                "request": dict(request or {}),
+            }
+        selected_task_kinds = [requested_task_kind] if requested_task_kind else [
+            task_kind for task_kind in model_task_kinds if task_kind in self.warmup_task_kinds()
+        ]
+        if not selected_task_kinds:
+            return {
+                "ok": False,
+                "provider": self.provider_id(),
+                "action": "warmup_local_model",
+                "modelId": model_id,
+                "error": (
+                    f"warmup_unsupported_task_kind:{model_task_kinds[0]}"
+                    if model_task_kinds else "missing_task_kind"
+                ),
+                "request": dict(request or {}),
+            }
+        unsupported_warmup_task = next(
+            (task_kind for task_kind in selected_task_kinds if task_kind not in self.warmup_task_kinds()),
+            "",
+        )
+        if unsupported_warmup_task:
+            return {
+                "ok": False,
+                "provider": self.provider_id(),
+                "action": "warmup_local_model",
+                "modelId": model_id,
+                "taskKind": unsupported_warmup_task,
+                "taskKinds": selected_task_kinds,
+                "error": f"warmup_unsupported_task_kind:{unsupported_warmup_task}",
+                "request": dict(request or {}),
+            }
+        if not model_path:
+            return {
+                "ok": False,
+                "provider": self.provider_id(),
+                "action": "warmup_local_model",
+                "modelId": model_id,
+                "taskKinds": selected_task_kinds,
+                "error": "missing_model_path",
+                "request": dict(request or {}),
+            }
+
+        has_transformers, has_torch = _has_transformers_runtime()
+        if not has_transformers:
+            return {
+                "ok": False,
+                "provider": self.provider_id(),
+                "action": "warmup_local_model",
+                "modelId": model_id,
+                "taskKinds": selected_task_kinds,
+                "error": "missing_module:transformers",
+                "request": dict(request or {}),
+            }
+        if not has_torch:
+            return {
+                "ok": False,
+                "provider": self.provider_id(),
+                "action": "warmup_local_model",
+                "modelId": model_id,
+                "taskKinds": selected_task_kinds,
+                "error": "missing_module:torch",
+                "request": dict(request or {}),
+            }
+
+        instance_key = _request_instance_key(request)
+        load_profile_hash = _request_load_profile_hash(request)
+        effective_context_length = _request_effective_context_length(request)
+        device_backends: list[str] = []
+        already_loaded = True
+
+        try:
+            for task_kind in selected_task_kinds:
+                cache_key = _safe_str(instance_key) or model_path or model_id
+                if task_kind == EMBED_TASK_KIND:
+                    if cache_key not in self._embedding_model_cache:
+                        already_loaded = False
+                    runtime = self._load_embedding_runtime(
+                        model_id=model_id,
+                        model_path=model_path,
+                        instance_key=instance_key,
+                        load_profile_hash=load_profile_hash,
+                        effective_context_length=effective_context_length,
+                    )
+                elif task_kind == ASR_TASK_KIND:
+                    if cache_key not in self._asr_pipeline_cache:
+                        already_loaded = False
+                    runtime = self._load_asr_runtime(
+                        model_id=model_id,
+                        model_path=model_path,
+                        instance_key=instance_key,
+                        load_profile_hash=load_profile_hash,
+                        effective_context_length=effective_context_length,
+                    )
+                else:
+                    return {
+                        "ok": False,
+                        "provider": self.provider_id(),
+                        "action": "warmup_local_model",
+                        "modelId": model_id,
+                        "taskKind": task_kind,
+                        "taskKinds": selected_task_kinds,
+                        "error": f"warmup_unsupported_task_kind:{task_kind}",
+                        "request": dict(request or {}),
+                    }
+                device_backends.append(_safe_str(runtime.get("device")) or "cpu")
+        except Exception as exc:
+            return {
+                "ok": False,
+                "provider": self.provider_id(),
+                "action": "warmup_local_model",
+                "modelId": model_id,
+                "taskKinds": selected_task_kinds,
+                "error": "warmup_runtime_failed",
+                "errorDetail": _safe_str(exc)[:240],
+                "request": dict(request or {}),
+            }
+
+        cold_start_ms = 0 if already_loaded else max(0, int(round((time.time() - started_at) * 1000.0)))
+        normalized_backends = sorted({backend for backend in device_backends if backend})
+        if base_dir:
+            self._sync_process_local_state(base_dir=base_dir)
+        return {
+            "ok": True,
+            "provider": self.provider_id(),
+            "action": "warmup_local_model",
+            "modelId": model_id,
+            "modelPath": model_path,
+            "taskKind": requested_task_kind,
+            "taskKinds": selected_task_kinds,
+            "instanceKey": instance_key,
+            "loadProfileHash": load_profile_hash,
+            "effectiveContextLength": effective_context_length,
+            "deviceBackend": normalized_backends[0] if len(normalized_backends) == 1 else ("mixed" if normalized_backends else "cpu"),
+            "coldStartMs": cold_start_ms,
+            "alreadyLoaded": already_loaded,
+            "lifecycleMode": self.lifecycle_mode(),
+            "supportedLifecycleActions": self.supported_lifecycle_actions(),
+            "warmupTaskKinds": self.warmup_task_kinds(),
+            "residencyScope": self.residency_scope(),
+            "processScoped": True,
+        }
+
+    def unload_model(self, request: dict[str, Any]) -> dict[str, Any]:
+        base_dir = _request_base_dir(request)
+        if base_dir:
+            self._ensure_process_local_tracking(base_dir=base_dir)
+        model_info = self._resolve_model_info(request)
+        model_id = _safe_str(model_info.get("model_id"))
+        if not model_id:
+            return {
+                "ok": False,
+                "provider": self.provider_id(),
+                "action": "unload_local_model",
+                "error": "missing_model_id",
+                "request": dict(request or {}),
+            }
+        matches = self._collect_matching_cache_entries(model_id=model_id)
+        if not matches:
+            return {
+                "ok": False,
+                "provider": self.provider_id(),
+                "action": "unload_local_model",
+                "modelId": model_id,
+                "error": "model_not_loaded",
+                "request": dict(request or {}),
+            }
+
+        task_kinds: set[str] = set()
+        evicted_rows: list[dict[str, Any]] = []
+        for cache_name, cache_key, entry in matches:
+            cache = self._embedding_model_cache if cache_name == EMBED_TASK_KIND else self._asr_pipeline_cache
+            task_kinds.update(_string_list(entry.get("task_kinds")))
+            if isinstance(entry, dict):
+                evicted_rows.append(dict(entry))
+            cache.pop(cache_key, None)
+        if base_dir:
+            self._sync_process_local_state(
+                base_dir=base_dir,
+                eviction_reason="manual_unload",
+                evicted_instances=evicted_rows,
+            )
+
+        return {
+            "ok": True,
+            "provider": self.provider_id(),
+            "action": "unload_local_model",
+            "modelId": model_id,
+            "taskKinds": sorted(task_kinds),
+            "unloadedInstanceCount": len(matches),
+            "lifecycleMode": self.lifecycle_mode(),
+            "supportedLifecycleActions": self.supported_lifecycle_actions(),
+            "warmupTaskKinds": self.warmup_task_kinds(),
+            "residencyScope": self.residency_scope(),
+            "processScoped": True,
+        }
+
+    def evict_instance(self, request: dict[str, Any]) -> dict[str, Any]:
+        base_dir = _request_base_dir(request)
+        if base_dir:
+            self._ensure_process_local_tracking(base_dir=base_dir)
+        instance_key = _request_instance_key(request)
+        if not instance_key:
+            return {
+                "ok": False,
+                "provider": self.provider_id(),
+                "action": "evict_local_instance",
+                "error": "missing_instance_key",
+                "request": dict(request or {}),
+            }
+        matches = self._collect_matching_cache_entries(instance_key=instance_key)
+        if not matches:
+            return {
+                "ok": False,
+                "provider": self.provider_id(),
+                "action": "evict_local_instance",
+                "instanceKey": instance_key,
+                "error": "instance_not_loaded",
+                "request": dict(request or {}),
+            }
+
+        task_kinds: set[str] = set()
+        model_id = ""
+        evicted_rows: list[dict[str, Any]] = []
+        for cache_name, cache_key, entry in matches:
+            cache = self._embedding_model_cache if cache_name == EMBED_TASK_KIND else self._asr_pipeline_cache
+            task_kinds.update(_string_list(entry.get("task_kinds")))
+            if not model_id:
+                model_id = _safe_str(entry.get("model_id"))
+            if isinstance(entry, dict):
+                evicted_rows.append(dict(entry))
+            cache.pop(cache_key, None)
+        if base_dir:
+            self._sync_process_local_state(
+                base_dir=base_dir,
+                eviction_reason="manual_evict_instance",
+                evicted_instances=evicted_rows,
+            )
+
+        return {
+            "ok": True,
+            "provider": self.provider_id(),
+            "action": "evict_local_instance",
+            "modelId": model_id,
+            "instanceKey": instance_key,
+            "taskKinds": sorted(task_kinds),
+            "evictedInstanceCount": len(matches),
+            "lifecycleMode": self.lifecycle_mode(),
+            "supportedLifecycleActions": self.supported_lifecycle_actions(),
+            "warmupTaskKinds": self.warmup_task_kinds(),
+            "residencyScope": self.residency_scope(),
+            "processScoped": True,
         }
 
     def _resolve_model_info(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -857,11 +1541,23 @@ class TransformersProvider(LocalProvider):
         )
         return max(8, min(4096, _safe_int(raw_dims, DEFAULT_HASH_FALLBACK_DIMS)))
 
-    def _load_asr_runtime(self, *, model_id: str, model_path: str) -> dict[str, Any]:
-        cache_key = model_path or model_id
+    def _load_asr_runtime(
+        self,
+        *,
+        model_id: str,
+        model_path: str,
+        instance_key: str = "",
+        load_profile_hash: str = "",
+        effective_context_length: int = 0,
+    ) -> dict[str, Any]:
+        cache_key = _safe_str(instance_key) or model_path or model_id
         cached = self._asr_pipeline_cache.get(cache_key)
         if cached:
-            return cached
+            return self._touch_cache_entry(
+                cached,
+                task_kinds=[ASR_TASK_KIND],
+                effective_context_length=effective_context_length,
+            )
 
         from transformers import pipeline  # type: ignore
 
@@ -885,19 +1581,41 @@ class TransformersProvider(LocalProvider):
         if pipe is None:
             raise RuntimeError(load_errors[-1] if load_errors else "asr_pipeline_init_failed")
 
+        now = time.time()
         out = {
             "pipeline": pipe,
             "model_id": model_id,
+            "model_path": model_path,
+            "instance_key": _safe_str(instance_key),
+            "load_profile_hash": _safe_str(load_profile_hash),
             "device": _safe_str(getattr(pipe, "device", "cpu")) or "cpu",
+            "task_kinds": [ASR_TASK_KIND],
+            "effective_context_length": max(0, int(effective_context_length or 0)),
+            "loaded_at": now,
+            "last_used_at": now,
+            "residency": "resident",
+            "residency_scope": self.residency_scope(),
         }
         self._asr_pipeline_cache[cache_key] = out
         return out
 
-    def _load_embedding_runtime(self, *, model_id: str, model_path: str) -> dict[str, Any]:
-        cache_key = model_path or model_id
+    def _load_embedding_runtime(
+        self,
+        *,
+        model_id: str,
+        model_path: str,
+        instance_key: str = "",
+        load_profile_hash: str = "",
+        effective_context_length: int = 0,
+    ) -> dict[str, Any]:
+        cache_key = _safe_str(instance_key) or model_path or model_id
         cached = self._embedding_model_cache.get(cache_key)
         if cached:
-            return cached
+            return self._touch_cache_entry(
+                cached,
+                task_kinds=[EMBED_TASK_KIND],
+                effective_context_length=effective_context_length,
+            )
 
         import torch  # type: ignore
         from transformers import AutoModel, AutoTokenizer  # type: ignore
@@ -924,12 +1642,22 @@ class TransformersProvider(LocalProvider):
                 dims = int(raw_value)
                 break
 
+        now = time.time()
         out = {
             "tokenizer": tokenizer,
             "model": model,
             "device": device,
             "dims": dims,
             "model_id": model_id,
+            "model_path": model_path,
+            "instance_key": _safe_str(instance_key),
+            "load_profile_hash": _safe_str(load_profile_hash),
+            "task_kinds": [EMBED_TASK_KIND],
+            "effective_context_length": max(0, int(effective_context_length or 0)),
+            "loaded_at": now,
+            "last_used_at": now,
+            "residency": "resident",
+            "residency_scope": self.residency_scope(),
         }
         self._embedding_model_cache[cache_key] = out
         return out
@@ -939,13 +1667,22 @@ class TransformersProvider(LocalProvider):
         *,
         model_id: str,
         model_path: str,
+        instance_key: str,
+        load_profile_hash: str,
+        effective_context_length: int,
         texts: list[str],
         max_length: int,
     ) -> tuple[list[list[float]], int, str]:
         import torch  # type: ignore
         import torch.nn.functional as torch_f  # type: ignore
 
-        runtime = self._load_embedding_runtime(model_id=model_id, model_path=model_path)
+        runtime = self._load_embedding_runtime(
+            model_id=model_id,
+            model_path=model_path,
+            instance_key=instance_key,
+            load_profile_hash=load_profile_hash,
+            effective_context_length=effective_context_length,
+        )
         tokenizer = runtime["tokenizer"]
         model = runtime["model"]
         device = str(runtime.get("device") or "cpu")
@@ -989,11 +1726,20 @@ class TransformersProvider(LocalProvider):
         *,
         model_id: str,
         model_path: str,
+        instance_key: str,
+        load_profile_hash: str,
+        effective_context_length: int,
         audio_meta: dict[str, Any],
         language: str,
         timestamps: bool,
     ) -> tuple[str, list[dict[str, Any]], str]:
-        runtime = self._load_asr_runtime(model_id=model_id, model_path=model_path)
+        runtime = self._load_asr_runtime(
+            model_id=model_id,
+            model_path=model_path,
+            instance_key=instance_key,
+            load_profile_hash=load_profile_hash,
+            effective_context_length=effective_context_length,
+        )
         pipe = runtime["pipeline"]
         call_kwargs: dict[str, Any] = {}
         if timestamps:
@@ -1144,6 +1890,9 @@ class TransformersProvider(LocalProvider):
 
     def _run_embedding_task(self, request: dict[str, Any]) -> dict[str, Any]:
         started_at = time.time()
+        base_dir = _request_base_dir(request)
+        if base_dir:
+            self._ensure_process_local_tracking(base_dir=base_dir)
         model_info = self._resolve_model_info(request)
         model_id = _safe_str(model_info.get("model_id"))
         error_code, validated = self._validate_embedding_request(request, model_info=model_info)
@@ -1159,6 +1908,9 @@ class TransformersProvider(LocalProvider):
 
         texts = list(validated.get("texts") or [])
         model_path = _safe_str(model_info.get("model_path"))
+        instance_key = _request_instance_key(request)
+        load_profile_hash = _request_load_profile_hash(request)
+        effective_context_length = _request_effective_context_length(request)
         max_length = max(32, min(2048, _safe_int(request.get("max_length"), 512)))
         allow_hash_fallback = _hash_fallback_enabled(request)
         has_transformers, has_torch = _has_transformers_runtime()
@@ -1174,6 +1926,9 @@ class TransformersProvider(LocalProvider):
                 vectors, dims, device_backend = self._run_real_embedding(
                     model_id=model_id,
                     model_path=model_path,
+                    instance_key=instance_key,
+                    load_profile_hash=load_profile_hash,
+                    effective_context_length=effective_context_length,
                     texts=texts,
                     max_length=max_length,
                 )
@@ -1222,6 +1977,8 @@ class TransformersProvider(LocalProvider):
             fallback_mode = "hash"
 
         latency_ms = max(0, int(round((time.time() - started_at) * 1000.0)))
+        if base_dir and not fallback_mode and has_transformers and has_torch and model_path:
+            self._sync_process_local_state(base_dir=base_dir)
         return {
             "ok": True,
             "provider": self.provider_id(),
@@ -1245,6 +2002,9 @@ class TransformersProvider(LocalProvider):
 
     def _run_asr_task(self, request: dict[str, Any]) -> dict[str, Any]:
         started_at = time.time()
+        base_dir = _request_base_dir(request)
+        if base_dir:
+            self._ensure_process_local_tracking(base_dir=base_dir)
         model_info = self._resolve_model_info(request)
         model_id = _safe_str(model_info.get("model_id"))
         model_path = _safe_str(model_info.get("model_path"))
@@ -1267,6 +2027,9 @@ class TransformersProvider(LocalProvider):
 
         has_transformers, has_torch = _has_transformers_runtime()
         allow_asr_fallback = _asr_fallback_enabled(request)
+        instance_key = _request_instance_key(request)
+        load_profile_hash = _request_load_profile_hash(request)
+        effective_context_length = _request_effective_context_length(request)
         error_detail = ""
         text = ""
         segments: list[dict[str, Any]] = []
@@ -1278,6 +2041,9 @@ class TransformersProvider(LocalProvider):
                 text, segments, device_backend = self._run_real_asr(
                     model_id=model_id,
                     model_path=model_path,
+                    instance_key=instance_key,
+                    load_profile_hash=load_profile_hash,
+                    effective_context_length=effective_context_length,
                     audio_meta=validated,
                     language=_safe_str(validated.get("language")),
                     timestamps=bool(validated.get("timestamps")),
@@ -1346,6 +2112,8 @@ class TransformersProvider(LocalProvider):
 
         latency_ms = max(0, int(round((time.time() - started_at) * 1000.0)))
         duration_sec = round(_safe_float(validated.get("duration_sec"), 0.0), 6)
+        if base_dir and not fallback_mode and has_transformers and has_torch and model_path:
+            self._sync_process_local_state(base_dir=base_dir)
         return {
             "ok": True,
             "provider": self.provider_id(),

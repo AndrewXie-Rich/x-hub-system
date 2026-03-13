@@ -139,6 +139,285 @@ struct ChatSessionModelRecentContextTests {
         #expect(!executeBlock.contains(longCanonical))
     }
 
+    @Test
+    func projectMemoryBlockIncludesPendingSupervisorGuidance() throws {
+        let session = ChatSessionModel()
+        let root = try makeProjectRoot(named: "project-memory-guidance")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-project-memory-1",
+                reviewId: "review-project-memory-1",
+                projectId: "proj-project-memory-1",
+                targetRole: .coder,
+                deliveryMode: .replanRequest,
+                interventionMode: .replanNextSafePoint,
+                safePointPolicy: .nextStepBoundary,
+                guidanceText: "先重新对齐 done definition，再开始重构。",
+                ackStatus: .pending,
+                ackRequired: true,
+                ackNote: "",
+                injectedAtMs: 1_773_380_000_000,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-guidance-project-memory-1"
+            ),
+            for: ctx
+        )
+
+        let block = session.projectMemoryBlockForTesting(
+            ctx: ctx,
+            canonicalMemory: "goal: improve review loop",
+            recentText: "recent",
+            userText: "继续推进当前实现"
+        )
+
+        #expect(block.contains("[pending_supervisor_guidance]"))
+        #expect(block.contains("injection_id: guidance-project-memory-1"))
+        #expect(block.contains("ack_status: pending"))
+        #expect(block.contains("guidance_text:"))
+        #expect(block.contains("先重新对齐 done definition，再开始重构。"))
+    }
+
+    @Test
+    func explicitSupervisorGuidanceAckPersistsRejectedStatus() throws {
+        let session = ChatSessionModel()
+        let root = try makeProjectRoot(named: "project-guidance-ack-rejected")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-ack-rejected-1",
+                reviewId: "review-ack-rejected-1",
+                projectId: "proj-ack-rejected-1",
+                targetRole: .coder,
+                deliveryMode: .replanRequest,
+                interventionMode: .replanNextSafePoint,
+                safePointPolicy: .nextStepBoundary,
+                guidanceText: "改成更稳的 replan 路线。",
+                ackStatus: .pending,
+                ackRequired: true,
+                ackNote: "",
+                injectedAtMs: 1_773_381_000_000,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-guidance-ack-rejected-1"
+            ),
+            for: ctx
+        )
+
+        session.applySupervisorGuidanceAckForTesting(
+            ctx: ctx,
+            envelope: ToolActionEnvelope(
+                tool_calls: nil,
+                final: "当前先不采纳这条 guidance。",
+                guidance_ack: ToolGuidanceAckPayload(
+                    injection_id: "guidance-ack-rejected-1",
+                    status: .rejected,
+                    note: "Conflicts with the approved migration boundary."
+                )
+            )
+        )
+
+        let updated = try #require(SupervisorGuidanceInjectionStore.latest(for: ctx))
+        #expect(updated.ackStatus == .rejected)
+        #expect(updated.ackNote == "Conflicts with the approved migration boundary.")
+    }
+
+    @Test
+    func executableEnvelopeAutoAcceptsPendingSupervisorGuidance() throws {
+        let session = ChatSessionModel()
+        let root = try makeProjectRoot(named: "project-guidance-ack-auto")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-ack-auto-1",
+                reviewId: "review-ack-auto-1",
+                projectId: "proj-ack-auto-1",
+                targetRole: .coder,
+                deliveryMode: .priorityInsert,
+                interventionMode: .suggestNextSafePoint,
+                safePointPolicy: .nextToolBoundary,
+                guidanceText: "先读取当前 diff，再决定是否重构。",
+                ackStatus: .pending,
+                ackRequired: true,
+                ackNote: "",
+                injectedAtMs: 1_773_382_000_000,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-guidance-ack-auto-1"
+            ),
+            for: ctx
+        )
+
+        session.applySupervisorGuidanceAckForTesting(
+            ctx: ctx,
+            envelope: ToolActionEnvelope(
+                tool_calls: [
+                    ToolCall(
+                        id: "read-diff",
+                        tool: .git_diff,
+                        args: [:]
+                    )
+                ],
+                final: nil,
+                guidance_ack: nil
+            )
+        )
+
+        let updated = try #require(SupervisorGuidanceInjectionStore.latest(for: ctx))
+        #expect(updated.ackStatus == .accepted)
+        #expect(updated.ackNote == "auto_accepted_from_executable_result")
+    }
+
+    @Test
+    func slashGuidanceShowsAndManuallyAcceptsPendingGuidance() throws {
+        let session = ChatSessionModel()
+        let root = try makeProjectRoot(named: "project-guidance-slash")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-slash-1",
+                reviewId: "review-slash-1",
+                projectId: "proj-slash-1",
+                targetRole: .coder,
+                deliveryMode: .priorityInsert,
+                interventionMode: .suggestNextSafePoint,
+                safePointPolicy: .nextToolBoundary,
+                guidanceText: "先看当前 blocker，再决定是否继续 patch。",
+                ackStatus: .pending,
+                ackRequired: true,
+                ackNote: "",
+                injectedAtMs: 1_773_383_000_000,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-guidance-slash-1"
+            ),
+            for: ctx
+        )
+
+        let status = session.handleSlashGuidanceForTesting(args: [], ctx: ctx)
+        #expect(status.contains("pending guidance:"))
+        #expect(status.contains("guidance-slash-1"))
+
+        let accept = session.handleSlashGuidanceForTesting(
+            args: ["accept", "manual", "operator", "ok"],
+            ctx: ctx
+        )
+        #expect(accept.contains("已更新 guidance ack"))
+
+        let updated = try #require(SupervisorGuidanceInjectionStore.latest(for: ctx))
+        #expect(updated.ackStatus == .accepted)
+        #expect(updated.ackNote == "manual operator ok")
+    }
+
+    @Test
+    func guidanceAckLatestBlockIncludesAckNote() throws {
+        let session = ChatSessionModel()
+        let root = try makeProjectRoot(named: "project-guidance-ack-note")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-ack-note-1",
+                reviewId: "review-ack-note-1",
+                projectId: "proj-ack-note-1",
+                targetRole: .coder,
+                deliveryMode: .replanRequest,
+                interventionMode: .replanNextSafePoint,
+                safePointPolicy: .nextStepBoundary,
+                guidanceText: "改成更稳的 replan 路线。",
+                ackStatus: .rejected,
+                ackRequired: true,
+                ackNote: "Need extra evidence before moving the migration boundary.",
+                injectedAtMs: 1_773_384_000_000,
+                ackUpdatedAtMs: 1_773_384_000_100,
+                auditRef: "audit-guidance-ack-note-1"
+            ),
+            for: ctx
+        )
+
+        let block = session.projectMemoryBlockForTesting(
+            ctx: ctx,
+            canonicalMemory: "goal: improve review loop",
+            recentText: "recent",
+            userText: "继续推进当前实现"
+        )
+
+        #expect(block.contains("[latest_supervisor_guidance]"))
+        #expect(block.contains("ack_status: rejected"))
+        #expect(block.contains("ack_note: Need extra evidence before moving the migration boundary."))
+    }
+
+    @Test
+    func projectMemoryBlockRespectsSafePointDeliveryWindow() throws {
+        let session = ChatSessionModel()
+        let root = try makeProjectRoot(named: "project-guidance-safe-point-window")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-safe-point-window-1",
+                reviewId: "review-safe-point-window-1",
+                projectId: "proj-safe-point-window-1",
+                targetRole: .coder,
+                deliveryMode: .replanRequest,
+                interventionMode: .replanNextSafePoint,
+                safePointPolicy: .nextStepBoundary,
+                guidanceText: "下一 planning step 再插入。",
+                ackStatus: .pending,
+                ackRequired: true,
+                ackNote: "",
+                injectedAtMs: 200,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-safe-point-window-1"
+            ),
+            for: ctx
+        )
+
+        let firstStep = session.projectMemoryBlockForTesting(
+            ctx: ctx,
+            canonicalMemory: "goal: improve review loop",
+            recentText: "recent",
+            userText: "继续推进当前实现",
+            safePointState: SupervisorSafePointExecutionState(
+                runStartedAtMs: 100,
+                flowStep: 1,
+                toolResultsCount: 0,
+                verifyRunIndex: 0,
+                finalizeOnly: false
+            )
+        )
+        let secondStep = session.projectMemoryBlockForTesting(
+            ctx: ctx,
+            canonicalMemory: "goal: improve review loop",
+            recentText: "recent",
+            userText: "继续推进当前实现",
+            safePointState: SupervisorSafePointExecutionState(
+                runStartedAtMs: 100,
+                flowStep: 2,
+                toolResultsCount: 0,
+                verifyRunIndex: 0,
+                finalizeOnly: false
+            )
+        )
+
+        #expect(!firstStep.contains("[pending_supervisor_guidance]"))
+        #expect(secondStep.contains("[pending_supervisor_guidance]"))
+        #expect(secondStep.contains("guidance-safe-point-window-1"))
+    }
+
     private func makeTurns(count: Int) -> [AXChatMessage] {
         var out: [AXChatMessage] = []
         for index in 1...count {
@@ -147,5 +426,12 @@ struct ChatSessionModelRecentContextTests {
             out.append(AXChatMessage(role: .assistant, content: "assistant-\(index)", createdAt: base + 1))
         }
         return out
+    }
+
+    private func makeProjectRoot(named name: String) throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(name)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
     }
 }

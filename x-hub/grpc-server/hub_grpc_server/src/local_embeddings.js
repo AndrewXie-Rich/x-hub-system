@@ -75,8 +75,8 @@ function pruneEmbeddingCache() {
   }
 }
 
-function embeddingCacheKey(modelId, text) {
-  return `${safeString(modelId)}:${sha256Hex(text)}`;
+function embeddingCacheKey(modelId, text, deviceId = '') {
+  return `${safeString(modelId)}:${safeString(deviceId)}:${sha256Hex(text)}`;
 }
 
 function vectorDims(vector) {
@@ -222,6 +222,7 @@ function resolveLocalEmbeddingModel(runtimeBaseDir, preferredModelId = '') {
 async function requestEmbeddingVectors({
   runtimeBaseDir,
   requestId,
+  deviceId,
   model,
   items,
   executor,
@@ -237,7 +238,7 @@ async function requestEmbeddingVectors({
 
   for (let idx = 0; idx < rows.length; idx += 1) {
     const row = rows[idx] || {};
-    const cacheKey = embeddingCacheKey(modelId, row.text);
+    const cacheKey = embeddingCacheKey(modelId, row.text, deviceId);
     const cached = EMBEDDING_CACHE.get(cacheKey);
     if (cached && Array.isArray(cached.vector) && vectorDims(cached.vector) > 0) {
       results[idx] = cached.vector;
@@ -260,6 +261,7 @@ async function requestEmbeddingVectors({
         task_kind: EMBED_TASK_KIND,
         model_id: modelId,
         model_path: modelPath,
+        device_id: safeString(deviceId),
         task_kinds: Array.isArray(model?.task_kinds) ? model.task_kinds : [EMBED_TASK_KIND],
         request_id: safeString(requestId),
         input_sanitized: true,
@@ -331,6 +333,7 @@ async function requestEmbeddingVectors({
 export async function prepareLocalMemoryEmbeddings({
   runtimeBaseDir,
   requestId = '',
+  deviceId = '',
   preferredModelId = '',
   query = '',
   documents = [],
@@ -455,6 +458,7 @@ export async function prepareLocalMemoryEmbeddings({
   const vectorResponse = await requestEmbeddingVectors({
     runtimeBaseDir: baseDir,
     requestId: safeString(requestId),
+    deviceId: safeString(deviceId),
     model,
     items: [
       { kind: 'query', text: queryText.text },

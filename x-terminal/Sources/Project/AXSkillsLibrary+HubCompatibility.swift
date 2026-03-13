@@ -1135,7 +1135,12 @@ extension AXSkillsLibrary {
             return SupervisorGovernedSkillDispatchVariant(
                 actions: actions,
                 dispatch: dispatch,
-                actionArg: stringValue(object["action_arg"]).isEmpty ? "action" : stringValue(object["action_arg"]),
+                actionArg: {
+                    if object.keys.contains("action_arg") {
+                        return stringValue(object["action_arg"])
+                    }
+                    return "action"
+                }(),
                 actionMap: stringMapValue(object["action_map"])
             )
         }

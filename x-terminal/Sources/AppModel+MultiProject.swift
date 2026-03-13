@@ -56,13 +56,26 @@ extension AppModel {
         name: String,
         taskDescription: String,
         modelName: String,
-        autonomyLevel: AutonomyLevel = .auto
+        executionTier: AXProjectExecutionTier = .a3DeliverAuto,
+        supervisorInterventionTier: AXProjectSupervisorInterventionTier? = nil,
+        reviewPolicyMode: AXProjectReviewPolicyMode? = nil,
+        progressHeartbeatSeconds: Int? = nil,
+        reviewPulseSeconds: Int? = nil,
+        brainstormReviewSeconds: Int? = nil,
+        eventDrivenReviewEnabled: Bool? = nil
     ) async -> ProjectModel {
         let config = ProjectConfig(
             name: name,
             taskDescription: taskDescription,
             modelName: modelName,
-            autonomyLevel: autonomyLevel
+            autonomyLevel: .fromExecutionTier(executionTier),
+            executionTier: executionTier,
+            supervisorInterventionTier: supervisorInterventionTier,
+            reviewPolicyMode: reviewPolicyMode,
+            progressHeartbeatSeconds: progressHeartbeatSeconds,
+            reviewPulseSeconds: reviewPulseSeconds,
+            brainstormReviewSeconds: brainstormReviewSeconds,
+            eventDrivenReviewEnabled: eventDrivenReviewEnabled
         )
 
         return await multiProjectManager.createProject(config)

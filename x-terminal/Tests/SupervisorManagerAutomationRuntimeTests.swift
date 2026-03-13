@@ -23,7 +23,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
 
-        let root = try makeProjectRoot()
+        let root = try makeRegistryVisibleProjectRoot()
         defer {
             manager.resetAutomationRuntimeState()
             try? FileManager.default.removeItem(at: root)
@@ -70,7 +70,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
 
-        let root = try makeProjectRoot()
+        let root = try makeRegistryVisibleProjectRoot()
         defer {
             manager.resetAutomationRuntimeState()
             try? FileManager.default.removeItem(at: root)
@@ -109,7 +109,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
 
-        let root = try makeProjectRoot()
+        let root = try makeRegistryVisibleProjectRoot()
         defer {
             manager.resetAutomationRuntimeState()
             try? FileManager.default.removeItem(at: root)
@@ -213,11 +213,12 @@ struct SupervisorManagerAutomationRuntimeTests {
     }
 
     @Test
+    @MainActor
     func heartbeatAutoProgressKickstartsPausedReadyProject() async throws {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
 
-        let root = try makeProjectRoot()
+        let root = try makeRegistryVisibleProjectRoot()
         defer {
             manager.resetAutomationRuntimeState()
             try? FileManager.default.removeItem(at: root)
@@ -249,6 +250,11 @@ struct SupervisorManagerAutomationRuntimeTests {
             projects: [project]
         )
         manager.setAppModel(appModel)
+        _ = manager.applySupervisorJurisdictionRegistry(
+            .ownerAll(for: [project]),
+            persist: false,
+            normalizeWithKnownProjects: true
+        )
 
         let actions = manager.runHeartbeatAutoProgressForTesting(
             now: Date(timeIntervalSince1970: 1_773_201_500)
@@ -269,7 +275,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
 
-        let root = try makeProjectRoot()
+        let root = try makeRegistryVisibleProjectRoot()
         defer {
             manager.resetAutomationRuntimeState()
             try? FileManager.default.removeItem(at: root)
@@ -317,7 +323,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
 
-        let root = try makeProjectRoot()
+        let root = try makeRegistryVisibleProjectRoot()
         defer {
             manager.resetAutomationRuntimeState()
             try? FileManager.default.removeItem(at: root)
@@ -421,7 +427,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
 
-        let root = try makeProjectRoot()
+        let root = try makeRegistryVisibleProjectRoot()
         defer {
             manager.resetAutomationRuntimeState()
             try? FileManager.default.removeItem(at: root)
@@ -471,11 +477,19 @@ struct SupervisorManagerAutomationRuntimeTests {
     }
 
     @Test
+    @MainActor
     func hubConnectorIngressSnapshotFailClosesUnsupportedSourceAndRoutesDeclaredWebhook() throws {
-        let manager = SupervisorManager.makeForTesting()
+        var spoken: [String] = []
+        let synthesizer = SupervisorSpeechSynthesizer(
+            deduper: SupervisorVoiceBriefDeduper(cooldown: 0),
+            speakSink: { spoken.append($0) }
+        )
+        let manager = SupervisorManager.makeForTesting(
+            supervisorSpeechSynthesizer: synthesizer
+        )
         manager.resetAutomationRuntimeState()
 
-        let root = try makeProjectRoot()
+        let root = try makeRegistryVisibleProjectRoot()
         defer {
             manager.resetAutomationRuntimeState()
             try? FileManager.default.removeItem(at: root)
@@ -494,6 +508,12 @@ struct SupervisorManagerAutomationRuntimeTests {
             projects: [project]
         )
         manager.setAppModel(appModel)
+        _ = manager.applySupervisorJurisdictionRegistry(
+            .ownerAll(for: [project]),
+            persist: false,
+            normalizeWithKnownProjects: true
+        )
+        manager.clearMessages()
 
         let snapshot = HubIPCClient.ConnectorIngressSnapshot(
             source: "hub_runtime_grpc",
@@ -545,6 +565,24 @@ struct SupervisorManagerAutomationRuntimeTests {
         #expect(firstPass.last?.triggerId == "webhook/github_pr")
         let runId = try #require(firstPass.last?.runId)
         #expect(manager.automationCurrentCheckpoint?.state == .queued)
+        #expect(manager.messages.contains(where: {
+            $0.role == .system &&
+                $0.content.contains("Discord") &&
+                $0.content.contains("失败闭锁")
+        }))
+        #expect(manager.messages.contains(where: {
+            $0.role == .system &&
+                $0.content.contains("GitHub") &&
+                $0.content.contains("已转入 XT automation")
+        }))
+        #expect(spoken.contains(where: {
+            $0.contains("Discord") &&
+                $0.contains("失败闭锁")
+        }))
+        #expect(spoken.contains(where: {
+            $0.contains("GitHub") &&
+                $0.contains("远程入口")
+        }))
 
         _ = try manager.advanceAutomationRun(
             for: ctx,
@@ -577,9 +615,113 @@ struct SupervisorManagerAutomationRuntimeTests {
     }
 
     @Test
+    @MainActor
+    func hubConnectorIngressSnapshotHoldsBusyProjectAndAnnouncesBrief() throws {
+        var spoken: [String] = []
+        let synthesizer = SupervisorSpeechSynthesizer(
+            deduper: SupervisorVoiceBriefDeduper(cooldown: 0),
+            speakSink: { spoken.append($0) }
+        )
+        let manager = SupervisorManager.makeForTesting(
+            supervisorSpeechSynthesizer: synthesizer
+        )
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeLiveIngressRecipe(), activate: true, for: ctx)
+        let project = makeProjectEntry(root: root)
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: 1_773_202_100,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+        _ = manager.applySupervisorJurisdictionRegistry(
+            .ownerAll(for: [project]),
+            persist: false,
+            normalizeWithKnownProjects: true
+        )
+        manager.clearMessages()
+
+        let prepared = try manager.startAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: 1_773_202_100)),
+            emitSystemMessage: false
+        )
+        #expect(manager.automationCurrentCheckpoint?.runID == prepared.launchRef)
+        #expect(manager.automationCurrentCheckpoint?.state == .queued)
+
+        let snapshot = HubIPCClient.ConnectorIngressSnapshot(
+            source: "hub_runtime_grpc",
+            updatedAtMs: 1_773_202_110_000,
+            items: [
+                HubIPCClient.ConnectorIngressReceipt(
+                    receiptId: "hub-slack-hold-001",
+                    requestId: "req-hub-slack-hold-001",
+                    projectId: project.projectId,
+                    connector: "slack",
+                    targetId: "dm-9",
+                    ingressType: "connector_event",
+                    channelScope: "dm",
+                    sourceId: "user-9",
+                    messageId: "msg-slack-hold-001",
+                    dedupeKey: "sha256:hub-slack-hold-001",
+                    receivedAtMs: 1_773_202_105_000,
+                    eventSequence: 21,
+                    deliveryState: "accepted",
+                    runtimeState: "queued"
+                )
+            ]
+        )
+
+        let results = manager.serviceHubConnectorIngressReceiptsForTesting(
+            snapshot,
+            now: Date(timeIntervalSince1970: 1_773_202_110)
+        )
+        #expect(results.count == 1)
+        #expect(results.first?.decision == .hold)
+        #expect(results.first?.reasonCode == "automation_active_run_present")
+        #expect(manager.messages.contains(where: {
+            $0.role == .system &&
+                $0.content.contains("Slack") &&
+                $0.content.contains("暂缓")
+        }))
+        #expect(spoken.contains(where: {
+            $0.contains("Slack") &&
+                $0.contains("暂缓")
+        }))
+
+        let routeRows = try rawLogEntries(for: ctx).filter {
+            ($0["type"] as? String) == "automation_external_trigger_route"
+        }
+        #expect(routeRows.contains {
+            ($0["ingress_channel"] as? String) == "hub_connector_receipt_snapshot"
+                && ($0["decision"] as? String) == "hold"
+                && ($0["reason_code"] as? String) == "automation_active_run_present"
+        })
+    }
+
+    @Test
     func operatorChannelXTCommandPrepareDeployPlanUsesPrepareOnlyPathAndPersistsResult() async throws {
         try await Self.gate.run {
-            let manager = SupervisorManager.makeForTesting()
+            var spoken: [String] = []
+            let synthesizer = SupervisorSpeechSynthesizer(
+                deduper: SupervisorVoiceBriefDeduper(cooldown: 0),
+                speakSink: { spoken.append($0) }
+            )
+            let manager = SupervisorManager.makeForTesting(
+                supervisorSpeechSynthesizer: synthesizer
+            )
             manager.resetAutomationRuntimeState()
 
             let originalMode = HubAIClient.transportMode()
@@ -612,6 +754,7 @@ struct SupervisorManagerAutomationRuntimeTests {
                 projects: [project]
             )
             manager.setAppModel(appModel)
+            manager.clearMessages()
 
             let snapshot = HubIPCClient.OperatorChannelXTCommandSnapshot(
                 source: "hub_runtime_grpc",
@@ -666,13 +809,29 @@ struct SupervisorManagerAutomationRuntimeTests {
                     && ($0["command_id"] as? String) == "cmd-op-1"
                     && ($0["run_id"] as? String) == runId
             })
+            #expect(manager.messages.contains(where: {
+                $0.role == .system &&
+                    $0.content.contains("Slack") &&
+                    $0.content.contains("已准备执行")
+            }))
+            #expect(spoken.contains(where: {
+                $0.contains("Slack") &&
+                    $0.contains("XT 指令")
+            }))
         }
     }
 
     @Test
     func operatorChannelXTCommandFailsClosedWhenProjectBindingDoesNotMatchRoutedDevice() async throws {
         try await Self.gate.run {
-            let manager = SupervisorManager.makeForTesting()
+            var spoken: [String] = []
+            let synthesizer = SupervisorSpeechSynthesizer(
+                deduper: SupervisorVoiceBriefDeduper(cooldown: 0),
+                speakSink: { spoken.append($0) }
+            )
+            let manager = SupervisorManager.makeForTesting(
+                supervisorSpeechSynthesizer: synthesizer
+            )
             manager.resetAutomationRuntimeState()
 
             let root = try makeProjectRoot()
@@ -695,6 +854,7 @@ struct SupervisorManagerAutomationRuntimeTests {
                 projects: [project]
             )
             manager.setAppModel(appModel)
+            manager.clearMessages()
 
             let snapshot = HubIPCClient.OperatorChannelXTCommandSnapshot(
                 source: "hub_runtime_grpc",
@@ -741,7 +901,70 @@ struct SupervisorManagerAutomationRuntimeTests {
                     && ($0["command_id"] as? String) == "cmd-op-mismatch"
                     && ($0["deny_code"] as? String) == "trusted_automation_project_not_bound"
             })
+            #expect(manager.messages.contains(where: {
+                $0.role == .system &&
+                    $0.content.contains("失败闭锁") &&
+                    $0.content.contains("trusted_automation_project_not_bound")
+            }))
+            #expect(spoken.contains(where: {
+                $0.contains("Slack") &&
+                    $0.contains("失败闭锁")
+            }))
         }
+    }
+
+    @Test
+    func naturalLanguageAutomationStatusAndCancelMapToRuntimeCommands() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
+        var project = makeProjectEntry(root: root)
+        project.displayName = "亮亮"
+
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+        _ = manager.applySupervisorJurisdictionRegistry(
+            .ownerAll(for: [project]),
+            persist: false,
+            normalizeWithKnownProjects: true
+        )
+
+        let prepared = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: 1_773_203_000))
+        )
+        #expect(manager.automationCurrentCheckpoint?.runID == prepared.launchRef)
+        #expect(manager.automationCurrentCheckpoint?.state == .queued)
+
+        let statusText = try #require(
+            manager.directSupervisorActionIfApplicableForTesting("亮亮的自动流程现在怎么样")
+        )
+        #expect(statusText.contains("🤖 Automation Runtime 状态"))
+        #expect(statusText.contains("项目: \(project.displayName)"))
+        #expect(statusText.contains("last_launch: \(prepared.launchRef)"))
+
+        let cancelText = try #require(
+            manager.directSupervisorActionIfApplicableForTesting("先暂停亮亮的自动流程")
+        )
+        #expect(cancelText.contains("🛑 automation 已取消"))
+        #expect(cancelText.contains("run_id: \(prepared.launchRef)"))
     }
 
     @Test
@@ -821,6 +1044,11 @@ struct SupervisorManagerAutomationRuntimeTests {
             appModel.projectContext?.root == root
         }
         manager.setAppModel(appModel)
+        _ = manager.applySupervisorJurisdictionRegistry(
+            .ownerAll(for: [project]),
+            persist: false,
+            normalizeWithKnownProjects: true
+        )
 
         let startText = try #require(manager.performAutomationRuntimeCommand("/automation start \(project.projectId)"))
         #expect(startText.contains("run_id:"))
@@ -835,6 +1063,225 @@ struct SupervisorManagerAutomationRuntimeTests {
         #expect(statusText.contains("last_execution_state: delivered"))
         #expect(statusText.contains("last_execution_actions: 1/1"))
         #expect(statusText.contains("last_execution_handoff: build/reports/xt_automation_run_handoff_"))
+    }
+
+    @Test
+    func automationStartSafePointHoldPausesBeforeExecutorAndRunsSupervisorFollowUp() async throws {
+        let manager = SupervisorManager.makeForTesting(enableSupervisorEventLoopAutoFollowUp: true)
+        manager.resetAutomationRuntimeState()
+        actor FollowUpFlag {
+            private var hit = false
+            func mark() { hit = true }
+            func value() -> Bool { hit }
+        }
+        let followUpFlag = FollowUpFlag()
+
+        let root = try makeProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
+        let project = makeProjectEntry(root: root)
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: nil,
+            projects: [project]
+        )
+        appModel.selectedProjectId = project.projectId
+        try await waitUntil("app model selected project for safe point hold") {
+            appModel.projectContext?.root == root
+        }
+        manager.setAppModel(appModel)
+        _ = manager.applySupervisorJurisdictionRegistry(
+            .ownerAll(for: [project]),
+            persist: false,
+            normalizeWithKnownProjects: true
+        )
+
+        let counter = ToolCallCounter()
+        manager.installAutomationRunExecutorForTesting(
+            XTAutomationRunExecutor { call, rootURL in
+                await counter.increment(call.tool)
+                return ToolResult(id: call.id, tool: call.tool, ok: true, output: "root=\(rootURL.path)")
+            }
+        )
+        manager.setSupervisorEventLoopResponseOverrideForTesting { userMessage, triggerSource in
+            await followUpFlag.mark()
+            #expect(triggerSource == "automation_safe_point")
+            #expect(userMessage.contains("trigger=automation_safe_point"))
+            #expect(userMessage.contains("requested_state=running"))
+            #expect(userMessage.contains("injection_id=guidance-auto-safe-point-start-1"))
+            return """
+            1. 先确认为什么要在当前 safe point 暂停。
+            2. 对照 guidance 判断是否需要重排 action graph。
+            3. 给 coder 一个可执行的下一步。
+            """
+        }
+
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-auto-safe-point-start-1",
+                reviewId: "review-auto-safe-point-start-1",
+                projectId: project.projectId,
+                targetRole: .coder,
+                deliveryMode: .replanRequest,
+                interventionMode: .replanNextSafePoint,
+                safePointPolicy: .checkpointBoundary,
+                guidanceText: "执行 action graph 前先停下，让 supervisor 重审方案。",
+                ackStatus: .pending,
+                ackRequired: true,
+                ackNote: "",
+                injectedAtMs: 1_773_200_700_000,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-guidance-auto-safe-point-start-1"
+            ),
+            for: ctx
+        )
+
+        let prepared = try manager.startAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: 1_773_200_701)),
+            emitSystemMessage: false
+        )
+
+        try await waitUntil("automation safe point hold before execution") {
+            manager.automationCurrentCheckpoint?.runID == prepared.launchRef &&
+            manager.automationCurrentCheckpoint?.state == .blocked
+        }
+        await manager.waitForSupervisorEventLoopForTesting()
+
+        #expect(await counter.count(for: .project_snapshot) == 0)
+        #expect(await followUpFlag.value())
+        #expect(manager.automationLatestExecutionReport == nil)
+
+        let rows = try rawLogEntries(for: ctx)
+        #expect(rows.contains {
+            ($0["type"] as? String) == "automation_safe_point_hold" &&
+            ($0["run_id"] as? String) == prepared.launchRef &&
+            ($0["requested_state"] as? String) == XTAutomationRunState.running.rawValue &&
+            ($0["injection_id"] as? String) == "guidance-auto-safe-point-start-1"
+        })
+        #expect(rows.contains {
+            ($0["type"] as? String) == "automation_execution" &&
+            ($0["phase"] as? String) == "started" &&
+            ($0["run_id"] as? String) == prepared.launchRef
+        } == false)
+        #expect(manager.messages.contains {
+            $0.role == .assistant && $0.content.contains("先确认为什么要在当前 safe point 暂停")
+        })
+    }
+
+    @Test
+    func automationSafePointHoldAfterExecutionRunsSupervisorFollowUp() async throws {
+        let manager = SupervisorManager.makeForTesting(enableSupervisorEventLoopAutoFollowUp: true)
+        manager.resetAutomationRuntimeState()
+        actor FollowUpFlag {
+            private var hit = false
+            func mark() { hit = true }
+            func value() -> Bool { hit }
+        }
+        let followUpFlag = FollowUpFlag()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
+        let project = makeProjectEntry(root: root)
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: nil,
+            projects: [project]
+        )
+        appModel.selectedProjectId = project.projectId
+        try await waitUntil("app model selected project for post execution hold") {
+            appModel.projectContext?.root == root
+        }
+        manager.setAppModel(appModel)
+
+        manager.setSupervisorEventLoopResponseOverrideForTesting { userMessage, triggerSource in
+            await followUpFlag.mark()
+            #expect(triggerSource == "automation_safe_point")
+            #expect(userMessage.contains("requested_state=delivered"))
+            #expect(userMessage.contains("injection_id=guidance-auto-safe-point-finish-1"))
+            return """
+            1. 先审查这次 automation 产物是否已经满足 done definition。
+            2. 如果 guidance 要求延后交付，就重新决定下一步是复核、replan 还是放行。
+            3. 输出给 coder 的具体执行建议。
+            """
+        }
+
+        let prepared = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: 1_773_200_800))
+        )
+        let running = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .running,
+            runID: prepared.launchRef,
+            auditRef: "audit-xt-auto-running-before-post-safe-point",
+            now: Date(timeIntervalSince1970: 1_773_200_801),
+            emitSystemMessage: false
+        )
+        #expect(running.state == .running)
+
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-auto-safe-point-finish-1",
+                reviewId: "review-auto-safe-point-finish-1",
+                projectId: project.projectId,
+                targetRole: .coder,
+                deliveryMode: .priorityInsert,
+                interventionMode: .suggestNextSafePoint,
+                safePointPolicy: .checkpointBoundary,
+                guidanceText: "动作跑完了，但先别交付，给 supervisor 一次 review 窗口。",
+                ackStatus: .pending,
+                ackRequired: true,
+                ackNote: "",
+                injectedAtMs: 1_773_200_800_500,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-guidance-auto-safe-point-finish-1"
+            ),
+            for: ctx
+        )
+
+        let finalCheckpoint = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .delivered,
+            runID: prepared.launchRef,
+            auditRef: "audit-xt-auto-post-safe-point-delivered",
+            now: Date(timeIntervalSince1970: 1_773_200_802),
+            emitSystemMessage: false
+        )
+        #expect(finalCheckpoint.state == .blocked)
+        await manager.waitForSupervisorEventLoopForTesting()
+
+        #expect(await followUpFlag.value())
+
+        let rows = try rawLogEntries(for: ctx)
+        #expect(rows.contains {
+            ($0["type"] as? String) == "automation_safe_point_hold" &&
+            ($0["run_id"] as? String) == prepared.launchRef &&
+            ($0["requested_state"] as? String) == XTAutomationRunState.delivered.rawValue &&
+            ($0["injection_id"] as? String) == "guidance-auto-safe-point-finish-1"
+        })
+        #expect(manager.messages.contains {
+            $0.role == .assistant && $0.content.contains("先审查这次 automation 产物是否已经满足 done definition")
+        })
     }
 
     @Test
@@ -1530,6 +1977,7 @@ struct SupervisorManagerAutomationRuntimeTests {
     }
 
     private func makeRegistryVisibleProjectRoot() throws -> URL {
+        // Keep a non-ephemeral prefix so registry-backed selection paths can still see the test project.
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("xt-operator-channel-runtime-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

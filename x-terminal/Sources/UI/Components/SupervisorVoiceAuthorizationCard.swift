@@ -5,7 +5,6 @@ struct SupervisorVoiceAuthorizationCard: View {
     @ObservedObject var supervisorManager: SupervisorManager
 
     @State private var transcriptDraft: String = ""
-    @State private var mobileConfirmed: Bool = false
     @State private var verifyInFlight = false
 
     private var resolution: SupervisorVoiceAuthorizationResolution? {
@@ -22,6 +21,21 @@ struct SupervisorVoiceAuthorizationCard: View {
 
     private var challengeKey: String {
         challenge?.challengeId ?? "none"
+    }
+
+    private var mobileConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: {
+                supervisorManager.voiceAuthorizationMobileConfirmationLatched
+            },
+            set: { confirmed in
+                supervisorManager.setVoiceAuthorizationMobileConfirmed(
+                    confirmed,
+                    source: "voice_authorization_card",
+                    emitSystemMessage: false
+                )
+            }
+        )
     }
 
     var body: some View {
@@ -178,7 +192,7 @@ struct SupervisorVoiceAuthorizationCard: View {
             }
 
             if resolution?.requiresMobileConfirm == true {
-                Toggle("Paired mobile confirmation already completed", isOn: $mobileConfirmed)
+                Toggle("Paired mobile confirmation already completed", isOn: mobileConfirmationBinding)
                     .toggleStyle(.switch)
             }
 
@@ -236,8 +250,7 @@ struct SupervisorVoiceAuthorizationCard: View {
         let trimmedTranscript = transcriptDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         _ = await supervisorManager.retryVoiceAuthorizationVerification(
             transcript: trimmedTranscript,
-            semanticMatchScore: 0.99,
-            mobileConfirmed: mobileConfirmed
+            semanticMatchScore: 0.99
         )
         if supervisorManager.activeVoiceChallenge == nil {
             resetDraftState()
@@ -245,7 +258,6 @@ struct SupervisorVoiceAuthorizationCard: View {
     }
 
     private func syncDraftStateFromCurrentChallenge() {
-        mobileConfirmed = false
         if !hasActiveChallenge {
             transcriptDraft = ""
         }
@@ -253,7 +265,6 @@ struct SupervisorVoiceAuthorizationCard: View {
 
     private func resetDraftState() {
         transcriptDraft = ""
-        mobileConfirmed = false
     }
 
     private func uiState(for resolution: SupervisorVoiceAuthorizationResolution) -> XTUISurfaceState {

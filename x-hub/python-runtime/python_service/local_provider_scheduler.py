@@ -47,6 +47,30 @@ def _normalize_task_kind(value: Any) -> str:
     return _safe_str(value).lower()
 
 
+def _request_field(request: dict[str, Any], snake_name: str, camel_name: str) -> Any:
+    if not isinstance(request, dict):
+        return None
+    if request.get(snake_name) is not None:
+        return request.get(snake_name)
+    return request.get(camel_name)
+
+
+def _request_device_id(request: dict[str, Any]) -> str:
+    return _safe_str(_request_field(request, "device_id", "deviceId"))
+
+
+def _request_load_profile_hash(request: dict[str, Any]) -> str:
+    return _safe_str(_request_field(request, "load_profile_hash", "loadProfileHash"))
+
+
+def _request_instance_key(request: dict[str, Any]) -> str:
+    return _safe_str(_request_field(request, "instance_key", "instanceKey"))
+
+
+def _request_effective_context_length(request: dict[str, Any]) -> int:
+    return max(0, _safe_int(_request_field(request, "effective_context_length", "effectiveContextLength"), 0))
+
+
 def _string_list(raw: Any) -> list[str]:
     if raw is None:
         return []
@@ -344,6 +368,10 @@ def read_provider_scheduler_telemetry(
                 "taskKind": _normalize_task_kind(entry.get("taskKind")),
                 "modelId": _safe_str(entry.get("modelId")),
                 "requestId": _safe_str(entry.get("requestId")),
+                "deviceId": _safe_str(entry.get("deviceId")),
+                "loadProfileHash": _safe_str(entry.get("loadProfileHash")),
+                "instanceKey": _safe_str(entry.get("instanceKey")),
+                "effectiveContextLength": max(0, _safe_int(entry.get("effectiveContextLength"), 0)),
                 "startedAt": float(entry.get("startedAt") or 0.0),
             }
             for entry in leases
@@ -378,6 +406,10 @@ def acquire_provider_slot(
     request_id = _safe_str(request_obj.get("request_id") or request_obj.get("requestId"))
     task_kind = _normalize_task_kind(request_obj.get("task_kind") or request_obj.get("taskKind"))
     model_id = _safe_str(request_obj.get("model_id") or request_obj.get("modelId"))
+    device_id = _request_device_id(request_obj)
+    load_profile_hash = _request_load_profile_hash(request_obj)
+    instance_key = _request_instance_key(request_obj)
+    effective_context_length = _request_effective_context_length(request_obj)
 
     _ensure_provider_dirs(base_dir, provider)
     lock_path = _provider_lock_path(base_dir, provider)
@@ -397,6 +429,10 @@ def acquire_provider_slot(
                 "scheduler": {
                     "provider": provider,
                     "concurrencyLimit": limit,
+                    "deviceId": device_id,
+                    "loadProfileHash": load_profile_hash,
+                    "instanceKey": instance_key,
+                    "effectiveContextLength": effective_context_length,
                     "queueState": "lock_timeout",
                     "queueWaitMs": max(0, int(round((_now() - start_ts) * 1000.0))),
                 },
@@ -417,6 +453,10 @@ def acquire_provider_slot(
                     "requestId": request_id,
                     "taskKind": task_kind,
                     "modelId": model_id,
+                    "deviceId": device_id,
+                    "loadProfileHash": load_profile_hash,
+                    "instanceKey": instance_key,
+                    "effectiveContextLength": effective_context_length,
                     "startedAt": now,
                     "expiresAt": now + (lease_ttl_ms / 1000.0),
                     "pid": os.getpid(),
@@ -433,6 +473,10 @@ def acquire_provider_slot(
                         "preferredDevice": _safe_str(policy.get("preferredDevice")),
                         "memoryFloorMB": max(0, _safe_int(policy.get("memoryFloorMB"), 0)),
                         "concurrencyLimit": limit,
+                        "deviceId": device_id,
+                        "loadProfileHash": load_profile_hash,
+                        "instanceKey": instance_key,
+                        "effectiveContextLength": effective_context_length,
                         "queueState": "waited" if final_wait_ms > 0 else "acquired",
                         "queueWaitMs": final_wait_ms,
                         "activeTaskCount": active_count + 1,
@@ -451,6 +495,10 @@ def acquire_provider_slot(
                         "preferredDevice": _safe_str(policy.get("preferredDevice")),
                         "memoryFloorMB": max(0, _safe_int(policy.get("memoryFloorMB"), 0)),
                         "concurrencyLimit": limit,
+                        "deviceId": device_id,
+                        "loadProfileHash": load_profile_hash,
+                        "instanceKey": instance_key,
+                        "effectiveContextLength": effective_context_length,
                         "queueState": "rejected",
                         "queueWaitMs": 0,
                         "activeTaskCount": active_count,
@@ -466,6 +514,10 @@ def acquire_provider_slot(
                     "requestId": request_id,
                     "taskKind": task_kind,
                     "modelId": model_id,
+                    "deviceId": device_id,
+                    "loadProfileHash": load_profile_hash,
+                    "instanceKey": instance_key,
+                    "effectiveContextLength": effective_context_length,
                     "startedAt": start_ts,
                     "expiresAt": now + max(1.0, (max(queue_timeout_ms, lease_ttl_ms) / 1000.0)),
                     "pid": os.getpid(),
@@ -483,6 +535,10 @@ def acquire_provider_slot(
                         "preferredDevice": _safe_str(policy.get("preferredDevice")),
                         "memoryFloorMB": max(0, _safe_int(policy.get("memoryFloorMB"), 0)),
                         "concurrencyLimit": limit,
+                        "deviceId": device_id,
+                        "loadProfileHash": load_profile_hash,
+                        "instanceKey": instance_key,
+                        "effectiveContextLength": effective_context_length,
                         "queueState": "timed_out",
                         "queueWaitMs": max(0, int(round((now - start_ts) * 1000.0))),
                         "activeTaskCount": active_count,

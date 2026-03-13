@@ -132,6 +132,7 @@ extension SupervisorSkillRegistrySnapshot {
 
     func memorySummary(maxItems: Int = 6, maxChars: Int = 1_000) -> String {
         let projectLabel = (projectName ?? projectId).trimmingCharacters(in: .whitespacesAndNewlines)
+        let variantPreviewLimit = 2
         var lines = ["project=\(projectLabel) id=\(projectId)"]
         for (index, item) in items.prefix(max(1, maxItems)).enumerated() {
             let grant = item.requiresGrant ? "grant=yes" : "grant=no"
@@ -142,10 +143,14 @@ extension SupervisorSkillRegistrySnapshot {
             if !item.capabilitiesRequired.isEmpty {
                 lines.append("   caps: \(item.capabilitiesRequired.joined(separator: ", "))")
             }
-            for variant in item.governedDispatchVariants {
+            for variant in item.governedDispatchVariants.prefix(variantPreviewLimit) {
                 if let summary = variant.variantSummary() {
                     lines.append("   variant: \(summary)")
                 }
+            }
+            let hiddenVariantCount = item.governedDispatchVariants.count - min(item.governedDispatchVariants.count, variantPreviewLimit)
+            if hiddenVariantCount > 0 {
+                lines.append("   variant_more: +\(hiddenVariantCount)")
             }
             if let payloadContract = item.governedDispatch?.payloadContractSummary() {
                 lines.append("   payload: \(payloadContract)")
@@ -265,7 +270,7 @@ private extension SupervisorGovernedSkillDispatch {
     }
 }
 
-private extension SupervisorGovernedSkillDispatchVariant {
+extension SupervisorGovernedSkillDispatchVariant {
     func matches(action: String) -> Bool {
         let normalized = action.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !normalized.isEmpty else { return false }
