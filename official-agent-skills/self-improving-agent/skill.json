@@ -11,6 +11,22 @@
       "SKILL.md"
     ]
   },
+  "governed_dispatch": {
+    "tool": "memory_snapshot",
+    "fixed_args": {
+      "mode": "supervisor_orchestration",
+      "retrospective": true
+    },
+    "passthrough_args": [
+      "focus",
+      "limit",
+      "include_doctor",
+      "include_incidents",
+      "include_skill_calls",
+      "include_plan",
+      "include_memory"
+    ]
+  },
   "capabilities_required": [
     "memory.snapshot",
     "project.snapshot",

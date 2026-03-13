@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 
 import {
   buildWhatsAppCloudHubActionExecutionRequest,
+  buildWhatsAppCloudSupervisorBriefProjectionRequest,
   createWhatsAppCloudHubActionExecutor,
   executeWhatsAppCloudHubAction,
 } from './WhatsAppCloudHubActionExecutor.js';
@@ -67,15 +68,58 @@ run('WhatsAppCloudHubActionExecutor builds Hub execution request from orchestrat
   assert.equal(String(request.scope_id || ''), 'project_alpha');
 });
 
-await runAsync('WhatsAppCloudHubActionExecutor executes Hub query and attaches normalized response', async () => {
-  let captured = null;
+run('WhatsAppCloudHubActionExecutor builds supervisor brief projection requests for project-scoped status actions', () => {
+  const request = buildWhatsAppCloudSupervisorBriefProjectionRequest(makeResult());
+  assert.equal(String(request.request_id || ''), 'whatsapp_cloud_api:messages:wamid.1');
+  assert.equal(String(request.project_id || ''), 'project_alpha');
+  assert.equal(String(request.projection_kind || ''), 'progress_brief');
+  assert.equal(String(request.trigger || ''), 'user_query');
+});
+
+await runAsync('WhatsAppCloudHubActionExecutor executes project-scoped supervisor status via supervisor brief projection RPC', async () => {
+  let capturedProjection = null;
+  let oldHubRpcCalls = 0;
   const executor = createWhatsAppCloudHubActionExecutor({
+    hub_client: {
+      async getSupervisorBriefProjection(request) {
+        capturedProjection = request;
+        return {
+          ok: true,
+          projection: {
+            projection_kind: request.projection_kind,
+            project_id: 'project_alpha',
+            status: 'awaiting_authorization',
+          },
+        };
+      },
+      async executeOperatorChannelHubCommand() {
+        oldHubRpcCalls += 1;
+        throw new Error('unexpected_old_hub_query_rpc');
+      },
+    },
+  });
+
+  const out = await executor.execute(makeResult());
+  assert.equal(String(capturedProjection?.project_id || ''), 'project_alpha');
+  assert.equal(String(capturedProjection?.projection_kind || ''), 'progress_brief');
+  assert.equal(oldHubRpcCalls, 0);
+  assert.equal(String(out.execution?.projection?.project_id || ''), 'project_alpha');
+});
+
+await runAsync('WhatsAppCloudHubActionExecutor keeps non-status Hub queries on the existing Hub command RPC', async () => {
+  let captured = null;
+  const out = await executeWhatsAppCloudHubAction({
+    result: makeResult({
+      command: {
+        ...makeResult().command,
+        action_name: 'supervisor.queue.get',
+      },
+    }),
     hub_client: {
       async executeOperatorChannelHubCommand(request) {
         captured = request;
         return {
           ok: true,
-          detail: 'query_executed',
           query: {
             action_name: request.action_name,
             project_id: 'project_alpha',
@@ -84,10 +128,8 @@ await runAsync('WhatsAppCloudHubActionExecutor executes Hub query and attaches n
       },
     },
   });
-
-  const out = await executor.execute(makeResult());
-  assert.equal(String(captured?.action_name || ''), 'supervisor.status.get');
-  assert.equal(String(out.execution?.query?.project_id || ''), 'project_alpha');
+  assert.equal(String(captured?.action_name || ''), 'supervisor.queue.get');
+  assert.equal(String(out.execution?.query?.action_name || ''), 'supervisor.queue.get');
 });
 
 await runAsync('WhatsAppCloudHubActionExecutor converts execution RPC failures into non-throwing execution errors', async () => {

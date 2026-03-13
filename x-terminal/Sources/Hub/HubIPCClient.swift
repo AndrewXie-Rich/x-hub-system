@@ -7,6 +7,7 @@ enum HubIPCClient {
     private static let testingOverrideLock = NSLock()
     private static var secretUseOverrideForTesting: (@Sendable (SecretUseRequestPayload) async -> SecretUseResult)?
     private static var secretRedeemOverrideForTesting: (@Sendable (SecretRedeemRequestPayload) async -> SecretRedeemResult)?
+    private static var memoryContextResolutionOverrideForTesting: (@Sendable (XTMemoryRouteDecision, XTMemoryUseMode, Double) async -> MemoryContextResolutionResult)?
 
     struct AutonomyPolicyOverrideItem: Equatable, Sendable {
         var projectId: String
@@ -798,7 +799,10 @@ enum HubIPCClient {
         var text: String
         var source: String
         var resolvedMode: String?
+        var requestedProfile: String?
         var resolvedProfile: String?
+        var attemptedProfiles: [String]?
+        var progressiveUpgradeCount: Int?
         var longtermMode: String?
         var retrievalAvailable: Bool?
         var fulltextNotLoaded: Bool?
@@ -817,7 +821,10 @@ enum HubIPCClient {
             text: String,
             source: String,
             resolvedMode: String? = nil,
+            requestedProfile: String? = nil,
             resolvedProfile: String? = nil,
+            attemptedProfiles: [String]? = nil,
+            progressiveUpgradeCount: Int? = nil,
             longtermMode: String? = nil,
             retrievalAvailable: Bool? = nil,
             fulltextNotLoaded: Bool? = nil,
@@ -835,7 +842,10 @@ enum HubIPCClient {
             self.text = text
             self.source = source
             self.resolvedMode = resolvedMode
+            self.requestedProfile = requestedProfile
             self.resolvedProfile = resolvedProfile
+            self.attemptedProfiles = attemptedProfiles
+            self.progressiveUpgradeCount = progressiveUpgradeCount
             self.longtermMode = longtermMode
             self.retrievalAvailable = retrievalAvailable
             self.fulltextNotLoaded = fulltextNotLoaded
@@ -855,7 +865,10 @@ enum HubIPCClient {
             case text
             case source
             case resolvedMode = "resolved_mode"
+            case requestedProfile = "requested_profile"
             case resolvedProfile = "resolved_profile"
+            case attemptedProfiles = "attempted_profiles"
+            case progressiveUpgradeCount = "progressive_upgrade_count"
             case longtermMode = "longterm_mode"
             case retrievalAvailable = "retrieval_available"
             case fulltextNotLoaded = "fulltext_not_loaded"
@@ -898,6 +911,8 @@ enum HubIPCClient {
         var response: MemoryContextResponsePayload?
         var source: String
         var resolvedMode: XTMemoryUseMode
+        var requestedProfile: String?
+        var attemptedProfiles: [String]
         var freshness: String
         var cacheHit: Bool
         var denyCode: String?
@@ -2323,6 +2338,7 @@ enum HubIPCClient {
         workingSetText: String?,
         rawEvidenceText: String?,
         servingProfile: XTMemoryServingProfile? = nil,
+        progressiveDisclosure: Bool = false,
         budgets: MemoryContextBudgets? = nil,
         timeoutSec: Double = 1.2
     ) async -> MemoryContextResponsePayload? {
@@ -2339,6 +2355,7 @@ enum HubIPCClient {
             workingSetText: workingSetText,
             rawEvidenceText: rawEvidenceText,
             servingProfile: servingProfile,
+            progressiveDisclosure: progressiveDisclosure,
             budgets: budgets,
             timeoutSec: timeoutSec
         )
@@ -2410,6 +2427,7 @@ fulltext_not_loaded=\(disclosure.fulltextNotLoaded ? "true" : "false")
         workingSetText: String?,
         rawEvidenceText: String?,
         servingProfile: XTMemoryServingProfile? = nil,
+        progressiveDisclosure: Bool = false,
         budgets: MemoryContextBudgets? = nil,
         timeoutSec: Double = 1.2
     ) async -> MemoryContextResolutionResult {
@@ -2427,22 +2445,87 @@ fulltext_not_loaded=\(disclosure.fulltextNotLoaded ? "true" : "false")
             servingProfile: servingProfile?.rawValue,
             budgets: budgets
         )
-        let route = XTMemoryRoleScopedRouter.route(
+        let targetRoute = XTMemoryRoleScopedRouter.route(
             role: requesterRole,
             mode: useMode,
             payload: rawPayload
         )
-        if let denyCode = route.denyCode?.rawValue {
+        let requestedProfile = targetRoute.servingProfile.rawValue
+        if let denyCode = targetRoute.denyCode?.rawValue {
             return MemoryContextResolutionResult(
                 response: nil,
                 source: "memory_router",
                 resolvedMode: useMode,
+                requestedProfile: requestedProfile,
+                attemptedProfiles: [requestedProfile],
                 freshness: "unavailable",
                 cacheHit: false,
                 denyCode: denyCode,
-                downgradeCode: route.downgradeCode?.rawValue,
+                downgradeCode: targetRoute.downgradeCode?.rawValue,
                 reasonCode: denyCode
             )
+        }
+        let progressiveProfiles = progressiveDisclosureProfiles(
+            enabled: progressiveDisclosure,
+            mode: useMode,
+            targetProfile: targetRoute.servingProfile
+        )
+        var attemptedProfiles: [String] = []
+        var lastResult: MemoryContextResolutionResult?
+
+        for profile in progressiveProfiles {
+            var stagedPayload = rawPayload
+            stagedPayload.servingProfile = profile.rawValue
+            let stagedRoute = XTMemoryRoleScopedRouter.route(
+                role: requesterRole,
+                mode: useMode,
+                payload: stagedPayload
+            )
+            let single = await requestMemoryContextSingleDetailed(
+                useMode: useMode,
+                route: stagedRoute,
+                timeoutSec: timeoutSec
+            )
+            attemptedProfiles.append(stagedRoute.servingProfile.rawValue)
+            let enriched = enrichProgressiveMemoryContextResult(
+                single,
+                requestedProfile: requestedProfile,
+                attemptedProfiles: attemptedProfiles
+            )
+            lastResult = enriched
+            guard let response = enriched.response else {
+                return enriched
+            }
+            if !shouldUpgradeMemoryContextProgressively(
+                response: response,
+                currentProfile: stagedRoute.servingProfile,
+                targetProfile: targetRoute.servingProfile
+            ) {
+                return enriched
+            }
+        }
+
+        return lastResult ?? MemoryContextResolutionResult(
+            response: nil,
+            source: "memory_router",
+            resolvedMode: useMode,
+            requestedProfile: requestedProfile,
+            attemptedProfiles: attemptedProfiles.isEmpty ? [requestedProfile] : attemptedProfiles,
+            freshness: "unavailable",
+            cacheHit: false,
+            denyCode: nil,
+            downgradeCode: nil,
+            reasonCode: "memory_context_unavailable"
+        )
+    }
+
+    private static func requestMemoryContextSingleDetailed(
+        useMode: XTMemoryUseMode,
+        route: XTMemoryRouteDecision,
+        timeoutSec: Double
+    ) async -> MemoryContextResolutionResult {
+        if let override = memoryContextResolutionOverride() {
+            return await override(route, useMode, timeoutSec)
         }
 
         let payload = route.payload
@@ -2477,6 +2560,8 @@ fulltext_not_loaded=\(disclosure.fulltextNotLoaded ? "true" : "false")
                     response: response,
                     source: response.source,
                     resolvedMode: useMode,
+                    requestedProfile: route.servingProfile.rawValue,
+                    attemptedProfiles: [route.servingProfile.rawValue],
                     freshness: response.freshness ?? "fresh_remote",
                     cacheHit: remote.cacheHit,
                     denyCode: nil,
@@ -2489,6 +2574,8 @@ fulltext_not_loaded=\(disclosure.fulltextNotLoaded ? "true" : "false")
                     response: nil,
                     source: remote.snapshot.source,
                     resolvedMode: useMode,
+                    requestedProfile: route.servingProfile.rawValue,
+                    attemptedProfiles: [route.servingProfile.rawValue],
                     freshness: route.bypassRemoteCache ? "fresh_remote_required" : "remote_failed",
                     cacheHit: remote.cacheHit,
                     denyCode: route.bypassRemoteCache
@@ -2505,6 +2592,8 @@ fulltext_not_loaded=\(disclosure.fulltextNotLoaded ? "true" : "false")
                 response: nil,
                 source: "hub_memory_v1_grpc",
                 resolvedMode: useMode,
+                requestedProfile: route.servingProfile.rawValue,
+                attemptedProfiles: [route.servingProfile.rawValue],
                 freshness: "unavailable",
                 cacheHit: false,
                 denyCode: route.bypassRemoteCache
@@ -2523,6 +2612,8 @@ fulltext_not_loaded=\(disclosure.fulltextNotLoaded ? "true" : "false")
                 response: nil,
                 source: "local_ipc",
                 resolvedMode: useMode,
+                requestedProfile: route.servingProfile.rawValue,
+                attemptedProfiles: [route.servingProfile.rawValue],
                 freshness: "unavailable",
                 cacheHit: false,
                 denyCode: route.bypassRemoteCache
@@ -2555,12 +2646,91 @@ fulltext_not_loaded=\(disclosure.fulltextNotLoaded ? "true" : "false")
             response: response,
             source: response.source,
             resolvedMode: useMode,
+            requestedProfile: route.servingProfile.rawValue,
+            attemptedProfiles: [route.servingProfile.rawValue],
             freshness: "fresh_local_ipc",
             cacheHit: false,
             denyCode: nil,
             downgradeCode: route.downgradeCode?.rawValue,
             reasonCode: nil
         )
+    }
+
+    private static func progressiveDisclosureProfiles(
+        enabled: Bool,
+        mode: XTMemoryUseMode,
+        targetProfile: XTMemoryServingProfile
+    ) -> [XTMemoryServingProfile] {
+        guard enabled else { return [targetProfile] }
+        switch mode {
+        case .projectChat, .supervisorOrchestration:
+            guard targetProfile.rank >= XTMemoryServingProfile.m2PlanReview.rank else {
+                return [targetProfile]
+            }
+            var profiles: [XTMemoryServingProfile] = [.m1Execute]
+            if targetProfile.rank >= XTMemoryServingProfile.m2PlanReview.rank {
+                profiles.append(.m2PlanReview)
+            }
+            if targetProfile.rank >= XTMemoryServingProfile.m3DeepDive.rank {
+                profiles.append(.m3DeepDive)
+            }
+            if targetProfile.rank >= XTMemoryServingProfile.m4FullScan.rank {
+                profiles.append(.m4FullScan)
+            }
+            return profiles
+        default:
+            return [targetProfile]
+        }
+    }
+
+    private static func shouldUpgradeMemoryContextProgressively(
+        response: MemoryContextResponsePayload,
+        currentProfile: XTMemoryServingProfile,
+        targetProfile: XTMemoryServingProfile
+    ) -> Bool {
+        guard currentProfile.rank < targetProfile.rank else { return false }
+        if !response.truncatedLayers.isEmpty { return true }
+        let totalRatio = usageRatio(used: response.usedTotalTokens, budget: response.budgetTotalTokens)
+        if totalRatio >= 0.82 { return true }
+
+        let saturatedCoreLayer = response.layerUsage.contains { layer in
+            switch layer.layer {
+            case "l1_canonical", "l2_observations", "l3_working_set":
+                return usageRatio(used: layer.usedTokens, budget: layer.budgetTokens) >= 0.88
+            default:
+                return false
+            }
+        }
+        return saturatedCoreLayer
+    }
+
+    private static func usageRatio(used: Int, budget: Int) -> Double {
+        guard budget > 0, used > 0 else { return 0 }
+        return Double(used) / Double(budget)
+    }
+
+    private static func enrichProgressiveMemoryContextResult(
+        _ result: MemoryContextResolutionResult,
+        requestedProfile: String,
+        attemptedProfiles: [String]
+    ) -> MemoryContextResolutionResult {
+        var enriched = result
+        enriched.requestedProfile = requestedProfile
+        enriched.attemptedProfiles = attemptedProfiles
+        if var response = enriched.response {
+            response.requestedProfile = requestedProfile
+            response.attemptedProfiles = attemptedProfiles
+            response.progressiveUpgradeCount = max(0, attemptedProfiles.count - 1)
+            enriched.response = response
+        }
+        return enriched
+    }
+
+    private static func memoryContextResolutionOverride() -> (@Sendable (XTMemoryRouteDecision, XTMemoryUseMode, Double) async -> MemoryContextResolutionResult)? {
+        testingOverrideLock.lock()
+        let override = memoryContextResolutionOverrideForTesting
+        testingOverrideLock.unlock()
+        return override
     }
 
     static func requestProjectMemoryRetrieval(
@@ -6070,10 +6240,24 @@ profile_id: \(normalizedProfile)
         testingOverrideLock.unlock()
     }
 
+    static func installMemoryContextResolutionOverrideForTesting(
+        _ override: (@Sendable (XTMemoryRouteDecision, XTMemoryUseMode, Double) async -> MemoryContextResolutionResult)?
+    ) {
+        testingOverrideLock.lock()
+        memoryContextResolutionOverrideForTesting = override
+        testingOverrideLock.unlock()
+    }
+
     static func resetSecretVaultOverridesForTesting() {
         testingOverrideLock.lock()
         secretUseOverrideForTesting = nil
         secretRedeemOverrideForTesting = nil
+        testingOverrideLock.unlock()
+    }
+
+    static func resetMemoryContextResolutionOverrideForTesting() {
+        testingOverrideLock.lock()
+        memoryContextResolutionOverrideForTesting = nil
         testingOverrideLock.unlock()
     }
 }

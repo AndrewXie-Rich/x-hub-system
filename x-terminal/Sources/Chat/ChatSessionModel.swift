@@ -4369,6 +4369,7 @@ latest_user:
             workingSetText: sanitizedPromptContextText(mergedRecentText),
             rawEvidenceText: rawEvidence,
             servingProfile: servingProfile,
+            progressiveDisclosure: true,
             budgets: nil,
             timeoutSec: 1.2
         )

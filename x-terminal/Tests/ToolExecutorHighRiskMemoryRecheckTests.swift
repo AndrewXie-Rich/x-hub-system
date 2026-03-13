@@ -106,6 +106,8 @@ struct ToolExecutorHighRiskMemoryRecheckTests {
             response: nil,
             source: "test_override",
             resolvedMode: .toolActHighRisk,
+            requestedProfile: XTMemoryServingProfile.m1Execute.rawValue,
+            attemptedProfiles: [XTMemoryServingProfile.m1Execute.rawValue],
             freshness: "unavailable",
             cacheHit: false,
             denyCode: XTMemoryUseDenyCode.memorySnapshotStaleForHighRiskAct.rawValue,

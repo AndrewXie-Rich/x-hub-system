@@ -10,7 +10,13 @@ struct ToolExecutorMemorySnapshotTests {
             text: "[MEMORY_V1]\n[L1_CANONICAL]\nKeep release scope frozen.\n[/L1_CANONICAL]\n[/MEMORY_V1]",
             source: "hub_remote_snapshot",
             resolvedMode: XTMemoryUseMode.projectChat.rawValue,
+            requestedProfile: XTMemoryServingProfile.m3DeepDive.rawValue,
             resolvedProfile: XTMemoryServingProfile.m2PlanReview.rawValue,
+            attemptedProfiles: [
+                XTMemoryServingProfile.m1Execute.rawValue,
+                XTMemoryServingProfile.m2PlanReview.rawValue
+            ],
+            progressiveUpgradeCount: 1,
             longtermMode: "summary_only",
             retrievalAvailable: false,
             fulltextNotLoaded: true,
@@ -44,7 +50,10 @@ struct ToolExecutorMemorySnapshotTests {
         #expect(jsonString(summary["mode"]) == "project")
         #expect(jsonString(summary["source"]) == "hub_remote_snapshot")
         #expect(jsonString(summary["resolved_mode"]) == XTMemoryUseMode.projectChat.rawValue)
+        #expect(jsonString(summary["requested_profile"]) == XTMemoryServingProfile.m3DeepDive.rawValue)
         #expect(jsonString(summary["resolved_profile"]) == XTMemoryServingProfile.m2PlanReview.rawValue)
+        #expect(jsonNumber(summary["progressive_upgrade_count"]) == 1)
+        #expect(jsonArray(summary["attempted_profiles"])?.count == 2)
         #expect(jsonString(summary["longterm_mode"]) == "summary_only")
         #expect(jsonBool(summary["retrieval_available"]) == false)
         #expect(jsonBool(summary["fulltext_not_loaded"]) == true)

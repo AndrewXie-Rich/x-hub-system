@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 
 import {
-  buildTelegramHubActionExecutionRequest,
-  buildTelegramSupervisorBriefProjectionRequest,
-  createTelegramHubActionExecutor,
-  executeTelegramHubAction,
-} from './TelegramHubActionExecutor.js';
+  buildFeishuHubActionExecutionRequest,
+  buildFeishuSupervisorBriefProjectionRequest,
+  createFeishuHubActionExecutor,
+  executeFeishuHubAction,
+} from './FeishuHubActionExecutor.js';
 
 function run(name, fn) {
   try {
@@ -29,18 +29,18 @@ async function runAsync(name, fn) {
 
 function makeResult(overrides = {}) {
   return {
-    request_id: 'telegram:message:1001',
+    request_id: 'feishu:event_callback:Ev-1',
     command: {
       actor: {
-        provider: 'telegram',
-        external_user_id: '123456',
-        external_tenant_id: 'telegram_ops_bot',
+        provider: 'feishu',
+        external_user_id: 'ou_user_1',
+        external_tenant_id: 'tenant-ops',
       },
       channel: {
-        provider: 'telegram',
-        account_id: 'telegram_ops_bot',
-        conversation_id: '-1001234567890',
-        thread_key: 'topic:42',
+        provider: 'feishu',
+        account_id: 'tenant-ops',
+        conversation_id: 'oc_room_1',
+        thread_key: 'om_anchor_1',
         channel_scope: 'group',
       },
       binding_id: 'binding-1',
@@ -56,30 +56,33 @@ function makeResult(overrides = {}) {
   };
 }
 
-run('TelegramHubActionExecutor builds Hub execution request from orchestrated result', () => {
-  const request = buildTelegramHubActionExecutionRequest(makeResult({
+run('FeishuHubActionExecutor builds Hub execution request from orchestrated result', () => {
+  const request = buildFeishuHubActionExecutionRequest(makeResult({
     command: {
       ...makeResult().command,
       note: 'approved after review',
     },
   }));
-  assert.equal(String(request.request_id || ''), 'telegram:message:1001');
+  assert.equal(String(request.request_id || ''), 'feishu:event_callback:Ev-1');
   assert.equal(String(request.action_name || ''), 'supervisor.status.get');
   assert.equal(String(request.scope_id || ''), 'project_alpha');
 });
 
-run('TelegramHubActionExecutor builds supervisor brief projection requests for project-scoped status actions', () => {
-  const request = buildTelegramSupervisorBriefProjectionRequest(makeResult());
-  assert.equal(String(request.request_id || ''), 'telegram:message:1001');
+run('FeishuHubActionExecutor builds supervisor brief projection requests for project-scoped status actions', () => {
+  const request = buildFeishuSupervisorBriefProjectionRequest(makeResult());
+  assert.equal(String(request.request_id || ''), 'feishu:event_callback:Ev-1');
   assert.equal(String(request.project_id || ''), 'project_alpha');
   assert.equal(String(request.projection_kind || ''), 'progress_brief');
   assert.equal(String(request.trigger || ''), 'user_query');
+  assert.equal(request.include_card_summary, true);
+  assert.equal(request.include_tts_script, false);
+  assert.equal(Number(request.max_evidence_refs || 0), 4);
 });
 
-await runAsync('TelegramHubActionExecutor executes project-scoped supervisor status via supervisor brief projection RPC', async () => {
+await runAsync('FeishuHubActionExecutor executes project-scoped supervisor status via supervisor brief projection RPC', async () => {
   let capturedProjection = null;
   let oldHubRpcCalls = 0;
-  const executor = createTelegramHubActionExecutor({
+  const executor = createFeishuHubActionExecutor({
     hub_client: {
       async getSupervisorBriefProjection(request) {
         capturedProjection = request;
@@ -89,6 +92,7 @@ await runAsync('TelegramHubActionExecutor executes project-scoped supervisor sta
             projection_kind: request.projection_kind,
             project_id: 'project_alpha',
             status: 'awaiting_authorization',
+            pending_grant_count: 1,
           },
         };
       },
@@ -102,13 +106,14 @@ await runAsync('TelegramHubActionExecutor executes project-scoped supervisor sta
   const out = await executor.execute(makeResult());
   assert.equal(String(capturedProjection?.project_id || ''), 'project_alpha');
   assert.equal(String(capturedProjection?.projection_kind || ''), 'progress_brief');
+  assert.equal(String(capturedProjection?.trigger || ''), 'user_query');
   assert.equal(oldHubRpcCalls, 0);
   assert.equal(String(out.execution?.projection?.project_id || ''), 'project_alpha');
 });
 
-await runAsync('TelegramHubActionExecutor keeps non-status Hub queries on the existing Hub command RPC', async () => {
+await runAsync('FeishuHubActionExecutor keeps non-status Hub queries on the existing Hub command RPC', async () => {
   let captured = null;
-  const out = await executeTelegramHubAction({
+  const out = await executeFeishuHubAction({
     result: makeResult({
       command: {
         ...makeResult().command,
@@ -132,8 +137,8 @@ await runAsync('TelegramHubActionExecutor keeps non-status Hub queries on the ex
   assert.equal(String(out.execution?.query?.action_name || ''), 'supervisor.queue.get');
 });
 
-await runAsync('TelegramHubActionExecutor converts execution RPC failures into non-throwing execution errors', async () => {
-  const out = await executeTelegramHubAction({
+await runAsync('FeishuHubActionExecutor converts execution RPC failures into non-throwing execution errors', async () => {
+  const out = await executeFeishuHubAction({
     result: makeResult({
       dispatch: {
         kind: 'hub_grant_action',

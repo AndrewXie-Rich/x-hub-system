@@ -888,6 +888,10 @@ struct SupervisorView: View {
             }
             .pickerStyle(.segmented)
 
+            Text("mode: explicit structured drill-down · reason: \(snapshot.openedReason)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
             if let project = appModel.registry.project(for: snapshot.projectId) {
                 let governed = appModel.governedAuthorityPresentation(for: project)
                 if governed.hasAnyVisibleSignal {
@@ -926,6 +930,82 @@ struct SupervisorView: View {
                             .font(.caption2)
                             .foregroundStyle(.orange)
                             .lineLimit(2)
+                    }
+                }
+
+                if let spec = snapshot.specCapsule {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Spec Capsule")
+                            .font(.caption2.weight(.semibold))
+                        Text("goal: \(spec.goal)")
+                            .font(.caption2)
+                            .lineLimit(2)
+                        Text("mvp: \(spec.mvpDefinition)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                        if !spec.approvedTechStack.isEmpty {
+                            Text("tech stack: \(spec.approvedTechStack.joined(separator: ", "))")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
+                    }
+                }
+
+                if let rails = snapshot.decisionRails,
+                   !rails.decisionTrack.isEmpty || rails.resolutions.contains(where: { !$0.shadowedBackgroundNotes.isEmpty || $0.preferredBackgroundNote != nil }) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Decision Rails")
+                            .font(.caption2.weight(.semibold))
+                        ForEach(Array(rails.decisionTrack.prefix(3).enumerated()), id: \.offset) { _, decision in
+                            Text("approved \(decision.category.rawValue): \(decision.statement)")
+                                .font(.caption2)
+                                .lineLimit(2)
+                        }
+                        ForEach(Array(rails.resolutions.prefix(3).enumerated()), id: \.offset) { _, resolution in
+                            if let note = resolution.preferredBackgroundNote {
+                                Text("background \(resolution.domain.rawValue): \(note.statement)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            } else if let note = resolution.shadowedBackgroundNotes.first {
+                                Text("shadowed \(resolution.domain.rawValue): \(note.statement)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                        }
+                    }
+                }
+
+                if let workflow = snapshot.workflow,
+                   let activeJob = workflow.activeJob {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Active Workflow")
+                            .font(.caption2.weight(.semibold))
+                        Text("job: \(activeJob.goal)")
+                            .font(.caption2)
+                            .lineLimit(2)
+                        Text("status: \(activeJob.status.rawValue)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        if let activePlan = workflow.activePlan {
+                            Text("plan: \(activePlan.status.rawValue)")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            ForEach(Array(activePlan.steps.sorted { lhs, rhs in
+                                if lhs.orderIndex != rhs.orderIndex {
+                                    return lhs.orderIndex < rhs.orderIndex
+                                }
+                                return lhs.stepId < rhs.stepId
+                            }.prefix(3).enumerated()), id: \.offset) { _, step in
+                                Text("\(step.orderIndex + 1). \(step.title)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                        }
                     }
                 }
 

@@ -71,6 +71,43 @@ run('TelegramResultPublisher builds routed summary payload', () => {
   assert.match(String(out.payload?.text || ''), /project_alpha/);
 });
 
+run('TelegramResultPublisher renders supervisor brief projection summaries when projection data is present', () => {
+  const out = buildTelegramResultSummary(makeResult({
+    command: {
+      ...makeResult().command,
+      action_name: 'supervisor.status.get',
+    },
+    dispatch: {
+      kind: 'hub_query',
+    },
+    execution: {
+      ok: true,
+      projection: {
+        projection_kind: 'progress_brief',
+        project_id: 'project_alpha',
+        trigger: 'awaiting_authorization',
+        status: 'awaiting_authorization',
+        topline: 'Release train paused on one approval',
+        critical_blocker: 'awaiting security review',
+        next_best_action: 'Review 1 pending grant request',
+        pending_grant_count: 1,
+        card_summary: 'One pending grant is blocking the release train.',
+        audit_ref: 'audit-projection-1',
+      },
+      route: {
+        route_mode: 'hub_only_status',
+        resolved_device_id: 'xt-alpha-1',
+        xt_online: true,
+      },
+    },
+  }));
+  assert.equal(!!out.ok, true);
+  assert.match(String(out.payload?.text || ''), /Status: supervisor_status/);
+  assert.match(String(out.payload?.text || ''), /Topline: Release train paused on one approval/);
+  assert.match(String(out.payload?.text || ''), /Pending grants: 1/);
+  assert.match(String(out.payload?.text || ''), /Audit: audit-projection-1/);
+});
+
 run('TelegramResultPublisher builds proactive grant decision summaries', () => {
   const out = buildTelegramGrantDecisionSummary({
     event: {

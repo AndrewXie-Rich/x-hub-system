@@ -912,6 +912,7 @@ extension AXSkillsLibrary {
     private struct SupervisorSkillManifestHints {
         var description: String
         var capabilitiesRequired: [String]
+        var governedDispatch: SupervisorGovernedSkillDispatch?
         var inputSchemaRef: String
         var outputSchemaRef: String
         var sideEffectClass: String
@@ -953,6 +954,7 @@ extension AXSkillsLibrary {
             displayName: firstNonEmptySkillText(skill.name, skill.skillID),
             description: manifestHints.description,
             capabilitiesRequired: manifestHints.capabilitiesRequired,
+            governedDispatch: manifestHints.governedDispatch,
             inputSchemaRef: manifestHints.inputSchemaRef.isEmpty ? "schema://\(skill.skillID).input" : manifestHints.inputSchemaRef,
             outputSchemaRef: manifestHints.outputSchemaRef.isEmpty ? "schema://\(skill.skillID).output" : manifestHints.outputSchemaRef,
             sideEffectClass: manifestHints.sideEffectClass,
@@ -989,6 +991,12 @@ extension AXSkillsLibrary {
                 fallbackDescription
             ),
             capabilitiesRequired: capabilities,
+            governedDispatch: parseSupervisorGovernedDispatch(
+                manifest["governed_dispatch"],
+                skillId: stringValue(manifest["skill_id"])
+            ) ?? fallbackGovernedDispatch(
+                skillId: stringValue(manifest["skill_id"])
+            ),
             inputSchemaRef: stringValue(manifest["input_schema_ref"]),
             outputSchemaRef: stringValue(manifest["output_schema_ref"]),
             sideEffectClass: sideEffectClass,
@@ -1020,6 +1028,14 @@ extension AXSkillsLibrary {
         if let array = raw as? [String] {
             let cleaned = array
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            if !cleaned.isEmpty {
+                return cleaned
+            }
+        }
+        if let array = raw as? [Any] {
+            let cleaned = array
+                .map { stringValue($0) }
                 .filter { !$0.isEmpty }
             if !cleaned.isEmpty {
                 return cleaned
@@ -1060,6 +1076,113 @@ extension AXSkillsLibrary {
             return Int(value.trimmingCharacters(in: .whitespacesAndNewlines)) ?? fallback
         default:
             return fallback
+        }
+    }
+
+    private static func parseSupervisorGovernedDispatch(
+        _ raw: Any?,
+        skillId: String
+    ) -> SupervisorGovernedSkillDispatch? {
+        guard let object = raw as? [String: Any] else { return nil }
+        let tool = stringValue(object["tool"])
+        guard !tool.isEmpty else { return nil }
+        return SupervisorGovernedSkillDispatch(
+            tool: tool,
+            fixedArgs: jsonObjectValue(object["fixed_args"]),
+            passthroughArgs: stringArrayValue(object["passthrough_args"], fallback: []),
+            argAliases: stringArrayMap(object["arg_aliases"]),
+            requiredAny: stringMatrixValue(object["required_any"]),
+            exactlyOneOf: stringMatrixValue(object["exactly_one_of"])
+        )
+    }
+
+    private static func fallbackGovernedDispatch(skillId: String) -> SupervisorGovernedSkillDispatch? {
+        switch skillId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "find-skills":
+            return SupervisorGovernedSkillDispatch(
+                tool: ToolName.skills_search.rawValue,
+                fixedArgs: [:],
+                passthroughArgs: ["query", "source_filter", "project_id", "limit"],
+                argAliases: ["source_filter": ["source"], "limit": ["max_results"]],
+                requiredAny: [["query"]],
+                exactlyOneOf: []
+            )
+        case "self-improving-agent":
+            return SupervisorGovernedSkillDispatch(
+                tool: ToolName.memory_snapshot.rawValue,
+                fixedArgs: [
+                    "mode": .string(XTMemoryUseMode.supervisorOrchestration.rawValue),
+                    "retrospective": .bool(true),
+                ],
+                passthroughArgs: ["focus", "limit", "include_doctor", "include_incidents", "include_skill_calls", "include_plan", "include_memory"],
+                argAliases: [:],
+                requiredAny: [],
+                exactlyOneOf: []
+            )
+        case "summarize", "document.summarize", "document_summarize":
+            return SupervisorGovernedSkillDispatch(
+                tool: ToolName.summarize.rawValue,
+                fixedArgs: [:],
+                passthroughArgs: ["url", "path", "text", "focus", "format", "grant_id", "timeout_sec", "max_bytes", "max_chars"],
+                argAliases: ["text": ["content", "value"]],
+                requiredAny: [],
+                exactlyOneOf: [["url", "path", "text"]]
+            )
+        default:
+            return nil
+        }
+    }
+
+    private static func jsonObjectValue(_ raw: Any?) -> [String: JSONValue] {
+        guard let object = raw as? [String: Any] else { return [:] }
+        var result: [String: JSONValue] = [:]
+        for (key, value) in object {
+            result[key] = jsonValue(value)
+        }
+        return result
+    }
+
+    private static func jsonValue(_ raw: Any?) -> JSONValue {
+        switch raw {
+        case let value as JSONValue:
+            return value
+        case let value as String:
+            return .string(value)
+        case let value as Bool:
+            return .bool(value)
+        case let value as NSNumber:
+            if CFGetTypeID(value) == CFBooleanGetTypeID() {
+                return .bool(value.boolValue)
+            }
+            return .number(value.doubleValue)
+        case let value as [String: Any]:
+            return .object(value.mapValues { jsonValue($0) })
+        case let value as [Any]:
+            return .array(value.map { jsonValue($0) })
+        default:
+            return .null
+        }
+    }
+
+    private static func stringArrayMap(_ raw: Any?) -> [String: [String]] {
+        guard let object = raw as? [String: Any] else { return [:] }
+        var result: [String: [String]] = [:]
+        for (key, value) in object {
+            let normalizedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalizedKey.isEmpty else { continue }
+            let normalizedValues = stringArrayValue(value, fallback: [])
+            if !normalizedValues.isEmpty {
+                result[normalizedKey] = normalizedValues
+            }
+        }
+        return result
+    }
+
+    private static func stringMatrixValue(_ raw: Any?) -> [[String]] {
+        guard let rows = raw as? [Any] else { return [] }
+        return rows.compactMap { row in
+            let values = stringArrayValue(row, fallback: [])
+            return values.isEmpty ? nil : values
         }
     }
 

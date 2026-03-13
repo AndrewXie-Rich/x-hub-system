@@ -101,6 +101,44 @@ run('FeishuResultPublisher reflects deny and route blocked outcomes in summary c
   assert.match(String(blocked.payload?.content || ''), /xt-alpha-1/);
 });
 
+run('FeishuResultPublisher renders supervisor brief projection summaries when projection data is present', () => {
+  const out = buildFeishuResultSummary(makeResult({
+    command: {
+      ...makeResult().command,
+      action_name: 'supervisor.status.get',
+    },
+    dispatch: {
+      kind: 'hub_query',
+    },
+    execution: {
+      ok: true,
+      projection: {
+        projection_kind: 'progress_brief',
+        project_id: 'project_alpha',
+        trigger: 'awaiting_authorization',
+        status: 'awaiting_authorization',
+        topline: 'Release train paused on one approval',
+        critical_blocker: 'awaiting security review',
+        next_best_action: 'Review 1 pending grant request',
+        pending_grant_count: 1,
+        card_summary: 'One pending grant is blocking the release train.',
+        audit_ref: 'audit-projection-1',
+      },
+      route: {
+        route_mode: 'hub_only_status',
+        resolved_device_id: 'xt-alpha-1',
+        xt_online: true,
+      },
+    },
+  }));
+  assert.equal(!!out.ok, true);
+  assert.match(String(out.payload?.content || ''), /supervisor_status/);
+  assert.match(String(out.payload?.content || ''), /Topline: Release train paused on one approval/);
+  assert.match(String(out.payload?.content || ''), /Blocker: awaiting security review/);
+  assert.match(String(out.payload?.content || ''), /Pending grants: 1/);
+  assert.match(String(out.payload?.content || ''), /audit-projection-1/);
+});
+
 run('FeishuResultPublisher renders actual governed XT command summaries when execution data is present', () => {
   const out = buildFeishuResultSummary(makeResult({
     execution: {

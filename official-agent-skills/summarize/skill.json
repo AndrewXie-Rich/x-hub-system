@@ -18,6 +18,33 @@
       "SKILL.md"
     ]
   },
+  "governed_dispatch": {
+    "tool": "summarize",
+    "passthrough_args": [
+      "url",
+      "path",
+      "text",
+      "focus",
+      "format",
+      "grant_id",
+      "timeout_sec",
+      "max_bytes",
+      "max_chars"
+    ],
+    "arg_aliases": {
+      "text": [
+        "content",
+        "value"
+      ]
+    },
+    "exactly_one_of": [
+      [
+        "url",
+        "path",
+        "text"
+      ]
+    ]
+  },
   "capabilities_required": [
     "document.read",
     "document.summarize"

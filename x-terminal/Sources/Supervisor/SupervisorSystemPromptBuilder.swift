@@ -94,6 +94,7 @@ struct SupervisorSystemPromptBuilder {
             "## Memory Context",
             "Use the following Memory v1 context as the primary project working set for this turn:",
             "- If Memory Context contains [focused_project_execution_brief], inspect that section first when the user asks you to review project memory/context or propose the next execution plan.",
+            "- If Memory Context contains [cross_project_drilldown], treat it as an explicitly opened structured drill-down for that project only; do not assume any other project's full chat history is loaded.",
             "- Ground concrete planning in the focused project's goal, current state, next step, blocker, active job/plan, pending steps, attention steps, and recent relevant messages.",
             params.memoryV1,
             ""

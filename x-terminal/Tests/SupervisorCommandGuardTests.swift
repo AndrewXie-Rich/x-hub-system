@@ -1239,6 +1239,100 @@ struct SupervisorCommandGuardTests {
     }
 
     @Test
+    func manifestDrivenGovernedDispatchRoutesUnknownWrapperSkill() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let fixture = SupervisorSkillRegistryFixture()
+        defer { fixture.cleanup() }
+
+        let root = try makeProjectRoot(named: "supervisor-call-generic-wrapper-skill")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "我的世界还原项目")
+        try fixture.writeHubSkillsStore(projectID: project.projectId)
+        try appendManifestDrivenSkillFixture(
+            hubBaseDir: fixture.hubBaseDir,
+            projectID: project.projectId,
+            skillID: "catalog.lookup.wrapper",
+            packageSHA256: "2020202020202020202020202020202020202020202020202020202020202020",
+            canonicalManifestSHA256: "2121212121212121212121212121212121212121212121212121212121212121",
+            manifest: [
+                "skill_id": "catalog.lookup.wrapper",
+                "description": "Wrapper over governed skill search.",
+                "capabilities_required": ["skills.search"],
+                "risk_level": "low",
+                "requires_grant": false,
+                "side_effect_class": "read_only",
+                "timeout_ms": 10000,
+                "max_retries": 1,
+                "governed_dispatch": [
+                    "tool": ToolName.skills_search.rawValue,
+                    "passthrough_args": ["query", "source_filter", "limit"],
+                    "arg_aliases": [
+                        "limit": ["max_results"],
+                    ],
+                    "required_any": [["query"]],
+                ],
+            ]
+        )
+        HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+
+        manager.setSupervisorToolExecutorOverrideForTesting { call, _ in
+            #expect(call.tool == .skills_search)
+            #expect(call.args["query"]?.stringValue == "browser automation")
+            #expect(call.args["source_filter"]?.stringValue == "builtin:catalog")
+            #expect(call.args["limit"]?.stringValue == "4")
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: true,
+                output: ToolExecutor.structuredOutput(
+                    summary: [
+                        "tool": .string(call.tool.rawValue),
+                        "ok": .bool(true),
+                        "results_count": .number(1),
+                    ],
+                    body: "1. Agent Browser [agent-browser]"
+                )
+            )
+        }
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"搜索受治理 skill wrapper","priority":"normal"}[/CREATE_JOB]"#,
+            userMessage: "请创建任务"
+        )
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [UPSERT_PLAN]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","plan_id":"plan-generic-wrapper-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"查找 browser skill","kind":"call_skill","status":"pending","skill_id":"catalog.lookup.wrapper"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划"
+        )
+
+        let rendered = manager.processSupervisorResponseForTesting(
+            #"""
+            [CALL_SKILL]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","step_id":"step-001","skill_id":"catalog.lookup.wrapper","payload":{"query":"browser automation","source_filter":"builtin:catalog","max_results":4}}[/CALL_SKILL]
+            """#,
+            userMessage: "请执行 wrapper skill"
+        )
+
+        #expect(rendered.contains("✅ 已为项目 \(project.displayName) 排队技能调用：catalog.lookup.wrapper"))
+        await manager.waitForSupervisorSkillDispatchForTesting()
+
+        let call = try #require(SupervisorProjectSkillCallStore.load(for: ctx).calls.first)
+        #expect(call.skillId == "catalog.lookup.wrapper")
+        #expect(call.toolName == ToolName.skills_search.rawValue)
+        #expect(call.status == .completed)
+    }
+
+    @Test
     func selfImprovingAgentMapsToRetrospectiveMemorySnapshotAndCompletes() async throws {
         let manager = SupervisorManager.makeForTesting()
         let fixture = SupervisorSkillRegistryFixture()
@@ -2600,6 +2694,65 @@ private struct SupervisorSkillRegistryFixture {
         """
         try revocations.write(to: storeDir.appendingPathComponent("skill_revocations.json"), atomically: true, encoding: .utf8)
     }
+}
+
+private func appendManifestDrivenSkillFixture(
+    hubBaseDir: URL,
+    projectID: String,
+    skillID: String,
+    packageSHA256: String,
+    canonicalManifestSHA256: String,
+    manifest: [String: Any]
+) throws {
+    let storeDir = hubBaseDir.appendingPathComponent("skills_store", isDirectory: true)
+    let indexURL = storeDir.appendingPathComponent("skills_store_index.json")
+    let pinsURL = storeDir.appendingPathComponent("skills_pins.json")
+
+    var indexRoot = try loadJSONObject(at: indexURL)
+    var skills = indexRoot["skills"] as? [[String: Any]] ?? []
+    let manifestData = try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys])
+    let manifestText = String(decoding: manifestData, as: UTF8.self)
+    skills.append([
+        "skill_id": skillID,
+        "name": skillID,
+        "version": "1.0.0",
+        "description": "Manifest-driven wrapper test skill.",
+        "publisher_id": "xhub.test",
+        "source_id": "builtin:catalog",
+        "package_sha256": packageSHA256,
+        "abi_compat_version": "skills_abi_compat.v1",
+        "compatibility_state": "supported",
+        "canonical_manifest_sha256": canonicalManifestSHA256,
+        "install_hint": "",
+        "manifest_json": manifestText,
+        "mapping_aliases_used": [],
+        "defaults_applied": [],
+    ])
+    indexRoot["skills"] = skills
+    try writeJSONObject(indexRoot, to: indexURL)
+
+    var pinsRoot = try loadJSONObject(at: pinsURL)
+    var projectPins = pinsRoot["project_pins"] as? [[String: Any]] ?? []
+    projectPins.append([
+        "project_id": projectID,
+        "skill_id": skillID,
+        "package_sha256": packageSHA256,
+    ])
+    pinsRoot["project_pins"] = projectPins
+    try writeJSONObject(pinsRoot, to: pinsURL)
+}
+
+private func loadJSONObject(at url: URL) throws -> [String: Any] {
+    let data = try Data(contentsOf: url)
+    guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        throw CocoaError(.coderReadCorrupt)
+    }
+    return object
+}
+
+private func writeJSONObject(_ object: [String: Any], to url: URL) throws {
+    let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+    try data.write(to: url, options: .atomic)
 }
 
 private func makeSupervisorTrustedAutomationPermissionReadiness() -> AXTrustedAutomationPermissionOwnerReadiness {

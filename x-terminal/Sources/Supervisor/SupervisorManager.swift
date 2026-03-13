@@ -2318,7 +2318,8 @@ final class SupervisorManager: ObservableObject {
     func buildSupervisorProjectDrillDown(
         for project: AXProjectEntry,
         requestedScope: SupervisorProjectDrillDownScope = .capsuleOnly,
-        recentMessageLimit: Int = 6
+        recentMessageLimit: Int = 6,
+        openedReason: String = "explicit_portfolio_drilldown"
     ) -> SupervisorProjectDrillDownSnapshot {
         let registry = supervisorJurisdictionRegistry
         let now = Date().timeIntervalSince1970
@@ -2326,6 +2327,7 @@ final class SupervisorManager: ObservableObject {
             let denied = SupervisorProjectDrillDownSnapshot.denied(
                 projectId: project.projectId,
                 projectName: project.displayName,
+                openedReason: openedReason,
                 status: .deniedProjectInvisible,
                 requestedScope: requestedScope,
                 denyReason: "project_not_visible_in_current_jurisdiction",
@@ -2338,6 +2340,7 @@ final class SupervisorManager: ObservableObject {
             let denied = SupervisorProjectDrillDownSnapshot.denied(
                 projectId: project.projectId,
                 projectName: project.displayName,
+                openedReason: openedReason,
                 status: .deniedScope,
                 requestedScope: requestedScope,
                 denyReason: "requested_scope_exceeds_jurisdiction_cap",
@@ -2350,6 +2353,22 @@ final class SupervisorManager: ObservableObject {
         let digest = supervisorMemoryDigest(project)
         let capsule = SupervisorPortfolioSnapshotBuilder.build(from: [digest], now: now).projects.first
         let ctx = AXProjectContext(root: URL(fileURLWithPath: project.rootPath, isDirectory: true))
+        let specCapsule = SupervisorProjectSpecCapsuleStore.load(for: ctx)
+        let decisionSnapshot = SupervisorDecisionTrackStore.load(for: ctx)
+        let backgroundSnapshot = SupervisorBackgroundPreferenceTrackStore.load(for: ctx)
+        let decisionRails = SupervisorDecisionRailResolver.resolve(
+            projectId: project.projectId,
+            decisions: decisionSnapshot.events,
+            backgroundNotes: backgroundSnapshot.notes
+        )
+        let skillCallSnapshot = SupervisorProjectSkillCallStore.load(for: ctx)
+        let workflow = SupervisorProjectWorkflowCanonicalSync.snapshot(
+            projectId: project.projectId,
+            projectName: project.displayName,
+            jobSnapshot: SupervisorProjectJobStore.load(for: ctx),
+            planSnapshot: SupervisorProjectPlanStore.load(for: ctx),
+            skillCallSnapshot: skillCallSnapshot
+        )
         let recentMessages: [AXRecentContextMessage]
         switch requestedScope {
         case .capsuleOnly:
@@ -2370,16 +2389,23 @@ final class SupervisorManager: ObservableObject {
             updatedAt: now,
             projectId: project.projectId,
             projectName: project.displayName,
+            openedReason: openedReason,
             status: .allowed,
             requestedScope: requestedScope,
             grantedScope: requestedScope,
             capsule: capsule,
+            specCapsule: specCapsule,
+            decisionRails: decisionRails,
+            workflow: workflow,
             recentMessages: recentMessages,
             denyReason: nil,
             refs: SupervisorProjectDrillDownRefsBuilder.build(
                 projectId: project.projectId,
                 ctx: ctx,
-                requestedScope: requestedScope
+                requestedScope: requestedScope,
+                specCapsule: specCapsule,
+                decisionRails: decisionRails,
+                workflow: workflow
             )
         )
         supervisorLastProjectDrillDownSnapshot = snapshot
@@ -2389,13 +2415,15 @@ final class SupervisorManager: ObservableObject {
     func buildSupervisorProjectDrillDown(
         projectId: String,
         requestedScope: SupervisorProjectDrillDownScope = .capsuleOnly,
-        recentMessageLimit: Int = 6
+        recentMessageLimit: Int = 6,
+        openedReason: String = "explicit_portfolio_drilldown"
     ) -> SupervisorProjectDrillDownSnapshot {
         let projects = knownProjects()
         guard let project = projects.first(where: { $0.projectId == projectId }) else {
             let denied = SupervisorProjectDrillDownSnapshot.denied(
                 projectId: projectId,
                 projectName: projectId,
+                openedReason: openedReason,
                 status: .projectNotFound,
                 requestedScope: requestedScope,
                 denyReason: "project_not_found"
@@ -2406,7 +2434,8 @@ final class SupervisorManager: ObservableObject {
         return buildSupervisorProjectDrillDown(
             for: project,
             requestedScope: requestedScope,
-            recentMessageLimit: recentMessageLimit
+            recentMessageLimit: recentMessageLimit,
+            openedReason: openedReason
         )
     }
 
@@ -4695,7 +4724,14 @@ final class SupervisorManager: ObservableObject {
             : workflow.step.currentOwner
 
         let mapped: SupervisorMappedSkillDispatch
-        switch mapSupervisorSkillToToolCall(skillId: skillId, payload: payloadObject, requestId: requestId) {
+        switch mapSupervisorSkillToToolCall(
+            skillId: skillId,
+            payload: payloadObject,
+            requestId: requestId,
+            projectId: workflow.project.projectId,
+            projectName: workflow.project.displayName,
+            registryItem: registryItem
+        ) {
         case .success(let dispatch):
             mapped = dispatch
         case .failure(let failure):
@@ -5318,7 +5354,9 @@ final class SupervisorManager: ObservableObject {
             switch mapSupervisorSkillToToolCall(
                 skillId: record.skillId,
                 payload: record.payload,
-                requestId: record.requestId
+                requestId: record.requestId,
+                projectId: project.projectId,
+                projectName: project.displayName
             ) {
             case .failure:
                 if let blocked = applySupervisorSkillCallStatus(
@@ -5535,7 +5573,9 @@ final class SupervisorManager: ObservableObject {
         switch mapSupervisorSkillToToolCall(
             skillId: record.skillId,
             payload: record.payload,
-            requestId: requestId
+            requestId: requestId,
+            projectId: record.projectId,
+            projectName: nil
         ) {
         case .failure:
             return nil
@@ -5686,7 +5726,10 @@ final class SupervisorManager: ObservableObject {
     private func mapSupervisorSkillToToolCall(
         skillId: String,
         payload: [String: JSONValue],
-        requestId: String
+        requestId: String,
+        projectId: String? = nil,
+        projectName: String? = nil,
+        registryItem: SupervisorSkillRegistryItem? = nil
     ) -> Result<SupervisorMappedSkillDispatch, SupervisorSkillMappingFailure> {
         switch skillId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "repo.git.status":
@@ -5771,6 +5814,16 @@ final class SupervisorManager: ObservableObject {
                 toolName: ToolName.bridge_status.rawValue
             ))
         case "find-skills", "skills.search", "skills_search":
+            if let registryDriven = mappedSupervisorGovernedDispatch(
+                skillId: skillId,
+                payload: payload,
+                requestId: requestId,
+                projectId: projectId,
+                projectName: projectName,
+                registryItem: registryItem
+            ) {
+                return registryDriven
+            }
             guard let query = payload["query"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !query.isEmpty else {
                 return .failure(SupervisorSkillMappingFailure(reasonCode: "payload.query_missing"))
@@ -5800,6 +5853,16 @@ final class SupervisorManager: ObservableObject {
                 requestId: requestId
             )
         case "self-improving-agent", "self_improving_agent", "agent.retrospective", "agent_retrospective":
+            if let registryDriven = mappedSupervisorGovernedDispatch(
+                skillId: skillId,
+                payload: payload,
+                requestId: requestId,
+                projectId: projectId,
+                projectName: projectName,
+                registryItem: registryItem
+            ) {
+                return registryDriven
+            }
             return mappedSupervisorSelfImprovingAgentDispatch(
                 payload: payload,
                 requestId: requestId
@@ -5896,6 +5959,16 @@ final class SupervisorManager: ObservableObject {
                 toolName: ToolName.browser_read.rawValue
             ))
         case "summarize", "document.summarize", "document_summarize":
+            if let registryDriven = mappedSupervisorGovernedDispatch(
+                skillId: skillId,
+                payload: payload,
+                requestId: requestId,
+                projectId: projectId,
+                projectName: projectName,
+                registryItem: registryItem
+            ) {
+                return registryDriven
+            }
             return mappedSupervisorSummarizeDispatch(
                 payload: payload,
                 requestId: requestId
@@ -5926,8 +5999,142 @@ final class SupervisorManager: ObservableObject {
                 toolName: ToolName.run_command.rawValue
             ))
         default:
+            if let registryDriven = mappedSupervisorGovernedDispatch(
+                skillId: skillId,
+                payload: payload,
+                requestId: requestId,
+                projectId: projectId,
+                projectName: projectName,
+                registryItem: registryItem
+            ) {
+                return registryDriven
+            }
             return .failure(SupervisorSkillMappingFailure(reasonCode: "unsupported_skill_id"))
         }
+    }
+
+    private func mappedSupervisorGovernedDispatch(
+        skillId: String,
+        payload: [String: JSONValue],
+        requestId: String,
+        projectId: String?,
+        projectName: String?,
+        registryItem: SupervisorSkillRegistryItem?
+    ) -> Result<SupervisorMappedSkillDispatch, SupervisorSkillMappingFailure>? {
+        let normalizedSkillId = skillId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedSkillId.isEmpty else { return nil }
+        let item = registryItem ?? resolvedSupervisorRegistryItem(
+            skillId: normalizedSkillId,
+            projectId: projectId,
+            projectName: projectName
+        )
+        guard let dispatch = item?.governedDispatch else { return nil }
+
+        let toolToken = dispatch.tool.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !toolToken.isEmpty,
+              let toolName = ToolName.allCases.first(where: { $0.rawValue == toolToken }) else {
+            return .failure(SupervisorSkillMappingFailure(reasonCode: "governed_dispatch_tool_invalid"))
+        }
+
+        var args = dispatch.fixedArgs
+        let canonicalKeys = Set(dispatch.passthroughArgs).union(dispatch.argAliases.keys)
+        for canonicalKey in canonicalKeys.sorted() {
+            if let value = resolvedGovernedDispatchPayloadValue(
+                payload: payload,
+                canonicalKey: canonicalKey,
+                aliases: dispatch.argAliases[canonicalKey] ?? []
+            ) {
+                args[canonicalKey] = value
+            }
+        }
+
+        for group in dispatch.requiredAny {
+            let presentCount = group.filter { governedDispatchHasValue(args[$0]) }.count
+            guard presentCount > 0 else {
+                return .failure(SupervisorSkillMappingFailure(reasonCode: governedDispatchMissingReasonCode(for: group)))
+            }
+        }
+
+        for group in dispatch.exactlyOneOf {
+            let presentCount = group.filter { governedDispatchHasValue(args[$0]) }.count
+            guard presentCount == 1 else {
+                return .failure(SupervisorSkillMappingFailure(reasonCode: governedDispatchExclusiveReasonCode(for: group, presentCount: presentCount)))
+            }
+        }
+
+        return .success(SupervisorMappedSkillDispatch(
+            toolCall: ToolCall(id: requestId, tool: toolName, args: args),
+            toolName: toolName.rawValue
+        ))
+    }
+
+    private func resolvedSupervisorRegistryItem(
+        skillId: String,
+        projectId: String?,
+        projectName: String?
+    ) -> SupervisorSkillRegistryItem? {
+        guard let projectId = firstNonEmptyString(projectId) else { return nil }
+        let snapshot = AXSkillsLibrary.supervisorSkillRegistrySnapshot(
+            projectId: projectId,
+            projectName: firstNonEmptyString(projectName),
+            hubBaseDir: HubPaths.baseDir()
+        )
+        return snapshot?.items.first { $0.skillId == skillId }
+    }
+
+    private func resolvedGovernedDispatchPayloadValue(
+        payload: [String: JSONValue],
+        canonicalKey: String,
+        aliases: [String]
+    ) -> JSONValue? {
+        let candidates = [canonicalKey] + aliases
+        for candidate in candidates {
+            let key = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty else { continue }
+            guard let value = payload[key], governedDispatchHasValue(value) else { continue }
+            return value
+        }
+        return nil
+    }
+
+    private func governedDispatchHasValue(_ value: JSONValue?) -> Bool {
+        guard let value else { return false }
+        switch value {
+        case .null:
+            return false
+        case .string(let string):
+            return !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .array(let array):
+            return !array.isEmpty
+        case .object(let object):
+            return !object.isEmpty
+        case .number, .bool:
+            return true
+        }
+    }
+
+    private func governedDispatchMissingReasonCode(for group: [String]) -> String {
+        let normalized = group
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+        if normalized.count == 1, let first = normalized.first {
+            return "payload.\(first)_missing"
+        }
+        return "payload.required_args_missing"
+    }
+
+    private func governedDispatchExclusiveReasonCode(for group: [String], presentCount: Int) -> String {
+        let normalized = group
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+        let sourceGroup = Set(["url", "path", "text"])
+        if Set(normalized) == sourceGroup {
+            return presentCount == 0 ? "payload.source_missing" : "payload.multiple_sources"
+        }
+        if normalized.count == 1, let first = normalized.first {
+            return "payload.\(first)_missing"
+        }
+        return presentCount == 0 ? "payload.required_args_missing" : "payload.mutually_exclusive_args"
     }
 
     private func mappedSupervisorRepoWriteFileDispatch(
@@ -7009,6 +7216,7 @@ final class SupervisorManager: ObservableObject {
             workingSetText: composition.workingSet,
             rawEvidenceText: composition.rawEvidence,
             servingProfile: servingProfile,
+            progressiveDisclosure: true,
             budgets: nil,
             timeoutSec: 1.2
         )
@@ -7097,11 +7305,17 @@ final class SupervisorManager: ObservableObject {
         let executionWorkingSet = sanitizeSupervisorPromptIdentifiers(
             executionBrief?.workingSet ?? ""
         )
+        let crossProjectDrillDownWorkingSet = sanitizeSupervisorPromptIdentifiers(
+            supervisorCrossProjectDrillDownWorkingSet(
+                excludingProjectId: focusedProjectSelection?.project.projectId
+            )
+        )
         let workingSet = """
 \(chatWorkingSet.isEmpty ? "(none)" : chatWorkingSet)
 \(actionWorkingSet.isEmpty ? "" : "\n[action_ledger]\n\(actionWorkingSet)")
 \(workflowWorkingSet.isEmpty ? "" : "\n[workflow]\n\(workflowWorkingSet)")
 \(executionWorkingSet.isEmpty ? "" : "\n[focused_project_execution]\n\(executionWorkingSet)")
+\(crossProjectDrillDownWorkingSet.isEmpty ? "" : "\n[cross_project_drilldown]\n\(crossProjectDrillDownWorkingSet)")
 """
         let modelEvidence = sanitizeSupervisorPromptIdentifiers(
             capped(generateAvailableModels(), maxChars: 1400)
@@ -7159,6 +7373,111 @@ latest_user:
             projectDigests: projectDigests,
             skillRegistrySnapshot: skillRegistrySnapshot
         )
+    }
+
+    private func supervisorCrossProjectDrillDownWorkingSet(
+        excludingProjectId focusedProjectId: String?
+    ) -> String {
+        guard let snapshot = supervisorLastProjectDrillDownSnapshot,
+              snapshot.status == .allowed else {
+            return ""
+        }
+        if let focusedProjectId,
+           snapshot.projectId == focusedProjectId {
+            return ""
+        }
+
+        var lines: [String] = [
+            "mode=explicit_structured_drilldown",
+            "reason=\(snapshot.openedReason)",
+            "project=\(snapshot.projectName) (\(snapshot.projectId))",
+            "requested_scope=\(snapshot.requestedScope.rawValue)",
+            "granted_scope=\(snapshot.grantedScope?.rawValue ?? "(none)")"
+        ]
+
+        if let capsule = snapshot.capsule {
+            lines.append("current_action=\(capped(capsule.currentAction, maxChars: 160))")
+            lines.append("next_step=\(capped(capsule.nextStep, maxChars: 160))")
+            if !capsule.topBlocker.isEmpty {
+                lines.append("blocker=\(capped(capsule.topBlocker, maxChars: 160))")
+            }
+        }
+
+        if let spec = snapshot.specCapsule {
+            lines.append("spec_goal=\(capped(spec.goal, maxChars: 180))")
+            lines.append("spec_mvp=\(capped(spec.mvpDefinition, maxChars: 180))")
+            if !spec.approvedTechStack.isEmpty {
+                lines.append("approved_tech_stack=\(capped(spec.approvedTechStack.joined(separator: ", "), maxChars: 180))")
+            }
+            if !spec.missingRequiredFields.isEmpty {
+                lines.append("missing_spec_fields=\(spec.missingRequiredFields.map(\.rawValue).joined(separator: ","))")
+            }
+        }
+
+        if let rails = snapshot.decisionRails {
+            let approvedDecisions = rails.decisionTrack.prefix(3).map { decision in
+                "\(decision.category.rawValue)=\(capped(firstNonEmptyLine(in: decision.statement), maxChars: 120))"
+            }
+            if !approvedDecisions.isEmpty {
+                lines.append("approved_decisions:")
+                lines.append(contentsOf: approvedDecisions.map { "- \($0)" })
+            }
+
+            let backgroundSummaries = rails.resolutions.compactMap { resolution -> String? in
+                if let note = resolution.preferredBackgroundNote {
+                    return "\(resolution.domain.rawValue)=\(capped(firstNonEmptyLine(in: note.statement), maxChars: 120)) [weak]"
+                }
+                if let note = resolution.shadowedBackgroundNotes.first {
+                    return "\(resolution.domain.rawValue)=\(capped(firstNonEmptyLine(in: note.statement), maxChars: 120)) [shadowed]"
+                }
+                return nil
+            }
+            if !backgroundSummaries.isEmpty {
+                lines.append("background_summary:")
+                lines.append(contentsOf: backgroundSummaries.prefix(3).map { "- \($0)" })
+            }
+        }
+
+        if let workflow = snapshot.workflow,
+           let activeJob = workflow.activeJob {
+            lines.append("active_job=\(activeJob.jobId) status=\(activeJob.status.rawValue)")
+            lines.append("active_job_goal=\(capped(activeJob.goal, maxChars: 180))")
+            if let activePlan = workflow.activePlan {
+                lines.append("active_plan=\(activePlan.planId) status=\(activePlan.status.rawValue)")
+                let steps = activePlan.steps
+                    .sorted { lhs, rhs in
+                        if lhs.orderIndex != rhs.orderIndex {
+                            return lhs.orderIndex < rhs.orderIndex
+                        }
+                        return lhs.stepId < rhs.stepId
+                    }
+                    .prefix(4)
+                    .map { step in
+                        "\(step.orderIndex + 1). \(step.status.rawValue) | \(capped(step.title, maxChars: 120))"
+                    }
+                if !steps.isEmpty {
+                    lines.append("active_plan_steps:")
+                    lines.append(contentsOf: steps.map { "- \($0)" })
+                }
+            }
+            if let activeSkillCall = workflow.activeSkillCall {
+                lines.append("active_skill=\(activeSkillCall.skillId) status=\(activeSkillCall.status.rawValue)")
+            }
+        }
+
+        if !snapshot.recentMessages.isEmpty {
+            lines.append("recent_short_context:")
+            lines.append(contentsOf: snapshot.recentMessages.prefix(4).map { message in
+                "- \(message.role): \(capped(message.content, maxChars: 160))"
+            })
+        }
+
+        if !snapshot.refs.isEmpty {
+            lines.append("scope_safe_refs:")
+            lines.append(contentsOf: snapshot.refs.prefix(6).map { "- \($0)" })
+        }
+
+        return lines.joined(separator: "\n")
     }
 
     private func recentSupervisorConversationWorkingSet(

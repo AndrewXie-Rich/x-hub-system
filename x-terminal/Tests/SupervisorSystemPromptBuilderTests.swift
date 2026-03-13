@@ -54,6 +54,7 @@ struct SupervisorSystemPromptBuilderTests {
         #expect(prompt.contains("For build requests such as making a game, app, tool, or feature"))
         #expect(prompt.contains("## Memory Context"))
         #expect(prompt.contains("If Memory Context contains [focused_project_execution_brief], inspect that section first"))
+        #expect(prompt.contains("If Memory Context contains [cross_project_drilldown], treat it as an explicitly opened structured drill-down"))
         #expect(prompt.contains("Ground concrete planning in the focused project's goal, current state, next step, blocker"))
         #expect(prompt.contains("project=myworld\nstatus=running"))
         #expect(prompt.contains("## User Turn"))

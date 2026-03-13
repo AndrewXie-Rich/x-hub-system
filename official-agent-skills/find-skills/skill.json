@@ -18,6 +18,28 @@
       "SKILL.md"
     ]
   },
+  "governed_dispatch": {
+    "tool": "skills.search",
+    "passthrough_args": [
+      "query",
+      "source_filter",
+      "project_id",
+      "limit"
+    ],
+    "arg_aliases": {
+      "source_filter": [
+        "source"
+      ],
+      "limit": [
+        "max_results"
+      ]
+    },
+    "required_any": [
+      [
+        "query"
+      ]
+    ]
+  },
   "capabilities_required": [
     "skills.search"
   ],

@@ -24,9 +24,123 @@ struct SupervisorProjectDrillDownTests {
             lastEventAt: now
         )
 
-        try AXProjectContext(root: projectRoot).ensureDirs()
-        AXRecentContextStore.appendUserMessage(ctx: AXProjectContext(root: projectRoot), text: "Need the latest status", createdAt: now - 3)
-        AXRecentContextStore.appendAssistantMessage(ctx: AXProjectContext(root: projectRoot), text: "Working on the local contract", createdAt: now - 2)
+        let ctx = AXProjectContext(root: projectRoot)
+        try ctx.ensureDirs()
+        AXRecentContextStore.appendUserMessage(ctx: ctx, text: "Need the latest status", createdAt: now - 3)
+        AXRecentContextStore.appendAssistantMessage(ctx: ctx, text: "Working on the local contract", createdAt: now - 2)
+        try SupervisorProjectSpecCapsuleStore.upsert(
+            SupervisorProjectSpecCapsuleBuilder.build(
+                projectId: project.projectId,
+                goal: "Ship structured drill-down without leaking full chat history",
+                mvpDefinition: "Expose spec, approved decisions, and workflow summary",
+                nonGoals: ["Do not expose complete cross-project chat logs"],
+                approvedTechStack: ["Swift", "SwiftUI"],
+                milestoneMap: [
+                    SupervisorProjectSpecMilestone(
+                        milestoneId: "ms-1",
+                        title: "Scope-safe drill-down",
+                        status: .active
+                    )
+                ],
+                sourceRefs: ["/tmp/spec-source.md"]
+            ),
+            for: ctx
+        )
+        try SupervisorDecisionTrackStore.upsert(
+            SupervisorDecisionTrackBuilder.build(
+                decisionId: "decision-1",
+                projectId: project.projectId,
+                category: .techStack,
+                status: .approved,
+                statement: "Keep cross-project drill-down in XT only and stay digest-first by default.",
+                source: "owner",
+                reversible: true,
+                approvalRequired: false,
+                auditRef: "audit-decision-1",
+                evidenceRefs: ["/tmp/decision-evidence.json"],
+                createdAtMs: Int64(now * 1000) - 2000
+            ),
+            for: ctx
+        )
+        try SupervisorBackgroundPreferenceTrackStore.upsert(
+            SupervisorBackgroundPreferenceTrackBuilder.build(
+                noteId: "note-1",
+                projectId: project.projectId,
+                domain: .techStack,
+                strength: .medium,
+                statement: "Prefer concise structured summaries over prose-heavy context dumps.",
+                createdAtMs: Int64(now * 1000) - 1500
+            ),
+            for: ctx
+        )
+        let job = SupervisorJobRecord(
+            schemaVersion: SupervisorJobRecord.currentSchemaVersion,
+            jobId: "job-1",
+            projectId: project.projectId,
+            goal: "Wire cross-project drill-down into supervisor memory",
+            priority: .high,
+            status: .running,
+            source: .supervisor,
+            currentOwner: "supervisor",
+            activePlanId: "plan-1",
+            createdAtMs: Int64(now * 1000) - 3_000,
+            updatedAtMs: Int64(now * 1000) - 1_000,
+            auditRef: "audit-job-1"
+        )
+        try SupervisorProjectJobStore.append(job, for: ctx)
+        try SupervisorProjectPlanStore.upsert(
+            SupervisorPlanRecord(
+                schemaVersion: SupervisorPlanRecord.currentSchemaVersion,
+                planId: "plan-1",
+                jobId: "job-1",
+                projectId: project.projectId,
+                status: .active,
+                currentOwner: "supervisor",
+                steps: [
+                    SupervisorPlanStepRecord(
+                        schemaVersion: SupervisorPlanStepRecord.currentSchemaVersion,
+                        stepId: "step-1",
+                        title: "Render drill-down summary into Memory v1",
+                        kind: .writeMemory,
+                        status: .running,
+                        skillId: "",
+                        currentOwner: "supervisor",
+                        detail: "append scope-safe structured drill-down block",
+                        orderIndex: 0,
+                        updatedAtMs: Int64(now * 1000) - 900
+                    )
+                ],
+                createdAtMs: Int64(now * 1000) - 2_500,
+                updatedAtMs: Int64(now * 1000) - 900,
+                auditRef: "audit-plan-1"
+            ),
+            for: ctx
+        )
+        try SupervisorProjectSkillCallStore.upsert(
+            SupervisorSkillCallRecord(
+                schemaVersion: SupervisorSkillCallRecord.currentSchemaVersion,
+                requestId: "call-1",
+                projectId: project.projectId,
+                jobId: "job-1",
+                planId: "plan-1",
+                stepId: "step-1",
+                skillId: "memory.drilldown",
+                toolName: "memory_snapshot",
+                status: .running,
+                payload: [:],
+                currentOwner: "supervisor",
+                resultSummary: "assembling structured drill-down",
+                denyCode: "",
+                resultEvidenceRef: "/tmp/workflow-evidence.json",
+                requiredCapability: nil,
+                grantRequestId: nil,
+                grantId: nil,
+                createdAtMs: Int64(now * 1000) - 850,
+                updatedAtMs: Int64(now * 1000) - 850,
+                auditRef: "audit-call-1"
+            ),
+            for: ctx
+        )
 
         let registry = SupervisorJurisdictionRegistry.ownerDefault(now: now)
             .upserting(projectId: project.projectId, displayName: project.displayName, role: .owner, now: now)
@@ -40,11 +154,20 @@ struct SupervisorProjectDrillDownTests {
 
         #expect(snapshot.status == .allowed)
         #expect(snapshot.grantedScope == .capsulePlusRecent)
+        #expect(snapshot.openedReason == "explicit_portfolio_drilldown")
         #expect(snapshot.capsule?.projectId == project.projectId)
+        #expect(snapshot.specCapsule?.goal == "Ship structured drill-down without leaking full chat history")
+        #expect(snapshot.decisionRails?.decisionTrack.first?.category == .techStack)
+        #expect(snapshot.workflow?.activeJob?.jobId == "job-1")
         #expect(snapshot.recentMessages.count == 2)
         #expect(snapshot.refs.contains(where: { $0.contains("xterminal.project.capsule.summary_json") }))
         #expect(snapshot.refs.contains(where: { $0.contains("xterminal.project.action.summary_json") }))
-        #expect(snapshot.refs.contains(AXRecentContextStore.jsonURL(for: AXProjectContext(root: projectRoot)).path))
+        #expect(snapshot.refs.contains(AXRecentContextStore.jsonURL(for: ctx).path))
+        #expect(snapshot.refs.contains(ctx.xterminalDir.appendingPathComponent("supervisor_project_spec_capsule.json").path))
+        #expect(snapshot.refs.contains(ctx.supervisorJobsURL.path))
+        #expect(snapshot.refs.contains("/tmp/decision-evidence.json"))
+        #expect(snapshot.refs.contains("/tmp/workflow-evidence.json"))
+        #expect(!snapshot.refs.contains(ctx.rawLogURL.path))
     }
 
     @Test

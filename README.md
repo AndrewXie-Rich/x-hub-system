@@ -274,81 +274,121 @@ It does **not** expand the validated public release slice above.
 
 ## Architecture In 30 Seconds
 
-This is still a simplified control-plane view, but it covers the major governed surfaces of the current system more accurately than the earlier sketch.
+This is still a simplified control-plane view, but it now separates the deep-client role of X-Terminal from thinner generic clients more explicitly.
 
 ```mermaid
-flowchart LR
+flowchart TB
     U[User / Operator]
 
-    subgraph C[Clients And Entry Surfaces]
-        XT[X-Terminal]
-        CL[Other Clients]
-        OC[Operator Channels: Slack / Telegram / Feishu]
+    subgraph C[Client Surfaces]
+        direction TB
+        subgraph XTZ[X-Terminal Layer]
+            direction LR
+            XT[X-Terminal<br/>Deep client: Hub memory, Supervisor, project sync]
+        end
+        subgraph GTZ[Generic / 3rd-Party Terminal Layer]
+            direction LR
+            GT[Generic Terminal / 3rd-Party Client<br/>Runs its own local memory / skills / tools by default]
+        end
     end
 
-    subgraph H[X-Hub Trusted Core]
+    OC[Operator Channels<br/>Slack / Telegram / Feishu]
+
+    subgraph H[X-Hub Governed Control Plane]
+        direction TB
         PA[Pairing + Device Trust]
-        SUP[Supervisor / Project Orchestration]
+        AG[AI Gateway + Session Entry]
         MM[Memory Truth + X-Constitution]
-        GP[Policy + Grants + Quotas]
+        SUP[Supervisor + Project Orchestration]
         SK[Skills Store + Trust Roots]
+        GP[Policy + Grants + Quotas]
         MR[Model + Capability Router]
-        AT[Governed Automations + Connector Control]
         FG[Fail-Closed Gates + Kill Switch]
+        AT[Governed Automations + Connector Control]
         IPC[Bridge + Runtime IPC]
         AU[Audit + Evidence + Runtime Truth]
     end
 
-    subgraph E[Execution And Governed Assets]
-        XTEX[X-Terminal Tools / Device Execution]
-        CHW[Channel Workers]
+    subgraph E[Execution Surfaces]
+        direction LR
         LPR[Local Provider Runtime]
         LM[Local Models: MLX / Transformers]
         PM[Paid Providers / APIs]
+        XTEX[X-Terminal Tools / Device Execution]
+        CHW[Channel Workers]
         OAS[Official Agent Skills]
     end
 
+    U --> GT
     U --> XT
-    U --> CL
     U --> OC
 
-    XT --> PA
-    CL --> PA
-    OC --> CHW
+    GT -->|AI requests| PA
+    XT -->|paired deep-client session| PA
+    OC -->|operator ingress| CHW
 
-    PA --> SUP
-    PA --> GP
+    PA --> AG
+    XT -->|memory sync / project continuity| MM
+    XT -->|supervisor board / orchestration UX| SUP
 
+    AG --> GP
+    AG --> MR
     SUP --> MM
     SUP --> SK
+    SUP --> GP
     SUP --> MR
-    SUP --> AT
 
     MM --> GP
     SK --> OAS
+
+    GP --> FG
+    FG --> MR
+    FG --> AT
+    FG --> XTEX
+    FG --> CHW
+
     MR --> IPC
     IPC --> LPR
     LPR --> LM
     MR --> PM
 
-    GP --> FG
-    FG --> XTEX
-    FG --> CHW
-    FG --> AT
-
     AT --> XTEX
     AT --> CHW
 
+    MM --> AU
+    GP --> AU
     XTEX --> AU
     CHW --> AU
     LPR --> AU
     PM --> AU
-    AU -. visible runtime truth .-> XT
+
+    AU -. runtime truth / downgrade visibility .-> XT
+    AU -. audit / revocation feedback .-> GT
+
+    style XTZ fill:#ecfdf3,stroke:#2d6a4f,stroke-width:1.5px,color:#163826;
+    style GTZ fill:#fff1f1,stroke:#b42318,stroke-width:1.5px,color:#5b1111;
+
+    classDef xtclient fill:#e7f8ec,stroke:#2d6a4f,color:#163826,stroke-width:1px;
+    classDef gtclient fill:#fff0f0,stroke:#b42318,color:#5b1111,stroke-width:1px;
+    classDef opclient fill:#eef6ff,stroke:#2f6fda,color:#0f2547,stroke-width:1px;
+    classDef hub fill:#eef8f1,stroke:#2d6a4f,color:#163826,stroke-width:1px;
+    classDef exec fill:#fff6e9,stroke:#b26a00,color:#4d2d00,stroke-width:1px;
+    classDef safety fill:#fff1f1,stroke:#b42318,color:#5b1111,stroke-width:1px;
+
+    class XT xtclient;
+    class GT gtclient;
+    class OC opclient;
+    class PA,AG,MM,SUP,SK,GP,MR,AT,IPC,AU hub;
+    class LPR,LM,PM,XTEX,CHW,OAS exec;
+    class FG safety;
 ```
+
+X-Terminal is intentionally not the same thing as a generic terminal.
+In the current design, X-Terminal is the deep governed client: it uses Hub memory, project sync, Supervisor surfaces, and the richer runtime-truth UX. Generic terminals and third-party clients can keep using their own native/local memory, skill, and tool stack, while calling into Hub-governed model and capability surfaces as needed. That still does not make them equivalent to X-Terminal, because those local stacks are not the same as Hub memory, Hub project continuity, Hub-governed skills, or the X-Terminal Supervisor surface.
 
 Execution baseline:
 
-`pair / ingress -> retrieve memory + constitution -> resolve route -> check policy + grants -> verify readiness -> execute on a governed surface -> audit + surface runtime truth`
+`pair / ingress -> decide client capability profile -> retrieve memory + constitution when applicable -> resolve route -> check policy + grants -> verify readiness -> execute on a governed surface -> audit + surface runtime truth`
 
 ## Memory-Backed Constitutional Guardrails
 

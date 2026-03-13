@@ -45,6 +45,7 @@ function auditRefFromResult(result = {}) {
 }
 
 function projectIdFromResult(result = {}) {
+  if (safeString(result.execution?.projection?.project_id)) return safeString(result.execution.projection.project_id);
   if (safeString(result.execution?.xt_command?.project_id)) return safeString(result.execution.xt_command.project_id);
   if (safeString(result.execution?.query?.project_id)) return safeString(result.execution.query.project_id);
   if (safeString(result.execution?.grant_action?.grant?.client?.project_id)) {
@@ -68,8 +69,11 @@ function classifyStatus(result = {}) {
     if (grantDecision === 'approved') return 'grant_approved';
     if (grantDecision === 'denied') return 'grant_denied';
 
-    const queryAction = safeString(execution.query?.action_name);
+    const projection = safeObject(execution.projection);
+    const queryAction = safeString(execution.query?.action_name || result.command?.action_name || result.gate?.action_name);
+    if (Object.keys(projection).length && queryAction === 'supervisor.status.get') return 'supervisor_status';
     if (queryAction === 'supervisor.status.get') return 'supervisor_status';
+    if (queryAction === 'supervisor.blockers.get') return 'supervisor_blockers';
     if (queryAction === 'supervisor.queue.get') return 'supervisor_queue';
   }
 
@@ -94,6 +98,7 @@ function buildExecutionSummary(result = {}) {
 
   const route = safeObject(execution.route);
   const query = safeObject(execution.query);
+  const projection = safeObject(execution.projection);
   const grantAction = safeObject(execution.grant_action);
   const xtCommand = safeObject(execution.xt_command);
   const heartbeat = safeObject(query.heartbeat);
@@ -127,6 +132,31 @@ function buildExecutionSummary(result = {}) {
         safeString(xtCommand.detail || execution.detail) ? `Detail: ${safeString(xtCommand.detail || execution.detail)}` : '',
       ].filter(Boolean),
       audit_ref: safeString(xtCommand.audit_ref || auditRef),
+    });
+  }
+
+  if (Object.keys(projection).length) {
+    const topline = safeString(projection.topline);
+    const criticalBlocker = safeString(projection.critical_blocker);
+    const nextBestAction = safeString(projection.next_best_action);
+    const cardSummary = safeString(projection.card_summary);
+    const pendingGrantCount = safeInt(projection.pending_grant_count, 0);
+    return buildWhatsAppCloudSummaryMessage({
+      delivery_context: deliveryContextFromResult(result),
+      title: 'Supervisor Status',
+      status: classifyStatus(result),
+      project_id: safeString(projection.project_id || projectId),
+      lines: [
+        actionName ? `Action: ${actionName}` : '',
+        topline ? `Topline: ${topline}` : '',
+        criticalBlocker ? `Blocker: ${criticalBlocker}` : '',
+        nextBestAction ? `Next: ${nextBestAction}` : '',
+        `Pending grants: ${pendingGrantCount}`,
+        cardSummary && cardSummary !== topline ? `Summary: ${cardSummary}` : '',
+        routeMode ? `Route: ${routeMode}` : '',
+        resolvedDeviceId ? `Device: ${resolvedDeviceId}${route.xt_online === true ? ' (online)' : ''}` : '',
+      ].filter(Boolean),
+      audit_ref: safeString(projection.audit_ref || auditRef),
     });
   }
 
@@ -174,6 +204,13 @@ function buildExecutionSummary(result = {}) {
       Object.keys(heartbeat).length ? `Heartbeat: queue_depth=${safeInt(heartbeat.queue_depth)} wait_ms=${safeInt(heartbeat.oldest_wait_ms)} risk=${safeString(heartbeat.risk_tier || 'unknown') || 'unknown'}` : 'Heartbeat: no live project heartbeat',
     ].filter(Boolean);
 
+    if (actionName === 'supervisor.blockers.get') {
+      const blockers = safeArray(heartbeat.blocked_reason).map((item) => safeString(item)).filter(Boolean);
+      const nextActions = safeArray(heartbeat.next_actions).map((item) => safeString(item)).filter(Boolean);
+      lines.push(blockers.length ? `Blockers: ${blockers.join('; ')}` : 'Blockers: none reported');
+      if (nextActions.length) lines.push(`Next actions: ${nextActions.join('; ')}`);
+    }
+
     if (actionName === 'supervisor.queue.get') {
       if (queue.planned === true) {
         const queueItems = safeArray(queue.items).slice(0, 3);
@@ -191,7 +228,7 @@ function buildExecutionSummary(result = {}) {
 
     return buildWhatsAppCloudSummaryMessage({
       delivery_context: deliveryContextFromResult(result),
-      title: actionName === 'supervisor.queue.get' ? 'Supervisor Queue' : 'Supervisor Status',
+      title: actionName === 'supervisor.blockers.get' ? 'Supervisor Blockers' : (actionName === 'supervisor.queue.get' ? 'Supervisor Queue' : 'Supervisor Status'),
       status: classifyStatus(result),
       project_id: projectId,
       lines,

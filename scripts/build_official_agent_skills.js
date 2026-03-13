@@ -37,6 +37,11 @@ function safeArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function cloneJSONValue(value) {
+  if (value == null) return undefined;
+  return JSON.parse(JSON.stringify(value));
+}
+
 function sha256Hex(data) {
   return crypto.createHash("sha256").update(data).digest("hex");
 }
@@ -305,6 +310,7 @@ function normalizeSourceManifest(skillDir, manifestObj, frontmatter) {
     requires_grant: Boolean(manifestObj.requires_grant),
     timeout_ms: Number.isFinite(Number(manifestObj.timeout_ms)) ? Number(manifestObj.timeout_ms) : undefined,
     max_retries: Number.isFinite(Number(manifestObj.max_retries)) ? Number(manifestObj.max_retries) : undefined,
+    governed_dispatch: cloneJSONValue(manifestObj.governed_dispatch),
     network_policy: {
       direct_network_forbidden: manifestObj?.network_policy?.direct_network_forbidden !== false,
     },

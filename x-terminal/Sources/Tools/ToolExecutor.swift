@@ -925,6 +925,7 @@ content_type=\(res.contentType)
             observationsText: nil,
             workingSetText: nil,
             rawEvidenceText: nil,
+            progressiveDisclosure: useMode == .projectChat || useMode == .supervisorOrchestration,
             budgets: nil,
             timeoutSec: 2.0
         )
@@ -1000,7 +1001,10 @@ content_type=\(res.contentType)
             "mode": .string(mode),
             "source": .string(response.source),
             "resolved_mode": response.resolvedMode.map(JSONValue.string) ?? .null,
+            "requested_profile": response.requestedProfile.map(JSONValue.string) ?? .null,
             "resolved_profile": response.resolvedProfile.map(JSONValue.string) ?? .null,
+            "attempted_profiles": .array((response.attemptedProfiles ?? []).map(JSONValue.string)),
+            "progressive_upgrade_count": response.progressiveUpgradeCount.map { .number(Double($0)) } ?? .null,
             "longterm_mode": response.longtermMode.map(JSONValue.string) ?? .null,
             "retrieval_available": response.retrievalAvailable.map(JSONValue.bool) ?? .null,
             "fulltext_not_loaded": response.fulltextNotLoaded.map(JSONValue.bool) ?? .null,
