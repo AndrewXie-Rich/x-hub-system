@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import XTerminal
 
+@Suite(.serialized)
 @MainActor
 struct SupervisorMemoryWorkingSetWindowTests {
 
@@ -150,6 +151,44 @@ struct SupervisorMemoryWorkingSetWindowTests {
         #expect(localMemory.contains("[decision_track] approved architecture direction"))
         #expect(localMemory.contains("Use governed project phases: scan, isolate, refactor, verify."))
         #expect(localMemory.contains("[project_spec_capsule] tech stack capsule"))
+    }
+
+    @Test
+    func focusedProjectReviewSurfacesRetrievalDenyMetadata() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-memory-retrieval-denied")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        HubIPCClient.installMemoryRetrievalOverrideForTesting { payload, _ in
+            HubIPCClient.MemoryRetrievalResponsePayload(
+                source: "test_supervisor_retrieval",
+                scope: payload.scope,
+                auditRef: payload.auditRef,
+                reasonCode: "scope_gate",
+                denyCode: "cross_scope_memory_denied",
+                snippets: [],
+                truncatedItems: 0,
+                redactedItems: 0
+            )
+        }
+        defer { HubIPCClient.resetMemoryContextResolutionOverrideForTesting() }
+
+        let localMemory = await manager.buildSupervisorLocalMemoryV1ForTesting(
+            "审查亮亮项目的上下文记忆，给出最具体的执行方案"
+        )
+
+        #expect(localMemory.contains("[focused_project_retrieval]"))
+        #expect(localMemory.contains("focus_project=亮亮 (\(project.projectId))"))
+        #expect(localMemory.contains("status=denied"))
+        #expect(localMemory.contains("reason_code=scope_gate"))
+        #expect(localMemory.contains("deny_code=cross_scope_memory_denied"))
+        #expect(localMemory.contains("retrieval_source=test_supervisor_retrieval"))
     }
 
     private func makeConversation(turns: Int) -> [SupervisorMessage] {

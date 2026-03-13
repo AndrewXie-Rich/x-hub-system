@@ -36,6 +36,11 @@ Understand the active repo shape first:
 - `x-terminal/` is the active terminal surface
 - `archive/` is history, not runtime
 
+Path casing rule:
+
+- `x-terminal/` is the only canonical repository path
+- `X-Terminal` is the product/app name and may appear in UI copy, app bundles, entitlements, or Application Support paths, but not as a source tree path
+
 Keep the Hub-first trust model intact:
 
 - trust, grants, and final policy authority belong in `x-hub/`

@@ -99,6 +99,9 @@ That convenience also means the vendor often becomes the default holder of runti
 
 X-Hub-System is aimed at teams and individuals who want that control plane to remain operator-owned.
 
+This is also about autonomous usability, not only privacy:
+the operator keeps authority over permissions, key material, memory truth, release timing, and whether any remote provider is allowed into the runtime path at all.
+
 | Typical cloud-agent default | X-Hub-System |
 |---|---|
 | Vendor-hosted control plane | Hub runs on operator-owned hardware |
@@ -110,6 +113,9 @@ X-Hub-System is aimed at teams and individuals who want that control plane to re
 ## What Full Local Mode Actually Buys You
 
 If you run X-Hub-System with local models only, keep the Hub on operator-owned hardware, and leave remote providers and external connector paths disabled, then the trusted control plane and model inference path no longer depend on third-party cloud inference services.
+
+In that posture, you remove an entire class of vendor-cloud exposure from the core path.
+The system is no longer relying on a remote SaaS inference plane to execute its main loop.
 
 That can materially reduce:
 
@@ -281,6 +287,14 @@ This is still a simplified control-plane view, but it now separates the deep-cli
 X-Terminal is intentionally not the same thing as a generic terminal.
 In the current design, X-Terminal is the deep governed client: it uses Hub memory, project sync, Supervisor surfaces, and the richer runtime-truth UX. Generic terminals and third-party clients can keep using their own native/local memory, skill, and tool stack, while calling into Hub-governed model and capability surfaces as needed. That still does not make them equivalent to X-Terminal, because those local stacks are not the same as Hub memory, Hub project continuity, Hub-governed skills, or the X-Terminal Supervisor surface.
 
+Read the diagram this way:
+
+- Green is the `X-Terminal` deep-client path.
+- Red is the thinner generic-terminal capability-call path.
+- Steps `2` and `3` are where X-Terminal pairs into Hub memory, X-Constitution, project sync, and Supervisor.
+- Both client types converge at Step `4`, where policy, grants, fail-closed gates, and kill-switch control become mandatory before execution.
+- Steps `5` and `6` are where governed routing, execution surfaces, audit, evidence, and runtime truth are produced.
+
 Execution baseline:
 
 `pair / ingress -> decide client capability profile -> retrieve memory + constitution when applicable -> resolve route -> check policy + grants -> verify readiness -> execute on a governed surface -> audit + surface runtime truth`
@@ -290,66 +304,15 @@ Execution baseline:
 The first diagram is about trust and control flow.
 This second diagram is about where the major pieces typically run.
 
-```mermaid
-flowchart LR
-    subgraph D[User Devices]
-        direction TB
-        subgraph XTD[X-Terminal Device]
-            direction TB
-            XTUI[X-Terminal UI + session runtime]
-            XTCACHE[Minimal local cache<br/>display / recovery only]
-        end
-        subgraph GTD[Generic / 3rd-Party Terminal Device]
-            direction TB
-            GTUI[Generic terminal / 3rd-party client]
-            GTLOCAL[Terminal-local memory / skills / tools]
-        end
-    end
-
-    subgraph H[Operator-Owned Hub Host]
-        direction TB
-        HXAPP[X-Hub macOS app / operator UI]
-        HCORE[Hub gRPC service<br/>policy / grants / audit / memory]
-        HSK[Skills store + trust roots<br/>official-agent-skills surface]
-        HCH[Operator channel workers]
-        HBR[Bridge / network boundary]
-        HLPR[Python local provider runtime]
-        HLM[Local models on Hub host<br/>MLX / Transformers]
-    end
-
-    subgraph X[Optional External Systems]
-        direction TB
-        OPP[Slack / Telegram / Feishu]
-        PAI[Paid model providers / APIs]
-        ECS[External services via connectors]
-    end
-
-    XTUI --- XTCACHE
-    GTUI --- GTLOCAL
-
-    XTUI <-->|paired deep-client session| HCORE
-    GTUI <-->|AI / capability calls| HCORE
-    HXAPP --> HCORE
-    HCORE --> HSK
-    HCORE --> HCH
-    HCORE --> HBR
-    HCORE --> HLPR
-    HLPR --> HLM
-    HCH <-->|operator ingress / results| OPP
-    HBR <-->|optional remote inference| PAI
-    HBR <-->|optional connector traffic| ECS
-
-    style XTD fill:#ecfdf3,stroke:#2d6a4f,stroke-width:1.5px,color:#163826;
-    style GTD fill:#fff1f1,stroke:#b42318,stroke-width:1.5px,color:#5b1111;
-    style H fill:#f6fbf7,stroke:#7aa58a,stroke-width:1.2px,color:#163826;
-    style X fill:#fffaf2,stroke:#c9973f,stroke-width:1.2px,color:#4d2d00;
-```
+![X-Hub deployment and runtime topology](docs/open-source/assets/xhub_deployment_runtime_topology.svg)
 
 Typical interpretation:
 
 - `X-Terminal` is the deep client and is expected to pair into Hub memory, project sync, and Supervisor-facing flows.
-- Generic terminals and third-party clients can keep their own local memory / skill / tool system while still using Hub-governed AI and capability surfaces.
-- The operator-owned Hub host is where trust, grants, policy, audit, memory truth, and local runtime governance live.
+- Generic terminals and third-party clients keep their own local memory / skill / tool system on their own device, while still using Hub-governed AI and capability surfaces when needed.
+- The operator-owned Hub host is split conceptually into a `Trusted Core` and a `Local Runtime Boundary`.
+- The `Trusted Core` is where trust, grants, policy, audit, memory truth, and operator control stay anchored.
+- The `Local Runtime Boundary` is where bridge transport, local provider runtime, and local models run under Hub governance.
 - Remote providers and connector targets are optional external surfaces, not the default location of the trusted control plane.
 
 ## Memory-Backed Constitutional Guardrails

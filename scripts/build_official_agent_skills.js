@@ -311,6 +311,8 @@ function normalizeSourceManifest(skillDir, manifestObj, frontmatter) {
     timeout_ms: Number.isFinite(Number(manifestObj.timeout_ms)) ? Number(manifestObj.timeout_ms) : undefined,
     max_retries: Number.isFinite(Number(manifestObj.max_retries)) ? Number(manifestObj.max_retries) : undefined,
     governed_dispatch: cloneJSONValue(manifestObj.governed_dispatch),
+    governed_dispatch_notes: cloneJSONValue(manifestObj.governed_dispatch_notes),
+    governed_dispatch_variants: cloneJSONValue(manifestObj.governed_dispatch_variants),
     network_policy: {
       direct_network_forbidden: manifestObj?.network_policy?.direct_network_forbidden !== false,
     },

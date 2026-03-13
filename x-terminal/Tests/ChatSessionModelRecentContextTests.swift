@@ -43,6 +43,56 @@ struct ChatSessionModelRecentContextTests {
     }
 
     @Test
+    func projectMemoryRetrievalFormattingSurfacesDenyAndTruncationMetadata() {
+        let session = ChatSessionModel()
+
+        let denied = session.formattedProjectMemoryRetrievalBlockForTesting(
+            response: HubIPCClient.MemoryRetrievalResponsePayload(
+                source: "test_retrieval",
+                scope: "current_project",
+                auditRef: "audit-denied-1",
+                reasonCode: "scope_gate",
+                denyCode: "cross_scope_memory_denied",
+                snippets: [],
+                truncatedItems: 0,
+                redactedItems: 0
+            )
+        )
+        let truncated = session.formattedProjectMemoryRetrievalBlockForTesting(
+            response: HubIPCClient.MemoryRetrievalResponsePayload(
+                source: "test_retrieval",
+                scope: "current_project",
+                auditRef: "audit-truncated-1",
+                reasonCode: nil,
+                denyCode: nil,
+                snippets: [
+                    HubIPCClient.MemoryRetrievalSnippet(
+                        snippetId: "snippet-1",
+                        sourceKind: "decision_track",
+                        title: "approved stack",
+                        ref: "memory://decision/proj/1",
+                        text: "Use Swift + governed Hub memory.",
+                        score: 96,
+                        truncated: false
+                    )
+                ],
+                truncatedItems: 2,
+                redactedItems: 1
+            )
+        )
+
+        #expect(denied?.contains("status=denied") == true)
+        #expect(denied?.contains("audit_ref=audit-denied-1") == true)
+        #expect(denied?.contains("reason_code=scope_gate") == true)
+        #expect(denied?.contains("deny_code=cross_scope_memory_denied") == true)
+        #expect(truncated?.contains("status=truncated") == true)
+        #expect(truncated?.contains("audit_ref=audit-truncated-1") == true)
+        #expect(truncated?.contains("truncated_items=2") == true)
+        #expect(truncated?.contains("redacted_items=1") == true)
+        #expect(truncated?.contains("[decision_track] approved stack") == true)
+    }
+
+    @Test
     func projectMemoryServingProfileEscalatesForStructureReviewAndRefactorPlanning() {
         let session = ChatSessionModel()
 

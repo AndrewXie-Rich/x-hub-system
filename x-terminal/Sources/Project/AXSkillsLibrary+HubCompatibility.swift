@@ -858,6 +858,7 @@ extension AXSkillsLibrary {
             guard skill.compatibilityState != .unsupported else { return nil }
             let hints = parseSupervisorSkillManifestHints(
                 skill.manifestJSON,
+                fallbackSkillId: skill.skillID,
                 fallbackDescription: firstNonEmptySkillText(skill.description, skill.installHint, skill.name),
                 capabilityFallback: skill.capabilitiesRequired
             )
@@ -913,6 +914,8 @@ extension AXSkillsLibrary {
         var description: String
         var capabilitiesRequired: [String]
         var governedDispatch: SupervisorGovernedSkillDispatch?
+        var governedDispatchVariants: [SupervisorGovernedSkillDispatchVariant]
+        var governedDispatchNotes: [String]
         var inputSchemaRef: String
         var outputSchemaRef: String
         var sideEffectClass: String
@@ -946,6 +949,7 @@ extension AXSkillsLibrary {
     ) -> SupervisorSkillRegistryItem {
         let manifestHints = parseSupervisorSkillManifestHints(
             skill.manifestJSON,
+            fallbackSkillId: skill.skillID,
             fallbackDescription: firstNonEmptySkillText(skill.description, skill.installHint, skill.name),
             capabilityFallback: skill.capabilitiesRequired
         )
@@ -955,6 +959,8 @@ extension AXSkillsLibrary {
             description: manifestHints.description,
             capabilitiesRequired: manifestHints.capabilitiesRequired,
             governedDispatch: manifestHints.governedDispatch,
+            governedDispatchVariants: manifestHints.governedDispatchVariants,
+            governedDispatchNotes: manifestHints.governedDispatchNotes,
             inputSchemaRef: manifestHints.inputSchemaRef.isEmpty ? "schema://\(skill.skillID).input" : manifestHints.inputSchemaRef,
             outputSchemaRef: manifestHints.outputSchemaRef.isEmpty ? "schema://\(skill.skillID).output" : manifestHints.outputSchemaRef,
             sideEffectClass: manifestHints.sideEffectClass,
@@ -969,10 +975,15 @@ extension AXSkillsLibrary {
 
     private static func parseSupervisorSkillManifestHints(
         _ rawManifest: String,
+        fallbackSkillId: String,
         fallbackDescription: String,
         capabilityFallback: [String]
     ) -> SupervisorSkillManifestHints {
         let manifest = jsonObject(from: rawManifest)
+        let resolvedSkillId = firstNonEmptySkillText(
+            stringValue(manifest["skill_id"]),
+            fallbackSkillId
+        )
         let capabilities = stringArrayValue(
             manifest["capabilities_required"],
             fallback: capabilityFallback
@@ -993,9 +1004,21 @@ extension AXSkillsLibrary {
             capabilitiesRequired: capabilities,
             governedDispatch: parseSupervisorGovernedDispatch(
                 manifest["governed_dispatch"],
-                skillId: stringValue(manifest["skill_id"])
+                skillId: resolvedSkillId
             ) ?? fallbackGovernedDispatch(
-                skillId: stringValue(manifest["skill_id"])
+                skillId: resolvedSkillId
+            ),
+            governedDispatchVariants: parseSupervisorGovernedDispatchVariants(
+                manifest["governed_dispatch_variants"],
+                skillId: resolvedSkillId
+            ).ifEmpty(
+                fallback: fallbackGovernedDispatchVariants(skillId: resolvedSkillId)
+            ),
+            governedDispatchNotes: stringArrayValue(
+                manifest["governed_dispatch_notes"],
+                fallback: fallbackGovernedDispatchNotes(
+                    skillId: resolvedSkillId
+                )
             ),
             inputSchemaRef: stringValue(manifest["input_schema_ref"]),
             outputSchemaRef: stringValue(manifest["output_schema_ref"]),
@@ -1096,6 +1119,28 @@ extension AXSkillsLibrary {
         )
     }
 
+    private static func parseSupervisorGovernedDispatchVariants(
+        _ raw: Any?,
+        skillId: String
+    ) -> [SupervisorGovernedSkillDispatchVariant] {
+        guard let rows = raw as? [Any] else { return [] }
+        return rows.compactMap { row in
+            guard let object = row as? [String: Any] else { return nil }
+            let actions = stringArrayValue(object["actions"], fallback: [])
+            guard !actions.isEmpty else { return nil }
+            guard let dispatch = parseSupervisorGovernedDispatch(
+                object["dispatch"] ?? object["governed_dispatch"],
+                skillId: skillId
+            ) else { return nil }
+            return SupervisorGovernedSkillDispatchVariant(
+                actions: actions,
+                dispatch: dispatch,
+                actionArg: stringValue(object["action_arg"]).isEmpty ? "action" : stringValue(object["action_arg"]),
+                actionMap: stringMapValue(object["action_map"])
+            )
+        }
+    }
+
     private static func fallbackGovernedDispatch(skillId: String) -> SupervisorGovernedSkillDispatch? {
         switch skillId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "find-skills":
@@ -1130,6 +1175,132 @@ extension AXSkillsLibrary {
             )
         default:
             return nil
+        }
+    }
+
+    private static func fallbackGovernedDispatchNotes(skillId: String) -> [String] {
+        switch skillId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "agent-browser", "agent_browser", "agent.browser":
+            return [
+                "actions=open/navigate/snapshot/extract/click/type/upload -> device.browser.control",
+                "actions=read/fetch -> browser_read; open/navigate/read/fetch require url; snapshot/extract accept url or session_id"
+            ]
+        default:
+            return []
+        }
+    }
+
+    private static func fallbackGovernedDispatchVariants(skillId: String) -> [SupervisorGovernedSkillDispatchVariant] {
+        switch skillId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "agent-browser", "agent_browser", "agent.browser":
+            return [
+                SupervisorGovernedSkillDispatchVariant(
+                    actions: ["open", "open_url", "navigate", "goto", "visit"],
+                    dispatch: SupervisorGovernedSkillDispatch(
+                        tool: ToolName.deviceBrowserControl.rawValue,
+                        fixedArgs: [:],
+                        passthroughArgs: ["url", "grant_id", "timeout_sec", "max_bytes"],
+                        argAliases: [:],
+                        requiredAny: [["url"]],
+                        exactlyOneOf: []
+                    ),
+                    actionArg: "action",
+                    actionMap: [
+                        "open": "open_url",
+                        "open_url": "open_url",
+                        "navigate": "navigate",
+                        "goto": "navigate",
+                        "visit": "navigate",
+                    ]
+                ),
+                SupervisorGovernedSkillDispatchVariant(
+                    actions: ["snapshot", "inspect", "extract"],
+                    dispatch: SupervisorGovernedSkillDispatch(
+                        tool: ToolName.deviceBrowserControl.rawValue,
+                        fixedArgs: [:],
+                        passthroughArgs: ["url", "session_id", "grant_id", "timeout_sec", "max_bytes"],
+                        argAliases: [:],
+                        requiredAny: [["url", "session_id"]],
+                        exactlyOneOf: []
+                    ),
+                    actionArg: "action",
+                    actionMap: [
+                        "snapshot": "snapshot",
+                        "inspect": "snapshot",
+                        "extract": "extract",
+                    ]
+                ),
+                SupervisorGovernedSkillDispatchVariant(
+                    actions: ["click", "tap"],
+                    dispatch: SupervisorGovernedSkillDispatch(
+                        tool: ToolName.deviceBrowserControl.rawValue,
+                        fixedArgs: [:],
+                        passthroughArgs: ["url", "session_id", "selector", "grant_id", "timeout_sec", "max_bytes"],
+                        argAliases: [:],
+                        requiredAny: [],
+                        exactlyOneOf: []
+                    ),
+                    actionArg: "action",
+                    actionMap: [
+                        "click": "click",
+                        "tap": "click",
+                    ]
+                ),
+                SupervisorGovernedSkillDispatchVariant(
+                    actions: ["type", "fill", "input", "enter"],
+                    dispatch: SupervisorGovernedSkillDispatch(
+                        tool: ToolName.deviceBrowserControl.rawValue,
+                        fixedArgs: [:],
+                        passthroughArgs: [
+                            "url", "session_id", "selector", "field_role",
+                            "text", "content", "value",
+                            "secret_item_id", "secret_scope", "secret_name", "secret_project_id",
+                            "grant_id", "timeout_sec", "max_bytes"
+                        ],
+                        argAliases: [:],
+                        requiredAny: [],
+                        exactlyOneOf: []
+                    ),
+                    actionArg: "action",
+                    actionMap: [
+                        "type": "type",
+                        "fill": "type",
+                        "input": "type",
+                        "enter": "type",
+                    ]
+                ),
+                SupervisorGovernedSkillDispatchVariant(
+                    actions: ["upload", "attach"],
+                    dispatch: SupervisorGovernedSkillDispatch(
+                        tool: ToolName.deviceBrowserControl.rawValue,
+                        fixedArgs: [:],
+                        passthroughArgs: ["url", "session_id", "selector", "path", "grant_id", "timeout_sec", "max_bytes"],
+                        argAliases: [:],
+                        requiredAny: [],
+                        exactlyOneOf: []
+                    ),
+                    actionArg: "action",
+                    actionMap: [
+                        "upload": "upload",
+                        "attach": "upload",
+                    ]
+                ),
+                SupervisorGovernedSkillDispatchVariant(
+                    actions: ["read", "read_page", "read-page", "fetch"],
+                    dispatch: SupervisorGovernedSkillDispatch(
+                        tool: ToolName.browser_read.rawValue,
+                        fixedArgs: [:],
+                        passthroughArgs: ["url", "grant_id", "timeout_sec", "max_bytes"],
+                        argAliases: [:],
+                        requiredAny: [["url"]],
+                        exactlyOneOf: []
+                    ),
+                    actionArg: "",
+                    actionMap: [:]
+                ),
+            ]
+        default:
+            return []
         }
     }
 
@@ -1174,6 +1345,18 @@ extension AXSkillsLibrary {
             if !normalizedValues.isEmpty {
                 result[normalizedKey] = normalizedValues
             }
+        }
+        return result
+    }
+
+    private static func stringMapValue(_ raw: Any?) -> [String: String] {
+        guard let object = raw as? [String: Any] else { return [:] }
+        var result: [String: String] = [:]
+        for (key, value) in object {
+            let cleanedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+            let cleanedValue = stringValue(value)
+            guard !cleanedKey.isEmpty, !cleanedValue.isEmpty else { continue }
+            result[cleanedKey] = cleanedValue
         }
         return result
     }
@@ -1285,5 +1468,11 @@ extension AXSkillsLibrary {
             return 0
         }
         return Int64((object["updated_at_ms"] as? NSNumber)?.int64Value ?? 0)
+    }
+}
+
+private extension Array {
+    func ifEmpty(fallback: @autoclosure () -> [Element]) -> [Element] {
+        isEmpty ? fallback() : self
     }
 }

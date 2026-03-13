@@ -2140,6 +2140,118 @@ struct SupervisorCommandGuardTests {
     }
 
     @Test
+    func continueIntentBootstrapsFocusedProjectWorkflowFromConcreteMemory() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-continue-bootstrap")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var project = makeProjectEntry(root: root, displayName: "亮亮")
+        project.currentStateSummary = "模块边界已初步摸清，但结构整理还没落盘"
+        project.nextStepSummary = "梳理项目结构并给出重构建议"
+        project.blockerSummary = "缺一版明确的分层切割方案"
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let rendered = try #require(
+            manager.directSupervisorActionIfApplicableForTesting("继续推进亮亮项目")
+        )
+
+        #expect(rendered.contains("把下一步起成一个受治理 workflow"))
+        #expect(rendered.contains("任务目标：梳理项目结构并给出重构建议"))
+        #expect(rendered.contains("1. 审查项目上下文记忆并确认当前事实（completed）"))
+        #expect(rendered.contains("2. 梳理项目结构并给出重构建议（pending）"))
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let jobSnapshot = SupervisorProjectJobStore.load(for: ctx)
+        #expect(jobSnapshot.jobs.count == 1)
+
+        let job = try #require(jobSnapshot.jobs.first)
+        #expect(job.projectId == project.projectId)
+        #expect(job.goal == "梳理项目结构并给出重构建议")
+        #expect(job.priority == .high)
+        #expect(job.source == .supervisor)
+        #expect(job.status == .running)
+        #expect(manager.currentTask?.id == job.jobId)
+
+        let planSnapshot = SupervisorProjectPlanStore.load(for: ctx)
+        #expect(planSnapshot.plans.count == 1)
+
+        let plan = try #require(planSnapshot.plans.first)
+        #expect(plan.jobId == job.jobId)
+        #expect(plan.projectId == project.projectId)
+        #expect(plan.status == .active)
+        #expect(plan.steps.count == 3)
+        #expect(plan.steps[0].status == .completed)
+        #expect(plan.steps[1].status == .pending)
+        #expect(plan.steps[1].title == "梳理项目结构并给出重构建议")
+    }
+
+    @Test
+    func continueIntentDoesNotDuplicateActiveWorkflowAndStillAllowsGovernedPlanUpdate() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-continue-existing-workflow")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var project = makeProjectEntry(root: root, displayName: "亮亮")
+        project.nextStepSummary = "梳理项目结构并给出重构建议"
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"亮亮","goal":"梳理项目结构并给出重构建议","priority":"high"}[/CREATE_JOB]"#,
+            userMessage: "给亮亮建一个任务：梳理项目结构并给出重构建议"
+        )
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let existingJob = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+
+        #expect(manager.directSupervisorActionIfApplicableForTesting("继续推进亮亮项目") == nil)
+        #expect(SupervisorProjectJobStore.load(for: ctx).jobs.count == 1)
+
+        let rendered = manager.processSupervisorResponseForTesting(
+            #"""
+            [UPSERT_PLAN]{"project_ref":"亮亮","job_id":"\#(existingJob.jobId)","plan_id":"plan-liang-continue-v2","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"审查当前执行上下文","kind":"write_memory","status":"completed"},{"step_id":"step-002","title":"梳理项目结构并给出重构建议","kind":"write_memory","status":"pending"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "继续推进亮亮项目"
+        )
+
+        #expect(rendered.contains("✅ 已为项目 \(project.displayName) 写入计划：plan-liang-continue-v2"))
+        #expect(SupervisorProjectJobStore.load(for: ctx).jobs.count == 1)
+        #expect(SupervisorProjectPlanStore.load(for: ctx).plans.count == 1)
+    }
+
+    @Test
+    func continueIntentDoesNotBootstrapWithoutFocusedProject() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let alphaRoot = try makeProjectRoot(named: "supervisor-continue-no-focus-alpha")
+        let betaRoot = try makeProjectRoot(named: "supervisor-continue-no-focus-beta")
+        defer { try? FileManager.default.removeItem(at: alphaRoot) }
+        defer { try? FileManager.default.removeItem(at: betaRoot) }
+
+        var alpha = makeProjectEntry(root: alphaRoot, displayName: "Alpha Console")
+        alpha.nextStepSummary = "补齐 Alpha 的重构计划"
+        var beta = makeProjectEntry(root: betaRoot, displayName: "Beta Studio")
+        beta.nextStepSummary = "补齐 Beta 的运行验证"
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [alpha, beta])
+        manager.setAppModel(appModel)
+
+        #expect(manager.directSupervisorActionIfApplicableForTesting("继续推进") == nil)
+
+        let alphaCtx = try #require(appModel.projectContext(for: alpha.projectId))
+        let betaCtx = try #require(appModel.projectContext(for: beta.projectId))
+        #expect(SupervisorProjectJobStore.load(for: alphaCtx).jobs.isEmpty)
+        #expect(SupervisorProjectJobStore.load(for: betaCtx).jobs.isEmpty)
+    }
+
+    @Test
     func malformedCreateJobPayloadFailsClosedWithoutCreatingJob() throws {
         let manager = SupervisorManager.makeForTesting()
         let root = try makeProjectRoot(named: "supervisor-create-job-invalid")

@@ -129,9 +129,8 @@ final class ChatSessionModel: ObservableObject {
         if loadedRootPath == rootPath { return }
         if let loadedRootPath, !loadedRootPath.isEmpty {
             let previousRoot = URL(fileURLWithPath: loadedRootPath, isDirectory: true)
-            let previousContext = AXProjectContext(root: previousRoot)
-            _ = AXMemoryLifecycleStore.writeSessionSummaryCapsule(
-                ctx: previousContext,
+            writeSessionSummaryCapsuleIfPossible(
+                ctx: AXProjectContext(root: previousRoot),
                 reason: "project_switch"
             )
         }
@@ -160,6 +159,13 @@ final class ChatSessionModel: ObservableObject {
         assistantProgressLinesByMessageID = [:]
         boundSessionId = nil
         currentRunId = nil
+    }
+
+    private func writeSessionSummaryCapsuleIfPossible(ctx: AXProjectContext, reason: String) {
+        _ = AXMemoryLifecycleStore.writeSessionSummaryCapsule(
+            ctx: ctx,
+            reason: reason
+        )
     }
 
     private func ensurePrimarySessionBound(ctx: AXProjectContext) -> String {
@@ -1165,6 +1171,7 @@ final class ChatSessionModel: ObservableObject {
             )
             return true
         case "clear":
+            writeSessionSummaryCapsuleIfPossible(ctx: ctx, reason: "session_reset")
             messages.removeAll()
             isSending = false
             currentReqId = nil
@@ -3059,6 +3066,12 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         shouldRequestProjectMemoryRetrieval(userText: userText)
     }
 
+    func formattedProjectMemoryRetrievalBlockForTesting(
+        response: HubIPCClient.MemoryRetrievalResponsePayload?
+    ) -> String? {
+        formattedProjectMemoryRetrievalBlock(response: response)
+    }
+
     func preferredProjectMemoryServingProfileForTesting(userText: String) -> XTMemoryServingProfile? {
         preferredProjectMemoryServingProfile(userText: userText)
     }
@@ -4441,7 +4454,20 @@ latest_user:
             maxSnippetChars: projectMemoryRetrievalMaxSnippetChars,
             timeoutSec: 1.0
         )
-        guard let response, response.denyCode == nil, !response.snippets.isEmpty else { return nil }
+        return formattedProjectMemoryRetrievalBlock(response: response)
+    }
+
+    private func formattedProjectMemoryRetrievalBlock(
+        response: HubIPCClient.MemoryRetrievalResponsePayload?
+    ) -> String? {
+        guard let response else {
+            return """
+            [retrieved_memory]
+            status=unavailable
+            reason_code=no_response
+            [/retrieved_memory]
+            """
+        }
 
         let items = response.snippets.prefix(projectMemoryRetrievalMaxSnippets).map { snippet in
             """
@@ -4450,14 +4476,43 @@ latest_user:
               \(snippet.text)
             """
         }.joined(separator: "\n")
-        guard !items.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-        return """
-        [retrieved_memory]
-        audit_ref: \(response.auditRef)
-        source: \(response.source)
-        \(items)
-        [/retrieved_memory]
-        """
+        let trimmedItems = items.trimmingCharacters(in: .whitespacesAndNewlines)
+        let denyCode = response.denyCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let reasonCode = response.reasonCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let status: String
+        if !denyCode.isEmpty {
+            status = "denied"
+        } else if response.truncatedItems > 0 {
+            status = "truncated"
+        } else if trimmedItems.isEmpty {
+            status = "empty"
+        } else {
+            status = "ok"
+        }
+
+        var lines = [
+            "[retrieved_memory]",
+            "status=\(status)",
+            "audit_ref=\(response.auditRef)",
+            "source=\(response.source)"
+        ]
+        if !reasonCode.isEmpty {
+            lines.append("reason_code=\(reasonCode)")
+        }
+        if !denyCode.isEmpty {
+            lines.append("deny_code=\(denyCode)")
+        }
+        if response.truncatedItems > 0 {
+            lines.append("truncated_items=\(response.truncatedItems)")
+        }
+        if response.redactedItems > 0 {
+            lines.append("redacted_items=\(response.redactedItems)")
+        }
+        if !trimmedItems.isEmpty {
+            lines.append(trimmedItems)
+        }
+        lines.append("[/retrieved_memory]")
+        return lines.joined(separator: "\n")
     }
 
     private func mergeProjectMemoryRetrieval(

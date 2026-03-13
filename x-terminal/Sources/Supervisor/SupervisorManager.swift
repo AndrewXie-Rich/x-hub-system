@@ -11,6 +11,7 @@ final class SupervisorManager: ObservableObject {
         case localPreflight = "local_preflight"
         case localDirectReply = "local_direct_reply"
         case localDirectAction = "local_direct_action"
+        case hubBriefProjection = "hub_brief_projection"
         case remoteModel = "remote_model"
         case localFallbackAfterRemoteError = "local_fallback_after_remote_error"
     }
@@ -220,6 +221,11 @@ final class SupervisorManager: ObservableObject {
         var canonical: String
         var observation: String
         var workingSet: String
+    }
+
+    private struct SupervisorBriefProjectionVoiceReply {
+        var text: String
+        var spokenOutcome: SupervisorSpeechSynthesizer.Outcome
     }
 
     private struct SupervisorLocalWorkflowBootstrapSpec {
@@ -989,6 +995,21 @@ final class SupervisorManager: ObservableObject {
             messages.append(assistantMessage)
             let spokenOutcome = fromVoice ? speakSupervisorVoiceReply(local) : .suppressed("not_voice_triggered")
             conversationSessionController.registerAssistantTurn(spoken: spokenOutcome == .spoken)
+            return
+        }
+
+        if fromVoice,
+           let hubProjectionReply = await supervisorBriefProjectionVoiceReplyIfApplicable(text) {
+            recordSupervisorReplyExecution(mode: .hubBriefProjection, actualModelId: nil)
+            let assistantMessage = SupervisorMessage(
+                id: UUID().uuidString,
+                role: .assistant,
+                content: hubProjectionReply.text,
+                isVoice: false,
+                timestamp: Date().timeIntervalSince1970
+            )
+            messages.append(assistantMessage)
+            conversationSessionController.registerAssistantTurn(spoken: hubProjectionReply.spokenOutcome == .spoken)
             return
         }
 
@@ -4531,13 +4552,14 @@ final class SupervisorManager: ObservableObject {
     private func createSupervisorJob(
         from payload: SupervisorCreateJobPayload,
         userMessage: String,
-        triggerSource: SupervisorCommandTriggerSource
-    ) -> (ok: Bool, reasonCode: String, message: String, projectId: String?, projectName: String?) {
+        triggerSource: SupervisorCommandTriggerSource,
+        emitSystemMessage: Bool = true
+    ) -> (ok: Bool, reasonCode: String, message: String, projectId: String?, projectName: String?, jobId: String?) {
         let goal = payload.goal.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !goal.isEmpty else {
             let message = "❌ CREATE_JOB 失败：goal 不能为空（goal_missing）"
-            addSystemMessage(message)
-            return (false, "goal_missing", message, nil, nil)
+            if emitSystemMessage { addSystemMessage(message) }
+            return (false, "goal_missing", message, nil, nil, nil)
         }
 
         let scope: SupervisorProjectScopeResolution
@@ -4548,8 +4570,8 @@ final class SupervisorManager: ObservableObject {
             triggerSource: triggerSource
         ) {
         case .failure(let failure):
-            addSystemMessage(failure.message)
-            return (false, failure.reasonCode, failure.message, failure.projectId, failure.projectName)
+            if emitSystemMessage { addSystemMessage(failure.message) }
+            return (false, failure.reasonCode, failure.message, failure.projectId, failure.projectName, nil)
         case .success(let resolved):
             scope = resolved
         }
@@ -4580,8 +4602,8 @@ final class SupervisorManager: ObservableObject {
             try SupervisorProjectJobStore.append(record, for: scope.ctx)
         } catch {
             let message = "❌ CREATE_JOB 失败：任务落盘失败（job_store_write_failed: \(error.localizedDescription))"
-            addSystemMessage(message)
-            return (false, "job_store_write_failed", message, scope.project.projectId, scope.project.displayName)
+            if emitSystemMessage { addSystemMessage(message) }
+            return (false, "job_store_write_failed", message, scope.project.projectId, scope.project.displayName, nil)
         }
 
         AXProjectStore.appendRawLog(
@@ -4615,30 +4637,31 @@ final class SupervisorManager: ObservableObject {
         )
 
         let message = "✅ 已为项目 \(scope.project.displayName) 创建任务：\(record.goal)（priority=\(record.priority.rawValue)）"
-        addSystemMessage(message)
-        return (true, "ok", message, scope.project.projectId, scope.project.displayName)
+        if emitSystemMessage { addSystemMessage(message) }
+        return (true, "ok", message, scope.project.projectId, scope.project.displayName, record.jobId)
     }
 
     private func upsertSupervisorPlan(
         from payload: SupervisorUpsertPlanPayload,
         userMessage: String,
-        triggerSource: SupervisorCommandTriggerSource
+        triggerSource: SupervisorCommandTriggerSource,
+        emitSystemMessage: Bool = true
     ) -> (ok: Bool, reasonCode: String, message: String, projectId: String?, projectName: String?) {
         let planId = payload.planId.trimmingCharacters(in: .whitespacesAndNewlines)
         let jobId = payload.jobId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !planId.isEmpty else {
             let message = "❌ UPSERT_PLAN 失败：plan_id 不能为空（plan_id_missing）"
-            addSystemMessage(message)
+            if emitSystemMessage { addSystemMessage(message) }
             return (false, "plan_id_missing", message, nil, nil)
         }
         guard !jobId.isEmpty else {
             let message = "❌ UPSERT_PLAN 失败：job_id 不能为空（job_id_missing）"
-            addSystemMessage(message)
+            if emitSystemMessage { addSystemMessage(message) }
             return (false, "job_id_missing", message, nil, nil)
         }
         guard !payload.steps.isEmpty else {
             let message = "❌ UPSERT_PLAN 失败：steps 不能为空（steps_missing）"
-            addSystemMessage(message)
+            if emitSystemMessage { addSystemMessage(message) }
             return (false, "steps_missing", message, nil, nil)
         }
 
@@ -4650,7 +4673,7 @@ final class SupervisorManager: ObservableObject {
             triggerSource: triggerSource
         ) {
         case .failure(let failure):
-            addSystemMessage(failure.message)
+            if emitSystemMessage { addSystemMessage(failure.message) }
             return (false, failure.reasonCode, failure.message, failure.projectId, failure.projectName)
         case .success(let resolved):
             scope = resolved
@@ -4659,13 +4682,13 @@ final class SupervisorManager: ObservableObject {
         let jobSnapshot = SupervisorProjectJobStore.load(for: scope.ctx)
         guard var job = jobSnapshot.jobs.first(where: { $0.jobId == jobId }) else {
             let message = "❌ UPSERT_PLAN 失败：找不到 job_id \(jobId)（job_not_found）"
-            addSystemMessage(message)
+            if emitSystemMessage { addSystemMessage(message) }
             return (false, "job_not_found", message, scope.project.projectId, scope.project.displayName)
         }
 
         guard job.projectId == scope.project.projectId else {
             let message = "❌ UPSERT_PLAN 失败：job 与当前 project scope 不一致（job_project_scope_mismatch）"
-            addSystemMessage(message)
+            if emitSystemMessage { addSystemMessage(message) }
             return (false, "job_project_scope_mismatch", message, scope.project.projectId, scope.project.displayName)
         }
 
@@ -4694,7 +4717,7 @@ final class SupervisorManager: ObservableObject {
         }
         guard steps.allSatisfy({ !$0.stepId.isEmpty }) else {
             let message = "❌ UPSERT_PLAN 失败：steps.step_id 不能为空（step_id_missing）"
-            addSystemMessage(message)
+            if emitSystemMessage { addSystemMessage(message) }
             return (false, "step_id_missing", message, scope.project.projectId, scope.project.displayName)
         }
 
@@ -4716,7 +4739,7 @@ final class SupervisorManager: ObservableObject {
             try SupervisorProjectPlanStore.upsert(plan, for: scope.ctx)
         } catch {
             let message = "❌ UPSERT_PLAN 失败：计划落盘失败（plan_store_write_failed: \(error.localizedDescription))"
-            addSystemMessage(message)
+            if emitSystemMessage { addSystemMessage(message) }
             return (false, "plan_store_write_failed", message, scope.project.projectId, scope.project.displayName)
         }
 
@@ -4728,7 +4751,7 @@ final class SupervisorManager: ObservableObject {
             try SupervisorProjectJobStore.upsert(job, for: scope.ctx)
         } catch {
             let message = "❌ UPSERT_PLAN 失败：任务状态更新失败（job_store_write_failed: \(error.localizedDescription))"
-            addSystemMessage(message)
+            if emitSystemMessage { addSystemMessage(message) }
             return (false, "job_store_write_failed", message, scope.project.projectId, scope.project.displayName)
         }
 
@@ -4761,7 +4784,7 @@ final class SupervisorManager: ObservableObject {
         )
 
         let message = "✅ 已为项目 \(scope.project.displayName) 写入计划：\(plan.planId)（job=\(plan.jobId), steps=\(plan.steps.count)）"
-        addSystemMessage(message)
+        if emitSystemMessage { addSystemMessage(message) }
         return (true, "ok", message, scope.project.projectId, scope.project.displayName)
     }
 
@@ -6237,6 +6260,16 @@ final class SupervisorManager: ObservableObject {
                 toolName: ToolName.skills_search.rawValue
             ))
         case "agent-browser", "agent_browser", "agent.browser":
+            if let registryDriven = mappedSupervisorGovernedDispatch(
+                skillId: skillId,
+                payload: payload,
+                requestId: requestId,
+                projectId: projectId,
+                projectName: projectName,
+                registryItem: registryItem
+            ) {
+                return registryDriven
+            }
             return mappedSupervisorAgentBrowserDispatch(
                 payload: payload,
                 requestId: requestId
@@ -6417,7 +6450,55 @@ final class SupervisorManager: ObservableObject {
             projectId: projectId,
             projectName: projectName
         )
+        if let variantResult = mappedSupervisorGovernedDispatchVariant(
+            item: item,
+            payload: payload,
+            requestId: requestId
+        ) {
+            return variantResult
+        }
         guard let dispatch = item?.governedDispatch else { return nil }
+        return mappedSupervisorGovernedDispatch(
+            dispatch: dispatch,
+            payload: payload,
+            requestId: requestId,
+            actionOverride: nil
+        )
+    }
+
+    private func mappedSupervisorGovernedDispatchVariant(
+        item: SupervisorSkillRegistryItem?,
+        payload: [String: JSONValue],
+        requestId: String
+    ) -> Result<SupervisorMappedSkillDispatch, SupervisorSkillMappingFailure>? {
+        guard let item, !item.governedDispatchVariants.isEmpty else { return nil }
+        let requestedAction = firstNonEmptyString(
+            payload["action"]?.stringValue,
+            payload["operation"]?.stringValue,
+            payload["mode"]?.stringValue
+        )?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased() ?? ""
+        guard !requestedAction.isEmpty else { return nil }
+
+        guard let variant = item.governedDispatchVariants.first(where: { $0.matches(action: requestedAction) }) else {
+            return .failure(SupervisorSkillMappingFailure(reasonCode: "payload.action_unsupported"))
+        }
+
+        return mappedSupervisorGovernedDispatch(
+            dispatch: variant.dispatch,
+            payload: payload,
+            requestId: requestId,
+            actionOverride: variant.resolvedActionOverride(for: requestedAction)
+        )
+    }
+
+    private func mappedSupervisorGovernedDispatch(
+        dispatch: SupervisorGovernedSkillDispatch,
+        payload: [String: JSONValue],
+        requestId: String,
+        actionOverride: (key: String, value: String)?
+    ) -> Result<SupervisorMappedSkillDispatch, SupervisorSkillMappingFailure> {
 
         let toolToken = dispatch.tool.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !toolToken.isEmpty,
@@ -6426,6 +6507,9 @@ final class SupervisorManager: ObservableObject {
         }
 
         var args = dispatch.fixedArgs
+        if let actionOverride {
+            args[actionOverride.key] = .string(actionOverride.value)
+        }
         let canonicalKeys = Set(dispatch.passthroughArgs).union(dispatch.argAliases.keys)
         for canonicalKey in canonicalKeys.sorted() {
             if let value = resolvedGovernedDispatchPayloadValue(
@@ -7716,7 +7800,7 @@ final class SupervisorManager: ObservableObject {
             capped(generateAvailableModels(), maxChars: 1400)
         )
         let skillRegistryEvidence = sanitizeSupervisorPromptIdentifiers(
-            capped(skillRegistrySnapshot?.memorySummary(maxItems: 6, maxChars: 900) ?? "", maxChars: 900)
+            capped(skillRegistrySnapshot?.memorySummary(maxItems: 6, maxChars: 1_200) ?? "", maxChars: 1_200)
         )
         let rawEvidence = """
 models:
@@ -7949,8 +8033,26 @@ latest_user:
             maxSnippetChars: supervisorProjectMemoryRetrievalMaxSnippetChars(servingProfile: servingProfile),
             timeoutSec: 1.0
         )
-        guard let response, response.denyCode == nil, !response.snippets.isEmpty else {
-            return ""
+        return formattedFocusedSupervisorProjectRetrievalBlock(
+            selection: selection,
+            response: response,
+            servingProfile: servingProfile
+        )
+    }
+
+    private func formattedFocusedSupervisorProjectRetrievalBlock(
+        selection: SupervisorFocusedProjectSelection,
+        response: HubIPCClient.MemoryRetrievalResponsePayload?,
+        servingProfile: XTMemoryServingProfile?
+    ) -> String {
+        let project = selection.project
+        guard let response else {
+            return """
+focus_project=\(project.displayName) (\(project.projectId))
+focus_source=\(selection.source)
+status=unavailable
+reason_code=no_response
+"""
         }
 
         let items = response.snippets
@@ -7963,17 +8065,43 @@ latest_user:
                 """
             }
             .joined(separator: "\n")
-        guard !items.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return ""
+        let trimmedItems = items.trimmingCharacters(in: .whitespacesAndNewlines)
+        let denyCode = response.denyCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let reasonCode = response.reasonCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let status: String
+        if !denyCode.isEmpty {
+            status = "denied"
+        } else if response.truncatedItems > 0 {
+            status = "truncated"
+        } else if trimmedItems.isEmpty {
+            status = "empty"
+        } else {
+            status = "ok"
         }
 
-        return """
-focus_project=\(project.displayName) (\(project.projectId))
-focus_source=\(selection.source)
-audit_ref=\(response.auditRef)
-retrieval_source=\(response.source)
-\(items)
-"""
+        var lines = [
+            "focus_project=\(project.displayName) (\(project.projectId))",
+            "focus_source=\(selection.source)",
+            "status=\(status)",
+            "audit_ref=\(response.auditRef)",
+            "retrieval_source=\(response.source)"
+        ]
+        if !reasonCode.isEmpty {
+            lines.append("reason_code=\(reasonCode)")
+        }
+        if !denyCode.isEmpty {
+            lines.append("deny_code=\(denyCode)")
+        }
+        if response.truncatedItems > 0 {
+            lines.append("truncated_items=\(response.truncatedItems)")
+        }
+        if response.redactedItems > 0 {
+            lines.append("redacted_items=\(response.redactedItems)")
+        }
+        if !trimmedItems.isEmpty {
+            lines.append(trimmedItems)
+        }
+        return lines.joined(separator: "\n")
     }
 
     private func shouldRequestSupervisorProjectMemoryRetrieval(
@@ -10574,7 +10702,7 @@ Coder 下一步建议：
                 lastSupervisorRequestedModelId = trimmedRequested
             }
             lastSupervisorRemoteFailureReasonCode = normalizedFailure
-        case .localPreflight, .localDirectReply, .localDirectAction:
+        case .localPreflight, .localDirectReply, .localDirectAction, .hubBriefProjection:
             break
         }
     }
@@ -10602,6 +10730,8 @@ Coder 下一步建议：
             return "最近一次回复属于本地直答路径，没有远端模型调用。"
         case .localDirectAction:
             return "最近一次回复属于本地直行动作路径，没有远端模型调用。"
+        case .hubBriefProjection:
+            return "最近一次回复属于 Hub brief 投影视图，没有远端模型调用。"
         case .localFallbackAfterRemoteError:
             if actualModelId.isEmpty {
                 if !requestedModelId.isEmpty, !failureReason.isEmpty {
@@ -10648,7 +10778,7 @@ Coder 下一步建议：
                 return "未验证成功。系统尝试过远端调用，但本地回退接管了最终回复，而且没有拿到可确认的实际 model_id。"
             }
             return "部分验证。远端曾被触发，且拿到 model_id=\(actualModelId)，但那轮最终回复被本地回退接管。"
-        case .localPreflight, .localDirectReply, .localDirectAction, .idle:
+        case .localPreflight, .localDirectReply, .localDirectAction, .hubBriefProjection, .idle:
             return "未验证。当前只能确认已配置好远端首选路由，但还没有一轮可确认的成功远端调用记录。"
         }
     }
@@ -12844,6 +12974,124 @@ Coder 下一步建议：
             job: job,
             preferences: currentVoicePreferences()
         )
+    }
+
+    private func supervisorBriefProjectionVoiceReplyIfApplicable(
+        _ text: String
+    ) async -> SupervisorBriefProjectionVoiceReply? {
+        guard shouldUseSupervisorBriefProjectionForVoiceQuery(text) else { return nil }
+        let projects = allProjects()
+        guard let focus = focusedSupervisorProjectSelection(projects: projects, userMessage: text) else {
+            return nil
+        }
+        let request = HubIPCClient.SupervisorBriefProjectionRequestPayload(
+            requestId: "voice_query_brief_\(Int(Date().timeIntervalSince1970 * 1000))_\(UUID().uuidString.lowercased())",
+            projectId: focus.project.projectId,
+            runId: nil,
+            missionId: nil,
+            projectionKind: "progress_brief",
+            trigger: supervisorBriefProjectionVoiceQueryTrigger(text),
+            includeTtsScript: true,
+            includeCardSummary: true,
+            maxEvidenceRefs: 4
+        )
+        let fetcher = supervisorBriefProjectionRequestOverride
+            ?? { payload in
+                await HubIPCClient.requestSupervisorBriefProjection(payload)
+            }
+        let result = await fetcher(request)
+        guard result.ok, let projection = result.projection else { return nil }
+
+        let replyText = renderSupervisorBriefProjectionVoiceReply(
+            projection,
+            projectName: focus.project.displayName
+        )
+        let script = projectionVoiceScript(from: projection)
+        let spokenOutcome: SupervisorSpeechSynthesizer.Outcome
+        if script.isEmpty {
+            spokenOutcome = speakSupervisorVoiceReply(replyText)
+        } else {
+            let job = SupervisorVoiceTTSJob(
+                trigger: .userQueryReply,
+                priority: .normal,
+                script: script,
+                dedupeKey: "voice-query:\(projectionVoiceDedupeKey(from: projection))"
+            )
+            spokenOutcome = supervisorSpeechSynthesizer.speak(
+                job: job,
+                preferences: currentVoicePreferences()
+            )
+        }
+        return SupervisorBriefProjectionVoiceReply(
+            text: replyText,
+            spokenOutcome: spokenOutcome
+        )
+    }
+
+    private func shouldUseSupervisorBriefProjectionForVoiceQuery(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("/") else { return false }
+        let normalized = normalizedLookupKey(trimmed)
+        guard !normalized.isEmpty else { return false }
+        let tokens = [
+            "进度",
+            "状态",
+            "卡点",
+            "阻塞",
+            "下一步",
+            "建议",
+            "授权",
+            "grant",
+            "status",
+            "progress",
+            "blocker",
+            "brief",
+            "summary",
+            "nextstep",
+            "next"
+        ]
+        return tokens.contains(where: { normalized.contains(normalizedLookupKey($0)) })
+    }
+
+    private func supervisorBriefProjectionVoiceQueryTrigger(_ text: String) -> String {
+        let normalized = normalizedLookupKey(text)
+        if normalized.contains("授权") || normalized.contains("grant") {
+            return "awaiting_authorization"
+        }
+        if normalized.contains("卡点") || normalized.contains("阻塞") || normalized.contains("blocker") {
+            return "blocked"
+        }
+        if normalized.contains("下一步") || normalized.contains("建议") || normalized.contains("nextstep") {
+            return "critical_path_changed"
+        }
+        return "daily_digest"
+    }
+
+    private func renderSupervisorBriefProjectionVoiceReply(
+        _ projection: HubIPCClient.SupervisorBriefProjectionSnapshot,
+        projectName: String
+    ) -> String {
+        var lines = ["🧭 Supervisor Brief · \(projectName)"]
+        let topline = projection.topline.trimmingCharacters(in: .whitespacesAndNewlines)
+        let blocker = projection.criticalBlocker.trimmingCharacters(in: .whitespacesAndNewlines)
+        let next = projection.nextBestAction.trimmingCharacters(in: .whitespacesAndNewlines)
+        let summary = projection.cardSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if !topline.isEmpty {
+            lines.append(topline)
+        } else if !summary.isEmpty {
+            lines.append(summary)
+        }
+        if !blocker.isEmpty {
+            lines.append("阻塞：\(blocker)")
+        }
+        if projection.pendingGrantCount > 0 {
+            lines.append("待授权：\(projection.pendingGrantCount)")
+        }
+        if !next.isEmpty {
+            lines.append("下一步：\(next)")
+        }
+        return lines.joined(separator: "\n")
     }
 
     private func heartbeatVoiceJob(

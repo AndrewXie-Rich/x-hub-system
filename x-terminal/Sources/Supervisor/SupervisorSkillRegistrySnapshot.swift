@@ -25,12 +25,28 @@ struct SupervisorGovernedSkillDispatch: Codable, Equatable, Sendable {
     }
 }
 
+struct SupervisorGovernedSkillDispatchVariant: Codable, Equatable, Sendable {
+    var actions: [String]
+    var dispatch: SupervisorGovernedSkillDispatch
+    var actionArg: String
+    var actionMap: [String: String]
+
+    enum CodingKeys: String, CodingKey {
+        case actions
+        case dispatch
+        case actionArg = "action_arg"
+        case actionMap = "action_map"
+    }
+}
+
 struct SupervisorSkillRegistryItem: Identifiable, Codable, Equatable, Sendable {
     var skillId: String
     var displayName: String
     var description: String
     var capabilitiesRequired: [String]
     var governedDispatch: SupervisorGovernedSkillDispatch?
+    var governedDispatchVariants: [SupervisorGovernedSkillDispatchVariant]
+    var governedDispatchNotes: [String]
     var inputSchemaRef: String
     var outputSchemaRef: String
     var sideEffectClass: String
@@ -49,6 +65,8 @@ struct SupervisorSkillRegistryItem: Identifiable, Codable, Equatable, Sendable {
         case description
         case capabilitiesRequired = "capabilities_required"
         case governedDispatch = "governed_dispatch"
+        case governedDispatchVariants = "governed_dispatch_variants"
+        case governedDispatchNotes = "governed_dispatch_notes"
         case inputSchemaRef = "input_schema_ref"
         case outputSchemaRef = "output_schema_ref"
         case sideEffectClass = "side_effect_class"
@@ -58,6 +76,28 @@ struct SupervisorSkillRegistryItem: Identifiable, Codable, Equatable, Sendable {
         case timeoutMs = "timeout_ms"
         case maxRetries = "max_retries"
         case available
+    }
+}
+
+extension SupervisorSkillRegistryItem {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        skillId = try container.decode(String.self, forKey: .skillId)
+        displayName = try container.decode(String.self, forKey: .displayName)
+        description = try container.decode(String.self, forKey: .description)
+        capabilitiesRequired = try container.decodeIfPresent([String].self, forKey: .capabilitiesRequired) ?? []
+        governedDispatch = try container.decodeIfPresent(SupervisorGovernedSkillDispatch.self, forKey: .governedDispatch)
+        governedDispatchVariants = try container.decodeIfPresent([SupervisorGovernedSkillDispatchVariant].self, forKey: .governedDispatchVariants) ?? []
+        governedDispatchNotes = try container.decodeIfPresent([String].self, forKey: .governedDispatchNotes) ?? []
+        inputSchemaRef = try container.decode(String.self, forKey: .inputSchemaRef)
+        outputSchemaRef = try container.decode(String.self, forKey: .outputSchemaRef)
+        sideEffectClass = try container.decode(String.self, forKey: .sideEffectClass)
+        riskLevel = try container.decode(SupervisorSkillRiskLevel.self, forKey: .riskLevel)
+        requiresGrant = try container.decode(Bool.self, forKey: .requiresGrant)
+        policyScope = try container.decode(String.self, forKey: .policyScope)
+        timeoutMs = try container.decode(Int.self, forKey: .timeoutMs)
+        maxRetries = try container.decode(Int.self, forKey: .maxRetries)
+        available = try container.decode(Bool.self, forKey: .available)
     }
 }
 
@@ -102,8 +142,20 @@ extension SupervisorSkillRegistrySnapshot {
             if !item.capabilitiesRequired.isEmpty {
                 lines.append("   caps: \(item.capabilitiesRequired.joined(separator: ", "))")
             }
+            for variant in item.governedDispatchVariants {
+                if let summary = variant.variantSummary() {
+                    lines.append("   variant: \(summary)")
+                }
+            }
             if let payloadContract = item.governedDispatch?.payloadContractSummary() {
                 lines.append("   payload: \(payloadContract)")
+            }
+            if item.governedDispatchVariants.isEmpty {
+                for note in item.governedDispatchNotes.prefix(2) {
+                    let cleaned = note.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !cleaned.isEmpty else { continue }
+                    lines.append("   dispatch_note: \(cleaned)")
+                }
             }
             let description = item.description.trimmingCharacters(in: .whitespacesAndNewlines)
             if !description.isEmpty {
@@ -210,5 +262,68 @@ private extension SupervisorGovernedSkillDispatch {
             result.append(cleaned)
         }
         return result
+    }
+}
+
+private extension SupervisorGovernedSkillDispatchVariant {
+    func matches(action: String) -> Bool {
+        let normalized = action.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return false }
+        return actions.contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalized }
+    }
+
+    func resolvedActionOverride(for requestedAction: String) -> (key: String, value: String)? {
+        let cleanedKey = actionArg.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanedKey.isEmpty else { return nil }
+        let normalizedAction = requestedAction.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalizedAction.isEmpty else { return nil }
+        let mapped = actionMap.first(where: {
+            $0.key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalizedAction
+        })?.value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolved = (mapped?.isEmpty == false ? mapped : requestedAction)
+        guard !resolved.isEmpty else { return nil }
+        return (cleanedKey, resolved)
+    }
+
+    func variantSummary(maxChars: Int = 220) -> String? {
+        let cleanedActions = actions
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !cleanedActions.isEmpty else { return nil }
+
+        var parts = ["actions=\(cleanedActions.joined(separator: "/")) -> \(dispatch.tool)"]
+        let actionMapping = actionMappingSummary()
+        if !actionMapping.isEmpty {
+            parts.append(actionMapping)
+        }
+        if let payloadSummary = dispatch.payloadContractSummary(maxChars: 140) {
+            parts.append(payloadSummary)
+        }
+
+        let summary = parts.joined(separator: " | ")
+        guard summary.count > maxChars else { return summary }
+        let end = summary.index(summary.startIndex, offsetBy: maxChars)
+        return String(summary[..<end]) + "..."
+    }
+
+    func actionMappingSummary() -> String {
+        let cleanedArg = actionArg.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanedArg.isEmpty, !actionMap.isEmpty else { return "" }
+
+        let grouped = Dictionary(grouping: actionMap.compactMap { key, value -> (String, String)? in
+            let action = key.trimmingCharacters(in: .whitespacesAndNewlines)
+            let mapped = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !action.isEmpty, !mapped.isEmpty else { return nil }
+            return (mapped, action)
+        }, by: \.0)
+
+        let segments = grouped.keys.sorted().compactMap { mapped -> String? in
+            let aliases = grouped[mapped]?
+                .map(\.1)
+                .sorted() ?? []
+            guard !aliases.isEmpty else { return nil }
+            return "\(aliases.joined(separator: "/"))=>\(cleanedArg)=\(mapped)"
+        }
+        return segments.isEmpty ? "" : "map=\(segments.joined(separator: ", "))"
     }
 }

@@ -179,4 +179,51 @@ struct AXMemoryLifecycleTests {
         #expect(summary.refs.contains(oldCtx.memoryJSONURL.path))
         #expect(summary.refs.contains(AXRecentContextStore.jsonURL(for: oldCtx).path))
     }
+
+    @Test
+    func clearSlashWritesSessionSummaryCapsuleForCurrentProject() throws {
+        let fixture = ToolExecutorProjectFixture(name: "memory-lifecycle-clear-current")
+        defer { fixture.cleanup() }
+
+        let ctx = AXProjectContext(root: fixture.root)
+        try ctx.ensureDirs()
+
+        var memory = AXMemory.new(projectName: "memory-lifecycle-clear-current", projectRoot: fixture.root.path)
+        memory.goal = "Persist an explicit summary before clearing the current conversation."
+        memory.currentState = ["Chat window contains active troubleshooting context"]
+        memory.nextSteps = ["Resume from the saved summary after clear"]
+        try AXProjectStore.saveMemory(memory, for: ctx)
+
+        let now = Date(timeIntervalSince1970: 1_779_900_500).timeIntervalSince1970
+        AXRecentContextStore.appendUserMessage(
+            ctx: ctx,
+            text: "Summarize this before I clear the chat",
+            createdAt: now - 4
+        )
+        AXRecentContextStore.appendAssistantMessage(
+            ctx: ctx,
+            text: "I will persist a short current-project session summary first.",
+            createdAt: now - 3
+        )
+
+        let session = ChatSessionModel()
+        session.ensureLoaded(ctx: ctx, limit: 20)
+        session.draft = "/clear"
+        session.send(
+            ctx: ctx,
+            memory: memory,
+            config: nil,
+            router: LLMRouter(settingsStore: SettingsStore())
+        )
+
+        #expect(session.messages.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: ctx.latestSessionSummaryURL.path))
+
+        let summaryData = try Data(contentsOf: ctx.latestSessionSummaryURL)
+        let summary = try JSONDecoder().decode(AXSessionSummaryCapsule.self, from: summaryData)
+        #expect(summary.phase == .sessionResetOrSwitch)
+        #expect(summary.reason == "session_reset")
+        #expect(summary.memorySummary.goal == "Persist an explicit summary before clearing the current conversation.")
+        #expect(summary.workingSetSummary.latestAssistantMessage == "I will persist a short current-project session summary first.")
+    }
 }

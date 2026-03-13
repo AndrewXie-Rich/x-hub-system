@@ -107,6 +107,82 @@ struct SupervisorHeartbeatVoiceTests {
     }
 
     @Test
+    func explicitVoiceStatusQueryPrefersHubBriefProjectionWhenFetcherReturnsProjection() async throws {
+        var spoken: [String] = []
+        let synthesizer = SupervisorSpeechSynthesizer(
+            deduper: SupervisorVoiceBriefDeduper(cooldown: 60),
+            speakSink: { spoken.append($0) }
+        )
+        let manager = SupervisorManager.makeForTesting(
+            supervisorSpeechSynthesizer: synthesizer
+        )
+        manager.installSupervisorBriefProjectionFetcherForTesting { payload in
+            HubIPCClient.SupervisorBriefProjectionResult(
+                ok: true,
+                source: "hub_supervisor_grpc",
+                projection: HubIPCClient.SupervisorBriefProjectionSnapshot(
+                    schemaVersion: "xhub.supervisor_brief_projection.v1",
+                    projectionId: "voice-query-\(payload.projectId)",
+                    projectionKind: payload.projectionKind,
+                    projectId: payload.projectId,
+                    runId: "",
+                    missionId: "",
+                    trigger: payload.trigger,
+                    status: "blocked",
+                    criticalBlocker: "等待生产授权",
+                    topline: "发布路径被一项生产授权阻塞。",
+                    nextBestAction: "处理 release grant。",
+                    pendingGrantCount: 1,
+                    ttsScript: [
+                        "Supervisor Hub 简报。发布路径被一项生产授权阻塞。",
+                        "建议下一步：处理 release grant。"
+                    ],
+                    cardSummary: "One grant is blocking production release.",
+                    evidenceRefs: ["grant:req-voice"],
+                    generatedAtMs: 1_777_000_200_000,
+                    expiresAtMs: 1_777_000_260_000,
+                    auditRef: "audit-hub-voice-query-1"
+                ),
+                reasonCode: nil
+            )
+        }
+
+        let root = try makeProjectRoot(named: "status-query-brief")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(
+            root: root,
+            displayName: "Release Runtime",
+            blockerSummary: "等待本地 blocker 文案",
+            nextStepSummary: "完成本地 heartbeat next step"
+        )
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        appModel.settingsStore.settings = configuredSettings(
+            from: appModel.settingsStore.settings,
+            autoReportMode: .blockersOnly
+        )
+        manager.setAppModel(appModel)
+
+        manager.sendMessage("现在状态怎么样", fromVoice: true)
+
+        try await waitUntil("voice status hub brief reply emitted") {
+            spoken.contains(where: { $0.contains("Supervisor Hub 简报") }) &&
+            manager.messages.contains(where: {
+                $0.role == .assistant &&
+                $0.content.contains("🧭 Supervisor Brief") &&
+                $0.content.contains("下一步：处理 release grant。")
+            })
+        }
+
+        #expect(spoken.count == 1)
+        #expect(spoken[0].contains("Supervisor Hub 简报"))
+        #expect(spoken[0].contains("处理 release grant"))
+        #expect(!spoken[0].contains("等待本地 blocker 文案"))
+    }
+
+    @Test
     func heartbeatVoicePrefersHubBriefProjectionTtsWhenFetcherReturnsProjection() async throws {
         var spoken: [String] = []
         let synthesizer = SupervisorSpeechSynthesizer(

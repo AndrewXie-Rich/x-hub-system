@@ -16,6 +16,118 @@
     "device.browser.control",
     "web.fetch"
   ],
+  "input_schema_ref": "schema://agent-browser.input",
+  "output_schema_ref": "schema://agent-browser.output",
+  "side_effect_class": "external_side_effect",
+  "risk_level": "high",
+  "requires_grant": true,
+  "timeout_ms": 45000,
+  "max_retries": 2,
+  "governed_dispatch_notes": [
+    "actions=open/navigate/snapshot/extract/click/type/upload -> device.browser.control",
+    "actions=read/fetch -> browser_read; open/navigate/read/fetch require url; snapshot/extract accept url or session_id"
+  ],
+  "governed_dispatch_variants": [
+    {
+      "actions": ["open", "open_url", "navigate", "goto", "visit"],
+      "action_arg": "action",
+      "action_map": {
+        "open": "open_url",
+        "open_url": "open_url",
+        "navigate": "navigate",
+        "goto": "navigate",
+        "visit": "navigate"
+      },
+      "dispatch": {
+        "tool": "device.browser.control",
+        "fixed_args": {},
+        "passthrough_args": ["url", "grant_id", "timeout_sec", "max_bytes"],
+        "arg_aliases": {},
+        "required_any": [["url"]],
+        "exactly_one_of": []
+      }
+    },
+    {
+      "actions": ["snapshot", "inspect", "extract"],
+      "action_arg": "action",
+      "action_map": {
+        "snapshot": "snapshot",
+        "inspect": "snapshot",
+        "extract": "extract"
+      },
+      "dispatch": {
+        "tool": "device.browser.control",
+        "fixed_args": {},
+        "passthrough_args": ["url", "session_id", "grant_id", "timeout_sec", "max_bytes"],
+        "arg_aliases": {},
+        "required_any": [["url", "session_id"]],
+        "exactly_one_of": []
+      }
+    },
+    {
+      "actions": ["click", "tap"],
+      "action_arg": "action",
+      "action_map": {
+        "click": "click",
+        "tap": "click"
+      },
+      "dispatch": {
+        "tool": "device.browser.control",
+        "fixed_args": {},
+        "passthrough_args": ["url", "session_id", "selector", "grant_id", "timeout_sec", "max_bytes"],
+        "arg_aliases": {},
+        "required_any": [],
+        "exactly_one_of": []
+      }
+    },
+    {
+      "actions": ["type", "fill", "input", "enter"],
+      "action_arg": "action",
+      "action_map": {
+        "type": "type",
+        "fill": "type",
+        "input": "type",
+        "enter": "type"
+      },
+      "dispatch": {
+        "tool": "device.browser.control",
+        "fixed_args": {},
+        "passthrough_args": ["url", "session_id", "selector", "field_role", "text", "content", "value", "secret_item_id", "secret_scope", "secret_name", "secret_project_id", "grant_id", "timeout_sec", "max_bytes"],
+        "arg_aliases": {},
+        "required_any": [],
+        "exactly_one_of": []
+      }
+    },
+    {
+      "actions": ["upload", "attach"],
+      "action_arg": "action",
+      "action_map": {
+        "upload": "upload",
+        "attach": "upload"
+      },
+      "dispatch": {
+        "tool": "device.browser.control",
+        "fixed_args": {},
+        "passthrough_args": ["url", "session_id", "selector", "path", "grant_id", "timeout_sec", "max_bytes"],
+        "arg_aliases": {},
+        "required_any": [],
+        "exactly_one_of": []
+      }
+    },
+    {
+      "actions": ["read", "read_page", "read-page", "fetch"],
+      "action_arg": "",
+      "action_map": {},
+      "dispatch": {
+        "tool": "browser_read",
+        "fixed_args": {},
+        "passthrough_args": ["url", "grant_id", "timeout_sec", "max_bytes"],
+        "arg_aliases": {},
+        "required_any": [["url"]],
+        "exactly_one_of": []
+      }
+    }
+  ],
   "network_policy": {
     "direct_network_forbidden": true
   },

@@ -5,6 +5,43 @@ import Testing
 struct AXSkillsCompatibilityTests {
 
     @Test
+    func supervisorSkillRegistryItemDecodesLegacySnapshotWithoutDispatchNotes() throws {
+        let data = Data(
+            #"""
+            {
+              "skill_id": "find-skills",
+              "display_name": "Find Skills",
+              "description": "Discover governed Agent skills.",
+              "capabilities_required": ["skills.search"],
+              "governed_dispatch": {
+                "tool": "skills.search",
+                "fixed_args": {},
+                "passthrough_args": ["query"],
+                "arg_aliases": {},
+                "required_any": [["query"]],
+                "exactly_one_of": []
+              },
+              "input_schema_ref": "schema://find-skills.input",
+              "output_schema_ref": "schema://find-skills.output",
+              "side_effect_class": "read_only",
+              "risk_level": "low",
+              "requires_grant": false,
+              "policy_scope": "project",
+              "timeout_ms": 10000,
+              "max_retries": 1,
+              "available": true
+            }
+            """#.utf8
+        )
+
+        let decoded = try JSONDecoder().decode(SupervisorSkillRegistryItem.self, from: data)
+
+        #expect(decoded.skillId == "find-skills")
+        #expect(decoded.governedDispatch?.tool == ToolName.skills_search.rawValue)
+        #expect(decoded.governedDispatchNotes.isEmpty)
+    }
+
+    @Test
     func compatibilityDoctorSnapshotReadsHubStoreAndIndexes() throws {
         let fixture = SkillsCompatibilityFixture()
         defer { fixture.cleanup() }
@@ -76,7 +113,7 @@ struct AXSkillsCompatibilityTests {
         #expect(snapshot.projectName == fixture.projectName)
         #expect(snapshot.updatedAtMs == 42)
         #expect(snapshot.memorySource == "hub_skill_registry")
-        #expect(snapshot.items.count == 2)
+        #expect(snapshot.items.count == 3)
         #expect(!snapshot.items.contains(where: { $0.skillId == "email.send.auto" }))
 
         let git = try #require(snapshot.items.first(where: { $0.skillId == "repo.git.status" }))
@@ -99,6 +136,14 @@ struct AXSkillsCompatibilityTests {
         #expect(browser.timeoutMs == 45_000)
         #expect(browser.maxRetries == 2)
         #expect(browser.governedDispatch?.tool == ToolName.deviceBrowserControl.rawValue)
+
+        let agentBrowser = try #require(snapshot.items.first(where: { $0.skillId == "agent-browser" }))
+        #expect(agentBrowser.capabilitiesRequired == ["browser.read", "device.browser.control", "web.fetch"])
+        #expect(agentBrowser.riskLevel == .high)
+        #expect(agentBrowser.requiresGrant)
+        #expect(agentBrowser.governedDispatch == nil)
+        #expect(agentBrowser.governedDispatchNotes.contains(where: { $0.contains("device.browser.control") }))
+        #expect(agentBrowser.governedDispatchNotes.contains(where: { $0.contains("browser_read") }))
     }
 
     @MainActor
@@ -143,6 +188,7 @@ struct AXSkillsCompatibilityTests {
         #expect(memory.contains("skills_registry:"))
         #expect(memory.contains("repo.git.status"))
         #expect(memory.contains("browser.runtime.smoke"))
+        #expect(memory.contains("agent-browser"))
         #expect(memory.contains("grant=yes"))
         #expect(memory.contains("caps: repo.read.status"))
         #expect(memory.contains("caps: web.navigate"))
@@ -151,8 +197,10 @@ struct AXSkillsCompatibilityTests {
         #expect(memory.contains("payload: fixed=action=open_url"))
         #expect(memory.contains("required_any=url"))
         #expect(memory.contains("args=url"))
-        #expect(registrySnapshot?.items.count == 2)
-        #expect(resolvedCache?.items.count == 2)
+        #expect(memory.contains("dispatch_note: actions=open/navigate/snapshot/extract/click/type/upload -> device.browser.control"))
+        #expect(memory.contains("dispatch_note: actions=read/fetch -> browser_read"))
+        #expect(registrySnapshot?.items.count == 3)
+        #expect(resolvedCache?.items.count == 3)
     }
 
     @Test
@@ -181,7 +229,7 @@ struct AXSkillsCompatibilityTests {
         #expect(snapshot.hubIndexUpdatedAtMs == 42)
         #expect(snapshot.auditRef == "audit-xt-w3-34-i-resolved-skills-12345678")
         #expect(snapshot.grantSnapshotRef == "grant-chain:12345678:refresh_required")
-        #expect(snapshot.items.count == 2)
+        #expect(snapshot.items.count == 3)
         #expect(!snapshot.items.contains(where: { $0.skillId == "email.send.auto" }))
 
         let repo = try #require(snapshot.items.first(where: { $0.skillId == "repo.git.status" }))
@@ -197,6 +245,11 @@ struct AXSkillsCompatibilityTests {
         #expect(browser.riskLevel == "high")
         #expect(browser.requiresGrant)
         #expect(browser.maxRetries == 2)
+
+        let agentBrowser = try #require(snapshot.items.first(where: { $0.skillId == "agent-browser" }))
+        #expect(agentBrowser.pinScope == "project")
+        #expect(agentBrowser.riskLevel == "high")
+        #expect(agentBrowser.requiresGrant)
     }
 
     @Test
@@ -467,6 +520,22 @@ private struct SkillsCompatibilityFixture {
               "defaults_applied": []
             },
             {
+              "skill_id": "agent-browser",
+              "name": "Agent Browser",
+              "version": "1.0.0",
+              "description": "Governed browser automation package.",
+              "publisher_id": "publisher.browser",
+              "source_id": "builtin:catalog",
+              "package_sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+              "abi_compat_version": "skills_abi_compat.v1",
+              "compatibility_state": "supported",
+              "canonical_manifest_sha256": "8888888888888888888888888888888888888888888888888888888888888888",
+              "install_hint": "",
+              "manifest_json": "{\"description\":\"Governed browser automation package.\",\"capabilities_required\":[\"browser.read\",\"device.browser.control\",\"web.fetch\"],\"risk_level\":\"high\",\"requires_grant\":true,\"side_effect_class\":\"external_side_effect\",\"timeout_ms\":45000,\"max_retries\":2}",
+              "mapping_aliases_used": [],
+              "defaults_applied": []
+            },
+            {
               "skill_id": "email.send.auto",
               "name": "Auto Email",
               "version": "3.0.0",
@@ -507,6 +576,11 @@ private struct SkillsCompatibilityFixture {
               "project_id": "\(projectID)",
               "skill_id": "browser.runtime.smoke",
               "package_sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+            },
+            {
+              "project_id": "\(projectID)",
+              "skill_id": "agent-browser",
+              "package_sha256": "7777777777777777777777777777777777777777777777777777777777777777"
             }
           ]
         }
