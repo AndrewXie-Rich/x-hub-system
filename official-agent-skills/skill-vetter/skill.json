@@ -1,0 +1,222 @@
+{
+  "schema_version": "xhub.skill_manifest.v1",
+  "skill_id": "skill-vetter",
+  "name": "Skill Vetter",
+  "version": "1.0.0",
+  "description": "Governed read-only wrapper for inspecting local Agent skill packages, reading manifests, and scanning for high-signal risky patterns before Hub-native vetting and promotion.",
+  "entrypoint": {
+    "runtime": "text",
+    "command": "cat",
+    "args": [
+      "SKILL.md"
+    ]
+  },
+  "capabilities_required": [
+    "hub.agent.import.record",
+    "project.snapshot",
+    "repo.list",
+    "repo.read.file",
+    "repo.search"
+  ],
+  "input_schema_ref": "schema://skill-vetter.input",
+  "output_schema_ref": "schema://skill-vetter.output",
+  "side_effect_class": "read_only",
+  "risk_level": "low",
+  "requires_grant": false,
+  "timeout_ms": 20000,
+  "max_retries": 1,
+  "governed_dispatch_notes": [
+    "actions=review_record/review-record -> agent.import.record accepts staging_id or selector/skill_id/project_id and defaults to the latest project import when omitted",
+    "actions=snapshot -> project_snapshot",
+    "actions=list -> list_dir",
+    "actions=read_manifest/read_skill/read -> read_file requires path",
+    "actions=search/grep -> search requires pattern",
+    "actions=scan_exec/scan_dynamic/scan_exfil/scan_obfuscation/scan_network -> search fixed high-signal risk patterns"
+  ],
+  "governed_dispatch_variants": [
+    {
+      "actions": ["review_record", "review-record", "hub_record", "hub-record"],
+      "action_arg": "",
+      "action_map": {},
+      "dispatch": {
+        "tool": "agent.import.record",
+        "fixed_args": {},
+        "passthrough_args": ["staging_id", "selector", "skill_id", "project_id"],
+        "arg_aliases": {
+          "staging_id": ["id", "import_id"],
+          "selector": ["mode", "locator"],
+          "skill_id": ["skill"],
+          "project_id": ["project"]
+        },
+        "required_any": [],
+        "exactly_one_of": []
+      }
+    },
+    {
+      "actions": ["snapshot", "inspect", "context"],
+      "action_arg": "",
+      "action_map": {},
+      "dispatch": {
+        "tool": "project_snapshot",
+        "fixed_args": {},
+        "passthrough_args": [],
+        "arg_aliases": {},
+        "required_any": [],
+        "exactly_one_of": []
+      }
+    },
+    {
+      "actions": ["list", "ls", "list_dir", "list-dir"],
+      "action_arg": "",
+      "action_map": {},
+      "dispatch": {
+        "tool": "list_dir",
+        "fixed_args": {},
+        "passthrough_args": ["path", "sandbox"],
+        "arg_aliases": {
+          "path": ["dir", "root"]
+        },
+        "required_any": [],
+        "exactly_one_of": []
+      }
+    },
+    {
+      "actions": ["read", "read_manifest", "manifest"],
+      "action_arg": "",
+      "action_map": {},
+      "dispatch": {
+        "tool": "read_file",
+        "fixed_args": {},
+        "passthrough_args": ["path", "sandbox"],
+        "arg_aliases": {
+          "path": ["manifest_path", "file"]
+        },
+        "required_any": [["path"]],
+        "exactly_one_of": []
+      }
+    },
+    {
+      "actions": ["read_skill", "read_instructions", "instructions"],
+      "action_arg": "",
+      "action_map": {},
+      "dispatch": {
+        "tool": "read_file",
+        "fixed_args": {},
+        "passthrough_args": ["path", "sandbox"],
+        "arg_aliases": {
+          "path": ["skill_path", "file"]
+        },
+        "required_any": [["path"]],
+        "exactly_one_of": []
+      }
+    },
+    {
+      "actions": ["search", "grep"],
+      "action_arg": "",
+      "action_map": {},
+      "dispatch": {
+        "tool": "search",
+        "fixed_args": {},
+        "passthrough_args": ["pattern", "path", "glob", "sandbox"],
+        "arg_aliases": {
+          "pattern": ["query"],
+          "path": ["dir", "root"]
+        },
+        "required_any": [["pattern"]],
+        "exactly_one_of": []
+      }
+    },
+    {
+      "actions": ["scan_exec", "scan-exec"],
+      "action_arg": "",
+      "action_map": {},
+      "dispatch": {
+        "tool": "search",
+        "fixed_args": {
+          "pattern": "child_process\\.(exec|spawn|execFile|fork)|subprocess\\.(run|Popen)|os\\.system\\(|Runtime\\.getRuntime\\(|ProcessBuilder\\("
+        },
+        "passthrough_args": ["path", "glob", "sandbox"],
+        "arg_aliases": {
+          "path": ["dir", "root"]
+        },
+        "required_any": [],
+        "exactly_one_of": []
+      }
+    },
+    {
+      "actions": ["scan_dynamic", "scan-dynamic"],
+      "action_arg": "",
+      "action_map": {},
+      "dispatch": {
+        "tool": "search",
+        "fixed_args": {
+          "pattern": "\\beval\\(|new Function\\(|vm\\.runIn(NewContext|Context)\\("
+        },
+        "passthrough_args": ["path", "glob", "sandbox"],
+        "arg_aliases": {
+          "path": ["dir", "root"]
+        },
+        "required_any": [],
+        "exactly_one_of": []
+      }
+    },
+    {
+      "actions": ["scan_exfil", "scan-exfil"],
+      "action_arg": "",
+      "action_map": {},
+      "dispatch": {
+        "tool": "search",
+        "fixed_args": {
+          "pattern": "process\\.env|os\\.environ|getenv\\(|fetch\\(|axios\\.|requests\\.|URLSession"
+        },
+        "passthrough_args": ["path", "glob", "sandbox"],
+        "arg_aliases": {
+          "path": ["dir", "root"]
+        },
+        "required_any": [],
+        "exactly_one_of": []
+      }
+    },
+    {
+      "actions": ["scan_obfuscation", "scan-obfuscation"],
+      "action_arg": "",
+      "action_map": {},
+      "dispatch": {
+        "tool": "search",
+        "fixed_args": {
+          "pattern": "Buffer\\.from\\([^\\n]*base64|base64\\.b64decode\\(|atob\\(|fromCharCode\\("
+        },
+        "passthrough_args": ["path", "glob", "sandbox"],
+        "arg_aliases": {
+          "path": ["dir", "root"]
+        },
+        "required_any": [],
+        "exactly_one_of": []
+      }
+    },
+    {
+      "actions": ["scan_network", "scan-network"],
+      "action_arg": "",
+      "action_map": {},
+      "dispatch": {
+        "tool": "search",
+        "fixed_args": {
+          "pattern": "ws://|wss://|net\\.connect\\(|tls\\.connect\\(|socket\\.connect\\("
+        },
+        "passthrough_args": ["path", "glob", "sandbox"],
+        "arg_aliases": {
+          "path": ["dir", "root"]
+        },
+        "required_any": [],
+        "exactly_one_of": []
+      }
+    }
+  ],
+  "network_policy": {
+    "direct_network_forbidden": true
+  },
+  "publisher": {
+    "publisher_id": "xhub.official"
+  },
+  "install_hint": "Pin from the official Agent catalog when a project needs governed, read-only pre-review of a skill package before relying on the Hub-native vetter verdict."
+}

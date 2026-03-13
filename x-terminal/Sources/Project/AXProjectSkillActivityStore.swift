@@ -1,0 +1,387 @@
+import Foundation
+
+struct ProjectSkillActivityItem: Identifiable, Equatable, Sendable {
+    var requestID: String
+    var skillID: String
+    var toolName: String
+    var status: String
+    var createdAt: Double
+    var resolutionSource: String
+    var toolArgs: [String: JSONValue]
+    var resultSummary: String
+    var detail: String
+    var denyCode: String
+    var authorizationDisposition: String
+
+    var id: String { requestID }
+}
+
+struct AXProjectSkillActivityEvent: Equatable, Sendable {
+    var item: ProjectSkillActivityItem
+    var rawObject: [String: JSONValue]
+    var lineIndex: Int
+}
+
+enum AXProjectSkillActivityStore {
+    private static let cacheQueue = DispatchQueue(label: "xterminal.project_skill_activity_store")
+    private static let recentTailMaxBytes = 256 * 1024
+
+    private struct CachedTailSnapshot {
+        var path: String
+        var modifiedAt: TimeInterval
+        var fileSize: UInt64
+        var events: [AXProjectSkillActivityEvent]
+        var latestByRequestID: [String: AXProjectSkillActivityEvent]
+    }
+
+    private struct FileSignature: Equatable {
+        var modifiedAt: TimeInterval
+        var fileSize: UInt64
+    }
+
+    private static var recentTailCacheByPath: [String: CachedTailSnapshot] = [:]
+
+    static func loadRecentActivities(
+        ctx: AXProjectContext,
+        limit: Int = 8
+    ) -> [ProjectSkillActivityItem] {
+        guard let snapshot = recentTailSnapshot(ctx: ctx) else {
+            return []
+        }
+        guard limit > 0 else { return [] }
+        return snapshot.latestByRequestID.values
+            .map(\.item)
+            .sorted { lhs, rhs in
+                if lhs.createdAt != rhs.createdAt {
+                    return lhs.createdAt > rhs.createdAt
+                }
+                return lhs.requestID > rhs.requestID
+            }
+            .prefix(limit)
+            .map { $0 }
+    }
+
+    static func loadRawLogText(ctx: AXProjectContext) -> String? {
+        guard FileManager.default.fileExists(atPath: ctx.rawLogURL.path),
+              let data = try? Data(contentsOf: ctx.rawLogURL),
+              let raw = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return raw
+    }
+
+    static func parseRecentActivities(
+        from raw: String,
+        limit: Int = 8
+    ) -> [ProjectSkillActivityItem] {
+        guard limit > 0 else { return [] }
+
+        let latest = latestEventsByRequestID(from: raw)
+        return latest.values
+            .map(\.item)
+            .sorted { lhs, rhs in
+                if lhs.createdAt != rhs.createdAt {
+                    return lhs.createdAt > rhs.createdAt
+                }
+                return lhs.requestID > rhs.requestID
+            }
+            .prefix(limit)
+            .map { $0 }
+    }
+
+    static func loadEvents(
+        ctx: AXProjectContext,
+        requestID: String
+    ) -> [AXProjectSkillActivityEvent] {
+        guard let raw = loadRawLogText(ctx: ctx) else {
+            return []
+        }
+        return events(from: raw, requestID: requestID)
+    }
+
+    static func events(
+        from raw: String,
+        requestID: String
+    ) -> [AXProjectSkillActivityEvent] {
+        let normalizedRequestID = requestID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedRequestID.isEmpty else { return [] }
+
+        return parsedEvents(from: raw)
+            .filter { $0.item.requestID == normalizedRequestID }
+            .sorted { lhs, rhs in
+                if lhs.item.createdAt != rhs.item.createdAt {
+                    return lhs.item.createdAt < rhs.item.createdAt
+                }
+                return lhs.lineIndex < rhs.lineIndex
+            }
+    }
+
+    static func dispatchesByRequestID(
+        ctx: AXProjectContext,
+        toolCalls: [ToolCall]
+    ) -> [String: XTProjectMappedSkillDispatch] {
+        guard let snapshot = recentTailSnapshot(ctx: ctx) else {
+            return [:]
+        }
+        return dispatchesByRequestID(
+            latestItemsByRequestID: snapshot.latestByRequestID.mapValues(\.item),
+            toolCalls: toolCalls
+        )
+    }
+
+    static func dispatchesByRequestID(
+        from raw: String,
+        toolCalls: [ToolCall]
+    ) -> [String: XTProjectMappedSkillDispatch] {
+        guard !toolCalls.isEmpty else { return [:] }
+        let latestItems = latestEventsByRequestID(from: raw).mapValues(\.item)
+        return dispatchesByRequestID(
+            latestItemsByRequestID: latestItems,
+            toolCalls: toolCalls
+        )
+    }
+
+    private static func dispatchesByRequestID(
+        latestItemsByRequestID latestItems: [String: ProjectSkillActivityItem],
+        toolCalls: [ToolCall]
+    ) -> [String: XTProjectMappedSkillDispatch] {
+        var out: [String: XTProjectMappedSkillDispatch] = [:]
+        for call in toolCalls {
+            guard let item = latestItems[call.id] else { continue }
+            let skillID = item.skillID.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !skillID.isEmpty else { continue }
+            let toolName = item.toolName.trimmingCharacters(in: .whitespacesAndNewlines)
+            out[call.id] = XTProjectMappedSkillDispatch(
+                skillId: skillID,
+                toolCall: call,
+                toolName: toolName.isEmpty ? call.tool.rawValue : toolName
+            )
+        }
+        return out
+    }
+
+    static func toolCall(
+        for item: ProjectSkillActivityItem,
+        requestID: String? = nil
+    ) -> ToolCall? {
+        let toolToken = item.toolName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let tool = ToolName(rawValue: toolToken) else {
+            return nil
+        }
+        let preferredID = requestID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let resolvedID = preferredID.isEmpty
+            ? item.requestID.trimmingCharacters(in: .whitespacesAndNewlines)
+            : preferredID
+        return ToolCall(
+            id: resolvedID.isEmpty ? UUID().uuidString : resolvedID,
+            tool: tool,
+            args: item.toolArgs
+        )
+    }
+
+    static func prettyJSONString(
+        for rawObject: [String: JSONValue]
+    ) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(JSONValue.object(rawObject)),
+              let text = String(data: data, encoding: .utf8) else {
+            return "{}"
+        }
+        return text
+    }
+
+    private static func latestEventsByRequestID(
+        from raw: String
+    ) -> [String: AXProjectSkillActivityEvent] {
+        var latestByRequestID: [String: AXProjectSkillActivityEvent] = [:]
+        for event in parsedEvents(from: raw) {
+            if let existing = latestByRequestID[event.item.requestID] {
+                if event.item.createdAt > existing.item.createdAt
+                    || (event.item.createdAt == existing.item.createdAt && event.lineIndex > existing.lineIndex) {
+                    latestByRequestID[event.item.requestID] = event
+                }
+            } else {
+                latestByRequestID[event.item.requestID] = event
+            }
+        }
+        return latestByRequestID
+    }
+
+    private static func recentTailSnapshot(
+        ctx: AXProjectContext
+    ) -> CachedTailSnapshot? {
+        let path = ctx.rawLogURL.path
+        guard let signature = fileSignature(for: ctx.rawLogURL) else {
+            _ = cacheQueue.sync {
+                recentTailCacheByPath.removeValue(forKey: path)
+            }
+            return nil
+        }
+
+        return cacheQueue.sync {
+            if let cached = recentTailCacheByPath[path],
+               cached.modifiedAt == signature.modifiedAt,
+               cached.fileSize == signature.fileSize {
+                return cached
+            }
+
+            guard let text = loadTailRawLogText(
+                url: ctx.rawLogURL,
+                maxBytes: recentTailMaxBytes
+            ) else {
+                recentTailCacheByPath.removeValue(forKey: path)
+                return nil
+            }
+
+            let events = parsedEvents(from: text)
+            let snapshot = CachedTailSnapshot(
+                path: path,
+                modifiedAt: signature.modifiedAt,
+                fileSize: signature.fileSize,
+                events: events,
+                latestByRequestID: latestEventsByRequestID(from: events)
+            )
+            recentTailCacheByPath[path] = snapshot
+            return snapshot
+        }
+    }
+
+    private static func latestEventsByRequestID(
+        from events: [AXProjectSkillActivityEvent]
+    ) -> [String: AXProjectSkillActivityEvent] {
+        var latestByRequestID: [String: AXProjectSkillActivityEvent] = [:]
+        for event in events {
+            if let existing = latestByRequestID[event.item.requestID] {
+                if event.item.createdAt > existing.item.createdAt
+                    || (event.item.createdAt == existing.item.createdAt && event.lineIndex > existing.lineIndex) {
+                    latestByRequestID[event.item.requestID] = event
+                }
+            } else {
+                latestByRequestID[event.item.requestID] = event
+            }
+        }
+        return latestByRequestID
+    }
+
+    private static func fileSignature(
+        for url: URL
+    ) -> FileSignature? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else {
+            return nil
+        }
+        let modifiedAt = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        let fileSize = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+        return FileSignature(
+            modifiedAt: modifiedAt,
+            fileSize: fileSize
+        )
+    }
+
+    private static func loadTailRawLogText(
+        url: URL,
+        maxBytes: Int
+    ) -> String? {
+        guard let data = readTailData(url: url, maxBytes: maxBytes),
+              var text = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+
+        let totalSize = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?
+            .uint64Value ?? 0
+        if totalSize > UInt64(max(8_192, maxBytes)),
+           let firstNewline = text.firstIndex(of: "\n") {
+            text = String(text[text.index(after: firstNewline)...])
+        }
+        return text
+    }
+
+    private static func readTailData(
+        url: URL,
+        maxBytes: Int
+    ) -> Data? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+
+        let bounded = max(8_192, maxBytes)
+        let totalSize = (try? handle.seekToEnd()) ?? 0
+        let start = totalSize > UInt64(bounded) ? totalSize - UInt64(bounded) : 0
+        try? handle.seek(toOffset: start)
+        return try? handle.readToEnd()
+    }
+
+    private static func parsedEvents(
+        from raw: String
+    ) -> [AXProjectSkillActivityEvent] {
+        raw.split(separator: "\n", omittingEmptySubsequences: true)
+            .enumerated()
+            .compactMap { lineIndex, line in
+                guard let data = line.data(using: .utf8),
+                      let value = try? JSONDecoder().decode(JSONValue.self, from: data),
+                      case .object(let object) = value,
+                      let item = parsedActivityItem(object) else {
+                    return nil
+                }
+                return AXProjectSkillActivityEvent(
+                    item: item,
+                    rawObject: object,
+                    lineIndex: lineIndex
+                )
+            }
+    }
+
+    private static func parsedActivityItem(
+        _ object: [String: JSONValue]
+    ) -> ProjectSkillActivityItem? {
+        guard stringValue(object["type"]) == "project_skill_call" else { return nil }
+
+        let requestID = stringValue(object["request_id"]) ?? ""
+        guard !requestID.isEmpty else { return nil }
+
+        return ProjectSkillActivityItem(
+            requestID: requestID,
+            skillID: stringValue(object["skill_id"]) ?? "",
+            toolName: stringValue(object["tool_name"]) ?? "",
+            status: stringValue(object["status"]) ?? "",
+            createdAt: numberValue(object["created_at"]) ?? 0,
+            resolutionSource: stringValue(object["resolution_source"]) ?? "",
+            toolArgs: jsonObjectValue(object["tool_args"]),
+            resultSummary: stringValue(object["result_summary"]) ?? "",
+            detail: stringValue(object["detail"]) ?? "",
+            denyCode: stringValue(object["deny_code"]) ?? "",
+            authorizationDisposition: stringValue(object["authorization_disposition"]) ?? ""
+        )
+    }
+
+    private static func stringValue(
+        _ raw: JSONValue?
+    ) -> String? {
+        guard let value = raw?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else {
+            return nil
+        }
+        return value
+    }
+
+    private static func numberValue(
+        _ raw: JSONValue?
+    ) -> Double? {
+        switch raw {
+        case .number(let value):
+            return value
+        case .string(let value):
+            return Double(value)
+        default:
+            return nil
+        }
+    }
+
+    private static func jsonObjectValue(
+        _ raw: JSONValue?
+    ) -> [String: JSONValue] {
+        guard case .object(let object)? = raw else {
+            return [:]
+        }
+        return object
+    }
+}

@@ -1,0 +1,141 @@
+import Foundation
+import Testing
+@testable import XTerminal
+
+@MainActor
+struct SupervisorGuidanceInjectionStoreTests {
+
+    @Test
+    func latestPendingAckSkipsNonRequiredAndAcceptedItems() throws {
+        let root = try makeProjectRoot(named: "guidance-store-pending")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        try SupervisorGuidanceInjectionStore.upsert(
+            makeGuidance(
+                injectionId: "guidance-observe",
+                injectedAtMs: 100,
+                ackRequired: false,
+                ackStatus: .pending
+            ),
+            for: ctx
+        )
+        try SupervisorGuidanceInjectionStore.upsert(
+            makeGuidance(
+                injectionId: "guidance-accepted",
+                injectedAtMs: 200,
+                ackRequired: true,
+                ackStatus: .accepted
+            ),
+            for: ctx
+        )
+        try SupervisorGuidanceInjectionStore.upsert(
+            makeGuidance(
+                injectionId: "guidance-pending",
+                injectedAtMs: 300,
+                ackRequired: true,
+                ackStatus: .pending
+            ),
+            for: ctx
+        )
+
+        let latest = SupervisorGuidanceInjectionStore.latest(for: ctx)
+        let pending = SupervisorGuidanceInjectionStore.latestPendingAck(for: ctx)
+
+        #expect(latest?.injectionId == "guidance-pending")
+        #expect(pending?.injectionId == "guidance-pending")
+    }
+
+    @Test
+    func acknowledgePersistsAckStatusNoteAndTimestamp() throws {
+        let root = try makeProjectRoot(named: "guidance-store-ack")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        try SupervisorGuidanceInjectionStore.upsert(
+            makeGuidance(
+                injectionId: "guidance-ack",
+                injectedAtMs: 100,
+                ackRequired: true,
+                ackStatus: .pending
+            ),
+            for: ctx
+        )
+
+        try SupervisorGuidanceInjectionStore.acknowledge(
+            injectionId: "guidance-ack",
+            status: .rejected,
+            note: "need smaller scope first",
+            atMs: 450,
+            for: ctx
+        )
+
+        let stored = try #require(SupervisorGuidanceInjectionStore.latest(for: ctx))
+        #expect(stored.ackStatus == .rejected)
+        #expect(stored.ackRequired)
+        #expect(stored.ackNote == "need smaller scope first")
+        #expect(stored.ackUpdatedAtMs == 450)
+    }
+
+    @Test
+    func upsertKeepsNewestFirstAndTrimsToMaxItems() throws {
+        let root = try makeProjectRoot(named: "guidance-store-trim")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        for index in 0..<70 {
+            try SupervisorGuidanceInjectionStore.upsert(
+                makeGuidance(
+                    injectionId: "guidance-\(index)",
+                    injectedAtMs: Int64(index + 1),
+                    ackRequired: index % 2 == 0,
+                    ackStatus: .pending
+                ),
+                for: ctx
+            )
+        }
+
+        let snapshot = SupervisorGuidanceInjectionStore.load(for: ctx)
+        #expect(snapshot.items.count == 64)
+        #expect(snapshot.items.first?.injectionId == "guidance-69")
+        #expect(snapshot.items.last?.injectionId == "guidance-6")
+        #expect(snapshot.updatedAtMs == 70)
+    }
+
+    private func makeProjectRoot(named name: String) throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(name)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    private func makeGuidance(
+        injectionId: String,
+        injectedAtMs: Int64,
+        ackRequired: Bool,
+        ackStatus: SupervisorGuidanceAckStatus
+    ) -> SupervisorGuidanceInjectionRecord {
+        SupervisorGuidanceInjectionBuilder.build(
+            injectionId: injectionId,
+            reviewId: "review-\(injectionId)",
+            projectId: "proj-guidance-store",
+            targetRole: .coder,
+            deliveryMode: .priorityInsert,
+            interventionMode: .suggestNextSafePoint,
+            safePointPolicy: .nextToolBoundary,
+            guidanceText: "guidance for \(injectionId)",
+            ackStatus: ackStatus,
+            ackRequired: ackRequired,
+            ackNote: "",
+            injectedAtMs: injectedAtMs,
+            ackUpdatedAtMs: 0,
+            auditRef: "audit-\(injectionId)"
+        )
+    }
+}

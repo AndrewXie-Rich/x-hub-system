@@ -1,0 +1,117 @@
+{
+  "schema_version": "xhub.skill_manifest.v1",
+  "skill_id": "skill-creator",
+  "name": "Skill Creator",
+  "version": "1.0.0",
+  "description": "Governed local skill authoring wrapper for inspecting project skills and writing SKILL.md, manifests, and reference files inside the current project root.",
+  "entrypoint": {
+    "runtime": "text",
+    "command": "cat",
+    "args": [
+      "SKILL.md"
+    ]
+  },
+  "capabilities_required": [
+    "project.snapshot",
+    "repo.list",
+    "repo.read.file",
+    "repo.search",
+    "repo.write.file"
+  ],
+  "input_schema_ref": "schema://skill-creator.input",
+  "output_schema_ref": "schema://skill-creator.output",
+  "side_effect_class": "project_write",
+  "risk_level": "medium",
+  "requires_grant": false,
+  "timeout_ms": 20000,
+  "max_retries": 1,
+  "governed_dispatch_notes": [
+    "actions=snapshot -> project_snapshot",
+    "actions=list -> list_dir",
+    "actions=read -> read_file requires path",
+    "actions=search/grep -> search requires pattern",
+    "actions=write -> write_file requires path and content"
+  ],
+  "governed_dispatch_variants": [
+    {
+      "actions": ["snapshot", "inspect", "context"],
+      "action_arg": "",
+      "action_map": {},
+      "dispatch": {
+        "tool": "project_snapshot",
+        "fixed_args": {},
+        "passthrough_args": [],
+        "arg_aliases": {},
+        "required_any": [],
+        "exactly_one_of": []
+      }
+    },
+    {
+      "actions": ["list", "ls", "list_dir", "list-dir"],
+      "action_arg": "",
+      "action_map": {},
+      "dispatch": {
+        "tool": "list_dir",
+        "fixed_args": {},
+        "passthrough_args": ["path", "sandbox"],
+        "arg_aliases": {
+          "path": ["dir"]
+        },
+        "required_any": [],
+        "exactly_one_of": []
+      }
+    },
+    {
+      "actions": ["read", "read_file", "read-file"],
+      "action_arg": "",
+      "action_map": {},
+      "dispatch": {
+        "tool": "read_file",
+        "fixed_args": {},
+        "passthrough_args": ["path", "sandbox"],
+        "arg_aliases": {
+          "path": ["file"]
+        },
+        "required_any": [["path"]],
+        "exactly_one_of": []
+      }
+    },
+    {
+      "actions": ["search", "grep"],
+      "action_arg": "",
+      "action_map": {},
+      "dispatch": {
+        "tool": "search",
+        "fixed_args": {},
+        "passthrough_args": ["pattern", "path", "glob", "sandbox"],
+        "arg_aliases": {
+          "pattern": ["query"]
+        },
+        "required_any": [["pattern"]],
+        "exactly_one_of": []
+      }
+    },
+    {
+      "actions": ["write", "write_file", "write-file"],
+      "action_arg": "",
+      "action_map": {},
+      "dispatch": {
+        "tool": "write_file",
+        "fixed_args": {},
+        "passthrough_args": ["path", "content", "sandbox"],
+        "arg_aliases": {
+          "content": ["text", "body", "value"]
+        },
+        "required_any": [["path"], ["content"]],
+        "exactly_one_of": []
+      }
+    }
+  ],
+  "network_policy": {
+    "direct_network_forbidden": true
+  },
+  "publisher": {
+    "publisher_id": "xhub.official"
+  },
+  "install_hint": "Pin from the official Agent catalog when a project needs governed local skill authoring before Hub staging and release."
+}

@@ -1,0 +1,83 @@
+{
+  "schema_version": "xhub.skill_manifest.v1",
+  "skill_id": "agent-backup",
+  "name": "Agent Backup",
+  "version": "1.0.0",
+  "description": "Governed local project backup wrapper for creating on-device tarball checkpoints and listing existing backup bundles inside the project root.",
+  "entrypoint": {
+    "runtime": "text",
+    "command": "cat",
+    "args": [
+      "SKILL.md"
+    ]
+  },
+  "capabilities_required": [
+    "project.snapshot",
+    "repo.list",
+    "repo.exec.local"
+  ],
+  "input_schema_ref": "schema://agent-backup.input",
+  "output_schema_ref": "schema://agent-backup.output",
+  "side_effect_class": "project_write",
+  "risk_level": "medium",
+  "requires_grant": false,
+  "timeout_ms": 60000,
+  "max_retries": 1,
+  "governed_dispatch_notes": [
+    "actions=snapshot -> project_snapshot",
+    "actions=list -> list_dir on .ax-backups",
+    "actions=create -> run_command creates a local tarball under .ax-backups"
+  ],
+  "governed_dispatch_variants": [
+    {
+      "actions": ["snapshot", "inspect", "context"],
+      "action_arg": "",
+      "action_map": {},
+      "dispatch": {
+        "tool": "project_snapshot",
+        "fixed_args": {},
+        "passthrough_args": [],
+        "arg_aliases": {},
+        "required_any": [],
+        "exactly_one_of": []
+      }
+    },
+    {
+      "actions": ["list", "ls", "list_dir", "list-dir"],
+      "action_arg": "",
+      "action_map": {},
+      "dispatch": {
+        "tool": "list_dir",
+        "fixed_args": {
+          "path": ".ax-backups"
+        },
+        "passthrough_args": [],
+        "arg_aliases": {},
+        "required_any": [],
+        "exactly_one_of": []
+      }
+    },
+    {
+      "actions": ["create", "backup", "checkpoint"],
+      "action_arg": "",
+      "action_map": {},
+      "dispatch": {
+        "tool": "run_command",
+        "fixed_args": {
+          "command": "mkdir -p .ax-backups && /usr/bin/tar -czf \".ax-backups/project-backup-$(/bin/date +%Y%m%d-%H%M%S).tgz\" --exclude .git --exclude .build --exclude .ax-backups ."
+        },
+        "passthrough_args": ["timeout_sec"],
+        "arg_aliases": {},
+        "required_any": [],
+        "exactly_one_of": []
+      }
+    }
+  ],
+  "network_policy": {
+    "direct_network_forbidden": true
+  },
+  "publisher": {
+    "publisher_id": "xhub.official"
+  },
+  "install_hint": "Pin from the official Agent catalog when a project needs governed local checkpoint bundles before risky edits or autonomous runs."
+}

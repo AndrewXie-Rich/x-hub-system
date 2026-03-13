@@ -1,0 +1,45 @@
+{
+  "schema_version": "xhub.skill_manifest.v1",
+  "skill_id": "example-skill",
+  "name": "Example Skill",
+  "version": "1.0.0",
+  "description": "Minimal governed Agent skill manifest template.",
+  "entrypoint": {
+    "runtime": "text",
+    "command": "cat",
+    "args": [
+      "SKILL.md"
+    ]
+  },
+  "capabilities_required": [
+    "repo.read.file"
+  ],
+  "input_schema_ref": "schema://example-skill.input",
+  "output_schema_ref": "schema://example-skill.output",
+  "side_effect_class": "read_only",
+  "risk_level": "low",
+  "requires_grant": false,
+  "timeout_ms": 10000,
+  "max_retries": 1,
+  "governed_dispatch": {
+    "tool": "read_file",
+    "fixed_args": {},
+    "passthrough_args": [
+      "path"
+    ],
+    "arg_aliases": {},
+    "required_any": [
+      [
+        "path"
+      ]
+    ],
+    "exactly_one_of": []
+  },
+  "network_policy": {
+    "direct_network_forbidden": true
+  },
+  "publisher": {
+    "publisher_id": "xhub.official"
+  },
+  "install_hint": "Replace the template fields before publishing."
+}

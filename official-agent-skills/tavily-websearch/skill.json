@@ -1,0 +1,54 @@
+{
+  "schema_version": "xhub.skill_manifest.v1",
+  "skill_id": "tavily-websearch",
+  "name": "Tavily Websearch",
+  "version": "1.0.0",
+  "description": "Governed live web search wrapper with a Tavily-compatible contract that currently routes through the active X-Hub/X-Terminal search backend.",
+  "entrypoint": {
+    "runtime": "text",
+    "command": "cat",
+    "args": [
+      "SKILL.md"
+    ]
+  },
+  "capabilities_required": [
+    "web.search"
+  ],
+  "input_schema_ref": "schema://tavily-websearch.input",
+  "output_schema_ref": "schema://tavily-websearch.output",
+  "side_effect_class": "external_side_effect",
+  "risk_level": "high",
+  "requires_grant": true,
+  "timeout_ms": 30000,
+  "max_retries": 1,
+  "governed_dispatch_notes": [
+    "routes through governed web_search",
+    "backend provider is runtime-configured; do not assume Tavily unless runtime confirms it"
+  ],
+  "governed_dispatch": {
+    "tool": "web_search",
+    "fixed_args": {},
+    "passthrough_args": [
+      "query",
+      "grant_id",
+      "timeout_sec",
+      "max_results",
+      "max_bytes"
+    ],
+    "arg_aliases": {
+      "query": ["q"],
+      "max_results": ["limit"]
+    },
+    "required_any": [
+      ["query"]
+    ],
+    "exactly_one_of": []
+  },
+  "network_policy": {
+    "direct_network_forbidden": true
+  },
+  "publisher": {
+    "publisher_id": "xhub.official"
+  },
+  "install_hint": "Pin from the official Agent catalog when a project needs governed live web search; provider selection stays inside runtime policy."
+}

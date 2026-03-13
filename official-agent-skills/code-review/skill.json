@@ -1,0 +1,114 @@
+{
+  "schema_version": "xhub.skill_manifest.v1",
+  "skill_id": "code-review",
+  "name": "Code Review",
+  "version": "1.0.0",
+  "description": "Governed read-only code review wrapper over git status, diffs, file reads, and scoped repo search.",
+  "entrypoint": {
+    "runtime": "text",
+    "command": "cat",
+    "args": [
+      "SKILL.md"
+    ]
+  },
+  "capabilities_required": [
+    "repo.read.status",
+    "repo.read.diff",
+    "repo.read.file",
+    "repo.search"
+  ],
+  "input_schema_ref": "schema://code-review.input",
+  "output_schema_ref": "schema://code-review.output",
+  "side_effect_class": "read_only",
+  "risk_level": "low",
+  "requires_grant": false,
+  "timeout_ms": 20000,
+  "max_retries": 1,
+  "governed_dispatch_notes": [
+    "actions=status -> git_status",
+    "actions=diff/changes -> git_diff",
+    "actions=staged_diff/staged-diff -> git_diff with cached=true",
+    "actions=read -> read_file requires path",
+    "actions=search/grep -> search requires pattern"
+  ],
+  "governed_dispatch_variants": [
+    {
+      "actions": ["status", "git-status", "repo-status"],
+      "action_arg": "",
+      "action_map": {},
+      "dispatch": {
+        "tool": "git_status",
+        "fixed_args": {},
+        "passthrough_args": [],
+        "arg_aliases": {},
+        "required_any": [],
+        "exactly_one_of": []
+      }
+    },
+    {
+      "actions": ["diff", "changes", "unstaged_diff", "unstaged-diff"],
+      "action_arg": "",
+      "action_map": {},
+      "dispatch": {
+        "tool": "git_diff",
+        "fixed_args": {},
+        "passthrough_args": [],
+        "arg_aliases": {},
+        "required_any": [],
+        "exactly_one_of": []
+      }
+    },
+    {
+      "actions": ["staged_diff", "staged-diff"],
+      "action_arg": "",
+      "action_map": {},
+      "dispatch": {
+        "tool": "git_diff",
+        "fixed_args": {
+          "cached": true
+        },
+        "passthrough_args": [],
+        "arg_aliases": {},
+        "required_any": [],
+        "exactly_one_of": []
+      }
+    },
+    {
+      "actions": ["read", "read_file", "read-file"],
+      "action_arg": "",
+      "action_map": {},
+      "dispatch": {
+        "tool": "read_file",
+        "fixed_args": {},
+        "passthrough_args": ["path", "sandbox"],
+        "arg_aliases": {
+          "path": ["file"]
+        },
+        "required_any": [["path"]],
+        "exactly_one_of": []
+      }
+    },
+    {
+      "actions": ["search", "grep"],
+      "action_arg": "",
+      "action_map": {},
+      "dispatch": {
+        "tool": "search",
+        "fixed_args": {},
+        "passthrough_args": ["pattern", "path", "glob", "sandbox"],
+        "arg_aliases": {
+          "pattern": ["query"]
+        },
+        "required_any": [["pattern"]],
+        "exactly_one_of": []
+      }
+    }
+  ],
+  "network_policy": {
+    "direct_network_forbidden": true
+  },
+  "publisher": {
+    "publisher_id": "xhub.official"
+  },
+  "install_hint": "Pin from the official Agent catalog when a project needs governed, read-only repository review."
+}
