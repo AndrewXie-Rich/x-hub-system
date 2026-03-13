@@ -1184,6 +1184,81 @@ enum HubIPCClient {
         var items: [ConnectorIngressReceipt]
     }
 
+    struct SupervisorBriefProjectionRequestPayload: Codable, Equatable {
+        var requestId: String
+        var projectId: String
+        var runId: String?
+        var missionId: String?
+        var projectionKind: String
+        var trigger: String
+        var includeTtsScript: Bool
+        var includeCardSummary: Bool
+        var maxEvidenceRefs: Int
+
+        enum CodingKeys: String, CodingKey {
+            case requestId = "request_id"
+            case projectId = "project_id"
+            case runId = "run_id"
+            case missionId = "mission_id"
+            case projectionKind = "projection_kind"
+            case trigger
+            case includeTtsScript = "include_tts_script"
+            case includeCardSummary = "include_card_summary"
+            case maxEvidenceRefs = "max_evidence_refs"
+        }
+    }
+
+    struct SupervisorBriefProjectionSnapshot: Codable, Equatable, Identifiable {
+        var schemaVersion: String
+        var projectionId: String
+        var projectionKind: String
+        var projectId: String
+        var runId: String
+        var missionId: String
+        var trigger: String
+        var status: String
+        var criticalBlocker: String
+        var topline: String
+        var nextBestAction: String
+        var pendingGrantCount: Int
+        var ttsScript: [String]
+        var cardSummary: String
+        var evidenceRefs: [String]
+        var generatedAtMs: Double
+        var expiresAtMs: Double
+        var auditRef: String
+
+        var id: String { projectionId }
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+            case projectionId = "projection_id"
+            case projectionKind = "projection_kind"
+            case projectId = "project_id"
+            case runId = "run_id"
+            case missionId = "mission_id"
+            case trigger
+            case status
+            case criticalBlocker = "critical_blocker"
+            case topline
+            case nextBestAction = "next_best_action"
+            case pendingGrantCount = "pending_grant_count"
+            case ttsScript = "tts_script"
+            case cardSummary = "card_summary"
+            case evidenceRefs = "evidence_refs"
+            case generatedAtMs = "generated_at_ms"
+            case expiresAtMs = "expires_at_ms"
+            case auditRef = "audit_ref"
+        }
+    }
+
+    struct SupervisorBriefProjectionResult: Codable, Equatable {
+        var ok: Bool
+        var source: String
+        var projection: SupervisorBriefProjectionSnapshot?
+        var reasonCode: String?
+    }
+
     struct OperatorChannelXTCommandItem: Codable, Equatable, Identifiable {
         var commandId: String
         var requestId: String
@@ -4144,6 +4219,94 @@ fulltext_not_loaded=\(disclosure.fulltextNotLoaded ? "true" : "false")
             grantRequestId: normalizedGrantId,
             grantId: nil,
             expiresAtMs: nil,
+            reasonCode: fallbackReason
+        )
+    }
+
+    static func requestSupervisorBriefProjection(
+        _ payload: SupervisorBriefProjectionRequestPayload
+    ) async -> SupervisorBriefProjectionResult {
+        let normalizedRequestId = normalized(payload.requestId)
+        guard let normalizedRequestId else {
+            return SupervisorBriefProjectionResult(
+                ok: false,
+                source: "hub_supervisor_grpc",
+                projection: nil,
+                reasonCode: "request_id_empty"
+            )
+        }
+
+        let normalizedProjectId = normalized(payload.projectId)
+        guard let normalizedProjectId else {
+            return SupervisorBriefProjectionResult(
+                ok: false,
+                source: "hub_supervisor_grpc",
+                projection: nil,
+                reasonCode: "project_id_empty"
+            )
+        }
+
+        let routeDecision = await currentRouteDecision()
+        let projectionKind = normalized(payload.projectionKind) ?? "progress_brief"
+        let trigger = normalized(payload.trigger) ?? "daily_digest"
+        let boundedEvidenceRefs = max(0, min(12, payload.maxEvidenceRefs))
+
+        if routeDecision.preferRemote {
+            let remote = await HubPairingCoordinator.shared.fetchRemoteSupervisorBriefProjection(
+                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                requestId: normalizedRequestId,
+                projectId: normalizedProjectId,
+                runId: normalized(payload.runId),
+                missionId: normalized(payload.missionId),
+                projectionKind: projectionKind,
+                trigger: trigger,
+                includeTtsScript: payload.includeTtsScript,
+                includeCardSummary: payload.includeCardSummary,
+                maxEvidenceRefs: boundedEvidenceRefs
+            )
+            let projection = remote.projection.map { row in
+                SupervisorBriefProjectionSnapshot(
+                    schemaVersion: row.schemaVersion,
+                    projectionId: row.projectionId,
+                    projectionKind: row.projectionKind,
+                    projectId: row.projectId,
+                    runId: row.runId,
+                    missionId: row.missionId,
+                    trigger: row.trigger,
+                    status: row.status,
+                    criticalBlocker: row.criticalBlocker,
+                    topline: row.topline,
+                    nextBestAction: row.nextBestAction,
+                    pendingGrantCount: max(0, row.pendingGrantCount),
+                    ttsScript: row.ttsScript,
+                    cardSummary: row.cardSummary,
+                    evidenceRefs: row.evidenceRefs,
+                    generatedAtMs: max(0, row.generatedAtMs),
+                    expiresAtMs: max(0, row.expiresAtMs),
+                    auditRef: row.auditRef
+                )
+            }
+            return SupervisorBriefProjectionResult(
+                ok: remote.ok && projection != nil,
+                source: remote.source,
+                projection: projection,
+                reasonCode: normalizedReasonCode(
+                    remote.reasonCode,
+                    fallback: remote.ok ? nil : "supervisor_brief_projection_failed"
+                )
+            )
+        }
+
+        let fallbackReason = routeDecision.requiresRemote
+            ? normalizedReasonCode(
+                routeDecision.remoteUnavailableReasonCode,
+                fallback: "hub_env_missing"
+            )
+            : "supervisor_brief_projection_file_ipc_not_supported"
+        return SupervisorBriefProjectionResult(
+            ok: false,
+            source: routeDecision.requiresRemote ? "hub_supervisor_grpc" : "file_ipc",
+            projection: nil,
             reasonCode: fallbackReason
         )
     }

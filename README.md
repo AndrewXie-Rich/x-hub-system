@@ -280,16 +280,18 @@ This is still a simplified control-plane view, but it now separates the deep-cli
 flowchart TB
     U[User / Operator]
 
-    subgraph C[Client Surfaces]
-        direction TB
-        subgraph XTZ[X-Terminal Layer]
-            direction LR
-            XT[X-Terminal<br/>Deep client: Hub memory, Supervisor, project sync]
-        end
-        subgraph GTZ[Generic / 3rd-Party Terminal Layer]
-            direction LR
-            GT[Generic Terminal / 3rd-Party Client<br/>Runs its own local memory / skills / tools by default]
-        end
+    subgraph XTZ[X-Terminal Flow]
+        direction LR
+        XT[X-Terminal]
+        XTM[Uses Hub memory<br/>and project sync]
+        XTS[Uses Supervisor<br/>and runtime-truth UX]
+    end
+
+    subgraph GTZ[Generic / 3rd-Party Terminal Flow]
+        direction LR
+        GT[Generic Terminal / 3rd-Party Client]
+        GTM[Local memory / skills / tools<br/>stay terminal-side by default]
+        GTA[Calls Hub AI / capability surfaces<br/>as needed]
     end
 
     OC[Operator Channels<br/>Slack / Telegram / Feishu]
@@ -322,6 +324,11 @@ flowchart TB
     U --> GT
     U --> XT
     U --> OC
+
+    XT --- XTM
+    XT --- XTS
+    GT --- GTM
+    GT --- GTA
 
     GT -->|AI requests| PA
     XT -->|paired deep-client session| PA
@@ -367,20 +374,9 @@ flowchart TB
 
     style XTZ fill:#ecfdf3,stroke:#2d6a4f,stroke-width:1.5px,color:#163826;
     style GTZ fill:#fff1f1,stroke:#b42318,stroke-width:1.5px,color:#5b1111;
-
-    classDef xtclient fill:#e7f8ec,stroke:#2d6a4f,color:#163826,stroke-width:1px;
-    classDef gtclient fill:#fff0f0,stroke:#b42318,color:#5b1111,stroke-width:1px;
-    classDef opclient fill:#eef6ff,stroke:#2f6fda,color:#0f2547,stroke-width:1px;
-    classDef hub fill:#eef8f1,stroke:#2d6a4f,color:#163826,stroke-width:1px;
-    classDef exec fill:#fff6e9,stroke:#b26a00,color:#4d2d00,stroke-width:1px;
-    classDef safety fill:#fff1f1,stroke:#b42318,color:#5b1111,stroke-width:1px;
-
-    class XT xtclient;
-    class GT gtclient;
-    class OC opclient;
-    class PA,AG,MM,SUP,SK,GP,MR,AT,IPC,AU hub;
-    class LPR,LM,PM,XTEX,CHW,OAS exec;
-    class FG safety;
+    style H fill:#f6fbf7,stroke:#7aa58a,stroke-width:1.2px,color:#163826;
+    style E fill:#fffaf2,stroke:#c9973f,stroke-width:1.2px,color:#4d2d00;
+    style FG fill:#fff1f1,stroke:#b42318,stroke-width:2px,color:#5b1111;
 ```
 
 X-Terminal is intentionally not the same thing as a generic terminal.
@@ -389,6 +385,73 @@ In the current design, X-Terminal is the deep governed client: it uses Hub memor
 Execution baseline:
 
 `pair / ingress -> decide client capability profile -> retrieve memory + constitution when applicable -> resolve route -> check policy + grants -> verify readiness -> execute on a governed surface -> audit + surface runtime truth`
+
+## Deployment / Runtime Topology
+
+The first diagram is about trust and control flow.
+This second diagram is about where the major pieces typically run.
+
+```mermaid
+flowchart LR
+    subgraph D[User Devices]
+        direction TB
+        subgraph XTD[X-Terminal Device]
+            direction TB
+            XTUI[X-Terminal UI + session runtime]
+            XTCACHE[Minimal local cache<br/>display / recovery only]
+        end
+        subgraph GTD[Generic / 3rd-Party Terminal Device]
+            direction TB
+            GTUI[Generic terminal / 3rd-party client]
+            GTLOCAL[Terminal-local memory / skills / tools]
+        end
+    end
+
+    subgraph H[Operator-Owned Hub Host]
+        direction TB
+        HXAPP[X-Hub macOS app / operator UI]
+        HCORE[Hub gRPC service<br/>policy / grants / audit / memory]
+        HSK[Skills store + trust roots<br/>official-agent-skills surface]
+        HCH[Operator channel workers]
+        HBR[Bridge / network boundary]
+        HLPR[Python local provider runtime]
+        HLM[Local models on Hub host<br/>MLX / Transformers]
+    end
+
+    subgraph X[Optional External Systems]
+        direction TB
+        OPP[Slack / Telegram / Feishu]
+        PAI[Paid model providers / APIs]
+        ECS[External services via connectors]
+    end
+
+    XTUI --- XTCACHE
+    GTUI --- GTLOCAL
+
+    XTUI <-->|paired deep-client session| HCORE
+    GTUI <-->|AI / capability calls| HCORE
+    HXAPP --> HCORE
+    HCORE --> HSK
+    HCORE --> HCH
+    HCORE --> HBR
+    HCORE --> HLPR
+    HLPR --> HLM
+    HCH <-->|operator ingress / results| OPP
+    HBR <-->|optional remote inference| PAI
+    HBR <-->|optional connector traffic| ECS
+
+    style XTD fill:#ecfdf3,stroke:#2d6a4f,stroke-width:1.5px,color:#163826;
+    style GTD fill:#fff1f1,stroke:#b42318,stroke-width:1.5px,color:#5b1111;
+    style H fill:#f6fbf7,stroke:#7aa58a,stroke-width:1.2px,color:#163826;
+    style X fill:#fffaf2,stroke:#c9973f,stroke-width:1.2px,color:#4d2d00;
+```
+
+Typical interpretation:
+
+- `X-Terminal` is the deep client and is expected to pair into Hub memory, project sync, and Supervisor-facing flows.
+- Generic terminals and third-party clients can keep their own local memory / skill / tool system while still using Hub-governed AI and capability surfaces.
+- The operator-owned Hub host is where trust, grants, policy, audit, memory truth, and local runtime governance live.
+- Remote providers and connector targets are optional external surfaces, not the default location of the trusted control plane.
 
 ## Memory-Backed Constitutional Guardrails
 

@@ -467,6 +467,39 @@ struct HubRemotePendingGrantActionResult: Sendable {
     }
 }
 
+struct HubRemoteSupervisorBriefProjection: Sendable {
+    var schemaVersion: String
+    var projectionId: String
+    var projectionKind: String
+    var projectId: String
+    var runId: String
+    var missionId: String
+    var trigger: String
+    var status: String
+    var criticalBlocker: String
+    var topline: String
+    var nextBestAction: String
+    var pendingGrantCount: Int
+    var ttsScript: [String]
+    var cardSummary: String
+    var evidenceRefs: [String]
+    var generatedAtMs: Double
+    var expiresAtMs: Double
+    var auditRef: String
+}
+
+struct HubRemoteSupervisorBriefProjectionResult: Sendable {
+    var ok: Bool
+    var source: String
+    var projection: HubRemoteSupervisorBriefProjection?
+    var reasonCode: String?
+    var logLines: [String]
+
+    var logText: String {
+        logLines.joined(separator: "\n")
+    }
+}
+
 struct HubRemoteVoiceGrantChallenge: Sendable {
     var challengeId: String
     var templateId: String
@@ -3670,6 +3703,181 @@ actor HubPairingCoordinator {
             inFlightByScope: inFlightByScope,
             queuedByScope: queuedByScope,
             queueItems: queueItems,
+            reasonCode: reason?.replacingOccurrences(of: " ", with: "_"),
+            logLines: logs
+        )
+    }
+
+    func fetchRemoteSupervisorBriefProjection(
+        options rawOptions: HubRemoteConnectOptions,
+        requestId: String,
+        projectId: String,
+        runId: String?,
+        missionId: String?,
+        projectionKind: String,
+        trigger: String,
+        includeTtsScript: Bool,
+        includeCardSummary: Bool,
+        maxEvidenceRefs: Int
+    ) -> HubRemoteSupervisorBriefProjectionResult {
+        let normalizedRequestId = requestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedProjectId = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedRequestId.isEmpty else {
+            return HubRemoteSupervisorBriefProjectionResult(
+                ok: false,
+                source: "hub_supervisor_grpc",
+                projection: nil,
+                reasonCode: "request_id_empty",
+                logLines: ["supervisor brief projection missing request_id"]
+            )
+        }
+        guard !normalizedProjectId.isEmpty else {
+            return HubRemoteSupervisorBriefProjectionResult(
+                ok: false,
+                source: "hub_supervisor_grpc",
+                projection: nil,
+                reasonCode: "project_id_empty",
+                logLines: ["supervisor brief projection missing project_id"]
+            )
+        }
+
+        let opts = sanitize(rawOptions)
+        var logs: [String] = []
+
+        let stateDir = opts.stateDir ?? defaultStateDir()
+        let hubEnv = stateDir.appendingPathComponent("hub.env")
+        let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
+        let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
+        let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
+
+        guard FileManager.default.fileExists(atPath: hubEnv.path) else {
+            return HubRemoteSupervisorBriefProjectionResult(
+                ok: false,
+                source: "hub_supervisor_grpc",
+                projection: nil,
+                reasonCode: "hub_env_missing",
+                logLines: ["missing hub env: \(hubEnv.path)"]
+            )
+        }
+        guard FileManager.default.fileExists(atPath: clientKitSrc.path) else {
+            return HubRemoteSupervisorBriefProjectionResult(
+                ok: false,
+                source: "hub_supervisor_grpc",
+                projection: nil,
+                reasonCode: "client_kit_missing",
+                logLines: ["missing client kit src: \(clientKitSrc.path)"]
+            )
+        }
+
+        let exported = readEnvExports(from: hubEnv)
+        let merged = mergedAxhubEnv(options: opts, extra: exported)
+        let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged)
+        guard let nodeBin else {
+            return HubRemoteSupervisorBriefProjectionResult(
+                ok: false,
+                source: "hub_supervisor_grpc",
+                projection: nil,
+                reasonCode: "node_missing",
+                logLines: ["missing node runtime for remote supervisor brief projection"]
+            )
+        }
+
+        var scriptEnv = merged
+        scriptEnv["XTERMINAL_SUPERVISOR_BRIEF_REQUEST_ID"] = normalizedRequestId
+        scriptEnv["XTERMINAL_SUPERVISOR_BRIEF_PROJECT_ID"] = normalizedProjectId
+        scriptEnv["XTERMINAL_SUPERVISOR_BRIEF_RUN_ID"] = runId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        scriptEnv["XTERMINAL_SUPERVISOR_BRIEF_MISSION_ID"] = missionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        scriptEnv["XTERMINAL_SUPERVISOR_BRIEF_KIND"] = projectionKind.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "progress_brief"
+            : projectionKind.trimmingCharacters(in: .whitespacesAndNewlines)
+        scriptEnv["XTERMINAL_SUPERVISOR_BRIEF_TRIGGER"] = trigger.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "daily_digest"
+            : trigger.trimmingCharacters(in: .whitespacesAndNewlines)
+        scriptEnv["XTERMINAL_SUPERVISOR_BRIEF_INCLUDE_TTS"] = includeTtsScript ? "1" : "0"
+        scriptEnv["XTERMINAL_SUPERVISOR_BRIEF_INCLUDE_CARD_SUMMARY"] = includeCardSummary ? "1" : "0"
+        scriptEnv["XTERMINAL_SUPERVISOR_BRIEF_MAX_EVIDENCE_REFS"] = String(max(0, min(12, maxEvidenceRefs)))
+        scriptEnv["HUB_PROJECT_ID"] = normalizedProjectId
+
+        let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
+        func runScript() -> StepOutput {
+            do {
+                let script = remoteSupervisorBriefProjectionScriptSource()
+                let result = try ProcessCapture.run(
+                    nodeBin,
+                    ["--input-type=module", "-"],
+                    cwd: clientKitHub,
+                    stdin: script.data(using: .utf8),
+                    timeoutSec: 12.0,
+                    env: scriptEnv
+                )
+                return StepOutput(exitCode: result.exitCode, output: result.combined, command: command)
+            } catch {
+                return StepOutput(exitCode: 127, output: String(describing: error), command: command)
+            }
+        }
+
+        var step = runScript()
+        appendStepLogs(into: &logs, step: step)
+        if step.exitCode != 0, shouldRetryAfterClientKitInstall(step.output) {
+            let install = runAxhubctl(args: ["install-client"], options: opts, env: [:], timeoutSec: 120.0)
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                step = runScript()
+                appendStepLogs(into: &logs, step: step)
+            }
+        }
+
+        guard let jsonLine = extractTrailingJSONObjectLine(step.output),
+              let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteSupervisorBriefProjectionScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(from: step.output, fallback: "remote_supervisor_brief_projection_failed")
+            return HubRemoteSupervisorBriefProjectionResult(
+                ok: false,
+                source: "hub_supervisor_grpc",
+                projection: nil,
+                reasonCode: fallback,
+                logLines: logs
+            )
+        }
+
+        let projection: HubRemoteSupervisorBriefProjection? = {
+            guard let row = decoded.projection else { return nil }
+            let projectionId = row.projectionId.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !projectionId.isEmpty else { return nil }
+            return HubRemoteSupervisorBriefProjection(
+                schemaVersion: row.schemaVersion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? "xhub.supervisor_brief_projection.v1"
+                    : row.schemaVersion.trimmingCharacters(in: .whitespacesAndNewlines),
+                projectionId: projectionId,
+                projectionKind: row.projectionKind.trimmingCharacters(in: .whitespacesAndNewlines),
+                projectId: row.projectId.trimmingCharacters(in: .whitespacesAndNewlines),
+                runId: row.runId.trimmingCharacters(in: .whitespacesAndNewlines),
+                missionId: row.missionId.trimmingCharacters(in: .whitespacesAndNewlines),
+                trigger: row.trigger.trimmingCharacters(in: .whitespacesAndNewlines),
+                status: row.status.trimmingCharacters(in: .whitespacesAndNewlines),
+                criticalBlocker: row.criticalBlocker.trimmingCharacters(in: .whitespacesAndNewlines),
+                topline: row.topline.trimmingCharacters(in: .whitespacesAndNewlines),
+                nextBestAction: row.nextBestAction.trimmingCharacters(in: .whitespacesAndNewlines),
+                pendingGrantCount: max(0, row.pendingGrantCount ?? 0),
+                ttsScript: (row.ttsScript ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty },
+                cardSummary: row.cardSummary.trimmingCharacters(in: .whitespacesAndNewlines),
+                evidenceRefs: (row.evidenceRefs ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty },
+                generatedAtMs: max(0, row.generatedAtMs ?? 0),
+                expiresAtMs: max(0, row.expiresAtMs ?? 0),
+                auditRef: row.auditRef.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        }()
+
+        let ok = (decoded.ok ?? (projection != nil)) && projection != nil
+        let reason = nonEmpty(decoded.errorCode)
+            ?? nonEmpty(decoded.reason)
+            ?? nonEmpty(decoded.errorMessage)
+            ?? (ok ? nil : "remote_supervisor_brief_projection_failed")
+
+        return HubRemoteSupervisorBriefProjectionResult(
+            ok: ok,
+            source: nonEmpty(decoded.source) ?? "hub_supervisor_grpc",
+            projection: projection,
             reasonCode: reason?.replacingOccurrences(of: " ", with: "_"),
             logLines: logs
         )
