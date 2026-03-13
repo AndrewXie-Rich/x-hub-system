@@ -62,6 +62,9 @@ final class ChatSessionModel: ObservableObject {
     private struct MemoryV1BuildInfo {
         var text: String
         var source: String
+        var longtermMode: String?
+        var retrievalAvailable: Bool?
+        var fulltextNotLoaded: Bool?
         var usedTokens: Int?
         var budgetTokens: Int?
         var truncatedLayers: [String]
@@ -737,6 +740,9 @@ final class ChatSessionModel: ObservableObject {
                     "prompt_tokens_est": TokenEstimator.estimateTokens(prompt),
                     "output_tokens_est": TokenEstimator.estimateTokens(out),
                     "memory_v1_source": promptBuild.memory.source,
+                    "memory_v1_longterm_mode": promptBuild.memory.longtermMode as Any,
+                    "memory_v1_retrieval_available": promptBuild.memory.retrievalAvailable as Any,
+                    "memory_v1_fulltext_not_loaded": promptBuild.memory.fulltextNotLoaded as Any,
                     "memory_v1_tokens_est": promptBuild.memory.usedTokens as Any,
                     "memory_v1_budget_tokens": promptBuild.memory.budgetTokens as Any,
                     "memory_v1_truncated_layers": promptBuild.memory.truncatedLayers,
@@ -3045,6 +3051,25 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         shouldRequestProjectMemoryRetrieval(userText: userText)
     }
 
+    func preferredProjectMemoryServingProfileForTesting(userText: String) -> XTMemoryServingProfile? {
+        preferredProjectMemoryServingProfile(userText: userText)
+    }
+
+    func projectMemoryBlockForTesting(
+        canonicalMemory: String,
+        recentText: String,
+        userText: String
+    ) -> String {
+        buildProjectMemoryV1Block(
+            ctx: AXProjectContext(root: URL(fileURLWithPath: "/tmp/project-memory-profile-test", isDirectory: true)),
+            canonicalMemory: canonicalMemory,
+            recentText: recentText,
+            toolResults: [],
+            userText: userText,
+            servingProfile: preferredProjectMemoryServingProfile(userText: userText)
+        )
+    }
+
     func shouldRepairImmediateExecutionForTesting(
         userText: String,
         toolResults: [ToolResult],
@@ -4208,41 +4233,72 @@ Response rules (STRICT):
         canonicalMemory: String,
         recentText: String,
         toolResults: [ToolResult],
-        userText: String
+        userText: String,
+        servingProfile: XTMemoryServingProfile? = nil
     ) -> String {
         let constitution = constitutionOneLinerForMemoryV1(userText: userText)
-        let canonical = cappedForMemoryV1(sanitizedPromptContextText(canonicalMemory), maxChars: 2800)
-        let observations = cappedForMemoryV1(sanitizedPromptContextText(projectObservationDigest(ctx: ctx)), maxChars: 900)
-        let working = cappedForMemoryV1(sanitizedPromptContextText(recentText), maxChars: 1600)
-        let rawEvidence = cappedForMemoryV1(sanitizedPromptContextText(toolEvidenceForMemoryV1(toolResults)), maxChars: 1400)
-        let latestUser = cappedForMemoryV1(userText, maxChars: 350)
+        let rawPayload = HubIPCClient.MemoryContextPayload(
+            mode: XTMemoryUseMode.projectChat.rawValue,
+            projectId: AXProjectRegistryStore.projectId(forRoot: ctx.root),
+            projectRoot: ctx.root.path,
+            displayName: ctx.root.lastPathComponent,
+            latestUser: userText,
+            constitutionHint: constitution,
+            canonicalText: sanitizedPromptContextText(canonicalMemory),
+            observationsText: sanitizedPromptContextText(projectObservationDigest(ctx: ctx)),
+            workingSetText: sanitizedPromptContextText(recentText),
+            rawEvidenceText: sanitizedPromptContextText(toolEvidenceForMemoryV1(toolResults)),
+            servingProfile: servingProfile?.rawValue,
+            budgets: nil
+        )
+        let route = XTMemoryRoleScopedRouter.route(
+            role: .chat,
+            mode: .projectChat,
+            payload: rawPayload
+        )
+        let payload = route.payload
+        let servingProfileSection = payload.servingProfile.map { profile in
+            """
+[SERVING_PROFILE]
+profile_id: \(profile)
+[/SERVING_PROFILE]
+"""
+        } ?? ""
 
-        return """
+        let disclosure = HubIPCClient.resolveMemoryLongtermDisclosure(
+            useMode: .projectChat,
+            retrievalAvailable: false
+        )
+        return HubIPCClient.ensureMemoryLongtermDisclosureText(
+            """
 [MEMORY_V1]
+\(servingProfileSection.isEmpty ? "" : "\(servingProfileSection)\n")
 [L0_CONSTITUTION]
-\(constitution)
+\((payload.constitutionHint ?? "").isEmpty ? "(none)" : (payload.constitutionHint ?? ""))
 [/L0_CONSTITUTION]
 
 [L1_CANONICAL]
-\(canonical.isEmpty ? "(none)" : canonical)
+\((payload.canonicalText ?? "").isEmpty ? "(none)" : (payload.canonicalText ?? ""))
 [/L1_CANONICAL]
 
 [L2_OBSERVATIONS]
-\(observations.isEmpty ? "(none)" : observations)
+\((payload.observationsText ?? "").isEmpty ? "(none)" : (payload.observationsText ?? ""))
 [/L2_OBSERVATIONS]
 
 [L3_WORKING_SET]
-\(working.isEmpty ? "(none)" : working)
+\((payload.workingSetText ?? "").isEmpty ? "(none)" : (payload.workingSetText ?? ""))
 [/L3_WORKING_SET]
 
 [L4_RAW_EVIDENCE]
 tool_results:
-\(rawEvidence.isEmpty ? "(none)" : rawEvidence)
+\((payload.rawEvidenceText ?? "").isEmpty ? "(none)" : (payload.rawEvidenceText ?? ""))
 latest_user:
-\(latestUser)
+\(payload.latestUser)
 [/L4_RAW_EVIDENCE]
 [/MEMORY_V1]
-"""
+""",
+            disclosure: disclosure
+        )
     }
 
     private func buildProjectMemoryV1ViaHub(
@@ -4256,6 +4312,7 @@ latest_user:
         let preferHubMemory = XTProjectMemoryGovernance.prefersHubMemory(config)
         let observationsText = projectObservationDigest(ctx: ctx)
         let rawEvidence = sanitizedPromptContextText(toolEvidenceForMemoryV1(toolResults))
+        let servingProfile = preferredProjectMemoryServingProfile(userText: userText)
         let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
         let reg = AXProjectRegistryStore.load()
         let displayName = reg.projects.first(where: { $0.projectId == projectId })?.displayName ?? ctx.root.lastPathComponent
@@ -4280,13 +4337,17 @@ latest_user:
             canonicalMemory: canonicalMemory,
             recentText: mergedRecentText,
             toolResults: toolResults,
-            userText: userText
+            userText: userText,
+            servingProfile: servingProfile
         )
 
         if !preferHubMemory {
             return MemoryV1BuildInfo(
                 text: local,
                 source: XTProjectMemoryGovernance.localSourceLabel(prefersHubMemory: false),
+                longtermMode: XTMemoryLongtermPolicy.summaryOnly.rawValue,
+                retrievalAvailable: false,
+                fulltextNotLoaded: true,
                 usedTokens: TokenEstimator.estimateTokens(local),
                 budgetTokens: nil,
                 truncatedLayers: [],
@@ -4307,14 +4368,28 @@ latest_user:
             observationsText: sanitizedPromptContextText(observationsText),
             workingSetText: sanitizedPromptContextText(mergedRecentText),
             rawEvidenceText: rawEvidence,
+            servingProfile: servingProfile,
             budgets: nil,
             timeoutSec: 1.2
         )
         if let hubMemory {
             let source = XTProjectMemoryGovernance.normalizedResolvedSource(hubMemory.source)
+            let disclosure = HubIPCClient.resolveMemoryLongtermDisclosure(
+                useMode: .projectChat,
+                retrievalAvailable: false,
+                overrideLongtermMode: hubMemory.longtermMode,
+                overrideRetrievalAvailable: hubMemory.retrievalAvailable,
+                overrideFulltextNotLoaded: hubMemory.fulltextNotLoaded
+            )
             return MemoryV1BuildInfo(
-                text: hubMemory.text,
+                text: HubIPCClient.ensureMemoryLongtermDisclosureText(
+                    hubMemory.text,
+                    disclosure: disclosure
+                ),
                 source: source,
+                longtermMode: disclosure.longtermMode,
+                retrievalAvailable: disclosure.retrievalAvailable,
+                fulltextNotLoaded: disclosure.fulltextNotLoaded,
                 usedTokens: hubMemory.usedTotalTokens,
                 budgetTokens: hubMemory.budgetTotalTokens,
                 truncatedLayers: hubMemory.truncatedLayers,
@@ -4326,6 +4401,9 @@ latest_user:
         return MemoryV1BuildInfo(
             text: local,
             source: XTProjectMemoryGovernance.localSourceLabel(prefersHubMemory: true),
+            longtermMode: XTMemoryLongtermPolicy.summaryOnly.rawValue,
+            retrievalAvailable: false,
+            fulltextNotLoaded: true,
             usedTokens: TokenEstimator.estimateTokens(local),
             budgetTokens: nil,
             truncatedLayers: [],
@@ -4382,6 +4460,10 @@ latest_user:
         if retrieval.isEmpty { return recentText }
         if recent.isEmpty || recent == "(none)" { return retrieval }
         return "\(recent)\n\n\(retrieval)"
+    }
+
+    private func preferredProjectMemoryServingProfile(userText: String) -> XTMemoryServingProfile? {
+        XTMemoryServingProfileSelector.preferredProjectChatProfile(userMessage: userText)
     }
 
     private func shouldRequestProjectMemoryRetrieval(userText: String) -> Bool {

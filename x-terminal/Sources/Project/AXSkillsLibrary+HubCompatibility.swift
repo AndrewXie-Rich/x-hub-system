@@ -911,6 +911,7 @@ extension AXSkillsLibrary {
 
     private struct SupervisorSkillManifestHints {
         var description: String
+        var capabilitiesRequired: [String]
         var inputSchemaRef: String
         var outputSchemaRef: String
         var sideEffectClass: String
@@ -951,6 +952,7 @@ extension AXSkillsLibrary {
             skillId: skill.skillID,
             displayName: firstNonEmptySkillText(skill.name, skill.skillID),
             description: manifestHints.description,
+            capabilitiesRequired: manifestHints.capabilitiesRequired,
             inputSchemaRef: manifestHints.inputSchemaRef.isEmpty ? "schema://\(skill.skillID).input" : manifestHints.inputSchemaRef,
             outputSchemaRef: manifestHints.outputSchemaRef.isEmpty ? "schema://\(skill.skillID).output" : manifestHints.outputSchemaRef,
             sideEffectClass: manifestHints.sideEffectClass,
@@ -986,6 +988,7 @@ extension AXSkillsLibrary {
                 stringValue(manifest["description"]),
                 fallbackDescription
             ),
+            capabilitiesRequired: capabilities,
             inputSchemaRef: stringValue(manifest["input_schema_ref"]),
             outputSchemaRef: stringValue(manifest["output_schema_ref"]),
             sideEffectClass: sideEffectClass,

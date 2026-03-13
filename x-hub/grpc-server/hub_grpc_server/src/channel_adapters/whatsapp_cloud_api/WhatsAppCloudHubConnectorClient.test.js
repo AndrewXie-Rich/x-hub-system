@@ -45,6 +45,14 @@ await runAsync('WhatsAppCloudHubConnectorClient wraps HubRuntime governance RPCs
       calls.push({ method: 'EvaluateChannelCommandGate', req, md });
       cb(null, { decision: { allowed: true, action_name: req.action_name }, audit_logged: true });
     },
+    IngestSupervisorSurface(req, md, cb) {
+      calls.push({ method: 'IngestSupervisorSurface', req, md });
+      cb(null, { ok: true, ingress: { project_id: req.ingress?.project_id || '' } });
+    },
+    GetSupervisorBriefProjection(req, md, cb) {
+      calls.push({ method: 'GetSupervisorBriefProjection', req, md });
+      cb(null, { ok: true, projection: { project_id: req.project_id, status: 'active' } });
+    },
     ResolveSupervisorChannelRoute(req, md, cb) {
       calls.push({ method: 'ResolveSupervisorChannelRoute', req, md });
       cb(null, { ok: true, route: { route_mode: 'hub_to_xt', resolved_device_id: 'xt-1' } });
@@ -108,6 +116,23 @@ await runAsync('WhatsAppCloudHubConnectorClient wraps HubRuntime governance RPCs
   });
   assert.equal(String(execution.query?.project_id || ''), 'project_alpha');
 
+  const ingested = await client.ingestSupervisorSurface({
+    request_id: 'ingest-1',
+    ingress: {
+      surface_type: 'whatsapp_cloud_api',
+      normalized_intent_type: 'progress_query',
+      project_id: 'project_alpha',
+    },
+  });
+  assert.equal(String(ingested.ingress?.project_id || ''), 'project_alpha');
+
+  const projection = await client.getSupervisorBriefProjection({
+    request_id: 'brief-1',
+    project_id: 'project_alpha',
+    projection_kind: 'progress_brief',
+  });
+  assert.equal(String(projection.projection?.project_id || ''), 'project_alpha');
+
   const subscribed = client.subscribeHubEvents({
     scopes: ['grants'],
   });
@@ -115,4 +140,6 @@ await runAsync('WhatsAppCloudHubConnectorClient wraps HubRuntime governance RPCs
 
   assert.equal(String(calls[0].req.admin?.device_id || ''), 'hub_operator_channel_connector');
   assert.equal(String(calls[3].req.client?.app_id || ''), 'whatsapp_cloud_operator_adapter');
+  assert.equal(String(calls[4].req.client?.device_id || ''), 'hub_operator_channel_connector');
+  assert.equal(String(calls[5].req.client?.app_id || ''), 'whatsapp_cloud_operator_adapter');
 });

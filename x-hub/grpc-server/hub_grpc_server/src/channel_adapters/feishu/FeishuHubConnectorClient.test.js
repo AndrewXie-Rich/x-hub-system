@@ -86,6 +86,14 @@ await runAsync('FeishuHubConnectorClient wraps HubRuntime governance RPCs with c
       calls.push({ method: 'EvaluateChannelCommandGate', req, md });
       cb(null, { decision: { allowed: true, action_name: req.action_name }, audit_logged: true });
     },
+    IngestSupervisorSurface(req, md, cb) {
+      calls.push({ method: 'IngestSupervisorSurface', req, md });
+      cb(null, { ok: true, ingress: { project_id: req.ingress?.project_id || '' } });
+    },
+    GetSupervisorBriefProjection(req, md, cb) {
+      calls.push({ method: 'GetSupervisorBriefProjection', req, md });
+      cb(null, { ok: true, projection: { project_id: req.project_id, status: 'active' } });
+    },
     ResolveSupervisorChannelRoute(req, md, cb) {
       calls.push({ method: 'ResolveSupervisorChannelRoute', req, md });
       cb(null, { ok: true, route: { route_mode: 'hub_to_xt', resolved_device_id: 'xt-1' } });
@@ -153,6 +161,23 @@ await runAsync('FeishuHubConnectorClient wraps HubRuntime governance RPCs with c
       assert.equal(!!execution.ok, true);
       assert.equal(String(execution.query?.project_id || ''), 'project_alpha');
 
+      const ingested = await client.ingestSupervisorSurface({
+        request_id: 'ingest-1',
+        ingress: {
+          surface_type: 'feishu',
+          normalized_intent_type: 'progress_query',
+          project_id: 'project_alpha',
+        },
+      });
+      assert.equal(String(ingested.ingress?.project_id || ''), 'project_alpha');
+
+      const projection = await client.getSupervisorBriefProjection({
+        request_id: 'brief-1',
+        project_id: 'project_alpha',
+        projection_kind: 'progress_brief',
+      });
+      assert.equal(String(projection.projection?.project_id || ''), 'project_alpha');
+
       const subscribed = client.subscribeHubEvents({
         scopes: ['grants'],
       });
@@ -160,7 +185,7 @@ await runAsync('FeishuHubConnectorClient wraps HubRuntime governance RPCs with c
     }
   );
 
-  assert.equal(calls.length, 4);
+  assert.equal(calls.length, 6);
   assert.equal(String(calls[0].method || ''), 'EvaluateChannelCommandGate');
   assert.equal(String(calls[0].req.admin?.device_id || ''), 'hub_operator_channel_connector');
   assert.deepEqual(calls[0].md.get('authorization'), ['Bearer connector-token-2']);
@@ -169,8 +194,12 @@ await runAsync('FeishuHubConnectorClient wraps HubRuntime governance RPCs with c
   assert.equal(String(calls[2].method || ''), 'ExecuteOperatorChannelHubCommand');
   assert.equal(String(calls[2].req.admin?.device_id || ''), 'hub_operator_channel_connector');
   assert.deepEqual(calls[2].md.get('authorization'), ['Bearer connector-token-2']);
-  assert.equal(String(calls[3].method || ''), 'Subscribe');
+  assert.equal(String(calls[3].method || ''), 'IngestSupervisorSurface');
   assert.equal(String(calls[3].req.client?.app_id || ''), 'feishu_operator_adapter');
-  assert.deepEqual(calls[3].req.scopes, ['grants']);
-  assert.deepEqual(calls[3].md.get('authorization'), ['Bearer connector-token-2']);
+  assert.equal(String(calls[4].method || ''), 'GetSupervisorBriefProjection');
+  assert.equal(String(calls[4].req.client?.device_id || ''), 'hub_operator_channel_connector');
+  assert.equal(String(calls[5].method || ''), 'Subscribe');
+  assert.equal(String(calls[5].req.client?.app_id || ''), 'feishu_operator_adapter');
+  assert.deepEqual(calls[5].req.scopes, ['grants']);
+  assert.deepEqual(calls[5].md.get('authorization'), ['Bearer connector-token-2']);
 });

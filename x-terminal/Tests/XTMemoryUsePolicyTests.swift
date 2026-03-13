@@ -98,6 +98,126 @@ struct XTMemoryUsePolicyTests {
     }
 
     @Test
+    func supervisorReviewRequestAutoSelectsPlanReviewProfileAndExpandsContextBudget() {
+        let longCanonical = String(repeating: "c", count: 3_000)
+        let payload = HubIPCClient.MemoryContextPayload(
+            mode: XTMemoryUseMode.supervisorOrchestration.rawValue,
+            projectId: "proj-supervisor",
+            projectRoot: "/tmp/proj-supervisor",
+            displayName: "proj-supervisor",
+            latestUser: "审查项目上下文记忆，给出最具体的执行方案",
+            constitutionHint: "safe",
+            canonicalText: longCanonical,
+            observationsText: "obs",
+            workingSetText: "working",
+            rawEvidenceText: "raw",
+            budgets: nil
+        )
+
+        let route = XTMemoryRoleScopedRouter.route(
+            role: .supervisor,
+            mode: .supervisorOrchestration,
+            payload: payload
+        )
+
+        #expect(route.denyCode == nil)
+        #expect(route.servingProfile == .m2PlanReview)
+        #expect(route.payload.servingProfile == XTMemoryServingProfile.m2PlanReview.rawValue)
+        #expect(route.payload.budgets?.totalTokens == 2_340)
+        #expect(route.payload.canonicalText?.count == 3_000)
+    }
+
+    @Test
+    func projectChatStructureReviewRequestAutoSelectsPlanReviewProfile() {
+        let payload = HubIPCClient.MemoryContextPayload(
+            mode: XTMemoryUseMode.projectChat.rawValue,
+            projectId: "proj-chat-review",
+            projectRoot: "/tmp/proj-chat-review",
+            displayName: "proj-chat-review",
+            latestUser: "梳理项目结构并给出重构建议",
+            constitutionHint: "safe",
+            canonicalText: String(repeating: "c", count: 3_500),
+            observationsText: "obs",
+            workingSetText: "working",
+            rawEvidenceText: "raw",
+            budgets: nil
+        )
+
+        let route = XTMemoryRoleScopedRouter.route(
+            role: .chat,
+            mode: .projectChat,
+            payload: payload
+        )
+
+        #expect(route.denyCode == nil)
+        #expect(route.servingProfile == .m2PlanReview)
+        #expect(route.payload.canonicalText?.count == 3_500)
+    }
+
+    @Test
+    func projectChatContractRequiresProgressiveDisclosure() {
+        let contract = XTMemoryRoleScopedRouter.contract(for: .projectChat)
+
+        #expect(contract.longtermPolicy == .progressiveDisclosureRequired)
+    }
+
+    @Test
+    func projectChatFullScanRequestAutoSelectsDeepDiveProfile() {
+        let payload = HubIPCClient.MemoryContextPayload(
+            mode: XTMemoryUseMode.projectChat.rawValue,
+            projectId: "proj-chat-deep-dive",
+            projectRoot: "/tmp/proj-chat-deep-dive",
+            displayName: "proj-chat-deep-dive",
+            latestUser: "先完整通读整个仓库，再给我架构重构路径",
+            constitutionHint: "safe",
+            canonicalText: "goal",
+            observationsText: "obs",
+            workingSetText: "working",
+            rawEvidenceText: "raw",
+            budgets: nil
+        )
+
+        let route = XTMemoryRoleScopedRouter.route(
+            role: .chat,
+            mode: .projectChat,
+            payload: payload
+        )
+
+        #expect(route.denyCode == nil)
+        #expect(route.servingProfile == .m3DeepDive)
+        #expect(route.payload.budgets?.totalTokens == 4_480)
+    }
+
+    @Test
+    func highRiskToolRouteClampsFullScanProfileToPlanReview() {
+        let payload = HubIPCClient.MemoryContextPayload(
+            mode: XTMemoryUseMode.toolActHighRisk.rawValue,
+            projectId: "proj-risk",
+            projectRoot: "/tmp/proj-risk",
+            displayName: "proj-risk",
+            latestUser: "完整扫描所有背景再执行高风险动作",
+            constitutionHint: "safe",
+            canonicalText: "goal",
+            observationsText: "obs",
+            workingSetText: "working",
+            rawEvidenceText: "raw",
+            servingProfile: XTMemoryServingProfile.m4FullScan.rawValue,
+            budgets: nil
+        )
+
+        let route = XTMemoryRoleScopedRouter.route(
+            role: .tool,
+            mode: .toolActHighRisk,
+            payload: payload
+        )
+
+        #expect(route.denyCode == nil)
+        #expect(route.servingProfile == .m2PlanReview)
+        #expect(route.payload.servingProfile == XTMemoryServingProfile.m2PlanReview.rawValue)
+        #expect(route.payload.budgets?.totalTokens == 1_710)
+    }
+
+    @Test
     func rawEvidenceSanitizerRedactsSecretsAndBlobHeaders() {
         let sanitized = XTMemorySanitizer.sanitizeRawEvidenceSummary(
             "Authorization: Bearer sk-123456789012345678901234\nFrom: a@example.com\n<html>attack</html>\nnormal line",

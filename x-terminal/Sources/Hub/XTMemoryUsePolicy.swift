@@ -133,6 +133,66 @@ enum XTMemoryServingProfile: String, CaseIterable, Sendable {
     }
 }
 
+enum XTMemoryServingProfileSelector {
+    static func preferredSupervisorProfile(userMessage: String) -> XTMemoryServingProfile? {
+        let normalized = normalized(userMessage)
+        guard !normalized.isEmpty else { return nil }
+        if fullScanRequestSignals(normalized) {
+            return .m3DeepDive
+        }
+        if reviewPlanRequestSignals(normalized) {
+            return .m2PlanReview
+        }
+        return nil
+    }
+
+    static func preferredProjectChatProfile(userMessage: String) -> XTMemoryServingProfile? {
+        let normalized = normalized(userMessage)
+        guard !normalized.isEmpty else { return nil }
+        if fullScanRequestSignals(normalized) {
+            return .m3DeepDive
+        }
+        if reviewPlanRequestSignals(normalized) || projectStructureReviewSignals(normalized) {
+            return .m2PlanReview
+        }
+        return nil
+    }
+
+    static func reviewPlanRequestSignals(_ text: String) -> Bool {
+        let normalized = normalized(text)
+        guard !normalized.isEmpty else { return false }
+        let keywords = [
+            "审查", "审阅", "review", "上下文记忆", "项目记忆", "执行方案",
+            "重构建议", "方案评审", "规划", "计划", "梳理", "全貌", "背景信息",
+            "设计建议", "refactor", "architecture review", "planning", "deep dive"
+        ]
+        return keywords.contains { normalized.contains($0) }
+    }
+
+    static func fullScanRequestSignals(_ text: String) -> Bool {
+        let normalized = normalized(text)
+        guard !normalized.isEmpty else { return false }
+        let keywords = [
+            "全局", "全仓", "仓库级", "整个仓库", "完整上下文", "全部背景",
+            "全量背景", "portfolio", "repo-wide", "full scan", "system-wide",
+            "全面审查", "全面评审", "从全局看", "完整背景", "通读"
+        ]
+        return keywords.contains { normalized.contains($0) }
+    }
+
+    private static func projectStructureReviewSignals(_ text: String) -> Bool {
+        let keywords = [
+            "项目结构", "代码结构", "工程结构", "架构", "架构设计", "技术栈",
+            "tech stack", "system design", "design rationale", "历史决策", "decision track"
+        ]
+        return keywords.contains { text.contains($0) }
+    }
+
+    private static func normalized(_ text: String) -> String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+}
+
 struct XTMemoryServingProfileContract: Sendable {
     var budgetScale: Double
     var maxTotalTokens: Int
@@ -290,7 +350,7 @@ enum XTMemoryRoleScopedRouter {
                 allowedLayers: [.l0Constitution, .l1Canonical, .l2Observations, .l3WorkingSet, .l4RawEvidence],
                 freshnessPolicy: .allowShortTTLCache,
                 userMemoryPolicy: .defaultOff,
-                longtermPolicy: .summaryOnly,
+                longtermPolicy: .progressiveDisclosureRequired,
                 remoteExportPolicy: .localOnly,
                 constitutionMaxChars: 300,
                 canonicalMaxChars: 3_200,
@@ -499,25 +559,21 @@ enum XTMemoryRoleScopedRouter {
         case .laneHandoff:
             return .m0Heartbeat
         case .remotePromptBundle:
-            return reviewPlanRequestSignals(latestUser) ? .m1Execute : .m0Heartbeat
+            return XTMemoryServingProfileSelector.reviewPlanRequestSignals(latestUser) ? .m1Execute : .m0Heartbeat
+        case .projectChat:
+            return XTMemoryServingProfileSelector.preferredProjectChatProfile(userMessage: latestUser) ?? .m1Execute
         case .supervisorOrchestration:
-            if fullScanRequestSignals(latestUser) {
-                return .m3DeepDive
-            }
-            if reviewPlanRequestSignals(latestUser) {
-                return .m2PlanReview
-            }
-            return .m1Execute
+            return XTMemoryServingProfileSelector.preferredSupervisorProfile(userMessage: latestUser) ?? .m1Execute
         case .toolActHighRisk:
-            if reviewPlanRequestSignals(latestUser) {
+            if XTMemoryServingProfileSelector.reviewPlanRequestSignals(latestUser) {
                 return .m2PlanReview
             }
             return .m1Execute
         default:
-            if fullScanRequestSignals(latestUser) && role != .remoteExport {
+            if XTMemoryServingProfileSelector.fullScanRequestSignals(latestUser) && role != .remoteExport {
                 return .m3DeepDive
             }
-            if reviewPlanRequestSignals(latestUser) {
+            if XTMemoryServingProfileSelector.reviewPlanRequestSignals(latestUser) {
                 return .m2PlanReview
             }
             return .m1Execute
@@ -715,28 +771,6 @@ enum XTMemoryRoleScopedRouter {
     ) -> Int {
         guard value > 0 else { return 0 }
         return max(floor, Int((Double(value) * scale).rounded()))
-    }
-
-    private static func reviewPlanRequestSignals(_ text: String) -> Bool {
-        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !normalized.isEmpty else { return false }
-        let keywords = [
-            "审查", "审阅", "review", "上下文记忆", "项目记忆", "执行方案",
-            "重构建议", "方案评审", "规划", "计划", "梳理", "全貌", "背景信息",
-            "设计建议", "refactor", "architecture review", "planning", "deep dive"
-        ]
-        return keywords.contains { normalized.contains($0) }
-    }
-
-    private static func fullScanRequestSignals(_ text: String) -> Bool {
-        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !normalized.isEmpty else { return false }
-        let keywords = [
-            "全局", "全仓", "仓库级", "整个仓库", "完整上下文", "全部背景",
-            "全量背景", "portfolio", "repo-wide", "full scan", "system-wide",
-            "全面审查", "全面评审", "从全局看", "完整背景", "通读"
-        ]
-        return keywords.contains { normalized.contains($0) }
     }
 
     private static func cappedBudgets(

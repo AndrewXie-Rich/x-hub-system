@@ -7,10 +7,30 @@ enum SupervisorSkillRiskLevel: String, Codable, CaseIterable, Sendable {
     case critical
 }
 
+struct SupervisorGovernedSkillDispatch: Codable, Equatable, Sendable {
+    var tool: String
+    var fixedArgs: [String: JSONValue]
+    var passthroughArgs: [String]
+    var argAliases: [String: [String]]
+    var requiredAny: [[String]]
+    var exactlyOneOf: [[String]]
+
+    enum CodingKeys: String, CodingKey {
+        case tool
+        case fixedArgs = "fixed_args"
+        case passthroughArgs = "passthrough_args"
+        case argAliases = "arg_aliases"
+        case requiredAny = "required_any"
+        case exactlyOneOf = "exactly_one_of"
+    }
+}
+
 struct SupervisorSkillRegistryItem: Identifiable, Codable, Equatable, Sendable {
     var skillId: String
     var displayName: String
     var description: String
+    var capabilitiesRequired: [String]
+    var governedDispatch: SupervisorGovernedSkillDispatch?
     var inputSchemaRef: String
     var outputSchemaRef: String
     var sideEffectClass: String
@@ -27,6 +47,8 @@ struct SupervisorSkillRegistryItem: Identifiable, Codable, Equatable, Sendable {
         case skillId = "skill_id"
         case displayName = "display_name"
         case description
+        case capabilitiesRequired = "capabilities_required"
+        case governedDispatch = "governed_dispatch"
         case inputSchemaRef = "input_schema_ref"
         case outputSchemaRef = "output_schema_ref"
         case sideEffectClass = "side_effect_class"
@@ -73,8 +95,13 @@ extension SupervisorSkillRegistrySnapshot {
         var lines = ["project=\(projectLabel) id=\(projectId)"]
         for (index, item) in items.prefix(max(1, maxItems)).enumerated() {
             let grant = item.requiresGrant ? "grant=yes" : "grant=no"
-            let headline = "\(index + 1). \(item.skillId) | risk=\(item.riskLevel.rawValue) | \(grant) | scope=\(item.policyScope) | timeout_ms=\(item.timeoutMs) | retries=\(item.maxRetries) | side_effect=\(item.sideEffectClass)"
+            let dispatchTool = item.governedDispatch?.tool.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let dispatchSegment = dispatchTool.isEmpty ? "" : " | dispatch=\(dispatchTool)"
+            let headline = "\(index + 1). \(item.skillId) | risk=\(item.riskLevel.rawValue) | \(grant) | scope=\(item.policyScope) | timeout_ms=\(item.timeoutMs) | retries=\(item.maxRetries) | side_effect=\(item.sideEffectClass)\(dispatchSegment)"
             lines.append(headline)
+            if !item.capabilitiesRequired.isEmpty {
+                lines.append("   caps: \(item.capabilitiesRequired.joined(separator: ", "))")
+            }
             let description = item.description.trimmingCharacters(in: .whitespacesAndNewlines)
             if !description.isEmpty {
                 lines.append("   \(description)")

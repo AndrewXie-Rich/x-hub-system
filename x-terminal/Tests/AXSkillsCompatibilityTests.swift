@@ -81,6 +81,7 @@ struct AXSkillsCompatibilityTests {
 
         let git = try #require(snapshot.items.first(where: { $0.skillId == "repo.git.status" }))
         #expect(git.displayName == "Git Status")
+        #expect(git.capabilitiesRequired == ["repo.read.status"])
         #expect(git.riskLevel == .low)
         #expect(git.requiresGrant == false)
         #expect(git.sideEffectClass == "read_only")
@@ -89,6 +90,7 @@ struct AXSkillsCompatibilityTests {
         #expect(git.maxRetries == 0)
 
         let browser = try #require(snapshot.items.first(where: { $0.skillId == "browser.runtime.smoke" }))
+        #expect(browser.capabilitiesRequired == ["web.navigate"])
         #expect(browser.riskLevel == .high)
         #expect(browser.requiresGrant)
         #expect(browser.sideEffectClass == "external_side_effect")
@@ -140,6 +142,8 @@ struct AXSkillsCompatibilityTests {
         #expect(memory.contains("repo.git.status"))
         #expect(memory.contains("browser.runtime.smoke"))
         #expect(memory.contains("grant=yes"))
+        #expect(memory.contains("caps: repo.read.status"))
+        #expect(memory.contains("caps: web.navigate"))
         #expect(registrySnapshot?.items.count == 2)
         #expect(resolvedCache?.items.count == 2)
     }

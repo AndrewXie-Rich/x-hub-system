@@ -7034,29 +7034,7 @@ final class SupervisorManager: ObservableObject {
     private func preferredSupervisorMemoryServingProfile(
         userMessage: String
     ) -> XTMemoryServingProfile? {
-        let normalized = userMessage.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !normalized.isEmpty else { return nil }
-        if containsAny(
-            normalized,
-            [
-                "全局", "全仓", "仓库级", "整个仓库", "完整上下文", "全部背景",
-                "全量背景", "portfolio", "repo-wide", "full scan", "system-wide",
-                "全面审查", "全面评审", "从全局看", "完整背景", "通读"
-            ]
-        ) {
-            return .m3DeepDive
-        }
-        if containsAny(
-            normalized,
-            [
-                "审查", "审阅", "review", "上下文记忆", "项目记忆", "执行方案",
-                "重构建议", "方案评审", "规划", "计划", "梳理", "全貌", "背景信息",
-                "设计建议", "refactor", "architecture review", "planning", "deep dive"
-            ]
-        ) {
-            return .m2PlanReview
-        }
-        return nil
+        XTMemoryServingProfileSelector.preferredSupervisorProfile(userMessage: userMessage)
     }
 
     private func composeSupervisorMemoryV1(userMessage: String) async -> SupervisorMemoryComposition {

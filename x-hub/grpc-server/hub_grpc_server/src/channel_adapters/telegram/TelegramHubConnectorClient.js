@@ -37,9 +37,9 @@ export function telegramConnectorPrincipal({ app_id = 'telegram_operator_adapter
   };
 }
 
-function unary(runtimeClient, method, request, metadataFactory) {
+function unary(rpcClient, method, request, metadataFactory) {
   return new Promise((resolve, reject) => {
-    runtimeClient[method](request, metadataFactory(), (err, out) => {
+    rpcClient[method](request, metadataFactory(), (err, out) => {
       if (err) reject(err);
       else resolve(out);
     });
@@ -55,7 +55,7 @@ export function createTelegramHubConnectorClient(options = {}) {
   const principal = options.principal && typeof options.principal === 'object'
     ? options.principal
     : telegramConnectorPrincipal({ app_id: safeString(options.app_id || 'telegram_operator_adapter') });
-  const proto = (!options.runtimeClient || !options.eventsClient)
+  const proto = (!options.runtimeClient || !options.eventsClient || !options.supervisorClient)
     ? loadProto(resolveHubProtoPath(env))
     : null;
 
@@ -68,6 +68,23 @@ export function createTelegramHubConnectorClient(options = {}) {
     if (options.eventsClient) return options.eventsClient;
     const { creds, options: clientOptions } = makeClientCredentials(env);
     return new proto.HubEvents(address, creds, clientOptions);
+  })();
+  const supervisorClient = (() => {
+    if (options.supervisorClient) return options.supervisorClient;
+    if (
+      runtimeClient
+      && (
+        typeof runtimeClient.IngestSupervisorSurface === 'function'
+        || typeof runtimeClient.ResolveSupervisorRoute === 'function'
+        || typeof runtimeClient.GetSupervisorBriefProjection === 'function'
+        || typeof runtimeClient.ResolveSupervisorGuidance === 'function'
+        || typeof runtimeClient.IssueSupervisorCheckpointChallenge === 'function'
+      )
+    ) {
+      return runtimeClient;
+    }
+    const { creds, options: clientOptions } = makeClientCredentials(env);
+    return new proto.HubSupervisor(address, creds, clientOptions);
   })();
 
   return {
@@ -82,6 +99,13 @@ export function createTelegramHubConnectorClient(options = {}) {
       if (eventsClient !== runtimeClient) {
         try {
           eventsClient.close?.();
+        } catch {
+          // ignore
+        }
+      }
+      if (supervisorClient !== runtimeClient && supervisorClient !== eventsClient) {
+        try {
+          supervisorClient.close?.();
         } catch {
           // ignore
         }
@@ -203,6 +227,133 @@ export function createTelegramHubConnectorClient(options = {}) {
           scope_id: safeString(scope_id),
           pending_grant,
           note: safeString(note),
+        },
+        metadataFactory
+      );
+    },
+    async ingestSupervisorSurface({
+      request_id = '',
+      ingress = {},
+      allow_hub_only_without_project = false,
+    } = {}) {
+      return await unary(
+        supervisorClient,
+        'IngestSupervisorSurface',
+        {
+          request_id: safeString(request_id),
+          client: principal,
+          ingress: ingress || {},
+          allow_hub_only_without_project: !!allow_hub_only_without_project,
+        },
+        metadataFactory
+      );
+    },
+    async resolveSupervisorRoute({
+      request_id = '',
+      ingress = {},
+      require_xt = false,
+      require_runner = false,
+      preferred_device_id_override = '',
+    } = {}) {
+      return await unary(
+        supervisorClient,
+        'ResolveSupervisorRoute',
+        {
+          request_id: safeString(request_id),
+          client: principal,
+          ingress: ingress || {},
+          require_xt: !!require_xt,
+          require_runner: !!require_runner,
+          preferred_device_id_override: safeString(preferred_device_id_override),
+        },
+        metadataFactory
+      );
+    },
+    async getSupervisorBriefProjection({
+      request_id = '',
+      project_id = '',
+      run_id = '',
+      mission_id = '',
+      projection_kind = '',
+      trigger = '',
+      include_tts_script = true,
+      include_card_summary = true,
+      max_evidence_refs = 0,
+    } = {}) {
+      return await unary(
+        supervisorClient,
+        'GetSupervisorBriefProjection',
+        {
+          request_id: safeString(request_id),
+          client: principal,
+          project_id: safeString(project_id),
+          run_id: safeString(run_id),
+          mission_id: safeString(mission_id),
+          projection_kind: safeString(projection_kind),
+          trigger: safeString(trigger),
+          include_tts_script: include_tts_script !== false,
+          include_card_summary: include_card_summary !== false,
+          max_evidence_refs: Number(max_evidence_refs || 0),
+        },
+        metadataFactory
+      );
+    },
+    async resolveSupervisorGuidance({
+      request_id = '',
+      ingress = {},
+      guidance_type = '',
+      normalized_instruction = '',
+      target_scope = null,
+      requires_confirmation = false,
+      requires_authorization = false,
+    } = {}) {
+      return await unary(
+        supervisorClient,
+        'ResolveSupervisorGuidance',
+        {
+          request_id: safeString(request_id),
+          client: principal,
+          ingress: ingress || {},
+          guidance_type: safeString(guidance_type),
+          normalized_instruction: safeString(normalized_instruction),
+          target_scope: target_scope && typeof target_scope === 'object' ? target_scope : null,
+          requires_confirmation: !!requires_confirmation,
+          requires_authorization: !!requires_authorization,
+        },
+        metadataFactory
+      );
+    },
+    async issueSupervisorCheckpointChallenge({
+      request_id = '',
+      project_id = '',
+      mission_id = '',
+      checkpoint_type = '',
+      risk_tier = '',
+      decision_path = '',
+      scope_digest = '',
+      amount_digest = '',
+      requires_mobile_confirm = false,
+      bound_device_id = '',
+      ttl_ms = 0,
+      evidence_refs = [],
+    } = {}) {
+      return await unary(
+        supervisorClient,
+        'IssueSupervisorCheckpointChallenge',
+        {
+          request_id: safeString(request_id),
+          client: principal,
+          project_id: safeString(project_id),
+          mission_id: safeString(mission_id),
+          checkpoint_type: safeString(checkpoint_type),
+          risk_tier: safeString(risk_tier),
+          decision_path: safeString(decision_path),
+          scope_digest: safeString(scope_digest),
+          amount_digest: safeString(amount_digest),
+          requires_mobile_confirm: !!requires_mobile_confirm,
+          bound_device_id: safeString(bound_device_id),
+          ttl_ms: Number(ttl_ms || 0),
+          evidence_refs: Array.isArray(evidence_refs) ? evidence_refs.map((item) => safeString(item)).filter(Boolean) : [],
         },
         metadataFactory
       );

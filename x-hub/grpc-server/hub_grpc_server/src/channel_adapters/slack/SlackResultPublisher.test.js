@@ -100,11 +100,51 @@ run('SlackResultPublisher reflects deny and route blocked outcomes in summary co
   assert.match(String(blocked.payload?.text || ''), /Device: xt-alpha-1/);
 });
 
-run('SlackResultPublisher renders actual Hub query summaries when execution data is present', () => {
+run('SlackResultPublisher renders supervisor brief projection summaries when projection data is present', () => {
   const out = buildSlackResultSummary(makeResult({
     command: {
       ...makeResult().command,
       action_name: 'supervisor.status.get',
+    },
+    dispatch: {
+      kind: 'hub_query',
+    },
+    execution: {
+      ok: true,
+      projection: {
+        projection_kind: 'progress_brief',
+        project_id: 'project_alpha',
+        trigger: 'awaiting_authorization',
+        status: 'awaiting_authorization',
+        topline: 'Release train paused on one approval',
+        critical_blocker: 'awaiting security review',
+        next_best_action: 'Review 1 pending grant request',
+        pending_grant_count: 1,
+        card_summary: 'One pending grant is blocking the release train.',
+        audit_ref: 'audit-projection-1',
+      },
+      route: {
+        route_mode: 'hub_only_status',
+        resolved_device_id: 'xt-alpha-1',
+        xt_online: true,
+      },
+    },
+  }));
+  assert.equal(!!out.ok, true);
+  assert.match(String(out.payload?.text || ''), /status=supervisor_status/);
+  assert.match(String(out.payload?.text || ''), /Topline: Release train paused on one approval/);
+  assert.match(String(out.payload?.text || ''), /Blocker: awaiting security review/);
+  assert.match(String(out.payload?.text || ''), /Next: Review 1 pending grant request/);
+  assert.match(String(out.payload?.text || ''), /Pending grants: 1/);
+  assert.match(String(out.payload?.text || ''), /Device: xt-alpha-1/);
+  assert.equal(String(out.payload?.metadata?.event_payload?.audit_ref || ''), 'audit-projection-1');
+});
+
+run('SlackResultPublisher renders legacy Hub blocker query summaries when execution query data is present', () => {
+  const out = buildSlackResultSummary(makeResult({
+    command: {
+      ...makeResult().command,
+      action_name: 'supervisor.blockers.get',
     },
     dispatch: {
       kind: 'hub_query',
@@ -117,17 +157,14 @@ run('SlackResultPublisher renders actual Hub query summaries when execution data
         xt_online: true,
       },
       query: {
-        action_name: 'supervisor.status.get',
+        action_name: 'supervisor.blockers.get',
         project_id: 'project_alpha',
-        root_project_id: 'project_root',
-        dispatch: {
-          assigned_agent_profile: 'release-agent',
-          queue_priority: 7,
-        },
         heartbeat: {
           queue_depth: 3,
           oldest_wait_ms: 9000,
           risk_tier: 'medium',
+          blocked_reason: ['awaiting security review'],
+          next_actions: ['approve release grant'],
         },
         provider_status: {
           runtime_state: 'ready',
@@ -136,9 +173,9 @@ run('SlackResultPublisher renders actual Hub query summaries when execution data
     },
   }));
   assert.equal(!!out.ok, true);
-  assert.match(String(out.payload?.text || ''), /status=supervisor_status/);
-  assert.match(String(out.payload?.text || ''), /Device: xt-alpha-1/);
-  assert.match(String(out.payload?.text || ''), /Dispatch: release-agent priority=7/);
+  assert.match(String(out.payload?.text || ''), /status=supervisor_blockers/);
+  assert.match(String(out.payload?.text || ''), /Blockers: awaiting security review/);
+  assert.match(String(out.payload?.text || ''), /Next actions: approve release grant/);
 });
 
 run('SlackResultPublisher renders governed XT command execution summaries when execution data is present', () => {

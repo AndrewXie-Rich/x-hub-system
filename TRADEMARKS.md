@@ -1,7 +1,7 @@
 # Trademarks
 
 The names, logos, and brand identifiers used for this project are not granted
-under the source license.
+under the software license.
 
 This includes, without limitation:
 

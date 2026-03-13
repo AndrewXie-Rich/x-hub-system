@@ -4,6 +4,10 @@ This document defines the minimum process for cutting a public release.
 
 This guide is release-operations facing. Use `README.md` for the product narrative and validated public wording.
 
+Repository license note:
+- public messaging should describe this repository as open source under the MIT License
+- keep trademark and validated-scope notes separate from the software-license statement
+
 Primary gate source:
 - `docs/open-source/OSS_RELEASE_CHECKLIST_v1.md`
 

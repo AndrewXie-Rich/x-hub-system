@@ -249,6 +249,9 @@ public struct IPCMemoryContextResponsePayload: Codable, Sendable, Equatable {
     public var text: String
     public var source: String
     public var resolvedProfile: String?
+    public var longtermMode: String?
+    public var retrievalAvailable: Bool?
+    public var fulltextNotLoaded: Bool?
     public var budgetTotalTokens: Int
     public var usedTotalTokens: Int
     public var layerUsage: [IPCMemoryContextLayerUsage]
@@ -260,6 +263,9 @@ public struct IPCMemoryContextResponsePayload: Codable, Sendable, Equatable {
         text: String,
         source: String,
         resolvedProfile: String? = nil,
+        longtermMode: String? = nil,
+        retrievalAvailable: Bool? = nil,
+        fulltextNotLoaded: Bool? = nil,
         budgetTotalTokens: Int,
         usedTotalTokens: Int,
         layerUsage: [IPCMemoryContextLayerUsage],
@@ -270,6 +276,9 @@ public struct IPCMemoryContextResponsePayload: Codable, Sendable, Equatable {
         self.text = text
         self.source = source
         self.resolvedProfile = resolvedProfile
+        self.longtermMode = longtermMode
+        self.retrievalAvailable = retrievalAvailable
+        self.fulltextNotLoaded = fulltextNotLoaded
         self.budgetTotalTokens = budgetTotalTokens
         self.usedTotalTokens = usedTotalTokens
         self.layerUsage = layerUsage
@@ -282,6 +291,9 @@ public struct IPCMemoryContextResponsePayload: Codable, Sendable, Equatable {
         case text
         case source
         case resolvedProfile = "resolved_profile"
+        case longtermMode = "longterm_mode"
+        case retrievalAvailable = "retrieval_available"
+        case fulltextNotLoaded = "fulltext_not_loaded"
         case budgetTotalTokens = "budget_total_tokens"
         case usedTotalTokens = "used_total_tokens"
         case layerUsage = "layer_usage"

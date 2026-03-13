@@ -16,6 +16,13 @@
 
 **X-Hub-System is not just another AI terminal. It is a security-first architecture for governable Agent execution.**
 
+If you only want an Agent that can act, many tools already exist.
+If you want one that can act without making one prompt injection, one exposed runtime, one bad plugin, or one unsafe default turn into full compromise, that is the problem X-Hub-System is built to tackle.
+If you also want the trusted control plane, policy, keys, and privacy decisions to stay under operator control instead of disappearing into a vendor cloud, that is another core reason this system exists.
+
+Repository license note: this repository is released under the **MIT License**.
+Trademark rights are not granted by the software license; see `TRADEMARKS.md`.
+
 ## Public Preview Status
 
 X-Hub-System is currently a **public tech preview** of a system architecture for safe, governable Agent execution.
@@ -53,6 +60,69 @@ X-Hub-System is built for the harder problem: making AI execution governable.
 - Terminals do not own trust, keys, grants, or final policy decisions.
 - High-risk paths fail closed when pairing, grants, bridge heartbeat, or runtime readiness is incomplete.
 - Memory, automation, and audit stay anchored to the Hub instead of being scattered across clients and plugins.
+
+## Why Not Just Use An Agent Framework?
+
+Most agent stacks optimize for capability first:
+
+- one runtime holds prompts, tools, browser state, memory, secrets, and side-effect execution together
+- one exposed control surface can become a remote takeover path
+- one imported skill or plugin can quietly expand the trust boundary
+- one prompt injection can jump from "read this page" to "exfiltrate data" or "perform irreversible actions"
+
+X-Hub-System is designed around the opposite assumption: terminals, skills, connectors, browser content, and execution surfaces should not automatically become the trust anchor.
+
+| Common failure mode in agent stacks | X-Hub-System design response |
+|---|---|
+| Remote takeover of an exposed or weakly protected agent runtime becomes full control | Pairing, device trust, grants, and higher-risk execution stay Hub-governed; missing identity, bridge health, or readiness is supposed to fail closed rather than proceed |
+| Prompt injection turns browsing or document reading into secret leakage or dangerous execution | Policy, memory truth, constitutional guardrails, and irreversible-action gates live in the Hub instead of depending on terminal-local prompt discipline |
+| Plugin or skill supply chain becomes the easiest path to compromise | Skills are separated from the trust anchor, with Hub-side governance, trust roots, and explicit reviewable boundaries instead of "plugin equals full trust" |
+| Unsafe defaults and silent downgrade hide real risk from the operator | X-Hub is built to surface configured route, actual route, downgrade, fallback, and readiness truth instead of masking them |
+
+## Security Advantage, Not Security Theater
+
+The claim is not that any AI system becomes magically invulnerable.
+
+The claim is structural:
+
+- one compromised terminal should not automatically own Hub policy
+- one malicious page should not automatically inherit secret access
+- one imported skill should not automatically gain full-system privilege
+- one risky action should not proceed without the right grant, policy state, and audit trail
+- one missing readiness signal should stop execution rather than be silently ignored
+
+## Why Not Just Use A Cloud Agent Service?
+
+Many cloud Agent products are convenient because the vendor hosts the control plane for you.
+
+That convenience also means the vendor often becomes the default holder of runtime control, logs, prompts, memory context, update timing, and sometimes key material or policy decisions.
+
+X-Hub-System is aimed at teams and individuals who want that control plane to remain operator-owned.
+
+| Typical cloud-agent default | X-Hub-System |
+|---|---|
+| Vendor-hosted control plane | Hub runs on operator-owned hardware |
+| Memory, audit, and runtime truth often live primarily in vendor infrastructure | Memory truth, policy, and audit are designed to stay anchored to your Hub |
+| Secret handling and routing policy are often hidden behind SaaS defaults | Grants, routing, readiness, and secret policy are intended to remain reviewable and operator-controlled |
+| Local-only operation is weak or secondary | Local models and paid models can sit under one governed surface, with the operator deciding when remote providers are used |
+| Product updates can silently change behavior or trust boundaries | The operator owns the deployed Hub runtime, kill-switch posture, and release-adoption timing |
+
+## What Full Local Mode Actually Buys You
+
+If you run X-Hub-System with local models only, keep the Hub on operator-owned hardware, and leave remote providers and external connector paths disabled, then the trusted control plane and model inference path no longer depend on third-party cloud inference services.
+
+That can materially reduce:
+
+- prompt and context export to external model vendors
+- provider-side retention, opaque logging, or silent service-side behavior changes
+- exposure of paid-model credentials and remote-provider policy drift
+- dependence on vendor uptime for the core local inference path
+
+It does **not** mean "all threats disappear."
+
+Local compromise, LAN exposure, malicious files, hostile web content, unsafe imports, operator mistakes, and implementation bugs can still exist.
+
+That is exactly why X-Hub-System still keeps policy, grants, readiness gates, audit, trust roots, and kill-switch behavior inside the Hub even when the chosen runtime posture is fully local.
 
 ## Why Not Just Another AI Terminal?
 
@@ -93,6 +163,7 @@ The current repository and preview builds already demonstrate working foundation
 - X-Terminal source build and packaged app flow
 - paired Hub <-> Terminal routing across local and remote paths
 - Hub-governed local and paid model execution
+- Hub-governed operator channel workers for Slack, Telegram, and Feishu, with higher-risk channel paths kept explicitly gated until require-real evidence is complete
 - truthful configured-model vs actual-model visibility in X-Terminal
 - early Supervisor and project-coder orchestration surfaces
 - Hub-backed memory, policy, and audit integration as the system-of-record direction
@@ -119,6 +190,16 @@ These points describe the architecture-backed direction of the system. The valid
 - **Long-horizon stability**: Hub-backed memory reduces drift across multi-step work.
 - **Multi-terminal design**: terminals can stay fast and replaceable without becoming the trust anchor.
 
+## What Makes This Attractive To Security-Conscious Teams
+
+- **Reduced blast radius by design**: UI, tools, model routing, memory, grants, and side effects do not all collapse into one terminal-local trust zone.
+- **Better than prompt-only safety**: X-Constitution, policy, grants, manifests, audit, and kill-switches are meant to reinforce each other.
+- **Operator-owned control plane**: deployment, keys, secrets policy, audit, and memory truth can stay on infrastructure the user controls instead of being SaaS-default black boxes.
+- **Operator-selectable local-only posture**: when remote providers and connector paths are disabled, the core control plane and inference path can stay off third-party cloud infrastructure.
+- **Safer connector model**: operator-channel paths can exist without letting every chat surface become an ungoverned control plane.
+- **Stronger response posture**: revoke, fail closed, inspect audit, and cut execution from the Hub when something looks wrong.
+- **More honest operations**: the system is designed to show what actually ran, what downgraded, what was blocked, and why.
+
 ## Who Should Use X-Hub-System First
 
 X-Hub-System is especially suited for:
@@ -140,6 +221,7 @@ Why:
 - X-Hub currently ships a native macOS Hub app and runtime surface.
 - The active Hub app package targets `macOS 13+`.
 - The Hub runtime also includes an MLX-based local runtime path, which aligns naturally with Apple silicon desktops.
+- That means the trusted control plane can live on hardware the operator actually owns, rather than being forced into a vendor-hosted default.
 
 Recommended deployment tiers:
 
@@ -166,7 +248,7 @@ Within the validated mainline above, this repository already demonstrates:
 1. **Hub-backed memory UX**
    X-Terminal can present memory-aware UX while the Hub remains the truth-source.
 2. **Governed multi-channel gateway**
-   Channel routing stays inside Hub policy instead of leaking across clients.
+   Channel routing stays inside Hub policy instead of leaking across clients. Preview operator surfaces already exist for Slack, Telegram, and Feishu, while higher-risk or insufficiently evidenced paths remain explicitly gated.
 3. **Hub-first automations**
    Automation flows are routed through Hub readiness, policy, and audit constraints.
 
@@ -192,27 +274,81 @@ It does **not** expand the validated public release slice above.
 
 ## Architecture In 30 Seconds
 
+This is still a simplified control-plane view, but it covers the major governed surfaces of the current system more accurately than the earlier sketch.
+
 ```mermaid
 flowchart LR
-    U[User] --> XT[X-Terminal or Client]
-    XT --> H[X-Hub Trusted Core]
+    U[User / Operator]
 
-    H --> MR[Model Router]
-    H --> MM[Memory Truth]
-    H --> GP[Grant and Policy Chain]
-    H --> AU[Audit and Evidence]
-    H --> AT[Governed Automations]
-    H --> KS[Kill Switch]
+    subgraph C[Clients And Entry Surfaces]
+        XT[X-Terminal]
+        CL[Other Clients]
+        OC[Operator Channels: Slack / Telegram / Feishu]
+    end
 
-    GP --> FG[Fail-Closed Gates]
-    MR --> LM[Local Models]
-    MR --> PM[Paid Models]
-    AT --> AU
+    subgraph H[X-Hub Trusted Core]
+        PA[Pairing + Device Trust]
+        SUP[Supervisor / Project Orchestration]
+        MM[Memory Truth + X-Constitution]
+        GP[Policy + Grants + Quotas]
+        SK[Skills Store + Trust Roots]
+        MR[Model + Capability Router]
+        AT[Governed Automations + Connector Control]
+        FG[Fail-Closed Gates + Kill Switch]
+        IPC[Bridge + Runtime IPC]
+        AU[Audit + Evidence + Runtime Truth]
+    end
+
+    subgraph E[Execution And Governed Assets]
+        XTEX[X-Terminal Tools / Device Execution]
+        CHW[Channel Workers]
+        LPR[Local Provider Runtime]
+        LM[Local Models: MLX / Transformers]
+        PM[Paid Providers / APIs]
+        OAS[Official Agent Skills]
+    end
+
+    U --> XT
+    U --> CL
+    U --> OC
+
+    XT --> PA
+    CL --> PA
+    OC --> CHW
+
+    PA --> SUP
+    PA --> GP
+
+    SUP --> MM
+    SUP --> SK
+    SUP --> MR
+    SUP --> AT
+
+    MM --> GP
+    SK --> OAS
+    MR --> IPC
+    IPC --> LPR
+    LPR --> LM
+    MR --> PM
+
+    GP --> FG
+    FG --> XTEX
+    FG --> CHW
+    FG --> AT
+
+    AT --> XTEX
+    AT --> CHW
+
+    XTEX --> AU
+    CHW --> AU
+    LPR --> AU
+    PM --> AU
+    AU -. visible runtime truth .-> XT
 ```
 
 Execution baseline:
 
-`pair -> resolve route -> check policy -> verify readiness -> execute -> audit`
+`pair / ingress -> retrieve memory + constitution -> resolve route -> check policy + grants -> verify readiness -> execute on a governed surface -> audit + surface runtime truth`
 
 ## Memory-Backed Constitutional Guardrails
 
@@ -319,11 +455,10 @@ open build/X-Terminal.app
 
 ### Developer Source Run Notes
 
-For developers working from source, use the public executable names:
+For developers working from source, use the public X-Hub helper entrypoints:
 
 ```bash
-cd x-hub/macos/RELFlowHub
-swift run XHub
+bash x-hub/tools/run_xhub_from_source.command
 ```
 
 ```bash
@@ -331,7 +466,7 @@ cd x-terminal
 swift run XTerminal
 ```
 
-The Hub-side Swift package still uses the historical internal target and package names under the hood, but `XHub` is now the preferred source-run executable alias. `RELFlowHub` remains available for compatibility.
+Under the hood, the Hub-side Swift package still lives in the historical internal package directory `x-hub/macos/RELFlowHub/`, but the preferred public source-run entrypoint is now `x-hub/tools/run_xhub_from_source.command`. `RELFlowHub` remains only as an internal compatibility layer for now.
 
 ### Run The XT Release Gate
 
@@ -350,6 +485,12 @@ XT_GATE_MODE=strict bash scripts/ci/xt_release_gate.sh
 
 X-Hub-System is being opened early on purpose.
 
+If you want the shortest contributor onramp, read:
+
+1. `docs/open-source/CONTRIBUTOR_START_HERE.md`
+2. `CONTRIBUTING.md`
+3. `docs/WORKING_INDEX.md`
+
 We are especially interested in contributors who care about:
 
 - Swift/macOS productization for Hub and Terminal
@@ -358,7 +499,18 @@ We are especially interested in contributors who care about:
 - voice loop, diagnostics, and operator UX
 - protocol design, tests, release engineering, and security review
 
-If you want to help shape a Hub-first AI system instead of another thin terminal wrapper, start with `CONTRIBUTING.md` and open an issue or pull request.
+Recommended first contribution paths:
+
+- docs and release wording that reduce repo-entry friction
+- tests and gates that harden fail-closed behavior
+- runtime diagnostics and launch recovery improvements
+- isolated reliability fixes in Hub services or X-Terminal UX
+
+Before starting a large feature, protocol change, or trust-boundary change, open an issue first.
+
+This repository is currently maintained primarily by one person, so the fastest-moving pull requests are usually small, well-scoped, and explicit about validation and risk.
+
+If you want to help shape a Hub-first AI system instead of another thin terminal wrapper, start with `docs/open-source/CONTRIBUTOR_START_HERE.md`, then use `CONTRIBUTING.md` when preparing your pull request.
 
 ## 30-Second Demo Flow
 
@@ -391,6 +543,7 @@ Use this order for a quick system check:
 |---|---|
 | `x-hub/` | Active Hub app, gRPC server, model routing, grants, and trust surfaces |
 | `x-terminal/` | Active terminal implementation, supervisor flows, session runtime, and doctor checks |
+| `official-agent-skills/` | Official Agent skill sources, trust roots, and distribution artifacts used by the active skills surface |
 | `protocol/` | Shared contracts between Hub and terminal surfaces |
 | `specs/` | Active spec packs and traceability artifacts |
 | `docs/` | Specs, release docs, security guidance, and work orders |
@@ -469,10 +622,16 @@ Start here:
 4. `x-hub/README.md`
 5. `x-terminal/README.md`
 
+Contributor onramp:
+
+- `docs/open-source/CONTRIBUTOR_START_HERE.md`
+- `docs/open-source/STARTER_ISSUES_v1.md`
+
 Release and governance references:
 
 - `RELEASE.md`
 - `CHANGELOG.md`
+- `GOVERNANCE.md`
 - `docs/whitepaper-submodule.md`
 - `docs/open-source/OSS_RELEASE_CHECKLIST_v1.md`
 - `docs/open-source/GITHUB_RELEASE_NOTES_TEMPLATE_v1.md`
@@ -496,3 +655,5 @@ Internal work orders, operator navigation docs, and in-progress slices may move 
 ## License
 
 MIT. See `LICENSE`.
+
+Trademark rights are not granted by the software license. See `TRADEMARKS.md`.

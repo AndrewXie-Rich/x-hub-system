@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 
 import {
   buildSlackHubActionExecutionRequest,
+  buildSlackSupervisorBriefProjectionRequest,
   createSlackHubActionExecutor,
   executeSlackHubAction,
 } from './SlackHubActionExecutor.js';
@@ -70,6 +71,17 @@ run('SlackHubActionExecutor builds Hub execution request from orchestrated Slack
   assert.equal(String(request.note || ''), 'approved after review');
 });
 
+run('SlackHubActionExecutor builds supervisor brief projection requests for project-scoped status actions', () => {
+  const request = buildSlackSupervisorBriefProjectionRequest(makeResult());
+  assert.equal(String(request.request_id || ''), 'slack:event_callback:Ev-1');
+  assert.equal(String(request.project_id || ''), 'project_alpha');
+  assert.equal(String(request.projection_kind || ''), 'progress_brief');
+  assert.equal(String(request.trigger || ''), 'user_query');
+  assert.equal(request.include_card_summary, true);
+  assert.equal(request.include_tts_script, false);
+  assert.equal(Number(request.max_evidence_refs || 0), 4);
+});
+
 await runAsync('SlackHubActionExecutor executes governed XT command dispatches through the same Hub RPC', async () => {
   let captured = null;
   const out = await executeSlackHubAction({
@@ -103,9 +115,53 @@ await runAsync('SlackHubActionExecutor executes governed XT command dispatches t
   assert.equal(String(out.execution?.xt_command?.status || ''), 'queued');
 });
 
-await runAsync('SlackHubActionExecutor executes Hub query and attaches normalized response', async () => {
-  let captured = null;
+await runAsync('SlackHubActionExecutor executes project-scoped supervisor status via supervisor brief projection RPC', async () => {
+  let capturedProjection = null;
+  let oldHubRpcCalls = 0;
   const executor = createSlackHubActionExecutor({
+    hub_client: {
+      async getSupervisorBriefProjection(request) {
+        capturedProjection = request;
+        return {
+          ok: true,
+          projection: {
+            projection_kind: request.projection_kind,
+            project_id: 'project_alpha',
+            status: 'awaiting_authorization',
+            topline: 'Release train paused on one approval',
+            pending_grant_count: 1,
+          },
+        };
+      },
+      async executeOperatorChannelHubCommand() {
+        oldHubRpcCalls += 1;
+        throw new Error('unexpected_old_hub_query_rpc');
+      },
+    },
+  });
+
+  const out = await executor.execute(makeResult());
+  assert.equal(String(capturedProjection?.project_id || ''), 'project_alpha');
+  assert.equal(String(capturedProjection?.projection_kind || ''), 'progress_brief');
+  assert.equal(String(capturedProjection?.trigger || ''), 'user_query');
+  assert.equal(capturedProjection?.include_card_summary, true);
+  assert.equal(capturedProjection?.include_tts_script, false);
+  assert.equal(oldHubRpcCalls, 0);
+  assert.equal(!!out.execution?.ok, true);
+  assert.equal(String(out.execution?.projection?.project_id || ''), 'project_alpha');
+  assert.equal(String(out.execution?.projection?.status || ''), 'awaiting_authorization');
+  assert.equal(Number(out.execution?.projection?.pending_grant_count || 0), 1);
+});
+
+await runAsync('SlackHubActionExecutor keeps non-status Hub queries on the existing Hub command RPC', async () => {
+  let captured = null;
+  const out = await executeSlackHubAction({
+    result: makeResult({
+      command: {
+        ...makeResult().command,
+        action_name: 'supervisor.queue.get',
+      },
+    }),
     hub_client: {
       async executeOperatorChannelHubCommand(request) {
         captured = request;
@@ -115,21 +171,19 @@ await runAsync('SlackHubActionExecutor executes Hub query and attaches normalize
           query: {
             action_name: request.action_name,
             project_id: 'project_alpha',
-            heartbeat: {
-              project_id: 'project_alpha',
-              queue_depth: 3,
+            queue: {
+              planned: true,
+              items: [],
             },
           },
         };
       },
     },
   });
-
-  const out = await executor.execute(makeResult());
-  assert.equal(String(captured?.action_name || ''), 'supervisor.status.get');
+  assert.equal(String(captured?.action_name || ''), 'supervisor.queue.get');
   assert.equal(!!out.execution?.ok, true);
   assert.equal(String(out.execution?.query?.project_id || ''), 'project_alpha');
-  assert.equal(Number(out.execution?.query?.heartbeat?.queue_depth || 0), 3);
+  assert.equal(String(out.execution?.query?.action_name || ''), 'supervisor.queue.get');
 });
 
 await runAsync('SlackHubActionExecutor converts execution RPC failures into non-throwing execution errors', async () => {

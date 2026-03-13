@@ -799,6 +799,9 @@ enum HubIPCClient {
         var source: String
         var resolvedMode: String?
         var resolvedProfile: String?
+        var longtermMode: String?
+        var retrievalAvailable: Bool?
+        var fulltextNotLoaded: Bool?
         var freshness: String?
         var cacheHit: Bool?
         var denyCode: String?
@@ -815,6 +818,9 @@ enum HubIPCClient {
             source: String,
             resolvedMode: String? = nil,
             resolvedProfile: String? = nil,
+            longtermMode: String? = nil,
+            retrievalAvailable: Bool? = nil,
+            fulltextNotLoaded: Bool? = nil,
             freshness: String? = nil,
             cacheHit: Bool? = nil,
             denyCode: String? = nil,
@@ -830,6 +836,9 @@ enum HubIPCClient {
             self.source = source
             self.resolvedMode = resolvedMode
             self.resolvedProfile = resolvedProfile
+            self.longtermMode = longtermMode
+            self.retrievalAvailable = retrievalAvailable
+            self.fulltextNotLoaded = fulltextNotLoaded
             self.freshness = freshness
             self.cacheHit = cacheHit
             self.denyCode = denyCode
@@ -847,6 +856,9 @@ enum HubIPCClient {
             case source
             case resolvedMode = "resolved_mode"
             case resolvedProfile = "resolved_profile"
+            case longtermMode = "longterm_mode"
+            case retrievalAvailable = "retrieval_available"
+            case fulltextNotLoaded = "fulltext_not_loaded"
             case freshness
             case cacheHit = "cache_hit"
             case denyCode = "deny_code"
@@ -2333,6 +2345,58 @@ enum HubIPCClient {
         return result.response
     }
 
+    struct MemoryLongtermDisclosure: Equatable {
+        var longtermMode: String
+        var retrievalAvailable: Bool
+        var fulltextNotLoaded: Bool
+    }
+
+    static func resolveMemoryLongtermDisclosure(
+        useMode: XTMemoryUseMode,
+        retrievalAvailable fallbackRetrievalAvailable: Bool,
+        overrideLongtermMode: String? = nil,
+        overrideRetrievalAvailable: Bool? = nil,
+        overrideFulltextNotLoaded: Bool? = nil
+    ) -> MemoryLongtermDisclosure {
+        let defaultLongtermMode: String
+        switch useMode {
+        case .projectChat where fallbackRetrievalAvailable:
+            defaultLongtermMode = "progressive_disclosure"
+        case .laneHandoff:
+            defaultLongtermMode = XTMemoryLongtermPolicy.denied.rawValue
+        default:
+            defaultLongtermMode = XTMemoryLongtermPolicy.summaryOnly.rawValue
+        }
+
+        return MemoryLongtermDisclosure(
+            longtermMode: normalized(overrideLongtermMode) ?? defaultLongtermMode,
+            retrievalAvailable: overrideRetrievalAvailable ?? fallbackRetrievalAvailable,
+            fulltextNotLoaded: overrideFulltextNotLoaded ?? true
+        )
+    }
+
+    static func ensureMemoryLongtermDisclosureText(
+        _ text: String,
+        disclosure: MemoryLongtermDisclosure
+    ) -> String {
+        guard !text.contains("[LONGTERM_MEMORY]") else { return text }
+        let section = """
+[LONGTERM_MEMORY]
+longterm_mode=\(disclosure.longtermMode)
+retrieval_available=\(disclosure.retrievalAvailable ? "true" : "false")
+fulltext_not_loaded=\(disclosure.fulltextNotLoaded ? "true" : "false")
+[/LONGTERM_MEMORY]
+"""
+
+        if let range = text.range(of: "[/SERVING_PROFILE]\n") {
+            return String(text[..<range.upperBound]) + section + "\n" + String(text[range.upperBound...])
+        }
+        if let range = text.range(of: "[MEMORY_V1]\n") {
+            return String(text[..<range.upperBound]) + section + "\n" + String(text[range.upperBound...])
+        }
+        return section + "\n" + text
+    }
+
     static func requestMemoryContextDetailed(
         useMode: XTMemoryUseMode,
         requesterRole: XTMemoryRequesterRole,
@@ -2392,8 +2456,19 @@ enum HubIPCClient {
             )
             if remote.snapshot.ok {
                 var response = buildMemoryContextFromRemoteSnapshot(snapshot: remote.snapshot, payload: payload)
+                let disclosure = resolveMemoryLongtermDisclosure(
+                    useMode: useMode,
+                    retrievalAvailable: false,
+                    overrideLongtermMode: response.longtermMode,
+                    overrideRetrievalAvailable: response.retrievalAvailable,
+                    overrideFulltextNotLoaded: response.fulltextNotLoaded
+                )
                 response.resolvedMode = useMode.rawValue
                 response.resolvedProfile = route.servingProfile.rawValue
+                response.longtermMode = disclosure.longtermMode
+                response.retrievalAvailable = disclosure.retrievalAvailable
+                response.fulltextNotLoaded = disclosure.fulltextNotLoaded
+                response.text = ensureMemoryLongtermDisclosureText(response.text, disclosure: disclosure)
                 response.freshness = remote.cacheHit ? "ttl_cache" : "fresh_remote"
                 response.cacheHit = remote.cacheHit
                 response.denyCode = nil
@@ -2459,8 +2534,19 @@ enum HubIPCClient {
         }
 
         var response = local
+        let disclosure = resolveMemoryLongtermDisclosure(
+            useMode: useMode,
+            retrievalAvailable: false,
+            overrideLongtermMode: response.longtermMode,
+            overrideRetrievalAvailable: response.retrievalAvailable,
+            overrideFulltextNotLoaded: response.fulltextNotLoaded
+        )
         response.resolvedMode = useMode.rawValue
         response.resolvedProfile = route.servingProfile.rawValue
+        response.longtermMode = disclosure.longtermMode
+        response.retrievalAvailable = disclosure.retrievalAvailable
+        response.fulltextNotLoaded = disclosure.fulltextNotLoaded
+        response.text = ensureMemoryLongtermDisclosureText(response.text, disclosure: disclosure)
         response.freshness = "fresh_local_ipc"
         response.cacheHit = false
         response.denyCode = nil
@@ -4609,6 +4695,11 @@ enum HubIPCClient {
         payload: MemoryContextPayload
     ) -> MemoryContextResponsePayload {
         let servingProfile = normalized(payload.servingProfile)
+        let useMode = XTMemoryUseMode.parse(payload.mode) ?? .projectChat
+        let disclosure = resolveMemoryLongtermDisclosure(
+            useMode: useMode,
+            retrievalAvailable: false
+        )
         let localCanonical = XTMemorySanitizer.sanitizeText(payload.canonicalText, maxChars: 3_200, lineCap: 36) ?? ""
         let localObservations = XTMemorySanitizer.sanitizeText(payload.observationsText, maxChars: 1_800, lineCap: 24) ?? ""
         let localWorking = XTMemorySanitizer.sanitizeText(payload.workingSetText, maxChars: 2_600, lineCap: 28) ?? ""
@@ -4623,7 +4714,8 @@ enum HubIPCClient {
         let mergedWorking = mergedMemoryLayer(localPrimary: localWorking, remoteSecondary: remoteWorking)
         let servingProfileSection = memoryServingProfileSection(servingProfile)
 
-        let finalText = """
+        let finalText = ensureMemoryLongtermDisclosureText(
+            """
 [MEMORY_V1]
 \(servingProfileSection.isEmpty ? "" : "\(servingProfileSection)\n")
 [L0_CONSTITUTION]
@@ -4648,7 +4740,9 @@ latest_user:
 \(payload.latestUser)
 [/L4_RAW_EVIDENCE]
 [/MEMORY_V1]
-"""
+""",
+            disclosure: disclosure
+        )
 
         let l0Used = TokenEstimator.estimateTokens(constitution)
         let l1Used = TokenEstimator.estimateTokens(mergedCanonical)
@@ -4689,6 +4783,9 @@ latest_user:
             source: snapshot.source,
             resolvedMode: payload.mode,
             resolvedProfile: servingProfile,
+            longtermMode: disclosure.longtermMode,
+            retrievalAvailable: disclosure.retrievalAvailable,
+            fulltextNotLoaded: disclosure.fulltextNotLoaded,
             freshness: nil,
             cacheHit: nil,
             denyCode: nil,

@@ -34,10 +34,17 @@ enum HubMemoryContextBuilder {
         var hasStoredCanonical: Bool
     }
 
+    private struct LongtermDisclosure {
+        var longtermMode: String
+        var retrievalAvailable: Bool
+        var fulltextNotLoaded: Bool
+    }
+
     static func build(from req: IPCMemoryContextRequestPayload) -> IPCMemoryContextResponsePayload {
         let servingProfile = normalizedServingProfile(req.servingProfile)
         let budgets = normalizedBudgets(req.budgets, servingProfile: servingProfile)
         let mode = normalized(req.mode).lowercased()
+        let disclosure = longtermDisclosure(for: mode)
         var counters = RedactionCounters()
         var truncatedLayers: [String] = []
 
@@ -111,10 +118,13 @@ enum HubMemoryContextBuilder {
         let l4RawText = nonEmptyOrNone(l4Raw.text)
         let l4LatestUserText = nonEmptyOrNone(l4LatestUser.text)
         let servingProfileSection = servingProfileSection(servingProfile)
+        let longtermDisclosureSection = longtermDisclosureSection(disclosure)
 
         let memoryText = """
 [MEMORY_V1]
 \(servingProfileSection.isEmpty ? "" : "\(servingProfileSection)\n")
+\(longtermDisclosureSection)
+
 [L0_CONSTITUTION]
 \(l0Text)
 [/L0_CONSTITUTION]
@@ -164,6 +174,9 @@ latest_user:
             text: memoryText,
             source: "hub_memory_v1",
             resolvedProfile: servingProfile,
+            longtermMode: disclosure.longtermMode,
+            retrievalAvailable: disclosure.retrievalAvailable,
+            fulltextNotLoaded: disclosure.fulltextNotLoaded,
             budgetTotalTokens: budgets.totalTokens,
             usedTotalTokens: usedTotal,
             layerUsage: layerUsage,
@@ -242,6 +255,39 @@ latest_user:
 [SERVING_PROFILE]
 profile_id: \(servingProfile)
 [/SERVING_PROFILE]
+"""
+    }
+
+    private static func longtermDisclosure(for mode: String) -> LongtermDisclosure {
+        switch mode {
+        case "project", "project_chat":
+            return LongtermDisclosure(
+                longtermMode: "progressive_disclosure",
+                retrievalAvailable: true,
+                fulltextNotLoaded: true
+            )
+        case "lane_handoff":
+            return LongtermDisclosure(
+                longtermMode: "denied",
+                retrievalAvailable: false,
+                fulltextNotLoaded: true
+            )
+        default:
+            return LongtermDisclosure(
+                longtermMode: "summary_only",
+                retrievalAvailable: false,
+                fulltextNotLoaded: true
+            )
+        }
+    }
+
+    private static func longtermDisclosureSection(_ disclosure: LongtermDisclosure) -> String {
+        """
+[LONGTERM_MEMORY]
+longterm_mode=\(disclosure.longtermMode)
+retrieval_available=\(disclosure.retrievalAvailable ? "true" : "false")
+fulltext_not_loaded=\(disclosure.fulltextNotLoaded ? "true" : "false")
+[/LONGTERM_MEMORY]
 """
     }
 

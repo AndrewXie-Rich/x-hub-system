@@ -428,6 +428,46 @@ run('MMS/service api brief projection includes blocker and pending grants', () =
   try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
+run('MMS/service api guidance blocks direct tool jump', () => {
+  const runtimeBaseDir = makeTmp('runtime');
+  const dbPath = makeTmp('db', '.db');
+  fs.mkdirSync(runtimeBaseDir, { recursive: true });
+
+  withEnv(baseEnv(runtimeBaseDir), () => {
+    const db = new HubDB({ dbPath });
+    try {
+      const impl = makeServices({ db, bus: new HubEventBus() });
+      const response = invokeUnary(
+        impl.HubSupervisor.ResolveSupervisorGuidance,
+        {
+          request_id: 'guidance-direct-tool-jump',
+          client: makeClientIdentity('payments-prod'),
+          guidance_type: 'scope_hold',
+          normalized_instruction: 'Please terminal.exec npm publish right now',
+          ingress: {
+            surface_type: 'xt_voice',
+            normalized_intent_type: 'directive',
+            project_id: 'payments-prod',
+          },
+          target_scope: {
+            scope_type: 'project',
+          },
+        }
+      );
+
+      assert.equal(!!response.ok, false);
+      assert.equal(String(response.deny_code || ''), 'direct_tool_jump_blocked');
+      assert.equal(String(response.resolution?.resolution || ''), 'fail_closed');
+      assert.equal(String(response.resolution?.project_id || ''), 'payments-prod');
+    } finally {
+      db.close();
+    }
+  });
+
+  cleanupDbArtifacts(dbPath);
+  try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch { /* ignore */ }
+});
+
 run('MMS/service api high-risk voice-only checkpoint is denied fail-closed', () => {
   const runtimeBaseDir = makeTmp('runtime');
   const dbPath = makeTmp('db', '.db');
@@ -454,9 +494,99 @@ run('MMS/service api high-risk voice-only checkpoint is denied fail-closed', () 
       );
 
       assert.equal(!!response.ok, false);
-      assert.equal(String(response.deny_code || ''), 'voice_only_high_risk_blocked');
+      assert.equal(String(response.deny_code || ''), 'voice_only_not_allowed');
       assert.equal(String(response.challenge?.state || ''), 'denied');
       assert.equal(String(response.challenge?.underlying_flow || ''), 'none');
+    } finally {
+      db.close();
+    }
+  });
+
+  cleanupDbArtifacts(dbPath);
+  try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch { /* ignore */ }
+});
+
+run('MMS/service api payment checkpoint requires amount digest', () => {
+  const runtimeBaseDir = makeTmp('runtime');
+  const dbPath = makeTmp('db', '.db');
+  fs.mkdirSync(runtimeBaseDir, { recursive: true });
+
+  withEnv(baseEnv(runtimeBaseDir), () => {
+    const db = new HubDB({ dbPath });
+    try {
+      const impl = makeServices({ db, bus: new HubEventBus() });
+      const response = invokeUnary(
+        impl.HubSupervisor.IssueSupervisorCheckpointChallenge,
+        {
+          request_id: 'checkpoint-payment-missing-amount',
+          client: makeClientIdentity('shopping-mission'),
+          project_id: 'shopping-mission',
+          checkpoint_type: 'payment',
+          risk_tier: 'critical',
+          decision_path: 'voice_plus_mobile',
+          scope_digest: 'merchant:groceries',
+          bound_device_id: 'bt-headset-1',
+        }
+      );
+
+      assert.equal(!!response.ok, false);
+      assert.equal(String(response.deny_code || ''), 'policy_denied');
+      assert.equal(String(response.challenge?.state || ''), 'fail_closed');
+      assert.equal(String(response.challenge?.underlying_flow || ''), 'none');
+    } finally {
+      db.close();
+    }
+  });
+
+  cleanupDbArtifacts(dbPath);
+  try { fs.rmSync(runtimeBaseDir, { recursive: true, force: true }); } catch { /* ignore */ }
+});
+
+run('MMS/service api voice-plus-mobile checkpoint delegates to voice grant chain', () => {
+  const runtimeBaseDir = makeTmp('runtime');
+  const dbPath = makeTmp('db', '.db');
+  fs.mkdirSync(runtimeBaseDir, { recursive: true });
+
+  withEnv(baseEnv(runtimeBaseDir), () => {
+    const db = new HubDB({ dbPath });
+    try {
+      const impl = makeServices({ db, bus: new HubEventBus() });
+      const response = invokeUnary(
+        impl.HubSupervisor.IssueSupervisorCheckpointChallenge,
+        {
+          request_id: 'checkpoint-voice-plus-mobile',
+          client: makeClientIdentity('shopping-mission'),
+          project_id: 'shopping-mission',
+          mission_id: 'mission-voice-1',
+          checkpoint_type: 'substitution',
+          risk_tier: 'medium',
+          decision_path: 'voice_plus_mobile',
+          scope_digest: 'substitute:milk:oat',
+          bound_device_id: 'bt-headset-1',
+          ttl_ms: 120000,
+          evidence_refs: ['mission:shopping-mission:substitution:1'],
+        }
+      );
+
+      assert.equal(!!response.ok, true);
+      assert.equal(String(response.deny_code || ''), '');
+      assert.equal(String(response.challenge?.underlying_flow || ''), 'voice_grant');
+      assert.match(String(response.challenge?.underlying_ref_id || ''), /^voice_chal_/);
+      assert.equal(String(response.challenge?.state || ''), 'pending');
+      assert.equal(!!response.challenge?.requires_mobile_confirm, true);
+      assert.equal(
+        Array.isArray(response.challenge?.evidence_refs)
+          && response.challenge.evidence_refs.some((item) => String(item || '').startsWith('voice_grant:')),
+        true
+      );
+
+      const rawVoice = db._getVoiceGrantChallengeRowRaw(String(response.challenge?.underlying_ref_id || ''));
+      assert.ok(rawVoice);
+      const parsedVoice = db._parseVoiceGrantChallengeRow(rawVoice);
+      assert.equal(String(parsedVoice?.project_id || ''), 'shopping-mission');
+      assert.equal(String(parsedVoice?.bound_device_id || ''), 'bt-headset-1');
+      assert.equal(String(parsedVoice?.risk_level || ''), 'medium');
+      assert.equal(!!parsedVoice?.requires_mobile_confirm, true);
     } finally {
       db.close();
     }

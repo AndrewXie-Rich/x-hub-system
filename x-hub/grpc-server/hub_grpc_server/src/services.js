@@ -8683,6 +8683,12 @@ export function makeServices({ db, bus }) {
     return 'none';
   }
 
+  function voiceGrantRiskLevelFromSupervisorRiskTier(risk_tier = '') {
+    const tier = normalizeSupervisorRiskTier(risk_tier, 'high');
+    if (tier === 'low' || tier === 'medium') return tier;
+    return 'high';
+  }
+
   function issueSupervisorCheckpointChallengeInternal(req = {}) {
     const project_id = safeString(req.project_id);
     const checkpoint_type = normalizeSupervisorCheckpointType(req.checkpoint_type);
@@ -8729,14 +8735,26 @@ export function makeServices({ db, bus }) {
         },
       };
     }
+    if (checkpoint_type === 'payment' && !safeString(challenge.amount_digest)) {
+      return {
+        ok: false,
+        deny_code: 'policy_denied',
+        challenge: {
+          ...challenge,
+          state: 'fail_closed',
+          deny_code: 'policy_denied',
+          underlying_flow: 'none',
+        },
+      };
+    }
     if ((risk_tier === 'high' || risk_tier === 'critical') && decision_path === 'voice_only') {
       return {
         ok: false,
-        deny_code: 'voice_only_high_risk_blocked',
+        deny_code: 'voice_only_not_allowed',
         challenge: {
           ...challenge,
           state: 'denied',
-          deny_code: 'voice_only_high_risk_blocked',
+          deny_code: 'voice_only_not_allowed',
           underlying_flow: 'none',
         },
       };
@@ -8744,11 +8762,11 @@ export function makeServices({ db, bus }) {
     if (challenge.requires_mobile_confirm && decision_path === 'voice_only') {
       return {
         ok: false,
-        deny_code: 'mobile_confirm_required',
+        deny_code: 'voice_only_not_allowed',
         challenge: {
           ...challenge,
           state: 'denied',
-          deny_code: 'mobile_confirm_required',
+          deny_code: 'voice_only_not_allowed',
           underlying_flow: 'none',
         },
       };
@@ -8757,6 +8775,149 @@ export function makeServices({ db, bus }) {
       ok: true,
       deny_code: '',
       challenge,
+    };
+  }
+
+  function maybeDelegateSupervisorCheckpointVoiceGrant(access, req = {}, challenge = null) {
+    const checkpoint = challenge && typeof challenge === 'object' ? { ...challenge } : null;
+    if (!checkpoint || safeString(checkpoint.underlying_flow) !== 'voice_grant') {
+      return {
+        ok: true,
+        delegated: false,
+        challenge: checkpoint,
+      };
+    }
+    if (access?.auth_kind !== 'client') {
+      return {
+        ok: true,
+        delegated: false,
+        challenge: checkpoint,
+      };
+    }
+
+    const client = access?.client && typeof access.client === 'object' ? access.client : {};
+    const device_id = safeString(client.device_id);
+    const user_id = safeString(client.user_id);
+    const app_id = safeString(client.app_id);
+    const project_id = safeString(checkpoint.project_id || client.project_id);
+    if (!device_id || !app_id) {
+      return {
+        ok: false,
+        delegated: false,
+        deny_code: 'identity_unbound',
+        challenge: {
+          ...checkpoint,
+          state: 'fail_closed',
+          deny_code: 'identity_unbound',
+          underlying_flow: 'none',
+          underlying_ref_id: '',
+        },
+      };
+    }
+    if (!project_id) {
+      return {
+        ok: false,
+        delegated: false,
+        deny_code: 'project_not_bound',
+        challenge: {
+          ...checkpoint,
+          state: 'fail_closed',
+          deny_code: 'project_not_bound',
+          underlying_flow: 'none',
+          underlying_ref_id: '',
+        },
+      };
+    }
+    if (!safeString(checkpoint.bound_device_id)) {
+      return {
+        ok: false,
+        delegated: false,
+        deny_code: 'device_not_bound',
+        challenge: {
+          ...checkpoint,
+          state: 'fail_closed',
+          deny_code: 'device_not_bound',
+          underlying_flow: 'none',
+          underlying_ref_id: '',
+        },
+      };
+    }
+
+    let delegated = null;
+    try {
+      delegated = db.issueVoiceGrantChallenge({
+        request_id: `${safeString(checkpoint.request_id) || safeString(req.request_id) || 'supervisor_checkpoint'}:voice_grant`,
+        template_id: `supervisor.checkpoint.${safeString(checkpoint.checkpoint_type) || 'unknown'}.v1`,
+        action_digest: `supervisor_checkpoint:${safeString(checkpoint.checkpoint_type) || 'unknown'}`,
+        scope_digest: safeString(checkpoint.scope_digest) || `project:${project_id}`,
+        amount_digest: safeString(checkpoint.amount_digest),
+        risk_level: voiceGrantRiskLevelFromSupervisorRiskTier(checkpoint.risk_tier),
+        bound_device_id: safeString(checkpoint.bound_device_id),
+        mobile_terminal_id: safeString(req.mobile_terminal_id || ''),
+        allow_voice_only: safeString(checkpoint.decision_path) === 'voice_only',
+        requires_mobile_confirm: !!checkpoint.requires_mobile_confirm,
+        ttl_ms: Math.max(30 * 1000, Number(checkpoint.expires_at_ms || 0) - nowMs()),
+        device_id,
+        user_id,
+        app_id,
+        project_id,
+      });
+    } catch {
+      delegated = null;
+    }
+
+    if (!delegated?.issued || !safeString(delegated?.challenge?.challenge_id)) {
+      return {
+        ok: false,
+        delegated: false,
+        deny_code: safeString(delegated?.deny_code) || 'runtime_error',
+        challenge: {
+          ...checkpoint,
+          state: 'fail_closed',
+          deny_code: safeString(delegated?.deny_code) || 'runtime_error',
+          underlying_flow: 'none',
+          underlying_ref_id: '',
+        },
+      };
+    }
+
+    const voiceChallengeId = safeString(delegated.challenge.challenge_id);
+    const evidence_refs = safeStringList([
+      ...(Array.isArray(checkpoint.evidence_refs) ? checkpoint.evidence_refs : []),
+      `voice_grant:${voiceChallengeId}`,
+    ]);
+    const delegatedChallenge = {
+      ...checkpoint,
+      project_id,
+      requires_mobile_confirm: !!delegated.challenge.requires_mobile_confirm,
+      expires_at_ms: Math.max(0, Number(delegated.challenge.expires_at_ms || checkpoint.expires_at_ms || 0)),
+      underlying_flow: 'voice_grant',
+      underlying_ref_id: voiceChallengeId,
+      evidence_refs,
+      state: 'pending',
+      deny_code: '',
+    };
+    appendSupervisorAudit({
+      access,
+      req,
+      event_type: 'supervisor.voice.challenge_issued',
+      ok: true,
+      severity: 'info',
+      request_id: `${safeString(req.request_id || checkpoint.request_id)}:voice_grant`,
+      project_id,
+      ext: {
+        op: 'issue_supervisor_checkpoint_challenge',
+        checkpoint_challenge_id: safeString(checkpoint.challenge_id),
+        voice_challenge_id: voiceChallengeId,
+        risk_level: safeString(delegated.challenge.risk_level),
+        requires_mobile_confirm: !!delegated.challenge.requires_mobile_confirm,
+      },
+    });
+    return {
+      ok: true,
+      delegated: true,
+      challenge: delegatedChallenge,
+      voice_grant_challenge: delegated.challenge,
     };
   }
 
@@ -8966,10 +9127,13 @@ export function makeServices({ db, bus }) {
     }
 
     const req = call.request || {};
-    const out = issueSupervisorCheckpointChallengeInternal({
+    let out = issueSupervisorCheckpointChallengeInternal({
       ...req,
       project_id: safeString(req.project_id || access?.client?.project_id),
     });
+    if (out.ok && out?.challenge) {
+      out = maybeDelegateSupervisorCheckpointVoiceGrant(access, req, out.challenge);
+    }
     const audit_logged = appendSupervisorAudit({
       access,
       req,
@@ -8985,6 +9149,8 @@ export function makeServices({ db, bus }) {
         checkpoint_type: safeString(out?.challenge?.checkpoint_type),
         decision_path: safeString(out?.challenge?.decision_path),
         risk_tier: safeString(out?.challenge?.risk_tier),
+        underlying_flow: safeString(out?.challenge?.underlying_flow),
+        underlying_ref_id: safeString(out?.challenge?.underlying_ref_id),
       },
     });
     callback(null, {

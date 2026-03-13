@@ -235,6 +235,9 @@ but all calls MUST still be routed through Hub for monitoring, quotas, and kill-
 
 ### 6.2 Capabilities
 - `ai.generate.local` (default allow; still audited)
+- `ai.embed.local` (default allow; local embedding / retrieval vectors)
+- `ai.audio.local` (default allow; local speech-to-text / audio understanding)
+- `ai.vision.local` (default allow; local OCR / vision-understand)
 - `ai.generate.paid` (requires grant unless policy auto-approves)
 - `web.fetch` (requires grant unless policy auto-approves)
 
@@ -308,6 +311,8 @@ Hub MUST push grant decisions to the requesting device:
 Hub MUST support an emergency kill-switch that overrides grants/quotas:
 - `models_disabled=true` MUST reject all `ai.generate.*` (local + paid).
 - `network_disabled=true` MUST reject `web.fetch` and paid/online model calls.
+- `disabled_local_capabilities[]` MAY reject `ai.generate.local / ai.embed.local / ai.audio.local / ai.vision.local` independently.
+- `disabled_local_providers[]` MAY reject specific local providers (for example `mlx`, `transformers`) without disabling the whole local runtime.
 
 Scope (string):
 - `device:<device_id>` (recommended)
@@ -317,6 +322,7 @@ Scope (string):
 
 gRPC (draft v1):
 - `HubAdmin.SetKillSwitch` / `HubAdmin.GetKillSwitch` (see proto).
+- `KillSwitchUpdated` carries `disabled_local_capabilities[]` and `disabled_local_providers[]` for additive backward-compatible rollout.
 - `HubRuntime.GetSchedulerStatus` (paid AI queue/in-flight snapshot for Supervisor dashboards).
 - `HubRuntime.GetConnectorIngressReceipts` (recent connector/webhook ingress receipts for XT-side governed automation binding).
 
@@ -634,7 +640,74 @@ See `service HubMemory` in `protocol/hub_protocol_v1.proto`:
 
 ---
 
-## 13) Skills (Discovery + Import v1)
+## 13) Multimodal Supervisor Control Plane (Reserved v1 Contract Binding)
+
+Goal: keep `X-Hub` as the single multimodal `Supervisor` control plane while allowing `X-Terminal`, mobile / wearable companion, operator channels, and trusted runner surfaces to share one route / grant / brief / checkpoint chain.
+
+Protocol freeze anchor:
+- `docs/memory-new/xhub-multimodal-supervisor-control-plane-contract-freeze-v1.md`
+- `docs/memory-new/schema/xhub_multimodal_supervisor_control_plane_contract.v1.json`
+
+Hard boundaries:
+- all external surface ingress is untrusted until normalized and project-bound
+- natural language never maps directly to `terminal.exec`, `device.*`, `connector.send`, `grant.approve`, or `payment.*`
+- `hub_to_runner` requires trusted automation readiness and same-project scope
+- high-risk checkpoint default path is not `voice_only`; default is `voice + mobile` or another explicit second factor path
+- raw audio / external attachment body / unredacted transcript do not become canonical memory by default
+
+### 13.1 gRPC
+See `service HubSupervisor` in `protocol/hub_protocol_v1.proto`:
+- `IngestSupervisorSurface`
+  - normalize any `xt_ui | xt_voice | mobile_companion | wearable_companion | slack | telegram | feishu | whatsapp_cloud_api | whatsapp_personal_runner | runner_event | hub_internal` ingress into one machine-readable envelope
+  - freeze object: `xhub.supervisor_surface_ingress.v1`
+  - if `project_id` cannot be safely established, server MUST fail-closed or explicitly downgrade to a `hub_only`-safe path
+- `ResolveSupervisorRoute`
+  - freeze `hub_only | hub_to_xt | hub_to_runner | fail_closed` as the only valid route outcomes
+  - freeze object: `xhub.supervisor_route_decision.v1`
+  - `hub_to_xt` and `hub_to_runner` both require `same_project_scope=true`; missing XT readiness or runner readiness must not fake success
+- `GetSupervisorBriefProjection`
+  - produce a cross-surface brief from Hub memory / heartbeat / dispatch state / pending grants
+  - freeze object: `xhub.supervisor_brief_projection.v1`
+  - intended consumers: TTS brief, mobile card, IM heartbeat, XT cockpit
+  - every projection MUST carry `evidence_refs`
+- `ResolveSupervisorGuidance`
+  - compile user guidance into a structured directive bound to `project / run / pool / lane / mission`
+  - freeze object: `xhub.supervisor_guidance_resolution.v1`
+  - ambiguous target or silent scope expansion MUST fail-closed
+- `IssueSupervisorCheckpointChallenge`
+  - issue a generic checkpoint challenge envelope for `payment | substitution | budget_exceed | scope_expansion | external_side_effect | remote_posture_drop | geofence_exit`
+  - freeze object: `xhub.supervisor_checkpoint_challenge.v1`
+  - this RPC is the surface-level checkpoint envelope; it MAY delegate to an existing domain-specific chain such as:
+    - `IssueVoiceGrantChallenge / VerifyVoiceGrantResponse`
+    - `CreatePaymentIntent / IssuePaymentChallenge / ConfirmPaymentIntent`
+    - approval-card or manual-review paths
+
+Recommended machine-readable deny codes (minimum set):
+- `identity_unbound`
+- `project_not_bound`
+- `ambiguous_target`
+- `scope_expansion_detected`
+- `xt_offline`
+- `runner_not_ready`
+- `trusted_automation_project_not_bound`
+- `remote_posture_insufficient`
+- `grant_required`
+- `voice_only_not_allowed`
+- `policy_denied`
+- `challenge_expired`
+- `device_not_bound`
+- `runtime_error`
+
+### 13.2 HTTP (reserved)
+- `POST /supervisor/surfaces/ingest`
+- `POST /supervisor/routes/resolve`
+- `POST /supervisor/briefs/get`
+- `POST /supervisor/guidance/resolve`
+- `POST /supervisor/checkpoints/issue`
+
+---
+
+## 14) Skills (Discovery + Import v1)
 
 Goal: preserve a portable “search + install skill” UX while keeping Hub as the single control plane:
 - Hub stores/pins/audits skills; Hub does **not** execute third-party skill code.

@@ -10,6 +10,10 @@ struct ToolExecutorMemorySnapshotTests {
             text: "[MEMORY_V1]\n[L1_CANONICAL]\nKeep release scope frozen.\n[/L1_CANONICAL]\n[/MEMORY_V1]",
             source: "hub_remote_snapshot",
             resolvedMode: XTMemoryUseMode.projectChat.rawValue,
+            resolvedProfile: XTMemoryServingProfile.m2PlanReview.rawValue,
+            longtermMode: "summary_only",
+            retrievalAvailable: false,
+            fulltextNotLoaded: true,
             freshness: "fresh_remote",
             cacheHit: false,
             denyCode: nil,
@@ -40,6 +44,10 @@ struct ToolExecutorMemorySnapshotTests {
         #expect(jsonString(summary["mode"]) == "project")
         #expect(jsonString(summary["source"]) == "hub_remote_snapshot")
         #expect(jsonString(summary["resolved_mode"]) == XTMemoryUseMode.projectChat.rawValue)
+        #expect(jsonString(summary["resolved_profile"]) == XTMemoryServingProfile.m2PlanReview.rawValue)
+        #expect(jsonString(summary["longterm_mode"]) == "summary_only")
+        #expect(jsonBool(summary["retrieval_available"]) == false)
+        #expect(jsonBool(summary["fulltext_not_loaded"]) == true)
         #expect(jsonString(summary["freshness"]) == "fresh_remote")
         #expect(jsonBool(summary["cache_hit"]) == false)
         #expect(jsonNumber(summary["budget_total_tokens"]) == 1600)
