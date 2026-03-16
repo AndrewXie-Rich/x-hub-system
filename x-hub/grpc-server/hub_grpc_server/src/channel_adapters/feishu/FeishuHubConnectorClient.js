@@ -151,6 +151,22 @@ export function createFeishuHubConnectorClient(options = {}) {
         metadataFactory
       );
     },
+    async listChannelOnboardingDiscoveryTickets(filters = {}) {
+      return await unary(
+        runtimeClient,
+        'ListChannelOnboardingDiscoveryTickets',
+        { admin: principal, ...filters },
+        metadataFactory
+      );
+    },
+    async createOrTouchChannelOnboardingDiscoveryTicket(ticket, request_id = '') {
+      return await unary(
+        runtimeClient,
+        'CreateOrTouchChannelOnboardingDiscoveryTicket',
+        { request_id: safeString(request_id), admin: principal, ticket: ticket || {} },
+        metadataFactory
+      );
+    },
     async evaluateChannelCommandGate({
       request_id = '',
       actor = {},

@@ -89,7 +89,6 @@ function ensureDb(db) {
   if (!db || typeof db !== 'object' || !db.db || typeof db.db.exec !== 'function') {
     throw new Error('channel_bindings_store_db_required');
   }
-  if (CHANNEL_BINDINGS_TABLES_INIT.has(db)) return;
   db.db.exec(`
     CREATE TABLE IF NOT EXISTS supervisor_operator_channel_bindings (
       binding_id TEXT PRIMARY KEY,
@@ -402,6 +401,38 @@ export function upsertSupervisorOperatorChannelBinding(db, {
   request_id = '',
 } = {}) {
   ensureDb(db);
+  db.db.exec('BEGIN;');
+  try {
+    const out = upsertSupervisorOperatorChannelBindingTx(db, {
+      binding,
+      audit,
+      request_id,
+    });
+    if (!out.ok) {
+      db.db.exec('ROLLBACK;');
+      return out;
+    }
+    db.db.exec('COMMIT;');
+    return out;
+  } catch (err) {
+    try {
+      db.db.exec('ROLLBACK;');
+    } catch {
+      // ignore
+    }
+    const normalized = normalizeSupervisorOperatorChannelBinding(binding);
+    return bindingDeny('audit_write_failed', {
+      message: safeString(err?.message || 'audit_write_failed'),
+    }, normalized);
+  }
+}
+
+export function upsertSupervisorOperatorChannelBindingTx(db, {
+  binding = {},
+  audit = {},
+  request_id = '',
+} = {}) {
+  ensureDb(db);
   const normalized = normalizeSupervisorOperatorChannelBinding(binding);
   if (!normalized.provider) {
     return bindingDeny('provider_unknown');
@@ -421,88 +452,74 @@ export function upsertSupervisorOperatorChannelBinding(db, {
   const updated = !!existing;
   const bindingId = existing?.binding_id || normalized.binding_id || uuid();
   const createdAtMs = existing?.created_at_ms || normalized.created_at_ms || nowMs();
-
-  db.db.exec('BEGIN;');
-  try {
-    const auditRef = appendBindingAudit({
-      db,
-      event_type: 'channel.binding.upserted',
-      binding: {
-        ...normalized,
-        binding_id: bindingId,
-        created_at_ms: createdAtMs,
-      },
-      request_id,
-      audit,
-      created,
-      updated,
-    });
-    const updatedAtMs = nowMs();
-    db.db
-      .prepare(
-        `INSERT INTO supervisor_operator_channel_bindings(
-           binding_id, schema_version, provider, account_id, conversation_id, thread_key, route_key,
-           channel_scope, scope_type, scope_id, preferred_device_id, allowed_actions_json,
-           approval_surface, threading_mode, status, created_at_ms, updated_at_ms, audit_ref
-         ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-         ON CONFLICT(binding_id) DO UPDATE SET
-           schema_version = excluded.schema_version,
-           provider = excluded.provider,
-           account_id = excluded.account_id,
-           conversation_id = excluded.conversation_id,
-           thread_key = excluded.thread_key,
-           route_key = excluded.route_key,
-           channel_scope = excluded.channel_scope,
-           scope_type = excluded.scope_type,
-           scope_id = excluded.scope_id,
-           preferred_device_id = excluded.preferred_device_id,
-           allowed_actions_json = excluded.allowed_actions_json,
-           approval_surface = excluded.approval_surface,
-           threading_mode = excluded.threading_mode,
-           status = excluded.status,
-           updated_at_ms = excluded.updated_at_ms,
-           audit_ref = excluded.audit_ref`
-      )
-      .run(
-        bindingId,
-        normalized.schema_version,
-        normalized.provider,
-        normalized.account_id,
-        normalized.conversation_id,
-        normalized.thread_key,
-        normalized.route_key,
-        normalized.channel_scope,
-        normalized.scope_type,
-        normalized.scope_id,
-        normalized.preferred_device_id || null,
-        JSON.stringify(normalized.allowed_actions),
-        normalized.approval_surface,
-        normalized.threading_mode,
-        normalized.status,
-        createdAtMs,
-        updatedAtMs,
-        auditRef
-      );
-    const row = getSupervisorOperatorChannelBindingById(db, { binding_id: bindingId });
-    db.db.exec('COMMIT;');
-    return {
-      ok: true,
-      deny_code: '',
-      detail: {},
-      binding: row,
-      binding_match_mode: existing ? (normalized.thread_key ? 'exact_thread' : 'conversation_exact') : 'none',
-      audit_logged: true,
-      created,
-      updated,
-    };
-  } catch (err) {
-    try {
-      db.db.exec('ROLLBACK;');
-    } catch {
-      // ignore
-    }
-    return bindingDeny('audit_write_failed', {
-      message: safeString(err?.message || 'audit_write_failed'),
-    }, normalized);
-  }
+  const auditRef = appendBindingAudit({
+    db,
+    event_type: 'channel.binding.upserted',
+    binding: {
+      ...normalized,
+      binding_id: bindingId,
+      created_at_ms: createdAtMs,
+    },
+    request_id,
+    audit,
+    created,
+    updated,
+  });
+  const updatedAtMs = nowMs();
+  db.db
+    .prepare(
+      `INSERT INTO supervisor_operator_channel_bindings(
+         binding_id, schema_version, provider, account_id, conversation_id, thread_key, route_key,
+         channel_scope, scope_type, scope_id, preferred_device_id, allowed_actions_json,
+         approval_surface, threading_mode, status, created_at_ms, updated_at_ms, audit_ref
+       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(binding_id) DO UPDATE SET
+         schema_version = excluded.schema_version,
+         provider = excluded.provider,
+         account_id = excluded.account_id,
+         conversation_id = excluded.conversation_id,
+         thread_key = excluded.thread_key,
+         route_key = excluded.route_key,
+         channel_scope = excluded.channel_scope,
+         scope_type = excluded.scope_type,
+         scope_id = excluded.scope_id,
+         preferred_device_id = excluded.preferred_device_id,
+         allowed_actions_json = excluded.allowed_actions_json,
+         approval_surface = excluded.approval_surface,
+         threading_mode = excluded.threading_mode,
+         status = excluded.status,
+         updated_at_ms = excluded.updated_at_ms,
+         audit_ref = excluded.audit_ref`
+    )
+    .run(
+      bindingId,
+      normalized.schema_version,
+      normalized.provider,
+      normalized.account_id,
+      normalized.conversation_id,
+      normalized.thread_key,
+      normalized.route_key,
+      normalized.channel_scope,
+      normalized.scope_type,
+      normalized.scope_id,
+      normalized.preferred_device_id || null,
+      JSON.stringify(normalized.allowed_actions),
+      normalized.approval_surface,
+      normalized.threading_mode,
+      normalized.status,
+      createdAtMs,
+      updatedAtMs,
+      auditRef
+    );
+  const row = getSupervisorOperatorChannelBindingById(db, { binding_id: bindingId });
+  return {
+    ok: true,
+    deny_code: '',
+    detail: {},
+    binding: row,
+    binding_match_mode: existing ? (normalized.thread_key ? 'exact_thread' : 'conversation_exact') : 'none',
+    audit_logged: true,
+    created,
+    updated,
+  };
 }

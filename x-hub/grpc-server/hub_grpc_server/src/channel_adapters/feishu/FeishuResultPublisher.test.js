@@ -101,6 +101,42 @@ run('FeishuResultPublisher reflects deny and route blocked outcomes in summary c
   assert.match(String(blocked.payload?.content || ''), /xt-alpha-1/);
 });
 
+run('FeishuResultPublisher renders onboarding discovery summaries for unknown ingress', () => {
+  const out = buildFeishuResultSummary(makeResult({
+    command: {
+      ...makeResult().command,
+      action_name: 'supervisor.status.get',
+    },
+    gate: {
+      action_name: 'supervisor.status.get',
+      deny_code: 'channel_binding_missing',
+      route_mode: 'hub_only_status',
+    },
+    route: {
+      route_mode: 'discovery_ticket',
+    },
+    dispatch: {
+      kind: 'discovery_ticket',
+    },
+    discovery_ticket: {
+      ticket_id: 'disc-feishu-1',
+      status: 'pending',
+      ingress_surface: 'group',
+      proposed_scope_type: 'project',
+      proposed_scope_id: 'project_alpha',
+      recommended_binding_mode: 'thread_binding',
+      audit_ref: 'audit-disc-feishu-1',
+    },
+  }));
+  assert.equal(!!out.ok, true);
+  assert.match(String(out.payload?.content || ''), /Access Pending Approval/);
+  assert.match(String(out.payload?.content || ''), /Requested action: supervisor.status.get/);
+  assert.match(String(out.payload?.content || ''), /Ticket: disc-feishu-1/);
+  assert.match(String(out.payload?.content || ''), /Scope hint: project\/project_alpha/);
+  assert.match(String(out.payload?.content || ''), /access_pending_approval/);
+  assert.match(String(out.payload?.content || ''), /audit-disc-feishu-1/);
+});
+
 run('FeishuResultPublisher renders supervisor brief projection summaries when projection data is present', () => {
   const out = buildFeishuResultSummary(makeResult({
     command: {

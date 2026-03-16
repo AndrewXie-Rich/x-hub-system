@@ -100,6 +100,42 @@ run('SlackResultPublisher reflects deny and route blocked outcomes in summary co
   assert.match(String(blocked.payload?.text || ''), /Device: xt-alpha-1/);
 });
 
+run('SlackResultPublisher renders onboarding discovery summaries for unknown ingress', () => {
+  const out = buildSlackResultSummary(makeResult({
+    command: {
+      ...makeResult().command,
+      action_name: 'supervisor.status.get',
+    },
+    gate: {
+      action_name: 'supervisor.status.get',
+      deny_code: 'channel_binding_missing',
+      route_mode: 'hub_only_status',
+    },
+    route: {
+      route_mode: 'discovery_ticket',
+    },
+    dispatch: {
+      kind: 'discovery_ticket',
+    },
+    discovery_ticket: {
+      ticket_id: 'disc-slack-1',
+      status: 'pending',
+      ingress_surface: 'group',
+      proposed_scope_type: 'project',
+      proposed_scope_id: 'project_alpha',
+      recommended_binding_mode: 'thread_binding',
+      audit_ref: 'audit-disc-slack-1',
+    },
+  }));
+  assert.equal(!!out.ok, true);
+  assert.match(String(out.payload?.text || ''), /Access Pending Approval/);
+  assert.match(String(out.payload?.text || ''), /Requested action: supervisor.status.get/);
+  assert.match(String(out.payload?.text || ''), /Ticket: disc-slack-1/);
+  assert.match(String(out.payload?.text || ''), /Scope hint: project\/project_alpha/);
+  assert.match(String(out.payload?.text || ''), /status=access_pending_approval/);
+  assert.equal(String(out.payload?.metadata?.event_payload?.audit_ref || ''), 'audit-disc-slack-1');
+});
+
 run('SlackResultPublisher renders supervisor brief projection summaries when projection data is present', () => {
   const out = buildSlackResultSummary(makeResult({
     command: {

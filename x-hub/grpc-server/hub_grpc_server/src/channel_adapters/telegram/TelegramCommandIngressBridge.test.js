@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
-import { normalizeFeishuWebhookRequest } from './FeishuIngress.js';
-import { createFeishuCommandIngressBridge } from './FeishuCommandIngressBridge.js';
+import { normalizeTelegramUpdate } from './TelegramIngress.js';
+import { createTelegramCommandIngressBridge } from './TelegramCommandIngressBridge.js';
 
 function run(name, fn) {
   try {
@@ -24,45 +24,28 @@ async function runAsync(name, fn) {
 }
 
 function envelopeForText(text) {
-  const payload = {
-    schema: '2.0',
-    header: {
-      event_id: `feishu-${text.replace(/\s+/g, '-')}`,
-      event_type: 'im.message.receive_v1',
-      create_time: '1710000000123',
-      tenant_key: 'tenant-ops',
-      token: 'verify-token-1',
-    },
-    event: {
-      sender: {
-        sender_id: {
-          open_id: 'ou_user_1',
-        },
+  return normalizeTelegramUpdate({
+    update_id: 1001,
+    message: {
+      message_id: 88,
+      text,
+      chat: {
+        id: -1001234567890,
+        type: 'supergroup',
       },
-      message: {
-        message_id: 'om_1',
-        thread_id: 'omt_1',
-        chat_id: 'oc_room_1',
-        chat_type: 'group',
-        message_type: 'text',
-        content: JSON.stringify({
-          text,
-        }),
+      from: {
+        id: 123456,
       },
+      message_thread_id: 42,
     },
-  };
-  return normalizeFeishuWebhookRequest({
-    headers: {
-      'content-type': 'application/json; charset=utf-8',
-    },
-    raw_body: JSON.stringify(payload),
-    verification_token: 'verify-token-1',
+  }, {
+    account_id: 'telegram_ops_bot',
   });
 }
 
-await runAsync('FeishuCommandIngressBridge forwards valid commands into orchestrator and result sink', async () => {
+await runAsync('TelegramCommandIngressBridge forwards valid commands into orchestrator and result sink', async () => {
   const seen = [];
-  const bridge = createFeishuCommandIngressBridge({
+  const bridge = createTelegramCommandIngressBridge({
     hub_client: {
       async evaluateChannelCommandGate(req) {
         return {
@@ -105,9 +88,9 @@ await runAsync('FeishuCommandIngressBridge forwards valid commands into orchestr
   assert.equal(String(seen[0]?.route?.resolved_device_id || ''), 'xt-alpha-1');
 });
 
-await runAsync('FeishuCommandIngressBridge ignores valid Feishu events that are not supported commands', async () => {
+await runAsync('TelegramCommandIngressBridge ignores supported Telegram events that are not commands', async () => {
   let result_called = false;
-  const bridge = createFeishuCommandIngressBridge({
+  const bridge = createTelegramCommandIngressBridge({
     hub_client: {
       async evaluateChannelCommandGate() {
         throw new Error('should_not_be_called');
@@ -129,8 +112,8 @@ await runAsync('FeishuCommandIngressBridge ignores valid Feishu events that are 
   assert.equal(result_called, false);
 });
 
-await runAsync('FeishuCommandIngressBridge fails closed on retryable Hub RPC errors', async () => {
-  const bridge = createFeishuCommandIngressBridge({
+await runAsync('TelegramCommandIngressBridge fails closed on retryable Hub RPC errors', async () => {
+  const bridge = createTelegramCommandIngressBridge({
     hub_client: {
       async evaluateChannelCommandGate() {
         throw new Error('hub_unavailable');
@@ -149,10 +132,10 @@ await runAsync('FeishuCommandIngressBridge fails closed on retryable Hub RPC err
   assert.equal(!!out.retryable, true);
 });
 
-await runAsync('FeishuCommandIngressBridge acknowledges unknown unbound ingress by creating a discovery ticket', async () => {
+await runAsync('TelegramCommandIngressBridge acknowledges unknown unbound ingress by creating a discovery ticket', async () => {
   const seen = [];
   let route_called = false;
-  const bridge = createFeishuCommandIngressBridge({
+  const bridge = createTelegramCommandIngressBridge({
     hub_client: {
       async evaluateChannelCommandGate(req) {
         return {
@@ -172,11 +155,11 @@ await runAsync('FeishuCommandIngressBridge acknowledges unknown unbound ingress 
           updated: false,
           audit_logged: true,
           ticket: {
-            ticket_id: 'disc-feishu-bridge-1',
+            ticket_id: 'disc-telegram-bridge-1',
             provider: ticket.provider,
             status: 'pending',
             recommended_binding_mode: ticket.recommended_binding_mode,
-            audit_ref: 'audit-disc-feishu-bridge-1',
+            audit_ref: 'audit-disc-telegram-bridge-1',
           },
         };
       },
@@ -197,11 +180,11 @@ await runAsync('FeishuCommandIngressBridge acknowledges unknown unbound ingress 
   assert.equal(String(out.dispatch_kind || ''), 'discovery_ticket');
   assert.equal(route_called, false);
   assert.equal(seen.length, 1);
-  assert.equal(String(seen[0]?.discovery_ticket?.ticket_id || ''), 'disc-feishu-bridge-1');
+  assert.equal(String(seen[0]?.discovery_ticket?.ticket_id || ''), 'disc-telegram-bridge-1');
 });
 
-await runAsync('FeishuCommandIngressBridge keeps ingress ack success when reply delivery fails', async () => {
-  const bridge = createFeishuCommandIngressBridge({
+await runAsync('TelegramCommandIngressBridge keeps ingress ack success when reply delivery fails', async () => {
+  const bridge = createTelegramCommandIngressBridge({
     hub_client: {
       async evaluateChannelCommandGate(req) {
         return {
@@ -230,7 +213,7 @@ await runAsync('FeishuCommandIngressBridge keeps ingress ack success when reply 
       },
     },
     on_result: async () => {
-      throw new Error('feishu_post_failed');
+      throw new Error('telegram_post_failed');
     },
   });
 
@@ -239,11 +222,11 @@ await runAsync('FeishuCommandIngressBridge keeps ingress ack success when reply 
   assert.equal(!!out.ok, true);
   assert.equal(!!out.handled, true);
   assert.equal(!!out.reply_delivery_ok, false);
-  assert.equal(String(out.reply_delivery_error || ''), 'feishu_post_failed');
+  assert.equal(String(out.reply_delivery_error || ''), 'telegram_post_failed');
 });
 
-run('FeishuCommandIngressBridge exposes local normalize helper', () => {
-  const bridge = createFeishuCommandIngressBridge({
+run('TelegramCommandIngressBridge exposes local normalize helper', () => {
+  const bridge = createTelegramCommandIngressBridge({
     hub_client: {
       async evaluateChannelCommandGate() {
         return { decision: { allowed: true } };

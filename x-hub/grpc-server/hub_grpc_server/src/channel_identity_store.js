@@ -86,7 +86,6 @@ function ensureDb(db) {
   if (!db || typeof db !== 'object' || !db.db || typeof db.db.exec !== 'function') {
     throw new Error('channel_identity_store_db_required');
   }
-  if (CHANNEL_IDENTITY_TABLES_INIT.has(db)) return;
   db.db.exec(`
     CREATE TABLE IF NOT EXISTS channel_identity_bindings (
       identity_key TEXT PRIMARY KEY,
@@ -282,6 +281,38 @@ export function upsertChannelIdentityBinding(db, {
   request_id = '',
 } = {}) {
   ensureDb(db);
+  db.db.exec('BEGIN;');
+  try {
+    const out = upsertChannelIdentityBindingTx(db, {
+      binding,
+      audit,
+      request_id,
+    });
+    if (!out.ok) {
+      db.db.exec('ROLLBACK;');
+      return out;
+    }
+    db.db.exec('COMMIT;');
+    return out;
+  } catch (err) {
+    try {
+      db.db.exec('ROLLBACK;');
+    } catch {
+      // ignore
+    }
+    const normalized = normalizeChannelIdentityBinding(binding);
+    return identityDeny('audit_write_failed', {
+      message: safeString(err?.message || 'audit_write_failed'),
+    }, normalized);
+  }
+}
+
+export function upsertChannelIdentityBindingTx(db, {
+  binding = {},
+  audit = {},
+  request_id = '',
+} = {}) {
+  ensureDb(db);
   const normalized = normalizeChannelIdentityBinding(binding);
   if (!normalized.provider) {
     return identityDeny('provider_unknown');
@@ -299,68 +330,55 @@ export function upsertChannelIdentityBinding(db, {
   const existing = getChannelIdentityBinding(db, normalized);
   const created = !existing;
   const updated = !!existing;
-  db.db.exec('BEGIN;');
-  try {
-    const auditRef = appendIdentityAudit({
-      db,
-      event_type: 'channel.identity_binding.upserted',
-      binding: normalized,
-      request_id,
-      audit,
-      ok: true,
-      created,
-      updated,
-    });
-    const ts = nowMs();
-    db.db
-      .prepare(
-        `INSERT INTO channel_identity_bindings(
-           identity_key, schema_version, provider, external_user_id, external_tenant_id,
-           hub_user_id, roles_json, approval_only, status, synced_at_ms, updated_at_ms, audit_ref
-         ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-         ON CONFLICT(identity_key) DO UPDATE SET
-           schema_version = excluded.schema_version,
-           hub_user_id = excluded.hub_user_id,
-           roles_json = excluded.roles_json,
-           approval_only = excluded.approval_only,
-           status = excluded.status,
-           synced_at_ms = excluded.synced_at_ms,
-           updated_at_ms = excluded.updated_at_ms,
-           audit_ref = excluded.audit_ref`
-      )
-      .run(
-        normalized.identity_key,
-        normalized.schema_version,
-        normalized.provider,
-        normalized.external_user_id,
-        normalized.external_tenant_id,
-        normalized.hub_user_id,
-        JSON.stringify(normalized.roles),
-        normalized.approval_only ? 1 : 0,
-        normalized.status,
-        normalized.synced_at_ms,
-        ts,
-        auditRef
-      );
-    const row = getChannelIdentityBinding(db, normalized);
-    db.db.exec('COMMIT;');
-    return {
-      ok: true,
-      deny_code: '',
-      detail: {},
-      binding: row,
-      audit_logged: true,
-      created,
-      updated,
-    };
-  } catch (err) {
-    try {
-      db.db.exec('ROLLBACK;');
-    } catch {
-      // ignore
-    }
-    return identityDeny('audit_write_failed', {
-      message: safeString(err?.message || 'audit_write_failed'),
-    }, normalized);
-  }
+  const auditRef = appendIdentityAudit({
+    db,
+    event_type: 'channel.identity_binding.upserted',
+    binding: normalized,
+    request_id,
+    audit,
+    ok: true,
+    created,
+    updated,
+  });
+  const ts = nowMs();
+  db.db
+    .prepare(
+      `INSERT INTO channel_identity_bindings(
+         identity_key, schema_version, provider, external_user_id, external_tenant_id,
+         hub_user_id, roles_json, approval_only, status, synced_at_ms, updated_at_ms, audit_ref
+       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(identity_key) DO UPDATE SET
+         schema_version = excluded.schema_version,
+         hub_user_id = excluded.hub_user_id,
+         roles_json = excluded.roles_json,
+         approval_only = excluded.approval_only,
+         status = excluded.status,
+         synced_at_ms = excluded.synced_at_ms,
+         updated_at_ms = excluded.updated_at_ms,
+         audit_ref = excluded.audit_ref`
+    )
+    .run(
+      normalized.identity_key,
+      normalized.schema_version,
+      normalized.provider,
+      normalized.external_user_id,
+      normalized.external_tenant_id,
+      normalized.hub_user_id,
+      JSON.stringify(normalized.roles),
+      normalized.approval_only ? 1 : 0,
+      normalized.status,
+      normalized.synced_at_ms,
+      ts,
+      auditRef
+    );
+  const row = getChannelIdentityBinding(db, normalized);
+  return {
+    ok: true,
+    deny_code: '',
+    detail: {},
+    binding: row,
+    audit_logged: true,
+    created,
+    updated,
+  };
 }

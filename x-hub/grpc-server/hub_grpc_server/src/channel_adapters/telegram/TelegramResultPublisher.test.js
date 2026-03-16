@@ -71,6 +71,42 @@ run('TelegramResultPublisher builds routed summary payload', () => {
   assert.match(String(out.payload?.text || ''), /project_alpha/);
 });
 
+run('TelegramResultPublisher renders onboarding discovery summaries for unknown ingress', () => {
+  const out = buildTelegramResultSummary(makeResult({
+    command: {
+      ...makeResult().command,
+      action_name: 'supervisor.status.get',
+    },
+    gate: {
+      action_name: 'supervisor.status.get',
+      deny_code: 'channel_binding_missing',
+      route_mode: 'hub_only_status',
+    },
+    route: {
+      route_mode: 'discovery_ticket',
+    },
+    dispatch: {
+      kind: 'discovery_ticket',
+    },
+    discovery_ticket: {
+      ticket_id: 'disc-telegram-1',
+      status: 'pending',
+      ingress_surface: 'group',
+      proposed_scope_type: 'project',
+      proposed_scope_id: 'project_alpha',
+      recommended_binding_mode: 'thread_binding',
+      audit_ref: 'audit-disc-telegram-1',
+    },
+  }));
+  assert.equal(!!out.ok, true);
+  assert.match(String(out.payload?.text || ''), /Access Pending Approval/);
+  assert.match(String(out.payload?.text || ''), /Status: access_pending_approval/);
+  assert.match(String(out.payload?.text || ''), /Requested action: supervisor.status.get/);
+  assert.match(String(out.payload?.text || ''), /Ticket: disc-telegram-1/);
+  assert.match(String(out.payload?.text || ''), /Scope hint: project\/project_alpha/);
+  assert.match(String(out.payload?.text || ''), /Audit: audit-disc-telegram-1/);
+});
+
 run('TelegramResultPublisher renders supervisor brief projection summaries when projection data is present', () => {
   const out = buildTelegramResultSummary(makeResult({
     command: {

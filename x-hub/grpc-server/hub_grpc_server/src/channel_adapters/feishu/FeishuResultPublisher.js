@@ -41,10 +41,19 @@ function deliveryContextFromResult(result = {}) {
 }
 
 function auditRefFromResult(result = {}) {
-  return safeString(result.command?.audit_ref || result.request_id || result.route?.route_id || result.gate?.binding_id);
+  return safeString(
+    result.command?.audit_ref
+    || result.discovery_ticket?.audit_ref
+    || result.request_id
+    || result.route?.route_id
+    || result.gate?.binding_id
+  );
 }
 
 function projectIdFromResult(result = {}) {
+  if (safeString(result.discovery_ticket?.proposed_scope_type) === 'project' && safeString(result.discovery_ticket?.proposed_scope_id)) {
+    return safeString(result.discovery_ticket.proposed_scope_id);
+  }
   if (safeString(result.execution?.projection?.project_id)) return safeString(result.execution.projection.project_id);
   if (safeString(result.execution?.xt_command?.project_id)) return safeString(result.execution.xt_command.project_id);
   if (safeString(result.execution?.query?.project_id)) return safeString(result.execution.query.project_id);
@@ -57,6 +66,9 @@ function projectIdFromResult(result = {}) {
 }
 
 function classifyStatus(result = {}) {
+  const dispatchKind = safeString(result.dispatch?.kind);
+  if (dispatchKind === 'discovery_ticket') return 'access_pending_approval';
+
   const execution = safeObject(result.execution);
   if (Object.keys(execution).length) {
     const xtStatus = safeString(execution.xt_command?.status);
@@ -77,13 +89,41 @@ function classifyStatus(result = {}) {
     if (queryAction === 'supervisor.queue.get') return 'supervisor_queue';
   }
 
-  const dispatchKind = safeString(result.dispatch?.kind);
   if (dispatchKind === 'deny') return 'denied';
   if (dispatchKind === 'route_blocked') return 'route_blocked';
   if (dispatchKind === 'xt_command') return 'routed_to_xt';
   if (dispatchKind === 'runner_command') return 'routed_to_runner';
   if (dispatchKind === 'hub_grant_action') return 'hub_action';
   return 'hub_query';
+}
+
+function buildFeishuDiscoverySummary(result = {}) {
+  const ticket = safeObject(result.discovery_ticket);
+  if (!safeString(ticket.ticket_id)) return null;
+  const actionName = safeString(result.command?.action_name || result.gate?.action_name);
+  const scopeHint = safeString(ticket.proposed_scope_type) && safeString(ticket.proposed_scope_id)
+    ? `${safeString(ticket.proposed_scope_type)}/${safeString(ticket.proposed_scope_id)}`
+    : '';
+  return buildFeishuSummaryMessage({
+    delivery_context: deliveryContextFromResult(result),
+    title: 'Access Pending Approval',
+    status: classifyStatus(result),
+    project_id: projectIdFromResult(result),
+    lines: [
+      'This Feishu conversation is not bound to a governed operator scope yet.',
+      actionName ? `Requested action: ${actionName}` : '',
+      safeString(ticket.ticket_id) ? `Ticket: ${safeString(ticket.ticket_id)}` : '',
+      scopeHint ? `Scope hint: ${scopeHint}` : '',
+      safeString(ticket.recommended_binding_mode) ? `Binding mode: ${safeString(ticket.recommended_binding_mode)}` : '',
+      'A local Hub admin needs to approve this channel once before commands can run.',
+    ].filter(Boolean),
+    fields: [
+      safeString(ticket.status) ? { label: 'Status', value: safeString(ticket.status) } : null,
+      safeString(ticket.ingress_surface) ? { label: 'Surface', value: safeString(ticket.ingress_surface) } : null,
+      safeString(ticket.ticket_id) ? { label: 'Ticket', value: safeString(ticket.ticket_id) } : null,
+    ].filter(Boolean),
+    audit_ref: safeString(ticket.audit_ref || auditRefFromResult(result)),
+  });
 }
 
 function bindingDeliveryContext(binding = {}) {
@@ -285,6 +325,9 @@ function buildExecutionSummary(result = {}) {
 }
 
 export function buildFeishuResultSummary(result = {}) {
+  const discoverySummary = buildFeishuDiscoverySummary(result);
+  if (discoverySummary) return discoverySummary;
+
   const executionSummary = buildExecutionSummary(result);
   if (executionSummary) return executionSummary;
 

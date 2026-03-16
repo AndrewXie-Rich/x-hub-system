@@ -148,6 +148,57 @@ await runAsync('SlackCommandIngressBridge fails closed on retryable Hub RPC erro
   assert.equal(!!out.retryable, true);
 });
 
+await runAsync('SlackCommandIngressBridge acknowledges unknown unbound ingress by creating a discovery ticket', async () => {
+  const seen = [];
+  let route_called = false;
+  const bridge = createSlackCommandIngressBridge({
+    hub_client: {
+      async evaluateChannelCommandGate(req) {
+        return {
+          decision: {
+            allowed: false,
+            deny_code: 'identity_binding_missing',
+            action_name: req.action_name,
+            route_mode: 'hub_only_status',
+          },
+          audit_logged: true,
+        };
+      },
+      async createOrTouchChannelOnboardingDiscoveryTicket(ticket) {
+        return {
+          ok: true,
+          created: true,
+          updated: false,
+          audit_logged: true,
+          ticket: {
+            ticket_id: 'disc-bridge-1',
+            provider: ticket.provider,
+            status: 'pending',
+            recommended_binding_mode: ticket.recommended_binding_mode,
+            audit_ref: 'audit-disc-bridge-1',
+          },
+        };
+      },
+      async resolveSupervisorChannelRoute() {
+        route_called = true;
+        throw new Error('should_not_route');
+      },
+    },
+    on_result: async (result) => {
+      seen.push(result);
+    },
+  });
+
+  const out = await bridge.handleEnvelope(signedEnvelopeForText('status'));
+
+  assert.equal(!!out.ok, true);
+  assert.equal(!!out.handled, true);
+  assert.equal(String(out.dispatch_kind || ''), 'discovery_ticket');
+  assert.equal(route_called, false);
+  assert.equal(seen.length, 1);
+  assert.equal(String(seen[0]?.discovery_ticket?.ticket_id || ''), 'disc-bridge-1');
+});
+
 await runAsync('SlackCommandIngressBridge keeps ingress ack success when reply delivery fails', async () => {
   const bridge = createSlackCommandIngressBridge({
     hub_client: {

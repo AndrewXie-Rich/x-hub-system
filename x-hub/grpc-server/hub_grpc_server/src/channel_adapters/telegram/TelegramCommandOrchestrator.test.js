@@ -171,3 +171,56 @@ await runAsync('TelegramCommandOrchestrator keeps approval actions hub-side and 
   assert.equal(String(out.command?.pending_grant?.grant_request_id || ''), 'grant_req_1');
   assert.equal(String(calls[0].req.scope_id || ''), 'payments-prod');
 });
+
+await runAsync('TelegramCommandOrchestrator creates discovery ticket when governed bindings are missing', async () => {
+  let route_called = false;
+  const discovery_calls = [];
+  const out = await orchestrateTelegramCommand({
+    input: makeTelegramDeployEnvelope(),
+    hub_client: {
+      async evaluateChannelCommandGate(req) {
+        return {
+          decision: {
+            allowed: false,
+            deny_code: 'identity_binding_missing',
+            action_name: req.action_name,
+            route_mode: 'hub_only_status',
+          },
+          audit_logged: true,
+        };
+      },
+      async createOrTouchChannelOnboardingDiscoveryTicket(ticket, request_id) {
+        discovery_calls.push({ ticket, request_id });
+        return {
+          ok: true,
+          created: true,
+          updated: false,
+          audit_logged: true,
+          ticket: {
+            ticket_id: 'disc-telegram-1',
+            provider: ticket.provider,
+            conversation_id: ticket.conversation_id,
+            thread_key: ticket.thread_key,
+            recommended_binding_mode: ticket.recommended_binding_mode,
+            status: 'pending',
+            audit_ref: 'audit-disc-telegram-1',
+          },
+        };
+      },
+      async resolveSupervisorChannelRoute() {
+        route_called = true;
+        throw new Error('should_not_route');
+      },
+    },
+    now_fn: () => 1710000007000,
+  });
+
+  assert.equal(!!out.ok, true);
+  assert.equal(String(out.dispatch?.kind || ''), 'discovery_ticket');
+  assert.equal(String(out.discovery_ticket?.ticket_id || ''), 'disc-telegram-1');
+  assert.equal(route_called, false);
+  assert.equal(discovery_calls.length, 1);
+  assert.equal(String(discovery_calls[0].ticket.provider || ''), 'telegram');
+  assert.equal(String(discovery_calls[0].ticket.conversation_id || ''), '-1001234567890');
+  assert.equal(String(discovery_calls[0].ticket.recommended_binding_mode || ''), 'thread_binding');
+});

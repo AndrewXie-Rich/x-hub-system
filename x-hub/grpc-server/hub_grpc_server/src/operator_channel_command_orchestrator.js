@@ -6,12 +6,48 @@ function safeObject(input) {
   return input && typeof input === 'object' && !Array.isArray(input) ? input : {};
 }
 
+function shouldCreateDiscoveryTicket(gate = {}) {
+  const denyCode = safeString(gate.deny_code);
+  return denyCode === 'identity_binding_missing' || denyCode === 'channel_binding_missing';
+}
+
+function buildDiscoveryTicketDraft(command = {}) {
+  const actor = safeObject(command.actor);
+  const channel = safeObject(command.channel);
+  const pendingGrant = safeObject(command.pending_grant);
+  const proposedScopeId = safeString(
+    (safeString(command.scope_type).toLowerCase() === 'project' ? command.scope_id : '')
+    || pendingGrant.project_id
+    || command.route_project_id
+  );
+  return {
+    provider: safeString(channel.provider || actor.provider),
+    account_id: safeString(channel.account_id),
+    external_user_id: safeString(actor.external_user_id),
+    external_tenant_id: safeString(actor.external_tenant_id || channel.account_id),
+    conversation_id: safeString(channel.conversation_id),
+    thread_key: safeString(channel.thread_key),
+    ingress_surface: safeString(channel.channel_scope || 'group'),
+    first_message_preview: safeString(command.action_name),
+    proposed_scope_type: proposedScopeId ? 'project' : safeString(command.scope_type || ''),
+    proposed_scope_id: proposedScopeId,
+    recommended_binding_mode: safeString(channel.thread_key) ? 'thread_binding' : 'conversation_binding',
+  };
+}
+
 export function classifyOperatorChannelCommandDispatch({
   gate = {},
   route = {},
   action_name = '',
 } = {}) {
   const normalizedAction = safeString(action_name || gate.action_name).toLowerCase();
+  if (safeString(route.route_mode) === 'discovery_ticket') {
+    return {
+      kind: 'discovery_ticket',
+      execute_via: 'none',
+      terminal: true,
+    };
+  }
   if (gate && gate.allowed === false) {
     return {
       kind: 'deny',
@@ -113,6 +149,61 @@ export async function orchestrateOperatorChannelCommand({
 
   const gate = safeObject(gateResponse.decision);
   if (gate.allowed === false) {
+    if (
+      shouldCreateDiscoveryTicket(gate)
+      && hub_client
+      && typeof hub_client.createOrTouchChannelOnboardingDiscoveryTicket === 'function'
+    ) {
+      let discoveryResponse;
+      try {
+        discoveryResponse = await hub_client.createOrTouchChannelOnboardingDiscoveryTicket(
+          buildDiscoveryTicketDraft(command),
+          command.request_id
+        );
+      } catch (error) {
+        return {
+          ok: false,
+          deny_code: 'discovery_ticket_rpc_failed',
+          retryable: true,
+          request_id: safeString(command.request_id),
+          command,
+          gate,
+          detail: safeString(error?.message || 'discovery_ticket_rpc_failed'),
+        };
+      }
+
+      if (!discoveryResponse || discoveryResponse.ok !== true) {
+        return {
+          ok: false,
+          deny_code: safeString(discoveryResponse?.deny_code || 'discovery_ticket_rejected'),
+          retryable: safeString(discoveryResponse?.deny_code) === 'audit_write_failed',
+          request_id: safeString(command.request_id),
+          command,
+          gate,
+        };
+      }
+
+      const discoveryTicket = safeObject(discoveryResponse.ticket);
+      return {
+        ok: true,
+        request_id: safeString(command.request_id),
+        command,
+        gate,
+        route: {
+          route_mode: 'discovery_ticket',
+        },
+        discovery_ticket: discoveryTicket,
+        gate_audit_logged: gateResponse.audit_logged === true,
+        discovery_audit_logged: discoveryResponse.audit_logged === true,
+        discovery_created: discoveryResponse.created === true,
+        discovery_updated: discoveryResponse.updated === true,
+        dispatch: {
+          kind: 'discovery_ticket',
+          execute_via: 'none',
+          terminal: true,
+        },
+      };
+    }
     return {
       ok: true,
       request_id: safeString(command.request_id),
