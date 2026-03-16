@@ -61,6 +61,25 @@ enum VoiceAutoReportMode: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum VoicePersonaPreset: String, Codable, CaseIterable, Identifiable {
+    case briefing = "briefing"
+    case conversational = "conversational"
+    case calm = "calm"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .briefing:
+            return "Briefing"
+        case .conversational:
+            return "Conversational"
+        case .calm:
+            return "Calm"
+        }
+    }
+}
+
 struct VoiceQuietHours: Codable, Equatable {
     var enabled: Bool
     var fromLocal: String
@@ -79,6 +98,8 @@ struct VoiceRuntimePreferences: Codable, Equatable {
     var preferredRoute: VoicePreferredRoute
     var wakeMode: VoiceWakeMode
     var autoReportMode: VoiceAutoReportMode
+    var persona: VoicePersonaPreset
+    var interruptOnSpeech: Bool
     var quietHours: VoiceQuietHours
     var localeIdentifier: String
     var funASR: FunASRSidecarConfig
@@ -87,6 +108,8 @@ struct VoiceRuntimePreferences: Codable, Equatable {
         case preferredRoute
         case wakeMode
         case autoReportMode
+        case persona
+        case interruptOnSpeech
         case quietHours
         case localeIdentifier
         case funASR
@@ -97,6 +120,8 @@ struct VoiceRuntimePreferences: Codable, Equatable {
             preferredRoute: .automatic,
             wakeMode: .pushToTalk,
             autoReportMode: .summary,
+            persona: .conversational,
+            interruptOnSpeech: true,
             quietHours: .default(),
             localeIdentifier: "zh-CN",
             funASR: .default()
@@ -107,6 +132,8 @@ struct VoiceRuntimePreferences: Codable, Equatable {
         preferredRoute: VoicePreferredRoute,
         wakeMode: VoiceWakeMode,
         autoReportMode: VoiceAutoReportMode,
+        persona: VoicePersonaPreset,
+        interruptOnSpeech: Bool,
         quietHours: VoiceQuietHours,
         localeIdentifier: String,
         funASR: FunASRSidecarConfig
@@ -114,6 +141,8 @@ struct VoiceRuntimePreferences: Codable, Equatable {
         self.preferredRoute = preferredRoute
         self.wakeMode = wakeMode
         self.autoReportMode = autoReportMode
+        self.persona = persona
+        self.interruptOnSpeech = interruptOnSpeech
         self.quietHours = quietHours
         self.localeIdentifier = localeIdentifier
         self.funASR = funASR
@@ -124,6 +153,8 @@ struct VoiceRuntimePreferences: Codable, Equatable {
         preferredRoute = (try? container.decode(VoicePreferredRoute.self, forKey: .preferredRoute)) ?? .automatic
         wakeMode = (try? container.decode(VoiceWakeMode.self, forKey: .wakeMode)) ?? .pushToTalk
         autoReportMode = (try? container.decode(VoiceAutoReportMode.self, forKey: .autoReportMode)) ?? .summary
+        persona = (try? container.decode(VoicePersonaPreset.self, forKey: .persona)) ?? .conversational
+        interruptOnSpeech = (try? container.decode(Bool.self, forKey: .interruptOnSpeech)) ?? true
         quietHours = (try? container.decode(VoiceQuietHours.self, forKey: .quietHours)) ?? .default()
         localeIdentifier = (try? container.decode(String.self, forKey: .localeIdentifier)) ?? "zh-CN"
         funASR = (try? container.decode(FunASRSidecarConfig.self, forKey: .funASR)) ?? .default()

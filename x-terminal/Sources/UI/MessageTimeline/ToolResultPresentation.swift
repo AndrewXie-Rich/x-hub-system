@@ -5,6 +5,7 @@ enum ToolResultPresentation {
         guard result.ok else { return false }
         guard call.tool == .deviceBrowserControl else { return false }
         return ToolResultHumanSummary.isBrowserSecretFillSuccess(result)
+            || ToolResultHumanSummary.isBrowserUIObservationSuccess(result)
     }
 
     static func shouldShowTimelineCard(for result: ToolResult) -> Bool {
@@ -12,11 +13,15 @@ enum ToolResultPresentation {
             return true
         }
         return ToolResultHumanSummary.isBrowserSecretFillSuccess(result)
+            || ToolResultHumanSummary.isBrowserUIObservationSuccess(result)
     }
 
     static func title(for result: ToolResult) -> String {
         if result.ok, ToolResultHumanSummary.isBrowserSecretFillSuccess(result) {
             return "Credential filled from Secret Vault"
+        }
+        if result.ok, ToolResultHumanSummary.isBrowserUIObservationSuccess(result) {
+            return "Browser UI observation captured"
         }
         return "\(toolDisplayName(result.tool)) needs attention"
     }
@@ -28,6 +33,9 @@ enum ToolResultPresentation {
     static func iconName(for result: ToolResult) -> String {
         if result.ok, ToolResultHumanSummary.isBrowserSecretFillSuccess(result) {
             return "checkmark.shield.fill"
+        }
+        if result.ok, ToolResultHumanSummary.isBrowserUIObservationSuccess(result) {
+            return "eye.fill"
         }
         return "exclamationmark.triangle.fill"
     }
@@ -42,20 +50,42 @@ enum ToolResultPresentation {
             return "Read file"
         case .write_file:
             return "Write file"
+        case .delete_path:
+            return "Delete path"
+        case .move_path:
+            return "Move path"
         case .list_dir:
             return "List files"
         case .search:
             return "Search"
         case .run_command:
             return "Run command"
+        case .process_start:
+            return "Start process"
+        case .process_status:
+            return "Process status"
+        case .process_logs:
+            return "Process logs"
+        case .process_stop:
+            return "Stop process"
         case .git_status:
             return "Git status"
         case .git_diff:
             return "Git diff"
+        case .git_commit:
+            return "Git commit"
+        case .git_push:
+            return "Git push"
         case .git_apply_check:
             return "Patch check"
         case .git_apply:
             return "Apply patch"
+        case .pr_create:
+            return "Create pull request"
+        case .ci_read:
+            return "Read CI"
+        case .ci_trigger:
+            return "Trigger CI"
         case .session_list:
             return "Session list"
         case .session_resume:

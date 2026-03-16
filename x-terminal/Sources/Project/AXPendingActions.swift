@@ -20,6 +20,8 @@ struct AXPendingToolFlowState: Codable, Equatable {
     var finalizeOnly: Bool
     var formatRetryUsed: Bool
     var executionRetryUsed: Bool = false
+    var lastPromptVisibleGuidanceInjectionId: String? = nil
+    var lastSafePointPauseInjectionId: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case step
@@ -32,6 +34,8 @@ struct AXPendingToolFlowState: Codable, Equatable {
         case finalizeOnly
         case formatRetryUsed
         case executionRetryUsed
+        case lastPromptVisibleGuidanceInjectionId = "last_prompt_visible_guidance_injection_id"
+        case lastSafePointPauseInjectionId = "last_safe_point_pause_injection_id"
     }
 
     init(
@@ -44,7 +48,9 @@ struct AXPendingToolFlowState: Codable, Equatable {
         deferredFinal: String?,
         finalizeOnly: Bool,
         formatRetryUsed: Bool,
-        executionRetryUsed: Bool = false
+        executionRetryUsed: Bool = false,
+        lastPromptVisibleGuidanceInjectionId: String? = nil,
+        lastSafePointPauseInjectionId: String? = nil
     ) {
         self.step = step
         self.toolResults = toolResults
@@ -56,6 +62,8 @@ struct AXPendingToolFlowState: Codable, Equatable {
         self.finalizeOnly = finalizeOnly
         self.formatRetryUsed = formatRetryUsed
         self.executionRetryUsed = executionRetryUsed
+        self.lastPromptVisibleGuidanceInjectionId = lastPromptVisibleGuidanceInjectionId
+        self.lastSafePointPauseInjectionId = lastSafePointPauseInjectionId
     }
 
     init(from decoder: Decoder) throws {
@@ -70,6 +78,14 @@ struct AXPendingToolFlowState: Codable, Equatable {
         finalizeOnly = try container.decode(Bool.self, forKey: .finalizeOnly)
         formatRetryUsed = try container.decode(Bool.self, forKey: .formatRetryUsed)
         executionRetryUsed = try container.decodeIfPresent(Bool.self, forKey: .executionRetryUsed) ?? false
+        lastPromptVisibleGuidanceInjectionId = try container.decodeIfPresent(
+            String.self,
+            forKey: .lastPromptVisibleGuidanceInjectionId
+        )
+        lastSafePointPauseInjectionId = try container.decodeIfPresent(
+            String.self,
+            forKey: .lastSafePointPauseInjectionId
+        )
     }
 }
 

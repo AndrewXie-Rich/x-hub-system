@@ -23,7 +23,7 @@ struct ProjectTerminalView: View {
         HStack(spacing: 10) {
             Text("Terminal")
                 .font(.system(.body, design: .monospaced))
-            Text(ctx.root.lastPathComponent)
+            Text(ctx.displayName())
                 .font(.system(.body, design: .monospaced))
                 .foregroundStyle(.secondary)
 
@@ -106,4 +106,3 @@ struct ProjectTerminalView: View {
         )
     }
 }
-

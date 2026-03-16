@@ -74,6 +74,12 @@ enum AutonomyLevel: Int, Codable, CaseIterable {
     }
 }
 
+struct ProjectRegistryBinding: Equatable, Codable {
+    var projectId: String
+    var rootPath: String
+    var displayName: String
+}
+
 /// 项目模型
 @MainActor
 class ProjectModel: ObservableObject, Identifiable {
@@ -89,6 +95,7 @@ class ProjectModel: ObservableObject, Identifiable {
 
     @Published var currentModel: ModelInfo
     @Published var autonomyLevel: AutonomyLevel
+    @Published var registeredProjectBinding: ProjectRegistryBinding?
     @Published var executionTier: AXProjectExecutionTier
     @Published var supervisorInterventionTier: AXProjectSupervisorInterventionTier
     @Published var reviewPolicyMode: AXProjectReviewPolicyMode
@@ -162,6 +169,22 @@ class ProjectModel: ObservableObject, Identifiable {
         status == .blocked
     }
 
+    var registeredProjectId: String? {
+        registeredProjectBinding?.projectId
+    }
+
+    var registeredProjectRootPath: String? {
+        registeredProjectBinding?.rootPath
+    }
+
+    var registeredProjectDisplayName: String? {
+        registeredProjectBinding?.displayName
+    }
+
+    var isBoundToRegisteredProject: Bool {
+        registeredProjectBinding != nil
+    }
+
     var blockedDuration: TimeInterval {
         guard isBlocked, let pauseTime = pauseTime else { return 0 }
         return Date().timeIntervalSince(pauseTime)
@@ -184,6 +207,7 @@ class ProjectModel: ObservableObject, Identifiable {
         modelName: String,
         isLocalModel: Bool = false,
         autonomyLevel: AutonomyLevel = .assisted,
+        registeredProjectBinding: ProjectRegistryBinding? = nil,
         executionTier: AXProjectExecutionTier? = nil,
         supervisorInterventionTier: AXProjectSupervisorInterventionTier? = nil,
         reviewPolicyMode: AXProjectReviewPolicyMode? = nil,
@@ -198,25 +222,18 @@ class ProjectModel: ObservableObject, Identifiable {
             for: resolvedExecutionTier,
             supervisorInterventionTier: supervisorInterventionTier
         )
+        let resolvedModel = XTModelCatalog.modelInfo(
+            for: modelName,
+            preferLocalHint: isLocalModel
+        )
         self.id = id
         self.name = name
         self.taskDescription = taskDescription
         self.taskIcon = taskIcon
         self.status = status
-        self.currentModel = ModelInfo(
-            id: modelName,
-            name: modelName,
-            displayName: modelName,
-            type: isLocalModel ? .local : .hubPaid,
-            capability: .intermediate,
-            speed: .medium,
-            costPerMillionTokens: isLocalModel ? nil : 3.0,
-            memorySize: isLocalModel ? "40GB" : nil,
-            suitableFor: ["通用任务"],
-            badge: nil,
-            badgeColor: nil
-        )
-        self.autonomyLevel = autonomyLevel
+        self.currentModel = resolvedModel
+        self.autonomyLevel = .fromExecutionTier(resolvedExecutionTier)
+        self.registeredProjectBinding = registeredProjectBinding
         self.executionTier = resolvedExecutionTier
         self.supervisorInterventionTier = recommendedGovernance.supervisorInterventionTier
         self.reviewPolicyMode = reviewPolicyMode ?? recommendedGovernance.reviewPolicyMode
@@ -281,6 +298,10 @@ class ProjectModel: ObservableObject, Identifiable {
         priority = newPriority
     }
 
+    func updateRegisteredProjectBinding(_ binding: ProjectRegistryBinding?) {
+        registeredProjectBinding = binding
+    }
+
     func updateGovernance(
         executionTier: AXProjectExecutionTier,
         supervisorInterventionTier: AXProjectSupervisorInterventionTier,
@@ -298,6 +319,25 @@ class ProjectModel: ObservableObject, Identifiable {
         self.brainstormReviewSeconds = brainstormReviewSeconds
         self.eventDrivenReviewEnabled = eventDrivenReviewEnabled
         self.autonomyLevel = .fromExecutionTier(executionTier)
+    }
+
+    func governanceActivityContext(
+        resolveProjectContext: (String) -> AXProjectContext?
+    ) -> AXProjectContext? {
+        guard let binding = registeredProjectBinding else {
+            return nil
+        }
+
+        if let ctx = resolveProjectContext(binding.projectId) {
+            return ctx
+        }
+
+        let rootPath = binding.rootPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rootPath.isEmpty else {
+            return nil
+        }
+
+        return AXProjectContext(root: URL(fileURLWithPath: rootPath, isDirectory: true))
     }
 
     func addDependency(_ projectId: UUID) {

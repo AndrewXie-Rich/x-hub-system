@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 enum AXSkillCompatibilityState: String, Codable, CaseIterable, Sendable {
     case supported
@@ -240,6 +241,210 @@ extension AXSkillsLibrary {
             skillID: "summarize",
             displayName: "Summarize",
             summary: "Governed summarize wrapper for webpages, PDFs, and long documents."
+        ),
+    ]
+
+    private static let nativeSupervisorSkillSpecs: [(String, String, String, [String], SupervisorGovernedSkillDispatch, String, SupervisorSkillRiskLevel, Int, Int)] = [
+        (
+            "repo.delete.path",
+            "Repo Delete Path",
+            "Delete a governed file or directory within the project root.",
+            ["repo.delete_move"],
+            SupervisorGovernedSkillDispatch(
+                tool: ToolName.delete_path.rawValue,
+                fixedArgs: [:],
+                passthroughArgs: ["path", "recursive", "force"],
+                argAliases: ["path": ["target"]],
+                requiredAny: [["path"]],
+                exactlyOneOf: []
+            ),
+            "repo_mutation",
+            .medium,
+            10_000,
+            0
+        ),
+        (
+            "repo.move.path",
+            "Repo Move Path",
+            "Move or rename a governed file or directory within the project root.",
+            ["repo.delete_move"],
+            SupervisorGovernedSkillDispatch(
+                tool: ToolName.move_path.rawValue,
+                fixedArgs: [:],
+                passthroughArgs: ["from", "to", "overwrite", "create_dirs"],
+                argAliases: [
+                    "from": ["source", "src"],
+                    "to": ["destination", "dest", "new_path"],
+                ],
+                requiredAny: [["from"], ["to"]],
+                exactlyOneOf: []
+            ),
+            "repo_mutation",
+            .medium,
+            10_000,
+            0
+        ),
+        (
+            "process.start",
+            "Process Start",
+            "Start a governed managed process inside the project root.",
+            ["process.manage", "process.autorestart"],
+            SupervisorGovernedSkillDispatch(
+                tool: ToolName.process_start.rawValue,
+                fixedArgs: [:],
+                passthroughArgs: ["command", "name", "process_id", "cwd", "env", "restart_on_exit"],
+                argAliases: ["process_id": ["id"]],
+                requiredAny: [["command"]],
+                exactlyOneOf: []
+            ),
+            "managed_process_mutation",
+            .medium,
+            15_000,
+            0
+        ),
+        (
+            "process.status",
+            "Process Status",
+            "Read the state of managed processes for the project.",
+            ["process.manage"],
+            SupervisorGovernedSkillDispatch(
+                tool: ToolName.process_status.rawValue,
+                fixedArgs: [:],
+                passthroughArgs: ["process_id", "include_exited"],
+                argAliases: ["process_id": ["id"]],
+                requiredAny: [],
+                exactlyOneOf: []
+            ),
+            "read_only",
+            .low,
+            8_000,
+            0
+        ),
+        (
+            "process.logs",
+            "Process Logs",
+            "Read recent logs from a managed process.",
+            ["process.manage"],
+            SupervisorGovernedSkillDispatch(
+                tool: ToolName.process_logs.rawValue,
+                fixedArgs: [:],
+                passthroughArgs: ["process_id", "tail_lines", "max_bytes"],
+                argAliases: ["process_id": ["id"]],
+                requiredAny: [["process_id"]],
+                exactlyOneOf: []
+            ),
+            "read_only",
+            .low,
+            8_000,
+            0
+        ),
+        (
+            "process.stop",
+            "Process Stop",
+            "Stop a governed managed process.",
+            ["process.manage"],
+            SupervisorGovernedSkillDispatch(
+                tool: ToolName.process_stop.rawValue,
+                fixedArgs: [:],
+                passthroughArgs: ["process_id", "force"],
+                argAliases: ["process_id": ["id"]],
+                requiredAny: [["process_id"]],
+                exactlyOneOf: []
+            ),
+            "managed_process_mutation",
+            .medium,
+            10_000,
+            0
+        ),
+        (
+            "repo.git.commit",
+            "Git Commit",
+            "Create a governed git commit in the active repository.",
+            ["git.commit"],
+            SupervisorGovernedSkillDispatch(
+                tool: ToolName.git_commit.rawValue,
+                fixedArgs: [:],
+                passthroughArgs: ["message", "all", "allow_empty", "paths"],
+                argAliases: [:],
+                requiredAny: [["message"]],
+                exactlyOneOf: []
+            ),
+            "repo_mutation",
+            .medium,
+            20_000,
+            0
+        ),
+        (
+            "repo.git.push",
+            "Git Push",
+            "Push governed git changes to a configured remote.",
+            ["git.push"],
+            SupervisorGovernedSkillDispatch(
+                tool: ToolName.git_push.rawValue,
+                fixedArgs: [:],
+                passthroughArgs: ["remote", "branch", "set_upstream"],
+                argAliases: [:],
+                requiredAny: [],
+                exactlyOneOf: []
+            ),
+            "remote_side_effect",
+            .high,
+            60_000,
+            0
+        ),
+        (
+            "repo.pr.create",
+            "PR Create",
+            "Create a governed pull request via GitHub CLI.",
+            ["pr.create"],
+            SupervisorGovernedSkillDispatch(
+                tool: ToolName.pr_create.rawValue,
+                fixedArgs: [:],
+                passthroughArgs: ["title", "body", "base", "head", "draft", "fill", "labels", "reviewers"],
+                argAliases: [:],
+                requiredAny: [],
+                exactlyOneOf: []
+            ),
+            "remote_side_effect",
+            .high,
+            60_000,
+            0
+        ),
+        (
+            "repo.ci.read",
+            "CI Read",
+            "Read recent CI workflow runs via GitHub CLI.",
+            ["ci.read"],
+            SupervisorGovernedSkillDispatch(
+                tool: ToolName.ci_read.rawValue,
+                fixedArgs: ["provider": .string("github")],
+                passthroughArgs: ["workflow", "branch", "commit", "limit"],
+                argAliases: [:],
+                requiredAny: [],
+                exactlyOneOf: []
+            ),
+            "read_only",
+            .low,
+            30_000,
+            0
+        ),
+        (
+            "repo.ci.trigger",
+            "CI Trigger",
+            "Trigger a CI workflow via GitHub CLI.",
+            ["ci.trigger"],
+            SupervisorGovernedSkillDispatch(
+                tool: ToolName.ci_trigger.rawValue,
+                fixedArgs: ["provider": .string("github")],
+                passthroughArgs: ["workflow", "ref", "inputs"],
+                argAliases: [:],
+                requiredAny: [["workflow"]],
+                exactlyOneOf: []
+            ),
+            "remote_side_effect",
+            .high,
+            30_000,
+            0
         ),
     ]
 
@@ -784,7 +989,7 @@ extension AXSkillsLibrary {
         }
         let skillBySHA = Dictionary(uniqueKeysWithValues: skillPairs)
 
-        let items = selectedPins.compactMap { pin -> SupervisorSkillRegistryItem? in
+        let hubItems = selectedPins.compactMap { pin -> SupervisorSkillRegistryItem? in
             let sha = pin.packageSHA256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             guard let skill = skillBySHA[sha] else { return nil }
             let revoked = revocations.revokedSHA256.contains(sha)
@@ -795,6 +1000,10 @@ extension AXSkillsLibrary {
             guard skill.compatibilityState != .unsupported else { return nil }
             return supervisorSkillRegistryItem(skill: skill, scope: pin.scope)
         }
+        let items = mergedSupervisorRegistryItems(
+            hubItems: hubItems,
+            builtinItems: nativeSupervisorRegistryItems()
+        )
         .sorted { lhs, rhs in
             let leftScope = skillPinnedScopePriority(lhs.policyScope)
             let rightScope = skillPinnedScopePriority(rhs.policyScope)
@@ -805,7 +1014,12 @@ extension AXSkillsLibrary {
         }
 
         let updatedAtMs = max(0, hubIndex.skills.map(\.version).isEmpty ? 0 : loadHubSkillsIndexUpdatedAtMs(url: indexURL))
-        let source = hubIndex.available ? "hub_skill_registry" : "hub_skill_registry_unavailable"
+        let source: String = {
+            if hubIndex.available {
+                return nativeSupervisorRegistryItems().isEmpty ? "hub_skill_registry" : "hub_skill_registry+xt_builtin"
+            }
+            return nativeSupervisorRegistryItems().isEmpty ? "hub_skill_registry_unavailable" : "xt_builtin_skill_registry"
+        }()
         return SupervisorSkillRegistrySnapshot(
             schemaVersion: SupervisorSkillRegistrySnapshot.currentSchemaVersion,
             projectId: normalizedProjectId,
@@ -847,7 +1061,7 @@ extension AXSkillsLibrary {
         }
         let skillBySHA = Dictionary(uniqueKeysWithValues: skillPairs)
 
-        let items = selectedPins.compactMap { pin -> XTResolvedSkillCacheItem? in
+        let hubItems = selectedPins.compactMap { pin -> XTResolvedSkillCacheItem? in
             let sha = pin.packageSHA256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             guard let skill = skillBySHA[sha] else { return nil }
             let revoked = revocations.revokedSHA256.contains(sha)
@@ -879,6 +1093,10 @@ extension AXSkillsLibrary {
                 maxRetries: max(0, hints.maxRetries)
             )
         }
+        let items = mergedResolvedSkillCacheItems(
+            hubItems: hubItems,
+            builtinItems: nativeResolvedSkillCacheItems()
+        )
         .sorted { lhs, rhs in
             let leftScope = skillPinnedScopePriority(lhs.pinScope)
             let rightScope = skillPinnedScopePriority(rhs.pinScope)
@@ -900,7 +1118,7 @@ extension AXSkillsLibrary {
             projectId: normalizedProjectId,
             projectName: projectName,
             resolvedSnapshotId: "xt-resolved-skills-\(projectSuffix)-\(resolvedAt)",
-            source: "hub_resolved_skills_snapshot",
+            source: nativeResolvedSkillCacheItems().isEmpty ? "hub_resolved_skills_snapshot" : "hub_resolved_skills_snapshot+xt_builtin",
             grantSnapshotRef: grantSnapshotRef,
             auditRef: "audit-xt-w3-34-i-resolved-skills-\(projectSuffix)",
             resolvedAtMs: resolvedAt,
@@ -941,6 +1159,98 @@ extension AXSkillsLibrary {
                 }
                 .first
         }
+    }
+
+    private static func mergedSupervisorRegistryItems(
+        hubItems: [SupervisorSkillRegistryItem],
+        builtinItems: [SupervisorSkillRegistryItem]
+    ) -> [SupervisorSkillRegistryItem] {
+        var ordered: [SupervisorSkillRegistryItem] = []
+        var seen = Set<String>()
+        for item in hubItems + builtinItems {
+            let normalized = item.skillId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !normalized.isEmpty, seen.insert(normalized).inserted else { continue }
+            ordered.append(item)
+        }
+        return ordered
+    }
+
+    private static func mergedResolvedSkillCacheItems(
+        hubItems: [XTResolvedSkillCacheItem],
+        builtinItems: [XTResolvedSkillCacheItem]
+    ) -> [XTResolvedSkillCacheItem] {
+        var ordered: [XTResolvedSkillCacheItem] = []
+        var seen = Set<String>()
+        for item in hubItems + builtinItems {
+            let normalized = item.skillId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !normalized.isEmpty, seen.insert(normalized).inserted else { continue }
+            ordered.append(item)
+        }
+        return ordered
+    }
+
+    private static func nativeSupervisorRegistryItems() -> [SupervisorSkillRegistryItem] {
+        nativeSupervisorSkillSpecs.map { spec in
+            SupervisorSkillRegistryItem(
+                skillId: spec.0,
+                displayName: spec.1,
+                description: spec.2,
+                capabilitiesRequired: spec.3,
+                governedDispatch: spec.4,
+                governedDispatchVariants: [],
+                governedDispatchNotes: nativeSupervisorDispatchNotes(skillId: spec.0),
+                inputSchemaRef: "schema://\(spec.0).input",
+                outputSchemaRef: "schema://\(spec.0).output",
+                sideEffectClass: spec.5,
+                riskLevel: spec.6,
+                requiresGrant: false,
+                policyScope: "xt_builtin",
+                timeoutMs: spec.7,
+                maxRetries: spec.8,
+                available: true
+            )
+        }
+    }
+
+    private static func nativeResolvedSkillCacheItems() -> [XTResolvedSkillCacheItem] {
+        nativeSupervisorRegistryItems().map { item in
+            XTResolvedSkillCacheItem(
+                skillId: item.skillId,
+                displayName: item.displayName,
+                description: item.description,
+                packageSHA256: syntheticBuiltinSHA256(seed: item.skillId + "::package"),
+                canonicalManifestSHA256: syntheticBuiltinSHA256(seed: item.skillId + "::manifest"),
+                sourceId: "xt_builtin",
+                pinScope: item.policyScope,
+                riskLevel: item.riskLevel.rawValue,
+                requiresGrant: item.requiresGrant,
+                sideEffectClass: item.sideEffectClass,
+                inputSchemaRef: item.inputSchemaRef,
+                outputSchemaRef: item.outputSchemaRef,
+                timeoutMs: item.timeoutMs,
+                maxRetries: item.maxRetries
+            )
+        }
+    }
+
+    private static func nativeSupervisorDispatchNotes(skillId: String) -> [String] {
+        switch skillId {
+        case "repo.move.path":
+            return ["Use repo.move.path for both move and rename within the governed project root."]
+        case "process.start":
+            return ["restart_on_exit is honored only when the execution tier allows managed process auto-restart."]
+        case "repo.pr.create":
+            return ["Requires GitHub CLI `gh` to be installed and authenticated for the active repository."]
+        case "repo.ci.read", "repo.ci.trigger":
+            return ["Currently implemented through GitHub CLI and therefore provider=github only."]
+        default:
+            return []
+        }
+    }
+
+    private static func syntheticBuiltinSHA256(seed: String) -> String {
+        let digest = SHA256.hash(data: Data(seed.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
     }
 
     private static func supervisorSkillRegistryItem(
@@ -1177,6 +1487,108 @@ extension AXSkillsLibrary {
                 argAliases: ["text": ["content", "value"]],
                 requiredAny: [],
                 exactlyOneOf: [["url", "path", "text"]]
+            )
+        case "repo.delete.path", "repo.delete.file", "repo.delete":
+            return SupervisorGovernedSkillDispatch(
+                tool: ToolName.delete_path.rawValue,
+                fixedArgs: [:],
+                passthroughArgs: ["path", "recursive", "force"],
+                argAliases: ["path": ["target"]],
+                requiredAny: [["path"]],
+                exactlyOneOf: []
+            )
+        case "repo.move.path", "repo.rename.path", "repo.move", "repo.rename":
+            return SupervisorGovernedSkillDispatch(
+                tool: ToolName.move_path.rawValue,
+                fixedArgs: [:],
+                passthroughArgs: ["from", "to", "overwrite", "create_dirs"],
+                argAliases: [
+                    "from": ["source", "src"],
+                    "to": ["destination", "dest", "new_path"],
+                ],
+                requiredAny: [["from"], ["to"]],
+                exactlyOneOf: []
+            )
+        case "process.start":
+            return SupervisorGovernedSkillDispatch(
+                tool: ToolName.process_start.rawValue,
+                fixedArgs: [:],
+                passthroughArgs: ["command", "name", "process_id", "cwd", "env", "restart_on_exit"],
+                argAliases: ["process_id": ["id"]],
+                requiredAny: [["command"]],
+                exactlyOneOf: []
+            )
+        case "process.status":
+            return SupervisorGovernedSkillDispatch(
+                tool: ToolName.process_status.rawValue,
+                fixedArgs: [:],
+                passthroughArgs: ["process_id", "include_exited"],
+                argAliases: ["process_id": ["id"]],
+                requiredAny: [],
+                exactlyOneOf: []
+            )
+        case "process.logs":
+            return SupervisorGovernedSkillDispatch(
+                tool: ToolName.process_logs.rawValue,
+                fixedArgs: [:],
+                passthroughArgs: ["process_id", "tail_lines", "max_bytes"],
+                argAliases: ["process_id": ["id"]],
+                requiredAny: [["process_id"]],
+                exactlyOneOf: []
+            )
+        case "process.stop":
+            return SupervisorGovernedSkillDispatch(
+                tool: ToolName.process_stop.rawValue,
+                fixedArgs: [:],
+                passthroughArgs: ["process_id", "force"],
+                argAliases: ["process_id": ["id"]],
+                requiredAny: [["process_id"]],
+                exactlyOneOf: []
+            )
+        case "repo.git.commit":
+            return SupervisorGovernedSkillDispatch(
+                tool: ToolName.git_commit.rawValue,
+                fixedArgs: [:],
+                passthroughArgs: ["message", "all", "allow_empty", "paths"],
+                argAliases: [:],
+                requiredAny: [["message"]],
+                exactlyOneOf: []
+            )
+        case "repo.git.push":
+            return SupervisorGovernedSkillDispatch(
+                tool: ToolName.git_push.rawValue,
+                fixedArgs: [:],
+                passthroughArgs: ["remote", "branch", "set_upstream"],
+                argAliases: [:],
+                requiredAny: [],
+                exactlyOneOf: []
+            )
+        case "repo.pr.create", "repo.pull_request.create", "repo.pull-request.create":
+            return SupervisorGovernedSkillDispatch(
+                tool: ToolName.pr_create.rawValue,
+                fixedArgs: [:],
+                passthroughArgs: ["title", "body", "base", "head", "draft", "fill", "labels", "reviewers"],
+                argAliases: [:],
+                requiredAny: [],
+                exactlyOneOf: []
+            )
+        case "repo.ci.read", "ci.read":
+            return SupervisorGovernedSkillDispatch(
+                tool: ToolName.ci_read.rawValue,
+                fixedArgs: ["provider": .string("github")],
+                passthroughArgs: ["workflow", "branch", "commit", "limit"],
+                argAliases: [:],
+                requiredAny: [],
+                exactlyOneOf: []
+            )
+        case "repo.ci.trigger", "ci.trigger":
+            return SupervisorGovernedSkillDispatch(
+                tool: ToolName.ci_trigger.rawValue,
+                fixedArgs: ["provider": .string("github")],
+                passthroughArgs: ["workflow", "ref", "inputs"],
+                argAliases: [:],
+                requiredAny: [["workflow"]],
+                exactlyOneOf: []
             )
         default:
             return nil

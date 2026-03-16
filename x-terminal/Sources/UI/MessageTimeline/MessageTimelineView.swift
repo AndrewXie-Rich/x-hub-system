@@ -1,16 +1,21 @@
+import AppKit
 import SwiftUI
 
 /// 现代化的消息时间线视图，替代原来的 TranscriptTextView
 struct MessageTimelineView: View {
     let ctx: AXProjectContext
+    let config: AXProjectConfig?
     @ObservedObject var session: ChatSessionModel
     let hubConnected: Bool
     let onApproveSkillActivity: (String) -> Void
     let onRetrySkillActivity: (ProjectSkillActivityItem) -> Void
+    var focusedSkillActivityRequestId: String? = nil
+    var focusedSkillActivityNonce: Int? = nil
     var bottomPadding: CGFloat = 24
     @Namespace private var bottomID
     @State private var recentSkillActivities: [ProjectSkillActivityItem] = []
     @State private var selectedSkillRecord: ProjectSkillRecordSheetState?
+    @State private var pendingFocusedSkillActivityNonce: Int?
 
     private let recentSkillActivityLimit = 8
 
@@ -25,7 +30,12 @@ struct MessageTimelineView: View {
             ScrollView {
                 LazyVStack(spacing: 16) {
                     ForEach(visibleMessages) { message in
-                        MessageCard(message: message)
+                        MessageCard(
+                            ctx: ctx,
+                            config: config,
+                            session: session,
+                            message: message
+                        )
                             .id(message.id)
                             .transition(.asymmetric(
                                 insertion: .move(edge: .bottom).combined(with: .opacity),
@@ -37,6 +47,8 @@ struct MessageTimelineView: View {
                         ProjectSkillActivitySection(
                             items: recentSkillActivities,
                             pendingRequestIDs: Set(session.pendingToolCalls.map(\.id)),
+                            focusedRequestID: focusedSkillActivityRequestId,
+                            isFocused: focusedSkillActivityNonce != nil,
                             hubConnected: hubConnected,
                             isBusy: session.isSending,
                             onApprove: onApproveSkillActivity,
@@ -46,7 +58,8 @@ struct MessageTimelineView: View {
                             onRetry: onRetrySkillActivity,
                             onViewFullRecord: showFullRecord
                         )
-                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                        .id(MessageTimelineFocusPresentation.projectSkillActivitySectionAnchorID)
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
                     }
 
                     // 加载指示器
@@ -64,31 +77,42 @@ struct MessageTimelineView: View {
                 .padding(.bottom, bottomPadding)
             }
             .onChange(of: session.messages.count) { _ in
-                refreshRecentSkillActivities()
-                withAnimation(.easeOut(duration: 0.3)) {
-                    proxy.scrollTo(bottomID, anchor: .bottom)
+                refreshRecentSkillActivities(using: proxy)
+                if pendingFocusedSkillActivityNonce == nil {
+                    withAnimation(.easeOut(duration: 0.3)) {
+                        proxy.scrollTo(bottomID, anchor: .bottom)
+                    }
                 }
             }
             .onChange(of: session.isSending) { sending in
-                refreshRecentSkillActivities()
-                if sending {
+                refreshRecentSkillActivities(using: proxy)
+                if sending, pendingFocusedSkillActivityNonce == nil {
                     withAnimation(.easeOut(duration: 0.3)) {
                         proxy.scrollTo(bottomID, anchor: .bottom)
                     }
                 }
             }
             .onChange(of: session.messages.last?.content ?? "") { _ in
-                refreshRecentSkillActivities()
-                proxy.scrollTo(bottomID, anchor: .bottom)
+                refreshRecentSkillActivities(using: proxy)
+                if pendingFocusedSkillActivityNonce == nil {
+                    proxy.scrollTo(bottomID, anchor: .bottom)
+                }
             }
             .onChange(of: session.pendingToolCalls.map(\.id).joined(separator: ",")) { _ in
-                refreshRecentSkillActivities()
+                refreshRecentSkillActivities(using: proxy)
             }
             .onChange(of: recentSkillActivities.count) { _ in
-                proxy.scrollTo(bottomID, anchor: .bottom)
+                if pendingFocusedSkillActivityNonce == nil {
+                    proxy.scrollTo(bottomID, anchor: .bottom)
+                }
+            }
+            .onChange(of: focusedSkillActivityNonce) { newNonce in
+                pendingFocusedSkillActivityNonce = newNonce
+                refreshRecentSkillActivities(using: proxy)
             }
             .onAppear {
-                refreshRecentSkillActivities()
+                pendingFocusedSkillActivityNonce = focusedSkillActivityNonce
+                refreshRecentSkillActivities(using: proxy)
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
@@ -97,11 +121,57 @@ struct MessageTimelineView: View {
         }
     }
 
-    private func refreshRecentSkillActivities() {
-        recentSkillActivities = ProjectSkillActivityPresentation.loadRecentActivities(
+    private func refreshRecentSkillActivities(
+        using proxy: ScrollViewProxy? = nil
+    ) {
+        let items = resolvedRecentSkillActivities()
+        recentSkillActivities = items
+        if let proxy {
+            scrollToFocusedSkillActivityIfNeeded(using: proxy, items: items)
+        }
+    }
+
+    private func resolvedRecentSkillActivities() -> [ProjectSkillActivityItem] {
+        let items = ProjectSkillActivityPresentation.loadRecentActivities(
             ctx: ctx,
             limit: recentSkillActivityLimit
         )
+        guard let focusedRequestID = MessageTimelineFocusPresentation.normalizedRequestID(
+            focusedSkillActivityRequestId
+        ) else {
+            return items
+        }
+        let focusedItem = AXProjectSkillActivityStore.loadEvents(
+            ctx: ctx,
+            requestID: focusedRequestID
+        ).last?.item
+        return MessageTimelineFocusPresentation.mergedRecentSkillActivities(
+            items: items,
+            focusedItem: focusedItem
+        )
+    }
+
+    private func scrollToFocusedSkillActivityIfNeeded(
+        using proxy: ScrollViewProxy,
+        items: [ProjectSkillActivityItem]
+    ) {
+        guard let focusedSkillActivityNonce,
+              pendingFocusedSkillActivityNonce == focusedSkillActivityNonce else {
+            return
+        }
+        guard let anchorID = MessageTimelineFocusPresentation.projectSkillActivityAnchor(
+            requestID: focusedSkillActivityRequestId,
+            in: items
+        ) else {
+            return
+        }
+
+        DispatchQueue.main.async {
+            withAnimation(.easeInOut(duration: 0.24)) {
+                proxy.scrollTo(anchorID, anchor: .center)
+            }
+            pendingFocusedSkillActivityNonce = nil
+        }
     }
 
     private func showFullRecord(for item: ProjectSkillActivityItem) {
@@ -117,8 +187,23 @@ struct MessageTimelineView: View {
 
 /// 单个消息卡片
 struct MessageCard: View {
+    let ctx: AXProjectContext?
+    let config: AXProjectConfig?
+    let session: ChatSessionModel?
     let message: AXChatMessage
     @State private var isHovered = false
+
+    init(
+        ctx: AXProjectContext? = nil,
+        config: AXProjectConfig? = nil,
+        session: ChatSessionModel? = nil,
+        message: AXChatMessage
+    ) {
+        self.ctx = ctx
+        self.config = config
+        self.session = session
+        self.message = message
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -157,7 +242,12 @@ struct MessageCard: View {
                 }
 
                 // 消息内容
-                MessageContentView(message: message)
+                MessageContentView(
+                    ctx: ctx,
+                    config: config,
+                    session: session,
+                    message: message
+                )
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -307,13 +397,21 @@ struct MessageActionButtons: View {
 
 /// 消息内容视图
 struct MessageContentView: View {
+    let ctx: AXProjectContext?
+    let config: AXProjectConfig?
+    let session: ChatSessionModel?
     let message: AXChatMessage
 
     var body: some View {
         switch message.role {
         case .assistant:
             // Assistant 消息：解析并展示结构化内容
-            AssistantMessageContent(message: message)
+            AssistantMessageContent(
+                ctx: ctx,
+                config: config,
+                session: session,
+                message: message
+            )
 
         case .tool:
             // Tool 消息：展示 tool result
@@ -332,6 +430,8 @@ struct MessageContentView: View {
 struct ProjectSkillActivitySection: View {
     let items: [ProjectSkillActivityItem]
     let pendingRequestIDs: Set<String>
+    let focusedRequestID: String?
+    let isFocused: Bool
     let hubConnected: Bool
     let isBusy: Bool
     let onApprove: (String) -> Void
@@ -357,6 +457,7 @@ struct ProjectSkillActivitySection: View {
                 ProjectSkillActivityCard(
                     item: item,
                     isPendingApproval: pendingRequestIDs.contains(item.requestID),
+                    isFocused: focusedRequestID == item.requestID,
                     hubConnected: hubConnected,
                     isBusy: isBusy,
                     onApprove: {
@@ -372,14 +473,15 @@ struct ProjectSkillActivitySection: View {
                         onViewFullRecord(item)
                     }
                 )
+                .id(MessageTimelineFocusPresentation.projectSkillActivityAnchorID(requestID: item.requestID))
             }
         }
         .padding(16)
-        .background(Color.secondary.opacity(0.04))
+        .background(isFocused ? Color.orange.opacity(0.08) : Color.secondary.opacity(0.04))
         .cornerRadius(12)
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.secondary.opacity(0.08), lineWidth: 1)
+                .stroke(isFocused ? Color.orange.opacity(0.22) : Color.secondary.opacity(0.08), lineWidth: 1)
         )
     }
 }
@@ -387,6 +489,7 @@ struct ProjectSkillActivitySection: View {
 struct ProjectSkillActivityCard: View {
     let item: ProjectSkillActivityItem
     let isPendingApproval: Bool
+    let isFocused: Bool
     let hubConnected: Bool
     let isBusy: Bool
     let onApprove: () -> Void
@@ -493,12 +596,13 @@ struct ProjectSkillActivityCard: View {
             .tint(.secondary)
         }
         .padding(12)
-        .background(iconColor.opacity(0.06))
+        .background(isFocused ? Color.orange.opacity(0.12) : iconColor.opacity(0.06))
         .cornerRadius(10)
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .stroke(iconColor.opacity(0.18), lineWidth: 1)
+                .stroke(isFocused ? Color.orange.opacity(0.6) : iconColor.opacity(0.18), lineWidth: isFocused ? 1.5 : 1)
         )
+        .shadow(color: isFocused ? Color.orange.opacity(0.16) : .clear, radius: 8, y: 2)
     }
 
     private var iconColor: Color {
@@ -1046,6 +1150,9 @@ struct ToolResultView: View {
 
 /// Assistant 消息内容（支持 tool calls 展示）
 struct AssistantMessageContent: View {
+    let ctx: AXProjectContext?
+    let config: AXProjectConfig?
+    let session: ChatSessionModel?
     let message: AXChatMessage
     @State private var parsedContent: ParsedContent?
 
@@ -1065,12 +1172,362 @@ struct AssistantMessageContent: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
+
+            if let ctx,
+               let session,
+               RouteDiagnoseMessagePresentation.matches(message) {
+                RouteDiagnoseActionRail(
+                    ctx: ctx,
+                    config: config,
+                    session: session
+                )
+            }
         }
         .onAppear {
             parsedContent = ToolCallParser.parse(message.content)
         }
         .onChange(of: message.content) { newContent in
             parsedContent = ToolCallParser.parse(newContent)
+        }
+    }
+}
+
+struct RouteDiagnoseActionRail: View {
+    let ctx: AXProjectContext
+    let config: AXProjectConfig?
+    @ObservedObject var session: ChatSessionModel
+    @EnvironmentObject private var appModel: AppModel
+    @Environment(\.openWindow) private var openWindow
+    @State private var showModelPicker = false
+    @State private var repairActionInFlight = false
+
+    private var recommendation: HubModelPickerRecommendationState? {
+        RouteDiagnoseMessagePresentation.recommendation(
+            config: config,
+            settings: appModel.settingsStore.settings,
+            ctx: ctx,
+            modelsState: appModel.modelsState
+        )
+    }
+
+    private var availableModels: [HubModel] {
+        appModel.modelsState.models
+    }
+
+    private var recommendationTitle: String? {
+        guard let recommendation else { return nil }
+        return RouteDiagnoseMessagePresentation.actionTitle(
+            for: recommendation,
+            models: availableModels
+        )
+    }
+
+    private var latestRouteEvent: AXModelRouteDiagnosticEvent? {
+        AXModelRouteDiagnosticsStore.recentEvents(for: ctx, limit: 1).first
+    }
+
+    private func recordRouteRepairLog(
+        actionId: String,
+        outcome: String,
+        repairReasonCode: String? = nil,
+        note: String? = nil
+    ) {
+        AXRouteRepairLogStore.record(
+            actionId: actionId,
+            outcome: outcome,
+            latestEvent: latestRouteEvent,
+            repairReasonCode: repairReasonCode,
+            note: note,
+            for: ctx
+        )
+    }
+
+    private func openRouteDiagnoseModelPicker() {
+        recordRouteRepairLog(actionId: "open_model_picker", outcome: "opened")
+        showModelPicker = true
+    }
+
+    private var repairAction: RouteDiagnoseMessagePresentation.RepairAction? {
+        RouteDiagnoseMessagePresentation.repairAction(
+            latestEvent: latestRouteEvent,
+            hubConnected: appModel.hubConnected,
+            hubRemoteConnected: appModel.hubRemoteConnected,
+            hasRecommendation: recommendation != nil
+        )
+    }
+
+    private var repairActionTitle: String? {
+        guard let repairAction else { return nil }
+        return RouteDiagnoseMessagePresentation.title(
+            for: repairAction,
+            inProgress: repairActionInFlight || appModel.hubRemoteLinking
+        )
+    }
+
+    private var repairFocusContext: XTSectionFocusContext? {
+        guard let repairAction else { return nil }
+        return RouteDiagnoseMessagePresentation.focusContext(
+            for: repairAction,
+            latestEvent: latestRouteEvent,
+            recommendation: recommendation
+        )
+    }
+
+    private var repairActionBusy: Bool {
+        guard let repairAction else { return false }
+        switch repairAction {
+        case .connectHubAndDiagnose, .reconnectHubAndDiagnose:
+            return repairActionInFlight || appModel.hubRemoteLinking
+        case .openChooseModel, .openHubRecovery, .openHubConnectionLog:
+            return false
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                if let recommendation,
+                   let recommendationTitle {
+                    Button(recommendationTitle) {
+                        recordRouteRepairLog(
+                            actionId: "apply_recommended_model",
+                            outcome: "selected",
+                            note: "target_model=\(recommendation.modelId)"
+                        )
+                        appModel.setProjectRoleModel(role: .coder, modelId: recommendation.modelId)
+                        session.presentProjectRouteDiagnosis(
+                            ctx: ctx,
+                            config: appModel.projectConfig ?? config,
+                            router: appModel.llmRouter
+                        )
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(session.isSending)
+
+                    Button("更多模型") {
+                        openRouteDiagnoseModelPicker()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(!appModel.hubInteractive)
+                } else {
+                    Button("改模型") {
+                        openRouteDiagnoseModelPicker()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(!appModel.hubInteractive)
+                }
+
+                Button("重新诊断") {
+                    session.presentProjectRouteDiagnosis(
+                        ctx: ctx,
+                        config: appModel.projectConfig ?? config,
+                        router: appModel.llmRouter
+                    )
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(session.isSending)
+            }
+
+            HStack(spacing: 8) {
+                if let repairAction,
+                   let repairActionTitle {
+                    Button(repairActionTitle) {
+                        runRepairAction(repairAction)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(repairActionBusy)
+                }
+
+                Button("模型设置") {
+                    recordRouteRepairLog(
+                        actionId: "open_model_settings",
+                        outcome: "opened"
+                    )
+                    let context = RouteDiagnoseMessagePresentation.modelSettingsContext(
+                        latestEvent: latestRouteEvent
+                    )
+                    appModel.requestModelSettingsFocus(
+                        role: .coder,
+                        title: context.title,
+                        detail: context.detail
+                    )
+                    openWindow(id: "model_settings")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button("XT Diagnostics") {
+                    recordRouteRepairLog(
+                        actionId: "open_xt_diagnostics",
+                        outcome: "opened"
+                    )
+                    let context = RouteDiagnoseMessagePresentation.diagnosticsContext(
+                        latestEvent: latestRouteEvent
+                    )
+                    appModel.requestSettingsFocus(
+                        sectionId: "diagnostics",
+                        title: context.title,
+                        detail: context.detail
+                    )
+                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+
+            if let recommendation {
+                Text(recommendation.message)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let repairAction {
+                Text(RouteDiagnoseMessagePresentation.helperText(for: repairAction))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(12)
+        .background(Color.orange.opacity(0.06))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.orange.opacity(0.18), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .popover(isPresented: $showModelPicker) {
+            ModelSelectorView(
+                config: config,
+                focusContext: RouteDiagnoseMessagePresentation.focusContext(
+                    for: .openChooseModel,
+                    latestEvent: latestRouteEvent,
+                    recommendation: recommendation
+                )
+            )
+                .environmentObject(appModel)
+                .frame(width: 420)
+        }
+    }
+
+    private func runRepairAction(_ action: RouteDiagnoseMessagePresentation.RepairAction) {
+        repairActionInFlight = true
+        Task { @MainActor in
+            switch action {
+            case .connectHubAndDiagnose:
+                recordRouteRepairLog(
+                    actionId: "connect_hub_and_diagnose",
+                    outcome: "started"
+                )
+                let report = await appModel.runHubOneClickSetup(showAlertOnFinish: false)
+                if let report {
+                    recordRouteRepairLog(
+                        actionId: "connect_hub_and_diagnose",
+                        outcome: report.ok ? "succeeded" : "failed",
+                        repairReasonCode: report.reasonCode,
+                        note: report.summary
+                    )
+                    if !report.ok {
+                        let context = RouteDiagnoseMessagePresentation.diagnosticsFailureContext(
+                            for: action,
+                            report: report,
+                            latestEvent: latestRouteEvent
+                        )
+                        recordRouteRepairLog(
+                            actionId: "open_xt_diagnostics",
+                            outcome: "auto_opened",
+                            repairReasonCode: report.reasonCode,
+                            note: "source=connect_hub_and_diagnose_failed"
+                        )
+                        appModel.requestSettingsFocus(
+                            sectionId: "diagnostics",
+                            title: context.title,
+                            detail: context.detail
+                        )
+                        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                    }
+                }
+                session.presentProjectRouteDiagnosis(
+                    ctx: ctx,
+                    config: appModel.projectConfig ?? config,
+                    router: appModel.llmRouter
+                )
+            case .reconnectHubAndDiagnose:
+                recordRouteRepairLog(
+                    actionId: "reconnect_hub_and_diagnose",
+                    outcome: "started"
+                )
+                let report = await appModel.runHubReconnectOnly(showAlertOnFinish: false)
+                if let report {
+                    recordRouteRepairLog(
+                        actionId: "reconnect_hub_and_diagnose",
+                        outcome: report.ok ? "succeeded" : "failed",
+                        repairReasonCode: report.reasonCode,
+                        note: report.summary
+                    )
+                    if !report.ok {
+                        let context = RouteDiagnoseMessagePresentation.diagnosticsFailureContext(
+                            for: action,
+                            report: report,
+                            latestEvent: latestRouteEvent
+                        )
+                        recordRouteRepairLog(
+                            actionId: "open_xt_diagnostics",
+                            outcome: "auto_opened",
+                            repairReasonCode: report.reasonCode,
+                            note: "source=reconnect_hub_and_diagnose_failed"
+                        )
+                        appModel.requestSettingsFocus(
+                            sectionId: "diagnostics",
+                            title: context.title,
+                            detail: context.detail
+                        )
+                        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                    }
+                }
+                session.presentProjectRouteDiagnosis(
+                    ctx: ctx,
+                    config: appModel.projectConfig ?? config,
+                    router: appModel.llmRouter
+                )
+            case .openChooseModel:
+                recordRouteRepairLog(
+                    actionId: "open_choose_model",
+                    outcome: "opened"
+                )
+                appModel.requestSettingsFocus(
+                    sectionId: "choose_model",
+                    title: repairFocusContext?.title,
+                    detail: repairFocusContext?.detail
+                )
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            case .openHubRecovery:
+                recordRouteRepairLog(
+                    actionId: "open_hub_recovery",
+                    outcome: "opened"
+                )
+                appModel.requestHubSetupFocus(
+                    sectionId: "troubleshoot",
+                    title: repairFocusContext?.title,
+                    detail: repairFocusContext?.detail
+                )
+                openWindow(id: "hub_setup")
+            case .openHubConnectionLog:
+                recordRouteRepairLog(
+                    actionId: "open_hub_connection_log",
+                    outcome: "opened"
+                )
+                appModel.requestHubSetupFocus(
+                    sectionId: "connection_log",
+                    title: repairFocusContext?.title,
+                    detail: repairFocusContext?.detail
+                )
+                openWindow(id: "hub_setup")
+            }
+            repairActionInFlight = false
         }
     }
 }
@@ -1174,6 +1631,10 @@ struct ToolCallCard: View {
             return "doc.text"
         case .write_file:
             return "pencil"
+        case .delete_path:
+            return "trash"
+        case .move_path:
+            return "arrow.right.doc.on.clipboard"
         case .list_dir:
             return "folder"
         case .search:
@@ -1184,8 +1645,26 @@ struct ToolCallCard: View {
             return "text.alignleft"
         case .run_command:
             return "terminal"
+        case .process_start:
+            return "play.circle"
+        case .process_status:
+            return "waveform.path.ecg"
+        case .process_logs:
+            return "doc.text.magnifyingglass"
+        case .process_stop:
+            return "stop.circle"
         case .git_status, .git_diff, .git_apply_check, .git_apply:
             return "arrow.triangle.branch"
+        case .git_commit:
+            return "checkmark.circle"
+        case .git_push:
+            return "arrow.up.circle"
+        case .pr_create:
+            return "arrowshape.turn.up.right.circle"
+        case .ci_read:
+            return "list.bullet.clipboard"
+        case .ci_trigger:
+            return "bolt.badge.clock"
         case .session_list:
             return "list.bullet.rectangle"
         case .session_resume:

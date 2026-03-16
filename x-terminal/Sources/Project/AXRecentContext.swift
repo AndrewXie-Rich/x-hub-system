@@ -76,6 +76,23 @@ enum AXRecentContextStore {
         appendMessage(ctx: ctx, role: "assistant", text: text, createdAt: createdAt)
     }
 
+    static func removeTrailingMessage(ctx: AXProjectContext, role: String, text: String) {
+        let normalizedText = comparableMessageText(text)
+        guard !normalizedText.isEmpty else { return }
+
+        queue.sync {
+            var cur = loadUnlocked(for: ctx)
+            guard let last = cur.messages.last,
+                  last.role == role,
+                  comparableMessageText(last.content) == normalizedText else {
+                return
+            }
+            cur.messages.removeLast()
+            cur.updatedAt = Date().timeIntervalSince1970
+            saveUnlocked(cur, for: ctx)
+        }
+    }
+
     private static func appendMessage(ctx: AXProjectContext, role: String, text: String, createdAt: Double) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return }
@@ -253,5 +270,11 @@ enum AXRecentContextStore {
         if t.count <= max { return t }
         let idx = t.index(t.startIndex, offsetBy: max)
         return String(t[..<idx]) + "\n\n[x-terminal] truncated"
+    }
+
+    private static func comparableMessageText(_ raw: String) -> String {
+        raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\r\n", with: "\n")
     }
 }

@@ -18,6 +18,10 @@ struct SupervisorProjectDrillDownSnapshot: Equatable, Codable, Sendable {
     var capsule: SupervisorPortfolioProjectCard?
     var specCapsule: SupervisorProjectSpecCapsule?
     var decisionRails: SupervisorProjectDecisionRails?
+    var latestReview: SupervisorReviewNoteRecord?
+    var latestGuidance: SupervisorGuidanceInjectionRecord?
+    var pendingAckGuidance: SupervisorGuidanceInjectionRecord?
+    var followUpRhythmSummary: String?
     var workflow: SupervisorProjectWorkflowSnapshot?
     var recentMessages: [AXRecentContextMessage]
     var denyReason: String?
@@ -43,6 +47,10 @@ struct SupervisorProjectDrillDownSnapshot: Equatable, Codable, Sendable {
             capsule: nil,
             specCapsule: nil,
             decisionRails: nil,
+            latestReview: nil,
+            latestGuidance: nil,
+            pendingAckGuidance: nil,
+            followUpRhythmSummary: nil,
             workflow: nil,
             recentMessages: [],
             denyReason: denyReason,
@@ -58,6 +66,9 @@ enum SupervisorProjectDrillDownRefsBuilder {
         requestedScope: SupervisorProjectDrillDownScope,
         specCapsule: SupervisorProjectSpecCapsule?,
         decisionRails: SupervisorProjectDecisionRails?,
+        latestReview: SupervisorReviewNoteRecord?,
+        latestGuidance: SupervisorGuidanceInjectionRecord?,
+        pendingAckGuidance: SupervisorGuidanceInjectionRecord?,
         workflow: SupervisorProjectWorkflowSnapshot?
     ) -> [String] {
         var refs = [
@@ -77,6 +88,12 @@ enum SupervisorProjectDrillDownRefsBuilder {
                 refs.append(ctx.xterminalDir.appendingPathComponent("supervisor_background_preference_track.json").path)
             }
             refs.append(contentsOf: decisionRails.decisionTrack.flatMap(\.evidenceRefs))
+        }
+        if latestReview != nil {
+            refs.append(ctx.supervisorReviewNotesURL.path)
+        }
+        if latestGuidance != nil || pendingAckGuidance != nil {
+            refs.append(ctx.supervisorGuidanceInjectionsURL.path)
         }
         if let workflow {
             refs.append(ctx.supervisorJobsURL.path)

@@ -10,6 +10,9 @@ struct SupervisorView: View {
     @State private var selectedPortfolioProjectID: String?
     @State private var selectedPortfolioDrillDownScope: SupervisorProjectDrillDownScope = .capsuleOnly
     @State private var selectedSupervisorSkillRecord: SupervisorSkillRecordSheetState?
+    @State private var highlightedPendingSupervisorSkillApprovalAnchor: String?
+    @State private var highlightedPendingHubGrantAnchor: String?
+    @State private var supervisorFocusRefreshAttemptNonce: Int?
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openURL) private var openURL
     @EnvironmentObject private var appModel: AppModel
@@ -32,6 +35,11 @@ struct SupervisorView: View {
             case .failed: return "失败"
             }
         }
+    }
+
+    private enum DashboardFocusAnchor: String {
+        case pendingSupervisorSkillApprovalBoard = "supervisor.dashboard.pendingSupervisorSkillApprovalBoard"
+        case pendingHubGrantBoard = "supervisor.dashboard.pendingHubGrantBoard"
     }
     
     private var cockpitPresentation: SupervisorCockpitPresentation {
@@ -68,12 +76,26 @@ struct SupervisorView: View {
 
                 Divider()
 
-                // Keep operations panels scrollable so the chat composer remains reachable
-                // even when dashboard cards grow taller than the window.
-                ScrollView {
-                    dashboardBoards
+                ScrollViewReader { dashboardScrollProxy in
+                    // Keep operations panels scrollable so the chat composer remains reachable
+                    // even when dashboard cards grow taller than the window.
+                    ScrollView {
+                        dashboardBoards
+                    }
+                    .frame(maxHeight: dashboardPanelMaxHeight(totalHeight: proxy.size.height))
+                    .onAppear {
+                        processSupervisorFocusRequest(using: dashboardScrollProxy)
+                    }
+                    .onChange(of: appModel.supervisorFocusRequest?.nonce) { _ in
+                        processSupervisorFocusRequest(using: dashboardScrollProxy)
+                    }
+                    .onChange(of: supervisor.pendingHubGrants) { _ in
+                        processSupervisorFocusRequest(using: dashboardScrollProxy)
+                    }
+                    .onChange(of: supervisor.pendingSupervisorSkillApprovals) { _ in
+                        processSupervisorFocusRequest(using: dashboardScrollProxy)
+                    }
                 }
-                .frame(maxHeight: dashboardPanelMaxHeight(totalHeight: proxy.size.height))
 
                 Divider()
 
@@ -123,10 +145,14 @@ struct SupervisorView: View {
             supervisorMemoryBoard
             Divider()
             pendingSupervisorSkillApprovalBoard
+                .id(DashboardFocusAnchor.pendingSupervisorSkillApprovalBoard.rawValue)
             Divider()
             recentSupervisorSkillActivityBoard
             Divider()
+            supervisorEventLoopBoard
+            Divider()
             pendingHubGrantBoard
+                .id(DashboardFocusAnchor.pendingHubGrantBoard.rawValue)
             Divider()
             supervisorDoctorBoard
             Divider()
@@ -355,6 +381,234 @@ struct SupervisorView: View {
         conversationFocusRequestID += 1
     }
 
+    private func processSupervisorFocusRequest(using scrollProxy: ScrollViewProxy) {
+        guard let request = appModel.supervisorFocusRequest else { return }
+
+        switch request.subject {
+        case let .grant(grantRequestId, capability):
+            processGrantFocusRequest(
+                request,
+                grantRequestId: grantRequestId,
+                capability: capability,
+                using: scrollProxy
+            )
+        case let .approval(requestId):
+            processApprovalFocusRequest(
+                request,
+                requestId: requestId,
+                using: scrollProxy
+            )
+        }
+    }
+
+    private func processApprovalFocusRequest(
+        _ request: AXSupervisorFocusRequest,
+        requestId: String,
+        using scrollProxy: ScrollViewProxy
+    ) {
+        let resolvedProjectId = resolvedProjectIdForApprovalFocus(
+            explicitProjectId: request.projectId,
+            requestId: requestId
+        )
+
+        if let resolvedProjectId,
+           !resolvedProjectId.isEmpty {
+            selectedPortfolioProjectID = resolvedProjectId
+            if appModel.selectedProjectId != resolvedProjectId {
+                appModel.selectProject(resolvedProjectId)
+            }
+        }
+
+        withAnimation(.easeInOut(duration: 0.2)) {
+            scrollProxy.scrollTo(DashboardFocusAnchor.pendingSupervisorSkillApprovalBoard.rawValue, anchor: .center)
+        }
+
+        highlightedPendingHubGrantAnchor = nil
+
+        if let approval = matchingPendingSupervisorSkillApproval(
+            projectId: resolvedProjectId ?? request.projectId,
+            requestId: requestId
+        ) {
+            let rowAnchor = pendingSupervisorSkillApprovalRowAnchor(approval)
+            highlightedPendingSupervisorSkillApprovalAnchor = rowAnchor
+            highlightedPendingHubGrantAnchor = nil
+            withAnimation(.easeInOut(duration: 0.2)) {
+                scrollProxy.scrollTo(rowAnchor, anchor: .center)
+            }
+            completeSupervisorFocusRequest(request)
+            return
+        }
+
+        highlightedPendingSupervisorSkillApprovalAnchor = nil
+
+        if supervisor.pendingSupervisorSkillApprovals.isEmpty,
+           supervisorFocusRefreshAttemptNonce != request.nonce {
+            supervisorFocusRefreshAttemptNonce = request.nonce
+            supervisor.refreshPendingSupervisorSkillApprovalsNow()
+            return
+        }
+
+        completeSupervisorFocusRequest(request)
+    }
+
+    private func processGrantFocusRequest(
+        _ request: AXSupervisorFocusRequest,
+        grantRequestId: String?,
+        capability: String?,
+        using scrollProxy: ScrollViewProxy
+    ) {
+        let resolvedProjectId = resolvedProjectIdForGrantFocus(
+            explicitProjectId: request.projectId,
+            grantRequestId: grantRequestId,
+            capability: capability
+        )
+
+        if let resolvedProjectId,
+           !resolvedProjectId.isEmpty {
+            selectedPortfolioProjectID = resolvedProjectId
+            if appModel.selectedProjectId != resolvedProjectId {
+                appModel.selectProject(resolvedProjectId)
+            }
+        }
+
+        withAnimation(.easeInOut(duration: 0.2)) {
+            scrollProxy.scrollTo(DashboardFocusAnchor.pendingHubGrantBoard.rawValue, anchor: .center)
+        }
+
+        highlightedPendingSupervisorSkillApprovalAnchor = nil
+
+        if let grant = matchingPendingHubGrant(
+            projectId: resolvedProjectId ?? request.projectId,
+            grantRequestId: grantRequestId,
+            capability: capability
+        ) {
+            let rowAnchor = pendingHubGrantRowAnchor(grant)
+            highlightedPendingSupervisorSkillApprovalAnchor = nil
+            highlightedPendingHubGrantAnchor = rowAnchor
+            withAnimation(.easeInOut(duration: 0.2)) {
+                scrollProxy.scrollTo(rowAnchor, anchor: .center)
+            }
+            completeSupervisorFocusRequest(request)
+            return
+        }
+
+        highlightedPendingHubGrantAnchor = nil
+
+        if supervisor.pendingHubGrants.isEmpty,
+           supervisorFocusRefreshAttemptNonce != request.nonce {
+            supervisorFocusRefreshAttemptNonce = request.nonce
+            supervisor.refreshPendingHubGrantSnapshotNow()
+            return
+        }
+
+        completeSupervisorFocusRequest(request)
+    }
+
+    private func resolvedProjectIdForApprovalFocus(
+        explicitProjectId: String?,
+        requestId: String
+    ) -> String? {
+        let explicit = normalizedFocusToken(explicitProjectId)
+        if let explicit,
+           !explicit.isEmpty {
+            return explicit
+        }
+        return matchingPendingSupervisorSkillApproval(
+            projectId: nil,
+            requestId: requestId
+        )?.projectId
+    }
+
+    private func resolvedProjectIdForGrantFocus(
+        explicitProjectId: String?,
+        grantRequestId: String?,
+        capability: String?
+    ) -> String? {
+        let explicit = normalizedFocusToken(explicitProjectId)
+        if let explicit,
+           !explicit.isEmpty {
+            return explicit
+        }
+        return matchingPendingHubGrant(
+            projectId: nil,
+            grantRequestId: grantRequestId,
+            capability: capability
+        )?.projectId
+    }
+
+    private func matchingPendingSupervisorSkillApproval(
+        projectId: String?,
+        requestId: String
+    ) -> SupervisorManager.SupervisorPendingSkillApproval? {
+        let normalizedProjectId = normalizedFocusToken(projectId)
+        let normalizedRequestId = normalizedFocusToken(requestId)
+        guard let normalizedRequestId,
+              !normalizedRequestId.isEmpty else {
+            return nil
+        }
+
+        return supervisor.pendingSupervisorSkillApprovals.first { approval in
+            let projectMatches = normalizedProjectId == nil
+                || approval.projectId.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedProjectId
+            return projectMatches
+                && approval.requestId.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedRequestId
+        }
+    }
+
+    private func matchingPendingHubGrant(
+        projectId: String?,
+        grantRequestId: String?,
+        capability: String?
+    ) -> SupervisorManager.SupervisorPendingGrant? {
+        let normalizedProjectId = normalizedFocusToken(projectId)
+        let normalizedGrantId = normalizedFocusToken(grantRequestId)
+        let normalizedCapability = normalizedFocusToken(capability)?.lowercased()
+
+        if let normalizedGrantId,
+           !normalizedGrantId.isEmpty {
+            return supervisor.pendingHubGrants.first { grant in
+                let projectMatches = normalizedProjectId == nil
+                    || grant.projectId.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedProjectId
+                return projectMatches
+                    && grant.grantRequestId.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedGrantId
+            }
+        }
+
+        guard let normalizedCapability,
+              !normalizedCapability.isEmpty else {
+            return nil
+        }
+
+        let candidates = supervisor.pendingHubGrants.filter { grant in
+            let projectMatches = normalizedProjectId == nil
+                || grant.projectId.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedProjectId
+            return projectMatches
+                && grant.capability.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalizedCapability
+        }
+        return candidates.count == 1 ? candidates[0] : nil
+    }
+
+    private func completeSupervisorFocusRequest(_ request: AXSupervisorFocusRequest) {
+        supervisorFocusRefreshAttemptNonce = nil
+        appModel.clearSupervisorFocusRequest(request)
+    }
+
+    private func pendingHubGrantRowAnchor(_ grant: SupervisorManager.SupervisorPendingGrant) -> String {
+        let token = normalizedFocusToken(grant.grantRequestId) ?? grant.id
+        return "supervisor.pendingHubGrant.\(token)"
+    }
+
+    private func pendingSupervisorSkillApprovalRowAnchor(
+        _ approval: SupervisorManager.SupervisorPendingSkillApproval
+    ) -> String {
+        "supervisor.pendingSupervisorSkillApproval.\(approval.requestId)"
+    }
+
+    private func normalizedFocusToken(_ raw: String?) -> String? {
+        let trimmed = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     private var pendingSupervisorSkillApprovalBoard: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -385,6 +639,7 @@ struct SupervisorView: View {
                     LazyVStack(alignment: .leading, spacing: 8) {
                         ForEach(supervisor.pendingSupervisorSkillApprovals) { approval in
                             supervisorSkillApprovalRowView(approval)
+                                .id(pendingSupervisorSkillApprovalRowAnchor(approval))
                         }
                     }
                     .padding(.vertical, 2)
@@ -439,6 +694,44 @@ struct SupervisorView: View {
         .background(Color(NSColor.windowBackgroundColor))
     }
 
+    private var supervisorEventLoopBoard: some View {
+        let items = Array(supervisor.recentSupervisorEventLoopActivities.suffix(6).reversed())
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Image(systemName: items.isEmpty ? "arrow.triangle.branch" : "arrow.triangle.branch.fill")
+                    .foregroundColor(items.isEmpty ? .secondary : .accentColor)
+                Text("Supervisor 自动跟进：\(supervisor.recentSupervisorEventLoopActivities.count)")
+                    .font(.headline)
+
+                Spacer()
+
+                Text(supervisor.supervisorEventLoopStatusLine)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if items.isEmpty {
+                Text("当前还没有自动 follow-up 事件。skill callback、grant resolution、heartbeat 或 incident 触发后，这里会显示最近事件循环审计。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(items) { item in
+                            supervisorEventLoopActivityRow(item)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                .frame(maxHeight: 176)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(Color(NSColor.windowBackgroundColor))
+    }
+
     private var pendingHubGrantBoard: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -466,6 +759,12 @@ struct SupervisorView: View {
                     .foregroundStyle(.secondary)
             }
 
+            if !supervisor.pendingHubGrants.isEmpty {
+                Text(XTHubGrantPresentation.approvalFooterNote(count: supervisor.pendingHubGrants.count))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             if supervisor.pendingHubGrants.isEmpty {
                 Text("当前没有待审批的 Hub 授权。")
                     .font(.caption)
@@ -475,6 +774,7 @@ struct SupervisorView: View {
                     LazyVStack(alignment: .leading, spacing: 8) {
                         ForEach(supervisor.pendingHubGrants) { grant in
                             pendingHubGrantRow(grant)
+                                .id(pendingHubGrantRowAnchor(grant))
                         }
                     }
                     .padding(.vertical, 2)
@@ -488,7 +788,10 @@ struct SupervisorView: View {
     }
 
     private var supervisorMemoryBoard: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let memoryReadiness = supervisor.supervisorMemoryAssemblyReadiness
+        let pendingFollowUpQuestion = supervisor.supervisorPendingMemoryFactFollowUpQuestion
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Image(systemName: supervisor.supervisorMemoryProjectDigests.isEmpty ? "memorychip" : "internaldrive.fill")
                     .foregroundColor(supervisor.supervisorMemoryProjectDigests.isEmpty ? .secondary : .accentColor)
@@ -513,6 +816,72 @@ struct SupervisorView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
+
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: memoryReadinessIconName)
+                    .foregroundStyle(memoryReadinessColor)
+                Text(memoryReadinessHeadline)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(memoryReadinessColor)
+            }
+
+            Text(memoryReadiness.statusLine)
+                .font(.caption2)
+                .foregroundStyle(memoryReadinessColor)
+                .textSelection(.enabled)
+                .lineLimit(2)
+
+            Text(supervisor.supervisorMemoryAssemblyStatusLine)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+
+            if !pendingFollowUpQuestion.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "text.bubble.fill")
+                            .foregroundStyle(.orange)
+                        Text("Pending Memory Follow-up")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.orange)
+                    }
+
+                    Text("还缺这项项目背景：\(pendingFollowUpQuestion)")
+                        .font(.caption)
+                        .foregroundStyle(.primary)
+
+                    Text("你可以直接继续说事实，我会接着补进项目记忆。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.orange.opacity(0.08))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.orange.opacity(0.18), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+
+            if let assembly = supervisor.supervisorMemoryAssemblySnapshot {
+                Text(assembly.detailLine)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .lineLimit(2)
+            }
+
+            if !memoryReadiness.issues.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Strategic Review Risks")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(memoryReadinessColor)
+                    ForEach(Array(memoryReadiness.issues.prefix(3))) { issue in
+                        supervisorMemoryIssueRow(issue)
+                    }
+                }
+            }
 
             Text(supervisor.supervisorSkillRegistryStatusLine)
                 .font(.caption2)
@@ -730,6 +1099,31 @@ struct SupervisorView: View {
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
+    private func supervisorMemoryIssueRow(
+        _ issue: SupervisorMemoryAssemblyIssue
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(issue.severity.rawValue.uppercased())
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(issue.severity == .blocking ? Color.red : Color.orange)
+                Text(issue.summary)
+                    .font(.caption)
+                    .foregroundStyle(.primary)
+            }
+
+            Text(issue.detail)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
+        .background(Color(NSColor.controlBackgroundColor).opacity(0.4))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
     private func supervisorSkillRegistryRow(_ item: SupervisorSkillRegistryItem) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -799,9 +1193,9 @@ struct SupervisorView: View {
         isSelected: Bool,
         onSelect: @escaping () -> Void
     ) -> some View {
-        let governed = appModel.registry.project(for: card.projectId).map {
-            appModel.governedAuthorityPresentation(for: $0)
-        }
+        let projectEntry = appModel.registry.project(for: card.projectId)
+        let governed = projectEntry.map { appModel.governedAuthorityPresentation(for: $0) }
+        let switchboard = projectEntry.map { appModel.autonomySwitchboardPresentation(for: $0) }
 
         return VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -832,14 +1226,23 @@ struct SupervisorView: View {
                 }
             }
 
-            if let governed, governed.hasAnyVisibleSignal {
+            if let switchboard {
                 HStack(spacing: 6) {
-                    if governed.deviceAuthorityConfigured {
-                        portfolioGovernedTag("device authority", color: .green)
+                    portfolioGovernedTag(switchboard.configuredProfile.displayName, color: portfolioProfileColor(switchboard.configuredProfile))
+                    if switchboard.hasConfiguredEffectiveDrift {
+                        portfolioGovernedTag("effective \(switchboard.effectiveProfile.displayName)", color: portfolioProfileColor(switchboard.effectiveProfile))
                     }
-                    if governed.localAutoApproveConfigured {
+                    portfolioGovernedTag(switchboard.effectiveDeviceAuthorityPosture.displayName, color: .green)
+                    portfolioGovernedTag(switchboard.effectiveGrantPosture.displayName, color: .orange)
+                    if let governed, governed.localAutoApproveConfigured {
                         portfolioGovernedTag("local auto", color: .orange)
                     }
+                    if let governed, governed.governedReadableRootCount > 0 {
+                        portfolioGovernedTag("read+\(governed.governedReadableRootCount)", color: .blue)
+                    }
+                }
+            } else if let governed, governed.hasAnyVisibleSignal {
+                HStack(spacing: 6) {
                     if governed.governedReadableRootCount > 0 {
                         portfolioGovernedTag("read+\(governed.governedReadableRootCount)", color: .blue)
                     }
@@ -917,6 +1320,19 @@ struct SupervisorView: View {
             .clipShape(Capsule())
     }
 
+    private func portfolioProfileColor(_ profile: AXProjectAutonomyProfile) -> Color {
+        switch profile {
+        case .conservative:
+            return .secondary
+        case .safe:
+            return .green
+        case .fullAutonomy:
+            return .orange
+        case .custom:
+            return .blue
+        }
+    }
+
     @ViewBuilder
     private func supervisorProjectDrillDownPanel(_ snapshot: SupervisorProjectDrillDownSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -936,25 +1352,33 @@ struct SupervisorView: View {
             }
             .pickerStyle(.segmented)
 
-            Text("mode: explicit structured drill-down · reason: \(snapshot.openedReason)")
+            Text(
+                "view: drilldown · scope: \(snapshot.grantedScope?.rawValue ?? snapshot.requestedScope.rawValue) · reason: \(snapshot.openedReason) · refs: \(snapshot.refs.count)"
+            )
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
             if let project = appModel.registry.project(for: snapshot.projectId) {
                 let governed = appModel.governedAuthorityPresentation(for: project)
-                if governed.hasAnyVisibleSignal {
-                    HStack(spacing: 6) {
-                        if governed.deviceAuthorityConfigured {
-                            portfolioGovernedTag("device authority", color: .green)
-                        }
-                        if governed.localAutoApproveConfigured {
-                            portfolioGovernedTag("local auto", color: .orange)
-                        }
-                        if governed.governedReadableRootCount > 0 {
-                            portfolioGovernedTag("read+\(governed.governedReadableRootCount)", color: .blue)
-                        }
+                let switchboard = appModel.autonomySwitchboardPresentation(for: project)
+                HStack(spacing: 6) {
+                    portfolioGovernedTag(switchboard.configuredProfile.displayName, color: portfolioProfileColor(switchboard.configuredProfile))
+                    if switchboard.hasConfiguredEffectiveDrift {
+                        portfolioGovernedTag("effective \(switchboard.effectiveProfile.displayName)", color: portfolioProfileColor(switchboard.effectiveProfile))
+                    }
+                    portfolioGovernedTag(switchboard.effectiveDeviceAuthorityPosture.displayName, color: .green)
+                    portfolioGovernedTag(switchboard.effectiveGrantPosture.displayName, color: .orange)
+                    if governed.localAutoApproveConfigured {
+                        portfolioGovernedTag("local auto", color: .orange)
+                    }
+                    if governed.governedReadableRootCount > 0 {
+                        portfolioGovernedTag("read+\(governed.governedReadableRootCount)", color: .blue)
                     }
                 }
+                Text(switchboard.runtimeSummary)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
             }
 
             if !allowedScopes.contains(.capsulePlusRecent) {
@@ -1025,6 +1449,12 @@ struct SupervisorView: View {
                             }
                         }
                     }
+                }
+
+                if snapshot.latestReview != nil
+                    || snapshot.pendingAckGuidance != nil
+                    || snapshot.latestGuidance != nil {
+                    supervisorProjectDrillDownGovernanceSection(snapshot)
                 }
 
                 if let workflow = snapshot.workflow,
@@ -1100,6 +1530,94 @@ struct SupervisorView: View {
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
+    @ViewBuilder
+    private func supervisorProjectDrillDownGovernanceSection(
+        _ snapshot: SupervisorProjectDrillDownSnapshot
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Latest Governance")
+                .font(.caption2.weight(.semibold))
+
+            if let followUp = snapshot.followUpRhythmSummary,
+               !followUp.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text("follow-up rhythm: \(followUp)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            }
+
+            if let review = snapshot.latestReview {
+                Text("review: \(review.verdict.displayName) · \(review.reviewLevel.displayName) · \(review.trigger.displayName)")
+                    .font(.caption2)
+                    .lineLimit(2)
+                Text(
+                    "tier: \((review.effectiveSupervisorTier?.displayName) ?? "(none)") · depth: \((review.effectiveWorkOrderDepth?.displayName) ?? "(none)") · strength: \(supervisorProjectAIStrengthText(band: review.projectAIStrengthBand, confidence: review.projectAIStrengthConfidence))"
+                )
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                Text("summary: \(supervisorGovernanceScalar(review.summary))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                if let action = review.recommendedActions.first,
+                   !action.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text("next: \(action)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                let workOrderRef = supervisorGovernanceScalar(review.workOrderRef)
+                if workOrderRef != "(none)" {
+                    Text("work_order: \(workOrderRef)")
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            if let guidance = snapshot.pendingAckGuidance {
+                Text("pending guidance: \(guidance.deliveryMode.displayName) · \(guidance.interventionMode.displayName)")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+                Text(
+                    "ack: \(supervisorProjectGuidanceAckText(guidance)) · safe point: \(guidance.safePointPolicy.displayName) · lifecycle: \(SupervisorGuidanceInjectionStore.lifecycleSummary(for: guidance, nowMs: supervisorGovernanceNowMs))"
+                )
+                .font(.caption2)
+                .foregroundStyle(.orange)
+                .lineLimit(2)
+                Text(
+                    "tier: \((guidance.effectiveSupervisorTier?.displayName) ?? "(none)") · depth: \((guidance.effectiveWorkOrderDepth?.displayName) ?? "(none)") · work_order: \(supervisorGovernanceScalar(guidance.workOrderRef))"
+                )
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                Text("guidance: \(supervisorGovernanceScalar(guidance.guidanceText))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            }
+
+            if let guidance = snapshot.latestGuidance,
+               guidance.injectionId != snapshot.pendingAckGuidance?.injectionId {
+                Text("latest delivered guidance: \(guidance.deliveryMode.displayName) · \(guidance.interventionMode.displayName)")
+                    .font(.caption2)
+                    .lineLimit(2)
+                Text(
+                    "ack: \(supervisorProjectGuidanceAckText(guidance)) · safe point: \(guidance.safePointPolicy.displayName) · lifecycle: \(SupervisorGuidanceInjectionStore.lifecycleSummary(for: guidance, nowMs: supervisorGovernanceNowMs))"
+                )
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                Text("guidance: \(supervisorGovernanceScalar(guidance.guidanceText))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+    }
+
     private func supervisorPortfolioActionEventRow(_ event: SupervisorProjectActionEvent) -> some View {
         let recommendation = SupervisorRhythmRecommendationEngine.recommendation(for: event)
         return HStack(alignment: .top, spacing: 8) {
@@ -1131,6 +1649,29 @@ struct SupervisorView: View {
         guard trimmed.count > 800 else { return trimmed }
         let idx = trimmed.index(trimmed.startIndex, offsetBy: 800)
         return String(trimmed[..<idx]) + "…"
+    }
+
+    private var supervisorGovernanceNowMs: Int64 {
+        Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
+    }
+
+    private func supervisorGovernanceScalar(_ value: String?) -> String {
+        let trimmed = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "(none)" : trimmed
+    }
+
+    private func supervisorProjectAIStrengthText(
+        band: AXProjectAIStrengthBand?,
+        confidence: Double?
+    ) -> String {
+        guard let band else { return "(none)" }
+        guard let confidence else { return band.displayName }
+        let normalized = max(0, min(1, confidence))
+        return "\(band.displayName) · conf=\(Int((normalized * 100).rounded()))%"
+    }
+
+    private func supervisorProjectGuidanceAckText(_ record: SupervisorGuidanceInjectionRecord) -> String {
+        "\(record.ackStatus.displayName) · \(record.ackRequired ? "required" : "optional")"
     }
 
     private func supervisorMemoryUpdatedText(_ timestamp: TimeInterval) -> String {
@@ -1355,7 +1896,8 @@ struct SupervisorView: View {
     }
 
     private var supervisorDoctorBoard: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let memoryReadiness = supervisor.supervisorMemoryAssemblyReadiness
+        return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Image(systemName: doctorStatusIconName)
                     .foregroundColor(doctorStatusColor)
@@ -1379,6 +1921,18 @@ struct SupervisorView: View {
             Text("release_blocked_by_doctor_without_report=\(supervisor.releaseBlockedByDoctorWithoutReport)")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+
+            Text("strategic_memory_ready=\(memoryReadiness.ready ? "yes" : "no") · memory_issues=\(memoryReadiness.issues.count)")
+                .font(.caption2)
+                .foregroundStyle(memoryReadinessColor)
+                .textSelection(.enabled)
+
+            if !memoryReadiness.issues.isEmpty {
+                Text(memoryReadiness.issues.prefix(2).map(\.summary).joined(separator: " · "))
+                    .font(.caption2)
+                    .foregroundStyle(memoryReadinessColor)
+                    .lineLimit(2)
+            }
 
             if supervisor.doctorSuggestionCards.isEmpty {
                 Text(supervisor.doctorReport == nil ? "尚未生成 Doctor 报告，运行一次预检后可查看修复建议卡片。" : "未发现可执行修复项。")
@@ -1688,6 +2242,18 @@ struct SupervisorView: View {
     private func supervisorSkillApprovalRowView(
         _ approval: SupervisorManager.SupervisorPendingSkillApproval
     ) -> some View {
+        let rowAnchor = pendingSupervisorSkillApprovalRowAnchor(approval)
+        let isFocused = highlightedPendingSupervisorSkillApprovalAnchor == rowAnchor
+        let message = XTPendingApprovalPresentation.approvalMessage(
+            toolName: approval.toolName,
+            tool: approval.tool,
+            toolSummary: approval.toolSummary
+        )
+        let supplementaryReason = XTPendingApprovalPresentation.supplementaryReason(
+            approval.reason,
+            primaryMessage: message
+        )
+
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Label(
@@ -1704,16 +2270,22 @@ struct SupervisorView: View {
                     .foregroundStyle(.secondary)
             }
 
-            if !approval.reason.isEmpty {
-                Text(approval.reason)
-                    .font(.caption)
+            Text(message.summary)
+                .font(.caption)
+                .lineLimit(2)
+
+            if let nextStep = message.nextStep,
+               !nextStep.isEmpty {
+                Text(nextStep)
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
 
-            if !approval.toolSummary.isEmpty {
-                Text("目标：\(approval.toolSummary)")
-                    .font(.caption)
+            if let supplementaryReason {
+                Text("note: \(supplementaryReason)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
 
@@ -1742,7 +2314,11 @@ struct SupervisorView: View {
             }
         }
         .padding(10)
-        .background(Color.secondary.opacity(0.08))
+        .background(isFocused ? Color.orange.opacity(0.14) : Color.secondary.opacity(0.08))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(isFocused ? Color.orange.opacity(0.65) : Color.clear, lineWidth: 1.5)
+        )
         .cornerRadius(10)
     }
 
@@ -1750,6 +2326,18 @@ struct SupervisorView: View {
     private func pendingSupervisorSkillApprovalRow(
         _ approval: SupervisorManager.SupervisorPendingSkillApproval
     ) -> some View {
+        let rowAnchor = pendingSupervisorSkillApprovalRowAnchor(approval)
+        let isFocused = highlightedPendingSupervisorSkillApprovalAnchor == rowAnchor
+        let message = XTPendingApprovalPresentation.approvalMessage(
+            toolName: approval.toolName,
+            tool: approval.tool,
+            toolSummary: approval.toolSummary
+        )
+        let supplementaryReason = XTPendingApprovalPresentation.supplementaryReason(
+            approval.reason,
+            primaryMessage: message
+        )
+
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Label(
@@ -1766,16 +2354,22 @@ struct SupervisorView: View {
                     .foregroundStyle(.secondary)
             }
 
-            if !approval.reason.isEmpty {
-                Text(approval.reason)
-                    .font(.caption)
+            Text(message.summary)
+                .font(.caption)
+                .lineLimit(2)
+
+            if let nextStep = message.nextStep,
+               !nextStep.isEmpty {
+                Text(nextStep)
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
 
-            if !approval.toolSummary.isEmpty {
-                Text("目标：\(approval.toolSummary)")
-                    .font(.caption)
+            if let supplementaryReason {
+                Text("note: \(supplementaryReason)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
 
@@ -1804,7 +2398,11 @@ struct SupervisorView: View {
             }
         }
         .padding(10)
-        .background(Color.secondary.opacity(0.08))
+        .background(isFocused ? Color.orange.opacity(0.14) : Color.secondary.opacity(0.08))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(isFocused ? Color.orange.opacity(0.65) : Color.clear, lineWidth: 1.5)
+        )
         .cornerRadius(10)
     }
 
@@ -1849,10 +2447,97 @@ struct SupervisorView: View {
     }
 
     @ViewBuilder
+    private func supervisorEventLoopActivityRow(
+        _ item: SupervisorManager.SupervisorEventLoopActivity
+    ) -> some View {
+        let statusColor = supervisorEventLoopStatusColor(item.status)
+        let projectLabel = item.projectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? (item.projectId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "(global)" : item.projectId)
+            : item.projectName
+
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(supervisorEventLoopTriggerLabel(item.triggerSource))
+                    .font(.caption.weight(.semibold))
+                Text(projectLabel)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 8)
+
+                Text(supervisorEventLoopStatusLabel(item.status))
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(statusColor)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(statusColor.opacity(0.12))
+                    .clipShape(Capsule())
+            }
+
+            if !item.triggerSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text("trigger: \(item.triggerSummary)")
+                    .font(.caption)
+                    .lineLimit(2)
+            }
+
+            if !item.resultSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text("result: \(item.resultSummary)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            if !item.policySummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(item.policySummary)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            HStack(spacing: 8) {
+                Text("reason=\(item.reasonCode)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                Text("key=\(item.dedupeKey)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Text(relativeTimeText(item.updatedAt))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(10)
+        .background(statusColor.opacity(0.06))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(statusColor.opacity(0.18), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    @ViewBuilder
     private func pendingHubGrantRow(_ grant: SupervisorManager.SupervisorPendingGrant) -> some View {
         let grantId = grant.grantRequestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rowAnchor = pendingHubGrantRowAnchor(grant)
+        let isFocused = highlightedPendingHubGrantAnchor == rowAnchor
         let inFlight = !grantId.isEmpty && supervisor.pendingHubGrantActionsInFlight.contains(grantId)
         let canAct = appModel.hubInteractive && !grantId.isEmpty
+        let summary = XTHubGrantPresentation.awaitingSummary(
+            capability: grant.capability,
+            modelId: grant.modelId
+        )
+        let supplementaryReason = XTHubGrantPresentation.supplementaryReason(
+            grant.reason,
+            capability: grant.capability,
+            modelId: grant.modelId
+        )
+        let scopeSummary = XTHubGrantPresentation.scopeSummary(
+            requestedTtlSec: grant.requestedTtlSec,
+            requestedTokenCap: grant.requestedTokenCap
+        )
 
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -1867,16 +2552,20 @@ struct SupervisorView: View {
                     .foregroundStyle(.secondary)
             }
 
-            if !grant.reason.isEmpty {
-                Text(grant.reason)
-                    .font(.caption)
+            Text(summary)
+                .font(.caption)
+                .lineLimit(2)
+
+            if let supplementaryReason {
+                Text("原因：\(supplementaryReason)")
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
 
             if !grant.priorityReason.isEmpty {
                 Text("优先级解释：\(grant.priorityReason)")
-                    .font(.caption)
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
@@ -1885,6 +2574,13 @@ struct SupervisorView: View {
                 Text("建议动作：\(grant.nextAction)")
                     .font(.caption)
                     .lineLimit(2)
+            }
+
+            if let scopeSummary {
+                Text(scopeSummary)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
 
             HStack(alignment: .center, spacing: 8) {
@@ -1920,7 +2616,11 @@ struct SupervisorView: View {
             }
         }
         .padding(10)
-        .background(Color.secondary.opacity(0.08))
+        .background(isFocused ? Color.orange.opacity(0.14) : Color.secondary.opacity(0.08))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(isFocused ? Color.orange.opacity(0.65) : Color.clear, lineWidth: 1.5)
+        )
         .cornerRadius(10)
     }
 
@@ -1992,22 +2692,68 @@ struct SupervisorView: View {
         }
     }
 
+    private func supervisorEventLoopTriggerLabel(_ raw: String) -> String {
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "heartbeat":
+            return "Heartbeat"
+        case "skill_callback":
+            return "Skill Callback"
+        case "guidance_ack":
+            return "Guidance Ack"
+        case "automation_safe_point":
+            return "Safe Point"
+        case "incident":
+            return "Incident"
+        case "external_trigger_ingress":
+            return "External Trigger"
+        case "grant_resolution":
+            return "Grant Resolution"
+        case "approval_resolution":
+            return "Approval Resolution"
+        default:
+            return "User Turn"
+        }
+    }
+
+    private func supervisorEventLoopStatusLabel(_ raw: String) -> String {
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "queued":
+            return "Queued"
+        case "running":
+            return "Running"
+        case "completed":
+            return "Completed"
+        case "completed_empty":
+            return "Noop"
+        case "deduped":
+            return "Deduped"
+        default:
+            return raw
+        }
+    }
+
+    private func supervisorEventLoopStatusColor(_ raw: String) -> Color {
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "queued":
+            return .blue
+        case "running":
+            return .mint
+        case "completed":
+            return .green
+        case "completed_empty":
+            return .secondary
+        case "deduped":
+            return .orange
+        default:
+            return .secondary
+        }
+    }
+
     private func grantCapabilityText(_ grant: SupervisorManager.SupervisorPendingGrant) -> String {
-        let capability = grant.capability.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let modelId = grant.modelId.trimmingCharacters(in: .whitespacesAndNewlines)
-        if capability.contains("web_fetch") || capability.contains("web.fetch") {
-            return "联网访问"
-        }
-        if capability.contains("ai_generate_paid") || capability.contains("ai.generate.paid") {
-            return modelId.isEmpty ? "付费模型调用" : "付费模型调用（\(modelId)）"
-        }
-        if capability.contains("ai_generate_local") || capability.contains("ai.generate.local") {
-            return modelId.isEmpty ? "本地模型调用" : "本地模型调用（\(modelId)）"
-        }
-        if capability.isEmpty {
-            return "高风险能力"
-        }
-        return grant.capability
+        XTHubGrantPresentation.capabilityLabel(
+            capability: grant.capability,
+            modelId: grant.modelId
+        )
     }
 
     private func grantAgeText(_ createdAt: TimeInterval?) -> String {
@@ -2096,6 +2842,28 @@ struct SupervisorView: View {
         if supervisor.doctorHasBlockingFindings { return .red }
         if let report = supervisor.doctorReport, report.summary.warningCount > 0 { return .orange }
         return .green
+    }
+
+    private var memoryReadinessIconName: String {
+        let readiness = supervisor.supervisorMemoryAssemblyReadiness
+        if readiness.ready { return "checkmark.seal.fill" }
+        if readiness.blockingCount > 0 { return "exclamationmark.triangle.fill" }
+        return "exclamationmark.circle.fill"
+    }
+
+    private var memoryReadinessColor: Color {
+        let readiness = supervisor.supervisorMemoryAssemblyReadiness
+        if readiness.ready { return .green }
+        if readiness.blockingCount > 0 { return .red }
+        return .orange
+    }
+
+    private var memoryReadinessHeadline: String {
+        let readiness = supervisor.supervisorMemoryAssemblyReadiness
+        if readiness.ready {
+            return "Strategic review memory ready"
+        }
+        return "Strategic review memory underfed (\(readiness.issues.count))"
     }
 
     private func xtReadyStatusColor(_ snapshot: SupervisorManager.XTReadyIncidentExportSnapshot) -> Color {
@@ -2257,16 +3025,12 @@ struct SupervisorView: View {
     }
 
     private func laneProjectURL(_ projectID: UUID?) -> URL? {
-        guard let projectID else { return URL(string: "xterminal://supervisor") }
-        var components = URLComponents()
-        components.scheme = "xterminal"
-        components.host = "project"
-        components.queryItems = [
-            URLQueryItem(name: "project_id", value: projectID.uuidString),
-            URLQueryItem(name: "pane", value: "chat"),
-            URLQueryItem(name: "open", value: "supervisor"),
-        ]
-        return components.url
+        guard let projectID else { return XTDeepLinkURLBuilder.supervisorURL() }
+        return XTDeepLinkURLBuilder.projectURL(
+            projectId: projectID.uuidString,
+            pane: .chat,
+            resumeRequested: true
+        )
     }
 
     private func filteredLaneHealthLanes(from snapshot: SupervisorLaneHealthSnapshot?) -> [SupervisorLaneHealthLaneState] {
@@ -2903,6 +3667,34 @@ private struct SupervisorSkillActivityCard: View {
                     .lineLimit(2)
             }
 
+            if let workflowLine = SupervisorSkillActivityPresentation.workflowLine(for: item) {
+                Text(workflowLine)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            if let governanceLine = SupervisorSkillActivityPresentation.governanceLine(for: item) {
+                Text(governanceLine)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            if let followUpRhythmLine = SupervisorSkillActivityPresentation.followUpRhythmLine(for: item) {
+                Text(followUpRhythmLine)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            if let guidanceLine = SupervisorSkillActivityPresentation.pendingGuidanceLine(for: item) {
+                Text(guidanceLine)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+            }
+
             HStack(spacing: 8) {
                 if SupervisorSkillActivityPresentation.isAwaitingLocalApproval(item) {
                     Button("Approve") {
@@ -2923,9 +3715,8 @@ private struct SupervisorSkillActivityCard: View {
                     .buttonStyle(.bordered)
                 }
 
-                if !item.requiredCapability.isEmpty,
-                   item.actionURL?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
-                    Button("Open") {
+                if item.actionURL?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+                    Button(SupervisorSkillActivityPresentation.actionButtonTitle(for: item)) {
                         onOpenActionURL()
                     }
                     .buttonStyle(.bordered)
@@ -3045,6 +3836,13 @@ private struct SupervisorSkillRecordSheet: View {
                         ProjectSkillRecordFieldSection(
                             title: "Approval Status",
                             fields: record.record.approvalFields
+                        )
+                    }
+
+                    if !record.record.governanceFields.isEmpty {
+                        ProjectSkillRecordFieldSection(
+                            title: "Governance Context",
+                            fields: record.record.governanceFields
                         )
                     }
 
@@ -3277,6 +4075,10 @@ struct SupervisorCockpitPresentationInput: Codable, Equatable {
     let xtReadyStrictE2EReady: Bool
     let xtReadyIssueCount: Int
     let xtReadyReportPath: String
+    let memoryAssemblyReady: Bool
+    let memoryAssemblyIssueCount: Int
+    let memoryAssemblyStatusLine: String
+    let memoryAssemblyTopIssueCode: String?
     let autoConfirmPolicy: String?
     let autoLaunchPolicy: String?
     let grantGateMode: String?
@@ -3316,6 +4118,10 @@ struct SupervisorCockpitPresentationInput: Codable, Equatable {
         xtReadyStrictE2EReady: Bool,
         xtReadyIssueCount: Int,
         xtReadyReportPath: String,
+        memoryAssemblyReady: Bool = true,
+        memoryAssemblyIssueCount: Int = 0,
+        memoryAssemblyStatusLine: String = "ready",
+        memoryAssemblyTopIssueCode: String? = nil,
         autoConfirmPolicy: String? = nil,
         autoLaunchPolicy: String? = nil,
         grantGateMode: String? = nil,
@@ -3354,6 +4160,10 @@ struct SupervisorCockpitPresentationInput: Codable, Equatable {
         self.xtReadyStrictE2EReady = xtReadyStrictE2EReady
         self.xtReadyIssueCount = xtReadyIssueCount
         self.xtReadyReportPath = xtReadyReportPath
+        self.memoryAssemblyReady = memoryAssemblyReady
+        self.memoryAssemblyIssueCount = memoryAssemblyIssueCount
+        self.memoryAssemblyStatusLine = memoryAssemblyStatusLine
+        self.memoryAssemblyTopIssueCode = memoryAssemblyTopIssueCode
         self.autoConfirmPolicy = autoConfirmPolicy
         self.autoLaunchPolicy = autoLaunchPolicy
         self.grantGateMode = grantGateMode
@@ -3394,6 +4204,10 @@ struct SupervisorCockpitPresentationInput: Codable, Equatable {
         case xtReadyStrictE2EReady = "xt_ready_strict_e2e_ready"
         case xtReadyIssueCount = "xt_ready_issue_count"
         case xtReadyReportPath = "xt_ready_report_path"
+        case memoryAssemblyReady = "memory_assembly_ready"
+        case memoryAssemblyIssueCount = "memory_assembly_issue_count"
+        case memoryAssemblyStatusLine = "memory_assembly_status_line"
+        case memoryAssemblyTopIssueCode = "memory_assembly_top_issue_code"
         case autoConfirmPolicy = "auto_confirm_policy"
         case autoLaunchPolicy = "auto_launch_policy"
         case grantGateMode = "grant_gate_mode"
@@ -3453,6 +4267,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
         monitor: ExecutionMonitor
     ) -> SupervisorCockpitPresentation {
         let xtReadySnapshot = supervisorManager.xtReadyIncidentExportSnapshot(limit: 120)
+        let memoryReadiness = supervisorManager.supervisorMemoryAssemblyReadiness
         let laneSnapshot = supervisorManager.supervisorLaneHealthSnapshot
         let abnormalLane = laneSnapshot?.lanes.first { lane in
             switch lane.status {
@@ -3488,6 +4303,10 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                 xtReadyStrictE2EReady: xtReadySnapshot.strictE2EReady,
                 xtReadyIssueCount: xtReadySnapshot.strictE2EIssues.count + xtReadySnapshot.missingIncidentCodes.count,
                 xtReadyReportPath: xtReadySnapshot.reportPath,
+                memoryAssemblyReady: memoryReadiness.ready,
+                memoryAssemblyIssueCount: memoryReadiness.issues.count,
+                memoryAssemblyStatusLine: memoryReadiness.statusLine,
+                memoryAssemblyTopIssueCode: memoryReadiness.issues.first?.code,
                 autoConfirmPolicy: runtimePolicy?.autoConfirmPolicy.rawValue,
                 autoLaunchPolicy: runtimePolicy?.autoLaunchPolicy.rawValue,
                 grantGateMode: runtimePolicy?.grantGateMode,
@@ -3530,7 +4349,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
         } else {
             replayStatus = "pending"
         }
-        let plannerMachineStatusRef = "processing=\(input.isProcessing); pending_grants=\(input.pendingGrantCount); grant_snapshot_fresh=\(input.hasFreshPendingGrantSnapshot); lane_running=\(input.laneSummary.running); lane_blocked=\(input.laneSummary.blocked); lane_stalled=\(input.laneSummary.stalled); lane_failed=\(input.laneSummary.failed); xt_ready_status=\(input.xtReadyStatus); xt_ready_issues=\(input.xtReadyIssueCount); one_shot_state=\(input.oneShotRuntimeState ?? "none"); one_shot_owner=\(oneShotOwner); one_shot_blocker=\(oneShotTopBlocker); one_shot_next=\(oneShotNextTarget); one_shot_active_lanes=\(input.oneShotRuntimeActiveLaneCount); auto_confirm=\(input.autoConfirmPolicy ?? "none"); auto_launch=\(input.autoLaunchPolicy ?? "none"); freeze=\(freezeDecision); denied_launches=\(input.deniedLaunchCount); batons=\(input.directedUnblockBatonCount); replay=\(replayStatus)"
+        let plannerMachineStatusRef = "processing=\(input.isProcessing); pending_grants=\(input.pendingGrantCount); grant_snapshot_fresh=\(input.hasFreshPendingGrantSnapshot); lane_running=\(input.laneSummary.running); lane_blocked=\(input.laneSummary.blocked); lane_stalled=\(input.laneSummary.stalled); lane_failed=\(input.laneSummary.failed); xt_ready_status=\(input.xtReadyStatus); xt_ready_issues=\(input.xtReadyIssueCount); memory_ready=\(input.memoryAssemblyReady); memory_issues=\(input.memoryAssemblyIssueCount); memory_top_issue=\(input.memoryAssemblyTopIssueCode ?? "none"); one_shot_state=\(input.oneShotRuntimeState ?? "none"); one_shot_owner=\(oneShotOwner); one_shot_blocker=\(oneShotTopBlocker); one_shot_next=\(oneShotNextTarget); one_shot_active_lanes=\(input.oneShotRuntimeActiveLaneCount); auto_confirm=\(input.autoConfirmPolicy ?? "none"); auto_launch=\(input.autoLaunchPolicy ?? "none"); freeze=\(freezeDecision); denied_launches=\(input.deniedLaunchCount); batons=\(input.directedUnblockBatonCount); replay=\(replayStatus)"
         let runtimeStageRail = buildRuntimeStageRail(
             input: input,
             oneShotState: oneShotState,
@@ -3545,6 +4364,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             input.autoConfirmPolicy.map { "auto_confirm=\($0)" },
             input.autoLaunchPolicy.map { "auto_launch=\($0)" },
             input.grantGateMode.map { "grant_gate=\($0)" },
+            "strategic_memory=\(input.memoryAssemblyReady ? "ready" : "underfed")",
             input.oneShotRuntimeState.map { "one_shot=\($0)" },
             "freeze=\(freezeDecision)",
             "replay=\(replayStatus)"
@@ -3751,27 +4571,95 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             )
             plannerExplain = "\(contractSummary)。one-shot intake → planner explain → blocker triage → delivery freeze。当前处于 \(input.oneShotRuntimeState ?? "planning_or_running")，并附带 replay=\(replayStatus)、freeze=\(freezeDecision) 的解释上下文。"
         } else if oneShotState == .deliveryFreeze || oneShotState == .completed || !input.xtReadyStrictE2EReady || input.xtReadyIssueCount > 0 {
+            let memoryUnderfed = !input.memoryAssemblyReady || input.memoryAssemblyIssueCount > 0
+            let deliveryHeadline = memoryUnderfed
+                ? "交付冻结前仍需补齐 strategic memory"
+                : "交付冻结前仍需 review delivery"
+            let deliveryWhatHappened = if memoryUnderfed {
+                oneShotSummary.isEmpty
+                    ? "当前 review / freeze 阶段虽然已经接近交付，但 Supervisor memory assembly 仍存在 underfed 风险，因此不能把当前状态上提为可信的 strategic review。"
+                    : oneShotSummary
+            } else {
+                oneShotSummary.isEmpty
+                    ? "XT-Ready 还存在未清零问题，Cockpit 因此不把当前状态上提为已交付完成。"
+                    : oneShotSummary
+            }
+            let deliveryWhyItHappened = memoryUnderfed
+                ? "如果 strategic review 建立在 underfed memory 上，Supervisor 很容易因为缺少长期目标、关键决策来由和可靠依据而给出失真的纠偏。"
+                : "delivery freeze 需要 strict e2e 与 incident 证据；问题未清零时继续保持 explainable hold。"
+            let deliveryUserAction = if memoryUnderfed {
+                "先刷新 Supervisor memory，并确认当前项目的深度记忆、长期目标、关键决策原因、当前卡点以及可作为依据的日志或结果都已补齐，再 review delivery。"
+            } else {
+                input.scopeFreezeNextActions.first ?? "先 review delivery，确认 XT-Ready issues 再决定是否推进。"
+            }
+            let deliveryBlockerHeadline = memoryUnderfed ? "Top blocker: memory_context_underfed" : "Top blocker: review_delivery"
             intakeStatus = StatusExplanation(
                 state: .diagnosticRequired,
-                headline: "交付冻结前仍需 review delivery",
-                whatHappened: oneShotSummary.isEmpty ? "XT-Ready 还存在未清零问题，Cockpit 因此不把当前状态上提为已交付完成。" : oneShotSummary,
-                whyItHappened: "delivery freeze 需要 strict e2e 与 incident 证据；问题未清零时继续保持 explainable hold。",
-                userAction: input.scopeFreezeNextActions.first ?? "先 review delivery，确认 XT-Ready issues 再决定是否推进。",
+                headline: deliveryHeadline,
+                whatHappened: deliveryWhatHappened,
+                whyItHappened: deliveryWhyItHappened,
+                userAction: deliveryUserAction,
                 machineStatusRef: plannerMachineStatusRef,
                 hardLine: "delivery freeze requires strict evidence",
-                highlights: [contractSummary, "xt_ready_issue_count=\(input.xtReadyIssueCount)"].filter { !$0.isEmpty }
+                highlights: [
+                    contractSummary,
+                    "xt_ready_issue_count=\(input.xtReadyIssueCount)",
+                    "memory_issue_count=\(input.memoryAssemblyIssueCount)",
+                    input.memoryAssemblyTopIssueCode.map { "memory_top_issue=\($0)" } ?? ""
+                ].filter { !$0.isEmpty }
             )
             blockerStatus = StatusExplanation(
                 state: .diagnosticRequired,
-                headline: "Top blocker: review_delivery",
-                whatHappened: "当前主 blocker 是交付冻结证据仍待复核。",
-                whyItHappened: "XT-Ready 未绿时，Cockpit 不能向外暗示 release 已完成。",
-                userAction: input.scopeFreezeNextActions.first ?? "查看 delivery report 与 XT-Ready export，再决定下一步。",
+                headline: deliveryBlockerHeadline,
+                whatHappened: memoryUnderfed
+                    ? "当前主 blocker 是 strategic review 的 memory 供给仍不可信。"
+                    : "当前主 blocker 是交付冻结证据仍待复核。",
+                whyItHappened: memoryUnderfed
+                    ? "memory assembly 没有达到 review-ready 之前，Cockpit 不能把当前 freeze / completion 展示成可信的 release 收口。"
+                    : "XT-Ready 未绿时，Cockpit 不能向外暗示 release 已完成。",
+                userAction: memoryUnderfed
+                    ? deliveryUserAction
+                    : (input.scopeFreezeNextActions.first ?? "查看 delivery report 与 XT-Ready export，再决定下一步。"),
                 machineStatusRef: plannerMachineStatusRef,
                 hardLine: "no release without strict evidence",
-                highlights: ["xt_ready_status=\(input.xtReadyStatus)"]
+                highlights: [
+                    "xt_ready_status=\(input.xtReadyStatus)",
+                    "memory_status=\(input.memoryAssemblyStatusLine)"
+                ]
             )
-            plannerExplain = "\(contractSummary)。当前停在 delivery review，原因是 XT-Ready 仍有未消化问题。"
+            plannerExplain = memoryUnderfed
+                ? "\(contractSummary)。当前停在 memory_context_underfed；需先补齐 strategic review memory，再进入可信的 delivery review。"
+                : "\(contractSummary)。当前停在 delivery review，原因是 XT-Ready 仍有未消化问题。"
+        } else if !input.memoryAssemblyReady || input.memoryAssemblyIssueCount > 0 {
+            let topIssue = input.memoryAssemblyTopIssueCode ?? "memory_context_underfed"
+            intakeStatus = StatusExplanation(
+                state: .diagnosticRequired,
+                headline: "Strategic review 记忆仍未喂够",
+                whatHappened: "当前没有 grant / lane / XT-Ready 的显式硬阻塞，但 Supervisor memory assembly 仍未达到可信的 review 供给线。",
+                whyItHappened: "如果在这时直接做战略纠偏，Supervisor 会更容易受到浅层 working set 或局部噪声误导，而不是依据完整项目背景做判断。",
+                userAction: "先刷新 Supervisor memory，并确认当前项目的深度记忆、长期目标、关键决策原因、当前卡点以及可作为依据的日志或结果都已补齐。",
+                machineStatusRef: plannerMachineStatusRef,
+                hardLine: "strategic review must not run on underfed memory",
+                highlights: [
+                    contractSummary,
+                    "memory_issue_count=\(input.memoryAssemblyIssueCount)",
+                    "memory_status=\(input.memoryAssemblyStatusLine)"
+                ].filter { !$0.isEmpty }
+            )
+            blockerStatus = StatusExplanation(
+                state: .diagnosticRequired,
+                headline: "Top blocker: \(topIssue)",
+                whatHappened: "当前主 blocker 是 Supervisor strategic memory 仍未准备好。",
+                whyItHappened: "memory assembly 的锚点、层级或证据链不完整时，Cockpit 不应把状态包装成 ready。",
+                userAction: "刷新 memory 并重做 focused strategic review 前的装配检查。",
+                machineStatusRef: plannerMachineStatusRef,
+                hardLine: "memory readiness stays explicit before strategic review",
+                highlights: [
+                    "memory_ready=\(input.memoryAssemblyReady)",
+                    "memory_top_issue=\(topIssue)"
+                ]
+            )
+            plannerExplain = "\(contractSummary)。当前停在 \(topIssue)；需要先把 strategic memory 从 underfed 拉回 review-ready，才适合继续推进纠偏或评审。"
         } else {
             intakeStatus = StatusExplanation(
                 state: .ready,
@@ -4057,6 +4945,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
         oneShotState: OneShotRunStateStatus?,
         freezeDecision: String
     ) -> SupervisorRuntimeStageItemPresentation {
+        let memoryNeedsReview = !input.memoryAssemblyReady || input.memoryAssemblyIssueCount > 0
         if input.topLaunchDenyCode == "scope_expansion" || freezeDecision == "no_go" || !input.scopeFreezeBlockedExpansionItems.isEmpty {
             return SupervisorRuntimeStageItemPresentation(
                 id: "freeze",
@@ -4076,9 +4965,11 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             return SupervisorRuntimeStageItemPresentation(
                 id: "freeze",
                 title: "Freeze",
-                detail: "交付冻结进行中，等待 strict evidence / review delivery。",
+                detail: memoryNeedsReview
+                    ? "交付冻结进行中，但 strategic memory 仍需补齐后再 review delivery。"
+                    : "交付冻结进行中，等待 strict evidence / review delivery。",
                 progress: .active,
-                surfaceState: input.xtReadyStrictE2EReady && input.xtReadyIssueCount == 0 ? .releaseFrozen : .diagnosticRequired,
+                surfaceState: input.xtReadyStrictE2EReady && input.xtReadyIssueCount == 0 && !memoryNeedsReview ? .releaseFrozen : .diagnosticRequired,
                 actionID: "review_delivery",
                 actionLabel: "Open review"
             )
@@ -4086,9 +4977,11 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             return SupervisorRuntimeStageItemPresentation(
                 id: "freeze",
                 title: "Freeze",
-                detail: "validated mainline 已完成冻结收口。",
+                detail: memoryNeedsReview
+                    ? "validated mainline 已完成执行，但 release freeze 仍需补齐 strategic memory。"
+                    : "validated mainline 已完成冻结收口。",
                 progress: .completed,
-                surfaceState: .releaseFrozen,
+                surfaceState: memoryNeedsReview ? .diagnosticRequired : .releaseFrozen,
                 actionID: "review_delivery",
                 actionLabel: "Open report"
             )

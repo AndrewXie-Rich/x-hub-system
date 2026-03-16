@@ -83,4 +83,37 @@ struct XTProjectCanonicalMemorySyncTests {
         #expect(risks.hasPrefix("1. \(String(repeating: "r", count: 400))"))
         #expect(risks.hasSuffix("..."))
     }
+
+    @Test
+    func preferredProjectNameOverridesMemoryProjectNameInScalarAndSummaryJSON() throws {
+        let memory = AXMemory(
+            schemaVersion: AXMemory.currentSchemaVersion,
+            projectName: "project-snapshot-friendly-name",
+            projectRoot: "/tmp/project-snapshot-friendly-name",
+            goal: "Keep Hub-facing project identity stable.",
+            requirements: [],
+            currentState: [],
+            decisions: [],
+            nextSteps: [],
+            openQuestions: [],
+            risks: [],
+            recommendations: [],
+            updatedAt: 1_772_200_111.0
+        )
+
+        let items = XTProjectCanonicalMemorySync.items(
+            memory: memory,
+            preferredProjectName: "Supervisor 耳机项目"
+        )
+        let lookup = Dictionary(uniqueKeysWithValues: items.map { ($0.key, $0.value) })
+
+        #expect(lookup["xterminal.project.memory.project_name"] == "Supervisor 耳机项目")
+
+        let summary = try #require(lookup["xterminal.project.memory.summary_json"])
+        let summaryData = try #require(summary.data(using: .utf8))
+        let summaryObject = try #require(
+            JSONSerialization.jsonObject(with: summaryData) as? [String: Any]
+        )
+        #expect(summaryObject["project_name"] as? String == "Supervisor 耳机项目")
+    }
 }

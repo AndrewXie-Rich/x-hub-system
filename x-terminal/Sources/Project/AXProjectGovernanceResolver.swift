@@ -6,6 +6,8 @@ enum AXProjectGovernanceResolver {
         config: AXProjectConfig,
         legacyAutonomyLevel: AutonomyLevel? = nil,
         remoteOverride: AXProjectAutonomyRemoteOverrideSnapshot? = nil,
+        projectAIStrengthProfile: AXProjectAIStrengthProfile? = nil,
+        adaptationPolicy: AXProjectSupervisorAdaptationPolicy = .default,
         permissionReadiness: AXTrustedAutomationPermissionOwnerReadiness = .current()
     ) -> AXProjectResolvedGovernanceState {
         let projectId = AXProjectRegistryStore.projectId(forRoot: projectRoot)
@@ -20,16 +22,28 @@ enum AXProjectGovernanceResolver {
 
         var effectiveBundle = configuredBundle
         var capabilityBundle = configuredBundle.executionTier.baseCapabilityBundle
+        var supervisorAdaptation = resolvedSupervisorAdaptation(
+            configuredBundle: configuredBundle,
+            validation: validation,
+            projectAIStrengthProfile: projectAIStrengthProfile,
+            adaptationPolicy: adaptationPolicy
+        )
+
+        effectiveBundle.supervisorInterventionTier = supervisorAdaptation.effectiveSupervisorTier
 
         if validation.shouldFailClosed {
             effectiveBundle = .conservativeFallback
             capabilityBundle = .observeOnly
+            supervisorAdaptation.effectiveSupervisorTier = effectiveBundle.supervisorInterventionTier
+            supervisorAdaptation.effectiveWorkOrderDepth = effectiveBundle.supervisorInterventionTier.defaultWorkOrderDepth
+            supervisorAdaptation.escalationReasons = ["validation_fail_closed"]
         }
 
         return AXProjectResolvedGovernanceState(
             projectId: projectId,
             configuredBundle: configuredBundle,
             effectiveBundle: effectiveBundle.normalized(),
+            supervisorAdaptation: supervisorAdaptation,
             compatSource: compatSource,
             projectMemoryCeiling: effectiveBundle.executionTier.defaultProjectMemoryCeiling,
             supervisorReviewMemoryCeiling: effectiveBundle.supervisorInterventionTier.defaultReviewMemoryCeiling,
@@ -46,6 +60,8 @@ enum AXProjectGovernanceResolver {
         config: AXProjectConfig,
         legacyAutonomyLevel: AutonomyLevel? = nil,
         effectiveAutonomy: AXProjectAutonomyEffectivePolicy,
+        projectAIStrengthProfile: AXProjectAIStrengthProfile? = nil,
+        adaptationPolicy: AXProjectSupervisorAdaptationPolicy = .default,
         permissionReadiness: AXTrustedAutomationPermissionOwnerReadiness = .current()
     ) -> AXProjectResolvedGovernanceState {
         let projectId = AXProjectRegistryStore.projectId(forRoot: projectRoot)
@@ -59,16 +75,28 @@ enum AXProjectGovernanceResolver {
 
         var effectiveBundle = configuredBundle
         var capabilityBundle = configuredBundle.executionTier.baseCapabilityBundle
+        var supervisorAdaptation = resolvedSupervisorAdaptation(
+            configuredBundle: configuredBundle,
+            validation: validation,
+            projectAIStrengthProfile: projectAIStrengthProfile,
+            adaptationPolicy: adaptationPolicy
+        )
+
+        effectiveBundle.supervisorInterventionTier = supervisorAdaptation.effectiveSupervisorTier
 
         if validation.shouldFailClosed {
             effectiveBundle = .conservativeFallback
             capabilityBundle = .observeOnly
+            supervisorAdaptation.effectiveSupervisorTier = effectiveBundle.supervisorInterventionTier
+            supervisorAdaptation.effectiveWorkOrderDepth = effectiveBundle.supervisorInterventionTier.defaultWorkOrderDepth
+            supervisorAdaptation.escalationReasons = ["validation_fail_closed"]
         }
 
         return AXProjectResolvedGovernanceState(
             projectId: projectId,
             configuredBundle: configuredBundle,
             effectiveBundle: effectiveBundle.normalized(),
+            supervisorAdaptation: supervisorAdaptation,
             compatSource: compatSource,
             projectMemoryCeiling: effectiveBundle.executionTier.defaultProjectMemoryCeiling,
             supervisorReviewMemoryCeiling: effectiveBundle.supervisorInterventionTier.defaultReviewMemoryCeiling,
@@ -143,6 +171,69 @@ enum AXProjectGovernanceResolver {
             warningReasons: warningReasons
         )
     }
+
+    private static func resolvedSupervisorAdaptation(
+        configuredBundle: AXProjectGovernanceBundle,
+        validation: AXProjectGovernanceValidation,
+        projectAIStrengthProfile: AXProjectAIStrengthProfile?,
+        adaptationPolicy: AXProjectSupervisorAdaptationPolicy
+    ) -> AXProjectSupervisorAdaptationSnapshot {
+        let configuredTier = configuredBundle.supervisorInterventionTier
+        let baselineRecommendedTier = validation.recommendedSupervisorTier
+        var recommendedTier = baselineRecommendedTier
+        var effectiveTier = configuredTier
+        var escalationReasons: [String] = []
+
+        if let projectAIStrengthProfile {
+            recommendedTier = max(recommendedTier, projectAIStrengthProfile.recommendedSupervisorFloor)
+
+            if projectAIStrengthProfile.recommendedSupervisorFloor > configuredTier {
+                escalationReasons.append(
+                    "project_ai_strength_\(projectAIStrengthProfile.strengthBand.rawValue)_requires_supervisor_at_least_\(projectAIStrengthProfile.recommendedSupervisorFloor.rawValue)"
+                )
+            }
+        }
+
+        switch adaptationPolicy.adaptationMode {
+        case .manualOnly:
+            effectiveTier = configuredTier
+        case .raiseOnly, .bidirectional:
+            effectiveTier = max(configuredTier, recommendedTier)
+        }
+
+        let recommendedWorkOrderDepth = resolvedWorkOrderDepth(
+            supervisorTier: recommendedTier,
+            projectAIStrengthProfile: projectAIStrengthProfile
+        )
+        let effectiveWorkOrderDepth = adaptationPolicy.adaptationMode == .manualOnly
+            ? configuredTier.defaultWorkOrderDepth
+            : resolvedWorkOrderDepth(
+                supervisorTier: effectiveTier,
+                projectAIStrengthProfile: projectAIStrengthProfile
+            )
+
+        return AXProjectSupervisorAdaptationSnapshot(
+            configuredSupervisorTier: configuredTier,
+            baselineRecommendedSupervisorTier: baselineRecommendedTier,
+            recommendedSupervisorTier: recommendedTier,
+            effectiveSupervisorTier: effectiveTier,
+            recommendedWorkOrderDepth: recommendedWorkOrderDepth,
+            effectiveWorkOrderDepth: effectiveWorkOrderDepth,
+            adaptationPolicy: adaptationPolicy,
+            projectAIStrengthProfile: projectAIStrengthProfile,
+            escalationReasons: escalationReasons
+        )
+    }
+
+    private static func resolvedWorkOrderDepth(
+        supervisorTier: AXProjectSupervisorInterventionTier,
+        projectAIStrengthProfile: AXProjectAIStrengthProfile?
+    ) -> AXProjectSupervisorWorkOrderDepth {
+        max(
+            supervisorTier.defaultWorkOrderDepth,
+            projectAIStrengthProfile?.recommendedWorkOrderDepth ?? .none
+        )
+    }
 }
 
 func xtResolveProjectGovernance(
@@ -150,6 +241,8 @@ func xtResolveProjectGovernance(
     config: AXProjectConfig,
     legacyAutonomyLevel: AutonomyLevel? = nil,
     remoteOverride: AXProjectAutonomyRemoteOverrideSnapshot? = nil,
+    projectAIStrengthProfile: AXProjectAIStrengthProfile? = nil,
+    adaptationPolicy: AXProjectSupervisorAdaptationPolicy = .default,
     permissionReadiness: AXTrustedAutomationPermissionOwnerReadiness = .current()
 ) -> AXProjectResolvedGovernanceState {
     AXProjectGovernanceResolver.resolve(
@@ -157,6 +250,8 @@ func xtResolveProjectGovernance(
         config: config,
         legacyAutonomyLevel: legacyAutonomyLevel,
         remoteOverride: remoteOverride,
+        projectAIStrengthProfile: projectAIStrengthProfile,
+        adaptationPolicy: adaptationPolicy,
         permissionReadiness: permissionReadiness
     )
 }
@@ -166,6 +261,8 @@ func xtResolveProjectGovernance(
     config: AXProjectConfig,
     legacyAutonomyLevel: AutonomyLevel? = nil,
     effectiveAutonomy: AXProjectAutonomyEffectivePolicy,
+    projectAIStrengthProfile: AXProjectAIStrengthProfile? = nil,
+    adaptationPolicy: AXProjectSupervisorAdaptationPolicy = .default,
     permissionReadiness: AXTrustedAutomationPermissionOwnerReadiness = .current()
 ) -> AXProjectResolvedGovernanceState {
     AXProjectGovernanceResolver.resolve(
@@ -173,6 +270,8 @@ func xtResolveProjectGovernance(
         config: config,
         legacyAutonomyLevel: legacyAutonomyLevel,
         effectiveAutonomy: effectiveAutonomy,
+        projectAIStrengthProfile: projectAIStrengthProfile,
+        adaptationPolicy: adaptationPolicy,
         permissionReadiness: permissionReadiness
     )
 }

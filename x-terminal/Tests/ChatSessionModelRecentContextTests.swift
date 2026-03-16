@@ -39,6 +39,7 @@ struct ChatSessionModelRecentContextTests {
 
         #expect(session.shouldRequestProjectMemoryRetrievalForTesting(userText: "你能把我之前说过的话再总结一下吗"))
         #expect(session.shouldRequestProjectMemoryRetrievalForTesting(userText: "这个项目的 tech stack 决策是什么"))
+        #expect(session.shouldRequestProjectMemoryRetrievalForTesting(userText: "展开 memory://decision/proj-1/approved-stack"))
         #expect(!session.shouldRequestProjectMemoryRetrievalForTesting(userText: "继续修当前编译错误"))
     }
 
@@ -90,6 +91,42 @@ struct ChatSessionModelRecentContextTests {
         #expect(truncated?.contains("truncated_items=2") == true)
         #expect(truncated?.contains("redacted_items=1") == true)
         #expect(truncated?.contains("[decision_track] approved stack") == true)
+    }
+
+    @Test
+    func projectMemoryRetrievalPromotesExplicitRefQueriesToStageTwo() {
+        let session = ChatSessionModel()
+        let ref = "memory://decision/proj-1/approved-stack"
+
+        #expect(session.projectMemoryRetrievalStageForTesting(userText: "展开 \(ref) 的详情") == "stage2_explicit_ref_read")
+        #expect(session.projectMemoryExplicitRefsForTesting(userText: "展开 \(ref) 的详情") == [ref])
+
+        let block = session.formattedProjectMemoryRetrievalBlockForTesting(
+            response: HubIPCClient.MemoryRetrievalResponsePayload(
+                source: "test_retrieval",
+                scope: "current_project",
+                auditRef: "audit-ref-1",
+                snippets: [
+                    HubIPCClient.MemoryRetrievalSnippet(
+                        snippetId: "snippet-explicit-1",
+                        sourceKind: "decision_track",
+                        title: "approved stack ref",
+                        ref: ref,
+                        text: "Formal decision text for the approved stack.",
+                        score: 97,
+                        truncated: false
+                    )
+                ],
+                truncatedItems: 0,
+                redactedItems: 0
+            ),
+            retrievalStage: "stage2_explicit_ref_read",
+            explicitRefs: [ref]
+        )
+
+        #expect(block?.contains("retrieval_stage=stage2_explicit_ref_read") == true)
+        #expect(block?.contains("explicit_refs=\(ref)") == true)
+        #expect(block?.contains("summary_insufficient=true") == false)
     }
 
     @Test
@@ -177,6 +214,7 @@ struct ChatSessionModelRecentContextTests {
         #expect(block.contains("[pending_supervisor_guidance]"))
         #expect(block.contains("injection_id: guidance-project-memory-1"))
         #expect(block.contains("ack_status: pending"))
+        #expect(block.contains("lifecycle: active"))
         #expect(block.contains("guidance_text:"))
         #expect(block.contains("先重新对齐 done definition，再开始重构。"))
     }
@@ -267,12 +305,108 @@ struct ChatSessionModelRecentContextTests {
                 ],
                 final: nil,
                 guidance_ack: nil
-            )
+            ),
+            visiblePendingGuidanceInjectionId: "guidance-ack-auto-1"
         )
 
         let updated = try #require(SupervisorGuidanceInjectionStore.latest(for: ctx))
         #expect(updated.ackStatus == .accepted)
         #expect(updated.ackNote == "auto_accepted_from_executable_result")
+    }
+
+    @Test
+    func executableEnvelopeDoesNotAutoAcceptGuidanceBeforeSafePointVisibility() throws {
+        let session = ChatSessionModel()
+        let root = try makeProjectRoot(named: "project-guidance-ack-not-visible")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-ack-not-visible-1",
+                reviewId: "review-ack-not-visible-1",
+                projectId: "proj-ack-not-visible-1",
+                targetRole: .coder,
+                deliveryMode: .replanRequest,
+                interventionMode: .replanNextSafePoint,
+                safePointPolicy: .nextStepBoundary,
+                guidanceText: "下一 planning step 再切到 replan。",
+                ackStatus: .pending,
+                ackRequired: true,
+                ackNote: "",
+                injectedAtMs: 1_773_382_100_000,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-guidance-ack-not-visible-1"
+            ),
+            for: ctx
+        )
+
+        session.applySupervisorGuidanceAckForTesting(
+            ctx: ctx,
+            envelope: ToolActionEnvelope(
+                tool_calls: [
+                    ToolCall(
+                        id: "read-current-state",
+                        tool: .read_file,
+                        args: ["path": .string("README.md")]
+                    )
+                ],
+                final: nil,
+                guidance_ack: nil
+            ),
+            visiblePendingGuidanceInjectionId: nil
+        )
+
+        let updated = try #require(SupervisorGuidanceInjectionStore.latest(for: ctx))
+        #expect(updated.ackStatus == .pending)
+        #expect(updated.ackNote.isEmpty)
+    }
+
+    @Test
+    func immediateGuidancePausesToolExecutionUntilPromptHasSeenIt() throws {
+        let session = ChatSessionModel()
+        let root = try makeProjectRoot(named: "project-guidance-immediate-pause")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-immediate-pause-1",
+                reviewId: "review-immediate-pause-1",
+                projectId: "proj-immediate-pause-1",
+                targetRole: .coder,
+                deliveryMode: .stopSignal,
+                interventionMode: .stopImmediately,
+                safePointPolicy: .immediate,
+                guidanceText: "立刻停下，先重看方案。",
+                ackStatus: .pending,
+                ackRequired: true,
+                ackNote: "",
+                injectedAtMs: 1_773_382_200_000,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-guidance-immediate-pause-1"
+            ),
+            for: ctx
+        )
+
+        let unseenPause = session.pendingSupervisorGuidancePauseBeforeToolExecutionForTesting(
+            ctx: ctx,
+            runStartedAtMs: 1_773_382_100_000,
+            step: 1,
+            toolResultsCount: 0
+        )
+        let seenPause = session.pendingSupervisorGuidancePauseBeforeToolExecutionForTesting(
+            ctx: ctx,
+            runStartedAtMs: 1_773_382_100_000,
+            step: 1,
+            toolResultsCount: 0,
+            lastPromptVisibleGuidanceInjectionId: "guidance-immediate-pause-1"
+        )
+
+        #expect(unseenPause == "guidance-immediate-pause-1")
+        #expect(seenPause == nil)
     }
 
     @Test
@@ -306,6 +440,7 @@ struct ChatSessionModelRecentContextTests {
         let status = session.handleSlashGuidanceForTesting(args: [], ctx: ctx)
         #expect(status.contains("pending guidance:"))
         #expect(status.contains("guidance-slash-1"))
+        #expect(status.contains("lifecycle: active"))
 
         let accept = session.handleSlashGuidanceForTesting(
             args: ["accept", "manual", "operator", "ok"],
@@ -356,6 +491,7 @@ struct ChatSessionModelRecentContextTests {
         #expect(block.contains("[latest_supervisor_guidance]"))
         #expect(block.contains("ack_status: rejected"))
         #expect(block.contains("ack_note: Need extra evidence before moving the migration boundary."))
+        #expect(block.contains("lifecycle: settled"))
     }
 
     @Test

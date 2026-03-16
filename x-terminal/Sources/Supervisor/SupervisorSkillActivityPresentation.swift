@@ -8,6 +8,7 @@ struct SupervisorSkillFullRecord: Identifiable, Equatable, Sendable {
     var latestStatusLabel: String
     var requestMetadata: [ProjectSkillRecordField]
     var approvalFields: [ProjectSkillRecordField]
+    var governanceFields: [ProjectSkillRecordField]
     var skillPayloadText: String?
     var toolArgumentsText: String?
     var resultFields: [ProjectSkillRecordField]
@@ -31,7 +32,9 @@ enum SupervisorSkillActivityPresentation {
         case "blocked":
             return "Supervisor skill blocked"
         case "awaiting_authorization":
-            return item.requiredCapability.isEmpty ? "Supervisor approval required" : "Hub grant required"
+            return item.requiredCapability.isEmpty
+                ? "Supervisor approval required"
+                : "Hub grant required · \(humanCapabilityLabel(item.requiredCapability))"
         case "running":
             return "Supervisor skill running"
         case "queued":
@@ -93,6 +96,69 @@ enum SupervisorSkillActivityPresentation {
         displayToolName(item.toolName, tool: item.tool)
     }
 
+    static func actionButtonTitle(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String {
+        switch normalizedStatus(item.status) {
+        case "awaiting_authorization":
+            return item.requiredCapability.isEmpty ? "Open Approval" : "Open Grant"
+        default:
+            return "Open Project"
+        }
+    }
+
+    static func workflowLine(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String? {
+        let fields = [
+            compactWorkflowToken(label: "job", value: item.record.jobId),
+            compactWorkflowToken(label: "plan", value: item.record.planId),
+            compactWorkflowToken(label: "step", value: item.record.stepId)
+        ].compactMap { $0 }
+        guard !fields.isEmpty else { return nil }
+        return "workflow: " + fields.joined(separator: " · ")
+    }
+
+    static func governanceLine(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String? {
+        guard let governance = item.governance else { return nil }
+        var parts: [String] = []
+        if let verdict = governance.latestReviewVerdict?.displayName {
+            parts.append(verdict)
+        }
+        if let level = governance.latestReviewLevel?.displayName {
+            parts.append(level)
+        }
+        if let tier = governance.effectiveSupervisorTier?.displayName {
+            parts.append(tier)
+        }
+        if let depth = governance.effectiveWorkOrderDepth?.displayName {
+            parts.append(depth)
+        }
+        let workOrderRef = nonEmpty(governance.workOrderRef)
+        if let workOrderRef {
+            parts.append("work_order=\(workOrderRef)")
+        }
+        guard !parts.isEmpty else { return nil }
+        return "governance: " + parts.joined(separator: " · ")
+    }
+
+    static func followUpRhythmLine(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String? {
+        guard let governance = item.governance else { return nil }
+        guard let summary = nonEmpty(governance.followUpRhythmSummary) else { return nil }
+        return "follow-up: \(summary)"
+    }
+
+    static func pendingGuidanceLine(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String? {
+        guard let governance = item.governance else { return nil }
+        guard let ackStatus = governance.pendingGuidanceAckStatus else { return nil }
+        var parts = ["guidance: \(ackStatus.displayName)"]
+        parts.append(governance.pendingGuidanceRequired ? "required" : "optional")
+        if let latestDelivery = governance.latestGuidanceDeliveryMode?.displayName {
+            parts.append(latestDelivery)
+        }
+        let guidanceId = nonEmpty(governance.pendingGuidanceId) ?? nonEmpty(governance.latestGuidanceId)
+        if let guidanceId {
+            parts.append("id=\(guidanceId)")
+        }
+        return parts.joined(separator: " · ")
+    }
+
     static func body(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String {
         let skillLabel = item.skillId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? "This supervisor skill"
@@ -112,17 +178,12 @@ enum SupervisorSkillActivityPresentation {
                 ? "\(skillLabel) is running via \(toolLabel)."
                 : "\(skillLabel) is running via \(toolLabel) on \(target)."
         case "awaiting_authorization":
-            if !item.resultSummary.isEmpty {
-                return item.resultSummary
-            }
-            if !item.requiredCapability.isEmpty {
-                return target.isEmpty
-                    ? "\(skillLabel) is waiting for Hub grant approval to run \(toolLabel)."
-                    : "\(skillLabel) is waiting for Hub grant approval to run \(toolLabel) on \(target)."
-            }
-            return target.isEmpty
-                ? "\(skillLabel) is waiting for local approval to run \(toolLabel)."
-                : "\(skillLabel) is waiting for local approval to run \(toolLabel) on \(target)."
+            return XTGuardrailMessagePresentation.awaitingApprovalBody(
+                toolLabel: toolLabel,
+                target: target,
+                requiredCapability: item.requiredCapability,
+                denyCode: item.denyCode
+            )
         case "completed":
             if !item.resultSummary.isEmpty { return item.resultSummary }
             return "\(skillLabel) completed via \(toolLabel)."
@@ -130,11 +191,13 @@ enum SupervisorSkillActivityPresentation {
             if !item.resultSummary.isEmpty { return item.resultSummary }
             return "\(skillLabel) failed while running \(toolLabel)."
         case "blocked":
-            if !item.resultSummary.isEmpty { return item.resultSummary }
-            if !item.denyCode.isEmpty {
-                return "\(skillLabel) was blocked before \(toolLabel) could continue (\(item.denyCode))."
-            }
-            return "\(skillLabel) was blocked before \(toolLabel) could continue."
+            return XTGuardrailMessagePresentation.blockedBody(
+                tool: item.tool,
+                toolLabel: toolLabel,
+                denyCode: item.denyCode,
+                requiredCapability: item.requiredCapability,
+                fallbackSummary: item.resultSummary
+            )
         case "canceled":
             if !item.resultSummary.isEmpty { return item.resultSummary }
             return "\(skillLabel) was canceled."
@@ -196,6 +259,22 @@ enum SupervisorSkillActivityPresentation {
         })
         let evidence = SupervisorSkillResultEvidenceStore.load(requestId: requestID, for: ctx)
         let events = loadEvents(ctx: ctx, requestID: requestID)
+        let latestReview = SupervisorReviewNoteStore.latest(for: ctx)
+        let latestGuidance = SupervisorGuidanceInjectionStore.latest(for: ctx)
+        let pendingGuidance = SupervisorGuidanceInjectionStore.latestPendingAck(for: ctx)
+        let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: ctx.root)
+        let adaptationPolicy = AXProjectSupervisorAdaptationPolicy.default
+        let strengthProfile = AXProjectAIStrengthAssessor.assess(
+            ctx: ctx,
+            adaptationPolicy: adaptationPolicy
+        )
+        let resolvedGovernance = xtResolveProjectGovernance(
+            projectRoot: ctx.root,
+            config: config,
+            projectAIStrengthProfile: strengthProfile,
+            adaptationPolicy: adaptationPolicy,
+            permissionReadiness: .current()
+        )
 
         guard record != nil || evidence != nil || !events.isEmpty else {
             return nil
@@ -239,6 +318,35 @@ enum SupervisorSkillActivityPresentation {
             ("trigger_source", firstNonEmpty(evidence?.triggerSource, events.last?.triggerSource))
         ])
 
+        let governanceFields = recordFields([
+            ("latest_review_id", latestReview?.reviewId),
+            ("review_verdict", latestReview?.verdict.displayName),
+            ("review_level", latestReview?.reviewLevel.displayName),
+            (
+                "supervisor_tier",
+                latestReview?.effectiveSupervisorTier?.displayName
+                    ?? pendingGuidance?.effectiveSupervisorTier?.displayName
+                    ?? latestGuidance?.effectiveSupervisorTier?.displayName
+            ),
+            (
+                "work_order_depth",
+                latestReview?.effectiveWorkOrderDepth?.displayName
+                    ?? pendingGuidance?.effectiveWorkOrderDepth?.displayName
+                    ?? latestGuidance?.effectiveWorkOrderDepth?.displayName
+            ),
+            ("work_order_ref", firstNonEmpty(latestReview?.workOrderRef, pendingGuidance?.workOrderRef, latestGuidance?.workOrderRef)),
+            ("latest_guidance_id", latestGuidance?.injectionId),
+            ("latest_guidance_delivery", latestGuidance?.deliveryMode.displayName),
+            ("pending_guidance_id", pendingGuidance?.injectionId),
+            (
+                "pending_guidance_ack",
+                pendingGuidance.map {
+                    "\($0.ackStatus.displayName) · \($0.ackRequired ? "required" : "optional")"
+                }
+            ),
+            ("follow_up_rhythm", SupervisorReviewPolicyEngine.eventFollowUpCadenceLabel(governance: resolvedGovernance))
+        ])
+
         let resultFields = recordFields([
             ("result_status", firstNonEmpty(evidence?.status, record?.status.rawValue, events.last?.status)),
             ("result_summary", firstNonEmpty(evidence?.resultSummary, record?.resultSummary, events.last?.resultSummary)),
@@ -267,6 +375,7 @@ enum SupervisorSkillActivityPresentation {
             latestStatusLabel: statusLabel(for: latestStatus),
             requestMetadata: requestMetadata,
             approvalFields: approvalFields,
+            governanceFields: governanceFields,
             skillPayloadText: skillPayloadText,
             toolArgumentsText: toolArgumentsText,
             resultFields: resultFields,
@@ -292,6 +401,7 @@ enum SupervisorSkillActivityPresentation {
 
         appendRecordSection("Request Metadata", fields: record.requestMetadata, into: &lines)
         appendRecordSection("Approval Status", fields: record.approvalFields, into: &lines)
+        appendRecordSection("Governance Context", fields: record.governanceFields, into: &lines)
 
         if let payload = nonEmpty(record.skillPayloadText) {
             lines.append("")
@@ -377,6 +487,11 @@ enum SupervisorSkillActivityPresentation {
         var timestampMs: Int64
         var rawObject: [String: JSONValue]
         var lineIndex: Int
+    }
+
+    private static func compactWorkflowToken(label: String, value: String?) -> String? {
+        guard let value = nonEmpty(value) else { return nil }
+        return "\(label)=\(value)"
     }
 
     private static func loadEvents(
@@ -474,7 +589,11 @@ enum SupervisorSkillActivityPresentation {
         switch normalizedStatus(event.status) {
         case "awaiting_authorization":
             if !event.requiredCapability.isEmpty {
-                return "Waiting for Hub grant approval"
+                return XTHubGrantPresentation.awaitingStateSummary(
+                    capability: event.requiredCapability,
+                    modelId: "",
+                    grantRequestId: event.grantRequestId
+                )
             }
             return "Waiting for local approval"
         case "queued":
@@ -628,8 +747,30 @@ enum SupervisorSkillActivityPresentation {
             return "read file"
         case .write_file:
             return "write file"
+        case .delete_path:
+            return "delete path"
+        case .move_path:
+            return "move path"
         case .run_command:
             return "run command"
+        case .process_start:
+            return "start process"
+        case .process_status:
+            return "process status"
+        case .process_logs:
+            return "process logs"
+        case .process_stop:
+            return "stop process"
+        case .git_commit:
+            return "git commit"
+        case .git_push:
+            return "git push"
+        case .pr_create:
+            return "create pull request"
+        case .ci_read:
+            return "read ci"
+        case .ci_trigger:
+            return "trigger ci"
         case .search:
             return "search"
         case .skills_search:
@@ -649,6 +790,13 @@ enum SupervisorSkillActivityPresentation {
         default:
             return resolvedTool.rawValue.replacingOccurrences(of: "_", with: " ")
         }
+    }
+
+    private static func humanCapabilityLabel(_ capability: String) -> String {
+        XTHubGrantPresentation.capabilityLabel(
+            capability: capability,
+            modelId: ""
+        )
     }
 
     private static func encodedJSONText<T: Encodable>(

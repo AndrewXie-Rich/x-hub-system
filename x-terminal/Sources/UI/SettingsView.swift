@@ -219,22 +219,36 @@ enum XTSettingsSurfacePlanner {
 
 struct SettingsView: View {
     @EnvironmentObject private var appModel: AppModel
+    @State private var activeFocusRequest: XTSettingsFocusRequest?
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: UIThemeTokens.sectionSpacing) {
-                headerSection
-                ValidatedScopeBadge(presentation: ValidatedScopePresentation.validatedMainlineOnly)
-                StatusExplanationCard(explanation: settingsStatus)
-                PrimaryActionRail(title: "快速动作", actions: quickActions, onTap: handleAction)
-                settingsCenterOverview
-                pairHubSection
-                chooseModelSection
-                grantAndRepairSection
-                securityRuntimeSection
-                diagnosticsSection
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: UIThemeTokens.sectionSpacing) {
+                    headerSection
+                    ValidatedScopeBadge(presentation: ValidatedScopePresentation.validatedMainlineOnly)
+                    StatusExplanationCard(explanation: settingsStatus)
+                    PrimaryActionRail(title: "快速动作", actions: quickActions, onTap: handleAction)
+                    settingsCenterOverview
+                    pairHubSection
+                        .id("pair_hub")
+                    chooseModelSection
+                        .id("choose_model")
+                    grantAndRepairSection
+                        .id("grant_permissions")
+                    securityRuntimeSection
+                        .id("security_runtime")
+                    diagnosticsSection
+                        .id("diagnostics")
+                }
+                .padding(16)
             }
-            .padding(16)
+            .onAppear {
+                processSettingsFocusRequest(proxy)
+            }
+            .onChange(of: appModel.settingsFocusRequest?.nonce) { _ in
+                processSettingsFocusRequest(proxy)
+            }
         }
         .frame(minWidth: 820, idealWidth: 860, minHeight: 760)
     }
@@ -331,6 +345,9 @@ struct SettingsView: View {
     private var chooseModelSection: some View {
         GroupBox("2) Choose Model") {
             VStack(alignment: .leading, spacing: 10) {
+                if let context = focusContext(for: "choose_model") {
+                    XTFocusContextCard(context: context)
+                }
                 Text("所有角色仍经由 Hub 路由，但这里先保证首个任务所需角色已经选到模型。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -417,6 +434,9 @@ struct SettingsView: View {
     private var diagnosticsSection: some View {
         GroupBox("5) Diagnostics & Verify") {
             VStack(alignment: .leading, spacing: 10) {
+                if let context = focusContext(for: "diagnostics") {
+                    XTFocusContextCard(context: context)
+                }
                 HStack {
                     Text("Current route")
                     Spacer()
@@ -437,6 +457,20 @@ struct SettingsView: View {
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
                         ForEach(XTSettingsSurfacePlanner.diagnosticsLines(for: settingsState), id: \.self) { line in
+                            Text("• \(line)")
+                                .font(UIThemeTokens.monoFont())
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
+
+                if !routeRepairLogLines.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Recent route repair log")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        ForEach(routeRepairLogLines, id: \.self) { line in
                             Text("• \(line)")
                                 .font(UIThemeTokens.monoFont())
                                 .foregroundStyle(.secondary)
@@ -496,6 +530,11 @@ struct SettingsView: View {
             directedUnblockBatons: orchestrator.executionMonitor.directedUnblockBatons,
             replayReport: orchestrator.latestReplayHarnessReport
         )
+    }
+
+    private var routeRepairLogLines: [String] {
+        guard let ctx = appModel.projectContext else { return [] }
+        return AXRouteRepairLogStore.summaryLines(for: ctx, limit: 5)
     }
 
     private func handleAction(_ action: PrimaryActionRailAction) {
@@ -598,6 +637,29 @@ struct SettingsView: View {
         if appModel.hubRemoteLinking { return UIThemeTokens.color(for: .inProgress) }
         if appModel.hubRemoteConnected { return UIThemeTokens.color(for: .inProgress) }
         return UIThemeTokens.color(for: .permissionDenied)
+    }
+
+    private func processSettingsFocusRequest(_ proxy: ScrollViewProxy) {
+        guard let request = appModel.settingsFocusRequest else { return }
+        activeFocusRequest = request
+        withAnimation(.easeInOut(duration: 0.2)) {
+            proxy.scrollTo(request.sectionId, anchor: .top)
+        }
+        appModel.clearSettingsFocusRequest(request)
+        scheduleFocusContextClear(nonce: request.nonce)
+    }
+
+    private func focusContext(for sectionId: String) -> XTSectionFocusContext? {
+        guard activeFocusRequest?.sectionId == sectionId else { return nil }
+        return activeFocusRequest?.context
+    }
+
+    private func scheduleFocusContextClear(nonce: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12) {
+            if activeFocusRequest?.nonce == nonce {
+                activeFocusRequest = nil
+            }
+        }
     }
 }
 

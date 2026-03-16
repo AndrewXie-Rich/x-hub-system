@@ -164,6 +164,85 @@ struct SupervisorMultilaneFlowTests {
 
     @MainActor
     @Test
+    func laneAllocatorPrefersGovernanceTiersOverLegacyAutonomyShadow() throws {
+        let governancePreferredProject = ProjectModel(
+            name: "GovernancePreferred",
+            taskDescription: "Critical lanes",
+            modelName: "claude-sonnet-4.6",
+            autonomyLevel: .manual,
+            executionTier: .a4OpenClaw,
+            supervisorInterventionTier: .s3StrategicCoach,
+            budget: Budget(daily: 25, monthly: 750)
+        )
+        governancePreferredProject.autonomyLevel = .manual
+        governancePreferredProject.currentModel = ModelInfo(
+            id: "governance-preferred",
+            name: "governance-preferred",
+            displayName: "governance-preferred",
+            type: .hubPaid,
+            capability: .advanced,
+            speed: .medium,
+            costPerMillionTokens: 3.0,
+            memorySize: nil,
+            suitableFor: ["critical"],
+            badge: nil,
+            badgeColor: nil
+        )
+
+        let misleadingLegacyProject = ProjectModel(
+            name: "LegacyShadowOnly",
+            taskDescription: "Critical lanes",
+            modelName: "claude-sonnet-4.6",
+            autonomyLevel: .fullAuto,
+            executionTier: .a1Plan,
+            supervisorInterventionTier: .s1MilestoneReview,
+            budget: Budget(daily: 25, monthly: 750)
+        )
+        misleadingLegacyProject.autonomyLevel = .fullAuto
+        misleadingLegacyProject.currentModel = governancePreferredProject.currentModel
+
+        let laneTask = DecomposedTask(
+            description: "Handle privileged rollout",
+            type: .deployment,
+            complexity: .complex,
+            estimatedEffort: 7_200,
+            priority: 9
+        )
+        let lanePlan = SupervisorLanePlan(
+            laneID: "lane-governance-preferred",
+            goal: laneTask.description,
+            dependsOn: [],
+            riskTier: .high,
+            budgetClass: .premium,
+            createChildProject: false,
+            expectedArtifacts: ["release_plan"],
+            dodChecklist: ["rollback_ready"],
+            source: .inferred,
+            metadata: [:],
+            task: laneTask
+        )
+        let lane = MaterializedLane(
+            plan: lanePlan,
+            mode: .softSplit,
+            task: laneTask,
+            targetProject: nil,
+            lineageOperations: [],
+            decisionReasons: ["test"],
+            explain: "test lane"
+        )
+
+        let allocator = LaneAllocator()
+        let result = allocator.allocate(
+            lanes: [lane],
+            projects: [misleadingLegacyProject, governancePreferredProject]
+        )
+
+        let assignment = try #require(result.assignments.first)
+        #expect(assignment.project.id == governancePreferredProject.id)
+    }
+
+    @MainActor
+    @Test
     func laneAllocatorSkillProfileRejectsUnreliableHighRiskLane() throws {
         let unstableProject = ProjectModel(
             name: "Unstable",
@@ -268,6 +347,8 @@ struct SupervisorMultilaneFlowTests {
         let childProject = try #require(lane.targetProject)
         #expect(childProject.currentModel.capability.rawValue >= ModelCapability.advanced.rawValue)
         #expect(childProject.autonomyLevel.rawValue >= AutonomyLevel.semiAuto.rawValue)
+        #expect(childProject.executionTier == .a3DeliverAuto)
+        #expect(childProject.supervisorInterventionTier == .s3StrategicCoach)
 
         let allocator = LaneAllocator()
         let allocation = allocator.allocate(lanes: [lane], projects: [rootProject, childProject])
@@ -275,6 +356,27 @@ struct SupervisorMultilaneFlowTests {
 
         let assignment = try #require(allocation.assignments.first)
         #expect(assignment.project.id == childProject.id)
+    }
+
+    @MainActor
+    @Test
+    func supervisorOrchestratorTreatsA4ProjectAsExclusiveEvenIfLegacyAutonomyShadowIsManual() {
+        let supervisor = SupervisorModel()
+        let orchestrator = supervisor.orchestrator!
+        let project = ProjectModel(
+            name: "Exclusive A4",
+            taskDescription: "write docs",
+            modelName: "claude-sonnet-4.6",
+            autonomyLevel: .manual,
+            executionTier: .a4OpenClaw,
+            supervisorInterventionTier: .s3StrategicCoach
+        )
+        project.autonomyLevel = .manual
+
+        let plan = orchestrator.allocateResources([project])
+
+        #expect(plan.exclusiveProjects.count == 1)
+        #expect(plan.parallelProjects.isEmpty)
     }
 
     @MainActor

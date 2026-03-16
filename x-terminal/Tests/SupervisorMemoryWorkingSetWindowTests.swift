@@ -2,6 +2,28 @@ import Foundation
 import Testing
 @testable import XTerminal
 
+struct SupervisorMemoryRouteAttempt: Sendable {
+    var reviewLevelHint: String?
+    var servingProfile: String
+}
+
+actor SupervisorMemoryRouteRecorder {
+    private var attempts: [SupervisorMemoryRouteAttempt] = []
+
+    func record(reviewLevelHint: String?, servingProfile: String) {
+        attempts.append(
+            SupervisorMemoryRouteAttempt(
+                reviewLevelHint: reviewLevelHint,
+                servingProfile: servingProfile
+            )
+        )
+    }
+
+    func snapshot() -> [SupervisorMemoryRouteAttempt] {
+        attempts
+    }
+}
+
 @Suite(.serialized)
 @MainActor
 struct SupervisorMemoryWorkingSetWindowTests {
@@ -72,16 +94,48 @@ struct SupervisorMemoryWorkingSetWindowTests {
         let localMemory = await manager.buildSupervisorLocalMemoryV1ForTesting("看另一个项目的结构化摘要")
 
         #expect(localMemory.contains("[cross_project_drilldown]"))
+        #expect(localMemory.contains("view=drilldown"))
         #expect(localMemory.contains("mode=explicit_structured_drilldown"))
         #expect(localMemory.contains("reason=cross_project_review"))
         #expect(localMemory.contains("project=Cross Project (p-cross)"))
+        #expect(localMemory.contains("refs_count="))
         #expect(localMemory.contains("spec_goal=Let supervisor inspect another project without full chat history"))
         #expect(localMemory.contains("scope_safe_refs:"))
         #expect(!localMemory.contains("raw_log.jsonl"))
     }
 
     @Test
-    func reviewProfileExpandsSupervisorConversationWindowBeyondDefaultEightTurns() async {
+    func reviewProfileExpandsFocusedStrategicConversationWindowToDeepDive() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-review-window-m3")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+        manager.messages = makeConversation(turns: 14)
+
+        let localMemory = await manager.buildSupervisorLocalMemoryV1ForTesting(
+            "审查当前项目的上下文记忆，给出最具体的执行方案"
+        )
+        let lines = Set(localMemory.split(separator: "\n").map(String.init))
+
+        #expect(lines.contains("user: user-turn-1"))
+        #expect(lines.contains("user: user-turn-2"))
+        #expect(lines.contains("user: user-turn-3"))
+        #expect(lines.contains("assistant: assistant-turn-3"))
+        #expect(lines.contains("system: system-turn-14"))
+        #expect(localMemory.contains("[SERVING_GOVERNOR]"))
+        #expect(localMemory.contains("review_level_hint: r2_strategic"))
+        #expect(localMemory.contains("profile_floor: m3_deep_dive"))
+        #expect(localMemory.contains("minimum_pack: portfolio_brief, focused_project_anchor_pack, longterm_outline, delta_feed, conflict_set, context_refs, evidence_pack"))
+        #expect(localMemory.contains("[SERVING_PROFILE]"))
+        #expect(localMemory.contains("profile_id: m3_deep_dive"))
+    }
+
+    @Test
+    func strategicReviewWithoutFocusedProjectStaysAtPlanReviewWindow() async {
         let manager = SupervisorManager.makeForTesting()
         manager.messages = makeConversation(turns: 14)
 
@@ -90,10 +144,403 @@ struct SupervisorMemoryWorkingSetWindowTests {
         )
         let lines = Set(localMemory.split(separator: "\n").map(String.init))
 
+        #expect(!lines.contains("user: user-turn-1"))
         #expect(!lines.contains("user: user-turn-2"))
         #expect(lines.contains("user: user-turn-3"))
         #expect(lines.contains("assistant: assistant-turn-3"))
         #expect(lines.contains("system: system-turn-14"))
+        #expect(localMemory.contains("[SERVING_GOVERNOR]"))
+        #expect(localMemory.contains("review_level_hint: r2_strategic"))
+        #expect(localMemory.contains("profile_floor: m2_plan_review"))
+        #expect(localMemory.contains("minimum_pack: portfolio_brief, focused_project_anchor_pack, longterm_outline, delta_feed, conflict_set, context_refs"))
+        #expect(!localMemory.contains("minimum_pack: portfolio_brief, focused_project_anchor_pack, longterm_outline, delta_feed, conflict_set, context_refs, evidence_pack"))
+        #expect(localMemory.contains("[SERVING_PROFILE]"))
+        #expect(localMemory.contains("profile_id: m2_plan_review"))
+    }
+
+    @Test
+    func supervisorRemoteMemoryRequestCarriesReviewLevelHintAndProfileFloor() async throws {
+        let recorder = SupervisorMemoryRouteRecorder()
+        HubIPCClient.installMemoryContextResolutionOverrideForTesting { route, mode, _ in
+            await recorder.record(
+                reviewLevelHint: route.payload.reviewLevelHint,
+                servingProfile: route.servingProfile.rawValue
+            )
+            return HubIPCClient.MemoryContextResolutionResult(
+                response: HubIPCClient.MemoryContextResponsePayload(
+                    text: "[MEMORY_V1]\n[/MEMORY_V1]",
+                    source: "test_override",
+                    resolvedMode: mode.rawValue,
+                    resolvedProfile: route.servingProfile.rawValue,
+                    budgetTotalTokens: 1_800,
+                    usedTotalTokens: route.servingProfile == .m1Execute ? 1_560 : 820,
+                    layerUsage: [],
+                    truncatedLayers: route.servingProfile == .m1Execute ? ["l1_canonical"] : [],
+                    redactedItems: 0,
+                    privateDrops: 0
+                ),
+                source: "test_override",
+                resolvedMode: mode,
+                requestedProfile: route.servingProfile.rawValue,
+                attemptedProfiles: [route.servingProfile.rawValue],
+                freshness: "fresh_local_ipc",
+                cacheHit: false,
+                denyCode: nil,
+                downgradeCode: nil,
+                reasonCode: nil
+            )
+        }
+        defer { HubIPCClient.resetMemoryContextResolutionOverrideForTesting() }
+
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-remote-memory-m3")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+        _ = await manager.buildSupervisorMemoryV1ForTesting(
+            "审查当前项目的上下文记忆，给出最具体的执行方案"
+        )
+
+        let snapshot = await recorder.snapshot()
+        let strategicAttempt = snapshot.last {
+            $0.reviewLevelHint == SupervisorReviewLevel.r2Strategic.rawValue
+        }
+        #expect(strategicAttempt?.servingProfile == XTMemoryServingProfile.m3DeepDive.rawValue)
+    }
+
+    @Test
+    func supervisorRemoteStrategicMemoryWithoutFocusedProjectStaysAtM2() async throws {
+        let recorder = SupervisorMemoryRouteRecorder()
+        HubIPCClient.installMemoryContextResolutionOverrideForTesting { route, mode, _ in
+            await recorder.record(
+                reviewLevelHint: route.payload.reviewLevelHint,
+                servingProfile: route.servingProfile.rawValue
+            )
+            return HubIPCClient.MemoryContextResolutionResult(
+                response: HubIPCClient.MemoryContextResponsePayload(
+                    text: "[MEMORY_V1]\n[/MEMORY_V1]",
+                    source: "test_override",
+                    resolvedMode: mode.rawValue,
+                    resolvedProfile: route.servingProfile.rawValue,
+                    budgetTotalTokens: 1_800,
+                    usedTotalTokens: 820,
+                    layerUsage: [],
+                    truncatedLayers: [],
+                    redactedItems: 0,
+                    privateDrops: 0
+                ),
+                source: "test_override",
+                resolvedMode: mode,
+                requestedProfile: route.servingProfile.rawValue,
+                attemptedProfiles: [route.servingProfile.rawValue],
+                freshness: "fresh_local_ipc",
+                cacheHit: false,
+                denyCode: nil,
+                downgradeCode: nil,
+                reasonCode: nil
+            )
+        }
+        defer { HubIPCClient.resetMemoryContextResolutionOverrideForTesting() }
+
+        let manager = SupervisorManager.makeForTesting()
+        let rootA = try makeProjectRoot(named: "supervisor-remote-memory-unfocused-a")
+        let rootB = try makeProjectRoot(named: "supervisor-remote-memory-unfocused-b")
+        defer {
+            try? FileManager.default.removeItem(at: rootA)
+            try? FileManager.default.removeItem(at: rootB)
+        }
+        let projectA = makeProjectEntry(root: rootA, displayName: "项目 A")
+        let projectB = makeProjectEntry(root: rootB, displayName: "项目 B")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [projectA, projectB])
+        appModel.selectedProjectId = AXProjectRegistry.globalHomeId
+        manager.setAppModel(appModel)
+        _ = await manager.buildSupervisorMemoryV1ForTesting(
+            "审查当前项目的上下文记忆，给出最具体的执行方案"
+        )
+
+        let snapshot = await recorder.snapshot()
+        let strategicAttempt = snapshot.last {
+            $0.reviewLevelHint == SupervisorReviewLevel.r2Strategic.rawValue
+        }
+        #expect(strategicAttempt?.servingProfile == XTMemoryServingProfile.m2PlanReview.rawValue)
+    }
+
+    @Test
+    func focusedStrategicReviewDefaultsToM3AndExpandsLineageAndEvidence() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-strategic-m3")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var project = makeProjectEntry(root: root, displayName: "亮亮")
+        project.currentStateSummary = "主链在推进，但要防止策略跑偏"
+        project.nextStepSummary = "先完成验证，再决定是否改路"
+        project.blockerSummary = "release gate 还没绿"
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let ctx = AXProjectContext(root: root)
+        try SupervisorProjectSpecCapsuleStore.save(
+            SupervisorProjectSpecCapsuleBuilder.build(
+                projectId: project.projectId,
+                goal: "稳定推进主链并保住既定战略边界",
+                mvpDefinition: "通过 release gate 后再决定是否改路",
+                nonGoals: ["不要在验证完成前扩大 scope"],
+                approvedTechStack: ["Swift", "Hub memory", "governed channels"],
+                milestoneMap: [
+                    SupervisorProjectSpecMilestone(
+                        milestoneId: "m1",
+                        title: "先完成 release 验证",
+                        status: .active
+                    ),
+                    SupervisorProjectSpecMilestone(
+                        milestoneId: "m2",
+                        title: "验证后再决定是否切换路径",
+                        status: .planned
+                    )
+                ],
+                sourceRefs: ["spec://proj-liang"]
+            ),
+            for: ctx
+        )
+
+        _ = try SupervisorDecisionTrackStore.upsert(
+            SupervisorDecisionTrackBuilder.build(
+                decisionId: "decision-scope-freeze",
+                projectId: project.projectId,
+                category: .scopeFreeze,
+                status: .approved,
+                statement: "在 release gate 通过前，不允许提前切换到新战略路径。",
+                source: "user_confirmed_strategy",
+                reversible: true,
+                approvalRequired: false,
+                auditRef: "audit-decision-scope-freeze",
+                evidenceRefs: ["decision://scope-freeze"],
+                createdAtMs: 1_773_800_000_000
+            ),
+            for: ctx
+        )
+        _ = try SupervisorDecisionTrackStore.upsert(
+            SupervisorDecisionTrackBuilder.build(
+                decisionId: "decision-risk-posture",
+                projectId: project.projectId,
+                category: .riskPosture,
+                status: .approved,
+                statement: "当前阶段优先稳态验证，不接受高波动战略切换。",
+                source: "strategic_review",
+                reversible: true,
+                approvalRequired: false,
+                auditRef: "audit-decision-risk-posture",
+                evidenceRefs: ["decision://risk-posture"],
+                createdAtMs: 1_773_800_100_000
+            ),
+            for: ctx
+        )
+
+        AXRecentContextStore.appendUserMessage(
+            ctx: ctx,
+            text: "先别急着换路线，先把 release gate 跑绿。",
+            createdAt: Date(timeIntervalSince1970: 1_773_800_200).timeIntervalSince1970
+        )
+        AXRecentContextStore.appendAssistantMessage(
+            ctx: ctx,
+            text: "收到，当前 blocker 是 release gate 还没绿。",
+            createdAt: Date(timeIntervalSince1970: 1_773_800_201).timeIntervalSince1970
+        )
+
+        let localMemory = await manager.buildSupervisorLocalMemoryV1ForTesting(
+            "审查亮亮项目的上下文记忆，给出最具体的执行方案"
+        )
+
+        #expect(localMemory.contains("profile_id: m3_deep_dive"))
+        #expect(localMemory.contains("review_level_hint: r2_strategic"))
+        #expect(localMemory.contains("profile_floor: m3_deep_dive"))
+        #expect(localMemory.contains("minimum_pack: portfolio_brief, focused_project_anchor_pack, longterm_outline, delta_feed, conflict_set, context_refs, evidence_pack"))
+        #expect(localMemory.contains("decision_lineage:"))
+        #expect(localMemory.contains("category: risk_posture"))
+        #expect(localMemory.contains("blocker_lineage:"))
+        #expect(localMemory.contains("current_blocker: release gate 还没绿"))
+        #expect(localMemory.contains("guidance_guardrail: (none)"))
+        #expect(localMemory.contains("why_included=durable_background_outline"))
+        #expect(localMemory.contains("why_included=decision_lineage_anchor"))
+        #expect(localMemory.contains("why_included=active_blocker_lineage"))
+    }
+
+    @Test
+    func focusedProjectAnchorPackIncludesLatestUIReviewSummary() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-ui-review-anchor")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let ctx = AXProjectContext(root: root)
+        let review = XTUIReviewRecord(
+            schemaVersion: XTUIReviewRecord.currentSchemaVersion,
+            reviewID: "uir-supervisor-anchor",
+            projectID: project.projectId,
+            bundleID: "bundle-supervisor-anchor",
+            bundleRef: "local://.xterminal/ui_observation/bundles/bundle-supervisor-anchor.json",
+            surfaceType: .browserPage,
+            probeDepth: .standard,
+            objective: "browser_page_actionability",
+            verdict: .attentionNeeded,
+            confidence: .medium,
+            sufficientEvidence: true,
+            objectiveReady: false,
+            interactiveTargetCount: 0,
+            criticalActionExpected: true,
+            criticalActionVisible: false,
+            issueCodes: ["critical_action_not_visible"],
+            checks: [
+                XTUIReviewCheck(
+                    code: "critical_action_not_visible",
+                    status: .warning,
+                    detail: "The page looks like a login or gated flow, but no likely primary action was detected."
+                )
+            ],
+            summary: "attention needed; confidence=medium; issues=critical_action_not_visible",
+            createdAtMs: 1_773_800_300_000,
+            auditRef: "audit-supervisor-ui-review"
+        )
+        _ = try XTUIReviewStore.writeReview(review, for: ctx)
+
+        let localMemory = await manager.buildSupervisorLocalMemoryV1ForTesting(
+            "审查亮亮项目的上下文记忆，确认当前页面是否可继续自动化"
+        )
+
+        #expect(localMemory.contains("latest_ui_review:"))
+        #expect(localMemory.contains("review_ref: local://.xterminal/ui_review/reviews/uir-supervisor-anchor.json"))
+        #expect(localMemory.contains("verdict: attention_needed"))
+        #expect(localMemory.contains("latest_ui_review=ref=local://.xterminal/ui_review/reviews/uir-supervisor-anchor.json"))
+        #expect(localMemory.contains("issues=critical_action_not_visible"))
+    }
+
+    @Test
+    func focusedStrategicAssemblySnapshotCapturesSectionsAndTruncationTelemetry() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-assembly-snapshot-m3")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        HubIPCClient.installMemoryContextResolutionOverrideForTesting { route, mode, _ in
+            HubIPCClient.MemoryContextResolutionResult(
+                response: HubIPCClient.MemoryContextResponsePayload(
+                    text: "[MEMORY_V1]\n[/MEMORY_V1]",
+                    source: "test_override",
+                    resolvedMode: mode.rawValue,
+                    requestedProfile: route.servingProfile.rawValue,
+                    resolvedProfile: route.servingProfile.rawValue,
+                    attemptedProfiles: [route.servingProfile.rawValue],
+                    progressiveUpgradeCount: 0,
+                    freshness: "fresh_local_ipc",
+                    cacheHit: false,
+                    denyCode: nil,
+                    downgradeCode: nil,
+                    budgetTotalTokens: 1_800,
+                    usedTotalTokens: 1_560,
+                    layerUsage: [],
+                    truncatedLayers: ["l1_canonical"],
+                    redactedItems: 0,
+                    privateDrops: 0
+                ),
+                source: "test_override",
+                resolvedMode: mode,
+                requestedProfile: route.servingProfile.rawValue,
+                attemptedProfiles: [route.servingProfile.rawValue],
+                freshness: "fresh_local_ipc",
+                cacheHit: false,
+                denyCode: nil,
+                downgradeCode: nil,
+                reasonCode: nil
+            )
+        }
+        defer { HubIPCClient.resetMemoryContextResolutionOverrideForTesting() }
+
+        let snapshot = await manager.buildSupervisorMemoryAssemblySnapshotForTesting(
+            "审查亮亮项目的上下文记忆，给出最具体的执行方案"
+        )
+
+        #expect(snapshot?.requestedProfile == XTMemoryServingProfile.m3DeepDive.rawValue)
+        #expect(snapshot?.profileFloor == XTMemoryServingProfile.m3DeepDive.rawValue)
+        #expect(snapshot?.resolvedProfile == XTMemoryServingProfile.m3DeepDive.rawValue)
+        #expect(snapshot?.focusedProjectId == project.projectId)
+        #expect(snapshot?.selectedSections.contains("focused_project_anchor_pack") == true)
+        #expect(snapshot?.selectedSections.contains("evidence_pack") == true)
+        #expect(snapshot?.contextRefsSelected ?? 0 > 0)
+        #expect(snapshot?.evidenceItemsSelected ?? 0 > 0)
+        #expect(snapshot?.truncatedLayers == ["l1_canonical"])
+        #expect(snapshot?.usedTotalTokens == 1_560)
+        #expect(snapshot?.budgetTotalTokens == 1_800)
+    }
+
+    @Test
+    func unfocusedStrategicAssemblySnapshotReportsM2AndOmittedDeepDiveSections() async throws {
+        let manager = SupervisorManager.makeForTesting()
+
+        HubIPCClient.installMemoryContextResolutionOverrideForTesting { route, mode, _ in
+            HubIPCClient.MemoryContextResolutionResult(
+                response: HubIPCClient.MemoryContextResponsePayload(
+                    text: "[MEMORY_V1]\n[/MEMORY_V1]",
+                    source: "test_override",
+                    resolvedMode: mode.rawValue,
+                    requestedProfile: route.servingProfile.rawValue,
+                    resolvedProfile: route.servingProfile.rawValue,
+                    attemptedProfiles: [route.servingProfile.rawValue],
+                    progressiveUpgradeCount: 0,
+                    freshness: "fresh_local_ipc",
+                    cacheHit: false,
+                    denyCode: nil,
+                    downgradeCode: nil,
+                    budgetTotalTokens: 1_800,
+                    usedTotalTokens: 820,
+                    layerUsage: [],
+                    truncatedLayers: [],
+                    redactedItems: 0,
+                    privateDrops: 0
+                ),
+                source: "test_override",
+                resolvedMode: mode,
+                requestedProfile: route.servingProfile.rawValue,
+                attemptedProfiles: [route.servingProfile.rawValue],
+                freshness: "fresh_local_ipc",
+                cacheHit: false,
+                denyCode: nil,
+                downgradeCode: nil,
+                reasonCode: nil
+            )
+        }
+        defer { HubIPCClient.resetMemoryContextResolutionOverrideForTesting() }
+
+        let snapshot = await manager.buildSupervisorMemoryAssemblySnapshotForTesting(
+            "审查当前项目的上下文记忆，给出最具体的执行方案"
+        )
+
+        #expect(snapshot?.requestedProfile == XTMemoryServingProfile.m2PlanReview.rawValue)
+        #expect(snapshot?.profileFloor == XTMemoryServingProfile.m2PlanReview.rawValue)
+        #expect(snapshot?.resolvedProfile == XTMemoryServingProfile.m2PlanReview.rawValue)
+        #expect(snapshot?.focusedProjectId == nil)
+        #expect(snapshot?.selectedSections.contains("delta_feed") == true)
+        #expect(snapshot?.omittedSections.contains("focused_project_anchor_pack") == true)
+        #expect(snapshot?.omittedSections.contains("portfolio_brief") == true)
+        #expect(snapshot?.omittedSections.contains("context_refs") == true)
+        #expect(snapshot?.omittedSections.contains("evidence_pack") == true)
+        #expect(snapshot?.evidenceItemsSelected == 0)
     }
 
     @Test

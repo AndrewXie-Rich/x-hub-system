@@ -67,7 +67,7 @@ run_case() {
     cd "${ROOT_DIR}"
     HOME="${SWIFT_CHECK_HOME}" \
     CLANG_MODULE_CACHE_PATH="${SWIFT_CLANG_CACHE}" \
-      swift test --disable-sandbox --scratch-path "${SWIFT_SCRATCH_PATH}" --filter "${filter}" >"${log_file}" 2>&1
+      swift test --disable-sandbox --skip-build --scratch-path "${SWIFT_SCRATCH_PATH}" --filter "${filter}" >"${log_file}" 2>&1
   ); then
     :
   else
@@ -93,7 +93,7 @@ if (
   cd "${ROOT_DIR}"
   HOME="${SWIFT_CHECK_HOME}" \
   CLANG_MODULE_CACHE_PATH="${SWIFT_CLANG_CACHE}" \
-    swift build --disable-sandbox --scratch-path "${SWIFT_SCRATCH_PATH}" >"${BUILD_LOG}" 2>&1
+    swift build --disable-sandbox --build-tests --scratch-path "${SWIFT_SCRATCH_PATH}" >"${BUILD_LOG}" 2>&1
 ); then
   :
 else
@@ -113,6 +113,42 @@ run_case \
   "project_settings_governance_ui" \
   "ProjectSettingsGovernanceUITests" \
   "governance UI explainability and draft warnings" \
+  ""
+
+run_case \
+  "project_governance_presentation_summary" \
+  "ProjectGovernancePresentationSummaryTests" \
+  "governance badge/home summary keeps invalid-warning-clamp messaging stable" \
+  ""
+
+run_case \
+  "project_model_capability_catalog" \
+  "XTModelCatalogTests" \
+  "model capability labels remain consistent across create/settings/detail surfaces" \
+  ""
+
+run_case \
+  "project_model_routing_picker_state" \
+  "HubModelRoutingPickerStateTests" \
+  "shared routing picker state keeps explicit vs inherited model semantics stable" \
+  ""
+
+run_case \
+  "supervisor_project_model_override_routing" \
+  "SupervisorProjectModelOverrideRoutingTests" \
+  "supervisor project override writes stay scoped to the selected project" \
+  ""
+
+run_case \
+  "project_governance_activity_presentation" \
+  "ProjectGovernanceActivityPresentationTests" \
+  "governance activity timeline summary + pending ack visibility" \
+  "guidance_without_ack_tracking"
+
+run_case \
+  "project_model_governance_binding" \
+  "ProjectModelGovernanceBindingTests" \
+  "multi-project card binding resolves stable project context before root fallback" \
   ""
 
 run_case \

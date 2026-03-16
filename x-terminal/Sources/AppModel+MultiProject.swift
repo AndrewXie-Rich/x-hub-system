@@ -56,6 +56,7 @@ extension AppModel {
         name: String,
         taskDescription: String,
         modelName: String,
+        registeredProjectId: String? = nil,
         executionTier: AXProjectExecutionTier = .a3DeliverAuto,
         supervisorInterventionTier: AXProjectSupervisorInterventionTier? = nil,
         reviewPolicyMode: AXProjectReviewPolicyMode? = nil,
@@ -64,11 +65,20 @@ extension AppModel {
         brainstormReviewSeconds: Int? = nil,
         eventDrivenReviewEnabled: Bool? = nil
     ) async -> ProjectModel {
+        let binding = registeredProjectId
+            .flatMap { registry.project(for: $0) }
+            .map {
+                ProjectRegistryBinding(
+                    projectId: $0.projectId,
+                    rootPath: $0.rootPath,
+                    displayName: $0.displayName
+                )
+            }
         let config = ProjectConfig(
             name: name,
             taskDescription: taskDescription,
             modelName: modelName,
-            autonomyLevel: .fromExecutionTier(executionTier),
+            registeredProjectBinding: binding,
             executionTier: executionTier,
             supervisorInterventionTier: supervisorInterventionTier,
             reviewPolicyMode: reviewPolicyMode,
@@ -106,3 +116,13 @@ extension AppModel {
         await multiProjectManager.completeProject(projectId)
     }
 }
+
+#if DEBUG
+@MainActor
+extension AppModel {
+    static func resetSharedMultiProjectRuntimeForTesting() {
+        _multiProjectManager = nil
+        _supervisor = nil
+    }
+}
+#endif

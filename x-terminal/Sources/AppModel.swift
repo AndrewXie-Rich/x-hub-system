@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 
 enum HubSetupStepState: String {
@@ -125,6 +126,12 @@ final class AppModel: ObservableObject {
     @Published var localServerEnabled: Bool = false
     @Published var localServerPort: Int = 8080
     @Published var localServerLastError: String = ""
+    @Published private(set) var projectFocusRequest: AXProjectFocusRequest? = nil
+    @Published private(set) var supervisorFocusRequest: AXSupervisorFocusRequest? = nil
+    @Published private(set) var settingsFocusRequest: XTSettingsFocusRequest? = nil
+    @Published private(set) var hubSetupFocusRequest: XTHubSetupFocusRequest? = nil
+    @Published private(set) var modelSettingsFocusRequest: XTModelSettingsFocusRequest? = nil
+    @Published private var resumeReminderAcknowledgedSummaryMsByProjectId: [String: Int64] = [:]
 
     private var chatSessions: [String: ChatSessionModel] = [:]
     private var terminalSessions: [String: TerminalSessionModel] = [:]
@@ -132,6 +139,7 @@ final class AppModel: ObservableObject {
     @Published var paneByProjectId: [String: AXProjectPane] = [:]
 
     private var notifTokens: [NSObjectProtocol] = []
+    private var settingsSubscriptions: Set<AnyCancellable> = []
     private var skillScanTimer: Timer? = nil
     private let skillScanLastKey = "xterminal_skill_scan_last_ts"
     private let legacySkillScanLastKey = "xterminal_skill_scan_last_ts"
@@ -159,16 +167,23 @@ final class AppModel: ObservableObject {
     private var bridgeAlwaysOn: Bool = true
     private var bridgeEnsureInFlight: Bool = false
     private var bridgeEnsureLastAttemptAt: Date = .distantPast
+    private var nextProjectFocusRequestNonce: Int = 0
+    private var nextSupervisorFocusRequestNonce: Int = 0
+    private var nextSettingsFocusRequestNonce: Int = 0
+    private var nextHubSetupFocusRequestNonce: Int = 0
+    private var nextModelSettingsFocusRequestNonce: Int = 0
     private var nextProjectSnapshotRefreshAt: Date = .distantPast
     private var nextProjectAutonomyOverrideRefreshAt: Date = .distantPast
     private var nextSkillsCompatibilityRefreshAt: Date = .distantPast
     private var nextUnifiedDoctorRefreshAt: Date = .distantPast
     private var remoteSkillsCompatibilityOverlayInFlight: Bool = false
+    private var lastObservedModelAssignments: [AXRole: RoleProviderAssignment]
 
     init() {
         let ss = SettingsStore()
         settingsStore = ss
         llmRouter = LLMRouter(settingsStore: ss)
+        lastObservedModelAssignments = Self.modelAssignmentMap(for: ss.settings)
 
         // Memory pipeline status (coarse/refine) for toolbar indicators.
         let nc = NotificationCenter.default
@@ -192,6 +207,7 @@ final class AppModel: ObservableObject {
                 Task { @MainActor in self?.memoryRefineRunning = false }
             }
         )
+        observeModelAssignmentChanges()
 
         loadRegistry()
         bootstrapSelection()
@@ -244,7 +260,7 @@ final class AppModel: ObservableObject {
         if auto {
             maybeScheduleRemoteReconnect(allowBootstrap: false, force: false)
         } else {
-            await runRemoteConnectFlow(allowBootstrap: true, showAlertOnFinish: true)
+            _ = await runRemoteConnectFlow(allowBootstrap: true, showAlertOnFinish: true)
         }
     }
 
@@ -258,6 +274,14 @@ final class AppModel: ObservableObject {
         Task { @MainActor in
             await runRemoteConnectFlow(allowBootstrap: false, showAlertOnFinish: true)
         }
+    }
+
+    func runHubOneClickSetup(showAlertOnFinish: Bool = false) async -> HubRemoteConnectReport? {
+        await runRemoteConnectFlow(allowBootstrap: true, showAlertOnFinish: showAlertOnFinish)
+    }
+
+    func runHubReconnectOnly(showAlertOnFinish: Bool = false) async -> HubRemoteConnectReport? {
+        await runRemoteConnectFlow(allowBootstrap: false, showAlertOnFinish: showAlertOnFinish)
     }
 
     func saveHubRemotePrefsNow() {
@@ -437,7 +461,7 @@ final class AppModel: ObservableObject {
         let pid = AXProjectRegistryStore.projectId(forRoot: ctx.root)
         _ = sessionManager.ensurePrimarySession(
             projectId: pid,
-            title: ctx.projectName(),
+            title: ctx.displayName(registry: registry),
             directory: ctx.root.standardizedFileURL.path
         )
         if let s = chatSessions[pid] { return s }
@@ -473,6 +497,12 @@ final class AppModel: ObservableObject {
         return session(for: ctx)
     }
 
+    func persistSessionSummariesForLifecycle(reason: String) {
+        for ctx in activeProjectContextsForSessionSummary() {
+            _ = AXMemoryLifecycleStore.writeSessionSummaryCapsule(ctx: ctx, reason: reason)
+        }
+    }
+
     func sendFromHome(projectId: String, text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -483,6 +513,205 @@ final class AppModel: ObservableObject {
         let cfg = try? AXProjectStore.loadOrCreateConfig(for: ctx)
         s.draft = trimmed
         s.send(ctx: ctx, memory: mem, config: cfg, router: llmRouter)
+    }
+
+    func presentResumeBrief(projectId: String) {
+        guard let ctx = projectContext(for: projectId) else { return }
+        if let latest = sessionSummaryPresentation(projectId: projectId) {
+            resumeReminderAcknowledgedSummaryMsByProjectId[projectId] = latest.createdAtMs
+        }
+        let s = session(for: ctx)
+        s.presentProjectResumeBrief(ctx: ctx)
+        setPane(.chat, for: projectId)
+        selectProject(projectId)
+    }
+
+    func sessionSummaryPresentation(projectId: String) -> AXSessionSummaryCapsulePresentation? {
+        guard let ctx = projectContext(for: projectId) else { return nil }
+        return AXSessionSummaryCapsulePresentation.load(for: ctx)
+    }
+
+    func resumeReminderPresentation(projectId: String) -> AXSessionSummaryCapsulePresentation? {
+        guard let latest = sessionSummaryPresentation(projectId: projectId) else {
+            return nil
+        }
+        let acknowledgedAt = resumeReminderAcknowledgedSummaryMsByProjectId[projectId] ?? 0
+        guard latest.createdAtMs > acknowledgedAt else {
+            return nil
+        }
+        return latest
+    }
+
+    func latestResumeReminderProject() -> AXResumeReminderProjectPresentation? {
+        latestSessionSummaryProject(using: resumeReminderPresentation)
+    }
+
+    func latestSessionSummaryProject() -> AXResumeReminderProjectPresentation? {
+        latestSessionSummaryProject(using: sessionSummaryPresentation)
+    }
+
+    func preferredResumeProject() -> AXResumeReminderProjectPresentation? {
+        if let selected = selectedProjectResumeProject() {
+            return selected
+        }
+        return latestResumeReminderProject() ?? latestSessionSummaryProject()
+    }
+
+    func presentPreferredResumeBrief() {
+        guard let target = preferredResumeProject() else { return }
+        presentResumeBrief(projectId: target.projectId)
+    }
+
+    var canPresentPreferredResumeBrief: Bool {
+        preferredResumeProject() != nil
+    }
+
+    var preferredResumeCommandTitle: String {
+        guard let target = preferredResumeProject() else {
+            return "接上次进度"
+        }
+        return "接上次进度（\(target.projectDisplayName)）"
+    }
+
+    func dismissResumeReminder(projectId: String) {
+        guard let latest = resumeReminderPresentation(projectId: projectId) else { return }
+        resumeReminderAcknowledgedSummaryMsByProjectId[projectId] = latest.createdAtMs
+    }
+
+    func requestSupervisorGrantFocus(
+        projectId: String?,
+        grantRequestId: String?,
+        capability: String?
+    ) {
+        let normalizedProjectId = normalizedDeepLinkToken(projectId)
+        let normalizedGrantId = normalizedDeepLinkToken(grantRequestId)
+        let normalizedCapability = normalizedDeepLinkToken(capability)
+        guard normalizedGrantId != nil || normalizedCapability != nil else { return }
+
+        nextSupervisorFocusRequestNonce += 1
+        supervisorFocusRequest = AXSupervisorFocusRequest(
+            nonce: nextSupervisorFocusRequestNonce,
+            projectId: normalizedProjectId,
+            subject: .grant(
+                grantRequestId: normalizedGrantId,
+                capability: normalizedCapability
+            )
+        )
+    }
+
+    func requestSupervisorApprovalFocus(
+        projectId: String?,
+        requestId: String?
+    ) {
+        let normalizedProjectId = normalizedDeepLinkToken(projectId)
+        let normalizedRequestId = normalizedDeepLinkToken(requestId)
+        guard let normalizedRequestId else { return }
+
+        nextSupervisorFocusRequestNonce += 1
+        supervisorFocusRequest = AXSupervisorFocusRequest(
+            nonce: nextSupervisorFocusRequestNonce,
+            projectId: normalizedProjectId,
+            subject: .approval(requestId: normalizedRequestId)
+        )
+    }
+
+    func requestProjectToolApprovalFocus(
+        projectId: String?,
+        requestId: String?
+    ) {
+        guard let normalizedProjectId = normalizedDeepLinkToken(projectId) else { return }
+        let normalizedRequestId = normalizedDeepLinkToken(requestId)
+
+        nextProjectFocusRequestNonce += 1
+        projectFocusRequest = AXProjectFocusRequest(
+            nonce: nextProjectFocusRequestNonce,
+            projectId: normalizedProjectId,
+            subject: .toolApproval(requestId: normalizedRequestId)
+        )
+    }
+
+    func requestProjectRouteDiagnoseFocus(projectId: String?) {
+        guard let normalizedProjectId = normalizedDeepLinkToken(projectId) else { return }
+
+        nextProjectFocusRequestNonce += 1
+        projectFocusRequest = AXProjectFocusRequest(
+            nonce: nextProjectFocusRequestNonce,
+            projectId: normalizedProjectId,
+            subject: .routeDiagnose
+        )
+    }
+
+    func clearProjectFocusRequest(_ request: AXProjectFocusRequest) {
+        guard projectFocusRequest?.nonce == request.nonce else { return }
+        projectFocusRequest = nil
+    }
+
+    func clearSupervisorFocusRequest(_ request: AXSupervisorFocusRequest) {
+        guard supervisorFocusRequest?.nonce == request.nonce else { return }
+        supervisorFocusRequest = nil
+    }
+
+    func requestSettingsFocus(
+        sectionId: String?,
+        title: String? = nil,
+        detail: String? = nil
+    ) {
+        guard let normalizedSectionId = normalizedDeepLinkToken(sectionId) else { return }
+        let context = normalizedFocusContext(title: title, detail: detail)
+
+        nextSettingsFocusRequestNonce += 1
+        settingsFocusRequest = XTSettingsFocusRequest(
+            nonce: nextSettingsFocusRequestNonce,
+            sectionId: normalizedSectionId,
+            context: context
+        )
+    }
+
+    func clearSettingsFocusRequest(_ request: XTSettingsFocusRequest) {
+        guard settingsFocusRequest?.nonce == request.nonce else { return }
+        settingsFocusRequest = nil
+    }
+
+    func requestHubSetupFocus(
+        sectionId: String?,
+        title: String? = nil,
+        detail: String? = nil
+    ) {
+        guard let normalizedSectionId = normalizedDeepLinkToken(sectionId) else { return }
+        let context = normalizedFocusContext(title: title, detail: detail)
+
+        nextHubSetupFocusRequestNonce += 1
+        hubSetupFocusRequest = XTHubSetupFocusRequest(
+            nonce: nextHubSetupFocusRequestNonce,
+            sectionId: normalizedSectionId,
+            context: context
+        )
+    }
+
+    func clearHubSetupFocusRequest(_ request: XTHubSetupFocusRequest) {
+        guard hubSetupFocusRequest?.nonce == request.nonce else { return }
+        hubSetupFocusRequest = nil
+    }
+
+    func requestModelSettingsFocus(
+        role: AXRole? = nil,
+        title: String? = nil,
+        detail: String? = nil
+    ) {
+        let context = normalizedFocusContext(title: title, detail: detail)
+        guard role != nil || context != nil else { return }
+
+        nextModelSettingsFocusRequestNonce += 1
+        modelSettingsFocusRequest = XTModelSettingsFocusRequest(
+            nonce: nextModelSettingsFocusRequestNonce,
+            role: role,
+            context: context
+        )
+    }
+
+    func clearModelSettingsFocusRequest(_ request: XTModelSettingsFocusRequest) {
+        guard modelSettingsFocusRequest?.nonce == request.nonce else { return }
+        modelSettingsFocusRequest = nil
     }
 
     func prefillGrantContext(
@@ -499,10 +728,14 @@ final class AppModel: ObservableObject {
         s.ensureLoaded(ctx: ctx, limit: 200)
 
         let capabilityToken = (capability ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let capabilityLabel = XTHubGrantPresentation.capabilityLabel(
+            capability: capabilityToken,
+            modelId: ""
+        )
         let reasonText = (reason ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         var message = "请先处理 Hub 授权请求（grant_request_id=\(grantId)"
         if !capabilityToken.isEmpty {
-            message += "，capability=\(capabilityToken)"
+            message += "，capability=\(capabilityLabel)"
         }
         message += "），确认后继续推进当前项目。"
         if !reasonText.isEmpty {
@@ -518,6 +751,24 @@ final class AppModel: ObservableObject {
 
         setPane(.chat, for: projectId)
         selectProject(projectId)
+    }
+
+    private func normalizedDeepLinkToken(_ raw: String?) -> String? {
+        let trimmed = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func normalizedFocusContext(
+        title: String?,
+        detail: String?
+    ) -> XTSectionFocusContext? {
+        let normalizedTitle = normalizedDeepLinkToken(title)
+        let normalizedDetail = normalizedDeepLinkToken(detail)
+        guard let normalizedTitle else { return nil }
+        return XTSectionFocusContext(
+            title: normalizedTitle,
+            detail: normalizedDetail
+        )
     }
 
     func approvePending(for projectId: String) {
@@ -1550,9 +1801,26 @@ final class AppModel: ObservableObject {
     func setProjectRoleModel(role: AXRole, modelId: String?) {
         guard let ctx = projectContext else { return }
         guard var cfg = projectConfig else { return }
+        if projectModelSwitchChanged(current: cfg.modelOverride(for: role), next: modelId) {
+            _ = AXMemoryLifecycleStore.writeSessionSummaryCapsule(ctx: ctx, reason: "ai_switch")
+        }
         cfg = cfg.settingModelOverride(role: role, modelId: modelId)
         projectConfig = cfg
         try? AXProjectStore.saveConfig(cfg, for: ctx)
+    }
+
+    func setProjectRoleModelOverride(projectId: String, role: AXRole, modelId: String?) {
+        guard let ctx = projectContext(for: projectId) else { return }
+        guard var cfg = try? AXProjectStore.loadOrCreateConfig(for: ctx) else { return }
+        if projectModelSwitchChanged(current: cfg.modelOverride(for: role), next: modelId) {
+            _ = AXMemoryLifecycleStore.writeSessionSummaryCapsule(ctx: ctx, reason: "ai_switch")
+        }
+        cfg.setModelOverride(role: role, modelId: modelId)
+        try? AXProjectStore.saveConfig(cfg, for: ctx)
+
+        if projectContext?.root.standardizedFileURL.path == ctx.root.standardizedFileURL.path {
+            projectConfig = cfg
+        }
     }
 
     func setProjectTrustedAutomationBinding(
@@ -1619,6 +1887,62 @@ final class AppModel: ObservableObject {
         )
     }
 
+    func applyProjectAutonomyProfile(_ profile: AXProjectAutonomyProfile) {
+        guard profile != .custom else { return }
+        guard let ctx = projectContext else { return }
+        guard var cfg = projectConfig else { return }
+
+        let now = Date()
+        cfg = cfg.settingAutonomySwitchboardProfile(
+            profile,
+            projectRoot: ctx.root,
+            now: now
+        )
+        let resolved = xtResolveProjectGovernance(
+            projectRoot: ctx.root,
+            config: cfg,
+            remoteOverride: projectRemoteAutonomyOverride
+        )
+
+        projectConfig = cfg
+        try? AXProjectStore.saveConfig(cfg, for: ctx)
+        AXProjectStore.appendRawLog(
+            [
+                "type": "project_autonomy_profile",
+                "action": "apply",
+                "created_at": now.timeIntervalSince1970,
+                "project_id": AXProjectRegistryStore.projectId(forRoot: ctx.root),
+                "profile": profile.rawValue,
+                "execution_tier": cfg.executionTier.rawValue,
+                "supervisor_intervention_tier": cfg.supervisorInterventionTier.rawValue,
+                "review_policy_mode": cfg.reviewPolicyMode.rawValue,
+                "runtime_surface_configured": cfg.autonomyMode.rawValue,
+                "runtime_surface_preset": cfg.autonomyMode.rawValue,
+                "surface_preset": cfg.autonomyMode.rawValue,
+                "local_auto_approve": cfg.governedAutoApproveLocalToolCalls,
+                "prefer_hub_memory": cfg.preferHubMemory,
+                "runtime_surface_effective": resolved.effectiveAutonomy.effectiveMode.rawValue,
+                "runtime_surface_hub_override": resolved.effectiveAutonomy.hubOverrideMode.rawValue,
+                "runtime_surface_local_override": resolved.effectiveAutonomy.localOverrideMode.rawValue,
+                "runtime_surface_remote_override": resolved.effectiveAutonomy.remoteOverrideMode.rawValue,
+                "runtime_surface_remote_override_source": resolved.effectiveAutonomy.remoteOverrideSource,
+                "runtime_surface_remote_override_updated_at_ms": resolved.effectiveAutonomy.remoteOverrideUpdatedAtMs,
+                "runtime_surface_ttl_sec": cfg.autonomyTTLSeconds,
+                "runtime_surface_remaining_sec": resolved.effectiveAutonomy.remainingSeconds,
+                "runtime_surface_expired": resolved.effectiveAutonomy.expired,
+                "runtime_surface_kill_switch_engaged": resolved.effectiveAutonomy.killSwitchEngaged,
+                "effective_runtime_surface": resolved.effectiveAutonomy.effectiveMode.rawValue,
+                "effective_runtime_surface_hub_override": resolved.effectiveAutonomy.hubOverrideMode.rawValue,
+                "effective_mode": resolved.effectiveAutonomy.effectiveMode.rawValue,
+                "effective_hub_override_mode": resolved.effectiveAutonomy.hubOverrideMode.rawValue,
+                "trusted_automation_state": resolved.trustedAutomationStatus.state.rawValue,
+                "invalid_reasons": resolved.validation.invalidReasons,
+                "warning_reasons": resolved.validation.warningReasons,
+            ],
+            for: ctx
+        )
+    }
+
     func setProjectAutomationSelfIteration(
         enabled: Bool? = nil,
         maxAutoRetryDepth: Int? = nil
@@ -1673,6 +1997,19 @@ final class AppModel: ObservableObject {
                 "action": "update",
                 "created_at": now.timeIntervalSince1970,
                 "project_id": AXProjectRegistryStore.projectId(forRoot: ctx.root),
+                "runtime_surface": cfg.autonomyMode.rawValue,
+                "runtime_surface_configured": cfg.autonomyMode.rawValue,
+                "effective_runtime_surface": effective.effectiveMode.rawValue,
+                "previous_effective_runtime_surface": previous.effectiveMode.rawValue,
+                "runtime_surface_hub_override": effective.hubOverrideMode.rawValue,
+                "runtime_surface_local_override": effective.localOverrideMode.rawValue,
+                "runtime_surface_remote_override": effective.remoteOverrideMode.rawValue,
+                "runtime_surface_remote_override_source": effective.remoteOverrideSource,
+                "runtime_surface_remote_override_updated_at_ms": effective.remoteOverrideUpdatedAtMs,
+                "runtime_surface_ttl_sec": cfg.autonomyTTLSeconds,
+                "runtime_surface_remaining_sec": effective.remainingSeconds,
+                "runtime_surface_expired": effective.expired,
+                "runtime_surface_kill_switch_engaged": effective.killSwitchEngaged,
                 "mode": cfg.autonomyMode.rawValue,
                 "effective_mode": effective.effectiveMode.rawValue,
                 "previous_effective_mode": previous.effectiveMode.rawValue,
@@ -1755,6 +2092,18 @@ final class AppModel: ObservableObject {
                 "event_driven_review_enabled": cfg.eventDrivenReviewEnabled,
                 "event_review_triggers": cfg.eventReviewTriggers.map(\.rawValue),
                 "compat_source": cfg.governanceCompatSource.rawValue,
+                "runtime_surface_configured": cfg.autonomyMode.rawValue,
+                "runtime_surface_preset": cfg.autonomyMode.rawValue,
+                "effective_runtime_surface": resolved.effectiveAutonomy.effectiveMode.rawValue,
+                "runtime_surface_hub_override": resolved.effectiveAutonomy.hubOverrideMode.rawValue,
+                "runtime_surface_local_override": resolved.effectiveAutonomy.localOverrideMode.rawValue,
+                "runtime_surface_remote_override": resolved.effectiveAutonomy.remoteOverrideMode.rawValue,
+                "runtime_surface_remote_override_source": resolved.effectiveAutonomy.remoteOverrideSource,
+                "runtime_surface_remote_override_updated_at_ms": resolved.effectiveAutonomy.remoteOverrideUpdatedAtMs,
+                "runtime_surface_ttl_sec": cfg.autonomyTTLSeconds,
+                "runtime_surface_remaining_sec": resolved.effectiveAutonomy.remainingSeconds,
+                "runtime_surface_expired": resolved.effectiveAutonomy.expired,
+                "runtime_surface_kill_switch_engaged": resolved.effectiveAutonomy.killSwitchEngaged,
                 "surface_preset": cfg.autonomyMode.rawValue,
                 "invalid_reasons": resolved.validation.invalidReasons,
                 "warning_reasons": resolved.validation.warningReasons,
@@ -1770,11 +2119,141 @@ final class AppModel: ObservableObject {
     ) -> AXProjectResolvedGovernanceState {
         let root = projectContext?.root ?? URL(fileURLWithPath: "/")
         let resolvedConfig = config ?? projectConfig ?? .default(forProjectRoot: root)
-        return xtResolveProjectGovernance(
-            projectRoot: root,
+        return resolvedProjectGovernance(
+            ctx: AXProjectContext(root: root),
             config: resolvedConfig,
             legacyAutonomyLevel: legacyAutonomyLevel,
             remoteOverride: projectRemoteAutonomyOverride
+        )
+    }
+
+    func resolvedProjectGovernance(for project: AXProjectEntry) -> AXProjectResolvedGovernanceState {
+        let root = URL(fileURLWithPath: project.rootPath, isDirectory: true)
+        let config: AXProjectConfig
+        let remoteOverride: AXProjectAutonomyRemoteOverrideSnapshot?
+
+        if selectedProjectId == project.projectId, let projectConfig {
+            config = projectConfig
+            remoteOverride = projectRemoteAutonomyOverride
+        } else {
+            let ctx = AXProjectContext(root: root)
+            config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: root)
+            remoteOverride = nil
+        }
+
+        return resolvedProjectGovernance(
+            ctx: AXProjectContext(root: root),
+            config: config,
+            remoteOverride: remoteOverride
+        )
+    }
+
+    func resolvedProjectGovernance(for project: ProjectModel) -> AXProjectResolvedGovernanceState? {
+        guard let ctx = project.governanceActivityContext(resolveProjectContext: projectContext(for:)) else {
+            return nil
+        }
+
+        let bindingProjectId = project.registeredProjectBinding?.projectId
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let config: AXProjectConfig
+        let remoteOverride: AXProjectAutonomyRemoteOverrideSnapshot?
+
+        if !bindingProjectId.isEmpty,
+           selectedProjectId == bindingProjectId,
+           projectContext?.root.standardizedFileURL == ctx.root.standardizedFileURL,
+           let projectConfig {
+            config = projectConfig
+            remoteOverride = projectRemoteAutonomyOverride
+        } else {
+            config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: ctx.root)
+            remoteOverride = nil
+        }
+
+        return resolvedProjectGovernance(
+            ctx: ctx,
+            config: config,
+            legacyAutonomyLevel: project.autonomyLevel,
+            remoteOverride: remoteOverride
+        )
+    }
+
+    func autonomySwitchboardPresentation(for project: AXProjectEntry) -> AXProjectAutonomySwitchboardPresentation {
+        let root = URL(fileURLWithPath: project.rootPath, isDirectory: true)
+        let config: AXProjectConfig
+        let remoteOverride: AXProjectAutonomyRemoteOverrideSnapshot?
+
+        if selectedProjectId == project.projectId, let projectConfig {
+            config = projectConfig
+            remoteOverride = projectRemoteAutonomyOverride
+        } else {
+            let ctx = AXProjectContext(root: root)
+            config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: root)
+            remoteOverride = nil
+        }
+
+        let resolved = resolvedProjectGovernance(
+            ctx: AXProjectContext(root: root),
+            config: config,
+            remoteOverride: remoteOverride
+        )
+        return xtProjectAutonomySwitchboardPresentation(
+            projectRoot: root,
+            config: config,
+            resolved: resolved
+        )
+    }
+
+    func autonomySwitchboardPresentation(for project: ProjectModel) -> AXProjectAutonomySwitchboardPresentation {
+        if let ctx = project.governanceActivityContext(resolveProjectContext: projectContext(for:)) {
+            let bindingProjectId = project.registeredProjectBinding?.projectId
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let config: AXProjectConfig
+            let remoteOverride: AXProjectAutonomyRemoteOverrideSnapshot?
+
+            if !bindingProjectId.isEmpty,
+               selectedProjectId == bindingProjectId,
+               projectContext?.root.standardizedFileURL == ctx.root.standardizedFileURL,
+               let projectConfig {
+                config = projectConfig
+                remoteOverride = projectRemoteAutonomyOverride
+            } else {
+                config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: ctx.root)
+                remoteOverride = nil
+            }
+
+            let resolved = resolvedProjectGovernance(
+                ctx: ctx,
+                config: config,
+                legacyAutonomyLevel: project.autonomyLevel,
+                remoteOverride: remoteOverride
+            )
+            return xtProjectAutonomySwitchboardPresentation(
+                projectRoot: ctx.root,
+                config: config,
+                resolved: resolved
+            )
+        }
+
+        let root = fallbackAutonomyProjectRoot(for: project)
+        let config = xtAutonomySwitchboardDraftConfig(
+            projectRoot: root,
+            baselineProfile: xtAutonomyBaselineProfile(for: project.executionTier),
+            executionTier: project.executionTier,
+            supervisorInterventionTier: project.supervisorInterventionTier,
+            reviewPolicyMode: project.reviewPolicyMode,
+            progressHeartbeatSeconds: project.progressHeartbeatSeconds,
+            reviewPulseSeconds: project.reviewPulseSeconds,
+            brainstormReviewSeconds: project.brainstormReviewSeconds,
+            eventDrivenReviewEnabled: project.eventDrivenReviewEnabled
+        )
+        let resolved = resolvedProjectGovernance(
+            ctx: AXProjectContext(root: root),
+            config: config
+        )
+        return xtProjectAutonomySwitchboardPresentation(
+            projectRoot: root,
+            config: config,
+            resolved: resolved
         )
     }
 
@@ -1791,6 +2270,18 @@ final class AppModel: ObservableObject {
             projectRoot: root,
             config: config
         )
+    }
+
+    private func fallbackAutonomyProjectRoot(for project: ProjectModel) -> URL {
+        if let rootPath = project.registeredProjectRootPath?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !rootPath.isEmpty {
+            return URL(fileURLWithPath: rootPath, isDirectory: true)
+        }
+        if let root = projectContext?.root {
+            return root
+        }
+        return URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
     }
 
     private func refreshProjectRemoteAutonomyOverride(force: Bool) async {
@@ -1840,6 +2331,29 @@ final class AppModel: ObservableObject {
         Task { @MainActor in
             await loadSelectedProject()
         }
+    }
+
+    private func resolvedProjectGovernance(
+        ctx: AXProjectContext,
+        config: AXProjectConfig,
+        legacyAutonomyLevel: AutonomyLevel? = nil,
+        remoteOverride: AXProjectAutonomyRemoteOverrideSnapshot? = nil
+    ) -> AXProjectResolvedGovernanceState {
+        let adaptationPolicy = AXProjectSupervisorAdaptationPolicy.default
+        let strengthProfile = AXProjectAIStrengthAssessor.assess(
+            ctx: ctx,
+            adaptationPolicy: adaptationPolicy
+        )
+        let compatLegacyAutonomyLevel = config.governanceResolverLegacyAutonomyLevel(legacyAutonomyLevel)
+
+        return xtResolveProjectGovernance(
+            projectRoot: ctx.root,
+            config: config,
+            legacyAutonomyLevel: compatLegacyAutonomyLevel,
+            remoteOverride: remoteOverride,
+            projectAIStrengthProfile: strengthProfile,
+            adaptationPolicy: adaptationPolicy
+        )
     }
 
     private func loadSelectedProject() async {
@@ -1896,15 +2410,19 @@ final class AppModel: ObservableObject {
     }
 
     private func applySelection() async {
+        let previousRoot = projectRoot
         guard let pid = selectedProjectId else {
+            persistProjectSwitchSummaryIfNeeded(from: previousRoot, to: nil)
             projectRoot = nil
             return
         }
         if pid == AXProjectRegistry.globalHomeId {
+            persistProjectSwitchSummaryIfNeeded(from: previousRoot, to: nil)
             projectRoot = nil
             return
         }
         guard let entry = registry.project(for: pid) else {
+            persistProjectSwitchSummaryIfNeeded(from: previousRoot, to: nil)
             projectRoot = nil
             return
         }
@@ -1924,6 +2442,7 @@ final class AppModel: ObservableObject {
             return
         }
 
+        persistProjectSwitchSummaryIfNeeded(from: previousRoot, to: resolvedRoot)
         projectRoot = resolvedRoot
     }
 
@@ -1962,17 +2481,145 @@ final class AppModel: ObservableObject {
         return URL(fileURLWithPath: rootPath, isDirectory: true)
     }
 
+    private func observeModelAssignmentChanges() {
+        settingsStore.$settings
+            .dropFirst()
+            .sink { [weak self] newSettings in
+                Task { @MainActor in
+                    self?.handleObservedSettingsChange(newSettings)
+                }
+            }
+            .store(in: &settingsSubscriptions)
+    }
+
+    private func handleObservedSettingsChange(_ newSettings: XTerminalSettings) {
+        let nextAssignments = Self.modelAssignmentMap(for: newSettings)
+        defer {
+            lastObservedModelAssignments = nextAssignments
+        }
+        guard modelAssignmentsChanged(lastObservedModelAssignments, nextAssignments) else {
+            return
+        }
+        persistSessionSummariesForLifecycle(reason: "ai_switch")
+    }
+
+    private func activeProjectContextsForSessionSummary() -> [AXProjectContext] {
+        var ordered: [AXProjectContext] = []
+        var seen: Set<String> = []
+
+        if let projectContext {
+            let key = projectContext.root.standardizedFileURL.path
+            if seen.insert(key).inserted {
+                ordered.append(projectContext)
+            }
+        }
+
+        for projectId in chatSessions.keys.sorted() {
+            guard let ctx = projectContext(for: projectId) else { continue }
+            let key = ctx.root.standardizedFileURL.path
+            if seen.insert(key).inserted {
+                ordered.append(ctx)
+            }
+        }
+
+        return ordered
+    }
+
+    private func selectedProjectResumeProject() -> AXResumeReminderProjectPresentation? {
+        guard let selectedProjectId,
+              selectedProjectId != AXProjectRegistry.globalHomeId,
+              let project = registry.project(for: selectedProjectId),
+              let summary = sessionSummaryPresentation(projectId: selectedProjectId) else {
+            return nil
+        }
+        return AXResumeReminderProjectPresentation(
+            projectId: project.projectId,
+            projectDisplayName: project.displayName,
+            summary: summary
+        )
+    }
+
+    private func latestSessionSummaryProject(
+        using summaryLoader: (String) -> AXSessionSummaryCapsulePresentation?
+    ) -> AXResumeReminderProjectPresentation? {
+        let candidates = registry.sortedProjects().compactMap { project -> AXResumeReminderProjectPresentation? in
+            guard let summary = summaryLoader(project.projectId) else {
+                return nil
+            }
+            return AXResumeReminderProjectPresentation(
+                projectId: project.projectId,
+                projectDisplayName: project.displayName,
+                summary: summary
+            )
+        }
+
+        return candidates.sorted { lhs, rhs in
+            if lhs.summary.createdAtMs != rhs.summary.createdAtMs {
+                return lhs.summary.createdAtMs > rhs.summary.createdAtMs
+            }
+            let lhsLastOpenedAt = registry.project(for: lhs.projectId)?.lastOpenedAt ?? 0
+            let rhsLastOpenedAt = registry.project(for: rhs.projectId)?.lastOpenedAt ?? 0
+            if lhsLastOpenedAt != rhsLastOpenedAt {
+                return lhsLastOpenedAt > rhsLastOpenedAt
+            }
+            return lhs.projectDisplayName.localizedCaseInsensitiveCompare(rhs.projectDisplayName) == .orderedAscending
+        }.first
+    }
+
+    private func persistProjectSwitchSummaryIfNeeded(from previousRoot: URL?, to nextRoot: URL?) {
+        guard let previousRoot else { return }
+        let previousPath = previousRoot.standardizedFileURL.path
+        let nextPath = nextRoot?.standardizedFileURL.path
+        guard previousPath != nextPath else { return }
+        let ctx = AXProjectContext(root: previousRoot)
+        _ = AXMemoryLifecycleStore.writeSessionSummaryCapsule(ctx: ctx, reason: "project_switch")
+    }
+
+    private func projectModelSwitchChanged(current: String?, next: String?) -> Bool {
+        normalizedModelSwitchValue(current) != normalizedModelSwitchValue(next)
+    }
+
+    private func normalizedModelSwitchValue(_ raw: String?) -> String {
+        let trimmed = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.lowercased()
+    }
+
+    private func modelAssignmentsChanged(
+        _ previous: [AXRole: RoleProviderAssignment],
+        _ next: [AXRole: RoleProviderAssignment]
+    ) -> Bool {
+        for role in AXRole.allCases {
+            if previous[role] != next[role] {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func modelAssignmentMap(for settings: XTerminalSettings) -> [AXRole: RoleProviderAssignment] {
+        Dictionary(
+            uniqueKeysWithValues: AXRole.allCases.map { role in
+                (role, settings.assignment(for: role))
+            }
+        )
+    }
+
     private func loadHubRemotePrefs() {
         let d = UserDefaults.standard
+        let cached = HubAIClient.cachedRemoteProfile(stateDir: nil)
         let p = d.object(forKey: hubPairingPortKey) as? Int
             ?? d.object(forKey: legacyHubPairingPortKey) as? Int
+            ?? cached.pairingPort
             ?? 50052
         let g = d.object(forKey: hubGrpcPortKey) as? Int
             ?? d.object(forKey: legacyHubGrpcPortKey) as? Int
+            ?? cached.grpcPort
             ?? 50051
-        let host = d.string(forKey: hubInternetHostKey)
+        let explicitHost = (d.string(forKey: hubInternetHostKey)
             ?? d.string(forKey: legacyHubInternetHostKey)
-            ?? ""
+            ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let host = explicitHost.isEmpty ? (cached.internetHost ?? "") : explicitHost
         let ctl = d.string(forKey: hubAxhubctlPathKey)
             ?? d.string(forKey: legacyHubAxhubctlPathKey)
             ?? ""
@@ -2068,7 +2715,7 @@ final class AppModel: ObservableObject {
             // Only run background reconnect after a paired profile exists.
             let hasEnv = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
             if !hasEnv { return }
-            await runRemoteConnectFlow(
+            _ = await runRemoteConnectFlow(
                 allowBootstrap: allowBootstrap,
                 showAlertOnFinish: false,
                 updateSetupProgress: false
@@ -2080,8 +2727,8 @@ final class AppModel: ObservableObject {
         allowBootstrap: Bool,
         showAlertOnFinish: Bool,
         updateSetupProgress: Bool = true
-    ) async {
-        if hubRemoteLinking { return }
+    ) async -> HubRemoteConnectReport? {
+        if hubRemoteLinking { return nil }
         hubRemoteLinking = true
         hubReconnectLastAttemptAt = Date()
         if updateSetupProgress {
@@ -2127,6 +2774,13 @@ final class AppModel: ObservableObject {
         }
 
         if report.ok {
+            let cachedProfile = HubAIClient.cachedRemoteProfile(stateDir: nil)
+            if hubInternetHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               let discoveredInternetHost = cachedProfile.internetHost,
+               !discoveredInternetHost.isEmpty {
+                hubInternetHost = discoveredInternetHost
+                saveHubRemotePrefs()
+            }
             hubLastError = nil
             if showAlertOnFinish {
                 showAlert(
@@ -2146,6 +2800,7 @@ final class AppModel: ObservableObject {
             }
         }
         refreshUnifiedDoctorReport(force: true)
+        return report
     }
 
     private func configuredHubModelIDs() -> [String] {
@@ -2211,7 +2866,11 @@ final class AppModel: ObservableObject {
             wakeProfileSnapshot: supervisor.voiceWakeProfileSnapshot,
             conversationSession: supervisor.conversationSessionSnapshot,
             skillsSnapshot: skillsCompatibilitySnapshot,
-            reportPath: reportURL.path
+            reportPath: reportURL.path,
+            modelRouteDiagnostics: AXModelRouteDiagnosticsStore.doctorSummary(
+                for: sortedProjects,
+                now: now
+            )
         )
         let report = XTUnifiedDoctorBuilder.build(input: input)
         XTUnifiedDoctorStore.writeReport(report, to: reportURL)
@@ -2545,6 +3204,6 @@ final class AppModel: ObservableObject {
         saveHubRemotePrefs()
         hubPortAutoDetectMessage = "pairing state reset; probing ports..."
         await autoDetectHubPortsNow()
-        await runRemoteConnectFlow(allowBootstrap: true, showAlertOnFinish: true, updateSetupProgress: true)
+        _ = await runRemoteConnectFlow(allowBootstrap: true, showAlertOnFinish: true, updateSetupProgress: true)
     }
 }

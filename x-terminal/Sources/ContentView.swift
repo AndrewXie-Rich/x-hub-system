@@ -42,6 +42,14 @@ struct ContentView: View {
                     appModel.openProjectPicker()
                 }
 
+                Button {
+                    appModel.presentPreferredResumeBrief()
+                } label: {
+                    Label("接上次进度", systemImage: "arrow.clockwise.circle")
+                }
+                .help(toolbarResumeHelp)
+                .disabled(toolbarResumeTarget == nil)
+
                 Divider()
 
                 // 多项目视图切换
@@ -257,6 +265,17 @@ struct ContentView: View {
         }
     }
 
+    private var toolbarResumeTarget: AXResumeReminderProjectPresentation? {
+        appModel.preferredResumeProject()
+    }
+
+    private var toolbarResumeHelp: String {
+        guard let target = toolbarResumeTarget else {
+            return "当前没有可恢复的交接摘要"
+        }
+        return "接上次进度：\(target.projectDisplayName) · \(target.summary.detailText)。只会在你点击后展开，不会自动塞进当前 prompt。"
+    }
+
     private var mainPane: some View {
         VStack(spacing: 0) {
             // 多项目视图
@@ -314,18 +333,7 @@ struct ContentView: View {
     }
 
     private func handleDeepLink(_ url: URL) {
-        let scheme = (url.scheme ?? "").lowercased()
-        guard scheme == "xterminal" || scheme == "x-terminal" else {
-            return
-        }
-
-        let host = (url.host ?? "").lowercased()
-        let path = url.path.lowercased()
-        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
-        var query: [String: String] = [:]
-        for item in items {
-            query[item.name.lowercased()] = item.value ?? ""
-        }
+        guard let route = XTDeepLinkParser.parse(url) else { return }
 
         let openSupervisor: () -> Void = {
             openWindow(id: "supervisor")
@@ -333,52 +341,131 @@ struct ContentView: View {
         let openSupervisorSettings: () -> Void = {
             openWindow(id: "supervisor_settings")
         }
+        let requestSupervisorFocus: (
+            _ projectId: String?,
+            _ focusTarget: XTDeepLinkFocusTarget?,
+            _ requestId: String?,
+            _ grantRequestId: String?,
+            _ capability: String?
+        ) -> Void = { projectId, focusTarget, requestId, grantRequestId, capability in
+            switch focusTarget {
+            case .grant:
+                appModel.requestSupervisorGrantFocus(
+                    projectId: projectId,
+                    grantRequestId: grantRequestId,
+                    capability: capability
+                )
+            case .approval:
+                appModel.requestSupervisorApprovalFocus(
+                    projectId: projectId,
+                    requestId: requestId
+                )
+            case .toolApproval:
+                appModel.requestProjectToolApprovalFocus(
+                    projectId: projectId,
+                    requestId: requestId
+                )
+            case .routeDiagnose:
+                appModel.requestProjectRouteDiagnoseFocus(projectId: projectId)
+            case nil:
+                break
+            }
+        }
 
-        if host == "supervisor" || path == "/supervisor" {
-            openSupervisor()
-            return
-        }
-        if host == "hub-setup" || path == "/hub-setup" {
-            openWindow(id: "hub_setup")
-            return
-        }
-        if host == "supervisor-settings" || path == "/supervisor-settings" {
-            openSupervisorSettings()
-            return
-        }
-        if host == "project" || path == "/project" {
-            let projectId = (query["project_id"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            if !projectId.isEmpty {
+        switch route {
+        case let .supervisor(supervisorRoute):
+            if let projectId = supervisorRoute.projectId,
+               !projectId.isEmpty {
                 appModel.selectProject(projectId)
             }
-
-            let pane = (query["pane"] ?? "").lowercased()
-            if !projectId.isEmpty {
-                if pane == "terminal" {
-                    appModel.setPane(.terminal, for: projectId)
-                } else if pane == "chat" {
-                    appModel.setPane(.chat, for: projectId)
-                }
-            }
-
-            let openTarget = (query["open"] ?? "").lowercased()
-            if openTarget == "supervisor" {
-                openSupervisor()
-            } else if openTarget == "supervisor_settings" {
-                openSupervisorSettings()
-            }
-
-            let grantRequestId = (query["grant_request_id"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            if !projectId.isEmpty, !grantRequestId.isEmpty {
-                let capability = (query["grant_capability"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                let reason = (query["grant_reason"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if let projectId = supervisorRoute.projectId,
+               let grantRequestId = supervisorRoute.grantRequestId,
+               !projectId.isEmpty {
                 appModel.prefillGrantContext(
                     projectId: projectId,
                     grantRequestId: grantRequestId,
-                    capability: capability.isEmpty ? nil : capability,
-                    reason: reason.isEmpty ? nil : reason
+                    capability: supervisorRoute.grantCapability,
+                    reason: supervisorRoute.grantReason
                 )
             }
+            openSupervisor()
+            requestSupervisorFocus(
+                supervisorRoute.projectId,
+                supervisorRoute.focusTarget,
+                supervisorRoute.requestId,
+                supervisorRoute.grantRequestId,
+                supervisorRoute.grantCapability
+            )
+        case .hubSetup:
+            openWindow(id: "hub_setup")
+        case .supervisorSettings:
+            openSupervisorSettings()
+        case let .resume(projectId):
+            if let projectId {
+                appModel.presentResumeBrief(projectId: projectId)
+            } else {
+                appModel.presentPreferredResumeBrief()
+            }
+        case let .project(projectRoute):
+            let projectId = projectRoute.projectId ?? ""
+
+            if !projectId.isEmpty, !projectRoute.resumeRequested {
+                appModel.selectProject(projectId)
+            }
+
+            if !projectId.isEmpty,
+               !projectRoute.resumeRequested,
+               let pane = projectRoute.pane {
+                appModel.setPane(pane, for: projectId)
+            }
+
+            if projectRoute.resumeRequested {
+                if !projectId.isEmpty {
+                    appModel.presentResumeBrief(projectId: projectId)
+                } else {
+                    appModel.presentPreferredResumeBrief()
+                }
+            }
+
+            switch projectRoute.openTarget {
+            case .supervisor:
+                openSupervisor()
+            case .supervisorSettings:
+                openSupervisorSettings()
+            case nil:
+                break
+            }
+
+            if projectRoute.focusTarget == .grant || projectRoute.focusTarget == .approval,
+               projectRoute.openTarget == nil {
+                openSupervisor()
+            }
+
+            if projectRoute.focusTarget == .toolApproval || projectRoute.focusTarget == .routeDiagnose {
+                if !projectId.isEmpty {
+                    appModel.setPane(.chat, for: projectId)
+                }
+                if projectRoute.openTarget == nil, !projectId.isEmpty {
+                    appModel.selectProject(projectId)
+                }
+            }
+
+            if !projectId.isEmpty, let grantRequestId = projectRoute.grantRequestId {
+                appModel.prefillGrantContext(
+                    projectId: projectId,
+                    grantRequestId: grantRequestId,
+                    capability: projectRoute.grantCapability,
+                    reason: projectRoute.grantReason
+                )
+            }
+
+            requestSupervisorFocus(
+                projectRoute.projectId,
+                projectRoute.focusTarget,
+                projectRoute.requestId,
+                projectRoute.grantRequestId,
+                projectRoute.grantCapability
+            )
         }
     }
 }

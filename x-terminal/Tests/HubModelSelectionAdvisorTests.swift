@@ -61,6 +61,26 @@ struct HubModelSelectionAdvisorTests {
         #expect(assessment.inventoryCandidates.first?.id == "openai/gpt-4.1")
     }
 
+    @Test
+    func remoteLoadedFallbackCandidatesPreferRemoteFamilyAndSkipLocalModels() {
+        let snapshot = ModelStateSnapshot(
+            models: [
+                makeModel(id: "openai/gpt-5.4", name: "GPT 5.4", state: .available),
+                makeModel(id: "openai/gpt-4.1", name: "GPT 4.1", state: .loaded),
+                makeModel(id: "custom/gpt-4.1", name: "Custom GPT 4.1", state: .loaded, backend: "custom_openai"),
+                makeModel(id: "qwen3-14b-mlx", name: "Qwen 14B", state: .loaded, backend: "mlx", modelPath: "/models/qwen3")
+            ],
+            updatedAt: 1_776_200_300
+        )
+
+        let candidates = HubModelSelectionAdvisor.remoteLoadedFallbackCandidates(
+            requestedId: "openai/gpt-5.4",
+            snapshot: snapshot
+        )
+
+        #expect(candidates.map(\.id) == ["openai/gpt-4.1"])
+    }
+
     private func makeModel(
         id: String,
         name: String,

@@ -43,7 +43,7 @@ struct ProjectSkillActivityPresentationTests {
 
         let body = ProjectSkillActivityPresentation.body(for: item)
 
-        #expect(body.contains("waiting for approval"))
+        #expect(body.contains("Waiting for local approval"))
         #expect(body.contains("https://example.com"))
     }
 
@@ -60,7 +60,9 @@ struct ProjectSkillActivityPresentationTests {
             resultSummary: "",
             detail: "Device automation is disabled by policy.",
             denyCode: "trusted_automation_disabled",
-            authorizationDisposition: "deny"
+            authorizationDisposition: "deny",
+            policySource: "project_governance",
+            policyReason: "execution_tier_missing_browser_runtime"
         )
 
         let diagnostics = ProjectSkillActivityPresentation.diagnostics(for: item)
@@ -68,7 +70,33 @@ struct ProjectSkillActivityPresentationTests {
         #expect(diagnostics.contains("request_id=skill-3"))
         #expect(diagnostics.contains("deny_code=trusted_automation_disabled"))
         #expect(diagnostics.contains("authorization_disposition=deny"))
+        #expect(diagnostics.contains("policy_source=project_governance"))
+        #expect(diagnostics.contains("policy_reason=execution_tier_missing_browser_runtime"))
         #expect(diagnostics.contains("tool_args="))
+    }
+
+    @Test
+    func blockedGovernanceBodyUsesHumanGuidance() {
+        let item = ProjectSkillActivityItem(
+            requestID: "skill-3b",
+            skillID: "agent-browser",
+            toolName: ToolName.deviceBrowserControl.rawValue,
+            status: "blocked",
+            createdAt: 4.0,
+            resolutionSource: "primary",
+            toolArgs: ["action": .string("open_url")],
+            resultSummary: "project governance blocks device.browser.control under execution tier a0_observe",
+            detail: "project governance blocks device.browser.control under execution tier a0_observe",
+            denyCode: "governance_capability_denied",
+            authorizationDisposition: "deny",
+            policySource: "project_governance",
+            policyReason: "execution_tier_missing_browser_runtime"
+        )
+
+        let body = ProjectSkillActivityPresentation.body(for: item)
+
+        #expect(body.contains("does not allow browser automation"))
+        #expect(body.contains("Raise the execution tier"))
     }
 
     @Test
@@ -134,7 +162,7 @@ struct ProjectSkillActivityPresentationTests {
         try ctx.ensureDirs()
 
         let raw = """
-        {"type":"project_skill_call","created_at":1.0,"status":"awaiting_approval","request_id":"skill-6","skill_id":"agent-browser","tool_name":"device.browser.control","tool_args":{"action":"open_url","url":"https://example.com"}}
+        {"type":"project_skill_call","created_at":1.0,"status":"awaiting_approval","request_id":"skill-6","skill_id":"agent-browser","tool_name":"device.browser.control","tool_args":{"action":"open_url","url":"https://example.com"},"authorization_disposition":"ask","policy_source":"project_governance","policy_reason":"execution_tier_missing_browser_runtime"}
         {"type":"project_skill_call","created_at":2.0,"status":"completed","request_id":"skill-6","skill_id":"agent-browser","tool_name":"device.browser.control","tool_args":{"action":"open_url","url":"https://example.com"},"result_summary":"Navigation completed"}
         """
         let data = try #require(raw.data(using: .utf8))
@@ -190,6 +218,8 @@ struct ProjectSkillActivityPresentationTests {
         #expect(record.title == "agent-browser")
         #expect(record.latestStatusLabel == "Completed")
         #expect(record.requestMetadata.contains(where: { $0.label == "project_id" && $0.value == "project-alpha" }))
+        #expect(record.approvalFields.contains(where: { $0.label == "policy_source" && $0.value == "project_governance" }))
+        #expect(record.approvalFields.contains(where: { $0.label == "policy_reason" && $0.value == "execution_tier_missing_browser_runtime" }))
         #expect(record.approvalFields.contains(where: { $0.label == "grant_request_id" && $0.value == "grant-123" }))
         #expect(record.toolArgumentsText?.contains("\"url\"") == true)
         #expect(record.resultFields.contains(where: { $0.label == "result_summary" && $0.value == "Navigation completed" }))

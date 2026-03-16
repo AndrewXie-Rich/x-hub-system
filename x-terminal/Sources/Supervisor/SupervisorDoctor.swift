@@ -40,12 +40,75 @@ struct SupervisorDoctorSummary: Codable, Equatable {
     var releaseBlockedByDoctorWithoutReport: Int
     var blockingCount: Int
     var warningCount: Int
+    var memoryAssemblyBlockingCount: Int
+    var memoryAssemblyWarningCount: Int
     var dmAllowlistRiskCount: Int
     var wsAuthRiskCount: Int
     var preAuthFloodBreakerRiskCount: Int
     var secretsPathOutOfScopeCount: Int
     var secretsMissingVariableCount: Int
     var secretsPermissionBoundaryCount: Int
+
+    init(
+        doctorReportPresent: Int,
+        releaseBlockedByDoctorWithoutReport: Int,
+        blockingCount: Int,
+        warningCount: Int,
+        memoryAssemblyBlockingCount: Int,
+        memoryAssemblyWarningCount: Int,
+        dmAllowlistRiskCount: Int,
+        wsAuthRiskCount: Int,
+        preAuthFloodBreakerRiskCount: Int,
+        secretsPathOutOfScopeCount: Int,
+        secretsMissingVariableCount: Int,
+        secretsPermissionBoundaryCount: Int
+    ) {
+        self.doctorReportPresent = doctorReportPresent
+        self.releaseBlockedByDoctorWithoutReport = releaseBlockedByDoctorWithoutReport
+        self.blockingCount = blockingCount
+        self.warningCount = warningCount
+        self.memoryAssemblyBlockingCount = memoryAssemblyBlockingCount
+        self.memoryAssemblyWarningCount = memoryAssemblyWarningCount
+        self.dmAllowlistRiskCount = dmAllowlistRiskCount
+        self.wsAuthRiskCount = wsAuthRiskCount
+        self.preAuthFloodBreakerRiskCount = preAuthFloodBreakerRiskCount
+        self.secretsPathOutOfScopeCount = secretsPathOutOfScopeCount
+        self.secretsMissingVariableCount = secretsMissingVariableCount
+        self.secretsPermissionBoundaryCount = secretsPermissionBoundaryCount
+    }
+
+    init(from decoder: Decoder) throws {
+        enum CodingKeys: String, CodingKey {
+            case doctorReportPresent
+            case releaseBlockedByDoctorWithoutReport
+            case blockingCount
+            case warningCount
+            case memoryAssemblyBlockingCount
+            case memoryAssemblyWarningCount
+            case dmAllowlistRiskCount
+            case wsAuthRiskCount
+            case preAuthFloodBreakerRiskCount
+            case secretsPathOutOfScopeCount
+            case secretsMissingVariableCount
+            case secretsPermissionBoundaryCount
+        }
+
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            doctorReportPresent: try container.decode(Int.self, forKey: .doctorReportPresent),
+            releaseBlockedByDoctorWithoutReport: try container.decode(Int.self, forKey: .releaseBlockedByDoctorWithoutReport),
+            blockingCount: try container.decode(Int.self, forKey: .blockingCount),
+            warningCount: try container.decode(Int.self, forKey: .warningCount),
+            memoryAssemblyBlockingCount: try container.decodeIfPresent(Int.self, forKey: .memoryAssemblyBlockingCount) ?? 0,
+            memoryAssemblyWarningCount: try container.decodeIfPresent(Int.self, forKey: .memoryAssemblyWarningCount) ?? 0,
+            dmAllowlistRiskCount: try container.decode(Int.self, forKey: .dmAllowlistRiskCount),
+            wsAuthRiskCount: try container.decode(Int.self, forKey: .wsAuthRiskCount),
+            preAuthFloodBreakerRiskCount: try container.decode(Int.self, forKey: .preAuthFloodBreakerRiskCount),
+            secretsPathOutOfScopeCount: try container.decode(Int.self, forKey: .secretsPathOutOfScopeCount),
+            secretsMissingVariableCount: try container.decode(Int.self, forKey: .secretsMissingVariableCount),
+            secretsPermissionBoundaryCount: try container.decode(Int.self, forKey: .secretsPermissionBoundaryCount)
+        )
+    }
 }
 
 struct SupervisorDoctorReport: Codable, Equatable {
@@ -214,6 +277,7 @@ struct SupervisorDoctorInputBundle {
     var secretsPlan: SupervisorSecretsDryRunPlan?
     var secretsPlanSource: String
     var reportURL: URL
+    var memoryAssemblySnapshot: SupervisorMemoryAssemblySnapshot?
 }
 
 struct SupervisorDoctorGateDecision {
@@ -265,6 +329,7 @@ enum SupervisorDoctorChecker {
         findings.append(contentsOf: checkWebSocketSecurity(config: input.config))
         findings.append(contentsOf: checkPreAuthFloodBreaker(config: input.config))
         findings.append(contentsOf: checkSecretsDryRun(plan: input.secretsPlan, workspaceRoot: input.workspaceRoot))
+        findings.append(contentsOf: checkMemoryAssembly(snapshot: input.memoryAssemblySnapshot))
 
         let blockingCount = findings.filter { $0.severity == .blocking }.count
         let warningCount = findings.filter { $0.severity == .warning }.count
@@ -286,6 +351,12 @@ enum SupervisorDoctorChecker {
             releaseBlockedByDoctorWithoutReport: 0,
             blockingCount: blockingCount,
             warningCount: warningCount,
+            memoryAssemblyBlockingCount: findings.filter {
+                $0.area == "memory_assembly" && $0.severity == .blocking
+            }.count,
+            memoryAssemblyWarningCount: findings.filter {
+                $0.area == "memory_assembly" && $0.severity == .warning
+            }.count,
             dmAllowlistRiskCount: findings.filter { $0.area == "dm_allowlist" }.count,
             wsAuthRiskCount: findings.filter { $0.area == "ws_auth" }.count,
             preAuthFloodBreakerRiskCount: findings.filter { $0.area == "pre_auth_flood_breaker" }.count,
@@ -326,7 +397,8 @@ enum SupervisorDoctorChecker {
 
     static func loadDefaultInputBundle(
         workspaceRoot: URL = defaultWorkspaceRoot(),
-        env: [String: String] = ProcessInfo.processInfo.environment
+        env: [String: String] = ProcessInfo.processInfo.environment,
+        memoryAssemblySnapshot: SupervisorMemoryAssemblySnapshot? = nil
     ) -> SupervisorDoctorInputBundle {
         let configURL = URL(fileURLWithPath: env["XTERMINAL_SUPERVISOR_DOCTOR_CONFIG"] ?? "")
         let hasCustomConfigURL = !(env["XTERMINAL_SUPERVISOR_DOCTOR_CONFIG"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -372,7 +444,8 @@ enum SupervisorDoctorChecker {
             configSource: configSource,
             secretsPlan: secretsPlan,
             secretsPlanSource: secretsSource,
-            reportURL: resolvedReportURL
+            reportURL: resolvedReportURL,
+            memoryAssemblySnapshot: memoryAssemblySnapshot
         )
     }
 
@@ -831,6 +904,24 @@ enum SupervisorDoctorChecker {
         return findings
     }
 
+    private static func checkMemoryAssembly(
+        snapshot: SupervisorMemoryAssemblySnapshot?
+    ) -> [SupervisorDoctorFinding] {
+        SupervisorMemoryAssemblyDiagnostics.evaluate(snapshot: snapshot).issues.map { issue in
+            finding(
+                code: issue.code,
+                area: "memory_assembly",
+                severity: doctorSeverity(for: issue.severity),
+                priority: doctorPriority(for: issue),
+                title: issue.summary,
+                detail: issue.detail,
+                reason: doctorReason(for: issue),
+                actions: doctorActions(for: issue),
+                verifyHint: doctorVerifyHint(for: issue)
+            )
+        }
+    }
+
     private static func finding(
         code: String,
         area: String,
@@ -853,6 +944,104 @@ enum SupervisorDoctorChecker {
             actions: actions,
             verifyHint: verifyHint
         )
+    }
+
+    private static func doctorSeverity(
+        for severity: SupervisorMemoryAssemblyIssueSeverity
+    ) -> SupervisorDoctorSeverity {
+        switch severity {
+        case .warning:
+            return .warning
+        case .blocking:
+            return .blocking
+        }
+    }
+
+    private static func doctorPriority(
+        for issue: SupervisorMemoryAssemblyIssue
+    ) -> SupervisorDoctorPriority {
+        switch issue.code {
+        case "memory_assembly_snapshot_missing":
+            return .p2
+        case "memory_review_floor_not_met":
+            return issue.severity == .blocking ? .p0 : .p1
+        default:
+            return .p1
+        }
+    }
+
+    private static func doctorReason(
+        for issue: SupervisorMemoryAssemblyIssue
+    ) -> String {
+        switch issue.code {
+        case "memory_assembly_snapshot_missing":
+            return "没有 snapshot 时，Doctor 无法判断 Supervisor 的 strategic review 是否拿到了足够背景。"
+        case "memory_review_floor_not_met":
+            return "resolved profile 低于 review floor 时，Supervisor 做战略纠偏时只会看到被压缩过的浅层上下文。"
+        case "memory_strategic_anchor_underfed":
+            return "缺少项目主线目标、关键决策来由或可靠依据时，战略判断会偏向短期噪声而不是项目主线。"
+        case "memory_core_layers_truncated":
+            return "l1/l2/l3 被截断会切断项目背景、近期变化和当前执行状态之间的连续性。"
+        case "memory_focus_evidence_missing":
+            return "focused strategic review 缺少日志、回执或实验结果这类已确认依据时，纠偏结论缺少可追溯证据。"
+        default:
+            return "Supervisor memory assembly 存在供给风险，需要先修复再做高价值 review。"
+        }
+    }
+
+    private static func doctorActions(
+        for issue: SupervisorMemoryAssemblyIssue
+    ) -> [String] {
+        switch issue.code {
+        case "memory_assembly_snapshot_missing":
+            return [
+                "先触发一次 focused strategic / rescue review，生成最新的 memory assembly snapshot。",
+                "确认 X-Hub memory context 请求成功返回，再重新运行 doctor / incident export。"
+            ]
+        case "memory_review_floor_not_met":
+            return [
+                "保持 focused strategic review 的 memory floor 至少为 m3_deep_dive。",
+                "检查 Hub progressive disclosure、token budget、denyCode / downgradeCode，确认 resolvedProfile >= profileFloor 后再做纠偏。"
+            ]
+        case "memory_strategic_anchor_underfed":
+            return [
+                "补齐当前项目的长期目标、完成标准、关键决策原因和当前卡点。",
+                "确认 focused project 已锁定，且这些背景事实已经同步进 Hub memory。"
+            ]
+        case "memory_core_layers_truncated":
+            return [
+                "提高 memory budget 或允许 progressive disclosure 继续升级，避免截断 l1/l2/l3。",
+                "在 strategic / rescue review 前确认 canonical、observations、working_set 都被完整装配。"
+            ]
+        case "memory_focus_evidence_missing":
+            return [
+                "为 focused project 补齐你认可的日志、回执、实验结果等依据。",
+                "检查 retrieval / evidence pack 装配是否命中当前项目，并重新生成 snapshot。"
+            ]
+        default:
+            return [
+                "修复 memory assembly 风险后重新运行 doctor。"
+            ]
+        }
+    }
+
+    private static func doctorVerifyHint(
+        for issue: SupervisorMemoryAssemblyIssue
+    ) -> String? {
+        switch issue.code {
+        case "memory_assembly_snapshot_missing":
+            return "doctor / incident export 不再出现 memory_assembly_snapshot_missing"
+        case "memory_review_floor_not_met":
+            return "memory snapshot 中 resolvedProfile >= profileFloor"
+        case "memory_strategic_anchor_underfed":
+            return "snapshot 已带上项目主线背景、长期目标摘要和关键依据包"
+        case "memory_core_layers_truncated":
+            return "snapshot.truncatedLayers 不再包含 l1_canonical / l2_observations / l3_working_set"
+        case "memory_focus_evidence_missing":
+            return "snapshot 已选入至少一条项目依据和一条可追溯证据"
+        default:
+            return nil
+        }
     }
 
     private static func resolvePath(_ raw: String, workspaceRoot: URL) -> URL {

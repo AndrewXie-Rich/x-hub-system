@@ -270,7 +270,7 @@ enum UIFirstRunJourneyPlanner {
                 headline: "模型已可见，但 grant 仍待放行",
                 whatHappened: "首用路径已经到模型 / grant 这一段；当前 lane launch 或 replay 合同仍返回 fail-closed 的 grant_required 信号。",
                 whyItHappened: "AI-4 直接消费 AI-2 的 denyCode / note / replay scenario，并继续把 grant_required 的修复入口限制在 3 步内。",
-                userAction: state.runtime.nextRepairAction ?? "先去 Hub 授权与 quota 入口修复，再回到 smoke。",
+                userAction: state.runtime.nextRepairAction ?? "先去 Hub 授权、能力范围与配额入口修复，再回到 smoke。",
                 machineStatusRef: machineStatusRef,
                 hardLine: "grant_fail_closed must remain visible",
                 highlights: mergedHighlights([
@@ -544,23 +544,38 @@ enum UIFirstRunJourneyPlanner {
 
 struct HubSetupWizardView: View {
     @EnvironmentObject private var appModel: AppModel
+    @State private var activeFocusRequest: XTHubSetupFocusRequest?
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: UIThemeTokens.sectionSpacing) {
-                headerSection
-                ValidatedScopeBadge(presentation: journeyPlan.badge)
-                StatusExplanationCard(explanation: journeyPlan.primaryStatus)
-                firstRunPathSection
-                modelSelectionSection
-                setupProgressSection
-                verifyReadinessSection
-                PrimaryActionRail(title: "首用动作", actions: journeyPlan.actions, onTap: handleAction)
-                StatusExplanationCard(explanation: journeyPlan.releaseStatus)
-                troubleshootSection
-                logSection
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: UIThemeTokens.sectionSpacing) {
+                    headerSection
+                    ValidatedScopeBadge(presentation: journeyPlan.badge)
+                    StatusExplanationCard(explanation: journeyPlan.primaryStatus)
+                    firstRunPathSection
+                        .id("first_run_path")
+                    modelSelectionSection
+                        .id("choose_model")
+                    setupProgressSection
+                        .id("pair_progress")
+                    verifyReadinessSection
+                        .id("verify_readiness")
+                    PrimaryActionRail(title: "首用动作", actions: journeyPlan.actions, onTap: handleAction)
+                    StatusExplanationCard(explanation: journeyPlan.releaseStatus)
+                    troubleshootSection
+                        .id("troubleshoot")
+                    logSection
+                        .id("connection_log")
+                }
+                .padding(16)
             }
-            .padding(16)
+            .onAppear {
+                processHubSetupFocusRequest(proxy)
+            }
+            .onChange(of: appModel.hubSetupFocusRequest?.nonce) { _ in
+                processHubSetupFocusRequest(proxy)
+            }
         }
         .frame(minWidth: 780, minHeight: 720)
     }
@@ -619,6 +634,9 @@ struct HubSetupWizardView: View {
     private var modelSelectionSection: some View {
         GroupBox("Choose Model") {
             VStack(alignment: .leading, spacing: 10) {
+                if let context = focusContext(for: "choose_model") {
+                    XTFocusContextCard(context: context)
+                }
                 HStack {
                     Text("已配置模型角色：\(journeyPlan.configuredModelRoles)/\(journeyPlan.totalModelRoles)")
                         .font(UIThemeTokens.monoFont())
@@ -649,7 +667,7 @@ struct HubSetupWizardView: View {
                     }
                 }
 
-                Text("建议至少先配置 coder / supervisor；grant 相关问题则直接走下方 TroubleshootPanel 的 Hub 授权入口。")
+                Text("建议至少先配置 coder / supervisor；如果卡在 Hub 授权、能力范围或配额，就直接走下方 TroubleshootPanel 的 Hub 授权入口。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -724,6 +742,9 @@ struct HubSetupWizardView: View {
     private var troubleshootSection: some View {
         GroupBox("Resolve Grant / Permission / Reachability") {
             VStack(alignment: .leading, spacing: 10) {
+                if let context = focusContext(for: "troubleshoot") {
+                    XTFocusContextCard(context: context)
+                }
                 if let issue = journeyPlan.currentFailureIssue {
                     Text("当前优先排障：\(issue.title)")
                         .font(.subheadline.weight(.semibold))
@@ -751,6 +772,19 @@ struct HubSetupWizardView: View {
                         }
                     }
                 }
+                if !routeRepairLogLines.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Recent route repair log")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        ForEach(routeRepairLogLines, id: \.self) { line in
+                            Text("• \(line)")
+                                .font(UIThemeTokens.monoFont())
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
                 TroubleshootPanel(title: "高频问题 3 步修复", issues: [.grantRequired, .permissionDenied, .hubUnreachable])
             }
             .padding(8)
@@ -759,16 +793,21 @@ struct HubSetupWizardView: View {
 
     private var logSection: some View {
         GroupBox("Connection Log") {
-            ScrollView {
-                Text(appModel.hubRemoteLog.isEmpty ? "No log yet." : appModel.hubRemoteLog)
-                    .font(UIThemeTokens.monoFont())
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
+            VStack(alignment: .leading, spacing: 10) {
+                if let context = focusContext(for: "connection_log") {
+                    XTFocusContextCard(context: context)
+                }
+                ScrollView {
+                    Text(appModel.hubRemoteLog.isEmpty ? "No log yet." : appModel.hubRemoteLog)
+                        .font(UIThemeTokens.monoFont())
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                }
+                .frame(minHeight: 180)
+                .background(Color(NSColor.controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
-            .frame(minHeight: 180)
-            .background(Color(NSColor.controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .padding(8)
         }
     }
@@ -805,6 +844,11 @@ struct HubSetupWizardView: View {
             directedUnblockBatons: orchestrator.executionMonitor.directedUnblockBatons,
             replayReport: orchestrator.latestReplayHarnessReport
         )
+    }
+
+    private var routeRepairLogLines: [String] {
+        guard let ctx = appModel.projectContext else { return [] }
+        return AXRouteRepairLogStore.summaryLines(for: ctx, limit: 5)
     }
 
     private var configuredModelRoles: Int {
@@ -964,5 +1008,28 @@ struct HubSetupWizardView: View {
             return UITroubleshootKnowledgeBase.guide(for: issue).steps.first?.instruction
         }
         return nil
+    }
+
+    private func processHubSetupFocusRequest(_ proxy: ScrollViewProxy) {
+        guard let request = appModel.hubSetupFocusRequest else { return }
+        activeFocusRequest = request
+        withAnimation(.easeInOut(duration: 0.2)) {
+            proxy.scrollTo(request.sectionId, anchor: .top)
+        }
+        appModel.clearHubSetupFocusRequest(request)
+        scheduleFocusContextClear(nonce: request.nonce)
+    }
+
+    private func focusContext(for sectionId: String) -> XTSectionFocusContext? {
+        guard activeFocusRequest?.sectionId == sectionId else { return nil }
+        return activeFocusRequest?.context
+    }
+
+    private func scheduleFocusContextClear(nonce: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12) {
+            if activeFocusRequest?.nonce == nonce {
+                activeFocusRequest = nil
+            }
+        }
     }
 }

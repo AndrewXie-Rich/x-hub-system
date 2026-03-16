@@ -408,7 +408,8 @@ final class ProjectMaterializer {
             status: .pending,
             modelName: suggestedModelName(for: plan),
             isLocalModel: plan.budgetClass == .economy,
-            autonomyLevel: suggestedAutonomyLevel(for: plan.riskTier),
+            executionTier: xtSuggestedExecutionTier(for: plan.riskTier),
+            supervisorInterventionTier: xtSuggestedSupervisorTier(for: plan.riskTier),
             budget: childBudget
         )
         applySuggestedExecutionProfile(to: childProject, for: plan)
@@ -427,7 +428,8 @@ final class ProjectMaterializer {
             status: .pending,
             modelName: suggestedModelName(for: plan),
             isLocalModel: plan.budgetClass == .economy,
-            autonomyLevel: suggestedAutonomyLevel(for: plan.riskTier),
+            executionTier: xtSuggestedExecutionTier(for: plan.riskTier),
+            supervisorInterventionTier: xtSuggestedSupervisorTier(for: plan.riskTier),
             budget: deriveChildBudget(from: parent?.budget ?? Budget(daily: 10.0, monthly: 300.0), laneBudgetClass: plan.budgetClass)
         )
         applySuggestedExecutionProfile(to: childProject, for: plan)
@@ -467,7 +469,19 @@ final class ProjectMaterializer {
 
     private func applySuggestedExecutionProfile(to project: ProjectModel, for plan: SupervisorLanePlan) {
         project.currentModel = suggestedModelInfo(for: plan)
-        project.autonomyLevel = suggestedAutonomyLevel(for: plan.riskTier)
+        let governance = AXProjectGovernanceBundle.recommended(
+            for: xtSuggestedExecutionTier(for: plan.riskTier),
+            supervisorInterventionTier: xtSuggestedSupervisorTier(for: plan.riskTier)
+        )
+        project.updateGovernance(
+            executionTier: governance.executionTier,
+            supervisorInterventionTier: governance.supervisorInterventionTier,
+            reviewPolicyMode: governance.reviewPolicyMode,
+            progressHeartbeatSeconds: governance.schedule.progressHeartbeatSeconds,
+            reviewPulseSeconds: governance.schedule.reviewPulseSeconds,
+            brainstormReviewSeconds: governance.schedule.brainstormReviewSeconds,
+            eventDrivenReviewEnabled: governance.schedule.eventDrivenReviewEnabled
+        )
     }
 
     private func suggestedModelInfo(for plan: SupervisorLanePlan) -> ModelInfo {
@@ -491,19 +505,6 @@ final class ProjectMaterializer {
             badge: nil,
             badgeColor: nil
         )
-    }
-
-    private func suggestedAutonomyLevel(for riskTier: LaneRiskTier) -> AutonomyLevel {
-        switch riskTier {
-        case .critical:
-            return .auto
-        case .high:
-            return .semiAuto
-        case .medium:
-            return .assisted
-        case .low:
-            return .assisted
-        }
     }
 
     private func buildExplain(

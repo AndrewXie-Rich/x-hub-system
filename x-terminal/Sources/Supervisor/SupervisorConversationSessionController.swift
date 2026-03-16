@@ -202,6 +202,38 @@ final class SupervisorConversationSessionController: ObservableObject {
         )
     }
 
+    func holdConversationForFollowUp(
+        reasonCode: String = "awaiting_memory_fact_follow_up",
+        now: Date? = nil
+    ) {
+        guard policy.enabled else { return }
+        let current = now ?? nowProvider()
+        let openedBy = snapshot.openedBy ?? .voiceReplyFollowup
+        expiryDate = current.addingTimeInterval(TimeInterval(policy.maxTTLSeconds))
+        if snapshot.isConversing {
+            publishConversationSnapshot(
+                openedBy: openedBy,
+                reasonCode: reasonCode,
+                now: current
+            )
+            return
+        }
+
+        snapshot = SupervisorConversationSessionSnapshot(
+            schemaVersion: "xt.supervisor_conversation_window_state.v1",
+            windowState: .conversing,
+            conversationId: UUID().uuidString.lowercased(),
+            openedBy: openedBy,
+            wakeMode: wakeMode,
+            route: route,
+            expiresAtMs: expiryDate?.timeIntervalSince1970.multiplied(by: 1000),
+            remainingTTLSeconds: remainingTTLSeconds(at: current),
+            keepOpenOverride: false,
+            reasonCode: reasonCode,
+            auditRef: policy.auditRef
+        )
+    }
+
     func registerRouteFailClosed(reasonCode: String?, now: Date? = nil) {
         guard snapshot.isConversing else { return }
         endConversation(

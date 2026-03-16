@@ -717,6 +717,86 @@ struct SupervisorManagerVoiceAuthorizationTests {
     }
 
     @Test
+    func ensureOneShotAnchorProjectCreatesLowRiskRootWithGovernanceTiers() async {
+        await Self.gate.run {
+            let manager = SupervisorManager.makeForTesting()
+            let supervisor = SupervisorModel()
+            let request = makeAnchorIntakeRequest(
+                projectID: "11111111-2222-3333-4444-555555555560",
+                requestID: "66666666-7777-8888-9999-000000000060",
+                userGoal: "Stabilize parser internals and ship repo-only fixes."
+            )
+            let planDecision = makeAnchorPlanDecision(
+                projectID: request.projectID,
+                requestID: request.requestID,
+                riskSurface: .low
+            )
+
+            let project = await manager.ensureOneShotAnchorProjectForTesting(
+                in: supervisor,
+                request: request,
+                planDecision: planDecision
+            )
+
+            #expect(project.name == "Root")
+            #expect(project.status == .running)
+            #expect(project.taskDescription == request.userGoal)
+            #expect(project.executionTier == .a3DeliverAuto)
+            #expect(project.supervisorInterventionTier == .s2PeriodicReview)
+            #expect(project.autonomyLevel == .auto)
+            #expect(project.currentModel.id == "one-shot-anchor-low")
+            #expect(supervisor.activeProjects.count == 1)
+            #expect(supervisor.activeProjects.first?.id == project.id)
+        }
+    }
+
+    @Test
+    func ensureOneShotAnchorProjectRefreshesExistingRootToCriticalGovernance() async {
+        await Self.gate.run {
+            let manager = SupervisorManager.makeForTesting()
+            let supervisor = SupervisorModel()
+            let staleRoot = ProjectModel(
+                name: "Root",
+                taskDescription: "Old root",
+                status: .pending,
+                modelName: "legacy-root",
+                autonomyLevel: .manual,
+                executionTier: .a1Plan,
+                supervisorInterventionTier: .s1MilestoneReview
+            )
+            staleRoot.status = .pending
+            supervisor.activeProjects = [staleRoot]
+
+            let request = makeAnchorIntakeRequest(
+                projectID: "11111111-2222-3333-4444-555555555561",
+                requestID: "66666666-7777-8888-9999-000000000061",
+                userGoal: "Execute the critical production recovery flow."
+            )
+            let planDecision = makeAnchorPlanDecision(
+                projectID: request.projectID,
+                requestID: request.requestID,
+                riskSurface: .critical
+            )
+
+            let project = await manager.ensureOneShotAnchorProjectForTesting(
+                in: supervisor,
+                request: request,
+                planDecision: planDecision
+            )
+
+            #expect(project.id == staleRoot.id)
+            #expect(project.status == .running)
+            #expect(project.taskDescription == request.userGoal)
+            #expect(project.executionTier == .a4OpenClaw)
+            #expect(project.supervisorInterventionTier == .s4TightSupervision)
+            #expect(project.autonomyLevel == .fullAuto)
+            #expect(project.currentModel.id == "one-shot-anchor-critical")
+            #expect(supervisor.activeProjects.count == 1)
+            #expect(supervisor.activeProjects.first?.id == staleRoot.id)
+        }
+    }
+
+    @Test
     func voicePendingGrantApproveIntentStartsAuthorizationAndVerifiedResolutionExecutesGrantAndRebriefs() async throws {
         try await Self.gate.run {
             var spoken: [String] = []
@@ -752,7 +832,34 @@ struct SupervisorManagerVoiceAuthorizationTests {
             appModel.selectedProjectId = project.projectId
             appModel.settingsStore.settings = configuredSettings(from: appModel.settingsStore.settings)
             manager.setAppModel(appModel)
-            manager.setPendingHubGrantsForTesting([grant])
+            let now = Date()
+            let nowMs = now.timeIntervalSince1970 * 1000.0
+            manager.setConnectorIngressSnapshotForTesting(
+                HubIPCClient.ConnectorIngressSnapshot(
+                    source: "test",
+                    updatedAtMs: nowMs,
+                    items: [
+                        HubIPCClient.ConnectorIngressReceipt(
+                            receiptId: "receipt-voice-grant-approve",
+                            requestId: "request-voice-grant-approve",
+                            projectId: project.projectId,
+                            connector: "slack",
+                            targetId: "dm-release",
+                            ingressType: "connector_event",
+                            channelScope: "dm",
+                            sourceId: "user-release",
+                            messageId: "message-voice-grant-approve",
+                            dedupeKey: "sha256:voice-grant-approve",
+                            receivedAtMs: nowMs - 5_000,
+                            eventSequence: 8,
+                            deliveryState: "accepted",
+                            runtimeState: "queued"
+                        )
+                    ]
+                ),
+                now: now
+            )
+            manager.setPendingHubGrantsForTesting([grant], now: now)
             manager.installSchedulerSnapshotRefreshOverrideForTesting { _ in }
             manager.installPendingHubGrantApproveOverrideForTesting { grantRequestId, projectId, requestedTtlSec, requestedTokenCap, note in
                 await approveProbe.record(
@@ -840,6 +947,7 @@ struct SupervisorManagerVoiceAuthorizationTests {
                 manager.voiceAuthorizationResolution?.state == .escalatedToMobile &&
                     manager.activeVoiceChallenge?.challengeId == "voice_chal_pending_grant_approve"
             }
+            #expect(manager.messages.last?.content.contains("来源：Slack / 私聊消息入口") == true)
 
             let resolution = await manager.retryVoiceAuthorizationVerification(
                 transcript: "Approve Hub grant for Release Runtime",
@@ -1045,7 +1153,50 @@ struct SupervisorManagerVoiceAuthorizationTests {
             appModel.selectedProjectId = AXProjectRegistry.globalHomeId
             appModel.settingsStore.settings = configuredSettings(from: appModel.settingsStore.settings)
             manager.setAppModel(appModel)
-            manager.setPendingHubGrantsForTesting([grantA, grantB])
+            let now = Date()
+            let nowMs = now.timeIntervalSince1970 * 1000.0
+            manager.setConnectorIngressSnapshotForTesting(
+                HubIPCClient.ConnectorIngressSnapshot(
+                    source: "test",
+                    updatedAtMs: nowMs,
+                    items: [
+                        HubIPCClient.ConnectorIngressReceipt(
+                            receiptId: "receipt-voice-ambiguous-a",
+                            requestId: "request-voice-ambiguous-a",
+                            projectId: projectA.projectId,
+                            connector: "slack",
+                            targetId: "dm-alpha",
+                            ingressType: "connector_event",
+                            channelScope: "dm",
+                            sourceId: "user-alpha",
+                            messageId: "message-voice-ambiguous-a",
+                            dedupeKey: "sha256:voice-ambiguous-a",
+                            receivedAtMs: nowMs - 5_000,
+                            eventSequence: 1,
+                            deliveryState: "accepted",
+                            runtimeState: "queued"
+                        ),
+                        HubIPCClient.ConnectorIngressReceipt(
+                            receiptId: "receipt-voice-ambiguous-b",
+                            requestId: "request-voice-ambiguous-b",
+                            projectId: projectB.projectId,
+                            connector: "telegram",
+                            targetId: "group-beta",
+                            ingressType: "connector_event",
+                            channelScope: "group",
+                            sourceId: "user-beta",
+                            messageId: "message-voice-ambiguous-b",
+                            dedupeKey: "sha256:voice-ambiguous-b",
+                            receivedAtMs: nowMs - 4_000,
+                            eventSequence: 2,
+                            deliveryState: "accepted",
+                            runtimeState: "queued"
+                        )
+                    ]
+                ),
+                now: now
+            )
+            manager.setPendingHubGrantsForTesting([grantA, grantB], now: now)
 
             manager.sendMessage("批准这个 grant", fromVoice: true)
 
@@ -1059,6 +1210,283 @@ struct SupervisorManagerVoiceAuthorizationTests {
             #expect(manager.voiceAuthorizationResolution == nil)
             #expect(manager.activeVoiceChallenge == nil)
             #expect(spoken.contains(where: { $0.contains("多个待处理 Hub grant") }))
+            #expect(manager.messages.last?.content.contains("来源：Slack / 私聊消息入口") == true)
+            #expect(manager.messages.last?.content.contains("来源：Telegram / 群聊消息入口") == true)
+        }
+    }
+
+    @Test
+    func voicePendingGrantIntentSelectsGrantByRemoteIngressAlias() async throws {
+        try await Self.gate.run {
+            let manager = SupervisorManager.makeForTesting()
+            manager.resetVoiceAuthorizationState()
+            manager.clearMessages()
+            defer {
+                manager.resetVoiceAuthorizationState()
+                manager.clearMessages()
+            }
+
+            let rootA = try makeProjectRoot(named: "voice-pending-grant-source-dm")
+            let rootB = try makeProjectRoot(named: "voice-pending-grant-source-group")
+            defer {
+                try? FileManager.default.removeItem(at: rootA)
+                try? FileManager.default.removeItem(at: rootB)
+            }
+
+            let projectA = makeProjectEntry(root: rootA, displayName: "Remote Slack DM")
+            let projectB = makeProjectEntry(root: rootB, displayName: "Remote Slack Group")
+            let grantA = makePendingGrant(
+                project: projectA,
+                grantRequestId: "grant-slack-dm-1",
+                capability: "web.fetch",
+                reason: "release production deploy"
+            )
+            let grantB = makePendingGrant(
+                project: projectB,
+                grantRequestId: "grant-slack-group-1",
+                capability: "web.fetch",
+                reason: "release production deploy"
+            )
+
+            let appModel = AppModel()
+            appModel.registry = registry(with: [projectA, projectB])
+            appModel.selectedProjectId = AXProjectRegistry.globalHomeId
+            appModel.settingsStore.settings = configuredSettings(from: appModel.settingsStore.settings)
+            manager.setAppModel(appModel)
+
+            let now = Date()
+            let nowMs = now.timeIntervalSince1970 * 1000.0
+            manager.setConnectorIngressSnapshotForTesting(
+                HubIPCClient.ConnectorIngressSnapshot(
+                    source: "test",
+                    updatedAtMs: nowMs,
+                    items: [
+                        HubIPCClient.ConnectorIngressReceipt(
+                            receiptId: "receipt-voice-source-dm",
+                            requestId: "request-voice-source-dm",
+                            projectId: projectA.projectId,
+                            connector: "slack",
+                            targetId: "dm-release",
+                            ingressType: "connector_event",
+                            channelScope: "dm",
+                            sourceId: "user-release-dm",
+                            messageId: "message-voice-source-dm",
+                            dedupeKey: "sha256:voice-source-dm",
+                            receivedAtMs: nowMs - 5_000,
+                            eventSequence: 11,
+                            deliveryState: "accepted",
+                            runtimeState: "queued"
+                        ),
+                        HubIPCClient.ConnectorIngressReceipt(
+                            receiptId: "receipt-voice-source-group",
+                            requestId: "request-voice-source-group",
+                            projectId: projectB.projectId,
+                            connector: "slack",
+                            targetId: "group-release",
+                            ingressType: "connector_event",
+                            channelScope: "group",
+                            sourceId: "user-release-group",
+                            messageId: "message-voice-source-group",
+                            dedupeKey: "sha256:voice-source-group",
+                            receivedAtMs: nowMs - 4_000,
+                            eventSequence: 12,
+                            deliveryState: "accepted",
+                            runtimeState: "queued"
+                        )
+                    ]
+                ),
+                now: now
+            )
+            manager.setPendingHubGrantsForTesting([grantA, grantB], now: now)
+
+            var issuedProjectID: String?
+            manager.installVoiceAuthorizationBridgeForTesting(
+                SupervisorVoiceAuthorizationBridge(
+                    issueHandler: { payload in
+                        issuedProjectID = payload.projectId
+                        return HubIPCClient.VoiceGrantChallengeResult(
+                            ok: true,
+                            source: "test",
+                            challenge: makeChallenge(
+                                challengeId: "voice_chal_pending_grant_source_scope",
+                                templateId: payload.templateId,
+                                actionDigest: payload.actionDigest,
+                                scopeDigest: payload.scopeDigest,
+                                amountDigest: payload.amountDigest ?? "",
+                                requiresMobileConfirm: payload.requiresMobileConfirm,
+                                allowVoiceOnly: payload.allowVoiceOnly,
+                                riskLevel: payload.riskLevel
+                            ),
+                            reasonCode: nil
+                        )
+                    }
+                )
+            )
+
+            manager.sendMessage("批准私聊那个 grant", fromVoice: true)
+
+            try await waitUntil("voice challenge issued for dm grant") {
+                manager.activeVoiceChallenge?.challengeId == "voice_chal_pending_grant_source_scope"
+            }
+
+            #expect(issuedProjectID == projectA.projectId)
+            #expect(manager.messages.last?.content.contains(projectA.displayName) == true)
+        }
+    }
+
+    @Test
+    func voicePendingGrantIntentSelectsGrantByRemoteProviderAlias() async throws {
+        try await Self.gate.run {
+            let manager = SupervisorManager.makeForTesting()
+            manager.resetVoiceAuthorizationState()
+            manager.clearMessages()
+            defer {
+                manager.resetVoiceAuthorizationState()
+                manager.clearMessages()
+            }
+
+            let rootA = try makeProjectRoot(named: "voice-pending-grant-provider-slack")
+            let rootB = try makeProjectRoot(named: "voice-pending-grant-provider-feishu")
+            defer {
+                try? FileManager.default.removeItem(at: rootA)
+                try? FileManager.default.removeItem(at: rootB)
+            }
+
+            let projectA = makeProjectEntry(root: rootA, displayName: "Slack Remote")
+            let projectB = makeProjectEntry(root: rootB, displayName: "Feishu Remote")
+            let grantA = makePendingGrant(
+                project: projectA,
+                grantRequestId: "grant-slack-provider-1",
+                capability: "web.fetch",
+                reason: "release production deploy"
+            )
+            let grantB = makePendingGrant(
+                project: projectB,
+                grantRequestId: "grant-feishu-provider-1",
+                capability: "web.fetch",
+                reason: "release production deploy"
+            )
+
+            let appModel = AppModel()
+            appModel.registry = registry(with: [projectA, projectB])
+            appModel.selectedProjectId = AXProjectRegistry.globalHomeId
+            appModel.settingsStore.settings = configuredSettings(from: appModel.settingsStore.settings)
+            manager.setAppModel(appModel)
+
+            let now = Date()
+            let nowMs = now.timeIntervalSince1970 * 1000.0
+            manager.setConnectorIngressSnapshotForTesting(
+                HubIPCClient.ConnectorIngressSnapshot(
+                    source: "test",
+                    updatedAtMs: nowMs,
+                    items: [
+                        HubIPCClient.ConnectorIngressReceipt(
+                            receiptId: "receipt-voice-provider-slack",
+                            requestId: "request-voice-provider-slack",
+                            projectId: projectA.projectId,
+                            connector: "slack",
+                            targetId: "dm-provider-slack",
+                            ingressType: "connector_event",
+                            channelScope: "dm",
+                            sourceId: "user-provider-slack",
+                            messageId: "message-voice-provider-slack",
+                            dedupeKey: "sha256:voice-provider-slack",
+                            receivedAtMs: nowMs - 5_000,
+                            eventSequence: 21,
+                            deliveryState: "accepted",
+                            runtimeState: "queued"
+                        ),
+                        HubIPCClient.ConnectorIngressReceipt(
+                            receiptId: "receipt-voice-provider-feishu",
+                            requestId: "request-voice-provider-feishu",
+                            projectId: projectB.projectId,
+                            connector: "feishu",
+                            targetId: "dm-provider-feishu",
+                            ingressType: "connector_event",
+                            channelScope: "dm",
+                            sourceId: "user-provider-feishu",
+                            messageId: "message-voice-provider-feishu",
+                            dedupeKey: "sha256:voice-provider-feishu",
+                            receivedAtMs: nowMs - 4_000,
+                            eventSequence: 22,
+                            deliveryState: "accepted",
+                            runtimeState: "queued"
+                        )
+                    ]
+                ),
+                now: now
+            )
+            manager.setPendingHubGrantsForTesting([grantA, grantB], now: now)
+
+            var issuedProjectID: String?
+            manager.installVoiceAuthorizationBridgeForTesting(
+                SupervisorVoiceAuthorizationBridge(
+                    issueHandler: { payload in
+                        issuedProjectID = payload.projectId
+                        return HubIPCClient.VoiceGrantChallengeResult(
+                            ok: true,
+                            source: "test",
+                            challenge: makeChallenge(
+                                challengeId: "voice_chal_pending_grant_provider_scope",
+                                templateId: payload.templateId,
+                                actionDigest: payload.actionDigest,
+                                scopeDigest: payload.scopeDigest,
+                                amountDigest: payload.amountDigest ?? "",
+                                requiresMobileConfirm: payload.requiresMobileConfirm,
+                                allowVoiceOnly: payload.allowVoiceOnly,
+                                riskLevel: payload.riskLevel
+                            ),
+                            reasonCode: nil
+                        )
+                    }
+                )
+            )
+
+            manager.sendMessage("批准 Slack 那个 grant", fromVoice: true)
+
+            try await waitUntil("voice challenge issued for slack grant") {
+                manager.activeVoiceChallenge?.challengeId == "voice_chal_pending_grant_provider_scope"
+            }
+
+            #expect(issuedProjectID == projectA.projectId)
+            #expect(manager.messages.last?.content.contains("Slack / 私聊消息入口") == true)
+        }
+    }
+
+    @Test
+    func voicePendingGrantIntentWithoutPendingGrantUsesSharedEmptyReply() async throws {
+        try await Self.gate.run {
+            var spoken: [String] = []
+            let synthesizer = SupervisorSpeechSynthesizer(
+                deduper: SupervisorVoiceBriefDeduper(cooldown: 0),
+                speakSink: { spoken.append($0) }
+            )
+            let manager = SupervisorManager.makeForTesting(
+                supervisorSpeechSynthesizer: synthesizer
+            )
+            manager.resetVoiceAuthorizationState()
+            manager.clearMessages()
+            defer {
+                manager.resetVoiceAuthorizationState()
+                manager.clearMessages()
+            }
+
+            manager.setPendingHubGrantsForTesting([])
+            manager.installSchedulerSnapshotRefreshOverrideForTesting { _ in }
+
+            manager.sendMessage("批准这个 grant", fromVoice: true)
+
+            let expectedReply = XTHubGrantPresentation.emptyPendingReply(projectName: nil)
+            try await waitUntil("empty pending grant reply emitted") {
+                manager.messages.contains(where: {
+                    $0.role == .assistant &&
+                        $0.content == expectedReply
+                })
+            }
+
+            #expect(manager.voiceAuthorizationResolution == nil)
+            #expect(manager.activeVoiceChallenge == nil)
+            #expect(spoken.contains(where: { $0.contains(expectedReply) }))
         }
     }
 
@@ -1254,7 +1682,7 @@ struct SupervisorManagerVoiceAuthorizationTests {
                     requestId: "voice-repeat-cancel",
                     projectId: "project-repeat-cancel",
                     actionText: "Approve production release",
-                    scopeText: "Release Runtime production path",
+                    scopeText: "project=Release Runtime; capability=production release; source=Slack / 私聊消息入口; reason=需要确认生产发布",
                     riskTier: .high
                 )
             )
@@ -1263,7 +1691,9 @@ struct SupervisorManagerVoiceAuthorizationTests {
             try await waitUntil("voice auth repeat prompt emitted") {
                 manager.messages.contains(where: {
                     $0.role == .assistant &&
-                        $0.content.contains("challenge code") &&
+                        $0.content.contains("高风险语音授权") &&
+                        $0.content.contains("Slack / 私聊消息入口") &&
+                        $0.content.contains("554433") &&
                         $0.content.contains("Approve production release")
                 })
             }
@@ -1277,8 +1707,9 @@ struct SupervisorManagerVoiceAuthorizationTests {
                     })
             }
 
-            #expect(spoken.contains(where: { $0.contains("当前语音授权仍在等待移动端确认") }))
-            #expect(spoken.contains(where: { $0.contains("Approve production release") }))
+            #expect(spoken.contains(where: { $0.contains("高风险语音授权") }))
+            #expect(spoken.contains(where: { $0.contains("Slack / 私聊消息入口") }))
+            #expect(spoken.contains(where: { $0.contains("554433") }))
             #expect(spoken.contains(where: { $0.contains("Voice authorization failed closed") }))
         }
     }
@@ -1654,6 +2085,62 @@ struct SupervisorManagerVoiceAuthorizationTests {
             requiresHumanAuthorizationTypes: [],
             auditRef: "audit-xt-w3-29-safe-one-shot",
             now: Date(timeIntervalSince1970: 1_772_220_029)
+        )
+    }
+
+    private func makeAnchorIntakeRequest(
+        projectID: String,
+        requestID: String,
+        userGoal: String
+    ) -> SupervisorOneShotIntakeRequest {
+        SupervisorOneShotIntakeRequest(
+            schemaVersion: "xterminal.supervisor_one_shot_intake_request.v1",
+            projectID: projectID,
+            requestID: requestID,
+            userGoal: userGoal,
+            contextRefs: ["memory://project/\(projectID)"],
+            preferredSplitProfile: .balanced,
+            participationMode: .guidedTouch,
+            innovationLevel: .l1,
+            tokenBudgetClass: .standard,
+            deliveryMode: .implementationFirst,
+            allowAutoLaunch: true,
+            requiresHumanAuthorizationTypes: [],
+            auditRef: "audit-anchor-\(requestID)"
+        )
+    }
+
+    private func makeAnchorPlanDecision(
+        projectID: String,
+        requestID: String,
+        riskSurface: OneShotRiskSurface
+    ) -> AdaptivePoolPlanDecision {
+        AdaptivePoolPlanDecision(
+            schemaVersion: "xterminal.adaptive_pool_plan_decision.v1",
+            projectID: projectID,
+            requestID: requestID,
+            complexityScore: riskSurface == .critical ? 0.95 : 0.35,
+            riskSurface: riskSurface,
+            selectedProfile: .balanced,
+            selectedParticipationMode: .guidedTouch,
+            selectedInnovationLevel: .l1,
+            poolCount: 1,
+            laneCount: 1,
+            poolPlan: [
+                AdaptivePoolPlanPoolEntry(
+                    poolID: "pool-root",
+                    purpose: "root anchor",
+                    laneIDs: ["lane-root"],
+                    requiresIsolation: riskSurface >= .high
+                )
+            ],
+            seatCap: 1,
+            blockRiskScore: riskSurface == .critical ? 0.9 : 0.2,
+            estimatedMergeCost: riskSurface == .critical ? 0.8 : 0.1,
+            decisionExplain: ["test_anchor_governance"],
+            decision: .allow,
+            denyCode: "none",
+            auditRef: "audit-plan-\(requestID)"
         )
     }
 }

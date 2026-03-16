@@ -25,6 +25,10 @@ struct GlobalHomeView: View {
         )
     }
 
+    private var homeResumeReminder: AXResumeReminderProjectPresentation? {
+        appModel.latestResumeReminderProject()
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             headerView
@@ -82,6 +86,18 @@ struct GlobalHomeView: View {
         let presentation = homePresentation
 
         return VStack(alignment: .leading, spacing: UIThemeTokens.sectionSpacing) {
+            if let reminder = homeResumeReminder {
+                HomeResumeReminderCard(
+                    reminder: reminder,
+                    onDismiss: {
+                        appModel.dismissResumeReminder(projectId: reminder.projectId)
+                    },
+                    onResume: {
+                        appModel.presentResumeBrief(projectId: reminder.projectId)
+                    }
+                )
+            }
+
             PrimaryActionRail(
                 title: "Primary Actions",
                 actions: presentation.actions,
@@ -172,8 +188,8 @@ struct GlobalHomeView: View {
         case "start_big_task":
             openSupervisor()
         case "resume_project":
-            if let project = appModel.sortedProjects.first {
-                appModel.selectProject(project.projectId)
+            if appModel.canPresentPreferredResumeBrief {
+                appModel.presentPreferredResumeBrief()
             } else {
                 openSupervisor()
             }
@@ -241,7 +257,13 @@ struct GlobalHomeView: View {
             await MainActor.run {
                 pendingGrantActionsInFlight.remove(grantId)
                 if !result.ok {
-                    decisionDrafts[projectId] = "Hub 授权审批失败（\(result.reasonCode ?? "unknown")）：grant_request_id=\(grantId)"
+                    decisionDrafts[projectId] = XTHubGrantPresentation.decisionFailureDraft(
+                        intent: .approve,
+                        capability: grant.capability,
+                        modelId: grant.modelId,
+                        grantRequestId: grantId,
+                        reasonCode: result.reasonCode
+                    )
                 }
             }
             await refreshPendingGrants()
@@ -263,11 +285,61 @@ struct GlobalHomeView: View {
             await MainActor.run {
                 pendingGrantActionsInFlight.remove(grantId)
                 if !result.ok {
-                    decisionDrafts[projectId] = "Hub 授权拒绝失败（\(result.reasonCode ?? "unknown")）：grant_request_id=\(grantId)"
+                    decisionDrafts[projectId] = XTHubGrantPresentation.decisionFailureDraft(
+                        intent: .deny,
+                        capability: grant.capability,
+                        modelId: grant.modelId,
+                        grantRequestId: grantId,
+                        reasonCode: result.reasonCode
+                    )
                 }
             }
             await refreshPendingGrants()
         }
+    }
+}
+
+private struct HomeResumeReminderCard: View {
+    let reminder: AXResumeReminderProjectPresentation
+    let onDismiss: () -> Void
+    let onResume: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Label("检测到最近交接摘要", systemImage: "arrow.triangle.branch")
+                    .font(.headline)
+                Spacer(minLength: 12)
+                Text(reminder.summary.detailText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Text(reminder.projectDisplayName)
+                .font(.subheadline.weight(.semibold))
+
+            Text("这是最近一次在生命周期边界写入的项目交接摘要。只有你点“接上次进度”时才会展开，不会自动塞进当前 prompt。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 10) {
+                Button("接上次进度", action: onResume)
+                    .buttonStyle(.borderedProminent)
+                Button("稍后", action: onDismiss)
+                    .buttonStyle(.bordered)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: UIThemeTokens.cardRadius)
+                .fill(UIThemeTokens.stateBackground(for: .inProgress))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: UIThemeTokens.cardRadius)
+                .stroke(UIThemeTokens.color(for: .inProgress).opacity(0.24), lineWidth: 1)
+        )
     }
 }
 
@@ -286,7 +358,13 @@ private struct ProjectHomeRow: View {
         let isRunning = session.isSending
         let candidates = appModel.skillCandidates(for: project.projectId)
         let curations = appModel.curationSuggestions(for: project.projectId)
+        let latestSessionSummary = AXSessionSummaryCapsulePresentation.load(for: projectContext)
+        let latestUIReview = XTUIReviewPresentation.loadLatestBrowserPage(for: projectContext)
         let governed = appModel.governedAuthorityPresentation(for: project)
+        let governancePresentation = ProjectGovernancePresentation(
+            resolved: appModel.resolvedProjectGovernance(for: project)
+        )
+        let switchboard = appModel.autonomySwitchboardPresentation(for: project)
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
                 Text(project.displayName)
@@ -295,16 +373,47 @@ private struct ProjectHomeRow: View {
                 Text("更新：\(timeText(project.lastSummaryAt))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Button("接上次进度") {
+                    appModel.presentResumeBrief(projectId: project.projectId)
+                }
+                .disabled(session.isSending)
                 Button("Open") {
                     appModel.selectProject(project.projectId)
+                    if !pending.isEmpty {
+                        appModel.setPane(.chat, for: project.projectId)
+                        appModel.requestProjectToolApprovalFocus(
+                            projectId: project.projectId,
+                            requestId: pending.first?.id
+                        )
+                    }
                 }
+            }
+
+            ProjectGovernanceCompactSummaryView(presentation: governancePresentation)
+
+            if let latestSessionSummary {
+                Text(latestSessionSummary.badgeText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .help(latestSessionSummary.helpText)
+            }
+
+            if let latestUIReview {
+                ProjectUIReviewCompactSummaryView(review: latestUIReview)
+                row(title: "UI review", value: latestUIReview.updatedText, placeholder: "未生成")
             }
 
             let digest = (project.statusDigest ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             let stateValue = (project.currentStateSummary ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             row(title: "状态", value: stateValue.isEmpty ? digest : stateValue, placeholder: "未生成")
             row(title: "记忆", value: memoryHealthSummary(), placeholder: "未知")
-            row(title: "治理", value: governedSummary(governed), placeholder: "manual")
+            row(title: "治理拨盘", value: governanceAxisSummary(governancePresentation, switchboard: switchboard), placeholder: "A0 / S0")
+            row(title: "治理状态", value: governancePresentation.homeStatusMessage, placeholder: "configured 与 effective 当前一致。")
+            row(title: "Review 节奏", value: governancePresentation.reviewCadenceText, placeholder: "off")
+            if let clampMessage = governancePresentation.homeClampMessage {
+                row(title: "Clamp / 收束", value: clampMessage, placeholder: "无")
+            }
+            row(title: "执行权限", value: governedSummary(governed, switchboard: switchboard), placeholder: "人工审批")
             row(title: "卡点", value: project.blockerSummary, placeholder: "无")
             row(title: "下一步", value: project.nextStepSummary, placeholder: "未生成")
 
@@ -327,14 +436,35 @@ private struct ProjectHomeRow: View {
                 ForEach(pendingGrants, id: \.grantRequestId) { grant in
                     let grantId = grant.grantRequestId.trimmingCharacters(in: .whitespacesAndNewlines)
                     let inFlight = pendingGrantActionsInFlight.contains(grantId)
+                    let supplementaryReason = XTHubGrantPresentation.supplementaryReason(
+                        grant.reason,
+                        capability: grant.capability,
+                        modelId: grant.modelId
+                    )
+                    let scopeSummary = XTHubGrantPresentation.scopeSummary(
+                        requestedTtlSec: grant.requestedTtlSec,
+                        requestedTokenCap: grant.requestedTokenCap
+                    )
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(hubGrantTitle(grant))
                                 .font(.subheadline)
+                            if let supplementaryReason {
+                                Text(supplementaryReason)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
                             Text("grant=\(grantId) · \(grantTimingText(grant.createdAtMs))")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .textSelection(.enabled)
+                            if let scopeSummary {
+                                Text(scopeSummary)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
                         }
                         Spacer(minLength: 8)
                         if inFlight {
@@ -474,6 +604,10 @@ private struct ProjectHomeRow: View {
         .padding(.vertical, 8)
     }
 
+    private var projectContext: AXProjectContext {
+        AXProjectContext(root: URL(fileURLWithPath: project.rootPath, isDirectory: true))
+    }
+
     private func timeText(_ ts: Double?) -> String {
         guard let ts, ts > 0 else { return "未更新" }
         let d = Date(timeIntervalSince1970: ts)
@@ -499,27 +633,10 @@ private struct ProjectHomeRow: View {
     }
 
     private func hubGrantTitle(_ grant: HubIPCClient.PendingGrantItem) -> String {
-        let capability = grant.capability.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let modelId = grant.modelId.trimmingCharacters(in: .whitespacesAndNewlines)
-        let reason = grant.reason.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        let capabilityLabel: String
-        if capability.contains("web_fetch") || capability.contains("web.fetch") {
-            capabilityLabel = "联网访问"
-        } else if capability.contains("ai_generate_paid") || capability.contains("ai.generate.paid") {
-            capabilityLabel = modelId.isEmpty ? "付费模型调用" : "付费模型调用（\(modelId)）"
-        } else if capability.contains("ai_generate_local") || capability.contains("ai.generate.local") {
-            capabilityLabel = modelId.isEmpty ? "本地模型调用" : "本地模型调用（\(modelId)）"
-        } else if capability.isEmpty {
-            capabilityLabel = "高风险能力"
-        } else {
-            capabilityLabel = grant.capability
-        }
-
-        if reason.isEmpty {
-            return capabilityLabel
-        }
-        return "\(capabilityLabel) · \(reason)"
+        XTHubGrantPresentation.capabilityLabel(
+            capability: grant.capability,
+            modelId: grant.modelId
+        )
     }
 
     private func grantTimingText(_ createdAtMs: Double) -> String {
@@ -576,18 +693,29 @@ private struct ProjectHomeRow: View {
         return out
     }
 
-    private func governedSummary(_ governed: AXProjectGovernedAuthorityPresentation) -> String {
+    private func governanceAxisSummary(
+        _ presentation: ProjectGovernancePresentation,
+        switchboard: AXProjectAutonomySwitchboardPresentation
+    ) -> String {
+        let base = "\(presentation.effectiveExecutionLabel) / \(presentation.effectiveSupervisorLabel) · \(presentation.reviewPolicyMode.displayName)"
+        guard switchboard.hasConfiguredEffectiveDrift else { return base }
+        return "\(base) · \(switchboard.configuredProfile.displayName) -> \(switchboard.effectiveProfile.displayName)"
+    }
+
+    private func governedSummary(
+        _ governed: AXProjectGovernedAuthorityPresentation,
+        switchboard: AXProjectAutonomySwitchboardPresentation
+    ) -> String {
         var parts: [String] = []
-        if governed.deviceAuthorityConfigured {
-            parts.append("device authority on")
-        }
-        if governed.localAutoApproveConfigured {
-            parts.append("local auto on")
-        }
+        parts.append(switchboard.effectiveDeviceAuthorityPosture.displayName)
+        parts.append(switchboard.effectiveGrantPosture.displayName)
         if governed.governedReadableRootCount > 0 {
             parts.append("read+\(governed.governedReadableRootCount)")
         }
-        return parts.isEmpty ? "manual" : parts.joined(separator: " · ")
+        if governed.localAutoApproveConfigured {
+            parts.append("local auto")
+        }
+        return parts.joined(separator: " · ")
     }
 
     private static let timeFormatter: DateFormatter = {
@@ -740,7 +868,7 @@ struct GlobalHomePresentation: Codable, Equatable {
                 projectCount: appModel.sortedProjects.count,
                 runningProjectCount: runningProjectCount,
                 pendingGrantCount: pendingGrantCount,
-                highlightedProjectName: appModel.sortedProjects.first?.displayName,
+                highlightedProjectName: appModel.preferredResumeProject()?.projectDisplayName ?? appModel.sortedProjects.first?.displayName,
                 autoConfirmPolicy: runtimePolicy?.autoConfirmPolicy.rawValue,
                 autoLaunchPolicy: runtimePolicy?.autoLaunchPolicy.rawValue,
                 grantGateMode: runtimePolicy?.grantGateMode,

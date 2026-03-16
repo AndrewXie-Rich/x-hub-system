@@ -138,6 +138,135 @@ struct HubIPCClientMemoryProgressiveDisclosureTests {
         ])
     }
 
+    @Test
+    func focusedSupervisorStrategicReviewDoesNotStartBelowM3Floor() async throws {
+        let recorder = MemoryProfileAttemptRecorder()
+        HubIPCClient.installMemoryContextResolutionOverrideForTesting { route, mode, _ in
+            await recorder.append(route.servingProfile.rawValue)
+            return Self.resolutionResult(
+                mode: mode,
+                profile: route.servingProfile,
+                usedTokens: 920,
+                budgetTokens: 2_880,
+                truncatedLayers: []
+            )
+        }
+        defer { HubIPCClient.resetMemoryContextResolutionOverrideForTesting() }
+
+        let result = await HubIPCClient.requestMemoryContextDetailed(
+            useMode: .supervisorOrchestration,
+            requesterRole: .supervisor,
+            projectId: nil,
+            projectRoot: nil,
+            displayName: "Supervisor",
+            latestUser: "审查当前项目的上下文记忆，给出最具体的执行方案",
+            reviewLevelHint: SupervisorReviewLevel.r2Strategic.rawValue,
+            constitutionHint: "safe",
+            portfolioBriefText: "portfolio",
+            focusedProjectAnchorPackText: "project: proj-1 (proj-1)\ngoal: keep strategic alignment",
+            longtermOutlineText: "longterm",
+            deltaFeedText: "delta",
+            conflictSetText: "conflict",
+            contextRefsText: "refs",
+            evidencePackText: "evidence",
+            canonicalText: "canonical",
+            observationsText: "observations",
+            workingSetText: "working",
+            rawEvidenceText: "raw",
+            servingProfile: .m3DeepDive,
+            progressiveDisclosure: true,
+            budgets: nil,
+            timeoutSec: 0.1
+        )
+
+        let response = try #require(result.response)
+        #expect(result.requestedProfile == XTMemoryServingProfile.m3DeepDive.rawValue)
+        #expect(result.attemptedProfiles == [XTMemoryServingProfile.m3DeepDive.rawValue])
+        #expect(response.resolvedProfile == XTMemoryServingProfile.m3DeepDive.rawValue)
+        #expect(response.attemptedProfiles == [XTMemoryServingProfile.m3DeepDive.rawValue])
+        #expect(await recorder.snapshot() == [XTMemoryServingProfile.m3DeepDive.rawValue])
+    }
+
+    @Test
+    func unfocusedSupervisorStrategicReviewStartsAtM2Floor() async throws {
+        let recorder = MemoryProfileAttemptRecorder()
+        HubIPCClient.installMemoryContextResolutionOverrideForTesting { route, mode, _ in
+            await recorder.append(route.servingProfile.rawValue)
+            return Self.resolutionResult(
+                mode: mode,
+                profile: route.servingProfile,
+                usedTokens: 920,
+                budgetTokens: 2_880,
+                truncatedLayers: []
+            )
+        }
+        defer { HubIPCClient.resetMemoryContextResolutionOverrideForTesting() }
+
+        let result = await HubIPCClient.requestMemoryContextDetailed(
+            useMode: .supervisorOrchestration,
+            requesterRole: .supervisor,
+            projectId: nil,
+            projectRoot: nil,
+            displayName: "Supervisor",
+            latestUser: "审查当前项目的上下文记忆，给出最具体的执行方案",
+            reviewLevelHint: SupervisorReviewLevel.r2Strategic.rawValue,
+            constitutionHint: "safe",
+            portfolioBriefText: "portfolio",
+            focusedProjectAnchorPackText: "",
+            longtermOutlineText: "longterm",
+            deltaFeedText: "delta",
+            conflictSetText: "conflict",
+            contextRefsText: "refs",
+            evidencePackText: "",
+            canonicalText: "canonical",
+            observationsText: "observations",
+            workingSetText: "working",
+            rawEvidenceText: "raw",
+            servingProfile: .m2PlanReview,
+            progressiveDisclosure: true,
+            budgets: nil,
+            timeoutSec: 0.1
+        )
+
+        let response = try #require(result.response)
+        #expect(result.requestedProfile == XTMemoryServingProfile.m2PlanReview.rawValue)
+        #expect(result.attemptedProfiles == [XTMemoryServingProfile.m2PlanReview.rawValue])
+        #expect(response.resolvedProfile == XTMemoryServingProfile.m2PlanReview.rawValue)
+        #expect(response.attemptedProfiles == [XTMemoryServingProfile.m2PlanReview.rawValue])
+        #expect(await recorder.snapshot() == [XTMemoryServingProfile.m2PlanReview.rawValue])
+    }
+
+    @Test
+    func projectChatLongtermDisclosureReplacesLegacySummaryBlockWithProgressiveRules() {
+        let disclosure = HubIPCClient.resolveMemoryLongtermDisclosure(
+            useMode: .projectChat,
+            retrievalAvailable: true
+        )
+        let rendered = HubIPCClient.ensureMemoryLongtermDisclosureText(
+            """
+            [MEMORY_V1]
+            [LONGTERM_MEMORY]
+            longterm_mode=summary_only
+            retrieval_available=false
+            fulltext_not_loaded=true
+            [/LONGTERM_MEMORY]
+            [/MEMORY_V1]
+            """,
+            disclosure: disclosure
+        )
+
+        #expect(rendered.components(separatedBy: "[LONGTERM_MEMORY]").count - 1 == 1)
+        #expect(rendered.contains("longterm_mode=progressive_disclosure"))
+        #expect(rendered.contains("retrieval_available=true"))
+        #expect(rendered.contains("policy=progressive_disclosure_required"))
+        #expect(rendered.contains("stage_0=outline_summary"))
+        #expect(rendered.contains("stage_1=related_snippets"))
+        #expect(rendered.contains("stage_2=explicit_ref_read_only"))
+        #expect(rendered.contains("stage_1_rule=state_summary_insufficient_before_requesting_snippets"))
+        #expect(rendered.contains("stage_2_rule=explicit_ref_required_before_ref_read"))
+        #expect(!rendered.contains("retrieval_available=false"))
+    }
+
     private static func resolutionResult(
         mode: XTMemoryUseMode,
         profile: XTMemoryServingProfile,

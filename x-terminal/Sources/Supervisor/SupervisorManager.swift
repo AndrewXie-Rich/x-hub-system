@@ -3,6 +3,7 @@ import Combine
 import UniformTypeIdentifiers
 import AppKit
 import CryptoKit
+import UserNotifications
 
 @MainActor
 final class SupervisorManager: ObservableObject {
@@ -14,6 +15,21 @@ final class SupervisorManager: ObservableObject {
         case hubBriefProjection = "hub_brief_projection"
         case remoteModel = "remote_model"
         case localFallbackAfterRemoteError = "local_fallback_after_remote_error"
+    }
+
+    struct SupervisorEventLoopActivity: Identifiable, Equatable {
+        var id: String
+        var createdAt: Double
+        var updatedAt: Double
+        var triggerSource: String
+        var status: String
+        var reasonCode: String
+        var dedupeKey: String
+        var projectId: String
+        var projectName: String
+        var triggerSummary: String
+        var resultSummary: String
+        var policySummary: String
     }
 
     static let shared = SupervisorManager()
@@ -66,11 +82,14 @@ final class SupervisorManager: ObservableObject {
     private let supervisorDeepDiveRetrievalMaxSnippets = 6
     private let supervisorReviewRetrievalMaxSnippetChars = 420
     private let supervisorDeepDiveRetrievalMaxSnippetChars = 620
+    private let supervisorEllipsisContextCarryWindowSec: TimeInterval = 180
     private var supervisorProjectCapsuleSyncAuditRefs: [String: String] = [:]
     private var supervisorPortfolioSnapshotSyncFingerprint: String = ""
     private var supervisorSkillExecutionTasks: [String: Task<Void, Never>] = [:]
     private let supervisorHubGrantPreflightEnabled: Bool
     private let supervisorEventLoopAutoFollowUpEnabled: Bool
+    private let persistSupervisorRuntimeState: Bool
+    private let allowPersistentProjectRegistryFallback: Bool
     private var supervisorNetworkAccessRequestOverride: (@Sendable (URL, Int, String?) async -> HubIPCClient.NetworkAccessResult)?
     private var supervisorBriefProjectionRequestOverride: (@Sendable (HubIPCClient.SupervisorBriefProjectionRequestPayload) async -> HubIPCClient.SupervisorBriefProjectionResult)?
     private var approvePendingHubGrantRequestOverride: (@Sendable (String, String?, Int?, Int?, String) async -> HubIPCClient.PendingGrantActionResult)?
@@ -79,8 +98,9 @@ final class SupervisorManager: ObservableObject {
     private var supervisorEventLoopResponseOverride: (@Sendable (String, String) async -> String)?
     private var schedulerSnapshotRefreshOverride: (@Sendable (Bool) async -> Void)?
     private var supervisorEventLoopTask: Task<Void, Never>?
-    private var pendingSupervisorEventLoopTrigger: SupervisorEventLoopTrigger?
+    private var pendingSupervisorEventLoopTriggers: [SupervisorEventLoopTrigger] = []
     private var supervisorEventLoopRecentTriggerLedger: [String: TimeInterval] = [:]
+    private let supervisorEventLoopActivityMaxEntries = 24
 
     private var heartbeatTimer: Timer?
     private var lastHeartbeatSnapshot: String = ""
@@ -108,6 +128,8 @@ final class SupervisorManager: ObservableObject {
     @Published private(set) var pendingHubGrantActionsInFlight: Set<String> = []
     @Published private(set) var pendingSupervisorSkillApprovals: [SupervisorPendingSkillApproval] = []
     @Published private(set) var recentSupervisorSkillActivities: [SupervisorRecentSkillActivity] = []
+    @Published private(set) var recentSupervisorEventLoopActivities: [SupervisorEventLoopActivity] = []
+    @Published private(set) var supervisorEventLoopStatusLine: String = "idle"
     @Published private(set) var voiceRuntimeState: SupervisorVoiceRuntimeState = .idle
     @Published private(set) var voiceRouteDecision: VoiceRouteDecision = .unavailable
     @Published private(set) var voiceAuthorizationStatus: VoiceTranscriberAuthorizationStatus = .undetermined
@@ -139,27 +161,36 @@ final class SupervisorManager: ObservableObject {
     @Published private(set) var blockerEscalationThreshold: Int = 3
     @Published private(set) var blockerEscalationCooldownSec: TimeInterval = 900
     @Published private(set) var supervisorMemoryStatusLine: String = "memory: idle"
+    @Published private(set) var supervisorMemoryAssemblyStatusLine: String = "assembly: idle"
     @Published private(set) var supervisorMemorySource: String = ""
     @Published private(set) var supervisorMemoryUpdatedAt: TimeInterval = 0
     @Published private(set) var supervisorMemoryPreview: String = ""
+    @Published private(set) var supervisorMemoryAssemblySnapshot: SupervisorMemoryAssemblySnapshot?
+    @Published private(set) var supervisorMemoryAssemblyReadiness: SupervisorMemoryAssemblyReadiness =
+        SupervisorMemoryAssemblyDiagnostics.evaluate(snapshot: nil)
+    @Published private(set) var supervisorPendingMemoryFactFollowUpStatusLine: String = "memory follow-up: idle"
+    @Published private(set) var supervisorPendingMemoryFactFollowUpQuestion: String = ""
     @Published private(set) var supervisorMemoryProjectDigests: [SupervisorMemoryProjectDigest] = []
     @Published private(set) var supervisorSkillRegistrySnapshot: SupervisorSkillRegistrySnapshot?
     @Published private(set) var supervisorSkillRegistryStatusLine: String = "skills: no focused project"
-    @Published private(set) var supervisorJurisdictionRegistry: SupervisorJurisdictionRegistry = SupervisorJurisdictionRegistryStore.load()
+    @Published private(set) var supervisorJurisdictionRegistry: SupervisorJurisdictionRegistry = .ownerDefault()
     @Published private(set) var supervisorPortfolioSnapshot: SupervisorPortfolioSnapshot = .empty
     @Published private(set) var supervisorProjectNotificationSnapshot: SupervisorProjectNotificationSnapshot = .empty
     @Published private(set) var supervisorLastProjectDrillDownSnapshot: SupervisorProjectDrillDownSnapshot?
     @Published private(set) var supervisorRecentProjectActionEvents: [SupervisorProjectActionEvent] = []
     private let heartbeatNotificationDedupeKey = "x_terminal_supervisor_heartbeat"
+    private let supervisorMemoryFollowUpNotificationThreadID = "x_terminal_supervisor_memory_follow_up"
     private let supervisorProjectActionEventMaxEntries = 24
     private var supervisorProjectNotificationLastDeliveredAt: [String: TimeInterval] = [:]
+    private var supervisorPendingMemoryFactFollowUpReminderFingerprint: String = ""
+    private var pendingSupervisorMemoryFactFollowUpProjectNameCache: [String: String] = [:]
     private var blockerStreakCount: Int = 0
     private var lastBlockerFingerprint: String = ""
     private var lastBlockerEscalationAt: TimeInterval = 0
     private var lastXTReadyIncidentAutoExportAt: TimeInterval = 0
     private let xtReadyIncidentAutoExportMinIntervalSec: TimeInterval = 0.8
     private var lastLaneHealthFingerprint: String = ""
-    private let voiceSessionCoordinator = VoiceSessionCoordinator.shared
+    private let voiceSessionCoordinator: VoiceSessionCoordinator
     private let voiceWakeProfileStore = VoiceWakeProfileStore.shared
     private let conversationSessionController: SupervisorConversationSessionController
     private let conversationWindowBridge = SupervisorConversationWindowBridge.shared
@@ -169,7 +200,14 @@ final class SupervisorManager: ObservableObject {
     private var preparedOneShotLaunchExecutorForTesting: ((SupervisorOneShotIntakeRequest, AdaptivePoolPlanDecision, SplitProposalBuildResult) async -> GuardedOneShotLaunchResumeOutcome)?
     private var activeVoiceAuthorizationRequest: SupervisorVoiceAuthorizationRequest?
     private var activeVoicePendingGrantAction: SupervisorVoicePendingGrantActionContext?
+    private var pendingSupervisorMemoryFactFollowUp: SupervisorPendingMemoryFactFollowUp?
+    private var supervisorMemoryFollowUpReminderOverrideForTesting: ((String, String, String?) -> Void)?
     private var voiceAuthorizationInFlight = false
+    private var pendingTalkLoopResumeTask: Task<Void, Never>?
+    private var hasObservedPendingHubGrantSnapshot = false
+    private var pendingHubGrantAnnouncementBacklog: [String: SupervisorPendingGrant] = [:]
+    private var lastPendingHubGrantVoiceContextToken: String = ""
+    private var lastPendingHubGrantVoiceContextAt: TimeInterval = 0
 
     private static let defaultsThreshold = 3
     private static let defaultsCooldownMinutes = 15
@@ -191,25 +229,69 @@ final class SupervisorManager: ObservableObject {
         var text: String
         var source: String
         var updatedAt: TimeInterval
+        var assemblySnapshot: SupervisorMemoryAssemblySnapshot?
         var projectDigests: [SupervisorMemoryProjectDigest]
         var skillRegistrySnapshot: SupervisorSkillRegistrySnapshot?
     }
 
     private struct SupervisorMemoryComposition {
+        var servingProfile: XTMemoryServingProfile
+        var reviewLevelHint: SupervisorReviewLevel
         var constitution: String
+        var portfolioBrief: String
+        var focusedProjectAnchorPack: String
+        var longtermOutline: String
+        var deltaFeed: String
+        var conflictSet: String
+        var contextRefs: String
+        var evidencePack: String
         var canonical: String
         var observations: String
         var workingSet: String
         var rawEvidence: String
         var localText: String
+        var focusedProjectId: String?
+        var profileFloor: XTMemoryServingProfile
+        var minimumPack: [String]
+        var compressionPolicy: String
+        var selectedSections: [String]
+        var omittedSections: [String]
+        var contextRefsSelectedCount: Int
+        var contextRefsOmittedCount: Int
+        var evidenceItemsSelectedCount: Int
+        var evidenceItemsOmittedCount: Int
         var projectDigests: [SupervisorMemoryProjectDigest]
         var skillRegistrySnapshot: SupervisorSkillRegistrySnapshot?
     }
 
+    private struct SupervisorServingGovernorMetadata {
+        var profileFloor: XTMemoryServingProfile
+        var minimumPack: [String]
+        var compressionPolicy: String
+    }
+
+    private struct SupervisorContextRefsRenderResult {
+        var text: String
+        var selectedCount: Int
+        var omittedCount: Int
+    }
+
+    private struct SupervisorEvidencePackRenderResult {
+        var text: String
+        var selectedCount: Int
+        var omittedCount: Int
+    }
+
     private struct SupervisorEventLoopTrigger {
+        var activityId: String
+        var ledgerId: String
         var userMessage: String
         var triggerSource: SupervisorCommandTriggerSource
         var dedupeKey: String
+        var projectId: String
+        var projectName: String
+        var triggerSummary: String
+        var policySummary: String
     }
 
     private struct SupervisorWorkflowMemorySlice {
@@ -224,9 +306,80 @@ final class SupervisorManager: ObservableObject {
     }
 
     private struct SupervisorFocusedProjectExecutionBrief {
+        var anchorPackBody: String
+        var longtermOutlineBody: String
+        var decisionLineageBody: String
+        var blockerLineageBody: String
         var canonical: String
         var observation: String
         var workingSet: String
+    }
+
+    private struct SupervisorFocusedProjectServingContext {
+        var project: AXProjectEntry
+        var ctx: AXProjectContext
+        var digest: SupervisorMemoryProjectDigest
+        var governance: SupervisorProjectDigestGovernanceContext
+        var recent: AXRecentContext
+        var latestReview: SupervisorReviewNoteRecord?
+        var latestGuidance: SupervisorGuidanceInjectionRecord?
+        var pendingAckGuidance: SupervisorGuidanceInjectionRecord?
+        var activeJob: SupervisorJobRecord?
+        var activePlan: SupervisorPlanRecord?
+        var activeSkillCall: SupervisorSkillCallRecord?
+        var servingProfile: XTMemoryServingProfile
+        var reviewLevelHint: SupervisorReviewLevel
+        var doneDefinition: String
+        var currentConstraints: [String]
+        var longtermOutlineBody: String
+        var decisionLineageDigest: String
+        var blockerLineageDigest: String
+        var recentMessagesDigest: String
+        var nextPendingStepsDigest: String
+        var attentionStepsDigest: String
+    }
+
+    private struct SupervisorConflictItem {
+        var conflictId: String
+        var conflictKind: String
+        var summary: String
+        var sideA: String
+        var sideB: String
+        var resolutionStatus: String
+        var refs: [String]
+    }
+
+    private struct SupervisorContextRefItem {
+        var refId: String
+        var refKind: String
+        var title: String
+        var sourceScope: String
+        var tokenCostHint: String
+        var freshnessHint: String
+    }
+
+    private struct SupervisorEvidenceItem {
+        var refId: String
+        var title: String
+        var excerpt: String
+        var whyIncluded: String
+        var sourceScope: String
+        var freshnessHint: String
+    }
+
+    private struct SupervisorDeltaFeedProjection {
+        var cursorFrom: String
+        var cursorTo: String
+        var focusProjectId: String
+        var projectStateHashBefore: String
+        var projectStateHashAfter: String
+        var portfolioStateHashBefore: String
+        var portfolioStateHashAfter: String
+        var materialChangeFlags: [String]
+        var deltaItems: [String]
+        var recentProjectActions: [String]
+        var recentActionLedger: [String]
+        var recentEventLines: [String]
     }
 
     private struct SupervisorBriefProjectionVoiceReply {
@@ -272,8 +425,10 @@ final class SupervisorManager: ObservableObject {
         var specCapsule: SupervisorProjectSpecCapsule?
         var missingSpecFields: [SupervisorProjectSpecField]
         var hardDecisions: [SupervisorDecisionCategory: SupervisorDecisionTrackEvent]
+        var selectedEvidencePins: [SupervisorSelectedEvidencePin]
         var backgroundShadowHint: String
         var decisionAssist: SupervisorDecisionBlockerAssist?
+        var resolvedGovernance: AXProjectResolvedGovernanceState?
         var updatedAt: TimeInterval
         var sourceTags: [String]
     }
@@ -288,6 +443,117 @@ final class SupervisorManager: ObservableObject {
         var role: AXRole
         var modelId: String
         var tag: String
+    }
+
+    private enum SupervisorNaturalMemoryPatchFieldKind: String {
+        case goal
+        case doneDefinition = "done_definition"
+        case nonGoal = "non_goal"
+        case approvedTechStack = "approved_tech_stack"
+        case decision
+        case decisionReason = "decision_reason"
+        case blocker
+        case attemptedAction = "attempted_action"
+        case currentState = "current_state"
+        case nextStep = "next_step"
+        case evidence
+    }
+
+    private struct SupervisorNaturalMemoryPatchIntent {
+        var goal: String?
+        var doneDefinition: String?
+        var nonGoals: [String]
+        var approvedTechStack: [String]
+        var decisionStatement: String?
+        var decisionReason: String?
+        var blockerSummary: String?
+        var attemptedActions: [String]
+        var currentStateSummary: String?
+        var nextStepSummary: String?
+        var selectedEvidence: [String]
+        var explicitRequest: Bool
+
+        var hasFacts: Bool {
+            goal?.isEmpty == false ||
+            doneDefinition?.isEmpty == false ||
+            !nonGoals.isEmpty ||
+            !approvedTechStack.isEmpty ||
+            decisionStatement?.isEmpty == false ||
+            decisionReason?.isEmpty == false ||
+            blockerSummary?.isEmpty == false ||
+            !attemptedActions.isEmpty ||
+            currentStateSummary?.isEmpty == false ||
+            nextStepSummary?.isEmpty == false ||
+            !selectedEvidence.isEmpty
+        }
+    }
+
+    private struct SupervisorNaturalMemoryPatchApplyResult {
+        var replyText: String
+        var appliedKinds: [String]
+    }
+
+    private enum SupervisorMemoryFactFollowUpCategory: String, CaseIterable {
+        case goalAndDone = "goal_and_done"
+        case decision = "decision"
+        case blocker = "blocker"
+        case evidence = "evidence"
+
+        var question: String {
+            switch self {
+            case .goalAndDone:
+                return "这个项目的长期目标和完成标准分别是什么？"
+            case .decision:
+                return "我们为什么走当前这条路径？关键决策和原因是什么？"
+            case .blocker:
+                return "现在卡在哪里，已经试过什么，下一步准备做什么？"
+            case .evidence:
+                return "哪些日志、结果、回执或实验可以作为这次判断的依据？"
+            }
+        }
+
+        var example: String {
+            switch self {
+            case .goalAndDone:
+                return "目标是……，完成标准是……"
+            case .decision:
+                return "我们决定……，原因是……"
+            case .blocker:
+                return "现在卡在……，已经试过……，下一步是……"
+            case .evidence:
+                return "证据是…… / 把……作为依据"
+            }
+        }
+
+        var tailLabel: String {
+            switch self {
+            case .goalAndDone:
+                return "长期目标和完成标准"
+            case .decision:
+                return "关键决策和原因"
+            case .blocker:
+                return "当前卡点、已试动作和下一步"
+            case .evidence:
+                return "判断依据"
+            }
+        }
+    }
+
+    private struct SupervisorPendingMemoryFactFollowUp {
+        var projectId: String?
+        var projectName: String?
+        var issueSummary: String?
+        var remainingCategories: [SupervisorMemoryFactFollowUpCategory]
+        var createdAt: TimeInterval
+        var updatedAt: TimeInterval
+    }
+
+    private struct SupervisorMemoryFactFollowUpReminder {
+        var fingerprint: String
+        var notificationIdentifier: String
+        var title: String
+        var body: String
+        var actionURL: String?
     }
 
     private struct DirectModelAssignmentIntent {
@@ -342,6 +608,12 @@ final class SupervisorManager: ObservableObject {
         var path: String
         var outcome: String
         var script: [String]
+    }
+
+    struct HeartbeatNotificationPresentation: Equatable {
+        var title: String
+        var body: String
+        var unread: Bool
     }
 
     private enum HubConnectorIngressResolution {
@@ -491,6 +763,10 @@ final class SupervisorManager: ObservableObject {
         var skillId: String?
         var currentOwner: String?
         var detail: String?
+        var dependsOn: [String]?
+        var timeoutMs: Int?
+        var maxRetries: Int?
+        var failurePolicy: String?
 
         enum CodingKeys: String, CodingKey {
             case stepId = "step_id"
@@ -500,6 +776,10 @@ final class SupervisorManager: ObservableObject {
             case skillId = "skill_id"
             case currentOwner = "current_owner"
             case detail
+            case dependsOn = "depends_on"
+            case timeoutMs = "timeout_ms"
+            case maxRetries = "max_retries"
+            case failurePolicy = "failure_policy"
         }
     }
 
@@ -572,16 +852,27 @@ final class SupervisorManager: ObservableObject {
         backgroundSupervisorServicesEnabled: Bool = true,
         supervisorHubGrantPreflightEnabled: Bool = true,
         supervisorEventLoopAutoFollowUpEnabled: Bool = true,
+        persistSupervisorRuntimeState: Bool = true,
+        allowPersistentProjectRegistryFallback: Bool = true,
         supervisorSpeechSynthesizer: SupervisorSpeechSynthesizer? = nil,
-        conversationSessionController: SupervisorConversationSessionController? = nil
+        conversationSessionController: SupervisorConversationSessionController? = nil,
+        voiceSessionCoordinator: VoiceSessionCoordinator? = nil
     ) {
+        self.voiceSessionCoordinator = voiceSessionCoordinator ?? VoiceSessionCoordinator.shared
         self.conversationSessionController = conversationSessionController ?? SupervisorConversationSessionController.shared
         self.supervisorSpeechSynthesizer = supervisorSpeechSynthesizer ?? SupervisorSpeechSynthesizer()
         self.backgroundSupervisorServicesEnabled = backgroundSupervisorServicesEnabled
         self.supervisorHubGrantPreflightEnabled = supervisorHubGrantPreflightEnabled
         self.supervisorEventLoopAutoFollowUpEnabled = supervisorEventLoopAutoFollowUpEnabled
+        self.persistSupervisorRuntimeState = persistSupervisorRuntimeState
+        self.allowPersistentProjectRegistryFallback = allowPersistentProjectRegistryFallback
         loadEscalationPolicyFromDefaults()
-        loadActionLedgerFromDisk()
+        if persistSupervisorRuntimeState {
+            supervisorJurisdictionRegistry = SupervisorJurisdictionRegistryStore.load()
+            loadActionLedgerFromDisk()
+        } else {
+            supervisorJurisdictionRegistry = .ownerDefault()
+        }
         bindVoiceRuntime()
         bindConversationSession()
         if registerForEvents {
@@ -592,16 +883,21 @@ final class SupervisorManager: ObservableObject {
     static func makeForTesting(
         enableSupervisorHubGrantPreflight: Bool = false,
         enableSupervisorEventLoopAutoFollowUp: Bool = false,
+        backgroundSupervisorServicesEnabled: Bool = false,
         supervisorSpeechSynthesizer: SupervisorSpeechSynthesizer? = nil,
-        conversationSessionController: SupervisorConversationSessionController? = nil
+        conversationSessionController: SupervisorConversationSessionController? = nil,
+        voiceSessionCoordinator: VoiceSessionCoordinator? = nil
     ) -> SupervisorManager {
         SupervisorManager(
             registerForEvents: false,
-            backgroundSupervisorServicesEnabled: false,
+            backgroundSupervisorServicesEnabled: backgroundSupervisorServicesEnabled,
             supervisorHubGrantPreflightEnabled: enableSupervisorHubGrantPreflight,
             supervisorEventLoopAutoFollowUpEnabled: enableSupervisorEventLoopAutoFollowUp,
+            persistSupervisorRuntimeState: false,
+            allowPersistentProjectRegistryFallback: false,
             supervisorSpeechSynthesizer: supervisorSpeechSynthesizer,
-            conversationSessionController: conversationSessionController
+            conversationSessionController: conversationSessionController,
+            voiceSessionCoordinator: voiceSessionCoordinator
         )
     }
 
@@ -743,6 +1039,7 @@ final class SupervisorManager: ObservableObject {
         voiceSessionCoordinator.$runtimeState
             .sink { [weak self] state in
                 self?.voiceRuntimeState = state
+                self?.interruptSupervisorPlaybackIfNeeded(for: state)
                 if state.state == .failClosed {
                     self?.conversationSessionController.registerRouteFailClosed(reasonCode: state.reasonCode)
                 }
@@ -782,6 +1079,7 @@ final class SupervisorManager: ObservableObject {
         voiceSessionCoordinator.$lastWakeEvent
             .compactMap { $0 }
             .sink { [weak self] event in
+                self?.interruptSupervisorPlaybackForWakeEventIfNeeded()
                 self?.conversationSessionController.configure(route: event.route)
                 self?.conversationSessionController.registerWakeHit(
                     now: Date(timeIntervalSince1970: event.timestamp)
@@ -828,11 +1126,86 @@ final class SupervisorManager: ObservableObject {
 
     private func refreshWakeProfileStatus() {
         let preferences = currentVoicePreferences()
+        voiceSessionCoordinator.setPreferences(preferences)
         voiceWakeProfileStore.applyPreferences(preferences)
         Task { @MainActor [weak self] in
             guard let self else { return }
             await self.voiceWakeProfileStore.refresh(pairingReady: self.currentWakeProfilePairingReady())
         }
+    }
+
+    private func interruptSupervisorPlaybackIfNeeded(for state: SupervisorVoiceRuntimeState) {
+        guard currentVoicePreferences().interruptOnSpeech else { return }
+        switch state.state {
+        case .listening, .transcribing:
+            cancelPendingTalkLoopResume()
+            _ = supervisorSpeechSynthesizer.interruptCurrentPlayback()
+        case .idle, .completed, .failClosed:
+            break
+        }
+    }
+
+    private func interruptSupervisorPlaybackForWakeEventIfNeeded() {
+        guard currentVoicePreferences().interruptOnSpeech else { return }
+        cancelPendingTalkLoopResume()
+        _ = supervisorSpeechSynthesizer.interruptCurrentPlayback()
+    }
+
+    private func cancelPendingTalkLoopResume() {
+        pendingTalkLoopResumeTask?.cancel()
+        pendingTalkLoopResumeTask = nil
+    }
+
+    private func scheduleTalkLoopResumeIfNeeded(
+        triggeredByVoice: Bool,
+        allowProactiveResume: Bool = false,
+        spokenOutcome: SupervisorSpeechSynthesizer.Outcome,
+        replyText: String,
+        source: String
+    ) {
+        guard triggeredByVoice || allowProactiveResume else { return }
+        guard spokenOutcome == .spoken else { return }
+        guard conversationSessionController.snapshot.isConversing else { return }
+        guard conversationSessionController.snapshot.wakeMode != .pushToTalk else { return }
+
+        let trimmed = replyText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let script = trimmed.isEmpty ? ["Supervisor response"] : conciseVoiceReplyScript(trimmed)
+        let job = SupervisorVoiceTTSJob(
+            trigger: .userQueryReply,
+            priority: .normal,
+            script: script.isEmpty ? ["Supervisor response"] : script,
+            dedupeKey: "talk_loop_resume:\(source)"
+        )
+        let delay = min(
+            8.0,
+            max(
+                0.9,
+                supervisorSpeechSynthesizer.estimatedPlaybackDuration(
+                    job: job,
+                    preferences: currentVoicePreferences()
+                ) + 0.12
+            )
+        )
+
+        cancelPendingTalkLoopResume()
+        pendingTalkLoopResumeTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await self.resumeTalkLoopListeningIfNeeded(source: source)
+        }
+    }
+
+    private func resumeTalkLoopListeningIfNeeded(source: String) async {
+        defer { pendingTalkLoopResumeTask = nil }
+        guard conversationSessionController.snapshot.isConversing else { return }
+        guard conversationSessionController.snapshot.wakeMode != .pushToTalk else { return }
+        guard voiceRouteDecision.route.supportsLiveCapture else { return }
+        guard !isProcessing else { return }
+        guard !voiceSessionCoordinator.isRecording else { return }
+        let resumed = await voiceSessionCoordinator.resumeListeningForTalkLoop()
+        guard resumed else { return }
+        appendRecentEvent("voice talk loop resumed: \(source)")
     }
 
     func openConversationSession(openedBy: SupervisorConversationOpenedBy = .manualButton) {
@@ -847,6 +1220,7 @@ final class SupervisorManager: ObservableObject {
     }
 
     func endConversationSession(reasonCode: String = "manual_close") {
+        cancelPendingTalkLoopResume()
         conversationSessionController.endConversation(reasonCode: reasonCode)
     }
 
@@ -1012,6 +1386,8 @@ final class SupervisorManager: ObservableObject {
             drainPendingSupervisorEventLoopIfNeeded()
         }
 
+        cancelPendingTalkLoopResume()
+
         if let local = await handleLocalPreflightCommand(text) {
             recordSupervisorReplyExecution(mode: .localPreflight, actualModelId: nil)
             let assistantMessage = SupervisorMessage(
@@ -1029,6 +1405,13 @@ final class SupervisorManager: ObservableObject {
             )
             let spokenOutcome = fromVoice ? speakSupervisorVoiceReply(local) : .suppressed("not_voice_triggered")
             conversationSessionController.registerAssistantTurn(spoken: spokenOutcome == .spoken)
+            scheduleTalkLoopResumeIfNeeded(
+                triggeredByVoice: fromVoice,
+                spokenOutcome: spokenOutcome,
+                replyText: local,
+                source: "local_preflight"
+            )
+            syncVoiceConversationForPendingMemoryFactFollowUpIfNeeded(fromVoice: fromVoice)
             return
         }
 
@@ -1055,6 +1438,13 @@ final class SupervisorManager: ObservableObject {
                 triggerSource: .userTurn
             )
             conversationSessionController.registerAssistantTurn(spoken: pendingGrantReply.spokenOutcome == .spoken)
+            scheduleTalkLoopResumeIfNeeded(
+                triggeredByVoice: fromVoice,
+                spokenOutcome: pendingGrantReply.spokenOutcome,
+                replyText: pendingGrantReply.text,
+                source: "pending_grant_voice_reply"
+            )
+            syncVoiceConversationForPendingMemoryFactFollowUpIfNeeded(fromVoice: fromVoice)
             return
         }
 
@@ -1075,6 +1465,13 @@ final class SupervisorManager: ObservableObject {
                 triggerSource: .userTurn
             )
             conversationSessionController.registerAssistantTurn(spoken: hubProjectionReply.spokenOutcome == .spoken)
+            scheduleTalkLoopResumeIfNeeded(
+                triggeredByVoice: fromVoice,
+                spokenOutcome: hubProjectionReply.spokenOutcome,
+                replyText: hubProjectionReply.text,
+                source: "hub_projection_voice_reply"
+            )
+            syncVoiceConversationForPendingMemoryFactFollowUpIfNeeded(fromVoice: fromVoice)
             return
         }
 
@@ -1096,6 +1493,19 @@ final class SupervisorManager: ObservableObject {
         )
         let spokenOutcome = fromVoice ? speakSupervisorVoiceReply(response) : .suppressed("not_voice_triggered")
         conversationSessionController.registerAssistantTurn(spoken: spokenOutcome == .spoken)
+        scheduleTalkLoopResumeIfNeeded(
+            triggeredByVoice: fromVoice,
+            spokenOutcome: spokenOutcome,
+            replyText: response,
+            source: "generated_supervisor_reply"
+        )
+        syncVoiceConversationForPendingMemoryFactFollowUpIfNeeded(fromVoice: fromVoice)
+    }
+
+    private func syncVoiceConversationForPendingMemoryFactFollowUpIfNeeded(fromVoice: Bool) {
+        guard fromVoice else { return }
+        guard activeSupervisorMemoryFactFollowUp() != nil else { return }
+        conversationSessionController.holdConversationForFollowUp()
     }
 
     private func generateSupervisorResponse(
@@ -1222,24 +1632,355 @@ final class SupervisorManager: ObservableObject {
         let normalizedMessage = userMessage.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedKey = dedupeKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedMessage.isEmpty, !normalizedKey.isEmpty else { return }
-
-        pruneSupervisorEventLoopTriggerLedger(now: Date().timeIntervalSince1970)
-        if supervisorEventLoopRecentTriggerLedger[normalizedKey] != nil {
-            return
-        }
-        supervisorEventLoopRecentTriggerLedger[normalizedKey] = Date().timeIntervalSince1970
-
-        let trigger = SupervisorEventLoopTrigger(
+        let now = Date().timeIntervalSince1970
+        let metadata = supervisorEventLoopMetadata(
             userMessage: normalizedMessage,
             triggerSource: triggerSource,
             dedupeKey: normalizedKey
         )
+
+        pruneSupervisorEventLoopTriggerLedger(now: now)
+        if supervisorEventLoopRecentTriggerLedger[normalizedKey] != nil {
+            let detail = supervisorEventLoopActivityDetail(
+                triggerSummary: metadata.summary,
+                dedupeKey: normalizedKey,
+                policySummary: metadata.policySummary
+            )
+            _ = appendActionLedger(
+                action: "supervisor_event_loop",
+                targetRef: normalizedKey,
+                projectId: metadata.projectId.isEmpty ? nil : metadata.projectId,
+                projectName: metadata.projectName.isEmpty ? nil : metadata.projectName,
+                role: nil,
+                modelId: nil,
+                status: "deduped",
+                reasonCode: "duplicate_trigger",
+                detail: detail,
+                verifiedAt: now,
+                triggerSource: triggerSource.rawValue
+            )
+            appendSupervisorEventLoopActivity(
+                SupervisorEventLoopActivity(
+                    id: UUID().uuidString,
+                    createdAt: now,
+                    updatedAt: now,
+                    triggerSource: triggerSource.rawValue,
+                    status: "deduped",
+                    reasonCode: "duplicate_trigger",
+                    dedupeKey: normalizedKey,
+                    projectId: metadata.projectId,
+                    projectName: metadata.projectName,
+                    triggerSummary: metadata.summary,
+                    resultSummary: "",
+                    policySummary: metadata.policySummary
+                )
+            )
+            return
+        }
+        supervisorEventLoopRecentTriggerLedger[normalizedKey] = now
+
+        let activityId = UUID().uuidString
+        let ledgerId = appendActionLedger(
+            action: "supervisor_event_loop",
+            targetRef: normalizedKey,
+            projectId: metadata.projectId.isEmpty ? nil : metadata.projectId,
+            projectName: metadata.projectName.isEmpty ? nil : metadata.projectName,
+            role: nil,
+            modelId: nil,
+            status: "queued",
+            reasonCode: "queued",
+            detail: supervisorEventLoopActivityDetail(
+                triggerSummary: metadata.summary,
+                dedupeKey: normalizedKey,
+                policySummary: metadata.policySummary
+            ),
+            verifiedAt: nil,
+            triggerSource: triggerSource.rawValue
+        )
+
+        let trigger = SupervisorEventLoopTrigger(
+            activityId: activityId,
+            ledgerId: ledgerId,
+            userMessage: normalizedMessage,
+            triggerSource: triggerSource,
+            dedupeKey: normalizedKey,
+            projectId: metadata.projectId,
+            projectName: metadata.projectName,
+            triggerSummary: metadata.summary,
+            policySummary: metadata.policySummary
+        )
+        appendSupervisorEventLoopActivity(
+            SupervisorEventLoopActivity(
+                id: activityId,
+                createdAt: now,
+                updatedAt: now,
+                triggerSource: triggerSource.rawValue,
+                status: "queued",
+                reasonCode: "queued",
+                dedupeKey: normalizedKey,
+                projectId: metadata.projectId,
+                projectName: metadata.projectName,
+                triggerSummary: metadata.summary,
+                resultSummary: "",
+                policySummary: metadata.policySummary
+            )
+        )
         if isProcessing || supervisorEventLoopTask != nil {
-            pendingSupervisorEventLoopTrigger = trigger
+            pendingSupervisorEventLoopTriggers.append(trigger)
+            refreshSupervisorEventLoopRuntimeState()
             return
         }
 
         startSupervisorEventLoopTurn(trigger)
+    }
+
+    private func supervisorEventLoopMetadata(
+        userMessage: String,
+        triggerSource: SupervisorCommandTriggerSource,
+        dedupeKey: String
+    ) -> (projectId: String, projectName: String, summary: String, policySummary: String) {
+        let projectId = supervisorEventLoopLineValue("project_id", in: userMessage)
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        let projectName = [
+            supervisorEventLoopLineValue("project_ref", in: userMessage),
+            projectId,
+            triggerSource.rawValue,
+        ]
+        .map { $0.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines) }
+        .first { !$0.isEmpty } ?? triggerSource.rawValue
+
+        let reviewTrigger = supervisorEventLoopLineValue("review_trigger", in: userMessage)
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        let reasonCode = supervisorEventLoopLineValue("reason_code", in: userMessage)
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        let primarySummary = [
+            supervisorEventLoopLineValue("summary", in: userMessage),
+            supervisorEventLoopLineValue("policy_reason", in: userMessage),
+            supervisorEventLoopLineValue("execution_detail", in: userMessage),
+            supervisorEventLoopLineValue("ack_note", in: userMessage),
+        ]
+        .map { $0.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines) }
+        .first { !$0.isEmpty }
+
+        let summary: String
+        if let primarySummary, !primarySummary.isEmpty {
+            if !reviewTrigger.isEmpty {
+                summary = capped("\(reviewTrigger) · \(primarySummary)", maxChars: 220)
+            } else {
+                summary = capped(primarySummary, maxChars: 220)
+            }
+        } else if !reviewTrigger.isEmpty {
+            summary = capped(reviewTrigger, maxChars: 220)
+        } else if !reasonCode.isEmpty {
+            summary = capped(reasonCode, maxChars: 220)
+        } else {
+            summary = capped(dedupeKey, maxChars: 220)
+        }
+
+        return (
+            projectId,
+            projectName,
+            summary,
+            supervisorEventLoopPolicySummary(
+                userMessage: userMessage,
+                projectId: projectId
+            )
+        )
+    }
+
+    private func supervisorEventLoopLineValue(
+        _ key: String,
+        in message: String
+    ) -> String {
+        let needle = key.trimmingCharacters(in: .whitespacesAndNewlines) + "="
+        guard !needle.isEmpty else { return "" }
+        for rawLine in message.split(whereSeparator: \.isNewline) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard line.hasPrefix(needle) else { continue }
+            return String(line.dropFirst(needle.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return ""
+    }
+
+    private func supervisorEventLoopPolicySummary(
+        userMessage: String,
+        projectId: String
+    ) -> String {
+        let reviewTriggerText = supervisorEventLoopDisplayValue(
+            raw: supervisorEventLoopLineValue("review_trigger", in: userMessage),
+            parser: SupervisorReviewTrigger.init(rawValue:),
+            display: \.displayName
+        )
+        let cadenceText = supervisorEventLoopLineValue("event_followup_rhythm", in: userMessage)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let tierText = supervisorEventLoopDisplayValue(
+            raw: supervisorEventLoopLineValue("effective_supervisor_tier", in: userMessage),
+            parser: AXProjectSupervisorInterventionTier.init(rawValue:),
+            display: \.displayName
+        )
+        let depthText = supervisorEventLoopDisplayValue(
+            raw: supervisorEventLoopLineValue("effective_work_order_depth", in: userMessage),
+            parser: AXProjectSupervisorWorkOrderDepth.init(rawValue:),
+            display: \.displayName
+        )
+        let strengthText = supervisorEventLoopDisplayValue(
+            raw: supervisorEventLoopLineValue("project_ai_strength_band", in: userMessage),
+            parser: AXProjectAIStrengthBand.init(rawValue:),
+            display: \.displayName
+        )
+
+        var parts: [String] = []
+        if !reviewTriggerText.isEmpty {
+            parts.append("review=\(reviewTriggerText)")
+        }
+
+        if !cadenceText.isEmpty {
+            parts.append(cadenceText)
+        }
+
+        let explicitGovernanceParts = [
+            tierText.isEmpty ? "" : "tier=\(tierText)",
+            depthText.isEmpty ? "" : "depth=\(depthText)",
+            strengthText.isEmpty ? "" : "strength=\(strengthText)"
+        ]
+        .filter { !$0.isEmpty }
+
+        if !explicitGovernanceParts.isEmpty {
+            parts.append(explicitGovernanceParts.joined(separator: " · "))
+        }
+
+        if !parts.isEmpty {
+            return capped(parts.joined(separator: " · "), maxChars: 220)
+        }
+
+        guard let governance = resolvedSupervisorEventLoopGovernance(projectId: projectId) else {
+            return ""
+        }
+
+        if reviewTriggerText.isEmpty {
+            return capped(
+                SupervisorReviewPolicyEngine.eventFollowUpCadenceSummary(governance: governance),
+                maxChars: 220
+            )
+        }
+        return capped(
+            "review=\(reviewTriggerText) · \(SupervisorReviewPolicyEngine.eventFollowUpCadenceSummary(governance: governance))",
+            maxChars: 220
+        )
+    }
+
+    private func resolvedSupervisorEventLoopGovernance(
+        projectId: String
+    ) -> AXProjectResolvedGovernanceState? {
+        let normalizedProjectId = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedProjectId.isEmpty else { return nil }
+        guard let project = allProjects().first(where: { $0.projectId == normalizedProjectId }),
+              let ctx = projectContext(from: project) else {
+            return nil
+        }
+        if let resolved = resolvedSupervisorProjectGovernanceState(
+            projectId: normalizedProjectId,
+            ctx: ctx
+        ) {
+            return resolved
+        }
+
+        let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: ctx.root)
+        let adaptationPolicy = AXProjectSupervisorAdaptationPolicy.default
+        let strengthProfile = AXProjectAIStrengthAssessor.assess(
+            ctx: ctx,
+            adaptationPolicy: adaptationPolicy
+        )
+        return xtResolveProjectGovernance(
+            projectRoot: ctx.root,
+            config: config,
+            projectAIStrengthProfile: strengthProfile,
+            adaptationPolicy: adaptationPolicy,
+            permissionReadiness: .current()
+        )
+    }
+
+    private func supervisorEventLoopDisplayValue<Value>(
+        raw: String,
+        parser: (String) -> Value?,
+        display: (Value) -> String
+    ) -> String {
+        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return "" }
+        guard let value = parser(normalized) else { return normalized }
+        return display(value)
+    }
+
+    private func supervisorEventLoopActivityDetail(
+        triggerSummary: String,
+        dedupeKey: String,
+        resultSummary: String = "",
+        policySummary: String = ""
+    ) -> String {
+        let normalizedTriggerSummary = triggerSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedResultSummary = resultSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedPolicySummary = policySummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        var lines: [String] = []
+        if !normalizedTriggerSummary.isEmpty {
+            lines.append("trigger=\(normalizedTriggerSummary)")
+        }
+        if !normalizedResultSummary.isEmpty {
+            lines.append("result=\(normalizedResultSummary)")
+        }
+        if !normalizedPolicySummary.isEmpty {
+            lines.append(normalizedPolicySummary)
+        }
+        lines.append("key=\(dedupeKey)")
+        return capped(lines.joined(separator: "\n"), maxChars: 220)
+    }
+
+    private func appendSupervisorEventLoopActivity(
+        _ activity: SupervisorEventLoopActivity
+    ) {
+        recentSupervisorEventLoopActivities.append(activity)
+        if recentSupervisorEventLoopActivities.count > supervisorEventLoopActivityMaxEntries {
+            recentSupervisorEventLoopActivities.removeFirst(
+                recentSupervisorEventLoopActivities.count - supervisorEventLoopActivityMaxEntries
+            )
+        }
+        refreshSupervisorEventLoopRuntimeState()
+    }
+
+    private func updateSupervisorEventLoopActivity(
+        id: String,
+        status: String,
+        reasonCode: String,
+        resultSummary: String? = nil
+    ) {
+        guard let index = recentSupervisorEventLoopActivities.lastIndex(where: { $0.id == id }) else { return }
+        recentSupervisorEventLoopActivities[index].status = status
+        recentSupervisorEventLoopActivities[index].reasonCode = reasonCode
+        recentSupervisorEventLoopActivities[index].updatedAt = Date().timeIntervalSince1970
+        if let resultSummary {
+            let normalized = resultSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !normalized.isEmpty {
+                recentSupervisorEventLoopActivities[index].resultSummary = capped(normalized, maxChars: 220)
+            }
+        }
+        refreshSupervisorEventLoopRuntimeState()
+    }
+
+    private func refreshSupervisorEventLoopRuntimeState() {
+        let queuedCount = pendingSupervisorEventLoopTriggers.count
+        let hasRunning = supervisorEventLoopTask != nil
+        if hasRunning, queuedCount > 0 {
+            supervisorEventLoopStatusLine = "running · queued \(queuedCount)"
+            return
+        }
+        if hasRunning {
+            supervisorEventLoopStatusLine = "running"
+            return
+        }
+        if queuedCount > 0 {
+            supervisorEventLoopStatusLine = "queued \(queuedCount)"
+            return
+        }
+        supervisorEventLoopStatusLine = recentSupervisorEventLoopActivities.isEmpty ? "idle" : "idle · recent activity"
     }
 
     private func recordSupervisorReviewNoteIfNeeded(
@@ -1263,17 +2004,24 @@ final class SupervisorManager: ObservableObject {
 
         let project = selection.project
         let ctx = supervisorMemoryContext(for: project)
+        let projectDigests = projects.map(supervisorMemoryDigest)
         let digest = supervisorMemoryDigest(project)
         let governance = loadSupervisorProjectDigestGovernanceContext(projectId: project.projectId, ctx: ctx)
         let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: ctx.root)
-        let effectiveAutonomy = config.effectiveAutonomyPolicy()
-        let resolvedGovernance = xtResolveProjectGovernance(
-            projectRoot: ctx.root,
-            config: config,
-            effectiveAutonomy: effectiveAutonomy
-        )
+        let resolvedGovernance = governance.resolvedGovernance
+            ?? resolvedSupervisorProjectGovernanceState(
+                projectId: project.projectId,
+                ctx: ctx
+            )
+            ?? xtResolveProjectGovernance(
+                projectRoot: ctx.root,
+                config: config,
+                effectiveAutonomy: config.effectiveAutonomyPolicy()
+            )
+        let effectiveAutonomy = resolvedGovernance.effectiveAutonomy
         let nowMs = Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
-        let trigger = explicitSupervisorReviewTriggerHint(in: userMessage) ?? inferredSupervisorReviewTrigger(
+        let explicitTrigger = explicitSupervisorReviewTriggerHint(in: userMessage)
+        let trigger = explicitTrigger ?? inferredSupervisorReviewTrigger(
             userMessage: userMessage,
             triggerSource: triggerSource
         )
@@ -1298,7 +2046,17 @@ final class SupervisorManager: ObservableObject {
             requestedAckRequired: routing.ackRequired,
             runKind: runKind
         )
-        guard policy.shouldReview else { return }
+        let auditOnly = !policy.shouldReview && shouldPersistAuditOnlySupervisorReviewNote(
+            triggerSource: triggerSource,
+            trigger: trigger,
+            explicitTrigger: explicitTrigger,
+            response: trimmedResponse
+        )
+        guard policy.shouldReview || auditOnly else { return }
+
+        let targetRole: SupervisorGuidanceTargetRole = auditOnly ? .supervisor : routing.targetRole
+        let deliveryMode: SupervisorGuidanceDeliveryMode = auditOnly ? .contextAppend : routing.deliveryMode
+        let ackRequired = auditOnly ? false : policy.ackRequired
         let reviewId = "review-\(String(project.projectId.prefix(8)).lowercased())-\(nowMs)"
         let auditRef = "audit-supervisor-review-\(String(project.projectId.prefix(8)).lowercased())-\(nowMs)"
         let doneDefinition = firstMeaningfulDigestValue([
@@ -1310,19 +2068,42 @@ final class SupervisorManager: ObservableObject {
             config: config,
             effectiveAutonomy: effectiveAutonomy
         )
-        let note = SupervisorReviewNoteBuilder.build(
+        let memoryCursor = supervisorReviewCursor(reviewId: reviewId, createdAtMs: nowMs)
+        let reviewWorkflowState = supervisorWorkflowState(
+            project: project,
+            ctx: ctx,
+            preferredJobId: currentTask?.projectId == project.projectId ? currentTask?.id : nil,
+            preferredPlanId: nil,
+            preferredRequestId: nil
+        )
+        let adaptation = resolvedGovernance.supervisorAdaptation
+        let strengthProfile = adaptation.projectAIStrengthProfile
+        let workOrderRef = supervisorReviewWorkOrderRef(
+            job: reviewWorkflowState?.job,
+            plan: reviewWorkflowState?.plan
+        )
+        var note = SupervisorReviewNoteBuilder.build(
             reviewId: reviewId,
             projectId: project.projectId,
             trigger: trigger,
             reviewLevel: policy.reviewLevel,
             verdict: verdict,
-            targetRole: routing.targetRole,
-            deliveryMode: routing.deliveryMode,
-            ackRequired: policy.ackRequired,
+            targetRole: targetRole,
+            deliveryMode: deliveryMode,
+            ackRequired: ackRequired,
+            effectiveSupervisorTier: adaptation.effectiveSupervisorTier,
+            effectiveWorkOrderDepth: adaptation.effectiveWorkOrderDepth,
+            projectAIStrengthBand: strengthProfile?.strengthBand,
+            projectAIStrengthConfidence: strengthProfile?.confidence,
+            projectAIStrengthAuditRef: strengthProfile?.auditRef,
+            workOrderRef: workOrderRef,
             summary: supervisorReviewSummary(trimmedResponse),
             recommendedActions: supervisorReviewRecommendedActions(
                 from: trimmedResponse,
-                fallbackNextStep: digest.nextStep
+                fallbackNextStep: digest.nextStep,
+                policy: policy,
+                adaptation: adaptation,
+                workflowState: reviewWorkflowState
             ),
             anchorGoal: digest.goal,
             anchorDoneDefinition: doneDefinition,
@@ -1330,18 +2111,43 @@ final class SupervisorManager: ObservableObject {
             currentState: digest.currentState,
             nextStep: digest.nextStep,
             blocker: digest.blocker,
+            memoryCursor: memoryCursor,
             createdAtMs: nowMs,
             auditRef: auditRef
         )
-        let guidance = supervisorGuidanceInjection(
-            from: note,
-            policy: policy,
-            injectedAtMs: nowMs
+        let guidance = auditOnly
+            ? nil
+            : supervisorGuidanceInjection(
+                from: note,
+                policy: policy,
+                injectedAtMs: nowMs
+            )
+        let reviewExecutionBrief = focusedSupervisorExecutionBrief(
+            selection: selection,
+            projectDigests: projectDigests,
+            includeLongtermOutline: true
         )
+        let reviewWorkflowObservation = focusedSupervisorWorkflowMemorySlice(
+            projects: projects,
+            userMessage: userMessage,
+            selection: selection
+        )?.observation
+        note.projectStateHash = focusedSupervisorCurrentStateHash(
+            digest: digest,
+            doneDefinition: doneDefinition,
+            executionBrief: reviewExecutionBrief,
+            workflowObservation: reviewWorkflowObservation,
+            workflowState: reviewWorkflowState,
+            latestGuidance: guidance,
+            pendingAckGuidance: guidance?.ackRequired == true && guidance?.ackStatus == .pending ? guidance : nil
+        )
+        note.portfolioStateHash = supervisorPortfolioStateHash(projectDigests)
 
         do {
             try SupervisorReviewNoteStore.upsert(note, for: ctx)
-            try SupervisorGuidanceInjectionStore.upsert(guidance, for: ctx)
+            if let guidance {
+                try SupervisorGuidanceInjectionStore.upsert(guidance, for: ctx)
+            }
             try SupervisorReviewScheduleStore.markReview(
                 for: ctx,
                 config: config,
@@ -1361,37 +2167,71 @@ final class SupervisorManager: ObservableObject {
                     "target_role": note.targetRole.rawValue,
                     "delivery_mode": note.deliveryMode.rawValue,
                     "ack_required": note.ackRequired,
+                    "effective_supervisor_tier": note.effectiveSupervisorTier?.rawValue ?? "",
+                    "effective_work_order_depth": note.effectiveWorkOrderDepth?.rawValue ?? "",
+                    "project_ai_strength_band": note.projectAIStrengthBand?.rawValue ?? "",
+                    "project_ai_strength_confidence": note.projectAIStrengthConfidence ?? 0,
+                    "project_ai_strength_audit_ref": note.projectAIStrengthAuditRef ?? "",
+                    "work_order_ref": note.workOrderRef ?? "",
                     "audit_ref": note.auditRef,
                     "summary": note.summary,
                     "recommended_actions": note.recommendedActions,
                     "review_run_kind": runKind.rawValue,
-                    "policy_reason": policy.policyReason,
+                    "policy_reason": auditOnly ? "structured_followup_audit_capture" : policy.policyReason,
+                    "audit_only": auditOnly,
                     "timestamp_ms": nowMs
                 ],
                 for: ctx
             )
-            AXProjectStore.appendRawLog(
-                [
-                    "type": "supervisor_guidance_injection",
-                    "action": "create",
-                    "project_id": project.projectId,
-                    "review_id": note.reviewId,
-                    "injection_id": guidance.injectionId,
-                    "target_role": guidance.targetRole.rawValue,
-                    "delivery_mode": guidance.deliveryMode.rawValue,
-                    "intervention_mode": guidance.interventionMode.rawValue,
-                    "safe_point_policy": guidance.safePointPolicy.rawValue,
-                    "ack_status": guidance.ackStatus.rawValue,
-                    "ack_required": guidance.ackRequired,
-                    "policy_reason": policy.policyReason,
-                    "audit_ref": guidance.auditRef,
-                    "guidance_text": guidance.guidanceText,
-                    "timestamp_ms": nowMs
-                ],
-                for: ctx
-            )
+            if let guidance {
+                AXProjectStore.appendRawLog(
+                    [
+                        "type": "supervisor_guidance_injection",
+                        "action": "create",
+                        "project_id": project.projectId,
+                        "review_id": note.reviewId,
+                        "injection_id": guidance.injectionId,
+                        "target_role": guidance.targetRole.rawValue,
+                        "delivery_mode": guidance.deliveryMode.rawValue,
+                        "intervention_mode": guidance.interventionMode.rawValue,
+                        "safe_point_policy": guidance.safePointPolicy.rawValue,
+                        "ack_status": guidance.ackStatus.rawValue,
+                        "ack_required": guidance.ackRequired,
+                        "effective_supervisor_tier": guidance.effectiveSupervisorTier?.rawValue ?? "",
+                        "effective_work_order_depth": guidance.effectiveWorkOrderDepth?.rawValue ?? "",
+                        "work_order_ref": guidance.workOrderRef ?? "",
+                        "expires_at_ms": guidance.expiresAtMs,
+                        "retry_at_ms": guidance.retryAtMs,
+                        "retry_count": guidance.retryCount,
+                        "max_retry_count": guidance.maxRetryCount,
+                        "policy_reason": policy.policyReason,
+                        "audit_ref": guidance.auditRef,
+                        "guidance_text": guidance.guidanceText,
+                        "timestamp_ms": nowMs
+                    ],
+                    for: ctx
+                )
+            }
         } catch {
             print("Supervisor review note save failed: \(error)")
+        }
+    }
+
+    private func shouldPersistAuditOnlySupervisorReviewNote(
+        triggerSource: SupervisorCommandTriggerSource,
+        trigger: SupervisorReviewTrigger,
+        explicitTrigger: SupervisorReviewTrigger?,
+        response: String
+    ) -> Bool {
+        guard triggerSource != .userTurn else { return false }
+        guard explicitTrigger != nil else { return false }
+        guard !response.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+
+        switch trigger {
+        case .periodicPulse, .blockerDetected, .planDrift, .failureStreak, .noProgressWindow, .preDoneSummary, .preHighRiskAction, .userOverride:
+            return true
+        case .periodicHeartbeat, .manualRequest:
+            return false
         }
     }
 
@@ -1479,6 +2319,28 @@ final class SupervisorManager: ObservableObject {
         case .incident:
             return .blockerDetected
         case .skillCallback:
+            if containsAny(
+                normalized,
+                [
+                    "review_trigger=blocker_detected",
+                    "status=failed",
+                    "status=blocked",
+                    "status=canceled",
+                    "active_plan_status=failed",
+                    "active_plan_status=blocked",
+                    "active_job_status=failed",
+                    "active_job_status=blocked"
+                ]
+            ) {
+                return .blockerDetected
+            }
+            if containsAny(normalized, ["review_trigger=pre_done_summary"]) {
+                return .preDoneSummary
+            }
+            if containsAny(normalized, ["status=completed"]) &&
+                containsAny(normalized, ["active_plan_status=completed", "active_job_status=completed"]) {
+                return .preDoneSummary
+            }
             return .periodicPulse
         case .guidanceAck:
             if containsAny(normalized, ["ack_status=rejected", "status=rejected", "rejected"]) {
@@ -1598,12 +2460,34 @@ final class SupervisorManager: ObservableObject {
             .split(whereSeparator: \.isNewline)
             .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        return capped(lines.first ?? response, maxChars: 220)
+        let base = capped(lines.first ?? response, maxChars: 220)
+        guard let readiness = currentSupervisorMemoryAssemblyReadinessForLanguageLayer(),
+              !readiness.ready else {
+            return base
+        }
+
+        let issueSummary = readiness.issues
+            .prefix(2)
+            .map(\.summary)
+            .joined(separator: "；")
+        let lead: String
+        if issueSummary.isEmpty {
+            lead = "当前 strategic memory 供给不足，不适合直接做战略纠偏。"
+        } else {
+            lead = "当前 strategic memory 供给不足（\(issueSummary)），不适合直接做战略纠偏。"
+        }
+        if base.isEmpty {
+            return capped(lead, maxChars: 220)
+        }
+        return capped("\(lead) \(base)", maxChars: 220)
     }
 
     private func supervisorReviewRecommendedActions(
         from response: String,
-        fallbackNextStep: String
+        fallbackNextStep: String,
+        policy: SupervisorReviewPolicyDecision,
+        adaptation: AXProjectSupervisorAdaptationSnapshot,
+        workflowState: (job: SupervisorJobRecord, plan: SupervisorPlanRecord?, skillCall: SupervisorSkillCallRecord?)?
     ) -> [String] {
         let parsed = response
             .split(whereSeparator: \.isNewline)
@@ -1626,8 +2510,27 @@ final class SupervisorManager: ObservableObject {
         let structured = filtered
             .filter(\.structured)
             .map(\.value)
+        let readiness = currentSupervisorMemoryAssemblyReadinessForLanguageLayer()
         if !structured.isEmpty {
-            return Array(structured.prefix(4))
+            let baseActions = Array(structured.prefix(4))
+            if let readiness, !readiness.ready {
+                return Array(
+                    orderedUniqueReviewScalars(
+                        supervisorMemoryRecoveryActions(for: readiness) + baseActions
+                    ).prefix(4)
+                )
+            }
+            return Array(
+                orderedUniqueReviewScalars(
+                    supervisorStructuredFollowupActions(
+                        baseActions: baseActions,
+                        fallbackNextStep: fallbackNextStep,
+                        policy: policy,
+                        adaptation: adaptation,
+                        workflowState: workflowState
+                    ) + baseActions
+                ).prefix(supervisorReviewRecommendedActionLimit(for: adaptation))
+            )
         }
 
         let candidates = filtered.map(\.value)
@@ -1636,14 +2539,340 @@ final class SupervisorManager: ObservableObject {
             return !lowered.hasPrefix("##") && !lowered.hasPrefix("[")
         }
         if !unstructured.isEmpty {
-            return Array(unstructured.prefix(4))
+            let baseActions = Array(unstructured.prefix(4))
+            if let readiness, !readiness.ready {
+                return Array(
+                    orderedUniqueReviewScalars(
+                        supervisorMemoryRecoveryActions(for: readiness) + baseActions
+                    ).prefix(4)
+                )
+            }
+            return Array(
+                orderedUniqueReviewScalars(
+                    supervisorStructuredFollowupActions(
+                        baseActions: baseActions,
+                        fallbackNextStep: fallbackNextStep,
+                        policy: policy,
+                        adaptation: adaptation,
+                        workflowState: workflowState
+                    ) + baseActions
+                ).prefix(supervisorReviewRecommendedActionLimit(for: adaptation))
+            )
         }
 
         let fallback = fallbackNextStep.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !fallback.isEmpty, !isDigestPlaceholder(fallback, treatContinueCurrentTaskAsPlaceholder: true) else {
-            return ["继续当前路径，并在下一观察点重新评估质量与偏航风险"]
+        let baseActions: [String]
+        if !fallback.isEmpty, !isDigestPlaceholder(fallback, treatContinueCurrentTaskAsPlaceholder: true) {
+            baseActions = [capped(fallback, maxChars: 160)]
+        } else {
+            baseActions = ["继续当前路径，并在下一观察点重新评估质量与偏航风险"]
         }
-        return [capped(fallback, maxChars: 160)]
+        if let readiness, !readiness.ready {
+            return Array(
+                orderedUniqueReviewScalars(
+                    supervisorMemoryRecoveryActions(for: readiness) + baseActions
+                ).prefix(4)
+            )
+        }
+        return Array(
+            orderedUniqueReviewScalars(
+                supervisorStructuredFollowupActions(
+                    baseActions: baseActions,
+                    fallbackNextStep: fallbackNextStep,
+                    policy: policy,
+                    adaptation: adaptation,
+                    workflowState: workflowState
+                ) + baseActions
+            ).prefix(supervisorReviewRecommendedActionLimit(for: adaptation))
+        )
+    }
+
+    private func supervisorReviewRecommendedActionLimit(
+        for adaptation: AXProjectSupervisorAdaptationSnapshot
+    ) -> Int {
+        adaptation.effectiveWorkOrderDepth >= .executionReady ? 5 : 4
+    }
+
+    private func supervisorStructuredFollowupActions(
+        baseActions: [String],
+        fallbackNextStep: String,
+        policy: SupervisorReviewPolicyDecision,
+        adaptation: AXProjectSupervisorAdaptationSnapshot,
+        workflowState: (job: SupervisorJobRecord, plan: SupervisorPlanRecord?, skillCall: SupervisorSkillCallRecord?)?
+    ) -> [String] {
+        let depth = adaptation.effectiveWorkOrderDepth
+        guard depth >= .executionReady else { return [] }
+        guard policy.reviewLevel != .r1Pulse || policy.interventionMode == .replanNextSafePoint else {
+            return []
+        }
+        guard !supervisorActionsAlreadySatisfyStructuredFollowup(baseActions, depth: depth) else {
+            return []
+        }
+        guard let workflowState else { return [] }
+        if supervisorShouldRelaxStructuredFollowup(
+            baseActions: baseActions,
+            policy: policy,
+            adaptation: adaptation,
+            workflowState: workflowState
+        ) {
+            return []
+        }
+
+        let focusStep = supervisorStructuredFocusStep(
+            plan: workflowState.plan,
+            depth: depth
+        )
+        let followupBoundary = supervisorStructuredSafePointLabel(policy.safePointPolicy)
+        let planRef = workflowState.plan?.planId.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let jobGoal = workflowState.job.goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallback = fallbackNextStep.trimmingCharacters(in: .whitespacesAndNewlines)
+        let focusStepLabel = focusStep.map(supervisorStructuredWorkflowStepLabel)
+        let nextPendingStep = supervisorOrderedWorkflowSteps(workflowState.plan)
+            .first(where: { $0.status == .pending && $0.stepId != focusStep?.stepId })
+        let nextPendingLabel = nextPendingStep.map(supervisorStructuredWorkflowStepLabel)
+
+        switch depth {
+        case .executionReady:
+            var actions: [String] = []
+            if let focusStepLabel {
+                actions.append(
+                    "在\(followupBoundary) 先把 \(focusStepLabel) 补成 execution-ready 工单：写清执行 detail、依赖、验证 checkpoint 和失败后的 replan 条件。"
+                )
+            } else if !planRef.isEmpty {
+                actions.append(
+                    "在\(followupBoundary) 先把计划 \(planRef) 补成 execution-ready 工单：按顺序写清步骤、owner、执行 detail 和验证 checkpoint。"
+                )
+            } else if !jobGoal.isEmpty {
+                actions.append(
+                    "围绕当前任务「\(capped(jobGoal, maxChars: 72))」先产出 execution-ready 工单：至少 2-4 个顺序步骤，并补一个验证/验收 checkpoint。"
+                )
+            } else if !fallback.isEmpty {
+                actions.append(
+                    "先把「\(capped(fallback, maxChars: 72))」改写成 execution-ready 工单：写清步骤顺序、执行 detail、依赖和验证方式。"
+                )
+            }
+            if !planRef.isEmpty {
+                let target = nextPendingLabel ?? focusStepLabel ?? "当前计划"
+                actions.append(
+                    "围绕计划 \(planRef) 明确 \(target) 的 owner、完成定义和回执格式；确认后再推进后续步骤。"
+                )
+            }
+            return actions
+        case .stepLockedRescue:
+            var actions: [String] = []
+            let focus = focusStepLabel ?? nextPendingLabel ?? (!planRef.isEmpty ? "计划 \(planRef)" : "当前 rescue 工单")
+            actions.append(
+                "在\(followupBoundary) 按 step_locked_rescue 重排当前工单：只推进 \(focus) 这一个解阻塞步骤，未完成验证前不要并行推进后续步骤。"
+            )
+            if let nextPendingLabel {
+                actions.append(
+                    "把后续步骤（先从 \(nextPendingLabel) 开始）串成 depends_on，并在当前步骤后补一个验证/回滚检查点。"
+                )
+            } else {
+                actions.append(
+                    "在当前解阻塞步骤后补一个验证/回滚检查点，验证通过后再放行下一步。"
+                )
+            }
+            return actions
+        case .none, .brief, .milestoneContract:
+            return []
+        }
+    }
+
+    private func supervisorShouldRelaxStructuredFollowup(
+        baseActions: [String],
+        policy: SupervisorReviewPolicyDecision,
+        adaptation: AXProjectSupervisorAdaptationSnapshot,
+        workflowState: (job: SupervisorJobRecord, plan: SupervisorPlanRecord?, skillCall: SupervisorSkillCallRecord?)
+    ) -> Bool {
+        guard adaptation.effectiveWorkOrderDepth == .executionReady else { return false }
+        guard policy.reviewLevel != .r3Rescue else { return false }
+        guard let strengthBand = adaptation.projectAIStrengthProfile?.strengthBand,
+              strengthBand >= .capable else {
+            return false
+        }
+
+        return supervisorActionsShowAnchoredExecutionIntent(
+            baseActions,
+            workflowState: workflowState
+        )
+    }
+
+    private func supervisorActionsShowAnchoredExecutionIntent(
+        _ actions: [String],
+        workflowState: (job: SupervisorJobRecord, plan: SupervisorPlanRecord?, skillCall: SupervisorSkillCallRecord?)
+    ) -> Bool {
+        let meaningfulActions = actions
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter {
+                !$0.isEmpty &&
+                !supervisorActionIsGenericFollowupPlaceholder($0)
+            }
+        guard meaningfulActions.count >= 2 else { return false }
+
+        var anchors: [String] = []
+        if let plan = workflowState.plan {
+            anchors.append(plan.planId)
+        }
+        for step in supervisorOrderedWorkflowSteps(workflowState.plan).prefix(3) {
+            anchors.append(step.stepId)
+            anchors.append(step.title)
+            anchors.append(supervisorStructuredWorkflowStepLabel(step))
+        }
+
+        let normalizedAnchors = anchors
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && ($0.count >= 4 || $0.contains("-")) }
+        guard !normalizedAnchors.isEmpty else { return false }
+
+        let anchoredActionCount = meaningfulActions.filter { action in
+            let lowered = action.lowercased()
+            return normalizedAnchors.contains { anchor in
+                lowered.contains(anchor.lowercased())
+            }
+        }.count
+
+        return anchoredActionCount >= 2 || (anchoredActionCount >= 1 && meaningfulActions.count >= 3)
+    }
+
+    private func supervisorActionIsGenericFollowupPlaceholder(
+        _ action: String
+    ) -> Bool {
+        if isDigestPlaceholder(action, treatContinueCurrentTaskAsPlaceholder: true) {
+            return true
+        }
+
+        let lowered = action.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let genericPhrases = [
+            "继续当前路径",
+            "继续推进当前路径",
+            "继续当前路线",
+            "继续按当前路径",
+            "继续按现有计划",
+            "补一下后续计划",
+            "补一下计划",
+            "按当前路径继续",
+            "continue current path",
+            "continue the current path",
+            "continue as planned",
+        ]
+        return genericPhrases.contains(where: lowered.contains)
+    }
+
+    private func supervisorActionsAlreadySatisfyStructuredFollowup(
+        _ actions: [String],
+        depth: AXProjectSupervisorWorkOrderDepth
+    ) -> Bool {
+        guard !actions.isEmpty else { return false }
+        let tokens: [String]
+        switch depth {
+        case .executionReady:
+            tokens = [
+                "execution-ready", "execution ready", "工单", "步骤", "step",
+                "detail", "依赖", "验证", "验收", "checkpoint", "replan"
+            ]
+        case .stepLockedRescue:
+            tokens = [
+                "step_locked_rescue", "解阻塞", "串行", "depends_on", "依赖",
+                "验证", "checkpoint", "回滚", "只推进", "单步"
+            ]
+        case .none, .brief, .milestoneContract:
+            return true
+        }
+        return actions.contains { action in
+            containsAny(action.lowercased(), tokens)
+        }
+    }
+
+    private func supervisorStructuredSafePointLabel(
+        _ policy: SupervisorGuidanceSafePointPolicy
+    ) -> String {
+        switch policy {
+        case .nextToolBoundary:
+            return "下一个 tool boundary"
+        case .nextStepBoundary:
+            return "下一个 step boundary"
+        case .checkpointBoundary:
+            return "下一个 checkpoint"
+        case .immediate:
+            return "当前立即"
+        }
+    }
+
+    private func supervisorStructuredFocusStep(
+        plan: SupervisorPlanRecord?,
+        depth: AXProjectSupervisorWorkOrderDepth
+    ) -> SupervisorPlanStepRecord? {
+        let orderedSteps = supervisorOrderedWorkflowSteps(plan)
+        switch depth {
+        case .stepLockedRescue:
+            return orderedSteps.first(where: { $0.status == .blocked || $0.status == .awaitingAuthorization || $0.status == .running })
+                ?? orderedSteps.first(where: { $0.status == .pending })
+                ?? orderedSteps.first
+        case .executionReady:
+            return orderedSteps.first(where: { $0.status == .blocked || $0.status == .awaitingAuthorization })
+                ?? orderedSteps.first(where: { $0.status == .pending })
+                ?? orderedSteps.first(where: { $0.status == .running })
+                ?? orderedSteps.first
+        case .none, .brief, .milestoneContract:
+            return nil
+        }
+    }
+
+    private func supervisorOrderedWorkflowSteps(
+        _ plan: SupervisorPlanRecord?
+    ) -> [SupervisorPlanStepRecord] {
+        guard let plan else { return [] }
+        return plan.steps.sorted { lhs, rhs in
+            if lhs.orderIndex != rhs.orderIndex {
+                return lhs.orderIndex < rhs.orderIndex
+            }
+            return lhs.stepId < rhs.stepId
+        }
+    }
+
+    private func supervisorStructuredWorkflowStepLabel(
+        _ step: SupervisorPlanStepRecord
+    ) -> String {
+        let title = step.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stepId = step.stepId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !stepId.isEmpty && !title.isEmpty {
+            return "\(stepId) \(capped(title, maxChars: 72))"
+        }
+        if !title.isEmpty {
+            return capped(title, maxChars: 72)
+        }
+        if !stepId.isEmpty {
+            return stepId
+        }
+        return "当前步骤"
+    }
+
+    private func currentSupervisorMemoryAssemblyReadinessForLanguageLayer() -> SupervisorMemoryAssemblyReadiness? {
+        guard supervisorMemoryAssemblySnapshot != nil else { return nil }
+        return supervisorMemoryAssemblyReadiness
+    }
+
+    private func supervisorMemoryRecoveryActions(
+        for readiness: SupervisorMemoryAssemblyReadiness
+    ) -> [String] {
+        var actions = [
+            "先补齐长期目标和完成标准、关键决策原因、当前卡点与已试动作、以及可作为依据的日志或结果，再确认记忆深度达标后做战略纠偏"
+        ]
+        let issueCodes = Set(readiness.issueCodes)
+        if issueCodes.contains("memory_review_floor_not_met") {
+            actions.append("先把当前项目的深度记忆拉到至少 m3，再决定是否调整项目战略")
+        }
+        if issueCodes.contains("memory_strategic_anchor_underfed") {
+            actions.append("先把项目长期目标、关键决策原因和当前卡点讲清楚，再给战略建议")
+        }
+        if issueCodes.contains("memory_focus_evidence_missing") {
+            actions.append("先补你认可的日志、回执、实验结果这些依据，再判断是否需要 replan")
+        }
+        if issueCodes.contains("memory_core_layers_truncated") {
+            actions.append("先补齐项目背景、近期变化和当前执行状态，再判断当前路径是否偏航")
+        }
+        return actions
     }
 
     private func focusedSupervisorReviewConstraintItems(
@@ -1659,7 +2888,7 @@ final class SupervisorManager: ObservableObject {
                 items.append("approved_tech_stack=\(specCapsule.approvedTechStack.prefix(3).joined(separator: " | "))")
             }
         }
-        items.append("autonomy=\(config.autonomyMode.rawValue)->\(effectiveAutonomy.effectiveMode.rawValue)")
+        items.append("surface=\(config.autonomyMode.rawValue)->\(effectiveAutonomy.effectiveMode.rawValue)")
         items.append("override=\(effectiveAutonomy.hubOverrideMode.rawValue)")
         if effectiveAutonomy.killSwitchEngaged {
             items.append("kill_switch=on")
@@ -1670,10 +2899,27 @@ final class SupervisorManager: ObservableObject {
     }
 
     private func startSupervisorEventLoopTurn(_ trigger: SupervisorEventLoopTrigger) {
+        updateActionLedger(
+            id: trigger.ledgerId,
+            status: "running",
+            reasonCode: "started",
+            detail: supervisorEventLoopActivityDetail(
+                triggerSummary: trigger.triggerSummary,
+                dedupeKey: trigger.dedupeKey,
+                policySummary: trigger.policySummary
+            ),
+            verifiedAt: nil
+        )
+        updateSupervisorEventLoopActivity(
+            id: trigger.activityId,
+            status: "running",
+            reasonCode: "started"
+        )
         supervisorEventLoopTask = Task { @MainActor [weak self] in
             guard let self else { return }
             await self.runSupervisorEventLoopTurn(trigger)
         }
+        refreshSupervisorEventLoopRuntimeState()
     }
 
     private func runSupervisorEventLoopTurn(_ trigger: SupervisorEventLoopTrigger) async {
@@ -1702,15 +2948,40 @@ final class SupervisorManager: ObservableObject {
             )
         }
 
+        let completionStatus = trimmed.isEmpty ? "completed_empty" : "completed"
+        let completionReason = trimmed.isEmpty ? "empty_response" : "ok"
+        let completionDetail = supervisorEventLoopActivityDetail(
+            triggerSummary: trigger.triggerSummary,
+            dedupeKey: trigger.dedupeKey,
+            resultSummary: trimmed.isEmpty ? "" : trimmed.replacingOccurrences(of: "\n", with: " "),
+            policySummary: trigger.policySummary
+        )
+        updateActionLedger(
+            id: trigger.ledgerId,
+            status: completionStatus,
+            reasonCode: completionReason,
+            detail: completionDetail,
+            verifiedAt: Date().timeIntervalSince1970
+        )
+        updateSupervisorEventLoopActivity(
+            id: trigger.activityId,
+            status: completionStatus,
+            reasonCode: completionReason,
+            resultSummary: trimmed.isEmpty ? nil : trimmed
+        )
         supervisorEventLoopTask = nil
+        refreshSupervisorEventLoopRuntimeState()
         drainPendingSupervisorEventLoopIfNeeded()
     }
 
     private func drainPendingSupervisorEventLoopIfNeeded() {
         guard !isProcessing else { return }
         guard supervisorEventLoopTask == nil else { return }
-        guard let trigger = pendingSupervisorEventLoopTrigger else { return }
-        pendingSupervisorEventLoopTrigger = nil
+        guard !pendingSupervisorEventLoopTriggers.isEmpty else {
+            refreshSupervisorEventLoopRuntimeState()
+            return
+        }
+        let trigger = pendingSupervisorEventLoopTriggers.removeFirst()
         startSupervisorEventLoopTurn(trigger)
     }
 
@@ -1753,6 +3024,11 @@ final class SupervisorManager: ObservableObject {
         status: SupervisorSkillCallStatus,
         reason: String
     ) {
+        let reviewHint = resolvedSupervisorSkillCallbackReviewHint(
+            project: project,
+            record: record,
+            status: status
+        )
         let normalizedReason = capped(
             reason.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " "),
             maxChars: 220
@@ -1764,14 +3040,118 @@ final class SupervisorManager: ObservableObject {
             extraLines: [
                 "tool_name=\(record.toolName.isEmpty ? "(none)" : record.toolName)",
                 "status=\(status.rawValue)",
+                "review_trigger=\(reviewHint.trigger.rawValue)",
+                "review_level_hint=\(reviewHint.reviewLevel.rawValue)",
+                "review_run_kind=\(reviewHint.runKind.rawValue)",
                 "summary=\(normalizedReason.isEmpty ? "(none)" : normalizedReason)"
             ]
         )
         queueSupervisorEventLoopTurn(
             userMessage: message,
             triggerSource: .skillCallback,
-            dedupeKey: "skill_callback:\(record.requestId):\(status.rawValue)"
+            dedupeKey: "skill_callback:\(record.requestId):\(status.rawValue):\(reviewHint.trigger.rawValue)"
         )
+    }
+
+    private func resolvedSupervisorSkillCallbackReviewHint(
+        project: AXProjectEntry,
+        record: SupervisorSkillCallRecord,
+        status: SupervisorSkillCallStatus
+    ) -> (trigger: SupervisorReviewTrigger, reviewLevel: SupervisorReviewLevel, runKind: SupervisorReviewRunKind) {
+        let ctx = supervisorMemoryContext(for: project)
+        let governance = resolvedSupervisorProjectGovernanceState(
+            projectId: project.projectId,
+            ctx: ctx
+        )
+        let effectiveTier = governance?.supervisorAdaptation.effectiveSupervisorTier
+            ?? governance?.effectiveBundle.supervisorInterventionTier
+            ?? .s0SilentAudit
+        let effectiveWorkOrderDepth = governance?.supervisorAdaptation.effectiveWorkOrderDepth ?? .none
+        let workflowState = supervisorWorkflowState(
+            project: project,
+            ctx: ctx,
+            preferredJobId: record.jobId,
+            preferredPlanId: record.planId,
+            preferredRequestId: record.requestId
+        )
+        let plan = workflowState?.plan
+        let job = workflowState?.job
+        let stepStatus = plan?.steps.first(where: { $0.stepId == record.stepId })?.status
+
+        if shouldRunSupervisorSkillCallbackBlockerReview(
+            status: status,
+            stepStatus: stepStatus,
+            planStatus: plan?.status,
+            jobStatus: job?.status
+        ) {
+            let reviewLevel: SupervisorReviewLevel = (
+                effectiveWorkOrderDepth == .stepLockedRescue || effectiveTier >= .s4TightSupervision
+            ) ? .r3Rescue : .r2Strategic
+            return (.blockerDetected, reviewLevel, .eventDriven)
+        }
+
+        if shouldRunSupervisorSkillCallbackPreDoneReview(
+            status: status,
+            plan: plan,
+            job: job,
+            completedStepId: record.stepId
+        ) {
+            return (.preDoneSummary, .r3Rescue, .eventDriven)
+        }
+
+        let pulseLevel: SupervisorReviewLevel = effectiveWorkOrderDepth >= .executionReady
+            ? .r2Strategic
+            : .r1Pulse
+        return (.periodicPulse, pulseLevel, .eventDriven)
+    }
+
+    private func shouldRunSupervisorSkillCallbackBlockerReview(
+        status: SupervisorSkillCallStatus,
+        stepStatus: SupervisorPlanStepStatus?,
+        planStatus: SupervisorPlanStatus?,
+        jobStatus: SupervisorJobStatus?
+    ) -> Bool {
+        let blockingSkillStatuses: Set<SupervisorSkillCallStatus> = [.blocked, .failed, .canceled]
+        if blockingSkillStatuses.contains(status) {
+            return true
+        }
+
+        let blockingStepStatuses: Set<SupervisorPlanStepStatus> = [.blocked, .failed, .canceled]
+        if let stepStatus, blockingStepStatuses.contains(stepStatus) {
+            return true
+        }
+
+        let blockingPlanStatuses: Set<SupervisorPlanStatus> = [.blocked, .failed, .canceled]
+        if let planStatus, blockingPlanStatuses.contains(planStatus) {
+            return true
+        }
+
+        let blockingJobStatuses: Set<SupervisorJobStatus> = [.blocked, .failed, .canceled]
+        if let jobStatus, blockingJobStatuses.contains(jobStatus) {
+            return true
+        }
+
+        return false
+    }
+
+    private func shouldRunSupervisorSkillCallbackPreDoneReview(
+        status: SupervisorSkillCallStatus,
+        plan: SupervisorPlanRecord?,
+        job: SupervisorJobRecord?,
+        completedStepId: String
+    ) -> Bool {
+        guard status == .completed else { return false }
+
+        if let plan, plan.status == .completed {
+            let hasOtherIncompleteSteps = plan.steps.contains { step in
+                step.stepId != completedStepId && step.status != .completed
+            }
+            if !hasOtherIncompleteSteps {
+                return true
+            }
+        }
+
+        return job?.status == .completed
     }
 
     private func scheduleSupervisorGrantResolutionFollowUp(
@@ -2018,6 +3398,7 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
         supervisorMemoryUpdatedAt = memoryInfo.updatedAt
         supervisorMemoryProjectDigests = visibleDigests
         supervisorMemoryPreview = memoryInfo.text
+        publishSupervisorMemoryAssemblyState(memoryInfo.assemblySnapshot)
         supervisorSkillRegistrySnapshot = memoryInfo.skillRegistrySnapshot
         supervisorSkillRegistryStatusLine = memoryInfo.skillRegistrySnapshot?.statusLine ?? "skills: no focused project"
         supervisorRecentProjectActionEvents = registry.filteredEvents(supervisorRecentProjectActionEvents)
@@ -2025,6 +3406,16 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
         supervisorPortfolioSnapshot = SupervisorPortfolioSnapshotBuilder.build(from: visibleDigests)
         syncSupervisorPortfolioSnapshotIfNeeded(supervisorPortfolioSnapshot)
         syncSupervisorProjectCapsulesIfNeeded(from: visibleDigests)
+    }
+
+    private func publishSupervisorMemoryAssemblyState(
+        _ snapshot: SupervisorMemoryAssemblySnapshot?
+    ) {
+        supervisorMemoryAssemblySnapshot = snapshot
+        supervisorMemoryAssemblyStatusLine = snapshot?.statusLine ?? "assembly: unavailable"
+        supervisorMemoryAssemblyReadiness = Self.evaluateSupervisorMemoryAssemblyReadiness(
+            snapshot: snapshot
+        )
     }
 
     private func syncSupervisorProjectCapsulesIfNeeded(from digests: [SupervisorMemoryProjectDigest]) {
@@ -2067,6 +3458,9 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
         memoryInfo: SupervisorMemoryBuildInfo
     ) -> String {
         let promptPreferences = currentSupervisorPromptPreferences()
+        let memoryReadiness = memoryInfo.assemblySnapshot.map { snapshot in
+            Self.evaluateSupervisorMemoryAssemblyReadiness(snapshot: snapshot)
+        }
         let params = SupervisorSystemPromptParamsBuilder.build(
             identity: currentSupervisorIdentityProfile(),
             preferredSupervisorModelId: preferredModel,
@@ -2080,6 +3474,7 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
             memoryV1: memoryInfo.text,
             promptMode: .full,
             extraSystemPrompt: promptPreferences.extraSystemPromptOrNil,
+            memoryReadiness: memoryReadiness,
             hubConnected: appModel?.hubConnected ?? false,
             hubRemoteConnected: appModel?.hubRemoteConnected ?? false
         )
@@ -2185,6 +3580,16 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
             }
         }
         return ""
+    }
+
+    private func firstNonEmpty(_ values: String?...) -> String? {
+        for value in values {
+            let cleaned = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !cleaned.isEmpty {
+                return cleaned
+            }
+        }
+        return nil
     }
 
     private func firstNonEmptyValue(_ preferred: String, _ fallback: String?) -> String {
@@ -3074,6 +4479,13 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
             decisions: decisionSnapshot.events,
             backgroundNotes: backgroundSnapshot.notes
         )
+        let latestReview = SupervisorReviewNoteStore.latest(for: ctx)
+        let latestGuidance = SupervisorGuidanceInjectionStore.latest(for: ctx)
+        let pendingAckGuidance = SupervisorGuidanceInjectionStore.latestPendingAck(for: ctx)
+        let resolvedGovernance = resolvedSupervisorProjectGovernanceState(
+            projectId: project.projectId,
+            ctx: ctx
+        )
         let skillCallSnapshot = SupervisorProjectSkillCallStore.load(for: ctx)
         let workflow = SupervisorProjectWorkflowCanonicalSync.snapshot(
             projectId: project.projectId,
@@ -3109,6 +4521,12 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
             capsule: capsule,
             specCapsule: specCapsule,
             decisionRails: decisionRails,
+            latestReview: latestReview,
+            latestGuidance: latestGuidance,
+            pendingAckGuidance: pendingAckGuidance,
+            followUpRhythmSummary: resolvedGovernance.map {
+                SupervisorReviewPolicyEngine.eventFollowUpCadenceSummary(governance: $0)
+            },
             workflow: workflow,
             recentMessages: recentMessages,
             denyReason: nil,
@@ -3118,6 +4536,9 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
                 requestedScope: requestedScope,
                 specCapsule: specCapsule,
                 decisionRails: decisionRails,
+                latestReview: latestReview,
+                latestGuidance: latestGuidance,
+                pendingAckGuidance: pendingAckGuidance,
                 workflow: workflow
             )
         )
@@ -3257,6 +4678,7 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
     ) -> SupervisorProjectDigestGovernanceContext {
         let specCapsule = SupervisorProjectSpecCapsuleStore.load(for: ctx)
         let decisionSnapshot = SupervisorDecisionTrackStore.load(for: ctx)
+        let selectedEvidenceSnapshot = SupervisorSelectedEvidencePinStore.load(for: ctx)
         let backgroundSnapshot = SupervisorBackgroundPreferenceTrackStore.load(for: ctx)
         let rails = SupervisorDecisionRailResolver.resolve(
             projectId: projectId,
@@ -3283,10 +4705,15 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
             let statement = capped(firstNonEmptyLine(in: note.statement), maxChars: 80)
             return "背景偏好（弱参考）：\(note.domain.rawValue)=\(statement)"
         } ?? ""
+        let resolvedGovernance = resolvedSupervisorProjectGovernanceState(
+            projectId: projectId,
+            ctx: ctx
+        )
 
         let updatedAt = max(
             TimeInterval(specCapsule?.updatedAtMs ?? 0) / 1000.0,
             TimeInterval(decisionSnapshot.updatedAtMs) / 1000.0,
+            TimeInterval(selectedEvidenceSnapshot.updatedAtMs) / 1000.0,
             TimeInterval(backgroundSnapshot.updatedAtMs) / 1000.0
         )
 
@@ -3297,18 +4724,51 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
         if !decisionSnapshot.events.isEmpty {
             sourceTags.append("decision_track")
         }
+        if !selectedEvidenceSnapshot.pins.isEmpty {
+            sourceTags.append("selected_evidence")
+        }
         if !backgroundSnapshot.notes.isEmpty {
             sourceTags.append("background_preference_track")
+        }
+        if resolvedGovernance != nil {
+            sourceTags.append("runtime_governance")
         }
 
         return SupervisorProjectDigestGovernanceContext(
             specCapsule: specCapsule,
             missingSpecFields: specCapsule?.missingRequiredFields ?? [],
             hardDecisions: hardDecisions,
+            selectedEvidencePins: selectedEvidenceSnapshot.pins,
             backgroundShadowHint: backgroundShadowHint,
             decisionAssist: nil,
+            resolvedGovernance: resolvedGovernance,
             updatedAt: updatedAt,
             sourceTags: sourceTags
+        )
+    }
+
+    private func resolvedSupervisorProjectGovernanceState(
+        projectId: String,
+        ctx: AXProjectContext
+    ) -> AXProjectResolvedGovernanceState? {
+        if let appModel,
+           let project = appModel.registry.project(for: projectId) {
+            return appModel.resolvedProjectGovernance(for: project)
+        }
+
+        let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: ctx.root)
+        let adaptationPolicy = AXProjectSupervisorAdaptationPolicy.default
+        let strengthProfile = AXProjectAIStrengthAssessor.assess(
+            ctx: ctx,
+            adaptationPolicy: adaptationPolicy
+        )
+
+        return xtResolveProjectGovernance(
+            projectRoot: ctx.root,
+            config: config,
+            projectAIStrengthProfile: strengthProfile,
+            adaptationPolicy: adaptationPolicy,
+            permissionReadiness: .current()
         )
     }
 
@@ -4361,20 +5821,13 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
         ) {
             return automationAction
         }
-        if !isExplicitModelAssignmentRequest(normalized) {
-            return localSupervisorWorkflowBootstrapIfApplicable(
-                userMessage,
-                normalized: normalized,
-                projects: projects
-            )
-        }
+        if isExplicitModelAssignmentRequest(normalized) {
+            let explicitRole = firstExplicitRoleMention(in: normalized)
+            let role = explicitRole ?? .coder
+            let usedDefaultRole = explicitRole == nil
 
-        let explicitRole = firstExplicitRoleMention(in: normalized)
-        let role = explicitRole ?? .coder
-        let usedDefaultRole = explicitRole == nil
-
-        guard let rawModelToken = extractRequestedModelToken(from: userMessage) else {
-            return """
+            guard let rawModelToken = extractRequestedModelToken(from: userMessage) else {
+                return """
 我大概知道你是想切模型，但这句话里还缺目标模型。
 
 你可以直接这样说：
@@ -4382,29 +5835,29 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
 - 把当前项目的模型换成 5.3
 - 把 reviewer 改成 auto
 """
-        }
+            }
 
-        let resolvedModelId: String
-        switch resolveRequestedModelToken(rawModelToken) {
-        case .resolved(let modelId):
-            resolvedModelId = modelId
-        case .auto:
-            resolvedModelId = "auto"
-        case .inventoryUnavailable:
-            return """
+            let resolvedModelId: String
+            switch resolveRequestedModelToken(rawModelToken) {
+            case .resolved(let modelId):
+                resolvedModelId = modelId
+            case .auto:
+                resolvedModelId = "auto"
+            case .inventoryUnavailable:
+                return """
 我知道你想切到“\(rawModelToken)”，但我现在拿不到 Hub 模型清单，所以没法把这个简称稳妥地映射成具体 model id。
 
 如果你现在就要改，直接给完整 model id 最稳，比如 `openai/gpt-5.3-codex`。
 """
-        case .notFound:
-            return """
+            case .notFound:
+                return """
 当前 Hub 模型清单里，我没找到能稳定匹配“\(rawModelToken)”的模型。
 
 最直接的做法是你给我完整 model id，或者先看一下 Hub 的 Models 页面再回来改。
 """
-        case .ambiguous(let candidates):
-            let labels = candidates.prefix(4).map { "\($0.id)（\($0.name)）" }.joined(separator: "、")
-            return """
+            case .ambiguous(let candidates):
+                let labels = candidates.prefix(4).map { "\($0.id)（\($0.name)）" }.joined(separator: "、")
+                return """
 “\(rawModelToken)”现在能匹配到多个模型，我不想替你盲选。
 
 候选：
@@ -4412,59 +5865,84 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
 
 你再说具体一点，最好直接给完整 model id。
 """
-        }
+            }
 
-        guard let intent = parseDirectModelAssignmentIntent(
-            userMessage,
-            projects: projects,
-            role: role,
-            usedDefaultRole: usedDefaultRole,
-            resolvedModelId: resolvedModelId,
-            sourceModelToken: rawModelToken
-        ) else {
-            return """
+            guard let intent = parseDirectModelAssignmentIntent(
+                userMessage,
+                projects: projects,
+                role: role,
+                usedDefaultRole: usedDefaultRole,
+                resolvedModelId: resolvedModelId,
+                sourceModelToken: rawModelToken
+            ) else {
+                return """
 我知道你是要改模型，但我现在还拿不到稳定的项目范围。
 
 你补项目名就行，或者先在侧栏选中项目后再说一句：
 `把这个项目的模型换成 \(rawModelToken)`
 """
-        }
+            }
 
-        let result: ModelAssignmentResult
-        if intent.appliesToAllProjects {
-            result = assignModelToAllProjects(role: intent.role, modelId: intent.modelId)
-        } else {
-            let projectRef = intent.projectRef ?? defaultProjectReferenceForDirectAssignment(projects: projects)
-            guard let projectRef else {
-                return """
+            let result: ModelAssignmentResult
+            if intent.appliesToAllProjects {
+                result = assignModelToAllProjects(role: intent.role, modelId: intent.modelId)
+            } else {
+                let projectRef = intent.projectRef ?? defaultProjectReferenceForDirectAssignment(projects: projects)
+                guard let projectRef else {
+                    return """
 我知道你要切模型，但当前项目不唯一，我不能替你猜。
 
 现在有 \(projects.count) 个项目。你补项目名，或者先选中项目后再说“把这个项目的模型换成 \(intent.sourceModelToken)”就行。
 """
+                }
+                result = assignModelToProject(projectRef: projectRef, role: intent.role, modelId: intent.modelId)
             }
-            result = assignModelToProject(projectRef: projectRef, role: intent.role, modelId: intent.modelId)
-        }
 
-        return naturalizeModelAssignmentResponse(result: result, intent: intent)
+            return naturalizeModelAssignmentResponse(result: result, intent: intent)
+        }
+        if let memoryPatchAction = directSupervisorNaturalMemoryPatchActionIfApplicable(
+            userMessage,
+            projects: projects
+        ) {
+            return memoryPatchAction
+        }
+        if let underfedFollowUp = directSupervisorUnderfedStrategicReviewPromptIfApplicable(
+            userMessage,
+            projects: projects
+        ) {
+            return underfedFollowUp
+        }
+        return localSupervisorWorkflowBootstrapIfApplicable(
+            userMessage,
+            normalized: normalized,
+            projects: projects
+        )
     }
 
     private func directSupervisorNaturalBriefReplyIfApplicable(
         _ userMessage: String,
         projects: [AXProjectEntry]
     ) -> String? {
+        guard activeSupervisorMemoryFactFollowUp() == nil else { return nil }
+        guard !looksLikeSupervisorNaturalMemoryPatchFacts(userMessage) else { return nil }
         let normalized = normalizedLookupKey(userMessage)
         guard !normalized.isEmpty else { return nil }
         guard !hasNaturalAutomationSubject(normalized) else { return nil }
-        guard isNaturalSupervisorBriefRequest(normalized) else { return nil }
+        let selection = focusedSupervisorProjectSelection(
+            projects: projects,
+            userMessage: userMessage
+        )
+        guard !looksLikeSupervisorCasualConversationPrompt(normalized) else { return nil }
+        guard isNaturalSupervisorBriefRequest(
+            normalized,
+            projectSelectionSource: selection?.source
+        ) else { return nil }
 
         if normalizedContainsAny(normalized, ["优先", "优先级", "先做哪个", "排序", "priority"]) {
             return generatePriorityRecommendation(projects)
         }
 
-        if let selection = focusedSupervisorProjectSelection(
-            projects: projects,
-            userMessage: userMessage
-        ) {
+        if let selection {
             return renderFocusedSupervisorNaturalBrief(selection.project)
         }
 
@@ -4477,28 +5955,116 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
         return generateProgressReport(projects)
     }
 
-    private func isNaturalSupervisorBriefRequest(_ normalized: String) -> Bool {
-        normalizedContainsAny(
+    private func looksLikeSupervisorCasualConversationPrompt(_ normalized: String) -> Bool {
+        guard normalizedContainsAny(
             normalized,
             [
+                "你最近",
+                "你今天",
+                "你现在",
+                "你还好吗",
+                "你好吗",
+                "感觉如何",
+                "感觉怎么样",
+                "你感觉如何",
+                "你感觉怎么样",
+                "你觉得如何",
+                "你觉得怎么样",
+                "体验如何",
+                "体验怎么样",
+                "心情如何",
+                "心情怎么样",
+                "聊聊天",
+                "聊聊",
+                "说说话",
+                "在这套系统里",
+                "在这个系统里",
+                "这个系统里",
+                "你在这里",
+                "你在这套系统"
+            ]
+        ) else {
+            return false
+        }
+
+        return !normalizedContainsAny(
+            normalized,
+            [
+                "项目",
+                "状态",
+                "进度",
+                "进展",
+                "卡点",
+                "阻塞",
+                "下一步",
+                "优先级",
                 "汇报",
                 "简报",
                 "brief",
                 "summary",
-                "状态",
-                "进度",
-                "怎么样",
-                "到哪了",
-                "卡点",
-                "卡在哪",
-                "阻塞",
-                "下一步",
-                "建议",
-                "先做哪个",
-                "优先级",
-                "priority"
+                "blocker",
+                "priority",
+                "nextstep"
             ]
         )
+    }
+
+    private func isNaturalSupervisorBriefRequest(
+        _ normalized: String,
+        projectSelectionSource: String?
+    ) -> Bool {
+        let strongSignals = [
+            "汇报",
+            "简报",
+            "brief",
+            "summary",
+            "状态",
+            "进度",
+            "进展",
+            "卡点",
+            "卡在哪",
+            "阻塞",
+            "下一步",
+            "建议",
+            "先做哪个",
+            "优先级",
+            "priority"
+        ]
+        if normalizedContainsAny(normalized, strongSignals) {
+            return true
+        }
+
+        let softSignals = [
+            "怎么样",
+            "如何了",
+            "到哪了"
+        ]
+        guard normalizedContainsAny(normalized, softSignals) else { return false }
+
+        if projectSelectionSource == "explicit_user_mention" || projectSelectionSource == "current_task" {
+            return true
+        }
+
+        return normalizedContainsAny(
+            normalized,
+            [
+                "项目",
+                "这个项目",
+                "当前项目",
+                "当前任务",
+                "这个任务",
+                "workflow",
+                "release",
+                "staging"
+            ]
+        )
+    }
+
+    private func looksLikeSupervisorNaturalMemoryPatchFacts(_ userMessage: String) -> Bool {
+        parseSupervisorNaturalMemoryPatchIntent(
+            userMessage,
+            explicitRequest: false
+        ).hasFacts
     }
 
     private func renderFocusedSupervisorNaturalBrief(_ project: AXProjectEntry) -> String {
@@ -4768,9 +6334,10 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
         _ userMessage: String,
         projects: [AXProjectEntry]
     ) -> String? {
+        guard !looksLikeSupervisorNaturalMemoryPatchFacts(userMessage) else { return nil }
         guard let approve = pendingGrantTextDecision(in: userMessage) else { return nil }
         guard !pendingHubGrants.isEmpty else {
-            return "当前没有待处理的 Hub grant。"
+            return XTHubGrantPresentation.emptyPendingReply(projectName: nil)
         }
 
         let selection = resolvePendingHubGrantForVoiceAction(userMessage, projects: projects)
@@ -4781,7 +6348,13 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
 
         let grantId = grant.grantRequestId.trimmingCharacters(in: .whitespacesAndNewlines)
         if !grantId.isEmpty, pendingHubGrantActionsInFlight.contains(grantId) {
-            return "这笔 Hub grant 正在处理中：\(grant.projectName)（grant=\(grantId)）。"
+            let summary = pendingGrantSummaryLine(
+                grant,
+                includeGrantToken: true,
+                includeScope: false,
+                includeReason: false
+            )
+            return "这笔 Hub grant 正在处理中：\(summary)。"
         }
 
         performPendingHubGrantAction(grant, approve: approve)
@@ -4789,10 +6362,11 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
             capability: grant.capability,
             modelId: grant.modelId
         )
+        let scopeSentence = pendingGrantScopeText(grant).map { "\($0)。" } ?? ""
         if approve {
-            return "收到，我开始处理《\(grant.projectName)》这笔\(capabilityText) Hub 授权了。结果回来后我继续汇报。"
+            return "收到，我开始处理《\(grant.projectName)》的\(capabilityText) Hub 授权了。\(scopeSentence)结果回来后我继续汇报。"
         }
-        return "收到，我先拦下《\(grant.projectName)》这笔\(capabilityText) Hub 授权，并把结果回写到系统。"
+        return "收到，我先拦下《\(grant.projectName)》的\(capabilityText) Hub 授权。\(scopeSentence)结果会回写到系统。"
     }
 
     private func pendingGrantTextDecision(in text: String) -> Bool? {
@@ -4850,6 +6424,1097 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
                 "自动跑"
             ]
         )
+    }
+
+    private func directSupervisorNaturalMemoryPatchActionIfApplicable(
+        _ userMessage: String,
+        projects: [AXProjectEntry]
+    ) -> String? {
+        let normalized = normalizedLookupKey(userMessage)
+        guard !normalized.isEmpty else { return nil }
+
+        let explicitRequest = isNaturalSupervisorMemoryPatchRequest(normalized)
+        var followUp = activeSupervisorMemoryFactFollowUp()
+        let explicitSelection = focusedSupervisorProjectSelection(
+            projects: projects,
+            userMessage: userMessage
+        )
+        if let currentFollowUp = followUp,
+           let followUpProjectId = currentFollowUp.projectId,
+           let explicitSelection,
+           explicitSelection.project.projectId != followUpProjectId {
+            clearPendingSupervisorMemoryFactFollowUp()
+            followUp = nil
+        }
+        let selection = explicitSelection ?? followUp.flatMap {
+            supervisorProjectSelectionForPendingMemoryFactFollowUp($0, projects: projects)
+        }
+        guard let selection else {
+            if explicitRequest {
+                return naturalSupervisorMemoryPatchPrompt(projectName: nil)
+            }
+            if let followUp {
+                return promptForPendingSupervisorMemoryFactFollowUp(followUp)
+            }
+            return nil
+        }
+
+        if followUp != nil {
+            followUp = bindPendingSupervisorMemoryFactFollowUp(to: selection.project)
+        }
+
+        let intent = parseSupervisorNaturalMemoryPatchIntent(
+            userMessage,
+            explicitRequest: explicitRequest
+        )
+        guard intent.hasFacts else {
+            if let followUp {
+                return promptForPendingSupervisorMemoryFactFollowUp(followUp)
+            }
+            return explicitRequest
+                ? naturalSupervisorMemoryPatchPrompt(projectName: selection.project.displayName)
+                : nil
+        }
+
+        let ctx = supervisorMemoryContext(for: selection.project)
+        do {
+            let result = try applySupervisorNaturalMemoryPatch(
+                intent,
+                project: selection.project,
+                ctx: ctx
+            )
+            refreshSupervisorMemorySnapshotNow()
+            return replyTextByAdvancingPendingSupervisorMemoryFactFollowUpIfNeeded(
+                baseReply: result.replyText,
+                intent: intent,
+                project: selection.project
+            )
+        } catch {
+            return "把《\(selection.project.displayName)》的项目背景补记忆时失败了：\(String(describing: error))"
+        }
+    }
+
+    private func directSupervisorUnderfedStrategicReviewPromptIfApplicable(
+        _ userMessage: String,
+        projects: [AXProjectEntry]
+    ) -> String? {
+        guard let readiness = currentSupervisorMemoryAssemblyReadinessForLanguageLayer(),
+              !readiness.ready else {
+            return nil
+        }
+
+        let normalized = normalizedSupervisorIntentText(userMessage)
+        guard shouldCollectNaturalFactsBeforeStrategicReview(normalized) else {
+            return nil
+        }
+
+        let selection = focusedSupervisorProjectSelection(
+            projects: projects,
+            userMessage: userMessage
+        )
+        let topIssue = readiness.issues.first?.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let followUp = installPendingSupervisorMemoryFactFollowUp(
+            projectId: selection?.project.projectId,
+            projectName: selection?.project.displayName,
+            issueSummary: topIssue,
+            categories: pendingSupervisorMemoryFactFollowUpCategories(for: readiness)
+        )
+        return naturalSupervisorUnderfedStrategicReviewPrompt(
+            followUp: followUp
+        )
+    }
+
+    private func shouldCollectNaturalFactsBeforeStrategicReview(_ normalized: String) -> Bool {
+        if isExplicitSupervisorReviewRequest(normalized) {
+            return true
+        }
+
+        return containsAny(
+            normalized,
+            [
+                "战略纠偏",
+                "直接纠偏",
+                "先纠偏",
+                "判断方向",
+                "方向对不对",
+                "要不要改方向",
+                "需不需要改方向",
+                "要不要重规划",
+                "需不需要重规划",
+                "要不要replan",
+                "需不需要replan",
+                "判断当前路径",
+                "这条路径对不对",
+                "现在是不是跑偏",
+                "有没有跑偏"
+            ]
+        )
+    }
+
+    private func isNaturalSupervisorMemoryPatchRequest(_ normalized: String) -> Bool {
+        normalizedContainsAny(
+            normalized,
+            [
+                "补背景",
+                "补记忆",
+                "补上下文",
+                "补长期背景",
+                "补决策依据",
+                "补卡点",
+                "补证据",
+                "记一下",
+                "记到项目里",
+                "记进项目里",
+                "记住这段",
+                "更新背景",
+                "更新记忆",
+                "longterm",
+                "decisionlineage",
+                "blockerlineage",
+                "selectedevidence"
+            ]
+        )
+    }
+
+    private func naturalSupervisorMemoryPatchPrompt(projectName: String?) -> String {
+        let lead: String
+        if let projectName, !projectName.isEmpty {
+            lead = "你直接口述《\(projectName)》的事实就行，我来整理入库。"
+        } else {
+            lead = "先告诉我项目名，或者先选中一个项目，然后直接口述事实就行，我来整理入库。"
+        }
+        return """
+\(lead)
+
+你可以直接这样说：
+- 目标是……，完成标准是……，先不做……
+- 我们决定……，原因是……
+- 现在卡在……，已经试过……，下一步是……
+- 把……作为依据 / 证据
+"""
+    }
+
+    private func naturalSupervisorUnderfedStrategicReviewPrompt(
+        followUp: SupervisorPendingMemoryFactFollowUp
+    ) -> String {
+        let issueTail: String
+        if let issueSummary = followUp.issueSummary, !issueSummary.isEmpty {
+            issueTail = "（当前缺口：\(capped(issueSummary, maxChars: 30))）"
+        } else {
+            issueTail = ""
+        }
+
+        if let projectName = displayNameForPendingSupervisorMemoryFactFollowUp(followUp),
+           !projectName.isEmpty {
+            return """
+《\(projectName)》当前项目背景还不够完整\(issueTail)，我先不直接做战略纠偏。
+
+\(promptForPendingSupervisorMemoryFactFollowUp(followUp))
+"""
+        }
+
+        return """
+当前项目背景还不够完整\(issueTail)，我先不直接做战略纠偏。
+
+\(promptForPendingSupervisorMemoryFactFollowUp(followUp))
+"""
+    }
+
+    private func pendingSupervisorMemoryFactFollowUpCategories(
+        for readiness: SupervisorMemoryAssemblyReadiness
+    ) -> [SupervisorMemoryFactFollowUpCategory] {
+        let issueCodes = Set(readiness.issueCodes)
+        var categories: [SupervisorMemoryFactFollowUpCategory] = []
+
+        if issueCodes.isEmpty ||
+            issueCodes.contains("memory_review_floor_not_met") ||
+            issueCodes.contains("memory_strategic_anchor_underfed") ||
+            issueCodes.contains("memory_core_layers_truncated") {
+            categories.append(contentsOf: [.goalAndDone, .decision, .blocker])
+        }
+        if issueCodes.isEmpty ||
+            issueCodes.contains("memory_review_floor_not_met") ||
+            issueCodes.contains("memory_strategic_anchor_underfed") ||
+            issueCodes.contains("memory_focus_evidence_missing") {
+            categories.append(.evidence)
+        }
+        if categories.isEmpty {
+            categories = SupervisorMemoryFactFollowUpCategory.allCases
+        }
+
+        var ordered: [SupervisorMemoryFactFollowUpCategory] = []
+        for category in categories where !ordered.contains(category) {
+            ordered.append(category)
+        }
+        return ordered
+    }
+
+    private func installPendingSupervisorMemoryFactFollowUp(
+        projectId: String?,
+        projectName: String?,
+        issueSummary: String?,
+        categories: [SupervisorMemoryFactFollowUpCategory]
+    ) -> SupervisorPendingMemoryFactFollowUp {
+        let now = Date().timeIntervalSince1970
+        rememberPendingSupervisorMemoryFactFollowUpProjectName(
+            projectId: projectId,
+            projectName: projectName
+        )
+        let followUp = SupervisorPendingMemoryFactFollowUp(
+            projectId: projectId,
+            projectName: projectName,
+            issueSummary: issueSummary,
+            remainingCategories: categories,
+            createdAt: now,
+            updatedAt: now
+        )
+        pendingSupervisorMemoryFactFollowUp = followUp
+        publishPendingSupervisorMemoryFactFollowUpState(followUp)
+        return followUp
+    }
+
+    private func activeSupervisorMemoryFactFollowUp() -> SupervisorPendingMemoryFactFollowUp? {
+        guard let followUp = pendingSupervisorMemoryFactFollowUp else { return nil }
+        let now = Date().timeIntervalSince1970
+        if now - followUp.updatedAt > supervisorEllipsisContextCarryWindowSec {
+            clearPendingSupervisorMemoryFactFollowUp()
+            return nil
+        }
+        publishPendingSupervisorMemoryFactFollowUpState(followUp)
+        return followUp
+    }
+
+    private func clearPendingSupervisorMemoryFactFollowUp() {
+        pendingSupervisorMemoryFactFollowUp = nil
+        publishPendingSupervisorMemoryFactFollowUpState(nil)
+    }
+
+    private func rememberPendingSupervisorMemoryFactFollowUpProjectName(
+        projectId: String?,
+        projectName: String?
+    ) {
+        let normalizedProjectID = projectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let normalizedProjectName = projectName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !normalizedProjectID.isEmpty,
+              !normalizedProjectName.isEmpty,
+              normalizedProjectName != normalizedProjectID else {
+            return
+        }
+        pendingSupervisorMemoryFactFollowUpProjectNameCache[normalizedProjectID] = normalizedProjectName
+    }
+
+    private func resolvedPendingSupervisorMemoryFactFollowUpProjectName(
+        existing: String?,
+        project: AXProjectEntry
+    ) -> String {
+        let existingName = existing?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let displayName = project.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let projectID = project.projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if !displayName.isEmpty, displayName != projectID {
+            return displayName
+        }
+        if !existingName.isEmpty {
+            return existingName
+        }
+        if !displayName.isEmpty {
+            return displayName
+        }
+        return projectID
+    }
+
+    private func displayNameForPendingSupervisorMemoryFactFollowUp(
+        _ followUp: SupervisorPendingMemoryFactFollowUp
+    ) -> String? {
+        let projectID = followUp.projectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let projectName = followUp.projectName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let registryProjects = AXProjectRegistryStore
+            .sanitizeLoadedRegistry(appModel?.registry ?? AXProjectRegistryStore.load())
+            .registry
+            .projects
+
+        if !projectName.isEmpty, projectName != projectID {
+            return projectName
+        }
+
+        if !projectID.isEmpty,
+           let cached = pendingSupervisorMemoryFactFollowUpProjectNameCache[projectID],
+           !cached.isEmpty {
+            return cached
+        }
+
+        if !projectID.isEmpty,
+           let resolved = registryProjects.first(where: { $0.projectId == projectID })?.displayName
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !resolved.isEmpty,
+           resolved != projectID {
+            return resolved
+        }
+
+        let selectedProjectID = appModel?.selectedProjectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !selectedProjectID.isEmpty,
+           let selectedDisplayName = registryProjects.first(where: { $0.projectId == selectedProjectID })?.displayName
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !selectedDisplayName.isEmpty,
+           selectedDisplayName != selectedProjectID {
+            return selectedDisplayName
+        }
+
+        if !projectName.isEmpty {
+            return projectName
+        }
+        if !projectID.isEmpty {
+            return projectID
+        }
+        return nil
+    }
+
+    private func supervisorProjectSelectionForPendingMemoryFactFollowUp(
+        _ followUp: SupervisorPendingMemoryFactFollowUp,
+        projects: [AXProjectEntry]
+    ) -> SupervisorFocusedProjectSelection? {
+        guard let projectId = followUp.projectId,
+              let project = projects.first(where: { $0.projectId == projectId }) else {
+            return nil
+        }
+        return SupervisorFocusedProjectSelection(
+            project: project,
+            source: "pending_memory_fact_follow_up"
+        )
+    }
+
+    private func bindPendingSupervisorMemoryFactFollowUp(
+        to project: AXProjectEntry
+    ) -> SupervisorPendingMemoryFactFollowUp? {
+        guard var followUp = activeSupervisorMemoryFactFollowUp() else { return nil }
+        followUp.projectId = project.projectId
+        followUp.projectName = resolvedPendingSupervisorMemoryFactFollowUpProjectName(
+            existing: followUp.projectName,
+            project: project
+        )
+        rememberPendingSupervisorMemoryFactFollowUpProjectName(
+            projectId: followUp.projectId,
+            projectName: followUp.projectName
+        )
+        followUp.updatedAt = Date().timeIntervalSince1970
+        pendingSupervisorMemoryFactFollowUp = followUp
+        publishPendingSupervisorMemoryFactFollowUpState(followUp)
+        return followUp
+    }
+
+    private func publishPendingSupervisorMemoryFactFollowUpState(
+        _ followUp: SupervisorPendingMemoryFactFollowUp?
+    ) {
+        let previousReminderFingerprint = supervisorPendingMemoryFactFollowUpReminderFingerprint
+        guard let followUp,
+              let nextCategory = followUp.remainingCategories.first else {
+            supervisorPendingMemoryFactFollowUpStatusLine = "memory follow-up: idle"
+            supervisorPendingMemoryFactFollowUpQuestion = ""
+            supervisorPendingMemoryFactFollowUpReminderFingerprint = ""
+            return
+        }
+
+        let projectLabel = displayNameForPendingSupervisorMemoryFactFollowUp(followUp)
+        let remainingCount = followUp.remainingCategories.count
+        if let projectLabel, !projectLabel.isEmpty {
+            supervisorPendingMemoryFactFollowUpStatusLine = "memory follow-up: \(projectLabel) / remaining=\(remainingCount)"
+        } else {
+            supervisorPendingMemoryFactFollowUpStatusLine = "memory follow-up: project_unresolved / remaining=\(remainingCount)"
+        }
+        supervisorPendingMemoryFactFollowUpQuestion = nextCategory.question
+        syncPendingSupervisorMemoryFactFollowUpReminderIfNeeded(
+            followUp,
+            nextCategory: nextCategory,
+            previousFingerprint: previousReminderFingerprint
+        )
+    }
+
+    private func syncPendingSupervisorMemoryFactFollowUpReminderIfNeeded(
+        _ followUp: SupervisorPendingMemoryFactFollowUp,
+        nextCategory: SupervisorMemoryFactFollowUpCategory,
+        previousFingerprint: String
+    ) {
+        let reminder = pendingSupervisorMemoryFactFollowUpReminder(
+            for: followUp,
+            nextCategory: nextCategory
+        )
+        supervisorPendingMemoryFactFollowUpReminderFingerprint = reminder.fingerprint
+        guard reminder.fingerprint != previousFingerprint else { return }
+        if let override = supervisorMemoryFollowUpReminderOverrideForTesting {
+            override(reminder.title, reminder.body, reminder.actionURL)
+            return
+        }
+        guard backgroundSupervisorServicesEnabled else { return }
+
+        HubIPCClient.pushNotification(
+            source: "X-Terminal",
+            title: reminder.title,
+            body: reminder.body,
+            dedupeKey: reminder.notificationIdentifier,
+            actionURL: reminder.actionURL,
+            unread: true
+        )
+        postLocalSupervisorMemoryFollowUpNotification(reminder)
+    }
+
+    private func pendingSupervisorMemoryFactFollowUpReminder(
+        for followUp: SupervisorPendingMemoryFactFollowUp,
+        nextCategory: SupervisorMemoryFactFollowUpCategory
+    ) -> SupervisorMemoryFactFollowUpReminder {
+        let projectID = followUp.projectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let projectName = displayNameForPendingSupervisorMemoryFactFollowUp(followUp) ?? ""
+        let stableScope: String = {
+            if !projectID.isEmpty {
+                return projectID
+            }
+            if !projectName.isEmpty {
+                return projectName
+            }
+            return "project_unresolved"
+        }()
+        let fingerprint = supervisorDeterministicDigest(
+            stable: [
+                "pending_memory_fact_follow_up",
+                stableScope,
+                nextCategory.rawValue,
+                nextCategory.question,
+            ].joined(separator: "|")
+        )
+
+        let title: String
+        let lead: String
+        if !projectName.isEmpty {
+            title = "待补背景：\(projectName)"
+            lead = "《\(projectName)》还缺这项项目背景：\(nextCategory.question)"
+        } else {
+            title = "Supervisor 等你补项目背景"
+            lead = "还没锁定项目，先说项目名，再补这项背景：\(nextCategory.question)"
+        }
+
+        let remainingCount = followUp.remainingCategories.count
+        let remainingLine = remainingCount > 1
+            ? "还剩 \(remainingCount) 项。"
+            : "这是最后 1 项。"
+        let issueLine: String
+        if let issueSummary = followUp.issueSummary?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !issueSummary.isEmpty {
+            issueLine = " 当前缺口：\(capped(issueSummary, maxChars: 48))。"
+        } else {
+            issueLine = ""
+        }
+        let body = "\(lead)\(issueLine) \(remainingLine) 直接说“\(nextCategory.example)”即可。"
+
+        return SupervisorMemoryFactFollowUpReminder(
+            fingerprint: fingerprint,
+            notificationIdentifier: "x_terminal_supervisor_memory_follow_up_\(fingerprint)",
+            title: title,
+            body: body,
+            actionURL: supervisorActionURL(projectId: followUp.projectId)
+        )
+    }
+
+    private func postLocalSupervisorMemoryFollowUpNotification(
+        _ reminder: SupervisorMemoryFactFollowUpReminder
+    ) {
+        guard canPostLocalSupervisorNotifications() else { return }
+        let content = UNMutableNotificationContent()
+        content.title = reminder.title
+        content.body = reminder.body
+        content.sound = .default
+        content.threadIdentifier = supervisorMemoryFollowUpNotificationThreadID
+
+        let request = UNNotificationRequest(
+            identifier: reminder.notificationIdentifier,
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error {
+                print("Supervisor memory follow-up notification error: \(error)")
+            }
+        }
+    }
+
+    private func canPostLocalSupervisorNotifications() -> Bool {
+        let bundleURL = Bundle.main.bundleURL.path.lowercased()
+        if bundleURL.contains("/swift/pm") {
+            return false
+        }
+        return true
+    }
+
+    private func promptForPendingSupervisorMemoryFactFollowUp(
+        _ followUp: SupervisorPendingMemoryFactFollowUp
+    ) -> String {
+        let nextCategory = followUp.remainingCategories.first ?? .goalAndDone
+        let tail = followUp.remainingCategories.dropFirst().map(\.tailLabel)
+        let tailLine = tail.isEmpty ? "" : "\n后面我还会继续补：\(tail.joined(separator: "、"))。"
+
+        if let projectName = displayNameForPendingSupervisorMemoryFactFollowUp(followUp),
+           !projectName.isEmpty {
+            return """
+我们一项一项补，我先问这一项：\(nextCategory.question)
+你可以直接说：\(nextCategory.example)
+\(tailLine)
+"""
+        }
+
+        return """
+先告诉我你要纠偏哪个项目；锁定项目后，我先问这一项：\(nextCategory.question)
+你可以直接说：某某项目，\(nextCategory.example)
+\(tailLine)
+"""
+    }
+
+    private func supervisorMemoryFactCategoriesCovered(
+        by intent: SupervisorNaturalMemoryPatchIntent
+    ) -> Set<SupervisorMemoryFactFollowUpCategory> {
+        var covered = Set<SupervisorMemoryFactFollowUpCategory>()
+        if intent.goal?.isEmpty == false ||
+            intent.doneDefinition?.isEmpty == false ||
+            !intent.nonGoals.isEmpty ||
+            !intent.approvedTechStack.isEmpty {
+            covered.insert(.goalAndDone)
+        }
+        if intent.decisionStatement?.isEmpty == false || intent.decisionReason?.isEmpty == false {
+            covered.insert(.decision)
+        }
+        if intent.blockerSummary?.isEmpty == false ||
+            !intent.attemptedActions.isEmpty ||
+            intent.currentStateSummary?.isEmpty == false ||
+            intent.nextStepSummary?.isEmpty == false {
+            covered.insert(.blocker)
+        }
+        if !intent.selectedEvidence.isEmpty {
+            covered.insert(.evidence)
+        }
+        return covered
+    }
+
+    private func replyTextByAdvancingPendingSupervisorMemoryFactFollowUpIfNeeded(
+        baseReply: String,
+        intent: SupervisorNaturalMemoryPatchIntent,
+        project: AXProjectEntry
+    ) -> String {
+        guard var followUp = activeSupervisorMemoryFactFollowUp() else {
+            return baseReply
+        }
+        if let followUpProjectId = followUp.projectId,
+           followUpProjectId != project.projectId {
+            clearPendingSupervisorMemoryFactFollowUp()
+            return baseReply
+        }
+
+        followUp.projectId = project.projectId
+        followUp.projectName = resolvedPendingSupervisorMemoryFactFollowUpProjectName(
+            existing: followUp.projectName,
+            project: project
+        )
+        rememberPendingSupervisorMemoryFactFollowUpProjectName(
+            projectId: followUp.projectId,
+            projectName: followUp.projectName
+        )
+        let covered = supervisorMemoryFactCategoriesCovered(by: intent)
+        guard !covered.isEmpty else {
+            followUp.updatedAt = Date().timeIntervalSince1970
+            pendingSupervisorMemoryFactFollowUp = followUp
+            return baseReply
+        }
+
+        followUp.remainingCategories.removeAll { covered.contains($0) }
+        followUp.updatedAt = Date().timeIntervalSince1970
+        if followUp.remainingCategories.isEmpty {
+            clearPendingSupervisorMemoryFactFollowUp()
+            return """
+\(baseReply)
+
+这轮关键背景我已经先补进《\(project.displayName)》了。你现在可以直接再让我审查一次方向；如果还有新的日志或结果，也可以继续补。
+"""
+        }
+
+        pendingSupervisorMemoryFactFollowUp = followUp
+        publishPendingSupervisorMemoryFactFollowUpState(followUp)
+        return """
+\(baseReply)
+
+下一项我还要补：
+\(promptForPendingSupervisorMemoryFactFollowUp(followUp))
+"""
+    }
+
+    private func parseSupervisorNaturalMemoryPatchIntent(
+        _ userMessage: String,
+        explicitRequest: Bool
+    ) -> SupervisorNaturalMemoryPatchIntent {
+        let segments = extractSupervisorNaturalMemoryPatchSegments(from: userMessage)
+
+        func firstValue(_ kind: SupervisorNaturalMemoryPatchFieldKind) -> String? {
+            segments.first(where: { $0.kind == kind })?.value
+        }
+
+        func allValues(_ kind: SupervisorNaturalMemoryPatchFieldKind) -> [String] {
+            segments.filter { $0.kind == kind }.map(\.value)
+        }
+
+        let rawDecision = firstValue(.decision)
+        let rawReason = firstValue(.decisionReason)
+        let rawBlocker = firstValue(.blocker)
+        let rawState = firstValue(.currentState)
+        let rawNextStep = firstValue(.nextStep)
+
+        var decisionStatement = sanitizeSupervisorNaturalMemoryPatchValue(rawDecision ?? "")
+        let lowered = normalizedSupervisorIntentText(userMessage)
+        let looksLikeQuestion = userMessage.contains("?") ||
+            userMessage.contains("？") ||
+            lowered.hasSuffix("吗")
+        if decisionStatement.isEmpty,
+           !looksLikeQuestion,
+           containsAny(
+                lowered,
+                [
+                    "我们决定",
+                    "决定先",
+                    "决定不",
+                    "改走",
+                    "不走",
+                    "改成",
+                    "换成",
+                    "锁定",
+                    "就按这个",
+                    "定成"
+                ]
+           ) {
+            decisionStatement = sanitizeSupervisorNaturalMemoryPatchValue(userMessage)
+        }
+
+        let selectedEvidence = orderedUniqueReviewScalars(
+            allValues(.evidence)
+                .flatMap(splitSupervisorNaturalMemoryPatchList)
+                .map(sanitizeSupervisorNaturalMemoryPatchValue)
+        )
+
+        return SupervisorNaturalMemoryPatchIntent(
+            goal: firstValue(.goal),
+            doneDefinition: firstValue(.doneDefinition),
+            nonGoals: orderedUniqueReviewScalars(
+                allValues(.nonGoal).flatMap(splitSupervisorNaturalMemoryPatchList)
+            ),
+            approvedTechStack: orderedUniqueReviewScalars(
+                allValues(.approvedTechStack).flatMap(splitSupervisorNaturalMemoryPatchList)
+            ),
+            decisionStatement: decisionStatement.isEmpty ? nil : decisionStatement,
+            decisionReason: rawReason,
+            blockerSummary: rawBlocker,
+            attemptedActions: orderedUniqueReviewScalars(
+                allValues(.attemptedAction).flatMap(splitSupervisorNaturalMemoryPatchList)
+            ),
+            currentStateSummary: rawState,
+            nextStepSummary: rawNextStep,
+            selectedEvidence: selectedEvidence,
+            explicitRequest: explicitRequest
+        )
+    }
+
+    private func extractSupervisorNaturalMemoryPatchSegments(
+        from text: String
+    ) -> [(kind: SupervisorNaturalMemoryPatchFieldKind, value: String)] {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        let markerMap: [(kind: SupervisorNaturalMemoryPatchFieldKind, tokens: [String])] = [
+            (.goal, ["长期目标是", "目标是", "goal is", "goal:", "目标:", "要做的是", "最终要"]),
+            (.doneDefinition, ["完成标准是", "验收标准是", "done definition is", "done definition:", "mvp是", "mvp:", "最小可交付是"]),
+            (.nonGoal, ["先不做", "不要做", "不做", "非目标是", "non goal is", "non goals are"]),
+            (.approvedTechStack, ["必须用", "只能用", "技术栈定为", "技术栈是", "tech stack is", "approved tech stack"]),
+            (.decision, ["我们决定", "决定先", "决定不", "改走", "不走", "改成", "换成", "锁定", "就按这个", "定成"]),
+            (.decisionReason, ["原因是", "因为", "理由是", "主要考虑是", "why:", "because"]),
+            (.blocker, ["现在卡在", "卡点是", "阻塞是", "卡住了", "blocker is"]),
+            (.attemptedAction, ["已经试过", "试过", "尝试了", "做过", "已试过"]),
+            (.currentState, ["现在状态是", "当前状态是", "目前状态是", "目前在", "current state is"]),
+            (.nextStep, ["下一步是", "接下来是", "接下来先", "后面先", "next step is"]),
+            (.evidence, ["把这个作为依据", "把这个当依据", "作为依据", "证据是", "依据是", "参考是", "把这个作为证据"])
+        ]
+
+        struct Match {
+            var kind: SupervisorNaturalMemoryPatchFieldKind
+            var location: Int
+            var length: Int
+        }
+
+        let lowered = trimmed.lowercased() as NSString
+        let original = trimmed as NSString
+        var matches: [Match] = []
+
+        for (kind, tokens) in markerMap {
+            for token in tokens {
+                let needle = token.lowercased()
+                var searchRange = NSRange(location: 0, length: lowered.length)
+                while true {
+                    let found = lowered.range(
+                        of: needle,
+                        options: [],
+                        range: searchRange
+                    )
+                    if found.location == NSNotFound { break }
+                    matches.append(Match(kind: kind, location: found.location, length: found.length))
+                    let nextLocation = found.location + max(found.length, 1)
+                    if nextLocation >= lowered.length { break }
+                    searchRange = NSRange(location: nextLocation, length: lowered.length - nextLocation)
+                }
+            }
+        }
+
+        let sorted = matches.sorted { lhs, rhs in
+            if lhs.location != rhs.location { return lhs.location < rhs.location }
+            return lhs.length > rhs.length
+        }
+
+        var selected: [Match] = []
+        var occupiedEnd = -1
+        for match in sorted {
+            if match.location < occupiedEnd { continue }
+            selected.append(match)
+            occupiedEnd = match.location + match.length
+        }
+
+        return selected.enumerated().compactMap { index, match in
+            let valueStart = match.location + match.length
+            let valueEnd = index + 1 < selected.count ? selected[index + 1].location : original.length
+            guard valueEnd > valueStart else { return nil }
+            let rawValue = original.substring(with: NSRange(location: valueStart, length: valueEnd - valueStart))
+            let cleaned = sanitizeSupervisorNaturalMemoryPatchValue(rawValue)
+            guard !cleaned.isEmpty else { return nil }
+            return (match.kind, cleaned)
+        }
+    }
+
+    private func sanitizeSupervisorNaturalMemoryPatchValue(_ raw: String) -> String {
+        var cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        cleaned = cleaned.replacingOccurrences(
+            of: #"^[\s:：,，;；\.\-、]+"#,
+            with: "",
+            options: .regularExpression
+        )
+        cleaned = cleaned.replacingOccurrences(
+            of: #"[\s,，;；。!！]+$"#,
+            with: "",
+            options: .regularExpression
+        )
+        cleaned = cleaned.trimmingCharacters(in: CharacterSet(charactersIn: "\"'“”‘’"))
+        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func splitSupervisorNaturalMemoryPatchList(_ raw: String) -> [String] {
+        let normalized = raw
+            .replacingOccurrences(of: "以及", with: "、")
+            .replacingOccurrences(of: "及", with: "、")
+            .replacingOccurrences(of: " and ", with: ",")
+        let parts = normalized.components(
+            separatedBy: CharacterSet(charactersIn: "、,，/|；;\n")
+        )
+        return parts
+            .map(sanitizeSupervisorNaturalMemoryPatchValue)
+            .filter { !$0.isEmpty }
+    }
+
+    private func applySupervisorNaturalMemoryPatch(
+        _ intent: SupervisorNaturalMemoryPatchIntent,
+        project: AXProjectEntry,
+        ctx: AXProjectContext
+    ) throws -> SupervisorNaturalMemoryPatchApplyResult {
+        let now = Date().timeIntervalSince1970
+        let nowMs = Int64((now * 1000.0).rounded())
+        let projectSuffix = String(project.projectId.prefix(8)).lowercased()
+        var appliedKinds: [String] = []
+        var replyLines: [String] = []
+        var evidencePins: [SupervisorSelectedEvidencePin] = []
+
+        if !intent.selectedEvidence.isEmpty {
+            for summary in intent.selectedEvidence.prefix(4) {
+                let pinSuffix = supervisorNaturalMemoryPatchStableSuffix(
+                    "\(project.projectId)|evidence|\(summary)"
+                )
+                let pin = SupervisorSelectedEvidencePinBuilder.build(
+                    pinId: "manual_evidence_\(pinSuffix)",
+                    projectId: project.projectId,
+                    summary: summary,
+                    sourceNote: "supervisor_user_confirmed",
+                    whyItMatters: intent.decisionReason ?? intent.blockerSummary ?? "user_selected_evidence",
+                    createdAtMs: nowMs,
+                    auditRef: "audit-supervisor-evidence-pin-\(projectSuffix)-\(pinSuffix)-\(nowMs)"
+                )
+                _ = try SupervisorSelectedEvidencePinStore.upsert(pin, for: ctx)
+                evidencePins.append(pin)
+            }
+            appliedKinds.append("selected_evidence")
+            let firstEvidence = intent.selectedEvidence.first ?? ""
+            replyLines.append(
+                "你刚确认的依据我已经先记成后续纠偏优先证据了：\(capped(firstEvidence, maxChars: 88))。"
+            )
+        }
+
+        let longtermAuditRef = "audit-supervisor-memory-longterm-\(projectSuffix)-\(nowMs)"
+        var specCapsule = SupervisorProjectSpecCapsuleStore.load(for: ctx) ?? SupervisorProjectSpecCapsule(
+            schemaVersion: SupervisorProjectSpecCapsule.schemaVersion,
+            projectId: project.projectId,
+            goal: "",
+            mvpDefinition: "",
+            nonGoals: [],
+            approvedTechStack: [],
+            techStackBlacklist: [],
+            moduleMap: [],
+            milestoneMap: [],
+            decisionDefaults: [:],
+            riskProfile: .medium,
+            updatedAtMs: nowMs,
+            sourceRefs: []
+        )
+        var longtermChanged = false
+        if let goal = intent.goal, !goal.isEmpty, goal != specCapsule.goal {
+            specCapsule.goal = goal
+            longtermChanged = true
+        }
+        if let doneDefinition = intent.doneDefinition,
+           !doneDefinition.isEmpty,
+           doneDefinition != specCapsule.mvpDefinition {
+            specCapsule.mvpDefinition = doneDefinition
+            longtermChanged = true
+        }
+        let mergedNonGoals = orderedUniqueReviewScalars(specCapsule.nonGoals + intent.nonGoals)
+        if mergedNonGoals != specCapsule.nonGoals {
+            specCapsule.nonGoals = mergedNonGoals
+            longtermChanged = true
+        }
+        let mergedTechStack = orderedUniqueReviewScalars(
+            specCapsule.approvedTechStack + intent.approvedTechStack
+        )
+        if mergedTechStack != specCapsule.approvedTechStack {
+            specCapsule.approvedTechStack = mergedTechStack
+            longtermChanged = true
+        }
+        if longtermChanged {
+            specCapsule.schemaVersion = SupervisorProjectSpecCapsule.schemaVersion
+            specCapsule.projectId = project.projectId
+            specCapsule.updatedAtMs = nowMs
+            specCapsule.sourceRefs = orderedUniqueReviewScalars(
+                specCapsule.sourceRefs + [longtermAuditRef]
+            )
+            _ = try SupervisorProjectSpecCapsuleStore.upsert(specCapsule, for: ctx)
+            appliedKinds.append("longterm")
+
+            var longtermBits: [String] = []
+            if let goal = intent.goal, !goal.isEmpty {
+                longtermBits.append("目标=\(capped(goal, maxChars: 42))")
+            }
+            if let doneDefinition = intent.doneDefinition, !doneDefinition.isEmpty {
+                longtermBits.append("完成标准=\(capped(doneDefinition, maxChars: 42))")
+            }
+            if !intent.nonGoals.isEmpty {
+                longtermBits.append("非目标=\(capped(intent.nonGoals.joined(separator: "、"), maxChars: 42))")
+            }
+            if !intent.approvedTechStack.isEmpty {
+                longtermBits.append("技术栈=\(capped(intent.approvedTechStack.joined(separator: "、"), maxChars: 42))")
+            }
+            replyLines.append(
+                "这段长期背景我已经记到《\(project.displayName)》的项目 anchor 里了" +
+                (longtermBits.isEmpty ? "。" : "：\(longtermBits.joined(separator: "；"))。")
+            )
+        }
+
+        if let decisionStatement = intent.decisionStatement, !decisionStatement.isEmpty {
+            let decisionCategory = supervisorNaturalMemoryPatchDecisionCategory(
+                statement: decisionStatement,
+                reason: intent.decisionReason
+            )
+            let decisionSuffix = supervisorNaturalMemoryPatchStableSuffix(
+                "\(project.projectId)|decision|\(decisionCategory.rawValue)|\(decisionStatement)"
+            )
+            let decisionEvent = SupervisorDecisionTrackBuilder.build(
+                decisionId: "manual_decision_\(decisionSuffix)",
+                projectId: project.projectId,
+                category: decisionCategory,
+                status: .approved,
+                statement: decisionStatement,
+                source: firstMeaningfulDigestValue(
+                    [intent.decisionReason, "supervisor_direct_memory_patch"],
+                    treatNoValueAsPlaceholder: false
+                ),
+                reversible: !containsAny(
+                    normalizedSupervisorIntentText(decisionStatement),
+                    ["锁定", "freeze", "固定", "必须", "only"]
+                ),
+                approvalRequired: false,
+                approvedBy: "supervisor",
+                auditRef: "audit-supervisor-memory-decision-\(projectSuffix)-\(decisionSuffix)-\(nowMs)",
+                evidenceRefs: evidencePins.map(\.auditRef),
+                createdAtMs: nowMs,
+                updatedAtMs: nowMs
+            )
+            _ = try SupervisorDecisionTrackStore.upsert(decisionEvent, for: ctx)
+            appliedKinds.append("decision_lineage")
+            let reasonTail: String
+            if let reason = intent.decisionReason, !reason.isEmpty {
+                reasonTail = " 原因我也一起记下了：\(capped(reason, maxChars: 72))。"
+            } else {
+                reasonTail = ""
+            }
+            replyLines.append(
+                "这条关键路径决策我已经记下了：\(capped(decisionStatement, maxChars: 88))。\n\(reasonTail)"
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        }
+
+        let hasBlockerFacts =
+            (intent.blockerSummary?.isEmpty == false) ||
+            !intent.attemptedActions.isEmpty ||
+            (intent.currentStateSummary?.isEmpty == false) ||
+            (intent.nextStepSummary?.isEmpty == false)
+        let blockerSummary = supervisorNaturalMemoryPatchComposedBlockerSummary(
+            blocker: intent.blockerSummary,
+            attemptedActions: intent.attemptedActions
+        )
+        let currentStateSummary = firstMeaningfulDigestValue(
+            [
+                intent.currentStateSummary,
+                intent.attemptedActions.isEmpty
+                    ? nil
+                    : "已试过：\(intent.attemptedActions.joined(separator: "；"))",
+                project.currentStateSummary
+            ],
+            treatNoValueAsPlaceholder: false
+        )
+        let nextStepSummary = firstMeaningfulDigestValue(
+            [intent.nextStepSummary, project.nextStepSummary],
+            treatContinueCurrentTaskAsPlaceholder: true,
+            treatNoValueAsPlaceholder: false
+        )
+        if hasBlockerFacts {
+            let registryUpdate = AXProjectRegistryStore.updateStatusDigest(
+                forRoot: ctx.root,
+                digest: firstMeaningfulDigestValue(
+                    [
+                        project.statusDigest,
+                        currentStateSummary,
+                        blockerSummary,
+                        nextStepSummary
+                    ],
+                    treatContinueCurrentTaskAsPlaceholder: true,
+                    treatNoValueAsPlaceholder: false
+                ),
+                lastSummaryAt: now,
+                currentState: currentStateSummary,
+                nextStep: nextStepSummary,
+                blocker: blockerSummary
+            )
+            if let entry = registryUpdate.entry {
+                appModel?.registry = registryUpdate.registry
+                HubIPCClient.syncProject(entry)
+            }
+            appliedKinds.append("blocker_lineage")
+
+            var blockerBits: [String] = []
+            if !blockerSummary.isEmpty {
+                blockerBits.append("卡点=\(capped(blockerSummary, maxChars: 52))")
+            }
+            if !nextStepSummary.isEmpty {
+                blockerBits.append("下一步=\(capped(nextStepSummary, maxChars: 52))")
+            }
+            replyLines.append(
+                "当前卡点我已经记进项目现状了" +
+                (blockerBits.isEmpty ? "。" : "：\(blockerBits.joined(separator: "；"))。")
+            )
+        }
+
+        guard !appliedKinds.isEmpty else {
+            return SupervisorNaturalMemoryPatchApplyResult(
+                replyText: naturalSupervisorMemoryPatchPrompt(projectName: project.displayName),
+                appliedKinds: []
+            )
+        }
+
+        AXProjectStore.appendRawLog(
+            [
+                "type": "supervisor_memory_patch",
+                "action": "upsert",
+                "source": "supervisor_direct_natural_language",
+                "project_id": project.projectId,
+                "patch_types": appliedKinds,
+                "goal": intent.goal ?? "",
+                "done_definition": intent.doneDefinition ?? "",
+                "non_goals": intent.nonGoals,
+                "approved_tech_stack": intent.approvedTechStack,
+                "decision_statement": intent.decisionStatement ?? "",
+                "decision_reason": intent.decisionReason ?? "",
+                "blocker_summary": blockerSummary,
+                "current_state": currentStateSummary,
+                "next_step": nextStepSummary,
+                "selected_evidence": intent.selectedEvidence,
+                "evidence_refs": evidencePins.map(\.auditRef),
+                "timestamp_ms": nowMs
+            ],
+            for: ctx
+        )
+        appendRecentEvent("memory patch: \(project.displayName) -> \(appliedKinds.joined(separator: ","))")
+
+        return SupervisorNaturalMemoryPatchApplyResult(
+            replyText: replyLines.joined(separator: "\n"),
+            appliedKinds: appliedKinds
+        )
+    }
+
+    private func supervisorNaturalMemoryPatchDecisionCategory(
+        statement: String,
+        reason: String?
+    ) -> SupervisorDecisionCategory {
+        let normalized = normalizedSupervisorIntentText(
+            "\(statement)\n\(reason ?? "")"
+        )
+        if containsAny(
+            normalized,
+            ["技术栈", "tech stack", "swiftui", "swift package", "react", "vue", "grpc", "typescript", "python"]
+        ) {
+            return .techStack
+        }
+        if containsAny(
+            normalized,
+            ["范围", "scope", "mvp", "先不做", "不做", "冻结", "freeze", "里程碑"]
+        ) {
+            return .scopeFreeze
+        }
+        if containsAny(
+            normalized,
+            ["风险", "risk", "授权", "grant", "安全", "上线", "部署", "production", "prod"]
+        ) {
+            return .riskPosture
+        }
+        if containsAny(
+            normalized,
+            ["批准", "同意", "驳回", "reject", "approve"]
+        ) {
+            return .approvalResult
+        }
+        if containsAny(
+            normalized,
+            ["界面", "ui", "视觉", "排版", "风格", "design"]
+        ) {
+            return .uiStyle
+        }
+        return SupervisorDecisionCategory(rawValue: "execution_path")
+    }
+
+    private func supervisorNaturalMemoryPatchComposedBlockerSummary(
+        blocker: String?,
+        attemptedActions: [String]
+    ) -> String {
+        let primary = sanitizeSupervisorNaturalMemoryPatchValue(blocker ?? "")
+        guard !primary.isEmpty else { return "" }
+        guard !attemptedActions.isEmpty else { return primary }
+        return "\(primary)；已试过：\(attemptedActions.joined(separator: "、"))"
+    }
+
+    private func supervisorNaturalMemoryPatchStableSuffix(_ stable: String) -> String {
+        let digest = normalizedLookupKey(supervisorDeterministicDigest(stable: stable))
+        return String(digest.suffix(16))
     }
 
     private func localSupervisorWorkflowBootstrapIfApplicable(
@@ -5797,27 +8462,89 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
         let existingPlan = previousPlanSnapshot.plans.first(where: { $0.planId == planId })
         let owner = (payload.currentOwner ?? job.currentOwner)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let steps = payload.steps.enumerated().map { index, step in
+        let resolvedGovernance = resolvedSupervisorProjectGovernanceState(
+            projectId: scope.project.projectId,
+            ctx: scope.ctx
+        )
+        let supervisorAdaptation = resolvedGovernance?.supervisorAdaptation
+        let effectiveWorkOrderDepth = supervisorAdaptation?.effectiveWorkOrderDepth ?? .none
+        let allowConciseExecutionReadyPlan = supervisorExecutionReadyPlanCanStayConcise(
+            payload.steps,
+            adaptation: supervisorAdaptation
+        )
+        var planNormalizationNotes: [String] = []
+        var previousStepID: String?
+        var steps: [SupervisorPlanStepRecord] = []
+
+        for (index, step) in payload.steps.enumerated() {
             let title = step.title.trimmingCharacters(in: .whitespacesAndNewlines)
-            return SupervisorPlanStepRecord(
+            let stepId = step.stepId.trimmingCharacters(in: .whitespacesAndNewlines)
+            let resolvedTitle = title.isEmpty ? "step-\(index + 1)" : title
+            var seenDependencies = Set<String>()
+            var dependsOn = (step.dependsOn ?? []).compactMap { raw -> String? in
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return nil }
+                guard seenDependencies.insert(trimmed).inserted else { return nil }
+                return trimmed
+            }
+            if effectiveWorkOrderDepth == .stepLockedRescue,
+               dependsOn.isEmpty,
+               let previousStepID,
+               !previousStepID.isEmpty,
+               index > 0 {
+                dependsOn = [previousStepID]
+                planNormalizationNotes.append("auto_chain:\(stepId.isEmpty ? resolvedTitle : stepId)->\(previousStepID)")
+            }
+
+            let currentOwner = (step.currentOwner ?? owner).trimmingCharacters(in: .whitespacesAndNewlines)
+            let rawDetail = (step.detail ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let detailNormalization = normalizedSupervisorPlanStepDetail(
+                rawDetail: rawDetail,
+                resolvedTitle: resolvedTitle,
+                payloadStep: step,
+                dependsOn: dependsOn,
+                effectiveWorkOrderDepth: effectiveWorkOrderDepth,
+                allowConciseExecutionReadyPlan: allowConciseExecutionReadyPlan
+            )
+            let detail = detailNormalization.detail
+            if let normalizationNote = detailNormalization.normalizationNote {
+                planNormalizationNotes.append(
+                    "\(normalizationNote):\(stepId.isEmpty ? resolvedTitle : stepId)"
+                )
+            }
+
+            let record = SupervisorPlanStepRecord(
                 schemaVersion: SupervisorPlanStepRecord.currentSchemaVersion,
-                stepId: step.stepId.trimmingCharacters(in: .whitespacesAndNewlines),
-                title: title.isEmpty ? "step-\(index + 1)" : title,
+                stepId: stepId,
+                title: resolvedTitle,
                 kind: SupervisorPlanStepKind.parse(step.kind),
                 status: SupervisorPlanStepStatus.parse(step.status),
                 skillId: (step.skillId ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
-                currentOwner: (step.currentOwner ?? owner).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                currentOwner: currentOwner.isEmpty
                     ? "supervisor"
-                    : (step.currentOwner ?? owner).trimmingCharacters(in: .whitespacesAndNewlines),
-                detail: (step.detail ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                    : currentOwner,
+                detail: detail,
+                dependsOn: dependsOn.isEmpty ? nil : dependsOn,
+                timeoutMs: step.timeoutMs.map { max(0, $0) },
+                maxRetries: step.maxRetries.map { max(0, $0) },
+                failurePolicy: SupervisorPlanStepFailurePolicy.parse(step.failurePolicy),
                 orderIndex: index,
                 updatedAtMs: nowMs
             )
+            steps.append(record)
+            if !stepId.isEmpty {
+                previousStepID = stepId
+            }
         }
         guard steps.allSatisfy({ !$0.stepId.isEmpty }) else {
             let message = "❌ UPSERT_PLAN 失败：steps.step_id 不能为空（step_id_missing）"
             if emitSystemMessage { addSystemMessage(message) }
             return (false, "step_id_missing", message, scope.project.projectId, scope.project.displayName)
+        }
+        if effectiveWorkOrderDepth == .stepLockedRescue, steps.count < 2 {
+            let message = "❌ UPSERT_PLAN 失败：当前项目处于 step_locked_rescue，计划至少需要 2 个步骤（step_locked_rescue_requires_multiple_steps）"
+            if emitSystemMessage { addSystemMessage(message) }
+            return (false, "step_locked_rescue_requires_multiple_steps", message, scope.project.projectId, scope.project.displayName)
         }
 
         let planStatus = derivedPlanStatus(from: steps)
@@ -5864,6 +8591,12 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
                 "project_id": plan.projectId,
                 "status": plan.status.rawValue,
                 "step_count": plan.steps.count,
+                "effective_supervisor_tier": supervisorAdaptation?.effectiveSupervisorTier.rawValue ?? "",
+                "effective_work_order_depth": effectiveWorkOrderDepth.rawValue,
+                "project_ai_strength_band": supervisorAdaptation?.projectAIStrengthProfile?.strengthBand.rawValue ?? AXProjectAIStrengthBand.unknown.rawValue,
+                "project_ai_strength_confidence": supervisorAdaptation?.projectAIStrengthProfile?.confidence ?? 0,
+                "project_ai_strength_audit_ref": supervisorAdaptation?.projectAIStrengthProfile?.auditRef ?? "",
+                "plan_normalization_notes": planNormalizationNotes,
                 "trigger_source": triggerSource.rawValue,
                 "audit_ref": plan.auditRef,
                 "timestamp_ms": plan.updatedAtMs
@@ -5882,9 +8615,129 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
             project: scope.project
         )
 
-        let message = "✅ 已为项目 \(scope.project.displayName) 写入计划：\(plan.planId)（job=\(plan.jobId), steps=\(plan.steps.count)）"
+        let normalizationSuffix = planNormalizationNotes.isEmpty
+            ? ""
+            : "；auto_normalized=\(capped(planNormalizationNotes.joined(separator: ", "), maxChars: 120))"
+        let message = "✅ 已为项目 \(scope.project.displayName) 写入计划：\(plan.planId)（job=\(plan.jobId), steps=\(plan.steps.count), depth=\(effectiveWorkOrderDepth.rawValue)）\(normalizationSuffix)"
         if emitSystemMessage { addSystemMessage(message) }
         return (true, "ok", message, scope.project.projectId, scope.project.displayName)
+    }
+
+    private func normalizedSupervisorPlanStepDetail(
+        rawDetail: String,
+        resolvedTitle: String,
+        payloadStep: SupervisorUpsertPlanStepPayload,
+        dependsOn: [String],
+        effectiveWorkOrderDepth: AXProjectSupervisorWorkOrderDepth,
+        allowConciseExecutionReadyPlan: Bool
+    ) -> (detail: String, normalizationNote: String?) {
+        guard rawDetail.isEmpty else {
+            return (rawDetail, nil)
+        }
+
+        if effectiveWorkOrderDepth == .stepLockedRescue {
+            return (resolvedTitle, "detail_from_title")
+        }
+
+        guard effectiveWorkOrderDepth >= .executionReady else {
+            return ("", nil)
+        }
+
+        if allowConciseExecutionReadyPlan,
+           supervisorExecutionReadyStepCanStayConcise(
+                payloadStep: payloadStep,
+                resolvedTitle: resolvedTitle,
+                dependsOn: dependsOn
+           ) {
+            return ("", nil)
+        }
+
+        return (resolvedTitle, "detail_from_title")
+    }
+
+    private func supervisorExecutionReadyPlanCanStayConcise(
+        _ steps: [SupervisorUpsertPlanStepPayload],
+        adaptation: AXProjectSupervisorAdaptationSnapshot?
+    ) -> Bool {
+        guard adaptation?.effectiveWorkOrderDepth == .executionReady else { return false }
+        guard let strengthBand = adaptation?.projectAIStrengthProfile?.strengthBand,
+              strengthBand >= .capable else {
+            return false
+        }
+        guard !steps.isEmpty else { return false }
+
+        let specificStepCount = steps.filter {
+            supervisorExecutionReadyStepTitleLooksSpecific($0.title)
+        }.count
+        guard specificStepCount == steps.count else { return false }
+
+        return steps.count >= 2 || steps.contains { step in
+            supervisorExecutionReadyStepCarriesStructuredSignal(step)
+        }
+    }
+
+    private func supervisorExecutionReadyStepCanStayConcise(
+        payloadStep: SupervisorUpsertPlanStepPayload,
+        resolvedTitle: String,
+        dependsOn: [String]
+    ) -> Bool {
+        guard supervisorExecutionReadyStepTitleLooksSpecific(resolvedTitle) else { return false }
+
+        if !dependsOn.isEmpty {
+            return true
+        }
+
+        if supervisorExecutionReadyStepCarriesStructuredSignal(payloadStep) {
+            return true
+        }
+
+        let kind = SupervisorPlanStepKind.parse(payloadStep.kind)
+        return kind != .unknown
+    }
+
+    private func supervisorExecutionReadyStepCarriesStructuredSignal(
+        _ step: SupervisorUpsertPlanStepPayload
+    ) -> Bool {
+        let skillId = (step.skillId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let failurePolicy = (step.failurePolicy ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let dependsOn = (step.dependsOn ?? []).contains {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return !skillId.isEmpty ||
+            dependsOn ||
+            step.timeoutMs != nil ||
+            step.maxRetries != nil ||
+            !failurePolicy.isEmpty
+    }
+
+    private func supervisorExecutionReadyStepTitleLooksSpecific(
+        _ rawTitle: String
+    ) -> Bool {
+        let trimmed = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 5 else { return false }
+
+        let lowered = trimmed.lowercased()
+        let genericExact = Set([
+            "step",
+            "todo",
+            "task",
+            "next step",
+            "follow up",
+            "follow-up",
+            "继续推进",
+            "继续当前路径",
+            "补计划",
+            "处理问题",
+            "修一下",
+            "做一下",
+        ])
+        if genericExact.contains(lowered) {
+            return false
+        }
+        if lowered.hasPrefix("step ") || lowered.hasPrefix("todo ") || lowered.hasPrefix("task ") {
+            return false
+        }
+        return true
     }
 
     private struct SupervisorProjectScopeResolution {
@@ -5921,11 +8774,6 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
 
     private struct SupervisorSkillMappingFailure: Error {
         var reasonCode: String
-    }
-
-    private enum SupervisorRepoCommandProfile {
-        case test
-        case build
     }
 
     private func resolveSupervisorProjectScope(
@@ -6329,7 +9177,11 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
         let awaitingResultSummary: String = {
             guard requiresWaitingAuthorization else { return "queued governed dispatch" }
             if let requiredCapability, !requiredCapability.isEmpty {
-                return "waiting for Hub grant approval"
+                return XTHubGrantPresentation.awaitingStateSummary(
+                    capability: requiredCapability,
+                    modelId: "",
+                    grantRequestId: nil
+                )
             }
             return "waiting for local governed approval"
         }()
@@ -6692,9 +9544,11 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
                 project: project,
                 status: .awaitingAuthorization,
                 stepStatus: .awaitingAuthorization,
-                resultSummary: normalizedGrantRequestId?.isEmpty == false
-                    ? "waiting for Hub grant approval (\(normalizedGrantRequestId!))"
-                    : "waiting for Hub grant approval",
+                resultSummary: XTHubGrantPresentation.awaitingStateSummary(
+                    capability: requiredCapability,
+                    modelId: "",
+                    grantRequestId: normalizedGrantRequestId
+                ),
                 denyCode: "grant_required",
                 requiredCapability: requiredCapability,
                 grantRequestId: normalizedGrantRequestId,
@@ -6716,7 +9570,11 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
                 project: project,
                 status: .blocked,
                 stepStatus: .blocked,
-                resultSummary: "Hub grant denied",
+                resultSummary: XTHubGrantPresentation.deniedStateSummary(
+                    capability: requiredCapability,
+                    modelId: "",
+                    deniedByUser: false
+                ),
                 denyCode: access.reasonCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "grant_denied",
                 requiredCapability: requiredCapability,
                 grantRequestId: normalizedGrantRequestId,
@@ -6814,7 +9672,11 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
                     project: project,
                     status: .blocked,
                     stepStatus: .blocked,
-                    resultSummary: "Hub grant denied by user",
+                    resultSummary: XTHubGrantPresentation.deniedStateSummary(
+                        capability: capability.isEmpty ? (record.requiredCapability ?? "") : capability,
+                        modelId: "",
+                        deniedByUser: true
+                    ),
                     denyCode: "grant_denied",
                     requiredCapability: capability.isEmpty ? record.requiredCapability : capability,
                     grantRequestId: grantRequestId.isEmpty ? record.grantRequestId : grantRequestId,
@@ -7257,6 +10119,16 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
                 toolCall: ToolCall(id: requestId, tool: .git_diff, args: args),
                 toolName: ToolName.git_diff.rawValue
             ))
+        case "repo.git.commit":
+            return mappedSupervisorGitCommitDispatch(
+                payload: payload,
+                requestId: requestId
+            )
+        case "repo.git.push":
+            return mappedSupervisorGitPushDispatch(
+                payload: payload,
+                requestId: requestId
+            )
         case "repo.git.apply", "repo.patch.apply", "repo.git.patch.apply":
             guard let patch = payload["patch"]?.stringValue,
                   !patch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -7286,6 +10158,16 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
             ))
         case "repo.write.file", "repo.write", "repo.file.write":
             return mappedSupervisorRepoWriteFileDispatch(
+                payload: payload,
+                requestId: requestId
+            )
+        case "repo.delete.path", "repo.delete.file", "repo.delete":
+            return mappedSupervisorRepoDeletePathDispatch(
+                payload: payload,
+                requestId: requestId
+            )
+        case "repo.move.path", "repo.rename.path", "repo.move", "repo.rename":
+            return mappedSupervisorRepoMovePathDispatch(
                 payload: payload,
                 requestId: requestId
             )
@@ -7505,6 +10387,41 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
                 payload: payload,
                 requestId: requestId,
                 profile: .build
+            )
+        case "repo.pr.create", "repo.pull_request.create", "repo.pull-request.create":
+            return mappedSupervisorPRCreateDispatch(
+                payload: payload,
+                requestId: requestId
+            )
+        case "repo.ci.read", "ci.read":
+            return mappedSupervisorCIReadDispatch(
+                payload: payload,
+                requestId: requestId
+            )
+        case "repo.ci.trigger", "ci.trigger":
+            return mappedSupervisorCITriggerDispatch(
+                payload: payload,
+                requestId: requestId
+            )
+        case "process.start":
+            return mappedSupervisorProcessStartDispatch(
+                payload: payload,
+                requestId: requestId
+            )
+        case "process.status":
+            return mappedSupervisorProcessStatusDispatch(
+                payload: payload,
+                requestId: requestId
+            )
+        case "process.logs":
+            return mappedSupervisorProcessLogsDispatch(
+                payload: payload,
+                requestId: requestId
+            )
+        case "process.stop":
+            return mappedSupervisorProcessStopDispatch(
+                payload: payload,
+                requestId: requestId
             )
         case "coder.run.command", "coder.run", "coder_run.command", "coder_run":
             guard let command = payload["command"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -7751,10 +10668,117 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
         ))
     }
 
+    private func mappedSupervisorRepoDeletePathDispatch(
+        payload: [String: JSONValue],
+        requestId: String
+    ) -> Result<SupervisorMappedSkillDispatch, SupervisorSkillMappingFailure> {
+        guard let path = firstNonEmptyString(
+            payload["path"]?.stringValue,
+            payload["target"]?.stringValue
+        )?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !path.isEmpty else {
+            return .failure(SupervisorSkillMappingFailure(reasonCode: "payload.path_missing"))
+        }
+        var args: [String: JSONValue] = ["path": .string(path)]
+        if let recursive = payload["recursive"] {
+            args["recursive"] = recursive
+        }
+        if let force = payload["force"] {
+            args["force"] = force
+        }
+        return .success(SupervisorMappedSkillDispatch(
+            toolCall: ToolCall(id: requestId, tool: .delete_path, args: args),
+            toolName: ToolName.delete_path.rawValue
+        ))
+    }
+
+    private func mappedSupervisorGitCommitDispatch(
+        payload: [String: JSONValue],
+        requestId: String
+    ) -> Result<SupervisorMappedSkillDispatch, SupervisorSkillMappingFailure> {
+        guard let message = payload["message"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !message.isEmpty else {
+            return .failure(SupervisorSkillMappingFailure(reasonCode: "payload.message_missing"))
+        }
+        var args: [String: JSONValue] = ["message": .string(message)]
+        if let all = payload["all"] {
+            args["all"] = all
+        }
+        if let allowEmpty = payload["allow_empty"] {
+            args["allow_empty"] = allowEmpty
+        }
+        if let paths = payload["paths"] {
+            args["paths"] = paths
+        }
+        return .success(SupervisorMappedSkillDispatch(
+            toolCall: ToolCall(id: requestId, tool: .git_commit, args: args),
+            toolName: ToolName.git_commit.rawValue
+        ))
+    }
+
+    private func mappedSupervisorGitPushDispatch(
+        payload: [String: JSONValue],
+        requestId: String
+    ) -> Result<SupervisorMappedSkillDispatch, SupervisorSkillMappingFailure> {
+        var args: [String: JSONValue] = [:]
+        if let remote = payload["remote"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !remote.isEmpty {
+            args["remote"] = .string(remote)
+        }
+        if let branch = payload["branch"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !branch.isEmpty {
+            args["branch"] = .string(branch)
+        }
+        if let setUpstream = payload["set_upstream"] {
+            args["set_upstream"] = setUpstream
+        }
+        return .success(SupervisorMappedSkillDispatch(
+            toolCall: ToolCall(id: requestId, tool: .git_push, args: args),
+            toolName: ToolName.git_push.rawValue
+        ))
+    }
+
+    private func mappedSupervisorRepoMovePathDispatch(
+        payload: [String: JSONValue],
+        requestId: String
+    ) -> Result<SupervisorMappedSkillDispatch, SupervisorSkillMappingFailure> {
+        guard let fromPath = firstNonEmptyString(
+            payload["from"]?.stringValue,
+            payload["source"]?.stringValue,
+            payload["src"]?.stringValue
+        )?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !fromPath.isEmpty else {
+            return .failure(SupervisorSkillMappingFailure(reasonCode: "payload.from_missing"))
+        }
+        guard let toPath = firstNonEmptyString(
+            payload["to"]?.stringValue,
+            payload["destination"]?.stringValue,
+            payload["dest"]?.stringValue,
+            payload["new_path"]?.stringValue
+        )?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !toPath.isEmpty else {
+            return .failure(SupervisorSkillMappingFailure(reasonCode: "payload.to_missing"))
+        }
+        var args: [String: JSONValue] = [
+            "from": .string(fromPath),
+            "to": .string(toPath),
+        ]
+        if let overwrite = payload["overwrite"] {
+            args["overwrite"] = overwrite
+        }
+        if let createDirs = payload["create_dirs"] {
+            args["create_dirs"] = createDirs
+        }
+        return .success(SupervisorMappedSkillDispatch(
+            toolCall: ToolCall(id: requestId, tool: .move_path, args: args),
+            toolName: ToolName.move_path.rawValue
+        ))
+    }
+
     private func mappedSupervisorRepoCommandDispatch(
         payload: [String: JSONValue],
         requestId: String,
-        profile: SupervisorRepoCommandProfile
+        profile: XTGovernedRepoCommandProfile
     ) -> Result<SupervisorMappedSkillDispatch, SupervisorSkillMappingFailure> {
         guard let rawCommand = payload["command"]?.stringValue else {
             return .failure(SupervisorSkillMappingFailure(reasonCode: "payload.command_missing"))
@@ -7769,6 +10793,180 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
         return .success(SupervisorMappedSkillDispatch(
             toolCall: ToolCall(id: requestId, tool: .run_command, args: args),
             toolName: ToolName.run_command.rawValue
+        ))
+    }
+
+    private func mappedSupervisorProcessStartDispatch(
+        payload: [String: JSONValue],
+        requestId: String
+    ) -> Result<SupervisorMappedSkillDispatch, SupervisorSkillMappingFailure> {
+        guard let command = payload["command"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !command.isEmpty else {
+            return .failure(SupervisorSkillMappingFailure(reasonCode: "payload.command_missing"))
+        }
+        var args: [String: JSONValue] = ["command": .string(command)]
+        if let processId = firstNonEmptyString(
+            payload["process_id"]?.stringValue,
+            payload["id"]?.stringValue
+        )?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !processId.isEmpty {
+            args["process_id"] = .string(processId)
+        }
+        if let name = payload["name"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !name.isEmpty {
+            args["name"] = .string(name)
+        }
+        if let cwd = payload["cwd"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !cwd.isEmpty {
+            args["cwd"] = .string(cwd)
+        }
+        if let restartOnExit = payload["restart_on_exit"] {
+            args["restart_on_exit"] = restartOnExit
+        }
+        if let env = payload["env"] {
+            args["env"] = env
+        }
+        return .success(SupervisorMappedSkillDispatch(
+            toolCall: ToolCall(id: requestId, tool: .process_start, args: args),
+            toolName: ToolName.process_start.rawValue
+        ))
+    }
+
+    private func mappedSupervisorPRCreateDispatch(
+        payload: [String: JSONValue],
+        requestId: String
+    ) -> Result<SupervisorMappedSkillDispatch, SupervisorSkillMappingFailure> {
+        let fill: Bool = {
+            guard let value = payload["fill"] else { return false }
+            switch value {
+            case .bool(let flag):
+                return flag
+            case .string(let text):
+                let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                return normalized == "true" || normalized == "1" || normalized == "yes" || normalized == "on"
+            default:
+                return false
+            }
+        }()
+        let title = payload["title"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard fill || !title.isEmpty else {
+            return .failure(SupervisorSkillMappingFailure(reasonCode: "payload.title_missing"))
+        }
+        var args: [String: JSONValue] = [:]
+        for key in ["title", "body", "base", "head", "draft", "fill", "labels", "reviewers"] {
+            if let value = payload[key] {
+                args[key] = value
+            }
+        }
+        return .success(SupervisorMappedSkillDispatch(
+            toolCall: ToolCall(id: requestId, tool: .pr_create, args: args),
+            toolName: ToolName.pr_create.rawValue
+        ))
+    }
+
+    private func mappedSupervisorCIReadDispatch(
+        payload: [String: JSONValue],
+        requestId: String
+    ) -> Result<SupervisorMappedSkillDispatch, SupervisorSkillMappingFailure> {
+        var args: [String: JSONValue] = ["provider": .string("github")]
+        for key in ["provider", "workflow", "branch", "commit", "limit"] {
+            if let value = payload[key] {
+                args[key] = value
+            }
+        }
+        return .success(SupervisorMappedSkillDispatch(
+            toolCall: ToolCall(id: requestId, tool: .ci_read, args: args),
+            toolName: ToolName.ci_read.rawValue
+        ))
+    }
+
+    private func mappedSupervisorCITriggerDispatch(
+        payload: [String: JSONValue],
+        requestId: String
+    ) -> Result<SupervisorMappedSkillDispatch, SupervisorSkillMappingFailure> {
+        guard let workflow = payload["workflow"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !workflow.isEmpty else {
+            return .failure(SupervisorSkillMappingFailure(reasonCode: "payload.workflow_missing"))
+        }
+        var args: [String: JSONValue] = [
+            "provider": .string("github"),
+            "workflow": .string(workflow),
+        ]
+        if let ref = payload["ref"] {
+            args["ref"] = ref
+        }
+        if let inputs = payload["inputs"] {
+            args["inputs"] = inputs
+        }
+        return .success(SupervisorMappedSkillDispatch(
+            toolCall: ToolCall(id: requestId, tool: .ci_trigger, args: args),
+            toolName: ToolName.ci_trigger.rawValue
+        ))
+    }
+
+    private func mappedSupervisorProcessStatusDispatch(
+        payload: [String: JSONValue],
+        requestId: String
+    ) -> Result<SupervisorMappedSkillDispatch, SupervisorSkillMappingFailure> {
+        var args: [String: JSONValue] = [:]
+        if let processId = firstNonEmptyString(
+            payload["process_id"]?.stringValue,
+            payload["id"]?.stringValue
+        )?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !processId.isEmpty {
+            args["process_id"] = .string(processId)
+        }
+        if let includeExited = payload["include_exited"] {
+            args["include_exited"] = includeExited
+        }
+        return .success(SupervisorMappedSkillDispatch(
+            toolCall: ToolCall(id: requestId, tool: .process_status, args: args),
+            toolName: ToolName.process_status.rawValue
+        ))
+    }
+
+    private func mappedSupervisorProcessLogsDispatch(
+        payload: [String: JSONValue],
+        requestId: String
+    ) -> Result<SupervisorMappedSkillDispatch, SupervisorSkillMappingFailure> {
+        guard let processId = firstNonEmptyString(
+            payload["process_id"]?.stringValue,
+            payload["id"]?.stringValue
+        )?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !processId.isEmpty else {
+            return .failure(SupervisorSkillMappingFailure(reasonCode: "payload.process_id_missing"))
+        }
+        var args: [String: JSONValue] = ["process_id": .string(processId)]
+        if let tailLines = payload["tail_lines"] {
+            args["tail_lines"] = tailLines
+        }
+        if let maxBytes = payload["max_bytes"] {
+            args["max_bytes"] = maxBytes
+        }
+        return .success(SupervisorMappedSkillDispatch(
+            toolCall: ToolCall(id: requestId, tool: .process_logs, args: args),
+            toolName: ToolName.process_logs.rawValue
+        ))
+    }
+
+    private func mappedSupervisorProcessStopDispatch(
+        payload: [String: JSONValue],
+        requestId: String
+    ) -> Result<SupervisorMappedSkillDispatch, SupervisorSkillMappingFailure> {
+        guard let processId = firstNonEmptyString(
+            payload["process_id"]?.stringValue,
+            payload["id"]?.stringValue
+        )?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !processId.isEmpty else {
+            return .failure(SupervisorSkillMappingFailure(reasonCode: "payload.process_id_missing"))
+        }
+        var args: [String: JSONValue] = ["process_id": .string(processId)]
+        if let force = payload["force"] {
+            args["force"] = force
+        }
+        return .success(SupervisorMappedSkillDispatch(
+            toolCall: ToolCall(id: requestId, tool: .process_stop, args: args),
+            toolName: ToolName.process_stop.rawValue
         ))
     }
 
@@ -8015,93 +11213,9 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
 
     private func supervisorValidatedRepoCommand(
         _ raw: String,
-        profile: SupervisorRepoCommandProfile
+        profile: XTGovernedRepoCommandProfile
     ) -> String? {
-        let trimmed = raw
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        guard !supervisorRepoCommandContainsUnsafeShellOperators(trimmed) else {
-            return nil
-        }
-
-        let lowered = trimmed.lowercased()
-        let allowedPrefixes = supervisorAllowedRepoCommandPrefixes(for: profile)
-        guard allowedPrefixes.contains(where: { prefix in
-            lowered == prefix || lowered.hasPrefix(prefix + " ")
-        }) else {
-            return nil
-        }
-        return trimmed
-    }
-
-    private func supervisorAllowedRepoCommandPrefixes(
-        for profile: SupervisorRepoCommandProfile
-    ) -> [String] {
-        switch profile {
-        case .test:
-            return [
-                "swift test",
-                "swift package test",
-                "npm test",
-                "npm run test",
-                "npm run smoke",
-                "npm exec vitest",
-                "pnpm test",
-                "pnpm run test",
-                "pnpm run smoke",
-                "pnpm vitest",
-                "yarn test",
-                "yarn smoke",
-                "bun test",
-                "bun run test",
-                "pytest",
-                "python -m pytest",
-                "python3 -m pytest",
-                "go test",
-                "cargo test",
-                "xcodebuild test",
-                "gradle test",
-                "./gradlew test",
-                "mvn test",
-                "bundle exec rspec",
-                "rspec",
-                "ctest",
-                "deno test",
-                "vitest",
-                "npx vitest"
-            ]
-        case .build:
-            return [
-                "swift build",
-                "swift package resolve",
-                "npm run build",
-                "pnpm run build",
-                "yarn build",
-                "bun run build",
-                "cargo build",
-                "go build",
-                "xcodebuild build",
-                "gradle build",
-                "./gradlew build",
-                "mvn package"
-            ]
-        }
-    }
-
-    private func supervisorRepoCommandContainsUnsafeShellOperators(_ command: String) -> Bool {
-        let forbiddenTokens = [
-            "&&",
-            "||",
-            ";",
-            "|",
-            ">",
-            "<",
-            "$(",
-            "`",
-            "\n"
-        ]
-        return forbiddenTokens.contains(where: { command.contains($0) })
+        xtValidateGovernedRepoCommand(raw, profile: profile)
     }
 
     private func firstNonEmptyString(_ values: String?...) -> String? {
@@ -8284,6 +11398,23 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
                 if !trimmed.isEmpty {
                     return capped("write_file \(ok ? "completed" : "failed"): \(path)\n\(trimmed)", maxChars: 320)
                 }
+            case .delete_path:
+                let path = toolCall.args["path"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "(none)"
+                if ok, trimmed.hasPrefix("{") || trimmed.hasPrefix("delete_path") {
+                    return capped("delete_path completed: \(path)", maxChars: 320)
+                }
+                if !trimmed.isEmpty {
+                    return capped("delete_path \(ok ? "completed" : "failed"): \(path)\n\(trimmed)", maxChars: 320)
+                }
+            case .move_path:
+                let fromPath = toolCall.args["from"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "(none)"
+                let toPath = toolCall.args["to"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "(none)"
+                if ok, trimmed.hasPrefix("{") || trimmed.hasPrefix("move_path") {
+                    return capped("move_path completed: \(fromPath) -> \(toPath)", maxChars: 320)
+                }
+                if !trimmed.isEmpty {
+                    return capped("move_path \(ok ? "completed" : "failed"): \(fromPath) -> \(toPath)\n\(trimmed)", maxChars: 320)
+                }
             case .run_command:
                 let command = toolCall.args["command"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "(none)"
                 if ok, trimmed.hasPrefix("exit: 0") {
@@ -8291,6 +11422,55 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
                 }
                 if !trimmed.isEmpty {
                     return capped("run_command \(ok ? "completed" : "failed"): \(command)\n\(trimmed)", maxChars: 320)
+                }
+            case .git_commit:
+                let message = toolCall.args["message"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "(none)"
+                if !trimmed.isEmpty {
+                    return capped("git_commit \(ok ? "completed" : "failed"): \(message)\n\(trimmed)", maxChars: 320)
+                }
+            case .git_push:
+                let remote = toolCall.args["remote"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "(default)"
+                let branch = toolCall.args["branch"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "(default)"
+                if !trimmed.isEmpty {
+                    return capped("git_push \(ok ? "completed" : "failed"): \(remote) \(branch)\n\(trimmed)", maxChars: 320)
+                }
+            case .process_start:
+                let processId = firstNonEmptyString(
+                    toolCall.args["process_id"]?.stringValue,
+                    toolCall.args["name"]?.stringValue
+                ) ?? "(none)"
+                if !trimmed.isEmpty {
+                    return capped("process_start \(ok ? "completed" : "failed"): \(processId)\n\(trimmed)", maxChars: 320)
+                }
+            case .process_status:
+                let processId = toolCall.args["process_id"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "all"
+                if !trimmed.isEmpty {
+                    return capped("process_status \(ok ? "completed" : "failed"): \(processId)\n\(trimmed)", maxChars: 320)
+                }
+            case .process_logs:
+                let processId = toolCall.args["process_id"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "(none)"
+                if !trimmed.isEmpty {
+                    return capped("process_logs \(ok ? "completed" : "failed"): \(processId)\n\(trimmed)", maxChars: 320)
+                }
+            case .process_stop:
+                let processId = toolCall.args["process_id"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "(none)"
+                if !trimmed.isEmpty {
+                    return capped("process_stop \(ok ? "completed" : "failed"): \(processId)\n\(trimmed)", maxChars: 320)
+                }
+            case .pr_create:
+                let title = toolCall.args["title"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "(fill)"
+                if !trimmed.isEmpty {
+                    return capped("pr_create \(ok ? "completed" : "failed"): \(title)\n\(trimmed)", maxChars: 320)
+                }
+            case .ci_read:
+                let workflow = toolCall.args["workflow"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "(all)"
+                if !trimmed.isEmpty {
+                    return capped("ci_read \(ok ? "completed" : "failed"): \(workflow)\n\(trimmed)", maxChars: 320)
+                }
+            case .ci_trigger:
+                let workflow = toolCall.args["workflow"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "(none)"
+                if !trimmed.isEmpty {
+                    return capped("ci_trigger \(ok ? "completed" : "failed"): \(workflow)\n\(trimmed)", maxChars: 320)
                 }
             case .git_apply:
                 let patchChars = toolCall.args["patch"]?.stringValue?.count ?? 0
@@ -8618,7 +11798,21 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
     }
 
     private func generateGeneralResponse(_ userMessage: String, _ projects: [AXProjectEntry]) -> String {
-        """
+        let normalized = normalizedSupervisorIntentText(userMessage)
+        if looksLikeSupervisorCasualConversationPrompt(normalizedLookupKey(userMessage))
+            || normalized.contains("正常聊天")
+            || normalized.contains("闲聊")
+            || normalized.contains("聊聊天") {
+            return """
+可以，正常聊天就行。
+
+如果你聊项目，我会偏执行和治理视角；如果你只是想随便聊聊，我也会按普通对话来接，不需要先变成项目指令。
+
+当前接管项目数：\(projects.count)。
+"""
+        }
+
+        return """
 这句我先不替你乱解释。
 
 如果你是想聊天，我就直接聊；如果你是想让我执行动作，通常只差一个关键约束，比如项目名、目标模型、平台，或者你是要查询现状还是直接修改。
@@ -8827,32 +12021,1342 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
         return min(100, max(1, priority))
     }
 
+    private func buildSupervisorPortfolioBrief(
+        projects: [AXProjectEntry],
+        projectDigests: [SupervisorMemoryProjectDigest],
+        focusedSelection: SupervisorFocusedProjectSelection?
+    ) -> String {
+        guard !projectDigests.isEmpty else { return "(none)" }
+        let digestById = Dictionary(uniqueKeysWithValues: projectDigests.map { ($0.projectId, $0) })
+        let ranked = projects.sorted { calculatePriority($0) > calculatePriority($1) }
+        let activeCount = projectDigests.filter { $0.runtimeState.localizedCaseInsensitiveContains("进行") || $0.runtimeState.localizedCaseInsensitiveContains("running") }.count
+        let blocked = ranked.compactMap { project -> String? in
+            guard let digest = digestById[project.projectId], digest.blocker != "(无)" else { return nil }
+            return "- \(digest.displayName) blocker=\(digest.blocker) next=\(capped(digest.nextStep, maxChars: 80))"
+        }
+        let priorityOrder = ranked.prefix(6).enumerated().compactMap { index, project -> String? in
+            guard let digest = digestById[project.projectId] else { return nil }
+            return "\(index + 1). \(digest.displayName) runtime=\(digest.runtimeState) next=\(capped(digest.nextStep, maxChars: 80)) blocker=\(capped(digest.blocker, maxChars: 80))"
+        }
+        let focusCandidate = focusedSelection?.project.displayName ?? projectDigests.first?.displayName ?? "(none)"
+        return """
+managed_projects: \(projectDigests.count)
+active_projects: \(activeCount)
+blocked_projects: \(blocked.count)
+focus_candidate_project: \(focusCandidate)
+priority_order:
+\(priorityOrder.isEmpty ? "(none)" : priorityOrder.joined(separator: "\n"))
+top_blocked_projects:
+\(blocked.prefix(4).joined(separator: "\n").isEmpty ? "(none)" : blocked.prefix(4).joined(separator: "\n"))
+"""
+    }
+
+    private func buildSupervisorDeltaFeed(
+        userMessage: String,
+        projectDigests: [SupervisorMemoryProjectDigest],
+        focusedSelection: SupervisorFocusedProjectSelection?,
+        focusedExecutionBrief: SupervisorFocusedProjectExecutionBrief?,
+        workflowObservation: String?
+    ) -> String {
+        let projection = supervisorDeltaFeedProjection(
+            projectDigests: projectDigests,
+            focusedSelection: focusedSelection,
+            focusedExecutionBrief: focusedExecutionBrief,
+            workflowObservation: workflowObservation
+        )
+        let deltaItemsText = projection.deltaItems.isEmpty
+            ? "- [no_material_change] keep_current_strategy"
+            : projection.deltaItems.joined(separator: "\n")
+        let recentProjectActionsText = projection.recentProjectActions.isEmpty
+            ? "(none)"
+            : projection.recentProjectActions.joined(separator: "\n")
+        let recentActionsText = projection.recentActionLedger.isEmpty
+            ? "(none)"
+            : projection.recentActionLedger.joined(separator: "\n")
+        let recentEventsText = projection.recentEventLines.isEmpty
+            ? "(none)"
+            : projection.recentEventLines.joined(separator: "\n")
+        return """
+cursor_from: \(projection.cursorFrom)
+cursor_to: \(projection.cursorTo)
+focus_project: \(focusedSelection?.project.displayName ?? "(none)")
+focus_project_id: \(projection.focusProjectId)
+project_state_hash_before: \(projection.projectStateHashBefore)
+project_state_hash_after: \(projection.projectStateHashAfter)
+portfolio_state_hash_before: \(projection.portfolioStateHashBefore)
+portfolio_state_hash_after: \(projection.portfolioStateHashAfter)
+material_change_flags: \(projection.materialChangeFlags.isEmpty ? "none" : projection.materialChangeFlags.joined(separator: ", "))
+user_intent_hint: \(capped(userMessage, maxChars: 160))
+delta_items:
+\(deltaItemsText)
+focused_project_delta:
+\(focusedExecutionBrief?.observation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? focusedExecutionBrief!.observation : "(none)")
+workflow_delta:
+\(workflowObservation?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? workflowObservation! : "(none)")
+recent_project_actions:
+\(recentProjectActionsText)
+recent_events:
+\(recentEventsText)
+recent_actions:
+\(recentActionsText)
+"""
+    }
+
+    private func supervisorDeltaFeedProjection(
+        projectDigests: [SupervisorMemoryProjectDigest],
+        focusedSelection: SupervisorFocusedProjectSelection?,
+        focusedExecutionBrief: SupervisorFocusedProjectExecutionBrief?,
+        workflowObservation: String?
+    ) -> SupervisorDeltaFeedProjection {
+        let nowMs = max(0, Int64((Date().timeIntervalSince1970 * 1000.0).rounded()))
+        var flags: [String] = []
+        var deltaItems: [String] = []
+        let portfolioStateHashAfter = supervisorPortfolioStateHash(projectDigests)
+
+        guard let focusedSelection else {
+            let recentProjectActions = supervisorRecentProjectActionEvents
+                .prefix(3)
+                .map { event in
+                    "- [\(supervisorDeltaItemType(for: event.eventType))] \(capped(event.projectName, maxChars: 48)): \(capped(event.actionSummary, maxChars: 140))"
+                }
+            let recentActionLedger = actionLedger
+                .suffix(3)
+                .map(supervisorDeltaActionLedgerLine(_:))
+            let recentEventLines = Array(recentEvents.suffix(4))
+            if !recentProjectActions.isEmpty { flags.append("portfolio_action_feed") }
+            if !recentActionLedger.isEmpty { flags.append("action_ledger") }
+            if projectDigests.contains(where: { !isDigestPlaceholder($0.blocker, treatNoValueAsPlaceholder: true) }) {
+                flags.append("portfolio_blockers_present")
+            }
+            if recentProjectActions.isEmpty && recentActionLedger.isEmpty {
+                flags.append("no_material_change")
+                deltaItems.append("- [no_material_change] no focused project selected; keep portfolio strategy and inspect only if a project surfaces material drift")
+            } else {
+                deltaItems.append(contentsOf: recentProjectActions)
+                deltaItems.append(contentsOf: recentActionLedger)
+            }
+            return SupervisorDeltaFeedProjection(
+                cursorFrom: "portfolio_bootstrap",
+                cursorTo: "memory_build:\(nowMs)",
+                focusProjectId: "(none)",
+                projectStateHashBefore: "(none)",
+                projectStateHashAfter: "(none)",
+                portfolioStateHashBefore: "(none)",
+                portfolioStateHashAfter: portfolioStateHashAfter,
+                materialChangeFlags: orderedUniqueSupervisorFlags(flags),
+                deltaItems: deltaItems,
+                recentProjectActions: recentProjectActions,
+                recentActionLedger: recentActionLedger,
+                recentEventLines: recentEventLines
+            )
+        }
+
+        let project = focusedSelection.project
+        let ctx = supervisorMemoryContext(for: project)
+        let digest = projectDigests.first(where: { $0.projectId == project.projectId }) ?? supervisorMemoryDigest(project)
+        let governance = loadSupervisorProjectDigestGovernanceContext(projectId: project.projectId, ctx: ctx)
+        let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: ctx.root)
+        let effectiveAutonomy = config.effectiveAutonomyPolicy()
+        let workflowState = supervisorWorkflowState(
+            project: project,
+            ctx: ctx,
+            preferredJobId: currentTask?.projectId == project.projectId ? currentTask?.id : nil,
+            preferredPlanId: nil,
+            preferredRequestId: nil
+        )
+        let activeJobGoal = workflowState?.job.goal.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let doneDefinition = firstMeaningfulDigestValue([
+            governance.specCapsule?.mvpDefinition,
+            activeJobGoal
+        ])
+        let currentConstraints = focusedSupervisorReviewConstraintItems(
+            specCapsule: governance.specCapsule,
+            config: config,
+            effectiveAutonomy: effectiveAutonomy
+        )
+        let latestReview = SupervisorReviewNoteStore.latest(for: ctx)
+        let latestGuidance = SupervisorGuidanceInjectionStore.latest(for: ctx)
+        let pendingAckGuidance = SupervisorGuidanceInjectionStore.latestPendingAck(for: ctx)
+        let cursorFromMs = max(
+            latestReview?.createdAtMs ?? 0,
+            0
+        )
+        let cursorFrom = latestReview?.memoryCursor ?? latestReview.map {
+            supervisorReviewCursor(reviewId: $0.reviewId, createdAtMs: $0.createdAtMs)
+        } ?? "none"
+        let projectStateHashBefore = latestReview?.projectStateHash ?? latestReview.map(focusedSupervisorReviewedStateHash(note:)) ?? "(none)"
+        let projectStateHashAfter = focusedSupervisorCurrentStateHash(
+            digest: digest,
+            doneDefinition: doneDefinition,
+            executionBrief: focusedExecutionBrief,
+            workflowObservation: workflowObservation,
+            workflowState: workflowState,
+            latestGuidance: latestGuidance,
+            pendingAckGuidance: pendingAckGuidance
+        )
+        let portfolioStateHashBefore = latestReview?.portfolioStateHash ?? "(none)"
+
+        flags.append("focused_project")
+        if latestReview == nil {
+            flags.append("first_review_baseline")
+            deltaItems.append("- [progress_delta] no prior focused-project review cursor; treating the current project state as the new baseline")
+        }
+        if projectStateHashBefore != "(none)", projectStateHashBefore != projectStateHashAfter {
+            flags.append("project_state_changed")
+        }
+        if portfolioStateHashBefore != "(none)", portfolioStateHashBefore != portfolioStateHashAfter {
+            flags.append("portfolio_state_changed")
+        }
+
+        if let latestReview {
+            appendSupervisorDeltaFieldChange(
+                kind: "progress_delta",
+                field: "current_state",
+                before: latestReview.currentState,
+                after: digest.currentState,
+                flags: &flags,
+                items: &deltaItems
+            )
+            appendSupervisorDeltaFieldChange(
+                kind: "progress_delta",
+                field: "next_step",
+                before: latestReview.nextStep,
+                after: digest.nextStep,
+                flags: &flags,
+                items: &deltaItems
+            )
+            appendSupervisorDeltaFieldChange(
+                kind: "blocker_delta",
+                field: "blocker",
+                before: latestReview.blocker,
+                after: digest.blocker,
+                flags: &flags,
+                items: &deltaItems
+            )
+            appendSupervisorDeltaFieldChange(
+                kind: "decision_delta",
+                field: "goal",
+                before: latestReview.anchorGoal,
+                after: digest.goal,
+                flags: &flags,
+                items: &deltaItems
+            )
+            appendSupervisorDeltaFieldChange(
+                kind: "decision_delta",
+                field: "done_definition",
+                before: latestReview.anchorDoneDefinition,
+                after: doneDefinition,
+                flags: &flags,
+                items: &deltaItems
+            )
+
+            let normalizedCurrentConstraints = normalizedSupervisorConstraintScalars(currentConstraints)
+            let normalizedPreviousConstraints = normalizedSupervisorConstraintScalars(latestReview.anchorConstraints)
+            if normalizedCurrentConstraints != normalizedPreviousConstraints {
+                flags.append("constraint_delta")
+                deltaItems.append(
+                    "- [decision_delta] constraints/guardrails changed since last review: before=\(supervisorDeltaConstraintInline(normalizedPreviousConstraints)) after=\(supervisorDeltaConstraintInline(normalizedCurrentConstraints))"
+                )
+            }
+        }
+
+        if let latestGuidance,
+           latestGuidance.injectedAtMs > cursorFromMs {
+            flags.append("guidance_delta")
+            deltaItems.append(
+                "- [guidance_delta] guidance updated: ack_status=\(latestGuidance.ackStatus.rawValue) delivery=\(latestGuidance.deliveryMode.rawValue) intervention=\(latestGuidance.interventionMode.rawValue)"
+            )
+        } else if let pendingAckGuidance,
+                  pendingAckGuidance.ackRequired,
+                  pendingAckGuidance.ackStatus == .pending {
+            flags.append("guidance_delta")
+            deltaItems.append(
+                "- [guidance_delta] pending supervisor guidance ack remains open: delivery=\(pendingAckGuidance.deliveryMode.rawValue) intervention=\(pendingAckGuidance.interventionMode.rawValue)"
+            )
+        }
+
+        let projectActionEvents = supervisorRecentProjectActionEvents
+            .filter { event in
+                event.projectId == project.projectId &&
+                max(0, Int64((event.occurredAt * 1000.0).rounded())) > cursorFromMs
+            }
+            .prefix(3)
+        let recentProjectActions = projectActionEvents.map { event in
+            "- [\(supervisorDeltaItemType(for: event.eventType))] \(capped(event.actionTitle, maxChars: 96)) -> \(capped(event.nextAction, maxChars: 96))"
+        }
+        if !recentProjectActions.isEmpty {
+            flags.append("project_action_feed")
+            deltaItems.append(contentsOf: recentProjectActions)
+        }
+
+        let recentActionLedger = actionLedger
+            .filter { item in
+                (item.projectId == project.projectId || item.projectName == project.displayName) &&
+                max(0, Int64((item.createdAt * 1000.0).rounded())) > cursorFromMs
+            }
+            .suffix(3)
+            .map(supervisorDeltaActionLedgerLine(_:))
+        if !recentActionLedger.isEmpty {
+            flags.append("action_ledger")
+            deltaItems.append(contentsOf: recentActionLedger)
+        }
+
+        let recentEventLines = supervisorRecentEventLines(
+            focusedSelection: focusedSelection,
+            cursorFromMs: cursorFromMs
+        )
+        if !recentEventLines.isEmpty {
+            flags.append("recent_events")
+        }
+        if projectDigests.contains(where: { !isDigestPlaceholder($0.blocker, treatNoValueAsPlaceholder: true) }) {
+            flags.append("portfolio_blockers_present")
+        }
+        if projectStateHashBefore == projectStateHashAfter && latestReview != nil && deltaItems.isEmpty {
+            flags.append("no_material_change")
+            deltaItems.append("- [no_material_change] focused project state hash is unchanged since the latest review; keep current strategy unless new evidence appears")
+        }
+
+        return SupervisorDeltaFeedProjection(
+            cursorFrom: cursorFrom,
+            cursorTo: "memory_build:\(nowMs)",
+            focusProjectId: project.projectId,
+            projectStateHashBefore: projectStateHashBefore,
+            projectStateHashAfter: projectStateHashAfter,
+            portfolioStateHashBefore: portfolioStateHashBefore,
+            portfolioStateHashAfter: portfolioStateHashAfter,
+            materialChangeFlags: orderedUniqueSupervisorFlags(flags),
+            deltaItems: deltaItems,
+            recentProjectActions: recentProjectActions,
+            recentActionLedger: recentActionLedger,
+            recentEventLines: recentEventLines
+        )
+    }
+
+    private func appendSupervisorDeltaFieldChange(
+        kind: String,
+        field: String,
+        before: String,
+        after: String,
+        flags: inout [String],
+        items: inout [String]
+    ) {
+        let beforeValue = supervisorNormalizedDeltaScalar(before)
+        let afterValue = supervisorNormalizedDeltaScalar(after)
+        guard beforeValue != afterValue else { return }
+        flags.append(kind)
+        items.append(
+            "- [\(kind)] \(field): before=\(capped(beforeValue, maxChars: 96)) after=\(capped(afterValue, maxChars: 96))"
+        )
+    }
+
+    private func supervisorPortfolioStateHash(
+        _ projectDigests: [SupervisorMemoryProjectDigest]
+    ) -> String {
+        let stable = projectDigests
+            .sorted { lhs, rhs in
+                if lhs.projectId != rhs.projectId {
+                    return lhs.projectId < rhs.projectId
+                }
+                return lhs.updatedAt < rhs.updatedAt
+            }
+            .map { digest in
+                [
+                    "project_id=\(digest.projectId)",
+                    "runtime_state=\(digest.runtimeState)",
+                    "goal=\(digest.goal)",
+                    "current_state=\(digest.currentState)",
+                    "next_step=\(digest.nextStep)",
+                    "blocker=\(digest.blocker)"
+                ].joined(separator: "\n")
+            }
+            .joined(separator: "\n---\n")
+        return supervisorDeterministicDigest(stable: stable.isEmpty ? "portfolio:none" : stable)
+    }
+
+    private func focusedSupervisorReviewedStateHash(
+        note: SupervisorReviewNoteRecord
+    ) -> String {
+        let stable = """
+project_id=\(note.projectId)
+goal=\(note.anchorGoal)
+done_definition=\(note.anchorDoneDefinition)
+constraints=\(normalizedSupervisorConstraintScalars(note.anchorConstraints).joined(separator: " | "))
+current_state=\(note.currentState)
+next_step=\(note.nextStep)
+blocker=\(note.blocker)
+"""
+        return supervisorDeterministicDigest(stable: stable)
+    }
+
+    private func focusedSupervisorCurrentStateHash(
+        digest: SupervisorMemoryProjectDigest,
+        doneDefinition: String,
+        executionBrief: SupervisorFocusedProjectExecutionBrief?,
+        workflowObservation: String?,
+        workflowState: (job: SupervisorJobRecord, plan: SupervisorPlanRecord?, skillCall: SupervisorSkillCallRecord?)?,
+        latestGuidance: SupervisorGuidanceInjectionRecord?,
+        pendingAckGuidance: SupervisorGuidanceInjectionRecord?
+    ) -> String {
+        let activeJob = workflowState?.job
+        let activePlan = workflowState?.plan
+        let activeSkillCall = workflowState?.skillCall
+        let stable = """
+project_id=\(digest.projectId)
+runtime_state=\(digest.runtimeState)
+goal=\(digest.goal)
+done_definition=\(doneDefinition)
+current_state=\(digest.currentState)
+next_step=\(digest.nextStep)
+blocker=\(digest.blocker)
+anchor=\(executionBrief?.anchorPackBody ?? "(none)")
+longterm_outline=\(executionBrief?.longtermOutlineBody ?? "(none)")
+workflow_observation=\(workflowObservation ?? "(none)")
+active_job_id=\(activeJob?.jobId ?? "(none)")
+active_job_status=\(activeJob?.status.rawValue ?? "(none)")
+active_plan_id=\(activePlan?.planId ?? "(none)")
+active_plan_status=\(activePlan?.status.rawValue ?? "(none)")
+active_skill_request_id=\(activeSkillCall?.requestId ?? "(none)")
+active_skill_status=\(activeSkillCall?.status.rawValue ?? "(none)")
+latest_guidance=\(latestGuidance?.reviewId ?? "(none)")/\(latestGuidance?.ackStatus.rawValue ?? "(none)")
+pending_ack_guidance=\(pendingAckGuidance?.reviewId ?? "(none)")/\(pendingAckGuidance?.ackStatus.rawValue ?? "(none)")
+"""
+        return supervisorDeterministicDigest(stable: stable)
+    }
+
+    private func supervisorRecentEventLines(
+        focusedSelection: SupervisorFocusedProjectSelection?,
+        cursorFromMs: Int64
+    ) -> [String] {
+        let targetName = focusedSelection?.project.displayName.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let targetID = focusedSelection?.project.projectId.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let filtered = recentEvents.reversed().filter { line in
+            guard focusedSelection != nil else { return true }
+            return (!targetName.isEmpty && line.localizedCaseInsensitiveContains(targetName))
+                || (!targetID.isEmpty && line.localizedCaseInsensitiveContains(targetID))
+                || line.localizedCaseInsensitiveContains("guidance ack")
+        }
+        let limited = Array(filtered.prefix(cursorFromMs > 0 ? 4 : 3).reversed())
+        return limited
+    }
+
+    private func supervisorDeltaActionLedgerLine(
+        _ item: SupervisorActionLedgerEntry
+    ) -> String {
+        let project = (item.projectName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let projectToken = project.isEmpty ? (item.projectId ?? "(none)") : project
+        let kind = supervisorDeltaItemType(for: item)
+        return "- [\(kind)] \(item.action) target=\(capped(projectToken, maxChars: 64)) status=\(item.status) reason=\(item.reasonCode)"
+    }
+
+    private func supervisorDeltaItemType(
+        for eventType: SupervisorProjectActionEventType
+    ) -> String {
+        switch eventType {
+        case .created, .progressed, .completed:
+            return "progress_delta"
+        case .blocked:
+            return "blocker_delta"
+        case .awaitingAuthorization:
+            return "grant_delta"
+        case .archived:
+            return "verification_delta"
+        }
+    }
+
+    private func supervisorDeltaItemType(
+        for item: SupervisorActionLedgerEntry
+    ) -> String {
+        let action = item.action.lowercased()
+        let status = item.status.lowercased()
+        let reason = item.reasonCode.lowercased()
+        if action.contains("grant") || reason.contains("authorization") || reason.contains("approve") {
+            return "grant_delta"
+        }
+        if status.contains("verified") || action.contains("verify") {
+            return "verification_delta"
+        }
+        if status.contains("blocked") || reason.contains("blocked") {
+            return "blocker_delta"
+        }
+        return "progress_delta"
+    }
+
+    private func supervisorDeltaConstraintInline(
+        _ items: [String]
+    ) -> String {
+        guard !items.isEmpty else { return "(none)" }
+        return capped(normalizedSupervisorConstraintScalars(items).prefix(4).joined(separator: " | "), maxChars: 160)
+    }
+
+    private func supervisorReviewCursor(
+        reviewId: String,
+        createdAtMs: Int64
+    ) -> String {
+        let normalizedReviewID = reviewId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalizedReviewID.isEmpty {
+            return "review:none@\(max(0, createdAtMs))"
+        }
+        return "review:\(normalizedReviewID)@\(max(0, createdAtMs))"
+    }
+
+    private func supervisorNormalizedDeltaScalar(
+        _ value: String
+    ) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return "(none)"
+        }
+        if isDigestPlaceholder(trimmed, treatContinueCurrentTaskAsPlaceholder: true, treatNoValueAsPlaceholder: true) {
+            return "(none)"
+        }
+        return trimmed
+    }
+
+    private func orderedUniqueSupervisorFlags(
+        _ flags: [String]
+    ) -> [String] {
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for flag in flags {
+            let trimmed = flag.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { continue }
+            ordered.append(trimmed)
+        }
+        return ordered
+    }
+
+    private func normalizedSupervisorConstraintScalars(
+        _ values: [String]
+    ) -> [String] {
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for value in values {
+            let normalized = normalizedSupervisorConstraintScalar(value)
+            guard !normalized.isEmpty, seen.insert(normalized).inserted else { continue }
+            ordered.append(normalized)
+        }
+        return ordered
+    }
+
+    private func normalizedSupervisorConstraintScalar(
+        _ value: String
+    ) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        if trimmed.hasPrefix("autonomy=") {
+            return "surface=\(trimmed.dropFirst("autonomy=".count))"
+        }
+        if trimmed.hasPrefix("autonomy_guard:") {
+            return "runtime_surface_guard:\(trimmed.dropFirst("autonomy_guard:".count))"
+        }
+        if trimmed.hasPrefix("autonomy:") {
+            return "runtime_surface:\(trimmed.dropFirst("autonomy:".count))"
+        }
+        return trimmed
+    }
+
+    private func focusedSupervisorServingContext(
+        selection: SupervisorFocusedProjectSelection?,
+        projectDigests: [SupervisorMemoryProjectDigest],
+        executionBrief: SupervisorFocusedProjectExecutionBrief?,
+        includeLongtermOutline: Bool,
+        servingProfile: XTMemoryServingProfile,
+        reviewLevelHint: SupervisorReviewLevel
+    ) -> SupervisorFocusedProjectServingContext? {
+        guard let selection else { return nil }
+
+        let project = selection.project
+        let ctx = supervisorMemoryContext(for: project)
+        let digest = projectDigests.first(where: { $0.projectId == project.projectId }) ?? supervisorMemoryDigest(project)
+        let governance = loadSupervisorProjectDigestGovernanceContext(projectId: project.projectId, ctx: ctx)
+        let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: ctx.root)
+        let effectiveAutonomy = config.effectiveAutonomyPolicy()
+        let workflowState = supervisorWorkflowState(
+            project: project,
+            ctx: ctx,
+            preferredJobId: currentTask?.projectId == project.projectId ? currentTask?.id : nil,
+            preferredPlanId: nil,
+            preferredRequestId: nil
+        )
+        let activeJob = workflowState?.job
+        let activePlan = workflowState?.plan
+        let activeSkillCall = workflowState?.skillCall
+        let doneDefinition = firstMeaningfulDigestValue([
+            governance.specCapsule?.mvpDefinition,
+            activeJob?.goal
+        ])
+        let currentConstraints = focusedSupervisorReviewConstraintItems(
+            specCapsule: governance.specCapsule,
+            config: config,
+            effectiveAutonomy: effectiveAutonomy
+        )
+        let longtermOutlineBody: String
+        let decisionLineageDigest: String
+        let blockerLineageDigest: String
+        if includeLongtermOutline {
+            if let executionBrief, !executionBrief.longtermOutlineBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                longtermOutlineBody = executionBrief.longtermOutlineBody
+                decisionLineageDigest = executionBrief.decisionLineageBody
+                blockerLineageDigest = executionBrief.blockerLineageBody
+            } else {
+                let approvedDecisions = focusedSupervisorApprovedDecisionDigest(governance.hardDecisions)
+                let backgroundHint = governance.backgroundShadowHint.trimmingCharacters(in: .whitespacesAndNewlines)
+                decisionLineageDigest = focusedSupervisorDecisionLineageDigest(
+                    governance.hardDecisions,
+                    expanded: servingProfile.rank >= XTMemoryServingProfile.m3DeepDive.rank
+                )
+                blockerLineageDigest = focusedSupervisorBlockerLineageDigest(
+                    digest: digest,
+                    latestReview: SupervisorReviewNoteStore.latest(for: ctx),
+                    latestGuidance: SupervisorGuidanceInjectionStore.latest(for: ctx),
+                    pendingAckGuidance: SupervisorGuidanceInjectionStore.latestPendingAck(for: ctx),
+                    activeSkillCall: activeSkillCall,
+                    decisionAssist: governance.decisionAssist,
+                    nextPendingStepsDigest: activePlan.map {
+                        workflowPlanFilteredStepsDigest($0, statuses: [.pending])
+                    } ?? "(none)",
+                    attentionStepsDigest: activePlan.map {
+                        workflowPlanFilteredStepsDigest(
+                            $0,
+                            statuses: [.running, .blocked, .awaitingAuthorization]
+                        )
+                    } ?? "(none)",
+                    expanded: servingProfile.rank >= XTMemoryServingProfile.m3DeepDive.rank
+                )
+                longtermOutlineBody = focusedSupervisorLongtermOutlineDigest(
+                    project: project,
+                    digest: digest,
+                    governance: governance,
+                    doneDefinition: doneDefinition,
+                    approvedDecisions: approvedDecisions,
+                    backgroundHint: backgroundHint,
+                    decisionLineage: decisionLineageDigest
+                )
+            }
+        } else {
+            longtermOutlineBody = ""
+            decisionLineageDigest = executionBrief?.decisionLineageBody ?? ""
+            blockerLineageDigest = executionBrief?.blockerLineageBody ?? ""
+        }
+
+        let recent = AXRecentContextStore.load(for: ctx)
+        let recentMessagesDigest = focusedSupervisorRecentMessagesDigest(recent, limit: 4)
+        let nextPendingStepsDigest = activePlan.map {
+            workflowPlanFilteredStepsDigest($0, statuses: [.pending])
+        } ?? "(none)"
+        let attentionStepsDigest = activePlan.map {
+            workflowPlanFilteredStepsDigest(
+                $0,
+                statuses: [.running, .blocked, .awaitingAuthorization]
+            )
+        } ?? "(none)"
+
+        return SupervisorFocusedProjectServingContext(
+            project: project,
+            ctx: ctx,
+            digest: digest,
+            governance: governance,
+            recent: recent,
+            latestReview: SupervisorReviewNoteStore.latest(for: ctx),
+            latestGuidance: SupervisorGuidanceInjectionStore.latest(for: ctx),
+            pendingAckGuidance: SupervisorGuidanceInjectionStore.latestPendingAck(for: ctx),
+            activeJob: activeJob,
+            activePlan: activePlan,
+            activeSkillCall: activeSkillCall,
+            servingProfile: servingProfile,
+            reviewLevelHint: reviewLevelHint,
+            doneDefinition: doneDefinition,
+            currentConstraints: currentConstraints,
+            longtermOutlineBody: longtermOutlineBody,
+            decisionLineageDigest: decisionLineageDigest,
+            blockerLineageDigest: blockerLineageDigest,
+            recentMessagesDigest: recentMessagesDigest,
+            nextPendingStepsDigest: nextPendingStepsDigest,
+            attentionStepsDigest: attentionStepsDigest
+        )
+    }
+
+    private func supervisorContextRefItems(
+        servingContext: SupervisorFocusedProjectServingContext?,
+        projectDigests: [SupervisorMemoryProjectDigest]
+    ) -> [SupervisorContextRefItem] {
+        var items: [SupervisorContextRefItem] = []
+        var seen = Set<String>()
+        let now = Date().timeIntervalSince1970
+
+        func append(
+            refId rawRefId: String?,
+            refKind: String,
+            title: String,
+            sourceScope: String,
+            tokenCostHint: String,
+            updatedAtMs: Int64
+        ) {
+            let refId = rawRefId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !refId.isEmpty else { return }
+            guard seen.insert(refId).inserted else { return }
+            let freshness = SupervisorProjectCapsuleBuilder.memoryFreshness(
+                updatedAt: Double(max(0, updatedAtMs)) / 1000.0,
+                now: now
+            ).rawValue
+            items.append(
+                SupervisorContextRefItem(
+                    refId: refId,
+                    refKind: refKind,
+                    title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+                    sourceScope: sourceScope.trimmingCharacters(in: .whitespacesAndNewlines),
+                    tokenCostHint: tokenCostHint.trimmingCharacters(in: .whitespacesAndNewlines),
+                    freshnessHint: freshness
+                )
+            )
+        }
+
+        if !projectDigests.isEmpty {
+            append(
+                refId: "portfolio_brief://supervisor",
+                refKind: "canonical_ref",
+                title: "portfolio brief / managed projects \(projectDigests.count)",
+                sourceScope: "portfolio_brief",
+                tokenCostHint: "low",
+                updatedAtMs: Int64((now * 1000.0).rounded())
+            )
+        }
+
+        guard let servingContext else { return items }
+
+        append(
+            refId: "delta_feed:\(servingContext.project.projectId)",
+            refKind: "observation_ref",
+            title: "delta feed / \(servingContext.project.displayName)",
+            sourceScope: "delta_feed",
+            tokenCostHint: "low",
+            updatedAtMs: Int64((now * 1000.0).rounded())
+        )
+
+        if let specCapsule = servingContext.governance.specCapsule {
+            append(
+                refId: specCapsule.sourceRefs.first ?? "spec_capsule:\(servingContext.project.projectId)",
+                refKind: "canonical_ref",
+                title: "spec capsule / \(servingContext.project.displayName)",
+                sourceScope: "spec_capsule",
+                tokenCostHint: "medium",
+                updatedAtMs: specCapsule.updatedAtMs
+            )
+        }
+
+        if !servingContext.longtermOutlineBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            append(
+                refId: "longterm_outline:\(servingContext.project.projectId)",
+                refKind: "longterm_ref",
+                title: "longterm outline / \(servingContext.project.displayName)",
+                sourceScope: "longterm_outline",
+                tokenCostHint: "medium",
+                updatedAtMs: Int64((servingContext.digest.updatedAt * 1000.0).rounded())
+            )
+        }
+
+        let decisionEvents = servingContext.governance.hardDecisions.values.sorted { lhs, rhs in
+            if lhs.updatedAtMs != rhs.updatedAtMs {
+                return lhs.updatedAtMs > rhs.updatedAtMs
+            }
+            return lhs.category.rawValue < rhs.category.rawValue
+        }
+        for decision in decisionEvents.prefix(4) {
+            append(
+                refId: decision.evidenceRefs.first ?? decision.auditRef,
+                refKind: "canonical_ref",
+                title: "approved decision / \(decision.category.rawValue)",
+                sourceScope: "decision_track",
+                tokenCostHint: "medium",
+                updatedAtMs: decision.updatedAtMs
+            )
+        }
+
+        for pin in servingContext.governance.selectedEvidencePins.prefix(4) {
+            append(
+                refId: pin.auditRef.isEmpty ? "selected_evidence:\(pin.pinId)" : pin.auditRef,
+                refKind: "evidence_ref",
+                title: "selected evidence / \(capped(pin.summary, maxChars: 44))",
+                sourceScope: "selected_evidence",
+                tokenCostHint: "low",
+                updatedAtMs: pin.createdAtMs
+            )
+        }
+
+        if let latestReview = servingContext.latestReview {
+            append(
+                refId: latestReview.memoryCursor ?? supervisorReviewCursor(
+                    reviewId: latestReview.reviewId,
+                    createdAtMs: latestReview.createdAtMs
+                ),
+                refKind: "observation_ref",
+                title: "latest review / \(servingContext.project.displayName)",
+                sourceScope: "review_note",
+                tokenCostHint: "medium",
+                updatedAtMs: latestReview.createdAtMs
+            )
+        }
+
+        if let latestGuidance = servingContext.pendingAckGuidance ?? servingContext.latestGuidance {
+            append(
+                refId: latestGuidance.auditRef.isEmpty ? "guidance:\(latestGuidance.injectionId)" : latestGuidance.auditRef,
+                refKind: "workflow_ref",
+                title: "latest guidance / \(servingContext.project.displayName)",
+                sourceScope: "guidance_injection",
+                tokenCostHint: "medium",
+                updatedAtMs: max(latestGuidance.injectedAtMs, latestGuidance.ackUpdatedAtMs)
+            )
+        }
+
+        if let activeJob = servingContext.activeJob {
+            append(
+                refId: activeJob.auditRef.isEmpty ? "job:\(activeJob.jobId)" : activeJob.auditRef,
+                refKind: "workflow_ref",
+                title: "active job / \(activeJob.jobId)",
+                sourceScope: "workflow_job",
+                tokenCostHint: "low",
+                updatedAtMs: activeJob.updatedAtMs
+            )
+        }
+
+        if let activePlan = servingContext.activePlan {
+            append(
+                refId: activePlan.auditRef.isEmpty ? "plan:\(activePlan.planId)" : activePlan.auditRef,
+                refKind: "workflow_ref",
+                title: "active plan / \(activePlan.planId)",
+                sourceScope: "workflow_plan",
+                tokenCostHint: "medium",
+                updatedAtMs: activePlan.updatedAtMs
+            )
+        }
+
+        if let activeSkillCall = servingContext.activeSkillCall {
+            append(
+                refId: activeSkillCall.auditRef.isEmpty ? "skill_call:\(activeSkillCall.requestId)" : activeSkillCall.auditRef,
+                refKind: "workflow_ref",
+                title: "active skill call / \(activeSkillCall.skillId)",
+                sourceScope: "workflow_skill_call",
+                tokenCostHint: "medium",
+                updatedAtMs: activeSkillCall.updatedAtMs
+            )
+        }
+
+        if !servingContext.recent.messages.isEmpty {
+            append(
+                refId: AXRecentContextStore.jsonURL(for: servingContext.ctx).path,
+                refKind: "observation_ref",
+                title: "recent context / \(servingContext.project.displayName)",
+                sourceScope: "recent_context",
+                tokenCostHint: "medium",
+                updatedAtMs: Int64((servingContext.recent.updatedAt * 1000.0).rounded())
+            )
+        }
+
+        return items
+    }
+
+    private func buildSupervisorContextRefs(
+        _ items: [SupervisorContextRefItem],
+        servingContext: SupervisorFocusedProjectServingContext?
+    ) -> SupervisorContextRefsRenderResult {
+        guard !items.isEmpty else {
+            return SupervisorContextRefsRenderResult(
+                text: "(none)",
+                selectedCount: 0,
+                omittedCount: 0
+            )
+        }
+        let maxItems: Int
+        switch servingContext?.servingProfile {
+        case .m4FullScan:
+            maxItems = 14
+        case .m3DeepDive:
+            maxItems = 12
+        default:
+            maxItems = 10
+        }
+        let selectedItems = Array(items.prefix(maxItems))
+        let text = selectedItems
+            .map { item in
+                "- ref_id=\(item.refId) ref_kind=\(item.refKind) title=\(capped(item.title, maxChars: 72)) source_scope=\(item.sourceScope) token_cost_hint=\(item.tokenCostHint) freshness_hint=\(item.freshnessHint)"
+            }
+            .joined(separator: "\n")
+        return SupervisorContextRefsRenderResult(
+            text: text.isEmpty ? "(none)" : text,
+            selectedCount: selectedItems.count,
+            omittedCount: max(0, items.count - selectedItems.count)
+        )
+    }
+
+    private func buildSupervisorConflictSet(
+        servingContext: SupervisorFocusedProjectServingContext?,
+        contextRefs: [SupervisorContextRefItem]
+    ) -> String {
+        guard let servingContext else { return "(none)" }
+
+        let specRef = contextRefs.first(where: { $0.sourceScope == "spec_capsule" })?.refId
+        let longtermRef = contextRefs.first(where: { $0.sourceScope == "longterm_outline" })?.refId
+        let decisionRefs = contextRefs
+            .filter { $0.sourceScope == "decision_track" }
+            .map(\.refId)
+        let guidanceRef = contextRefs.first(where: { $0.sourceScope == "guidance_injection" })?.refId
+        let jobRef = contextRefs.first(where: { $0.sourceScope == "workflow_job" })?.refId
+        let planRef = contextRefs.first(where: { $0.sourceScope == "workflow_plan" })?.refId
+        let reviewRef = contextRefs.first(where: { $0.sourceScope == "review_note" })?.refId
+
+        var conflicts: [SupervisorConflictItem] = []
+
+        if !servingContext.governance.missingSpecFields.isEmpty,
+           servingContext.activeJob != nil || servingContext.activePlan != nil {
+            conflicts.append(
+                SupervisorConflictItem(
+                    conflictId: "conflict-spec-vs-execution-\(servingContext.project.projectId)",
+                    conflictKind: "canonical_vs_observation",
+                    summary: "formal spec 仍有关键锚点缺失，但项目已经进入受治理执行态",
+                    sideA: "spec_capsule missing_fields=\(servingContext.governance.missingSpecFields.map(\.rawValue).joined(separator: ", "))",
+                    sideB: "workflow active_job=\(servingContext.activeJob?.jobId ?? "(none)") active_plan=\(servingContext.activePlan?.planId ?? "(none)")",
+                    resolutionStatus: "open",
+                    refs: orderedUniqueSupervisorRefs([specRef, jobRef, planRef].compactMap { $0 })
+                )
+            )
+        }
+
+        if let guidance = servingContext.pendingAckGuidance ?? servingContext.latestGuidance,
+           guidance.deliveryMode == .replanRequest,
+           !servingContext.governance.hardDecisions.isEmpty {
+            conflicts.append(
+                SupervisorConflictItem(
+                    conflictId: "conflict-decision-vs-guidance-\(guidance.injectionId)",
+                    conflictKind: "decision_vs_guidance",
+                    summary: "已批准决策仍在当前 anchor 中，但最新 supervisor guidance 请求 replan",
+                    sideA: focusedSupervisorInlineDecisionDigest(servingContext.governance.hardDecisions),
+                    sideB: "guidance=\(capped(guidance.guidanceText, maxChars: 120))",
+                    resolutionStatus: guidance.ackRequired && guidance.ackStatus == .pending ? "pending_guidance_ack" : "open",
+                    refs: orderedUniqueSupervisorRefs(decisionRefs + [guidanceRef].compactMap { $0 })
+                )
+            )
+        }
+
+        if !isDigestPlaceholder(servingContext.digest.blocker, treatNoValueAsPlaceholder: true),
+           containsAny(
+                normalizedSupervisorIntentText(servingContext.digest.runtimeState),
+                ["进行中", "running", "active", "推进", "working"]
+           ) {
+            conflicts.append(
+                SupervisorConflictItem(
+                    conflictId: "conflict-runtime-vs-memory-\(servingContext.project.projectId)",
+                    conflictKind: "runtime_vs_memory",
+                    summary: "runtime_state 仍显示推进中，但当前记忆已经显式记录 blocker",
+                    sideA: "runtime_state=\(servingContext.digest.runtimeState)",
+                    sideB: "blocker=\(capped(servingContext.digest.blocker, maxChars: 120))",
+                    resolutionStatus: "open",
+                    refs: orderedUniqueSupervisorRefs([jobRef, planRef, reviewRef].compactMap { $0 })
+                )
+            )
+        }
+
+        if let latestReview = servingContext.latestReview,
+           !latestReview.anchorDoneDefinition.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !servingContext.doneDefinition.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           latestReview.anchorDoneDefinition != servingContext.doneDefinition {
+            conflicts.append(
+                SupervisorConflictItem(
+                    conflictId: "conflict-done-definition-drift-\(latestReview.reviewId)",
+                    conflictKind: "longterm_vs_recent_execution",
+                    summary: "当前 done_definition 与最近一次 strategic review 的 anchor 已发生漂移",
+                    sideA: "latest_review_done_definition=\(capped(latestReview.anchorDoneDefinition, maxChars: 120))",
+                    sideB: "current_done_definition=\(capped(servingContext.doneDefinition, maxChars: 120))",
+                    resolutionStatus: "watch",
+                    refs: orderedUniqueSupervisorRefs([reviewRef, specRef, longtermRef].compactMap { $0 })
+                )
+            )
+        }
+
+        guard !conflicts.isEmpty else { return "(none)" }
+        return conflicts
+            .prefix(4)
+            .map { item in
+                """
+                - conflict_id: \(item.conflictId)
+                  conflict_kind: \(item.conflictKind)
+                  summary: \(item.summary)
+                  side_a: \(item.sideA)
+                  side_b: \(item.sideB)
+                  resolution_status: \(item.resolutionStatus)
+                  refs: \(item.refs.isEmpty ? "(none)" : item.refs.joined(separator: " | "))
+                """
+            }
+            .joined(separator: "\n")
+    }
+
+    private func buildSupervisorEvidencePack(
+        servingContext: SupervisorFocusedProjectServingContext?,
+        contextRefs: [SupervisorContextRefItem],
+        userMessage: String
+    ) -> SupervisorEvidencePackRenderResult {
+        guard let servingContext else {
+            return SupervisorEvidencePackRenderResult(
+                text: "(none)",
+                selectedCount: 0,
+                omittedCount: 0
+            )
+        }
+        let expandedEvidence = servingContext.servingProfile.rank >= XTMemoryServingProfile.m3DeepDive.rank
+        let maxSelectedItems: Int
+        switch servingContext.servingProfile {
+        case .m4FullScan:
+            maxSelectedItems = 8
+        case .m3DeepDive:
+            maxSelectedItems = 6
+        default:
+            maxSelectedItems = 4
+        }
+
+        func ref(for sourceScope: String) -> SupervisorContextRefItem? {
+            contextRefs.first(where: { $0.sourceScope == sourceScope })
+        }
+
+        func refs(for sourceScope: String) -> [SupervisorContextRefItem] {
+            contextRefs.filter { $0.sourceScope == sourceScope }
+        }
+
+        var items: [SupervisorEvidenceItem] = []
+
+        if let specCapsule = servingContext.governance.specCapsule,
+           let specRef = ref(for: "spec_capsule") {
+            let excerpt = [
+                "goal=\(specCapsule.goal)",
+                "done_definition=\(specCapsule.mvpDefinition)",
+                "non_goals=\(focusedSupervisorJoinedValueList(specCapsule.nonGoals, maxItems: 2, maxChars: 60))"
+            ].joined(separator: " | ")
+            items.append(
+                SupervisorEvidenceItem(
+                    refId: specRef.refId,
+                    title: specRef.title,
+                    excerpt: excerpt,
+                    whyIncluded: "stable_goal_and_done_definition",
+                    sourceScope: specRef.sourceScope,
+                    freshnessHint: specRef.freshnessHint
+                )
+            )
+        }
+
+        if items.isEmpty,
+           let longtermRef = ref(for: "longterm_outline") {
+            items.append(
+                SupervisorEvidenceItem(
+                    refId: longtermRef.refId,
+                    title: longtermRef.title,
+                    excerpt: servingContext.longtermOutlineBody,
+                    whyIncluded: "durable_background_outline",
+                    sourceScope: longtermRef.sourceScope,
+                    freshnessHint: longtermRef.freshnessHint
+                )
+            )
+        }
+
+        if expandedEvidence,
+           let longtermRef = ref(for: "longterm_outline"),
+           !servingContext.longtermOutlineBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            items.append(
+                SupervisorEvidenceItem(
+                    refId: longtermRef.refId,
+                    title: longtermRef.title,
+                    excerpt: focusedSupervisorLineageInlineDigest(servingContext.longtermOutlineBody),
+                    whyIncluded: "durable_background_outline",
+                    sourceScope: longtermRef.sourceScope,
+                    freshnessHint: longtermRef.freshnessHint
+                )
+            )
+        }
+
+        if let latestReview = servingContext.latestReview,
+           let reviewRef = ref(for: "review_note") {
+            let excerpt = [
+                "verdict=\(latestReview.verdict.rawValue)",
+                "summary=\(capped(latestReview.summary, maxChars: 120))",
+                "next_action=\(capped(latestReview.recommendedActions.first ?? "(none)", maxChars: 80))"
+            ].joined(separator: " | ")
+            items.append(
+                SupervisorEvidenceItem(
+                    refId: reviewRef.refId,
+                    title: reviewRef.title,
+                    excerpt: excerpt,
+                    whyIncluded: "latest_supervisor_verdict",
+                    sourceScope: reviewRef.sourceScope,
+                    freshnessHint: reviewRef.freshnessHint
+                )
+            )
+        }
+
+        let selectedEvidenceLimit = expandedEvidence ? 2 : 1
+        let selectedEvidenceRefs = refs(for: "selected_evidence")
+        for (index, pin) in servingContext.governance.selectedEvidencePins.prefix(selectedEvidenceLimit).enumerated() {
+            guard index < selectedEvidenceRefs.count else { break }
+            let evidenceRef = selectedEvidenceRefs[index]
+            let excerpt = [
+                "summary=\(capped(pin.summary, maxChars: 120))",
+                "source=\(capped(pin.sourceNote, maxChars: 60))",
+                "why=\(capped(pin.whyItMatters, maxChars: 80))"
+            ].joined(separator: " | ")
+            items.append(
+                SupervisorEvidenceItem(
+                    refId: evidenceRef.refId,
+                    title: evidenceRef.title,
+                    excerpt: excerpt,
+                    whyIncluded: "user_selected_evidence",
+                    sourceScope: evidenceRef.sourceScope,
+                    freshnessHint: evidenceRef.freshnessHint
+                )
+            )
+        }
+
+        if let guidance = servingContext.pendingAckGuidance ?? servingContext.latestGuidance,
+           let guidanceRef = ref(for: "guidance_injection") {
+            let excerpt = [
+                "ack_status=\(guidance.ackStatus.rawValue)",
+                "delivery=\(guidance.deliveryMode.rawValue)",
+                "guidance=\(capped(guidance.guidanceText, maxChars: 120))"
+            ].joined(separator: " | ")
+            items.append(
+                SupervisorEvidenceItem(
+                    refId: guidanceRef.refId,
+                    title: guidanceRef.title,
+                    excerpt: excerpt,
+                    whyIncluded: guidance.ackRequired && guidance.ackStatus == .pending
+                        ? "active_guidance_guardrail_pending_ack"
+                        : "active_guidance_guardrail",
+                    sourceScope: guidanceRef.sourceScope,
+                    freshnessHint: guidanceRef.freshnessHint
+                )
+            )
+        }
+
+        let decisionEvents = servingContext.governance.hardDecisions.values.sorted { lhs, rhs in
+            if lhs.updatedAtMs != rhs.updatedAtMs {
+                return lhs.updatedAtMs > rhs.updatedAtMs
+            }
+            return lhs.category.rawValue < rhs.category.rawValue
+        }
+        let decisionItemLimit = expandedEvidence ? 2 : 1
+        for decision in decisionEvents.prefix(decisionItemLimit) {
+            let preferredDecisionRefId = decision.evidenceRefs.first ?? decision.auditRef
+            guard let decisionRef = contextRefs.first(where: {
+                $0.sourceScope == "decision_track" && $0.refId == preferredDecisionRefId
+            }) else {
+                continue
+            }
+            let excerpt = expandedEvidence
+                ? "category=\(decision.category.rawValue) | statement=\(capped(firstNonEmptyLine(in: decision.statement), maxChars: 120)) | source=\(capped(decision.source, maxChars: 60))"
+                : "\(decision.category.rawValue)=\(capped(firstNonEmptyLine(in: decision.statement), maxChars: 140))"
+            items.append(
+                SupervisorEvidenceItem(
+                    refId: decisionRef.refId,
+                    title: decisionRef.title,
+                    excerpt: excerpt,
+                    whyIncluded: expandedEvidence ? "decision_lineage_anchor" : "approved_decision_anchor",
+                    sourceScope: decisionRef.sourceScope,
+                    freshnessHint: decisionRef.freshnessHint
+                )
+            )
+        }
+
+        if let activeJob = servingContext.activeJob,
+           let workflowRef = ref(for: "workflow_plan") ?? ref(for: "workflow_job") {
+            let excerpt = [
+                "job=\(activeJob.jobId)",
+                "goal=\(capped(activeJob.goal, maxChars: 100))",
+                "next_pending=\(capped(servingContext.nextPendingStepsDigest, maxChars: 120))",
+                "attention=\(capped(servingContext.attentionStepsDigest, maxChars: 120))"
+            ].joined(separator: " | ")
+            items.append(
+                SupervisorEvidenceItem(
+                    refId: workflowRef.refId,
+                    title: workflowRef.title,
+                    excerpt: excerpt,
+                    whyIncluded: "active_workflow_state",
+                    sourceScope: workflowRef.sourceScope,
+                    freshnessHint: workflowRef.freshnessHint
+                )
+            )
+        } else if let recentRef = ref(for: "recent_context") {
+            items.append(
+                SupervisorEvidenceItem(
+                    refId: recentRef.refId,
+                    title: recentRef.title,
+                    excerpt: servingContext.recentMessagesDigest,
+                    whyIncluded: "recent_project_messages",
+                    sourceScope: recentRef.sourceScope,
+                    freshnessHint: recentRef.freshnessHint
+                )
+            )
+        }
+
+        if expandedEvidence {
+            let blockerRef = ref(for: "guidance_injection")
+                ?? ref(for: "review_note")
+                ?? ref(for: "workflow_plan")
+                ?? ref(for: "workflow_job")
+                ?? ref(for: "recent_context")
+            if let blockerRef {
+                items.append(
+                    SupervisorEvidenceItem(
+                        refId: blockerRef.refId,
+                        title: blockerRef.title,
+                        excerpt: focusedSupervisorLineageInlineDigest(servingContext.blockerLineageDigest),
+                        whyIncluded: "active_blocker_lineage",
+                        sourceScope: blockerRef.sourceScope,
+                        freshnessHint: blockerRef.freshnessHint
+                    )
+                )
+            }
+
+            if let recentRef = ref(for: "recent_context"),
+               servingContext.recentMessagesDigest != "(none)" {
+                items.append(
+                    SupervisorEvidenceItem(
+                        refId: recentRef.refId,
+                        title: recentRef.title,
+                        excerpt: capped(servingContext.recentMessagesDigest, maxChars: 220),
+                        whyIncluded: "live_recent_context",
+                        sourceScope: recentRef.sourceScope,
+                        freshnessHint: recentRef.freshnessHint
+                    )
+                )
+            }
+        }
+
+        guard !items.isEmpty else {
+            return SupervisorEvidencePackRenderResult(
+                text: "(none)",
+                selectedCount: 0,
+                omittedCount: 0
+            )
+        }
+
+        let selectedItems = Array(items.prefix(maxSelectedItems))
+        let truncatedItems = max(0, items.count - selectedItems.count)
+        let auditRef = servingContext.pendingAckGuidance?.auditRef
+            ?? servingContext.latestGuidance?.auditRef
+            ?? servingContext.latestReview?.auditRef
+            ?? servingContext.governance.selectedEvidencePins.first?.auditRef
+            ?? "audit-supervisor-evidence-\(servingContext.project.projectId)"
+
+        return SupervisorEvidencePackRenderResult(
+            text: """
+evidence_goal: verify focused project anchors, latest review corrections, and live workflow before changing strategy for "\(capped(userMessage, maxChars: 72))"
+selected_items:
+\(selectedItems.map {
+    "- ref_id=\($0.refId) title=\(capped($0.title, maxChars: 64)) source_scope=\($0.sourceScope) freshness=\($0.freshnessHint) why_included=\($0.whyIncluded) excerpt=\(capped($0.excerpt, maxChars: 220))"
+}.joined(separator: "\n"))
+truncated_items: \(truncatedItems)
+redacted_items: 0
+audit_ref: \(auditRef.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "audit-supervisor-evidence-\(servingContext.project.projectId)" : auditRef)
+""",
+            selectedCount: selectedItems.count,
+            omittedCount: truncatedItems
+        )
+    }
+
+    private func supervisorDeterministicDigest(
+        stable: String
+    ) -> String {
+        let digest = SHA256.hash(data: Data(stable.utf8))
+        return "sha256:" + digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func supervisorAssemblyHasMeaningfulContent(
+        _ text: String
+    ) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        return trimmed != "(none)" && trimmed != "(not_loaded)"
+    }
+
+    private func supervisorMemoryAssemblySnapshot(
+        from composition: SupervisorMemoryComposition,
+        resolution: HubIPCClient.MemoryContextResolutionResult?,
+        finalSource: String,
+        updatedAt: TimeInterval
+    ) -> SupervisorMemoryAssemblySnapshot {
+        let response = resolution?.response
+        let resolvedProfile = response?.resolvedProfile
+            ?? resolution?.requestedProfile
+            ?? composition.servingProfile.rawValue
+        let attemptedProfiles = response?.attemptedProfiles
+            ?? resolution?.attemptedProfiles
+            ?? [composition.servingProfile.rawValue]
+        let progressiveUpgradeCount = response?.progressiveUpgradeCount
+            ?? max(0, attemptedProfiles.count - 1)
+        return SupervisorMemoryAssemblySnapshot(
+            source: finalSource,
+            resolutionSource: resolution?.source,
+            updatedAt: updatedAt,
+            reviewLevelHint: composition.reviewLevelHint.rawValue,
+            requestedProfile: resolution?.requestedProfile ?? composition.servingProfile.rawValue,
+            profileFloor: composition.profileFloor.rawValue,
+            resolvedProfile: resolvedProfile,
+            attemptedProfiles: attemptedProfiles,
+            progressiveUpgradeCount: progressiveUpgradeCount,
+            focusedProjectId: composition.focusedProjectId,
+            selectedSections: composition.selectedSections,
+            omittedSections: composition.omittedSections,
+            contextRefsSelected: composition.contextRefsSelectedCount,
+            contextRefsOmitted: composition.contextRefsOmittedCount,
+            evidenceItemsSelected: composition.evidenceItemsSelectedCount,
+            evidenceItemsOmitted: composition.evidenceItemsOmittedCount,
+            budgetTotalTokens: response?.budgetTotalTokens,
+            usedTotalTokens: response?.usedTotalTokens,
+            truncatedLayers: response?.truncatedLayers ?? [],
+            freshness: response?.freshness ?? resolution?.freshness,
+            cacheHit: response?.cacheHit ?? resolution?.cacheHit,
+            denyCode: response?.denyCode ?? resolution?.denyCode,
+            downgradeCode: response?.downgradeCode ?? resolution?.downgradeCode,
+            reasonCode: resolution?.reasonCode,
+            compressionPolicy: composition.compressionPolicy
+        )
+    }
+
     private func buildSupervisorMemoryV1(userMessage: String) async -> SupervisorMemoryBuildInfo {
         let composition = await composeSupervisorMemoryV1(userMessage: userMessage)
-        let servingProfile = preferredSupervisorMemoryServingProfile(userMessage: userMessage)
-        let hub = await HubIPCClient.requestMemoryContext(
+        let updatedAt = Date().timeIntervalSince1970
+        let result = await HubIPCClient.requestMemoryContextDetailed(
             useMode: .supervisorOrchestration,
             requesterRole: .supervisor,
             projectId: nil,
             projectRoot: nil,
             displayName: "Supervisor",
             latestUser: userMessage,
+            reviewLevelHint: composition.reviewLevelHint.rawValue,
             constitutionHint: composition.constitution,
+            portfolioBriefText: composition.portfolioBrief,
+            focusedProjectAnchorPackText: composition.focusedProjectAnchorPack,
+            longtermOutlineText: composition.longtermOutline,
+            deltaFeedText: composition.deltaFeed,
+            conflictSetText: composition.conflictSet,
+            contextRefsText: composition.contextRefs,
+            evidencePackText: composition.evidencePack,
             canonicalText: composition.canonical,
             observationsText: composition.observations,
             workingSetText: composition.workingSet,
             rawEvidenceText: composition.rawEvidence,
-            servingProfile: servingProfile,
+            servingProfile: composition.servingProfile,
             progressiveDisclosure: true,
             budgets: nil,
             timeoutSec: 1.2
         )
-        if let hub {
+        if let hub = result.response {
             let src = XTProjectMemoryGovernance.normalizedResolvedSource(hub.source)
             return SupervisorMemoryBuildInfo(
                 text: sanitizeSupervisorOutboundPrompt(hub.text),
                 source: src,
-                updatedAt: Date().timeIntervalSince1970,
+                updatedAt: updatedAt,
+                assemblySnapshot: supervisorMemoryAssemblySnapshot(
+                    from: composition,
+                    resolution: result,
+                    finalSource: src,
+                    updatedAt: updatedAt
+                ),
                 projectDigests: composition.projectDigests,
                 skillRegistrySnapshot: composition.skillRegistrySnapshot
             )
@@ -8860,26 +13364,240 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
         return SupervisorMemoryBuildInfo(
             text: sanitizeSupervisorOutboundPrompt(composition.localText),
             source: "local_fallback",
-            updatedAt: Date().timeIntervalSince1970,
+            updatedAt: updatedAt,
+            assemblySnapshot: supervisorMemoryAssemblySnapshot(
+                from: composition,
+                resolution: result,
+                finalSource: "local_fallback",
+                updatedAt: updatedAt
+            ),
             projectDigests: composition.projectDigests,
             skillRegistrySnapshot: composition.skillRegistrySnapshot
         )
     }
 
     private func preferredSupervisorMemoryServingProfile(
+        userMessage: String,
+        focusedProjectSelected: Bool
+    ) -> XTMemoryServingProfile {
+        let reviewLevelHint = preferredSupervisorReviewLevelHintForMemory(userMessage: userMessage)
+        let preferred = XTMemoryServingProfileSelector.preferredSupervisorProfile(userMessage: userMessage)
+            ?? .m1Execute
+        let floor = minimumSupervisorServingProfile(
+            for: reviewLevelHint,
+            focusedProjectSelected: focusedProjectSelected
+        )
+        return preferred.rank >= floor.rank ? preferred : floor
+    }
+
+    private func preferredSupervisorReviewLevelHintForMemory(
         userMessage: String
-    ) -> XTMemoryServingProfile? {
-        XTMemoryServingProfileSelector.preferredSupervisorProfile(userMessage: userMessage)
+    ) -> SupervisorReviewLevel {
+        explicitSupervisorReviewLevelHint(in: userMessage)
+            ?? inferredSupervisorReviewLevelHintForMemory(userMessage: userMessage)
+    }
+
+    private func inferredSupervisorReviewLevelHintForMemory(
+        userMessage: String
+    ) -> SupervisorReviewLevel {
+        let normalized = normalizedSupervisorIntentText(userMessage)
+        if containsAny(
+            normalized,
+            [
+                "高风险", "上线", "发布", "验收", "停止", "暂停", "rescue",
+                "incident", "紧急", "事故", "回滚", "授权"
+            ]
+        ) {
+            return .r3Rescue
+        }
+        if containsAny(
+            normalized,
+            [
+                "review", "审查", "审阅", "评审", "brainstorm", "blocker",
+                "阻塞", "drift", "跑偏", "纠偏", "architecture", "架构",
+                "方向", "重构", "better path", "更好的", "方案", "计划"
+            ]
+        ) {
+            return .r2Strategic
+        }
+        return .r1Pulse
+    }
+
+    private func minimumSupervisorServingProfile(
+        for reviewLevelHint: SupervisorReviewLevel,
+        focusedProjectSelected: Bool
+    ) -> XTMemoryServingProfile {
+        switch reviewLevelHint {
+        case .r1Pulse:
+            return .m1Execute
+        case .r2Strategic:
+            return focusedProjectSelected ? .m3DeepDive : .m2PlanReview
+        case .r3Rescue:
+            return .m3DeepDive
+        }
+    }
+
+    private func supervisorServingGovernorSection(
+        servingProfile: XTMemoryServingProfile,
+        reviewLevelHint: SupervisorReviewLevel,
+        focusedProjectSelected: Bool
+    ) -> String {
+        let metadata = supervisorServingGovernorMetadata(
+            servingProfile: servingProfile,
+            reviewLevelHint: reviewLevelHint,
+            focusedProjectSelected: focusedProjectSelected
+        )
+
+        return """
+[SERVING_GOVERNOR]
+review_level_hint: \(reviewLevelHint.rawValue)
+profile_floor: \(metadata.profileFloor.rawValue)
+minimum_pack: \(metadata.minimumPack.isEmpty ? "(none)" : metadata.minimumPack.joined(separator: ", "))
+compression_policy: \(metadata.compressionPolicy)
+[/SERVING_GOVERNOR]
+"""
+    }
+
+    private func supervisorServingGovernorMetadata(
+        servingProfile: XTMemoryServingProfile,
+        reviewLevelHint: SupervisorReviewLevel,
+        focusedProjectSelected: Bool
+    ) -> SupervisorServingGovernorMetadata {
+        let minimumPack = orderedSupervisorMinimumPack(
+            servingProfile: servingProfile,
+            reviewLevelHint: reviewLevelHint,
+            focusedProjectSelected: focusedProjectSelected
+        )
+        let profileFloor = minimumSupervisorServingProfile(
+            for: reviewLevelHint,
+            focusedProjectSelected: focusedProjectSelected
+        )
+        let compressionPolicy: String
+        switch reviewLevelHint {
+        case .r1Pulse:
+            compressionPolicy = "protect_anchor_then_delta_then_portfolio"
+        case .r2Strategic:
+            compressionPolicy = focusedProjectSelected
+                ? "protect_anchor_longterm_decision_blocker_and_evidence_first"
+                : "protect_anchor_conflict_longterm_then_refs"
+        case .r3Rescue:
+            compressionPolicy = "protect_anchor_conflict_and_evidence_first"
+        }
+
+        return SupervisorServingGovernorMetadata(
+            profileFloor: profileFloor,
+            minimumPack: minimumPack,
+            compressionPolicy: compressionPolicy
+        )
+    }
+
+    private func orderedSupervisorMinimumPack(
+        servingProfile: XTMemoryServingProfile,
+        reviewLevelHint: SupervisorReviewLevel,
+        focusedProjectSelected: Bool
+    ) -> [String] {
+        let profilePack = minimumPackForSupervisorServingProfile(servingProfile)
+        let reviewPack = minimumPackForSupervisorReviewLevel(
+            reviewLevelHint,
+            focusedProjectSelected: focusedProjectSelected
+        )
+        let reviewFloor = minimumSupervisorServingProfile(
+            for: reviewLevelHint,
+            focusedProjectSelected: focusedProjectSelected
+        )
+        let orderedPacks = reviewFloor.rank > servingProfile.rank
+            ? [reviewPack, profilePack]
+            : [profilePack, reviewPack]
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for pack in orderedPacks {
+            for item in pack {
+                guard seen.insert(item).inserted else { continue }
+                ordered.append(item)
+            }
+        }
+        return ordered
+    }
+
+    private func minimumPackForSupervisorServingProfile(
+        _ servingProfile: XTMemoryServingProfile
+    ) -> [String] {
+        switch servingProfile {
+        case .m0Heartbeat:
+            return ["portfolio_brief", "delta_feed"]
+        case .m1Execute:
+            return ["portfolio_brief", "focused_project_anchor_pack", "delta_feed"]
+        case .m2PlanReview:
+            return [
+                "portfolio_brief",
+                "focused_project_anchor_pack",
+                "longterm_outline",
+                "delta_feed",
+                "conflict_set",
+                "context_refs"
+            ]
+        case .m3DeepDive, .m4FullScan:
+            return [
+                "portfolio_brief",
+                "focused_project_anchor_pack",
+                "longterm_outline",
+                "delta_feed",
+                "conflict_set",
+                "context_refs",
+                "evidence_pack"
+            ]
+        }
+    }
+
+    private func minimumPackForSupervisorReviewLevel(
+        _ reviewLevelHint: SupervisorReviewLevel,
+        focusedProjectSelected: Bool
+    ) -> [String] {
+        switch reviewLevelHint {
+        case .r1Pulse:
+            return ["portfolio_brief", "focused_project_anchor_pack", "delta_feed"]
+        case .r2Strategic:
+            return focusedProjectSelected ? [
+                "portfolio_brief",
+                "focused_project_anchor_pack",
+                "longterm_outline",
+                "delta_feed",
+                "conflict_set",
+                "context_refs",
+                "evidence_pack"
+            ] : [
+                "portfolio_brief",
+                "focused_project_anchor_pack",
+                "longterm_outline",
+                "delta_feed",
+                "conflict_set",
+                "context_refs"
+            ]
+        case .r3Rescue:
+            return [
+                "portfolio_brief",
+                "focused_project_anchor_pack",
+                "longterm_outline",
+                "delta_feed",
+                "conflict_set",
+                "context_refs",
+                "evidence_pack"
+            ]
+        }
     }
 
     private func composeSupervisorMemoryV1(userMessage: String) async -> SupervisorMemoryComposition {
         let constitution = loadConstitutionOneLiner(userMessage: userMessage)
-        let servingProfile = preferredSupervisorMemoryServingProfile(userMessage: userMessage)
         let projects = allProjects()
         let projectDigests = collectSupervisorProjectMemoryDigests()
         let focusedProjectSelection = focusedSupervisorProjectSelection(
             projects: projects,
             userMessage: userMessage
+        )
+        let reviewLevelHint = preferredSupervisorReviewLevelHintForMemory(userMessage: userMessage)
+        let servingProfile = preferredSupervisorMemoryServingProfile(
+            userMessage: userMessage,
+            focusedProjectSelected: focusedProjectSelection != nil
         )
         let focusedSkillProject = focusedProjectSelection?.project
         let skillRegistrySnapshot: SupervisorSkillRegistrySnapshot?
@@ -8902,27 +13620,93 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
             userMessage: userMessage,
             servingProfile: servingProfile
         )
+        let includeLongtermOutline = shouldIncludeSupervisorLongtermOutline(servingProfile: servingProfile)
+        let includeStrategicExpansion = servingProfile.rank >= XTMemoryServingProfile.m3DeepDive.rank
         let executionBrief = focusedProjectSelection.map {
-            focusedSupervisorExecutionBrief(selection: $0, projectDigests: projectDigests)
+            focusedSupervisorExecutionBrief(
+                selection: $0,
+                projectDigests: projectDigests,
+                includeLongtermOutline: includeLongtermOutline,
+                includeStrategicExpansion: includeStrategicExpansion
+            )
         }
-        let canonical = capped(
+        let portfolioBrief = sanitizeSupervisorPromptIdentifiers(
+            buildSupervisorPortfolioBrief(
+                projects: projects,
+                projectDigests: projectDigests,
+                focusedSelection: focusedProjectSelection
+            )
+        )
+        let focusedProjectAnchorPack = sanitizeSupervisorPromptIdentifiers(
+            executionBrief?.anchorPackBody ?? ""
+        )
+        let longtermOutline = sanitizeSupervisorPromptIdentifiers(
+            includeLongtermOutline ? (executionBrief?.longtermOutlineBody ?? "") : ""
+        )
+        let canonicalLayer = capped(
             [
                 generateProjectList(from: projectDigests),
-                executionBrief?.canonical ?? "",
                 workflowSlice?.canonical ?? ""
             ]
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             .joined(separator: "\n\n"),
-            maxChars: 3200
+            maxChars: 2200
         )
         let localMemoryProjectCount = projectDigests.filter { $0.source.contains("local_project_memory") }.count
-        let observations = sanitizeSupervisorPromptIdentifiers(
+        let observationsLayer = sanitizeSupervisorPromptIdentifiers(
             (recentEvents.suffix(8) + [
                 "managed_projects: \(projectDigests.count)",
                 "projects_with_local_memory: \(localMemoryProjectCount)",
                 executionBrief?.observation ?? "",
                 workflowSlice?.observation ?? ""
             ]).joined(separator: "\n")
+        )
+        let deltaFeed = sanitizeSupervisorPromptIdentifiers(
+            buildSupervisorDeltaFeed(
+                userMessage: userMessage,
+                projectDigests: projectDigests,
+                focusedSelection: focusedProjectSelection,
+                focusedExecutionBrief: executionBrief,
+                workflowObservation: workflowSlice?.observation
+            )
+        )
+        let servingContext = focusedSupervisorServingContext(
+            selection: focusedProjectSelection,
+            projectDigests: projectDigests,
+            executionBrief: executionBrief,
+            includeLongtermOutline: includeLongtermOutline,
+            servingProfile: servingProfile,
+            reviewLevelHint: reviewLevelHint
+        )
+        let governorMetadata = supervisorServingGovernorMetadata(
+            servingProfile: servingProfile,
+            reviewLevelHint: reviewLevelHint,
+            focusedProjectSelected: focusedProjectSelection != nil
+        )
+        let contextRefItems = supervisorContextRefItems(
+            servingContext: servingContext,
+            projectDigests: projectDigests
+        )
+        let contextRefsRender = buildSupervisorContextRefs(
+            contextRefItems,
+            servingContext: servingContext
+        )
+        let conflictSet = sanitizeSupervisorPromptIdentifiers(
+            buildSupervisorConflictSet(
+                servingContext: servingContext,
+                contextRefs: contextRefItems
+            )
+        )
+        let contextRefs = sanitizeSupervisorPromptIdentifiers(
+            contextRefsRender.text
+        )
+        let evidencePackRender = buildSupervisorEvidencePack(
+            servingContext: servingContext,
+            contextRefs: contextRefItems,
+            userMessage: userMessage
+        )
+        let evidencePack = sanitizeSupervisorPromptIdentifiers(
+            evidencePackRender.text
         )
         let chatWorkingSet = recentSupervisorConversationWorkingSet(
             from: messages,
@@ -8942,7 +13726,7 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
                 excludingProjectId: focusedProjectSelection?.project.projectId
             )
         )
-        let workingSet = """
+        let workingSetLayer = """
 \(chatWorkingSet.isEmpty ? "(none)" : chatWorkingSet)
 \(actionWorkingSet.isEmpty ? "" : "\n[action_ledger]\n\(actionWorkingSet)")
 \(workflowWorkingSet.isEmpty ? "" : "\n[workflow]\n\(workflowWorkingSet)")
@@ -8961,31 +13745,91 @@ models:
 \(modelEvidence.isEmpty ? "(none)" : modelEvidence)
 \(skillRegistryEvidence.isEmpty ? "" : "\nskills_registry:\n\(skillRegistryEvidence)")
 """
-        let servingProfileSection = servingProfile.map { profile in
-            """
+        let canonical = canonicalLayer
+        let observations = observationsLayer
+        let workingSet = workingSetLayer
+        let longtermOutlineSection: String
+        if includeLongtermOutline {
+            longtermOutlineSection = """
+[LONGTERM_OUTLINE]
+\(longtermOutline.isEmpty ? "(none)" : longtermOutline)
+[/LONGTERM_OUTLINE]
+
+"""
+        } else {
+            longtermOutlineSection = ""
+        }
+        let servingGovernorSection = supervisorServingGovernorSection(
+            servingProfile: servingProfile,
+            reviewLevelHint: reviewLevelHint,
+            focusedProjectSelected: focusedProjectSelection != nil
+        )
+        let servingProfileSection = """
 [SERVING_PROFILE]
-profile_id: \(profile.rawValue)
+profile_id: \(servingProfile.rawValue)
 [/SERVING_PROFILE]
 """
-        } ?? ""
+
+        let sectionBodies: [(String, String)] = [
+            ("portfolio_brief", portfolioBrief),
+            ("focused_project_anchor_pack", focusedProjectAnchorPack),
+            ("longterm_outline", longtermOutline),
+            ("delta_feed", deltaFeed),
+            ("conflict_set", conflictSet),
+            ("context_refs", contextRefs),
+            ("evidence_pack", evidencePack)
+        ]
+        let selectedSections = sectionBodies
+            .filter { supervisorAssemblyHasMeaningfulContent($0.1) }
+            .map(\.0)
+        let omittedSections = sectionBodies
+            .filter { !supervisorAssemblyHasMeaningfulContent($0.1) }
+            .map(\.0)
 
         let local = """
 [MEMORY_V1]
-\(servingProfileSection.isEmpty ? "" : "\(servingProfileSection)\n")
+\(servingProfileSection)
+\(servingGovernorSection.isEmpty ? "" : "\n\(servingGovernorSection)")
+
+[PORTFOLIO_BRIEF]
+\(portfolioBrief.isEmpty ? "(none)" : portfolioBrief)
+[/PORTFOLIO_BRIEF]
+
+[FOCUSED_PROJECT_ANCHOR_PACK]
+\(focusedProjectAnchorPack.isEmpty ? "(none)" : focusedProjectAnchorPack)
+[/FOCUSED_PROJECT_ANCHOR_PACK]
+
+\(longtermOutlineSection)
+[DELTA_FEED]
+\(deltaFeed.isEmpty ? "(none)" : deltaFeed)
+[/DELTA_FEED]
+
+[CONFLICT_SET]
+\(conflictSet.isEmpty ? "(none)" : conflictSet)
+[/CONFLICT_SET]
+
+[CONTEXT_REFS]
+\(contextRefs.isEmpty ? "(none)" : contextRefs)
+[/CONTEXT_REFS]
+
+[EVIDENCE_PACK]
+\(evidencePack.isEmpty ? "(none)" : evidencePack)
+[/EVIDENCE_PACK]
+
 [L0_CONSTITUTION]
 \(constitution)
 [/L0_CONSTITUTION]
 
 [L1_CANONICAL]
-\(canonical.isEmpty ? "(none)" : canonical)
+\(canonicalLayer.isEmpty ? "(none)" : canonicalLayer)
 [/L1_CANONICAL]
 
 [L2_OBSERVATIONS]
-\(observations.isEmpty ? "(none)" : observations)
+\(observationsLayer.isEmpty ? "(none)" : observationsLayer)
 [/L2_OBSERVATIONS]
 
 [L3_WORKING_SET]
-\(workingSet.isEmpty ? "(none)" : workingSet)
+\(workingSetLayer.isEmpty ? "(none)" : workingSetLayer)
 [/L3_WORKING_SET]
 
 [L4_RAW_EVIDENCE]
@@ -8997,12 +13841,31 @@ latest_user:
 """
 
         return SupervisorMemoryComposition(
+            servingProfile: servingProfile,
+            reviewLevelHint: reviewLevelHint,
             constitution: constitution,
+            portfolioBrief: portfolioBrief,
+            focusedProjectAnchorPack: focusedProjectAnchorPack,
+            longtermOutline: longtermOutline,
+            deltaFeed: deltaFeed,
+            conflictSet: conflictSet,
+            contextRefs: contextRefs,
+            evidencePack: evidencePack,
             canonical: canonical,
             observations: observations,
             workingSet: workingSet,
             rawEvidence: rawEvidence,
             localText: local,
+            focusedProjectId: focusedProjectSelection?.project.projectId,
+            profileFloor: governorMetadata.profileFloor,
+            minimumPack: governorMetadata.minimumPack,
+            compressionPolicy: governorMetadata.compressionPolicy,
+            selectedSections: selectedSections,
+            omittedSections: omittedSections,
+            contextRefsSelectedCount: contextRefsRender.selectedCount,
+            contextRefsOmittedCount: contextRefsRender.omittedCount,
+            evidenceItemsSelectedCount: evidencePackRender.selectedCount,
+            evidenceItemsOmittedCount: evidencePackRender.omittedCount,
             projectDigests: projectDigests,
             skillRegistrySnapshot: skillRegistrySnapshot
         )
@@ -9021,11 +13884,13 @@ latest_user:
         }
 
         var lines: [String] = [
+            "view=drilldown",
             "mode=explicit_structured_drilldown",
             "reason=\(snapshot.openedReason)",
             "project=\(snapshot.projectName) (\(snapshot.projectId))",
             "requested_scope=\(snapshot.requestedScope.rawValue)",
-            "granted_scope=\(snapshot.grantedScope?.rawValue ?? "(none)")"
+            "granted_scope=\(snapshot.grantedScope?.rawValue ?? "(none)")",
+            "refs_count=\(snapshot.refs.count)"
         ]
 
         if let capsule = snapshot.capsule {
@@ -9173,6 +14038,7 @@ latest_user:
         let ctx = supervisorMemoryContext(for: project)
         let response = await HubIPCClient.requestProjectMemoryRetrieval(
             requesterRole: .supervisor,
+            useMode: .supervisorOrchestration,
             projectId: project.projectId,
             projectRoot: ctx.root.path,
             displayName: project.displayName,
@@ -9222,10 +14088,11 @@ reason_code=no_response
         let trimmedItems = items.trimmingCharacters(in: .whitespacesAndNewlines)
         let denyCode = response.denyCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let reasonCode = response.reasonCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let normalizedStatus = response.status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
         let status: String
-        if !denyCode.isEmpty {
+        if normalizedStatus == "denied" || !denyCode.isEmpty {
             status = "denied"
-        } else if response.truncatedItems > 0 {
+        } else if normalizedStatus == "truncated" || response.truncatedItems > 0 {
             status = "truncated"
         } else if trimmedItems.isEmpty {
             status = "empty"
@@ -9240,6 +14107,14 @@ reason_code=no_response
             "audit_ref=\(response.auditRef)",
             "retrieval_source=\(response.source)"
         ]
+        if let requestId = response.requestId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !requestId.isEmpty {
+            lines.append("request_id=\(requestId)")
+        }
+        if let resolvedScope = response.resolvedScope?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !resolvedScope.isEmpty {
+            lines.append("resolved_scope=\(resolvedScope)")
+        }
         if !reasonCode.isEmpty {
             lines.append("reason_code=\(reasonCode)")
         }
@@ -9500,9 +14375,18 @@ reason_code=no_response
         )
     }
 
+    private func shouldIncludeSupervisorLongtermOutline(
+        servingProfile: XTMemoryServingProfile?
+    ) -> Bool {
+        guard let servingProfile else { return false }
+        return servingProfile.rank >= XTMemoryServingProfile.m2PlanReview.rank
+    }
+
     private func focusedSupervisorExecutionBrief(
         selection: SupervisorFocusedProjectSelection,
         projectDigests: [SupervisorMemoryProjectDigest],
+        includeLongtermOutline: Bool = false,
+        includeStrategicExpansion: Bool = false,
         recentMessageLimit: Int = 4
     ) -> SupervisorFocusedProjectExecutionBrief {
         let project = selection.project
@@ -9551,25 +14435,65 @@ reason_code=no_response
             effectiveAutonomy: effectiveAutonomy
         )
         let approvedDecisions = focusedSupervisorApprovedDecisionDigest(governance.hardDecisions)
+        let decisionLineageBody = focusedSupervisorDecisionLineageDigest(
+            governance.hardDecisions,
+            expanded: includeStrategicExpansion
+        )
         let backgroundHint = governance.backgroundShadowHint.trimmingCharacters(in: .whitespacesAndNewlines)
         let latestReview = SupervisorReviewNoteStore.latest(for: ctx)
+        let latestUIReview = XTUIReviewStore.loadLatestBrowserPageReference(for: ctx)
+        let latestGuidance = SupervisorGuidanceInjectionStore.latest(for: ctx)
+        let pendingAckGuidance = SupervisorGuidanceInjectionStore.latestPendingAck(for: ctx)
+        let blockerLineageBody = focusedSupervisorBlockerLineageDigest(
+            digest: digest,
+            latestReview: latestReview,
+            latestGuidance: latestGuidance,
+            pendingAckGuidance: pendingAckGuidance,
+            activeSkillCall: activeSkillCall,
+            decisionAssist: governance.decisionAssist,
+            nextPendingStepsDigest: nextPendingSteps,
+            attentionStepsDigest: attentionSteps,
+            expanded: includeStrategicExpansion
+        )
+        let longtermOutlineBody = focusedSupervisorLongtermOutlineDigest(
+            project: project,
+            digest: digest,
+            governance: governance,
+            doneDefinition: doneDefinition,
+            approvedDecisions: approvedDecisions,
+            backgroundHint: backgroundHint,
+            decisionLineage: decisionLineageBody
+        )
+        let longtermOutlineAnchor = includeLongtermOutline ? longtermOutlineBody : "(not_loaded)"
+        let longtermOutlineInline = includeLongtermOutline
+            ? focusedSupervisorLongtermOutlineInlineDigest(longtermOutlineBody)
+            : "(not_loaded)"
         let latestReviewCanonical = focusedSupervisorLatestReviewCanonical(note: latestReview)
         let latestReviewInline = focusedSupervisorLatestReviewInline(note: latestReview)
-        let latestGuidance = SupervisorGuidanceInjectionStore.latest(for: ctx)
+        let latestUIReviewCanonical = focusedSupervisorLatestUIReviewCanonical(item: latestUIReview)
+        let latestUIReviewInline = focusedSupervisorLatestUIReviewInline(item: latestUIReview)
         let latestGuidanceCanonical = focusedSupervisorLatestGuidanceCanonical(item: latestGuidance)
         let latestGuidanceInline = focusedSupervisorLatestGuidanceInline(item: latestGuidance)
-        let pendingAckGuidance = SupervisorGuidanceInjectionStore.latestPendingAck(for: ctx)
         let pendingAckGuidanceCanonical = focusedSupervisorLatestGuidanceCanonical(item: pendingAckGuidance)
         let pendingAckGuidanceInline = focusedSupervisorLatestGuidanceInline(item: pendingAckGuidance)
-        let governanceSummary = """
-configured=\(config.autonomyMode.rawValue) effective=\(effectiveAutonomy.effectiveMode.rawValue) override=\(effectiveAutonomy.hubOverrideMode.rawValue) ttl_remaining_sec=\(effectiveAutonomy.remainingSeconds)
-"""
+        let decisionLineageInline = focusedSupervisorLineageInlineDigest(decisionLineageBody)
+        let blockerLineageInline = focusedSupervisorLineageInlineDigest(blockerLineageBody)
+        let governanceSummary = focusedSupervisorRuntimeGovernanceDigest(
+            governance: governance,
+            config: config,
+            effectiveAutonomy: effectiveAutonomy
+        )
+        let governanceInline = focusedSupervisorRuntimeGovernanceInlineDigest(
+            governance: governance,
+            config: config,
+            effectiveAutonomy: effectiveAutonomy
+        )
+        let governanceReasonsInline = focusedSupervisorRuntimeGovernanceReasonsInlineDigest(governance)
         let missingAnchorFields = governance.missingSpecFields.isEmpty
             ? "(none)"
             : governance.missingSpecFields.map(\.rawValue).joined(separator: ", ")
 
-        let canonical = """
-[focused_project_execution_brief]
+        let canonicalBody = """
 focus_source: \(selection.source)
 project: \(project.displayName) (\(project.projectId))
 memory_source: \(digest.source)
@@ -9580,10 +14504,18 @@ constraints:
 \(reviewConstraints)
 approved_decisions:
 \(approvedDecisions)
+decision_lineage:
+\(decisionLineageBody)
+longterm_outline:
+\(longtermOutlineAnchor)
 background_hints:
 \(backgroundHint.isEmpty ? "(none)" : backgroundHint)
+blocker_lineage:
+\(blockerLineageBody)
 governance:
 \(governanceSummary)
+latest_ui_review:
+\(latestUIReviewCanonical)
 latest_review_note:
 \(latestReviewCanonical)
 latest_guidance_injection:
@@ -9611,9 +14543,13 @@ active_skill_status: \(activeSkillCall?.status.rawValue ?? "(none)")
 active_skill_result_summary: \(activeSkillResult.isEmpty ? "(none)" : activeSkillResult)
 recent_relevant_messages:
 \(recentMessages)
-[/focused_project_execution_brief]
 """
-        let observation = "focused_project_execution_brief: source=\(selection.source) project=\(project.projectId) job=\(activeJob?.jobId ?? "(none)") plan=\(activePlan?.planId ?? "(none)") blocker=\(capped(digest.blocker, maxChars: 80)) next=\(capped(digest.nextStep, maxChars: 80))"
+        let canonical = """
+[FOCUSED_PROJECT_ANCHOR_PACK]
+\(canonicalBody)
+[/FOCUSED_PROJECT_ANCHOR_PACK]
+"""
+        let observation = "focused_project_anchor_pack: source=\(selection.source) project=\(project.projectId) job=\(activeJob?.jobId ?? "(none)") plan=\(activePlan?.planId ?? "(none)") blocker=\(capped(digest.blocker, maxChars: 80)) next=\(capped(digest.nextStep, maxChars: 80))"
         let workingSet = """
 focus_source=\(selection.source)
 project=\(project.displayName) (\(project.projectId))
@@ -9621,10 +14557,16 @@ goal=\(digest.goal)
 done_definition=\(doneDefinition.isEmpty ? "(none)" : capped(doneDefinition, maxChars: 160))
 constraints=\(focusedSupervisorInlineConstraintDigest(specCapsule: specCapsule, config: config, effectiveAutonomy: effectiveAutonomy))
 approved_decisions=\(focusedSupervisorInlineDecisionDigest(governance.hardDecisions))
+decision_lineage=\(decisionLineageInline)
+longterm_outline=\(longtermOutlineInline)
 background_hints=\(backgroundHint.isEmpty ? "(none)" : backgroundHint)
+blocker_lineage=\(blockerLineageInline)
+latest_ui_review=\(latestUIReviewInline)
 latest_review_note=\(latestReviewInline)
 latest_guidance_injection=\(latestGuidanceInline)
 pending_ack_guidance=\(pendingAckGuidanceInline)
+governance=\(governanceInline)
+governance_reasons=\(governanceReasonsInline)
 current_state=\(digest.currentState)
 next_step=\(digest.nextStep)
 blocker=\(digest.blocker)
@@ -9638,10 +14580,188 @@ recent_relevant_messages:
 \(recentMessages)
 """
         return SupervisorFocusedProjectExecutionBrief(
+            anchorPackBody: canonicalBody,
+            longtermOutlineBody: longtermOutlineBody,
+            decisionLineageBody: decisionLineageBody,
+            blockerLineageBody: blockerLineageBody,
             canonical: canonical,
             observation: observation,
             workingSet: workingSet
         )
+    }
+
+    private func focusedSupervisorLongtermOutlineDigest(
+        project: AXProjectEntry,
+        digest: SupervisorMemoryProjectDigest,
+        governance: SupervisorProjectDigestGovernanceContext,
+        doneDefinition: String,
+        approvedDecisions: String,
+        backgroundHint: String,
+        decisionLineage: String
+    ) -> String {
+        let stableConstraints = focusedSupervisorLongtermConstraintDigest(specCapsule: governance.specCapsule)
+        let milestones = focusedSupervisorMilestoneOutlineDigest(governance.specCapsule)
+        let sourceTags = governance.sourceTags.isEmpty
+            ? "(none)"
+            : governance.sourceTags.joined(separator: ", ")
+        return """
+project: \(project.displayName) (\(project.projectId))
+goal: \(digest.goal)
+done_definition: \(doneDefinition.isEmpty ? "(none)" : doneDefinition)
+stable_constraints:
+\(stableConstraints)
+strategic_milestones:
+\(milestones)
+durable_decisions:
+\(approvedDecisions)
+decision_lineage:
+\(decisionLineage.isEmpty ? "(none)" : decisionLineage)
+background_memory:
+\(backgroundHint.isEmpty ? "(none)" : backgroundHint)
+source_tags: \(sourceTags)
+"""
+    }
+
+    private func focusedSupervisorDecisionLineageDigest(
+        _ hardDecisions: [SupervisorDecisionCategory: SupervisorDecisionTrackEvent],
+        expanded: Bool
+    ) -> String {
+        let rows = hardDecisions.values
+            .sorted { lhs, rhs in
+                if lhs.updatedAtMs != rhs.updatedAtMs {
+                    return lhs.updatedAtMs > rhs.updatedAtMs
+                }
+                return lhs.category.rawValue < rhs.category.rawValue
+            }
+            .prefix(expanded ? 6 : 3)
+            .map { decision in
+                if expanded {
+                    let evidence = orderedUniqueSupervisorRefs(
+                        decision.evidenceRefs + [decision.auditRef]
+                    )
+                    return """
+                    - category: \(decision.category.rawValue)
+                      status: \(decision.status.rawValue)
+                      statement: \(capped(firstNonEmptyLine(in: decision.statement), maxChars: 160))
+                      source: \(capped(decision.source, maxChars: 72))
+                      reversible: \(decision.reversible)
+                      approval_required: \(decision.approvalRequired)
+                      updated_at_ms: \(decision.updatedAtMs)
+                      refs: \(evidence.isEmpty ? "(none)" : evidence.joined(separator: " | "))
+                    """
+                }
+                return "- \(decision.category.rawValue)=\(capped(firstNonEmptyLine(in: decision.statement), maxChars: 120))"
+            }
+        return rows.isEmpty ? "(none)" : rows.joined(separator: "\n")
+    }
+
+    private func focusedSupervisorBlockerLineageDigest(
+        digest: SupervisorMemoryProjectDigest,
+        latestReview: SupervisorReviewNoteRecord?,
+        latestGuidance: SupervisorGuidanceInjectionRecord?,
+        pendingAckGuidance: SupervisorGuidanceInjectionRecord?,
+        activeSkillCall: SupervisorSkillCallRecord?,
+        decisionAssist: SupervisorDecisionBlockerAssist?,
+        nextPendingStepsDigest: String,
+        attentionStepsDigest: String,
+        expanded: Bool
+    ) -> String {
+        let liveGuidance = pendingAckGuidance ?? latestGuidance
+        var lines: [String] = [
+            "current_blocker: \(digest.blocker)",
+            "runtime_state: \(digest.runtimeState)",
+            "current_state: \(capped(digest.currentState, maxChars: expanded ? 180 : 120))",
+            "next_step: \(capped(digest.nextStep, maxChars: expanded ? 180 : 120))"
+        ]
+
+        if let latestReview {
+            let reviewBlocker = latestReview.blocker.trimmingCharacters(in: .whitespacesAndNewlines)
+            lines.append(
+                "latest_review: verdict=\(latestReview.verdict.rawValue) level=\(latestReview.reviewLevel.rawValue) blocker=\(reviewBlocker.isEmpty ? "(none)" : capped(reviewBlocker, maxChars: 120))"
+            )
+            lines.append("latest_review_summary: \(capped(latestReview.summary, maxChars: 160))")
+        } else {
+            lines.append("latest_review: (none)")
+        }
+
+        if let liveGuidance {
+            lines.append(
+                "guidance_guardrail: ack_status=\(liveGuidance.ackStatus.rawValue) delivery=\(liveGuidance.deliveryMode.rawValue) text=\(capped(liveGuidance.guidanceText, maxChars: 160))"
+            )
+        } else {
+            lines.append("guidance_guardrail: (none)")
+        }
+
+        if let decisionAssist {
+            let template = decisionAssist.recommendedOption ?? decisionAssist.templateCandidates.first ?? "(none)"
+            lines.append(
+                "decision_blocker_assist: category=\(decisionAssist.blockerCategory.rawValue) mode=\(decisionAssist.governanceMode.rawValue) recommended=\(template)"
+            )
+        }
+
+        if let activeSkillCall {
+            lines.append(
+                "active_skill_gate: skill=\(activeSkillCall.skillId) status=\(activeSkillCall.status.rawValue) result=\(capped(activeSkillCall.resultSummary.isEmpty ? "(none)" : activeSkillCall.resultSummary, maxChars: 140))"
+            )
+        }
+
+        if expanded {
+            lines.append("attention_steps:\n\(attentionStepsDigest)")
+            lines.append("next_pending_after_blocker:\n\(nextPendingStepsDigest)")
+        } else {
+            lines.append("attention_steps=\(capped(attentionStepsDigest, maxChars: 140))")
+            lines.append("next_pending_after_blocker=\(capped(nextPendingStepsDigest, maxChars: 140))")
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    private func focusedSupervisorLineageInlineDigest(
+        _ body: String
+    ) -> String {
+        let lines = body
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && !$0.hasSuffix(":") }
+        guard !lines.isEmpty else { return "(none)" }
+        return capped(lines.prefix(4).joined(separator: " | "), maxChars: 260)
+    }
+
+    private func focusedSupervisorLongtermConstraintDigest(
+        specCapsule: SupervisorProjectSpecCapsule?
+    ) -> String {
+        var lines: [String] = []
+        if let specCapsule, !specCapsule.nonGoals.isEmpty {
+            lines.append("- non_goals: \(focusedSupervisorJoinedValueList(specCapsule.nonGoals, maxItems: 3, maxChars: 72))")
+        }
+        if let specCapsule, !specCapsule.approvedTechStack.isEmpty {
+            lines.append("- approved_tech_stack: \(focusedSupervisorJoinedValueList(specCapsule.approvedTechStack, maxItems: 3, maxChars: 72))")
+        }
+        if let specCapsule, !specCapsule.techStackBlacklist.isEmpty {
+            lines.append("- tech_stack_blacklist: \(focusedSupervisorJoinedValueList(specCapsule.techStackBlacklist, maxItems: 3, maxChars: 72))")
+        }
+        return lines.isEmpty ? "(none)" : lines.joined(separator: "\n")
+    }
+
+    private func focusedSupervisorMilestoneOutlineDigest(
+        _ specCapsule: SupervisorProjectSpecCapsule?
+    ) -> String {
+        guard let specCapsule, !specCapsule.milestoneMap.isEmpty else { return "(none)" }
+        return specCapsule.milestoneMap
+            .prefix(4)
+            .map { "- \($0.status.rawValue): \(capped($0.title, maxChars: 88))" }
+            .joined(separator: "\n")
+    }
+
+    private func focusedSupervisorLongtermOutlineInlineDigest(
+        _ outline: String
+    ) -> String {
+        let lines = outline
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && !$0.hasSuffix(":") }
+        guard !lines.isEmpty else { return "(none)" }
+        return capped(lines.prefix(4).joined(separator: " | "), maxChars: 220)
     }
 
     private func focusedSupervisorLatestReviewCanonical(
@@ -9653,10 +14773,18 @@ recent_relevant_messages:
             : note.recommendedActions.prefix(3).joined(separator: " | ")
         return """
 review_id: \(note.reviewId)
+memory_cursor: \(note.memoryCursor ?? supervisorReviewCursor(reviewId: note.reviewId, createdAtMs: note.createdAtMs))
+project_state_hash: \(note.projectStateHash ?? "(none)")
+portfolio_state_hash: \(note.portfolioStateHash ?? "(none)")
 trigger: \(note.trigger.rawValue)
 review_level: \(note.reviewLevel.rawValue)
 verdict: \(note.verdict.rawValue)
 delivery: \(note.targetRole.rawValue)/\(note.deliveryMode.rawValue) ack_required=\(note.ackRequired)
+effective_supervisor_tier: \(note.effectiveSupervisorTier?.rawValue ?? "(none)")
+effective_work_order_depth: \(note.effectiveWorkOrderDepth?.rawValue ?? "(none)")
+project_ai_strength_band: \(note.projectAIStrengthBand?.rawValue ?? "(none)") confidence=\(focusedSupervisorConfidenceText(note.projectAIStrengthConfidence ?? 0))
+project_ai_strength_audit_ref: \(note.projectAIStrengthAuditRef ?? "(none)")
+work_order_ref: \(note.workOrderRef ?? "(none)")
 summary: \(note.summary)
 recommended_actions: \(actions)
 """
@@ -9667,7 +14795,32 @@ recommended_actions: \(actions)
     ) -> String {
         guard let note else { return "(none)" }
         let action = note.recommendedActions.first ?? "(none)"
-        return "verdict=\(note.verdict.rawValue) level=\(note.reviewLevel.rawValue) delivery=\(note.deliveryMode.rawValue) ack_required=\(note.ackRequired) summary=\(capped(note.summary, maxChars: 120)) next_action=\(capped(action, maxChars: 80))"
+        let cursor = note.memoryCursor ?? supervisorReviewCursor(reviewId: note.reviewId, createdAtMs: note.createdAtMs)
+        return "cursor=\(cursor) verdict=\(note.verdict.rawValue) level=\(note.reviewLevel.rawValue) delivery=\(note.deliveryMode.rawValue) ack_required=\(note.ackRequired) depth=\(note.effectiveWorkOrderDepth?.rawValue ?? "(none)") work_order=\(note.workOrderRef ?? "(none)") summary=\(capped(note.summary, maxChars: 120)) next_action=\(capped(action, maxChars: 80))"
+    }
+
+    private func focusedSupervisorLatestUIReviewCanonical(
+        item: XTUIReviewLatestReference?
+    ) -> String {
+        guard let item else { return "(none)" }
+        return """
+review_ref: \(item.reviewRef)
+bundle_ref: \(item.bundleRef)
+verdict: \(item.verdict.rawValue)
+confidence: \(item.confidence.rawValue)
+sufficient_evidence: \(item.sufficientEvidence)
+objective_ready: \(item.objectiveReady)
+issue_codes: \(item.issueCodes.isEmpty ? "(none)" : item.issueCodes.joined(separator: ", "))
+summary: \(item.summary)
+"""
+    }
+
+    private func focusedSupervisorLatestUIReviewInline(
+        item: XTUIReviewLatestReference?
+    ) -> String {
+        guard let item else { return "(none)" }
+        let issues = item.issueCodes.isEmpty ? "(none)" : item.issueCodes.joined(separator: ",")
+        return "ref=\(item.reviewRef) verdict=\(item.verdict.rawValue) confidence=\(item.confidence.rawValue) sufficient_evidence=\(item.sufficientEvidence) objective_ready=\(item.objectiveReady) issues=\(issues) summary=\(capped(item.summary, maxChars: 120))"
     }
 
     private func focusedSupervisorLatestGuidanceCanonical(
@@ -9682,6 +14835,9 @@ intervention_mode: \(item.interventionMode.rawValue)
 safe_point_policy: \(item.safePointPolicy.rawValue)
 ack_status: \(item.ackStatus.rawValue)
 ack_required: \(item.ackRequired)
+effective_supervisor_tier: \(item.effectiveSupervisorTier?.rawValue ?? "(none)")
+effective_work_order_depth: \(item.effectiveWorkOrderDepth?.rawValue ?? "(none)")
+work_order_ref: \(item.workOrderRef ?? "(none)")
 ack_note: \(item.ackNote.isEmpty ? "(none)" : item.ackNote)
 guidance_text: \(item.guidanceText)
 """
@@ -9692,7 +14848,7 @@ guidance_text: \(item.guidanceText)
     ) -> String {
         guard let item else { return "(none)" }
         let ackNote = item.ackNote.isEmpty ? "(none)" : capped(item.ackNote, maxChars: 80)
-        return "ack_status=\(item.ackStatus.rawValue) ack_required=\(item.ackRequired) ack_note=\(ackNote) delivery=\(item.deliveryMode.rawValue) intervention=\(item.interventionMode.rawValue) safe_point=\(item.safePointPolicy.rawValue)"
+        return "ack_status=\(item.ackStatus.rawValue) ack_required=\(item.ackRequired) ack_note=\(ackNote) delivery=\(item.deliveryMode.rawValue) intervention=\(item.interventionMode.rawValue) safe_point=\(item.safePointPolicy.rawValue) depth=\(item.effectiveWorkOrderDepth?.rawValue ?? "(none)") work_order=\(item.workOrderRef ?? "(none)")"
     }
 
     private func supervisorGuidanceInjection(
@@ -9701,6 +14857,7 @@ guidance_text: \(item.guidanceText)
         injectedAtMs: Int64
     ) -> SupervisorGuidanceInjectionRecord {
         let guidanceText = supervisorGuidanceText(for: note)
+        let lifecycle = supervisorGuidanceLifecycle(policy: policy, injectedAtMs: injectedAtMs)
         return SupervisorGuidanceInjectionBuilder.build(
             injectionId: "guidance-\(note.reviewId)",
             reviewId: note.reviewId,
@@ -9712,10 +14869,45 @@ guidance_text: \(item.guidanceText)
             guidanceText: guidanceText,
             ackStatus: .pending,
             ackRequired: policy.ackRequired,
+            effectiveSupervisorTier: note.effectiveSupervisorTier,
+            effectiveWorkOrderDepth: note.effectiveWorkOrderDepth,
+            workOrderRef: note.workOrderRef,
             ackNote: "",
             injectedAtMs: injectedAtMs,
             ackUpdatedAtMs: 0,
+            expiresAtMs: lifecycle.expiresAtMs,
+            retryAtMs: 0,
+            retryCount: 0,
+            maxRetryCount: lifecycle.maxRetryCount,
             auditRef: "audit-guidance-\(note.reviewId)"
+        )
+    }
+
+    private func supervisorGuidanceLifecycle(
+        policy: SupervisorReviewPolicyDecision,
+        injectedAtMs: Int64
+    ) -> (expiresAtMs: Int64, maxRetryCount: Int) {
+        let ttlMinutes: Int64
+        let maxRetryCount: Int
+
+        switch policy.interventionMode {
+        case .stopImmediately:
+            ttlMinutes = 15
+            maxRetryCount = 1
+        case .replanNextSafePoint:
+            ttlMinutes = policy.reviewLevel == .r3Rescue ? 60 : 120
+            maxRetryCount = policy.reviewLevel == .r3Rescue ? 1 : 2
+        case .suggestNextSafePoint:
+            ttlMinutes = policy.reviewLevel == .r1Pulse ? 45 : 90
+            maxRetryCount = 2
+        case .observeOnly:
+            ttlMinutes = 30
+            maxRetryCount = 0
+        }
+
+        return (
+            expiresAtMs: injectedAtMs + ttlMinutes * 60 * 1000,
+            maxRetryCount: maxRetryCount
         )
     }
 
@@ -9724,12 +14916,30 @@ guidance_text: \(item.guidanceText)
     ) -> String {
         var lines: [String] = [
             "verdict=\(note.verdict.rawValue)",
-            "summary=\(note.summary)"
+            "summary=\(note.summary)",
+            "effective_supervisor_tier=\(note.effectiveSupervisorTier?.rawValue ?? "(none)")",
+            "effective_work_order_depth=\(note.effectiveWorkOrderDepth?.rawValue ?? "(none)")",
+            "work_order_ref=\(note.workOrderRef ?? "(none)")"
         ]
         if !note.recommendedActions.isEmpty {
             lines.append("actions=\(note.recommendedActions.joined(separator: " | "))")
         }
         return lines.joined(separator: "\n")
+    }
+
+    private func supervisorReviewWorkOrderRef(
+        job: SupervisorJobRecord?,
+        plan: SupervisorPlanRecord?
+    ) -> String? {
+        if let planId = plan?.planId.trimmingCharacters(in: .whitespacesAndNewlines),
+           !planId.isEmpty {
+            return "plan:\(planId)"
+        }
+        if let jobId = job?.jobId.trimmingCharacters(in: .whitespacesAndNewlines),
+           !jobId.isEmpty {
+            return "job:\(jobId)"
+        }
+        return nil
     }
 
     private func focusedSupervisorReviewConstraintDigest(
@@ -9750,7 +14960,7 @@ guidance_text: \(item.guidanceText)
             }
         }
         lines.append(
-            "- autonomy_guard: configured=\(config.autonomyMode.rawValue), effective=\(effectiveAutonomy.effectiveMode.rawValue), override=\(effectiveAutonomy.hubOverrideMode.rawValue), kill_switch=\(effectiveAutonomy.killSwitchEngaged ? "yes" : "no")"
+            "- runtime_surface_guard: configured=\(config.autonomyMode.rawValue), effective=\(effectiveAutonomy.effectiveMode.rawValue), override=\(effectiveAutonomy.hubOverrideMode.rawValue), kill_switch=\(effectiveAutonomy.killSwitchEngaged ? "yes" : "no")"
         )
         return lines.isEmpty ? "(none)" : lines.joined(separator: "\n")
     }
@@ -9770,7 +14980,7 @@ guidance_text: \(item.guidanceText)
         if let specCapsule, !specCapsule.approvedTechStack.isEmpty {
             items.append("stack=\(focusedSupervisorJoinedValueList(specCapsule.approvedTechStack, maxItems: 2, maxChars: 48))")
         }
-        items.append("autonomy=\(config.autonomyMode.rawValue)->\(effectiveAutonomy.effectiveMode.rawValue)")
+        items.append("surface=\(config.autonomyMode.rawValue)->\(effectiveAutonomy.effectiveMode.rawValue)")
         items.append("override=\(effectiveAutonomy.hubOverrideMode.rawValue)")
         return items.joined(separator: " | ")
     }
@@ -9820,6 +15030,73 @@ guidance_text: \(item.guidanceText)
             .prefix(maxItems)
             .map { capped($0, maxChars: maxChars) }
         return normalized.isEmpty ? "(none)" : normalized.joined(separator: " | ")
+    }
+
+    private func focusedSupervisorRuntimeGovernanceDigest(
+        governance: SupervisorProjectDigestGovernanceContext,
+        config: AXProjectConfig,
+        effectiveAutonomy: AXProjectAutonomyEffectivePolicy
+    ) -> String {
+        guard let resolved = governance.resolvedGovernance else {
+            return """
+runtime_surface: configured=\(config.autonomyMode.rawValue) effective=\(effectiveAutonomy.effectiveMode.rawValue) override=\(effectiveAutonomy.hubOverrideMode.rawValue) ttl_remaining_sec=\(effectiveAutonomy.remainingSeconds)
+"""
+        }
+
+        let adaptation = resolved.supervisorAdaptation
+        let strength = adaptation.projectAIStrengthProfile
+        let strengthAuditRef = strength?.auditRef.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        return """
+runtime_surface: configured=\(config.autonomyMode.rawValue) effective=\(resolved.effectiveAutonomy.effectiveMode.rawValue) override=\(resolved.effectiveAutonomy.hubOverrideMode.rawValue) ttl_remaining_sec=\(resolved.effectiveAutonomy.remainingSeconds)
+execution_tier: configured=\(resolved.configuredBundle.executionTier.rawValue) effective=\(resolved.effectiveBundle.executionTier.rawValue)
+supervisor_tier: configured=\(adaptation.configuredSupervisorTier.rawValue) baseline_recommended=\(adaptation.baselineRecommendedSupervisorTier.rawValue) recommended=\(adaptation.recommendedSupervisorTier.rawValue) effective=\(adaptation.effectiveSupervisorTier.rawValue)
+work_order_depth: recommended=\(adaptation.recommendedWorkOrderDepth.rawValue) effective=\(adaptation.effectiveWorkOrderDepth.rawValue) adaptation_mode=\(adaptation.adaptationPolicy.adaptationMode.rawValue)
+project_ai_strength: band=\(strength?.strengthBand.rawValue ?? AXProjectAIStrengthBand.unknown.rawValue) confidence=\(focusedSupervisorConfidenceText(strength?.confidence ?? 0)) audit_ref=\(strengthAuditRef.isEmpty ? "(none)" : strengthAuditRef)
+project_ai_strength_reasons: \(focusedSupervisorJoinedValueList(strength?.reasons ?? [], maxItems: 4, maxChars: 72))
+supervisor_escalation_reasons: \(focusedSupervisorJoinedValueList(adaptation.escalationReasons, maxItems: 3, maxChars: 72))
+governance_warnings: \(focusedSupervisorJoinedValueList(resolved.validation.warningReasons, maxItems: 3, maxChars: 64))
+governance_invalid: \(focusedSupervisorJoinedValueList(resolved.validation.invalidReasons, maxItems: 3, maxChars: 64))
+allowed_capabilities: \(focusedSupervisorJoinedValueList(resolved.capabilityBundle.allowedCapabilityLabels, maxItems: 6, maxChars: 40))
+"""
+    }
+
+    private func focusedSupervisorRuntimeGovernanceInlineDigest(
+        governance: SupervisorProjectDigestGovernanceContext,
+        config: AXProjectConfig,
+        effectiveAutonomy: AXProjectAutonomyEffectivePolicy
+    ) -> String {
+        guard let resolved = governance.resolvedGovernance else {
+            return capped(
+                "surface=\(config.autonomyMode.rawValue)->\(effectiveAutonomy.effectiveMode.rawValue)",
+                maxChars: 160
+            )
+        }
+
+        let adaptation = resolved.supervisorAdaptation
+        let strength = adaptation.projectAIStrengthProfile
+        return capped(
+            "exec=\(resolved.effectiveBundle.executionTier.rawValue) supervisor=\(adaptation.configuredSupervisorTier.rawValue)->\(adaptation.effectiveSupervisorTier.rawValue) depth=\(adaptation.effectiveWorkOrderDepth.rawValue) strength=\(strength?.strengthBand.rawValue ?? AXProjectAIStrengthBand.unknown.rawValue)(\(focusedSupervisorConfidenceText(strength?.confidence ?? 0))) mode=\(adaptation.adaptationPolicy.adaptationMode.rawValue)",
+            maxChars: 220
+        )
+    }
+
+    private func focusedSupervisorRuntimeGovernanceReasonsInlineDigest(
+        _ governance: SupervisorProjectDigestGovernanceContext
+    ) -> String {
+        guard let resolved = governance.resolvedGovernance else {
+            return "(none)"
+        }
+        let adaptation = resolved.supervisorAdaptation
+        return focusedSupervisorJoinedValueList(
+            adaptation.escalationReasons + (adaptation.projectAIStrengthProfile?.reasons ?? []),
+            maxItems: 4,
+            maxChars: 56
+        )
+    }
+
+    private func focusedSupervisorConfidenceText(_ value: Double) -> String {
+        String(format: "%.2f", min(1, max(0, value)))
     }
 
     private func focusedSupervisorRecentMessagesDigest(
@@ -10165,7 +15442,7 @@ attention_steps:
             ? registry.normalized(for: knownProjects())
             : registry
         supervisorJurisdictionRegistry = normalized
-        if persist {
+        if persist && persistSupervisorRuntimeState {
             SupervisorJurisdictionRegistryStore.save(normalized)
         }
         supervisorRecentProjectActionEvents = normalized.filteredEvents(supervisorRecentProjectActionEvents)
@@ -10181,7 +15458,9 @@ attention_steps:
         let normalized = supervisorJurisdictionRegistry.normalized(for: projects)
         guard normalized != supervisorJurisdictionRegistry else { return supervisorJurisdictionRegistry }
         supervisorJurisdictionRegistry = normalized
-        SupervisorJurisdictionRegistryStore.save(normalized)
+        if persistSupervisorRuntimeState {
+            SupervisorJurisdictionRegistryStore.save(normalized)
+        }
         supervisorRecentProjectActionEvents = normalized.filteredEvents(supervisorRecentProjectActionEvents)
         supervisorMemoryProjectDigests = normalized.filteredDigests(supervisorMemoryProjectDigests)
         supervisorPortfolioSnapshot = SupervisorPortfolioSnapshotBuilder.build(from: supervisorMemoryProjectDigests)
@@ -10189,7 +15468,11 @@ attention_steps:
     }
 
     private func knownProjects() -> [AXProjectEntry] {
-        let registry = appModel?.registry ?? AXProjectRegistryStore.load()
+        let registry = appModel?.registry ?? (
+            allowPersistentProjectRegistryFallback
+                ? AXProjectRegistryStore.load()
+                : .empty()
+        )
         let projects = AXProjectRegistryStore.sanitizeLoadedRegistry(registry).registry.projects
         return projects.sorted { a, b in
             if a.pinned != b.pinned { return a.pinned && !b.pinned }
@@ -10276,7 +15559,7 @@ attention_steps:
     ) {
         switch channel {
         case .interruptNow, .briefCard:
-            let actionURL = supervisorActionURL(projectId: event.projectId)
+            let actionURL = resumeProjectActionURL(projectId: event.projectId)
             let body = """
 summary=\(event.actionSummary)
 next=\(event.nextAction)
@@ -10479,6 +15762,7 @@ why=\(event.whyItMatters)
     }
 
     private func saveActionLedgerToDisk() {
+        guard persistSupervisorRuntimeState else { return }
         let url = actionLedgerURL()
         let dir = url.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -10776,12 +16060,15 @@ why=\(event.whyItMatters)
             blockerCount: blockerCount,
             blockerFingerprint: blockerFingerprint
         )
-        let focusProjectId = progressActions.first?.projectId
-            ?? blockerProjects.first?.projectId
-            ?? permissionSignals.first?.projectId
-            ?? queueSignals.first?.project.projectId
-        let focusActionURL = permissionSignals.first?.actionURL
-            ?? supervisorActionURL(projectId: focusProjectId)
+        let focusActionURL = self.heartbeatFocusActionURL(
+            projects: projects,
+            progressActions: progressActions,
+            blockerProjects: blockerProjects,
+            permissionSignals: permissionSignals,
+            queueSignals: queueSignals
+        )
+        let strategicStatusBlock = supervisorMemoryReadinessBriefTextLine()
+            .map { "战略纠偏状态：\($0)\n" } ?? ""
 
         let content = """
 🫀 Supervisor Heartbeat (\(time))
@@ -10790,7 +16077,7 @@ why=\(event.whyItMatters)
 \(changed ? "变化：检测到项目状态更新" : "变化：无重大状态变化")
 \(queueSignals.isEmpty ? "排队项目：0" : "排队项目：\(queueSignals.count)")
 \(permissionSignals.isEmpty ? "待授权项目：0" : "待授权项目：\(permissionSignals.count)")
-lane 状态：total=\(laneHealthSummary.total), running=\(laneHealthSummary.running), blocked=\(laneHealthSummary.blocked), stalled=\(laneHealthSummary.stalled), failed=\(laneHealthSummary.failed)
+\(strategicStatusBlock)lane 状态：total=\(laneHealthSummary.total), running=\(laneHealthSummary.running), blocked=\(laneHealthSummary.blocked), stalled=\(laneHealthSummary.stalled), failed=\(laneHealthSummary.failed)
 
 主动推进：
 \(progressSummary.isEmpty ? "（本轮无需介入）" : progressSummary)
@@ -10857,17 +16144,29 @@ Coder 下一步建议：
         let candidates = projects.compactMap { project -> (project: AXProjectEntry, candidate: SupervisorHeartbeatReviewCandidate)? in
             let ctx = supervisorMemoryContext(for: project)
             let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: ctx.root)
-            let effectiveAutonomy = config.effectiveAutonomyPolicy()
-            let governance = xtResolveProjectGovernance(
+            let governance = resolvedSupervisorProjectGovernanceState(
+                projectId: project.projectId,
+                ctx: ctx
+            ) ?? xtResolveProjectGovernance(
                 projectRoot: ctx.root,
                 config: config,
-                effectiveAutonomy: effectiveAutonomy
+                effectiveAutonomy: config.effectiveAutonomyPolicy()
             )
             guard governance.effectiveBundle.supervisorInterventionTier != .s0SilentAudit else {
-                _ = try? SupervisorReviewScheduleStore.touchHeartbeat(for: ctx, config: config, nowMs: nowMs)
+                _ = try? SupervisorReviewScheduleStore.touchHeartbeat(
+                    for: ctx,
+                    config: config,
+                    observedProgressAtMs: projectObservedProgressAtMs(project),
+                    nowMs: nowMs
+                )
                 return nil
             }
-            let schedule = (try? SupervisorReviewScheduleStore.touchHeartbeat(for: ctx, config: config, nowMs: nowMs))
+            let schedule = (try? SupervisorReviewScheduleStore.touchHeartbeat(
+                for: ctx,
+                config: config,
+                observedProgressAtMs: projectObservedProgressAtMs(project),
+                nowMs: nowMs
+            ))
                 ?? SupervisorReviewScheduleStore.load(for: ctx)
             guard let candidate = SupervisorReviewPolicyEngine.heartbeatCandidate(
                 governance: governance,
@@ -10919,6 +16218,13 @@ Coder 下一步建议：
             return lhs.candidate.reviewLevel < rhs.candidate.reviewLevel
         }
         return lhs.project.projectId < rhs.project.projectId
+    }
+
+    private func projectObservedProgressAtMs(_ project: AXProjectEntry) -> Int64? {
+        let summaryMs = Int64(((project.lastSummaryAt ?? 0) * 1000.0).rounded())
+        let eventMs = Int64(((project.lastEventAt ?? 0) * 1000.0).rounded())
+        let observed = max(summaryMs, eventMs)
+        return observed > 0 ? observed : nil
     }
 
     private struct BlockerSignal {
@@ -11056,6 +16362,12 @@ Coder 下一步建议：
         var oldestQueuedMs: Int
     }
 
+    private struct PendingGrantIngressContext {
+        var provider: String
+        var ingress: String
+        var receiptId: String
+    }
+
     private enum PermissionSignalKind: String {
         case toolApproval = "tool_approval"
         case hubGrant = "hub_grant"
@@ -11116,6 +16428,21 @@ Coder 下一步建议：
     }
 
     struct SupervisorRecentSkillActivity: Identifiable, Equatable {
+        struct GovernanceSummary: Equatable {
+            var latestReviewId: String = ""
+            var latestReviewVerdict: SupervisorReviewVerdict? = nil
+            var latestReviewLevel: SupervisorReviewLevel? = nil
+            var effectiveSupervisorTier: AXProjectSupervisorInterventionTier? = nil
+            var effectiveWorkOrderDepth: AXProjectSupervisorWorkOrderDepth? = nil
+            var followUpRhythmSummary: String = ""
+            var workOrderRef: String = ""
+            var latestGuidanceId: String = ""
+            var latestGuidanceDeliveryMode: SupervisorGuidanceDeliveryMode? = nil
+            var pendingGuidanceId: String = ""
+            var pendingGuidanceAckStatus: SupervisorGuidanceAckStatus? = nil
+            var pendingGuidanceRequired: Bool = false
+        }
+
         var projectId: String
         var projectName: String
         var record: SupervisorSkillCallRecord
@@ -11123,6 +16450,7 @@ Coder 下一步建议：
         var toolCall: ToolCall?
         var toolSummary: String
         var actionURL: String?
+        var governance: GovernanceSummary? = nil
 
         var id: String { "skill:\(projectId):\(record.requestId)" }
         var requestId: String { record.requestId }
@@ -11164,6 +16492,9 @@ Coder 下一步建议：
         var ledgerIncidentCount: Int
         var requiredIncidentEventCount: Int
         var missingIncidentCodes: [String]
+        var memoryAssemblyReady: Bool
+        var memoryAssemblyIssues: [String]
+        var memoryAssemblyStatusLine: String
         var strictE2EReady: Bool
         var strictE2EIssues: [String]
         var status: String
@@ -11199,6 +16530,11 @@ Coder 下一步建议：
         var highRiskBypassCount: Int
         var blockedEventMissRate: Double
         var nonMessageIngressPolicyCoverage: Int
+        var memoryAssemblyReady: Bool
+        var memoryAssemblyIssueCount: Int
+        var memoryAssemblyRequestedProfile: String
+        var memoryAssemblyResolvedProfile: String
+        var memoryAssemblyTruncatedLayerCount: Int
 
         enum CodingKeys: String, CodingKey {
             case highRiskLaneWithoutGrant = "high_risk_lane_without_grant"
@@ -11206,6 +16542,11 @@ Coder 下一步建议：
             case highRiskBypassCount = "high_risk_bypass_count"
             case blockedEventMissRate = "blocked_event_miss_rate"
             case nonMessageIngressPolicyCoverage = "non_message_ingress_policy_coverage"
+            case memoryAssemblyReady = "memory_assembly_ready"
+            case memoryAssemblyIssueCount = "memory_assembly_issue_count"
+            case memoryAssemblyRequestedProfile = "memory_assembly_requested_profile"
+            case memoryAssemblyResolvedProfile = "memory_assembly_resolved_profile"
+            case memoryAssemblyTruncatedLayerCount = "memory_assembly_truncated_layer_count"
         }
     }
 
@@ -11298,6 +16639,7 @@ Coder 下一步建议：
                 let preview = (pending.preview ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 let reason = (pending.reason ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 let detail = !preview.isEmpty ? preview : (!reason.isEmpty ? reason : "待确认工具操作")
+                let requestId = pending.toolCalls?.first?.id.trimmingCharacters(in: .whitespacesAndNewlines)
                 out.append(
                     ProjectPermissionSignal(
                         projectId: project.projectId,
@@ -11307,7 +16649,10 @@ Coder 下一步建议：
                         createdAt: pending.createdAt,
                         grantRequestId: nil,
                         capability: nil,
-                        actionURL: supervisorActionURL(projectId: project.projectId)
+                        actionURL: toolApprovalActionURL(
+                            projectId: project.projectId,
+                            requestId: requestId
+                        )
                     )
                 )
             }
@@ -11335,6 +16680,7 @@ Coder 下一步建议：
     }
 
     private func rebuildPendingHubGrantViewState(now: TimeInterval) {
+        let previousGrants = pendingHubGrants
         let projects = allProjects()
         hasFreshPendingHubGrantSnapshot = hasFreshPendingGrantSnapshot(now: now)
         pendingHubGrants = normalizedPendingHubGrants(
@@ -11354,10 +16700,202 @@ Coder 下一步建议：
         }
 
         if pendingHubGrantActionsInFlight.isEmpty {
+            updatePendingHubGrantVoiceAnnouncementState(
+                previousGrants: previousGrants,
+                now: now
+            )
             return
         }
         let activeGrantIds = Set(pendingHubGrants.map(\.grantRequestId))
         pendingHubGrantActionsInFlight = Set(pendingHubGrantActionsInFlight.filter { activeGrantIds.contains($0) })
+        updatePendingHubGrantVoiceAnnouncementState(
+            previousGrants: previousGrants,
+            now: now
+        )
+    }
+
+    private func updatePendingHubGrantVoiceAnnouncementState(
+        previousGrants: [SupervisorPendingGrant],
+        now: TimeInterval
+    ) {
+        let currentTokens = Set(pendingHubGrants.map(pendingGrantStableToken))
+        pendingHubGrantAnnouncementBacklog = pendingHubGrantAnnouncementBacklog.filter { currentTokens.contains($0.key) }
+        if !currentTokens.contains(lastPendingHubGrantVoiceContextToken) {
+            lastPendingHubGrantVoiceContextToken = ""
+            lastPendingHubGrantVoiceContextAt = 0
+        }
+
+        guard hasFreshPendingHubGrantSnapshot else { return }
+
+        let previousTokens = Set(previousGrants.map(pendingGrantStableToken))
+        if !hasObservedPendingHubGrantSnapshot {
+            hasObservedPendingHubGrantSnapshot = true
+            return
+        }
+
+        for grant in pendingHubGrants {
+            let token = pendingGrantStableToken(grant)
+            guard !previousTokens.contains(token) else { continue }
+            pendingHubGrantAnnouncementBacklog[token] = grant
+        }
+
+        flushPendingHubGrantVoiceAnnouncementBacklogIfNeeded(now: now)
+    }
+
+    private func flushPendingHubGrantVoiceAnnouncementBacklogIfNeeded(
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) {
+        guard !pendingHubGrantAnnouncementBacklog.isEmpty else { return }
+        guard conversationSessionController.snapshot.wakeMode != .pushToTalk else { return }
+        guard voiceRouteDecision.route.supportsLiveCapture else { return }
+        guard !isProcessing else { return }
+        guard !voiceSessionCoordinator.isRecording else { return }
+        guard activeVoiceChallenge == nil else { return }
+        guard activeVoicePendingGrantAction == nil else { return }
+        guard !voiceAuthorizationInFlight else { return }
+
+        guard let grant = pendingHubGrants.first(where: {
+            pendingHubGrantAnnouncementBacklog[pendingGrantStableToken($0)] != nil
+        }) else {
+            return
+        }
+
+        let token = pendingGrantStableToken(grant)
+        pendingHubGrantAnnouncementBacklog.removeValue(forKey: token)
+
+        let announcement = buildPendingHubGrantVoiceAnnouncement(
+            grant: grant,
+            pendingCount: pendingHubGrants.count,
+            now: now
+        )
+        let spokenOutcome = supervisorSpeechSynthesizer.speak(
+            job: announcement.job,
+            preferences: currentVoicePreferences(),
+            now: Date(timeIntervalSince1970: now)
+        )
+        guard spokenOutcome == .spoken else {
+            appendRecentEvent("pending hub grant voice alert suppressed: \(token)")
+            return
+        }
+
+        rememberPendingHubGrantVoiceContext(grant, now: now)
+        appendSupervisorAssistantMessage(announcement.text)
+        conversationSessionController.registerAssistantTurn(spoken: true)
+        conversationWindowBridge.requestOpen(reason: "pending_hub_grant:\(grant.projectId)")
+        appendRecentEvent("pending hub grant voice alert delivered: \(token)")
+        scheduleTalkLoopResumeIfNeeded(
+            triggeredByVoice: false,
+            allowProactiveResume: true,
+            spokenOutcome: spokenOutcome,
+            replyText: announcement.text,
+            source: "pending_grant_arrival"
+        )
+    }
+
+    private func buildPendingHubGrantVoiceAnnouncement(
+        grant: SupervisorPendingGrant,
+        pendingCount: Int,
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) -> (text: String, job: SupervisorVoiceTTSJob) {
+        let capabilityText = grantCapabilityText(
+            capability: grant.capability,
+            modelId: grant.modelId
+        )
+        let scopeText = pendingGrantScopeText(grant)
+        let reasonText = pendingGrantReasonText(grant)
+        let token = pendingGrantStableToken(grant)
+        let ingressContext = pendingGrantIngressContext(for: grant, now: now)
+
+        var lines: [String] = []
+        if pendingCount > 1 {
+            lines.append("🛂 当前共有 \(pendingCount) 笔待处理的 Hub grant，我先报最紧急的一笔。")
+        } else {
+            lines.append("🛂 检测到新的 Hub grant。")
+        }
+        lines.append("《\(grant.projectName)》现在需要处理一笔 \(capabilityText) 授权。")
+        if let ingressContext {
+            lines.append("来源：\(ingressContext.provider) / \(ingressContext.ingress)")
+        }
+        if let scopeText {
+            lines.append(scopeText)
+        }
+        if let reasonText {
+            lines.append("原因：\(capped(reasonText, maxChars: 96))")
+        }
+        lines.append("直接说“批准这个 grant”或“拒绝这个 grant”即可。")
+        lines.append("grant=\(token)")
+
+        let text = lines.joined(separator: "\n")
+        let script = heartbeatScriptPrefixedWithMemoryReadiness(
+            SupervisorVoiceScriptBuilder.pendingGrantAnnouncementScript(
+                pendingCount: pendingCount,
+                projectName: grant.projectName,
+                capabilitySummary: capabilityText,
+                scopeSummary: scopeText,
+                reasonSummary: reasonText.map { capped($0, maxChars: 56) },
+                sourceSummary: ingressContext.map { "\($0.provider) 的\($0.ingress)" }
+            )
+        )
+        let job = SupervisorVoiceTTSJob(
+            trigger: .authorization,
+            priority: .normal,
+            script: script,
+            dedupeKey: "pending_grant_arrival:\(token)"
+        )
+        return (text: text, job: job)
+    }
+
+    private func rememberPendingHubGrantVoiceContext(
+        _ grant: SupervisorPendingGrant,
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) {
+        lastPendingHubGrantVoiceContextToken = pendingGrantStableToken(grant)
+        lastPendingHubGrantVoiceContextAt = now
+    }
+
+    private func latestConnectorIngressReceipt(
+        for grant: SupervisorPendingGrant,
+        now: TimeInterval
+    ) -> HubIPCClient.ConnectorIngressReceipt? {
+        guard let snapshot = connectorIngressSnapshot else { return nil }
+        let snapshotUpdatedAtSec = snapshot.updatedAtMs > 0
+            ? snapshot.updatedAtMs / 1000.0
+            : connectorIngressLastSuccessAt
+        guard snapshotUpdatedAtSec > 0, now - snapshotUpdatedAtSec <= schedulerSnapshotStaleSec else {
+            return nil
+        }
+
+        let projectId = grant.projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !projectId.isEmpty else { return nil }
+
+        return snapshot.items.filter { receipt in
+            receipt.projectId.trimmingCharacters(in: .whitespacesAndNewlines) == projectId
+                && now - (max(0, receipt.receivedAtMs) / 1000.0) <= 180
+        }
+        .sorted { lhs, rhs in
+            if lhs.receivedAtMs != rhs.receivedAtMs {
+                return lhs.receivedAtMs > rhs.receivedAtMs
+            }
+            return lhs.eventSequence > rhs.eventSequence
+        }
+        .first
+    }
+
+    private func pendingGrantIngressContext(
+        for grant: SupervisorPendingGrant,
+        now: TimeInterval
+    ) -> PendingGrantIngressContext? {
+        guard let receipt = latestConnectorIngressReceipt(for: grant, now: now) else {
+            return nil
+        }
+        return PendingGrantIngressContext(
+            provider: remoteChannelProviderDisplayName(receipt.connector),
+            ingress: hubConnectorIngressDisplayName(
+                receipt,
+                triggerType: hubConnectorIngressTriggerType(for: receipt)
+            ),
+            receiptId: receipt.receiptId
+        )
     }
 
     private func rebuildPendingSupervisorSkillApprovalViewState() {
@@ -11399,7 +16937,10 @@ Coder 下一步建议：
                         toolSummary: pendingSupervisorSkillToolSummary(record: record, toolCall: toolCall),
                         reason: pendingSupervisorSkillApprovalReason(record: record),
                         createdAt: record.createdAtMs > 0 ? Double(record.createdAtMs) / 1000.0 : nil,
-                        actionURL: supervisorActionURL(projectId: project.projectId)
+                        actionURL: supervisorActionURL(
+                            projectId: project.projectId,
+                            requestId: record.requestId
+                        )
                     )
                 )
             }
@@ -11429,6 +16970,19 @@ Coder 下一步建议：
         for project in projects {
             guard let ctx = appModel.projectContext(for: project.projectId) else { continue }
             let snapshot = SupervisorProjectSkillCallStore.load(for: ctx)
+            let latestReview = SupervisorReviewNoteStore.latest(for: ctx)
+            let latestGuidance = SupervisorGuidanceInjectionStore.latest(for: ctx)
+            let pendingAckGuidance = SupervisorGuidanceInjectionStore.latestPendingAck(for: ctx)
+            let resolvedGovernance = resolvedSupervisorProjectGovernanceState(
+                projectId: project.projectId,
+                ctx: ctx
+            )
+            let governanceSummary = normalizedSupervisorSkillActivityGovernanceSummary(
+                latestReview: latestReview,
+                latestGuidance: latestGuidance,
+                pendingAckGuidance: pendingAckGuidance,
+                resolvedGovernance: resolvedGovernance
+            )
             for record in snapshot.calls {
                 let toolCall = resolvedSupervisorToolCallForRecord(record)
                 activities.append(
@@ -11439,7 +16993,11 @@ Coder 下一步建议：
                         tool: toolCall?.tool,
                         toolCall: toolCall,
                         toolSummary: pendingSupervisorSkillToolSummary(record: record, toolCall: toolCall),
-                        actionURL: supervisorActionURL(projectId: project.projectId)
+                        actionURL: supervisorSkillActivityActionURL(
+                            projectId: project.projectId,
+                            record: record
+                        ),
+                        governance: governanceSummary
                     )
                 )
             }
@@ -11464,6 +17022,54 @@ Coder 下一步建议：
         }
         .prefix(limit)
         .map { $0 }
+    }
+
+    private func normalizedSupervisorSkillActivityGovernanceSummary(
+        latestReview: SupervisorReviewNoteRecord?,
+        latestGuidance: SupervisorGuidanceInjectionRecord?,
+        pendingAckGuidance: SupervisorGuidanceInjectionRecord?,
+        resolvedGovernance: AXProjectResolvedGovernanceState?
+    ) -> SupervisorRecentSkillActivity.GovernanceSummary? {
+        let workOrderRef = normalizedSupervisorGovernanceScalar(
+            latestReview?.workOrderRef
+                ?? pendingAckGuidance?.workOrderRef
+                ?? latestGuidance?.workOrderRef
+        )
+        let followUpRhythmSummary = resolvedGovernance.map {
+            SupervisorReviewPolicyEngine.eventFollowUpCadenceLabel(governance: $0)
+        } ?? ""
+        let latestReviewId = normalizedSupervisorGovernanceScalar(latestReview?.reviewId)
+        let latestGuidanceId = normalizedSupervisorGovernanceScalar(latestGuidance?.injectionId)
+        let pendingGuidanceId = normalizedSupervisorGovernanceScalar(pendingAckGuidance?.injectionId)
+        let hasAnyContext = latestReview != nil
+            || latestGuidance != nil
+            || pendingAckGuidance != nil
+            || !followUpRhythmSummary.isEmpty
+            || !workOrderRef.isEmpty
+        guard hasAnyContext else { return nil }
+
+        return SupervisorRecentSkillActivity.GovernanceSummary(
+            latestReviewId: latestReviewId,
+            latestReviewVerdict: latestReview?.verdict,
+            latestReviewLevel: latestReview?.reviewLevel,
+            effectiveSupervisorTier: latestReview?.effectiveSupervisorTier
+                ?? pendingAckGuidance?.effectiveSupervisorTier
+                ?? latestGuidance?.effectiveSupervisorTier,
+            effectiveWorkOrderDepth: latestReview?.effectiveWorkOrderDepth
+                ?? pendingAckGuidance?.effectiveWorkOrderDepth
+                ?? latestGuidance?.effectiveWorkOrderDepth,
+            followUpRhythmSummary: followUpRhythmSummary,
+            workOrderRef: workOrderRef,
+            latestGuidanceId: latestGuidanceId,
+            latestGuidanceDeliveryMode: latestGuidance?.deliveryMode,
+            pendingGuidanceId: pendingGuidanceId,
+            pendingGuidanceAckStatus: pendingAckGuidance?.ackStatus,
+            pendingGuidanceRequired: pendingAckGuidance?.ackRequired ?? false
+        )
+    }
+
+    private func normalizedSupervisorGovernanceScalar(_ value: String?) -> String {
+        (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func supervisorPendingSkillApprovalSignals(
@@ -11766,11 +17372,16 @@ Coder 下一步建议：
         for grant in pendingHubGrants {
             guard let project = projectsById[grant.projectId] else { continue }
 
-            let capabilityText = grantCapabilityText(capability: grant.capability, modelId: grant.modelId)
-            var summary = "等待 Hub 授权：\(capabilityText)"
-            let reason = grant.reason.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !reason.isEmpty {
-                summary += "（\(capped(reason, maxChars: 48))）"
+            var summary = XTHubGrantPresentation.awaitingSummary(
+                capability: grant.capability,
+                modelId: grant.modelId
+            )
+            if let reason = XTHubGrantPresentation.supplementaryReason(
+                grant.reason,
+                capability: grant.capability,
+                modelId: grant.modelId
+            ) {
+                summary += " 原因：\(capped(reason, maxChars: 48))"
             }
 
             out.append(
@@ -11791,21 +17402,73 @@ Coder 下一步建议：
     }
 
     private func grantCapabilityText(capability: String, modelId: String) -> String {
-        let cap = capability.trimmingCharacters(in: .whitespacesAndNewlines)
-        let lowered = cap.lowercased()
-        if lowered.contains("web_fetch") || lowered.contains("web.fetch") {
-            return "联网访问（web_fetch）"
+        XTHubGrantPresentation.capabilityLabel(
+            capability: capability,
+            modelId: modelId
+        )
+    }
+
+    private func pendingGrantScopeText(_ grant: SupervisorPendingGrant) -> String? {
+        XTHubGrantPresentation.scopeSummary(
+            requestedTtlSec: grant.requestedTtlSec,
+            requestedTokenCap: grant.requestedTokenCap
+        )
+    }
+
+    private func pendingGrantReasonText(_ grant: SupervisorPendingGrant) -> String? {
+        XTHubGrantPresentation.supplementaryReason(
+            grant.reason,
+            capability: grant.capability,
+            modelId: grant.modelId
+        )
+    }
+
+    private func pendingGrantStableToken(_ grant: SupervisorPendingGrant) -> String {
+        let grantId = grant.grantRequestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !grantId.isEmpty {
+            return grantId
         }
-        if lowered.contains("ai_generate_paid") || lowered.contains("ai.generate.paid") {
-            if modelId.isEmpty { return "付费模型调用" }
-            return "付费模型调用（\(modelId)）"
+        return grant.id
+    }
+
+    private func pendingGrantSummaryLine(
+        _ grant: SupervisorPendingGrant,
+        includeGrantToken: Bool,
+        includeScope: Bool,
+        includeReason: Bool,
+        includeSource: Bool = false,
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) -> String {
+        var parts: [String] = [
+            grant.projectName,
+            grantCapabilityText(
+                capability: grant.capability,
+                modelId: grant.modelId
+            )
+        ]
+        if includeGrantToken {
+            parts.append("grant=\(pendingGrantStableToken(grant))")
         }
-        if lowered.contains("ai_generate_local") || lowered.contains("ai.generate.local") {
-            if modelId.isEmpty { return "本地模型调用" }
-            return "本地模型调用（\(modelId)）"
+        if includeScope, let scope = pendingGrantScopeText(grant) {
+            parts.append(scope)
         }
-        if cap.isEmpty { return "高风险能力" }
-        return cap
+        if includeSource, let source = pendingGrantSourceSummary(grant, now: now) {
+            parts.append("来源：\(source)")
+        }
+        if includeReason, let reason = pendingGrantReasonText(grant) {
+            parts.append("说明：\(capped(reason, maxChars: 96))")
+        }
+        return parts.joined(separator: " / ")
+    }
+
+    private func pendingGrantSourceSummary(
+        _ grant: SupervisorPendingGrant,
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) -> String? {
+        guard let ingressContext = pendingGrantIngressContext(for: grant, now: now) else {
+            return nil
+        }
+        return "\(ingressContext.provider) / \(ingressContext.ingress)"
     }
 
     private func buildHeartbeatNextStepSummary(
@@ -11977,6 +17640,13 @@ Coder 下一步建议：
         return info.text
     }
 
+    func buildSupervisorMemoryAssemblySnapshotForTesting(
+        _ userMessage: String
+    ) async -> SupervisorMemoryAssemblySnapshot? {
+        let info = await buildSupervisorMemoryV1(userMessage: userMessage)
+        return info.assemblySnapshot
+    }
+
     func supervisorMemoryDigestForTesting(_ project: AXProjectEntry) -> SupervisorMemoryProjectDigest {
         supervisorMemoryDigest(project)
     }
@@ -11984,6 +17654,18 @@ Coder 下一步建议：
     func buildSupervisorLocalMemoryV1ForTesting(_ userMessage: String) async -> String {
         let composition = await composeSupervisorMemoryV1(userMessage: userMessage)
         return composition.localText
+    }
+
+    func setSupervisorMemoryAssemblySnapshotForTesting(
+        _ snapshot: SupervisorMemoryAssemblySnapshot?
+    ) {
+        publishSupervisorMemoryAssemblyState(snapshot)
+    }
+
+    func setSupervisorIncidentLedgerForTesting(
+        _ incidents: [SupervisorLaneIncident]
+    ) {
+        supervisorIncidentLedger = incidents
     }
 
     func summarizedSupervisorSkillOutputForTesting(
@@ -12042,12 +17724,28 @@ Coder 下一步建议：
                 _ = await task.value
                 continue
             }
-            if pendingSupervisorEventLoopTrigger != nil {
+            if !pendingSupervisorEventLoopTriggers.isEmpty {
                 await Task.yield()
                 continue
             }
             break
         }
+    }
+
+    func queueSupervisorEventLoopTurnForTesting(
+        userMessage: String,
+        triggerSource: String,
+        dedupeKey: String
+    ) {
+        queueSupervisorEventLoopTurn(
+            userMessage: userMessage,
+            triggerSource: SupervisorCommandTriggerSource.parse(triggerSource),
+            dedupeKey: dedupeKey
+        )
+    }
+
+    func recentSupervisorEventLoopActivitiesForTesting() -> [SupervisorEventLoopActivity] {
+        recentSupervisorEventLoopActivities
     }
 
     func completePendingHubGrantActionForTesting(
@@ -12180,6 +17878,75 @@ Coder 下一步建议：
         )
     }
 
+    func heartbeatFocusActionURLForTesting(
+        reason: String = "test",
+        now: Date = Date()
+    ) -> String? {
+        let projects = allProjects()
+        guard !projects.isEmpty else { return nil }
+        let queueSignals = queuedProjectSignals(for: projects, now: now.timeIntervalSince1970)
+        let permissionSignals = collectPermissionSignals(for: projects)
+        let progressActions = heartbeatAutoProgressActions(
+            reason: reason,
+            now: now,
+            projects: projects,
+            queueSignals: queueSignals,
+            permissionSignals: permissionSignals
+        )
+        let blockerProjects: [(projectId: String, blocker: String)] = projects.compactMap { project in
+            let blocker = (project.blockerSummary ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !blocker.isEmpty else { return nil }
+            return (project.projectId, blocker)
+        }
+        return self.heartbeatFocusActionURL(
+            projects: projects,
+            progressActions: progressActions,
+            blockerProjects: blockerProjects,
+            permissionSignals: permissionSignals,
+            queueSignals: queueSignals
+        )
+    }
+
+    func buildHeartbeatNotificationPresentationForTesting(
+        timeText: String = "10:00",
+        reason: String = "test",
+        projectCount: Int,
+        changed: Bool,
+        blockerCount: Int,
+        blockerStreak: Int,
+        blockerEscalated: Bool,
+        blockerCooldownRemainingSec: Int = 0,
+        topSummary: String,
+        queueSummary: String,
+        permissionSummary: String,
+        progressSummary: String,
+        nextStepSummary: String,
+        queuePendingCount: Int,
+        permissionPendingCount: Int,
+        focusActionURL: String? = nil
+    ) -> HeartbeatNotificationPresentation {
+        buildHeartbeatNotificationPresentation(
+            timeText: timeText,
+            reason: reason,
+            projectCount: projectCount,
+            changed: changed,
+            blockerCount: blockerCount,
+            blockerSignal: BlockerSignal(
+                streak: blockerStreak,
+                escalated: blockerEscalated,
+                cooldownRemainingSec: blockerCooldownRemainingSec
+            ),
+            topSummary: topSummary,
+            queueSummary: queueSummary,
+            permissionSummary: permissionSummary,
+            progressSummary: progressSummary,
+            nextStepSummary: nextStepSummary,
+            queuePendingCount: queuePendingCount,
+            permissionPendingCount: permissionPendingCount,
+            focusActionURL: focusActionURL
+        )
+    }
+
     private func heartbeatVoiceTestOutcomeLabel(
         _ outcome: SupervisorSpeechSynthesizer.Outcome
     ) -> String {
@@ -12210,12 +17977,14 @@ Coder 下一步建议：
         projects: [AXProjectEntry]? = nil,
         preferredModel: String? = nil,
         memorySource: String = "memory_v1",
-        memoryText: String = "memory-line"
+        memoryText: String = "memory-line",
+        assemblySnapshot: SupervisorMemoryAssemblySnapshot? = nil
     ) -> String {
         let info = SupervisorMemoryBuildInfo(
             text: memoryText,
             source: memorySource,
             updatedAt: 0,
+            assemblySnapshot: assemblySnapshot,
             projectDigests: [],
             skillRegistrySnapshot: nil
         )
@@ -12608,7 +18377,7 @@ XT 当前 transport 是 grpc-only，这不属于 XT 本地 auto fallback；更�
         actualModelId: String,
         failureReason: String
     ) -> String {
-        var lines: [String] = [
+        let lines: [String] = [
             "- requested_model=\(requestedModelId.isEmpty ? "(none)" : requestedModelId)",
             "- actual_model=\(actualModelId.isEmpty ? "(none)" : actualModelId)",
             "- failure_reason=\(failureReason.isEmpty ? "(none)" : failureReason)"
@@ -13293,19 +19062,59 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
         )
     }
 
+    static func evaluateSupervisorMemoryAssemblyReadiness(
+        snapshot: SupervisorMemoryAssemblySnapshot?
+    ) -> SupervisorMemoryAssemblyReadiness {
+        SupervisorMemoryAssemblyDiagnostics.evaluate(snapshot: snapshot)
+    }
+
+    private static func xtReadyStrictIssueCodes(
+        incidentReadiness: XTReadyIncidentReadiness,
+        memoryReadiness: SupervisorMemoryAssemblyReadiness
+    ) -> [String] {
+        incidentReadiness.issues + memoryReadiness.issueCodes.map { "memory:\($0)" }
+    }
+
+    private static func xtReadyAutoExportStatus(
+        ok: Bool,
+        reason: String,
+        strictIssues: [String]
+    ) -> String {
+        guard ok else {
+            return "failed:\(reason)"
+        }
+        guard strictIssues.isEmpty else {
+            return "strict_risk:\(strictIssues.joined(separator: ","))"
+        }
+        return "ok"
+    }
+
     func exportXTReadyIncidentEventsReport(
         outputURL: URL? = nil,
         limit: Int = 120
     ) -> XTReadyIncidentEventsExportResult {
         let rows = Self.buildXTReadyIncidentEvents(from: supervisorIncidentLedger, limit: limit)
         let missing = Self.missingXTReadyIncidentCodes(in: rows)
+        let readiness = Self.evaluateXTReadyIncidentReadiness(events: rows)
+        let memoryReadiness = Self.evaluateSupervisorMemoryAssemblyReadiness(
+            snapshot: supervisorMemoryAssemblySnapshot
+        )
+        let strictIssues = Self.xtReadyStrictIssueCodes(
+            incidentReadiness: readiness,
+            memoryReadiness: memoryReadiness
+        )
         let destination = outputURL ?? defaultXTReadyIncidentEventsReportURL()
         let summary = XTReadyIncidentSummary(
             highRiskLaneWithoutGrant: 0,
             unauditedAutoResolution: 0,
             highRiskBypassCount: 0,
             blockedEventMissRate: 0,
-            nonMessageIngressPolicyCoverage: rows.isEmpty ? 0 : 1
+            nonMessageIngressPolicyCoverage: rows.isEmpty ? 0 : 1,
+            memoryAssemblyReady: memoryReadiness.ready,
+            memoryAssemblyIssueCount: memoryReadiness.issues.count,
+            memoryAssemblyRequestedProfile: supervisorMemoryAssemblySnapshot?.requestedProfile ?? "",
+            memoryAssemblyResolvedProfile: supervisorMemoryAssemblySnapshot?.resolvedProfile ?? "",
+            memoryAssemblyTruncatedLayerCount: supervisorMemoryAssemblySnapshot?.truncatedLayers.count ?? 0
         )
         let payload = XTReadyIncidentEventsPayload(
             runId: "xt_ready_runtime_\(Int64((Date().timeIntervalSince1970 * 1000).rounded()))",
@@ -13330,9 +19139,11 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
                 reason: "ok"
             )
             xtReadyIncidentEventsReportPath = result.outputPath
-            xtReadyIncidentEventsAutoExportStatus = missing.isEmpty
-                ? "ok"
-                : "partial_missing:\(missing.joined(separator: ","))"
+            xtReadyIncidentEventsAutoExportStatus = Self.xtReadyAutoExportStatus(
+                ok: result.ok,
+                reason: result.reason,
+                strictIssues: strictIssues
+            )
             return result
         } catch {
             let result = XTReadyIncidentEventsExportResult(
@@ -13343,7 +19154,11 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
                 reason: "write_failed:\(error.localizedDescription)"
             )
             xtReadyIncidentEventsReportPath = result.outputPath
-            xtReadyIncidentEventsAutoExportStatus = "failed:\(result.reason)"
+            xtReadyIncidentEventsAutoExportStatus = Self.xtReadyAutoExportStatus(
+                ok: result.ok,
+                reason: result.reason,
+                strictIssues: strictIssues
+            )
             return result
         }
     }
@@ -13351,15 +19166,25 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
     func xtReadyIncidentExportSnapshot(limit: Int = 120) -> XTReadyIncidentExportSnapshot {
         let rows = Self.buildXTReadyIncidentEvents(from: supervisorIncidentLedger, limit: limit)
         let missing = Self.missingXTReadyIncidentCodes(in: rows)
-        let readiness = Self.evaluateXTReadyIncidentReadiness(events: rows)
+        let incidentReadiness = Self.evaluateXTReadyIncidentReadiness(events: rows)
+        let memoryReadiness = Self.evaluateSupervisorMemoryAssemblyReadiness(
+            snapshot: supervisorMemoryAssemblySnapshot
+        )
+        let strictIssues = Self.xtReadyStrictIssueCodes(
+            incidentReadiness: incidentReadiness,
+            memoryReadiness: memoryReadiness
+        )
         let defaultPath = defaultXTReadyIncidentEventsReportURL().path
         return XTReadyIncidentExportSnapshot(
             autoExportEnabled: isXTReadyIncidentAutoExportEnabled,
             ledgerIncidentCount: supervisorIncidentLedger.count,
             requiredIncidentEventCount: rows.count,
             missingIncidentCodes: missing,
-            strictE2EReady: readiness.ready,
-            strictE2EIssues: readiness.issues,
+            memoryAssemblyReady: memoryReadiness.ready,
+            memoryAssemblyIssues: memoryReadiness.issueCodes,
+            memoryAssemblyStatusLine: memoryReadiness.statusLine,
+            strictE2EReady: incidentReadiness.ready && memoryReadiness.ready,
+            strictE2EIssues: strictIssues,
             status: xtReadyIncidentEventsAutoExportStatus,
             reportPath: xtReadyIncidentEventsReportPath.isEmpty ? defaultPath : xtReadyIncidentEventsReportPath
         )
@@ -14033,7 +19858,11 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
         let awaitingResultSummary: String = {
             guard requiresWaitingAuthorization else { return "queued governed dispatch" }
             if let requiredCapability, !requiredCapability.isEmpty {
-                return "waiting for Hub grant approval"
+                return XTHubGrantPresentation.awaitingStateSummary(
+                    capability: requiredCapability,
+                    modelId: "",
+                    grantRequestId: nil
+                )
             }
             return "waiting for local governed approval"
         }()
@@ -14320,7 +20149,13 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
         if result.ok {
             pendingHubGrants.removeAll { $0.grantRequestId == grantId }
             let action = approve ? "通过" : "拒绝"
-            addSystemMessage("已\(action) Hub 授权：\(grant.projectName)（grant=\(grantId)）")
+            let summary = pendingGrantSummaryLine(
+                grant,
+                includeGrantToken: true,
+                includeScope: true,
+                includeReason: false
+            )
+            addSystemMessage("已\(action) Hub 授权：\(summary)")
             await resumeSupervisorSkillCallsAfterGrantAction(
                 grant: grant,
                 approve: approve,
@@ -14329,7 +20164,13 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
         } else {
             let action = approve ? "通过" : "拒绝"
             let reason = result.reasonCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
-            addSystemMessage("Hub 授权\(action)失败：\(grant.projectName)（grant=\(grantId)，reason=\(reason)）")
+            let summary = pendingGrantSummaryLine(
+                grant,
+                includeGrantToken: true,
+                includeScope: false,
+                includeReason: false
+            )
+            addSystemMessage("Hub 授权\(action)失败：\(summary)（reason=\(reason)）")
         }
 
         await refreshSchedulerSnapshot(force: true)
@@ -14528,6 +20369,12 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
             let spokenOutcome = speakSupervisorVoiceReply(replyText)
             appendSupervisorAssistantMessage(replyText)
             conversationSessionController.registerAssistantTurn(spoken: spokenOutcome == .spoken)
+            scheduleTalkLoopResumeIfNeeded(
+                triggeredByVoice: true,
+                spokenOutcome: spokenOutcome,
+                replyText: replyText,
+                source: "pending_grant_missing_id"
+            )
             return true
         }
 
@@ -14536,6 +20383,12 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
             let spokenOutcome = speakSupervisorVoiceReply(replyText)
             appendSupervisorAssistantMessage(replyText)
             conversationSessionController.registerAssistantTurn(spoken: spokenOutcome == .spoken)
+            scheduleTalkLoopResumeIfNeeded(
+                triggeredByVoice: true,
+                spokenOutcome: spokenOutcome,
+                replyText: replyText,
+                source: "pending_grant_inflight"
+            )
             return true
         }
 
@@ -14574,6 +20427,12 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
         )
         appendSupervisorAssistantMessage(followUp.text)
         conversationSessionController.registerAssistantTurn(spoken: followUp.spokenOutcome == .spoken)
+        scheduleTalkLoopResumeIfNeeded(
+            triggeredByVoice: true,
+            spokenOutcome: followUp.spokenOutcome,
+            replyText: followUp.text,
+            source: "pending_grant_follow_up"
+        )
         return true
     }
 
@@ -14584,9 +20443,14 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
     ) async -> SupervisorVoicePendingGrantReply {
         let grantId = grant.grantRequestId.trimmingCharacters(in: .whitespacesAndNewlines)
         if !result.ok {
-            let actionText = approve ? "批准" : "拒绝"
-            let reason = result.reasonCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
-            let replyText = "语音授权已验证，但 Hub 授权\(actionText)失败：\(grant.projectName)（grant=\(grantId)，reason=\(reason)）。"
+            let replyText = XTHubGrantPresentation.voiceDecisionFailureReply(
+                projectName: grant.projectName,
+                intent: approve ? .approve : .deny,
+                capability: grant.capability,
+                modelId: grant.modelId,
+                grantRequestId: grantId,
+                reasonCode: result.reasonCode
+            )
             return SupervisorVoicePendingGrantReply(
                 text: replyText,
                 spokenOutcome: speakSupervisorVoiceReply(replyText)
@@ -14776,7 +20640,8 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
             taskIcon: "point.3.connected.trianglepath.dotted",
             status: .running,
             modelName: oneShotAnchorModelName(for: planDecision),
-            autonomyLevel: planDecision.riskSurface >= .high ? .fullAuto : .auto,
+            executionTier: planDecision.riskSurface >= .high ? .a4OpenClaw : .a3DeliverAuto,
+            supervisorInterventionTier: planDecision.riskSurface == .low ? .s2PeriodicReview : .s3StrategicCoach,
             budget: Budget(
                 daily: planDecision.riskSurface >= .high ? 40.0 : 20.0,
                 monthly: planDecision.riskSurface >= .high ? 1200.0 : 600.0
@@ -14793,29 +20658,46 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
         planDecision: AdaptivePoolPlanDecision
     ) {
         let capability: ModelCapability
-        let autonomy: AutonomyLevel
+        let executionTier: AXProjectExecutionTier
+        let supervisorTier: AXProjectSupervisorInterventionTier
         let modelName: String
 
         switch planDecision.riskSurface {
         case .critical:
             capability = .expert
-            autonomy = .fullAuto
+            executionTier = .a4OpenClaw
+            supervisorTier = .s4TightSupervision
             modelName = "one-shot-anchor-critical"
         case .high:
             capability = .advanced
-            autonomy = .fullAuto
+            executionTier = .a4OpenClaw
+            supervisorTier = .s3StrategicCoach
             modelName = "one-shot-anchor-high"
         case .medium:
             capability = .advanced
-            autonomy = .auto
+            executionTier = .a3DeliverAuto
+            supervisorTier = .s3StrategicCoach
             modelName = "one-shot-anchor-medium"
         case .low:
             capability = .intermediate
-            autonomy = .auto
+            executionTier = .a3DeliverAuto
+            supervisorTier = .s2PeriodicReview
             modelName = "one-shot-anchor-low"
         }
 
-        project.autonomyLevel = autonomy
+        let governance = AXProjectGovernanceBundle.recommended(
+            for: executionTier,
+            supervisorInterventionTier: supervisorTier
+        )
+        project.updateGovernance(
+            executionTier: governance.executionTier,
+            supervisorInterventionTier: governance.supervisorInterventionTier,
+            reviewPolicyMode: governance.reviewPolicyMode,
+            progressHeartbeatSeconds: governance.schedule.progressHeartbeatSeconds,
+            reviewPulseSeconds: governance.schedule.reviewPulseSeconds,
+            brainstormReviewSeconds: governance.schedule.brainstormReviewSeconds,
+            eventDrivenReviewEnabled: governance.schedule.eventDrivenReviewEnabled
+        )
         project.currentModel = ModelInfo(
             id: modelName,
             name: modelName,
@@ -14999,6 +20881,53 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
         queuePendingCount: Int,
         permissionPendingCount: Int
     ) {
+        let presentation = buildHeartbeatNotificationPresentation(
+            timeText: timeText,
+            reason: reason,
+            projectCount: projectCount,
+            changed: changed,
+            blockerCount: blockerCount,
+            blockerSignal: blockerSignal,
+            topSummary: topSummary,
+            queueSummary: queueSummary,
+            permissionSummary: permissionSummary,
+            progressSummary: progressSummary,
+            nextStepSummary: nextStepSummary,
+            queuePendingCount: queuePendingCount,
+            permissionPendingCount: permissionPendingCount,
+            focusActionURL: focusActionURL
+        )
+        HubIPCClient.pushNotification(
+            source: "X-Terminal",
+            title: presentation.title,
+            body: presentation.body,
+            dedupeKey: heartbeatNotificationDedupeKey,
+            actionURL: focusActionURL,
+            unread: presentation.unread
+        )
+    }
+
+    private func buildHeartbeatNotificationPresentation(
+        timeText: String,
+        reason: String,
+        projectCount: Int,
+        changed: Bool,
+        blockerCount: Int,
+        blockerSignal: BlockerSignal,
+        topSummary: String,
+        queueSummary: String,
+        permissionSummary: String,
+        progressSummary: String,
+        nextStepSummary: String,
+        queuePendingCount: Int,
+        permissionPendingCount: Int,
+        focusActionURL: String?
+    ) -> HeartbeatNotificationPresentation {
+        let memoryReadinessLine = supervisorMemoryReadinessBriefTextLine()
+        let routeDiagnoseAction = heartbeatNotificationHasRouteDiagnoseAction(focusActionURL)
+        let routeDiagnoseHighlight = routeDiagnoseAction
+            ? heartbeatRouteDiagnoseHighlight(nextStepSummary: nextStepSummary)
+            : nil
         let title: String
         let unread: Bool
         if blockerCount > 0, blockerSignal.escalated {
@@ -15019,6 +20948,12 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
         } else if queuePendingCount > 0 {
             title = "⏳ Supervisor 心跳：\(queuePendingCount) 个项目排队中"
             unread = changed
+        } else if routeDiagnoseAction {
+            title = "🧭 Supervisor 心跳：模型路由异常，点我直接诊断"
+            unread = true
+        } else if memoryReadinessLine != nil {
+            title = "⚠️ Supervisor 心跳：战略记忆供给不足"
+            unread = true
         } else if changed {
             title = "Supervisor 心跳：项目有更新（静默）"
             unread = false
@@ -15038,32 +20973,82 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
                 blockerLines.append("升级冷却中：约 \(mins) 分钟后可再次升级提醒")
             }
         }
-        let body = """
-时间：\(timeText)
-原因：\(reason)
-项目总数：\(projectCount)
-\(blockerLines.joined(separator: "\n"))
-排队项目数：\(queuePendingCount)
-待授权项目数：\(permissionPendingCount)
-主动推进：
-\(progressSummary.isEmpty ? "（本轮无需介入）" : progressSummary)
-重点看板：
-\(topSummary)
-排队态势：
-\(queueSummary.isEmpty ? "（无）" : queueSummary)
-权限申请：
-\(permissionSummary.isEmpty ? "（无）" : permissionSummary)
-Coder 下一步建议：
-\(nextStepSummary.isEmpty ? "（暂无）" : nextStepSummary)
-"""
-        HubIPCClient.pushNotification(
-            source: "X-Terminal",
+        var bodyLines = [
+            "时间：\(timeText)",
+            "原因：\(reason)",
+            "项目总数：\(projectCount)",
+            blockerLines.joined(separator: "\n"),
+            "排队项目数：\(queuePendingCount)",
+            "待授权项目数：\(permissionPendingCount)"
+        ]
+        if routeDiagnoseAction {
+            bodyLines.append("操作提示：")
+            bodyLines.append("点开这条提醒会直接进入项目聊天，并自动展开一条路由诊断摘要（等价于先去项目里看 `/route diagnose`）。")
+            if let routeDiagnoseHighlight {
+                bodyLines.append("优先建议：")
+                bodyLines.append(routeDiagnoseHighlight)
+            }
+        }
+        if let memoryReadinessLine {
+            bodyLines.append("战略纠偏状态：")
+            bodyLines.append(memoryReadinessLine)
+        }
+        bodyLines.append(contentsOf: [
+            "主动推进：",
+            progressSummary.isEmpty ? "（本轮无需介入）" : progressSummary,
+            "重点看板：",
+            topSummary,
+            "排队态势：",
+            queueSummary.isEmpty ? "（无）" : queueSummary,
+            "权限申请：",
+            permissionSummary.isEmpty ? "（无）" : permissionSummary,
+            "Coder 下一步建议：",
+            nextStepSummary.isEmpty ? "（暂无）" : nextStepSummary
+        ])
+        return HeartbeatNotificationPresentation(
             title: title,
-            body: body,
-            dedupeKey: heartbeatNotificationDedupeKey,
-            actionURL: focusActionURL,
+            body: bodyLines.joined(separator: "\n"),
             unread: unread
         )
+    }
+
+    private func heartbeatNotificationHasRouteDiagnoseAction(
+        _ focusActionURL: String?
+    ) -> Bool {
+        let raw = focusActionURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !raw.isEmpty,
+              let url = URL(string: raw),
+              let route = XTDeepLinkParser.parse(url) else {
+            return false
+        }
+
+        switch route {
+        case let .project(projectRoute):
+            return projectRoute.focusTarget == .routeDiagnose
+        default:
+            return false
+        }
+    }
+
+    private func heartbeatRouteDiagnoseHighlight(
+        nextStepSummary: String
+    ) -> String? {
+        let lines = nextStepSummary
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .replacingOccurrences(
+                        of: #"^\d+\.\s*"#,
+                        with: "",
+                        options: .regularExpression
+                    )
+            }
+            .filter { !$0.isEmpty }
+
+        if let routeLine = lines.first(where: { $0.contains("模型路由：") || $0.contains("/route diagnose") }) {
+            return routeLine
+        }
+        return nil
     }
 
     private func speakSupervisorHeartbeatUpdate(
@@ -15157,6 +21142,8 @@ Coder 下一步建议：
     private func supervisorPendingGrantVoiceReplyIfApplicable(
         _ text: String
     ) async -> SupervisorVoicePendingGrantReply? {
+        guard activeSupervisorMemoryFactFollowUp() == nil else { return nil }
+        guard !looksLikeSupervisorNaturalMemoryPatchFacts(text) else { return nil }
         guard let approve = pendingGrantVoiceDecision(in: text) else { return nil }
         if pendingHubGrants.isEmpty {
             await refreshSchedulerSnapshot(force: true)
@@ -15171,6 +21158,7 @@ Coder 下一步建议：
             )
         }
         guard let grant = selection.grant else { return nil }
+        rememberPendingHubGrantVoiceContext(grant)
 
         let request = makeVoiceAuthorizationRequestForPendingHubGrantAction(
             grant: grant,
@@ -15222,7 +21210,14 @@ Coder 下一步建议：
             cancelVoiceAuthorization()
             let replyText = "已取消当前语音授权。"
             appendSupervisorAssistantMessage(replyText)
-            conversationSessionController.registerAssistantTurn(spoken: true)
+            let spokenOutcome = speakSupervisorVoiceReply(replyText)
+            conversationSessionController.registerAssistantTurn(spoken: spokenOutcome == .spoken)
+            scheduleTalkLoopResumeIfNeeded(
+                triggeredByVoice: true,
+                spokenOutcome: spokenOutcome,
+                replyText: replyText,
+                source: "voice_auth_cancel"
+            )
             return true
         }
 
@@ -15231,6 +21226,12 @@ Coder 下一步建议：
             appendSupervisorAssistantMessage(replyText)
             let spokenOutcome = speakSupervisorVoiceReply(replyText)
             conversationSessionController.registerAssistantTurn(spoken: spokenOutcome == .spoken)
+            scheduleTalkLoopResumeIfNeeded(
+                triggeredByVoice: true,
+                spokenOutcome: spokenOutcome,
+                replyText: replyText,
+                source: "voice_auth_repeat_prompt"
+            )
             return true
         }
 
@@ -15254,6 +21255,12 @@ Coder 下一步建议：
                 appendSupervisorAssistantMessage(replyText)
                 let spokenOutcome = speakSupervisorVoiceReply(replyText)
                 conversationSessionController.registerAssistantTurn(spoken: spokenOutcome == .spoken)
+                scheduleTalkLoopResumeIfNeeded(
+                    triggeredByVoice: true,
+                    spokenOutcome: spokenOutcome,
+                    replyText: replyText,
+                    source: "voice_auth_mobile_confirmed"
+                )
                 return true
             }
         }
@@ -15276,6 +21283,12 @@ Coder 下一步建议：
         )
         appendSupervisorAssistantMessage(replyText)
         conversationSessionController.registerAssistantTurn(spoken: true)
+        scheduleTalkLoopResumeIfNeeded(
+            triggeredByVoice: true,
+            spokenOutcome: .spoken,
+            replyText: replyText,
+            source: "voice_auth_verification_reply"
+        )
         return true
     }
 
@@ -15311,6 +21324,137 @@ Coder 下一步建议：
         return tokens.contains { normalized.contains(normalizedLookupKey($0)) }
     }
 
+    private struct VoiceAuthorizationPromptScopeSummary {
+        var fields: [String: String]
+        var freeformSegments: [String]
+
+        func value(for key: String) -> String? {
+            let token = fields[key.lowercased()]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return token.isEmpty ? nil : token
+        }
+
+        var project: String? { value(for: "project") }
+        var capability: String? { value(for: "capability") }
+        var source: String? { value(for: "source") }
+        var reason: String? { value(for: "reason") }
+        var goal: String? { value(for: "goal") }
+        var rawScope: String? {
+            if let first = freeformSegments.first {
+                let trimmed = first.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    return trimmed
+                }
+            }
+            return value(for: "scope")
+        }
+    }
+
+    private func parseVoiceAuthorizationPromptScope(
+        _ scopeText: String
+    ) -> VoiceAuthorizationPromptScopeSummary {
+        let normalized = scopeText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            return VoiceAuthorizationPromptScopeSummary(fields: [:], freeformSegments: [])
+        }
+
+        var fields: [String: String] = [:]
+        var freeformSegments: [String] = []
+        let segments = normalized
+            .replacingOccurrences(of: "\n", with: ";")
+            .split(separator: ";")
+
+        for rawSegment in segments {
+            let segment = String(rawSegment).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !segment.isEmpty else { continue }
+            if let separator = segment.firstIndex(of: "=") {
+                let key = String(segment[..<separator])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+                let value = String(segment[segment.index(after: separator)...])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !key.isEmpty, !value.isEmpty {
+                    fields[key] = value
+                    continue
+                }
+            }
+            freeformSegments.append(segment)
+        }
+
+        if fields.isEmpty, freeformSegments.isEmpty {
+            freeformSegments.append(normalized)
+        }
+
+        return VoiceAuthorizationPromptScopeSummary(
+            fields: fields,
+            freeformSegments: freeformSegments
+        )
+    }
+
+    private func voiceAuthorizationRiskSpeechText(_ riskTier: LaneRiskTier) -> String {
+        switch riskTier {
+        case .low:
+            return "低风险"
+        case .medium:
+            return "中风险"
+        case .high:
+            return "高风险"
+        case .critical:
+            return "关键风险"
+        }
+    }
+
+    private func voiceAuthorizationPromptHeadline(
+        request: SupervisorVoiceAuthorizationRequest,
+        scopeSummary: VoiceAuthorizationPromptScopeSummary
+    ) -> String {
+        let project = scopeSummary.project.map { capped($0, maxChars: 32) }
+        let capability = scopeSummary.capability.map { capped($0, maxChars: 40) }
+        let source = scopeSummary.source.map { capped($0, maxChars: 36) }
+        let goal = scopeSummary.goal.map { capped($0, maxChars: 48) }
+        let rawScope = scopeSummary.rawScope.map { capped($0, maxChars: 48) }
+        let actionText = request.actionText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let action = actionText.isEmpty ? nil : capped(actionText, maxChars: 48)
+
+        let summary: String
+        if let project, let capability {
+            summary = "\(project) 现在要处理一笔 \(capability) 授权"
+        } else if let capability {
+            summary = "现在要处理一笔 \(capability) 授权"
+        } else if let project {
+            summary = "\(project) 现在有一笔待确认授权"
+        } else if let goal {
+            summary = "当前要确认的一次受治理执行，目标是 \(goal)"
+        } else if let action {
+            summary = "当前要确认的动作是 \(action)"
+        } else if let rawScope {
+            summary = "当前要确认一笔语音授权：\(rawScope)"
+        } else {
+            summary = "当前有一笔待确认语音授权"
+        }
+
+        let sourceSuffix = source.map { "，来源是 \($0)" } ?? ""
+        return "这是一笔\(voiceAuthorizationRiskSpeechText(request.riskTier))语音授权。\(summary)\(sourceSuffix)。"
+    }
+
+    private func voiceAuthorizationPromptInstructionLine(
+        challengeCode: String,
+        requiresMobileConfirm: Bool,
+        mobileConfirmed: Bool
+    ) -> String {
+        let normalizedCode = challengeCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let instruction = normalizedCode.isEmpty
+            ? "继续说授权短语即可"
+            : "说授权短语 \(normalizedCode)"
+
+        if requiresMobileConfirm {
+            if mobileConfirmed {
+                return "移动端确认已记录，现在直接\(instruction)。"
+            }
+            return "先在手机上确认，再\(instruction)。"
+        }
+        return "现在直接\(instruction)。"
+    }
+
     private func renderActiveVoiceAuthorizationPrompt(
         request: SupervisorVoiceAuthorizationRequest
     ) -> String {
@@ -15318,31 +21462,39 @@ Coder 下一步建议：
         let challengeToken = activeVoiceChallenge?.challengeId.trimmingCharacters(in: .whitespacesAndNewlines) ?? "n/a"
         let challengeCode = activeVoiceChallenge?.challengeCode.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let requiresMobileConfirm = voiceAuthorizationResolution?.requiresMobileConfirm ?? false
+        let scopeSummary = parseVoiceAuthorizationPromptScope(request.scopeText)
+        let actionUsedAsHeadlineFallback =
+            scopeSummary.project == nil &&
+            scopeSummary.capability == nil &&
+            scopeSummary.goal == nil &&
+            scopeSummary.rawScope == nil
 
         var lines: [String] = []
-        if requiresMobileConfirm {
-            if voiceAuthorizationMobileConfirmationLatched {
-                lines.append("当前语音授权已记录移动端确认（challenge=\(challengeToken)）。")
-            } else {
-                lines.append("当前语音授权仍在等待移动端确认（challenge=\(challengeToken)）。")
-            }
-        } else {
-            lines.append("当前语音授权挑战已激活（challenge=\(challengeToken)）。")
+        lines.append(
+            voiceAuthorizationPromptHeadline(
+                request: request,
+                scopeSummary: scopeSummary
+            )
+        )
+        lines.append(
+            voiceAuthorizationPromptInstructionLine(
+                challengeCode: challengeCode,
+                requiresMobileConfirm: requiresMobileConfirm,
+                mobileConfirmed: voiceAuthorizationMobileConfirmationLatched
+            )
+        )
+        if let reason = scopeSummary.reason {
+            lines.append("原因：\(capped(reason, maxChars: 96))")
         }
-        if !actionText.isEmpty {
-            lines.append("目标动作：\(actionText)")
+        let amountText = request.amountText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !amountText.isEmpty {
+            lines.append("约束：\(capped(amountText, maxChars: 96))")
         }
-        if !challengeCode.isEmpty {
-            lines.append("challenge code：\(challengeCode)")
+        if !actionText.isEmpty, !actionUsedAsHeadlineFallback {
+            lines.append("目标动作：\(capped(actionText, maxChars: 96))")
         }
-        if requiresMobileConfirm {
-            if voiceAuthorizationMobileConfirmationLatched {
-                lines.append("直接继续说授权短语即可，我会立刻执行校验。")
-            } else {
-                lines.append("完成移动端确认后，直接继续说授权短语即可。")
-            }
-        } else {
-            lines.append("直接继续说授权短语即可，我会立刻执行校验。")
+        if challengeToken != "n/a" {
+            lines.append("challenge=\(challengeToken)")
         }
         return lines.joined(separator: "\n")
     }
@@ -15593,6 +21745,7 @@ Coder 下一步建议：
         maxMessages: Int = 4
     ) -> Bool {
         let currentNormalized = normalizedLookupKey(currentUserMessage)
+        let now = Date().timeIntervalSince1970
         var skippedCurrentUserMessage = false
         var inspected = 0
 
@@ -15607,8 +21760,14 @@ Coder 下一步建议：
                 skippedCurrentUserMessage = true
                 continue
             }
+            if message.role == .user {
+                break
+            }
             guard message.role == .assistant || message.role == .system else {
                 continue
+            }
+            if now - message.timestamp > supervisorEllipsisContextCarryWindowSec {
+                break
             }
             inspected += 1
             if normalizedContainsAny(messageNormalized, needles) {
@@ -15627,7 +21786,7 @@ Coder 下一步建议：
     ) -> (grant: SupervisorPendingGrant?, reply: String?) {
         let grants = pendingHubGrants
         guard !grants.isEmpty else {
-            return (nil, "当前没有待处理的 Hub grant。")
+            return (nil, XTHubGrantPresentation.emptyPendingReply(projectName: nil))
         }
 
         var candidates = grants
@@ -15655,7 +21814,12 @@ Coder 下一步建议：
             if !projectMatches.isEmpty {
                 candidates = projectMatches
             } else if explicitGrantRequestId == nil {
-                return (nil, "项目 \(focus.project.displayName) 当前没有待处理的 Hub grant。")
+                return (
+                    nil,
+                    XTHubGrantPresentation.emptyPendingReply(
+                        projectName: focus.project.displayName
+                    )
+                )
             }
         }
 
@@ -15666,6 +21830,14 @@ Coder 下一步建议：
         let refined = refinedVoicePendingGrantCandidates(candidates, userMessage: userMessage)
         if refined.count == 1, let grant = refined.first {
             return (grant, nil)
+        }
+
+        if explicitGrantRequestId == nil,
+           let contextualGrant = recentPendingHubGrantVoiceContextCandidate(
+               candidates: refined.isEmpty ? candidates : refined,
+               userMessage: userMessage
+           ) {
+            return (contextualGrant, nil)
         }
 
         let ambiguous = refined.isEmpty ? candidates : refined
@@ -15696,6 +21868,7 @@ Coder 下一步建议：
         let foldedMessage = userMessage
             .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
             .lowercased()
+        let normalizedMessage = normalizedLookupKey(userMessage)
 
         return candidates.filter { grant in
             let grantId = grant.grantRequestId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -15717,8 +21890,33 @@ Coder 下一步建议：
 
             return pendingGrantVoiceAliasTerms(for: grant).contains { term in
                 foldedMessage.contains(term)
+            } || pendingGrantVoiceSourceAliasTerms(for: grant).contains { term in
+                !normalizedMessage.isEmpty && normalizedMessage.contains(term)
             }
         }
+    }
+
+    private func recentPendingHubGrantVoiceContextCandidate(
+        candidates: [SupervisorPendingGrant],
+        userMessage: String
+    ) -> SupervisorPendingGrant? {
+        let token = lastPendingHubGrantVoiceContextToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else { return nil }
+        guard Date().timeIntervalSince1970 - lastPendingHubGrantVoiceContextAt <= supervisorEllipsisContextCarryWindowSec else {
+            return nil
+        }
+
+        let normalized = normalizedLookupKey(userMessage)
+        guard !normalized.isEmpty else { return nil }
+        let hasDemonstrative = normalizedContainsAny(normalized, pendingGrantDemonstrativeTokens())
+        let hasSubject = normalizedContainsAny(normalized, pendingGrantSubjectTokens())
+        guard hasDemonstrative || hasSubject || hasRecentSupervisorPendingGrantContext(currentUserMessage: userMessage) else {
+            return nil
+        }
+
+        let matches = candidates.filter { pendingGrantStableToken($0) == token }
+        guard matches.count == 1 else { return nil }
+        return matches[0]
     }
 
     private func messageContainsMeaningfulSearchTerm(
@@ -15771,11 +21969,35 @@ Coder 下一步建议：
             aliases.append(contentsOf: ["secret", "credential", "token"])
         }
 
-        return aliases
-            .map {
-                $0.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
-                    .lowercased()
+        return normalizedVoiceLookupTerms(aliases)
+    }
+
+    private func pendingGrantVoiceSourceAliasTerms(
+        for grant: SupervisorPendingGrant,
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) -> [String] {
+        guard let receipt = latestConnectorIngressReceipt(for: grant, now: now) else {
+            return []
+        }
+
+        let triggerType = hubConnectorIngressTriggerType(for: receipt)
+        var aliases = remoteChannelProviderVoiceAliasTerms(receipt.connector)
+        aliases.append(hubConnectorIngressDisplayName(receipt, triggerType: triggerType))
+        aliases.append(contentsOf: hubConnectorIngressVoiceAliasTerms(receipt, triggerType: triggerType))
+        return normalizedVoiceLookupTerms(aliases)
+    }
+
+    private func normalizedVoiceLookupTerms(_ aliases: [String]) -> [String] {
+        var seen: Set<String> = []
+        var out: [String] = []
+        for alias in aliases {
+            let normalized = normalizedLookupKey(alias)
+            guard !normalized.isEmpty else { continue }
+            if seen.insert(normalized).inserted {
+                out.append(normalized)
             }
+        }
+        return out
     }
 
     private func makeVoiceAuthorizationRequestForPendingHubGrantAction(
@@ -15792,9 +22014,11 @@ Coder 下一步建议：
         let actionToken = approve ? "approve" : "deny"
         let capabilityText = grantCapabilityText(capability: grant.capability, modelId: grant.modelId)
         let reasonText = grant.reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sourceText = pendingGrantSourceSummary(grant) ?? ""
         let scopeFields = [
             "project=\(grant.projectName)",
             "capability=\(capabilityText)",
+            sourceText.isEmpty ? "" : "source=\(sourceText)",
             reasonText.isEmpty ? "" : "reason=\(capped(reasonText, maxChars: 96))"
         ]
         .filter { !$0.isEmpty }
@@ -15873,30 +22097,34 @@ Coder 下一步建议：
         let actionText = approve ? "批准" : "拒绝"
         let capabilityText = grantCapabilityText(capability: grant.capability, modelId: grant.modelId)
         let challengeToken = resolution.challengeId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "n/a"
+        let sourceText = pendingGrantSourceSummary(grant) ?? ""
+        let grantSubject = sourceText.isEmpty
+            ? grant.projectName
+            : "\(grant.projectName)（来源：\(sourceText)）"
 
         switch resolution.state {
         case .pending:
             if challengeAlreadyActive {
-                return "项目 \(grant.projectName) 的 \(capabilityText) \(actionText)语音授权仍在等待口令校验（challenge=\(challengeToken)）。"
+                return "项目 \(grantSubject) 的 \(capabilityText) \(actionText)语音授权仍在等待口令校验（challenge=\(challengeToken)）。"
             }
-            return "我已为 \(grant.projectName) 的 \(capabilityText) 发起\(actionText)语音授权（challenge=\(challengeToken)）。请继续说出授权短语。"
+            return "我已为 \(grantSubject) 的 \(capabilityText) 发起\(actionText)语音授权（challenge=\(challengeToken)）。请继续说出授权短语。"
 
         case .escalatedToMobile:
             if challengeAlreadyActive {
-                return "项目 \(grant.projectName) 的 \(capabilityText) \(actionText)语音授权仍等待移动端确认（challenge=\(challengeToken)）。"
+                return "项目 \(grantSubject) 的 \(capabilityText) \(actionText)语音授权仍等待移动端确认（challenge=\(challengeToken)）。"
             }
-            return "我已为 \(grant.projectName) 的 \(capabilityText) 发起\(actionText)语音授权（challenge=\(challengeToken)）。先在配对移动端确认，再继续口令校验。"
+            return "我已为 \(grantSubject) 的 \(capabilityText) 发起\(actionText)语音授权（challenge=\(challengeToken)）。先在配对移动端确认，再继续口令校验。"
 
         case .verified:
-            return "语音授权已通过，正在对 \(grant.projectName) 执行 Hub grant \(actionText)。"
+            return "语音授权已通过，正在对 \(grantSubject) 执行 Hub grant \(actionText)。"
 
         case .denied:
             let denyCode = resolution.denyCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "denied"
-            return "这次对 \(grant.projectName) 的 Hub grant \(actionText)语音授权未通过（deny=\(denyCode)）。"
+            return "这次对 \(grantSubject) 的 Hub grant \(actionText)语音授权未通过（deny=\(denyCode)）。"
 
         case .failClosed:
             let reason = resolution.reasonCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
-            return "我没有执行 \(grant.projectName) 的 Hub grant \(actionText)。语音授权已 fail-closed（reason=\(reason)）。"
+            return "我没有执行 \(grantSubject) 的 Hub grant \(actionText)。语音授权已 fail-closed（reason=\(reason)）。"
         }
     }
 
@@ -15904,19 +22132,17 @@ Coder 下一步建议：
         candidates: [SupervisorPendingGrant],
         focusedProjectName: String?
     ) -> String {
-        let header: String
-        if let focusedProjectName {
-            header = "项目 \(focusedProjectName) 还有多个待处理 Hub grant，我不能替你盲选。"
-        } else {
-            header = "当前有多个待处理 Hub grant，我不能替你盲选。"
-        }
+        let header = XTHubGrantPresentation.ambiguityHeader(projectName: focusedProjectName)
 
         let lines = candidates.prefix(3).enumerated().map { offset, grant in
-            let capabilityText = grantCapabilityText(capability: grant.capability, modelId: grant.modelId)
-            let grantToken = grant.grantRequestId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? grant.id
-                : grant.grantRequestId
-            return "\(offset + 1). \(grant.projectName) / \(capabilityText) / grant=\(grantToken)"
+            let summary = pendingGrantSummaryLine(
+                grant,
+                includeGrantToken: true,
+                includeScope: true,
+                includeReason: false,
+                includeSource: true
+            )
+            return "\(offset + 1). \(summary)"
         }
 
         return ([header] + lines + [
@@ -15927,6 +22153,8 @@ Coder 下一步建议：
     private func supervisorBriefProjectionVoiceReplyIfApplicable(
         _ text: String
     ) async -> SupervisorBriefProjectionVoiceReply? {
+        guard activeSupervisorMemoryFactFollowUp() == nil else { return nil }
+        guard !looksLikeSupervisorNaturalMemoryPatchFacts(text) else { return nil }
         guard shouldUseSupervisorBriefProjectionForVoiceQuery(text) else { return nil }
         let projects = allProjects()
         guard let focus = focusedSupervisorProjectSelection(projects: projects, userMessage: text) else {
@@ -16020,6 +22248,9 @@ Coder 下一步建议：
         projectName: String
     ) -> String {
         var lines = ["🧭 Supervisor Brief · \(projectName)"]
+        if let memoryLine = supervisorMemoryReadinessBriefTextLine() {
+            lines.append(memoryLine)
+        }
         let topline = projection.topline.trimmingCharacters(in: .whitespacesAndNewlines)
         let blocker = projection.criticalBlocker.trimmingCharacters(in: .whitespacesAndNewlines)
         let next = projection.nextBestAction.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -16040,6 +22271,19 @@ Coder 下一步建议：
             lines.append("下一步：\(next)")
         }
         return lines.joined(separator: "\n")
+    }
+
+    private func supervisorMemoryReadinessBriefTextLine() -> String? {
+        guard let readiness = currentSupervisorMemoryAssemblyReadinessForLanguageLayer(),
+              !readiness.ready else {
+            return nil
+        }
+
+        let topIssue = readiness.issues.first?.summary.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if topIssue.isEmpty {
+            return "当前项目背景记忆还没喂够，我先不做战略纠偏；如果要纠偏，请先补长期目标和完成标准、关键决策原因、当前卡点与已试动作、以及可作为依据的日志或结果。"
+        }
+        return "当前项目背景记忆还没喂够（\(capped(topIssue, maxChars: 28))），我先不做战略纠偏；如果要纠偏，请先补长期目标和完成标准、关键决策原因、当前卡点与已试动作、以及可作为依据的日志或结果。"
     }
 
     private func heartbeatVoiceJob(
@@ -16066,43 +22310,37 @@ Coder 下一步建议：
 
         if let firstBlocker = blockerProjects.first {
             let projectName = heartbeatProjectName(for: firstBlocker.projectId, in: projects) ?? "当前项目"
-            var script = [
-                "Supervisor 更新。当前有 \(blockerProjects.count) 个阻塞项目。",
-                "\(projectName) 阻塞：\(capped(firstBlocker.blocker, maxChars: 36))。"
-            ]
-            if let progressVoiceLine {
-                script.append(progressVoiceLine)
-            }
-            if blockerSignal.escalated {
-                script.append("该阻塞已持续 \(max(1, blockerSignal.streak)) 次心跳。")
-            }
-            if let nextStepLine {
-                script.append("建议下一步：\(nextStepLine)。")
-            }
             return SupervisorVoiceTTSJob(
                 trigger: .blocked,
                 priority: blockerSignal.escalated ? .interrupt : .normal,
-                script: script,
-                dedupeKey: "heartbeat:blocker:\(firstBlocker.projectId):\(capped(firstBlocker.blocker, maxChars: 48)):\(blockerSignal.streak)"
+                script: heartbeatScriptPrefixedWithMemoryReadiness(
+                    SupervisorVoiceScriptBuilder.blockedHeartbeatScript(
+                        blockerCount: blockerProjects.count,
+                        projectName: projectName,
+                        blockerSummary: capped(firstBlocker.blocker, maxChars: 36),
+                        progressLine: progressVoiceLine,
+                        blockerStreak: max(1, blockerSignal.streak),
+                        nextStepLine: nextStepLine
+                    )
+                ),
+                dedupeKey: "heartbeat:blocker:\(firstBlocker.projectId):\(capped(firstBlocker.blocker, maxChars: 48)):\(blockerSignal.streak)\(heartbeatMemoryReadinessDedupeSuffix())"
             )
         }
 
         if let permission = permissionSignals.first {
-            var script = [
-                "Supervisor 更新。当前有 \(permissionSignals.count) 个待授权项目。",
-                "\(permission.projectName) 需要处理：\(capped(permission.summary, maxChars: 36))。"
-            ]
-            if let progressVoiceLine {
-                script.append(progressVoiceLine)
-            }
-            if let nextStepLine {
-                script.append("建议下一步：\(nextStepLine)。")
-            }
             return SupervisorVoiceTTSJob(
                 trigger: .blocked,
                 priority: .normal,
-                script: script,
-                dedupeKey: "heartbeat:permission:\(permission.projectId):\(permission.kind.rawValue):\(capped(permission.summary, maxChars: 48))"
+                script: heartbeatScriptPrefixedWithMemoryReadiness(
+                    SupervisorVoiceScriptBuilder.permissionHeartbeatScript(
+                        permissionCount: permissionSignals.count,
+                        projectName: permission.projectName,
+                        summary: capped(permission.summary, maxChars: 36),
+                        progressLine: progressVoiceLine,
+                        nextStepLine: nextStepLine
+                    )
+                ),
+                dedupeKey: "heartbeat:permission:\(permission.projectId):\(permission.kind.rawValue):\(capped(permission.summary, maxChars: 48))\(heartbeatMemoryReadinessDedupeSuffix())"
             )
         }
 
@@ -16113,28 +22351,47 @@ Coder 下一步建议：
         let queueCount = queueSignals.count
         let projectCount = projects.count
         let leadProjectName = queueSignals.first?.project.displayName ?? projects.first?.displayName ?? "当前项目"
-        var summary = "Supervisor 更新。当前 \(projectCount) 个项目，无阻塞。"
-        if queueCount > 0 {
-            summary += " \(queueCount) 个项目仍在排队。"
-        } else {
-            summary += " 主线运行稳定。"
-        }
-        var script = [summary]
-        if let progressVoiceLine {
-            script.append(progressVoiceLine)
-        }
-        if queueCount > 0 {
-            script.append("当前关注：\(leadProjectName)。")
-        }
-        if let nextStepLine {
-            script.append("建议下一步：\(nextStepLine)。")
-        }
         return SupervisorVoiceTTSJob(
             trigger: .completed,
             priority: .quiet,
-            script: script,
-            dedupeKey: "heartbeat:summary:\(reason):\(projectCount):\(queueCount):\(leadProjectName)"
+            script: heartbeatScriptPrefixedWithMemoryReadiness(
+                SupervisorVoiceScriptBuilder.stableHeartbeatScript(
+                    projectCount: projectCount,
+                    queueCount: queueCount,
+                    leadProjectName: leadProjectName,
+                    progressLine: progressVoiceLine,
+                    nextStepLine: nextStepLine
+                )
+            ),
+            dedupeKey: "heartbeat:summary:\(reason):\(projectCount):\(queueCount):\(leadProjectName)\(heartbeatMemoryReadinessDedupeSuffix())"
         )
+    }
+
+    private func heartbeatScriptPrefixedWithMemoryReadiness(
+        _ script: [String]
+    ) -> [String] {
+        guard let readiness = currentSupervisorMemoryAssemblyReadinessForLanguageLayer(),
+              !readiness.ready else {
+            return script
+        }
+        let topIssue = readiness.issues.first?.summary.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let lead: String
+        if topIssue.isEmpty {
+            lead = "当前项目背景记忆还没喂够，我先不做战略纠偏，只汇报阻塞和下一步。"
+        } else {
+            lead = "当前项目背景记忆还没喂够，\(capped(topIssue, maxChars: 20))，我先不做战略纠偏，只汇报阻塞和下一步。"
+        }
+        guard script.first != lead else { return script }
+        return [lead] + script
+    }
+
+    private func heartbeatMemoryReadinessDedupeSuffix() -> String {
+        guard let readiness = currentSupervisorMemoryAssemblyReadinessForLanguageLayer(),
+              !readiness.ready else {
+            return ""
+        }
+        let issues = readiness.issueCodes.joined(separator: ",")
+        return ":memory_underfed:\(issues.isEmpty ? "unspecified" : issues)"
     }
 
     private func heartbeatProjectName(
@@ -16234,29 +22491,27 @@ Coder 下一步建议：
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         if !ttsScript.isEmpty {
-            return ttsScript
+            return heartbeatScriptPrefixedWithMemoryReadiness(
+                SupervisorVoiceScriptBuilder.projectionScript(
+                    ttsScript: ttsScript,
+                    trigger: projectionVoiceTrigger(from: projection)
+                )
+            )
         }
 
-        var script: [String] = []
         let topline = projection.topline.trimmingCharacters(in: .whitespacesAndNewlines)
         let blocker = projection.criticalBlocker.trimmingCharacters(in: .whitespacesAndNewlines)
         let next = projection.nextBestAction.trimmingCharacters(in: .whitespacesAndNewlines)
         let summary = projection.cardSummary.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !topline.isEmpty {
-            script.append(topline)
-        } else if !summary.isEmpty {
-            script.append(summary)
-        }
-        if !blocker.isEmpty {
-            script.append("当前阻塞：\(capped(blocker, maxChars: 48))。")
-        }
-        if projection.pendingGrantCount > 0 {
-            script.append("当前有 \(projection.pendingGrantCount) 个待授权项。")
-        }
-        if !next.isEmpty {
-            script.append("建议下一步：\(capped(next, maxChars: 48))。")
-        }
-        return script
+        return heartbeatScriptPrefixedWithMemoryReadiness(
+            SupervisorVoiceScriptBuilder.projectionFallbackScript(
+                topline: topline,
+                blocker: capped(blocker, maxChars: 48),
+                pendingGrantCount: projection.pendingGrantCount,
+                nextBestAction: capped(next, maxChars: 48),
+                summary: summary
+            )
+        )
     }
 
     private func projectionVoiceTrigger(
@@ -16293,13 +22548,13 @@ Coder 下一步建议：
     ) -> String {
         let projectionId = projection.projectionId.trimmingCharacters(in: .whitespacesAndNewlines)
         if !projectionId.isEmpty {
-            return "hub-brief:\(projectionId)"
+            return "hub-brief:\(projectionId)\(heartbeatMemoryReadinessDedupeSuffix())"
         }
         let auditRef = projection.auditRef.trimmingCharacters(in: .whitespacesAndNewlines)
         if !auditRef.isEmpty {
-            return "hub-brief:\(auditRef)"
+            return "hub-brief:\(auditRef)\(heartbeatMemoryReadinessDedupeSuffix())"
         }
-        return "hub-brief:\(projection.projectId):\(projection.trigger):\(Int(projection.generatedAtMs))"
+        return "hub-brief:\(projection.projectId):\(projection.trigger):\(Int(projection.generatedAtMs))\(heartbeatMemoryReadinessDedupeSuffix())"
     }
 
     private func conciseHeartbeatNextStep(_ text: String) -> String? {
@@ -16316,90 +22571,169 @@ Coder 下一步建议：
     }
 
     private func conciseVoiceReplyScript(_ text: String) -> [String] {
-        let sanitizedLines = text
-            .replacingOccurrences(of: "```", with: " ")
-            .components(separatedBy: .newlines)
-            .map { line in
-                line
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .replacingOccurrences(of: "•", with: "")
-                    .replacingOccurrences(of: "📊", with: "")
-                    .replacingOccurrences(of: "🚧", with: "")
-                    .replacingOccurrences(of: "🎯", with: "")
-                    .replacingOccurrences(of: "✅", with: "")
-                    .replacingOccurrences(of: "❌", with: "")
-                    .replacingOccurrences(of: "⚠️", with: "")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-            .filter { line in
-                !line.isEmpty &&
-                !line.hasPrefix("[") &&
-                !line.hasPrefix("```")
-            }
+        SupervisorVoiceScriptBuilder.conciseReplyScript(from: text)
+    }
 
-        guard !sanitizedLines.isEmpty else { return [] }
-
-        let lead = capped(sanitizedLines[0], maxChars: 80)
-        if sanitizedLines.count == 1 {
-            return [lead]
+    private func heartbeatFocusActionURL(
+        projects: [AXProjectEntry],
+        progressActions: [HeartbeatAutoProgressAction],
+        blockerProjects: [(projectId: String, blocker: String)],
+        permissionSignals: [ProjectPermissionSignal],
+        queueSignals: [ProjectQueueSignal]
+    ) -> String? {
+        if let actionURL = permissionSignals.first?.actionURL {
+            let trimmed = actionURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return trimmed
+            }
         }
 
-        let second = capped(sanitizedLines[1], maxChars: 80)
-        if second.isEmpty {
-            return [lead]
+        let focusProjectId = progressActions.first?.projectId
+            ?? blockerProjects.first?.projectId
+            ?? permissionSignals.first?.projectId
+            ?? queueSignals.first?.project.projectId
+        if let focusProjectId {
+            return resumeProjectActionURL(projectId: focusProjectId)
         }
-        return [lead, second]
+
+        if let routeProjectId = heartbeatRouteDiagnoseProjectId(projects: projects) {
+            return routeDiagnoseActionURL(projectId: routeProjectId)
+        }
+
+        return XTDeepLinkURLBuilder.supervisorURL()?.absoluteString
+    }
+
+    private func heartbeatRouteDiagnoseProjectId(
+        projects: [AXProjectEntry]
+    ) -> String? {
+        let orderedProjects = projects.sorted { p1, p2 in
+            calculatePriority(p1) > calculatePriority(p2)
+        }
+        for project in orderedProjects {
+            if AXProjectModelRouteMemoryStore.heartbeatNotice(for: project) != nil {
+                return project.projectId
+            }
+        }
+        return nil
     }
 
     private func supervisorActionURL(
         projectId: String?,
+        focusTarget: XTDeepLinkFocusTarget? = nil,
+        requestId: String? = nil,
         grantRequestId: String? = nil,
         capability: String? = nil
     ) -> String? {
+        let normalizedRequestId = requestId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let grantId = grantRequestId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let capabilityToken = capability?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let resolvedFocusTarget: XTDeepLinkFocusTarget? = {
+            if let focusTarget {
+                return focusTarget
+            }
+            if !grantId.isEmpty || !capabilityToken.isEmpty {
+                return .grant
+            }
+            if !normalizedRequestId.isEmpty {
+                return .approval
+            }
+            return nil
+        }()
         if let raw = projectId?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
-            var components = URLComponents()
-            components.scheme = "xterminal"
-            components.host = "project"
-            var queryItems: [URLQueryItem] = [
-                URLQueryItem(name: "project_id", value: raw),
-                URLQueryItem(name: "pane", value: "chat"),
-                URLQueryItem(name: "open", value: "supervisor"),
-            ]
-            if !grantId.isEmpty {
-                queryItems.append(URLQueryItem(name: "focus", value: "grant"))
-                queryItems.append(URLQueryItem(name: "grant_request_id", value: grantId))
-            }
-            if !capabilityToken.isEmpty {
-                queryItems.append(URLQueryItem(name: "grant_capability", value: capabilityToken))
-            }
-            components.queryItems = queryItems
-            return components.url?.absoluteString
+            return XTDeepLinkURLBuilder.projectURL(
+                projectId: raw,
+                pane: .chat,
+                openTarget: .supervisor,
+                focusTarget: resolvedFocusTarget,
+                requestId: normalizedRequestId.isEmpty ? nil : normalizedRequestId,
+                grantRequestId: grantId.isEmpty ? nil : grantId,
+                grantCapability: capabilityToken.isEmpty ? nil : capabilityToken
+            )?.absoluteString
         }
-        if !grantId.isEmpty || !capabilityToken.isEmpty {
-            var components = URLComponents()
-            components.scheme = "xterminal"
-            components.host = "supervisor"
-            var queryItems: [URLQueryItem] = []
-            if !grantId.isEmpty {
-                queryItems.append(URLQueryItem(name: "focus", value: "grant"))
-                queryItems.append(URLQueryItem(name: "grant_request_id", value: grantId))
-            }
-            if !capabilityToken.isEmpty {
-                queryItems.append(URLQueryItem(name: "grant_capability", value: capabilityToken))
-            }
-            components.queryItems = queryItems
-            return components.url?.absoluteString
+        if resolvedFocusTarget != nil {
+            return XTDeepLinkURLBuilder.supervisorURL(
+                focusTarget: resolvedFocusTarget,
+                requestId: normalizedRequestId.isEmpty ? nil : normalizedRequestId,
+                grantRequestId: grantId.isEmpty ? nil : grantId,
+                grantCapability: capabilityToken.isEmpty ? nil : capabilityToken
+            )?.absoluteString
         }
-        return "xterminal://supervisor"
+        return XTDeepLinkURLBuilder.supervisorURL()?.absoluteString
+    }
+
+    private func resumeProjectActionURL(
+        projectId: String?,
+        openTarget: XTDeepLinkOpenTarget? = nil
+    ) -> String? {
+        guard let raw = projectId?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return XTDeepLinkURLBuilder.supervisorURL()?.absoluteString
+        }
+        return XTDeepLinkURLBuilder.projectURL(
+            projectId: raw,
+            pane: .chat,
+            openTarget: openTarget,
+            resumeRequested: true
+        )?.absoluteString
+    }
+
+    private func toolApprovalActionURL(
+        projectId: String?,
+        requestId: String? = nil
+    ) -> String? {
+        guard let raw = projectId?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return nil
+        }
+        let normalizedRequestId = requestId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return XTDeepLinkURLBuilder.projectURL(
+            projectId: raw,
+            pane: .chat,
+            focusTarget: .toolApproval,
+            requestId: normalizedRequestId?.isEmpty == false ? normalizedRequestId : nil
+        )?.absoluteString
+    }
+
+    private func routeDiagnoseActionURL(
+        projectId: String?
+    ) -> String? {
+        guard let raw = projectId?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return nil
+        }
+        return XTDeepLinkURLBuilder.projectURL(
+            projectId: raw,
+            pane: .chat,
+            focusTarget: .routeDiagnose
+        )?.absoluteString
+    }
+
+    private func supervisorSkillActivityActionURL(
+        projectId: String,
+        record: SupervisorSkillCallRecord
+    ) -> String? {
+        let capability = record.requiredCapability?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let grantRequestId = record.grantRequestId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if record.status == .awaitingAuthorization {
+            if !capability.isEmpty || !grantRequestId.isEmpty {
+                return supervisorActionURL(
+                    projectId: projectId,
+                    grantRequestId: grantRequestId.isEmpty ? nil : grantRequestId,
+                    capability: capability.isEmpty ? nil : capability
+                )
+            }
+            return supervisorActionURL(
+                projectId: projectId,
+                requestId: record.requestId
+            )
+        }
+        return resumeProjectActionURL(projectId: projectId)
     }
 
     private func runSupervisorDoctorPreflight(
         reason: String,
         emitSystemMessage: Bool
     ) -> SupervisorDoctorReport {
-        let input = SupervisorDoctorChecker.loadDefaultInputBundle()
+        let input = SupervisorDoctorChecker.loadDefaultInputBundle(
+            memoryAssemblySnapshot: supervisorMemoryAssemblySnapshot
+        )
         let report = SupervisorDoctorChecker.runAndPersist(input: input)
         doctorReport = report
         doctorSuggestionCards = report.suggestions
@@ -17336,7 +23670,7 @@ audit=\(result.auditRef)
             title: title,
             body: body,
             dedupeKey: "x_terminal_operator_channel_xt_command_\(result.commandId)_\(result.status)_\(result.denyCode)",
-            actionURL: supervisorActionURL(projectId: result.projectId),
+            actionURL: resumeProjectActionURL(projectId: result.projectId),
             unread: true
         )
     }
@@ -17444,7 +23778,7 @@ audit=\(result.auditRef)
             title: title,
             body: body,
             dedupeKey: "x_terminal_hub_connector_ingress_\(receipt.receiptId)_\(result.decision.rawValue)_\(reasonToken)",
-            actionURL: supervisorActionURL(projectId: result.projectId),
+            actionURL: resumeProjectActionURL(projectId: result.projectId),
             unread: true
         )
     }
@@ -17496,6 +23830,29 @@ audit=\(result.auditRef)
         }
     }
 
+    private func hubConnectorIngressVoiceAliasTerms(
+        _ receipt: HubIPCClient.ConnectorIngressReceipt,
+        triggerType: XTAutomationTriggerType
+    ) -> [String] {
+        switch triggerType {
+        case .webhook:
+            return ["webhook", "web hook", "回调"]
+        default:
+            switch normalizedLookupKey(receipt.channelScope) {
+            case "dm":
+                return ["私聊消息入口", "私聊", "私信", "dm", "direct message"]
+            case "group":
+                return ["群聊消息入口", "群聊", "群组", "group"]
+            case "channel":
+                return ["频道消息入口", "频道", "channel"]
+            case "repo":
+                return ["仓库入口", "仓库", "repo"]
+            default:
+                return []
+            }
+        }
+    }
+
     private func hubConnectorIngressReasonDisplayName(_ token: String) -> String {
         switch normalizedLookupKey(token) {
         case "hubingresssourceunsupported":
@@ -17542,6 +23899,28 @@ audit=\(result.auditRef)
         default:
             let trimmed = provider.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? "Hub" : trimmed
+        }
+    }
+
+    private func remoteChannelProviderVoiceAliasTerms(_ provider: String) -> [String] {
+        switch normalizedLookupKey(provider) {
+        case "slack":
+            return ["Slack", "slack"]
+        case "telegram":
+            return ["Telegram", "telegram", "tg", "电报"]
+        case "feishu":
+            return ["Feishu", "feishu", "Lark", "lark", "飞书"]
+        case "github":
+            return ["GitHub", "github"]
+        case "discord":
+            return ["Discord", "discord"]
+        case "whatsappcloudapi":
+            return ["WhatsApp Cloud", "whatsapp cloud", "whatsapp"]
+        case "whatsapppersonalqr", "whatsapppersonalrunner":
+            return ["WhatsApp Personal", "whatsapp personal", "whatsapp"]
+        default:
+            let trimmed = provider.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? [] : [trimmed]
         }
     }
 
@@ -17775,6 +24154,7 @@ audit=\(result.auditRef)
         let triggerId = ingress.triggerId.trimmingCharacters(in: .whitespacesAndNewlines)
         let dedupeKey = ingress.dedupeKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let acceptedAt = ingress.receivedAt.timeIntervalSince1970
+        let projectDisplayName = projectDisplayName(for: ctx)
 
         appendAutomationExternalTriggerRouteLog(
             ingress: ingress,
@@ -17798,15 +24178,15 @@ audit=\(result.auditRef)
                 acceptedAt,
                 automationExternalTriggerAcceptedLedger[acceptedKey] ?? 0
             )
-            appendRecentEvent("automation trigger run: \(ctx.projectName()) -> \(triggerId)")
+            appendRecentEvent("automation trigger run: \(projectDisplayName) -> \(triggerId)")
         } else if decision == .hold {
-            appendRecentEvent("automation trigger hold: \(ctx.projectName()) -> \(triggerId) (\(reasonCode))")
+            appendRecentEvent("automation trigger hold: \(projectDisplayName) -> \(triggerId) (\(reasonCode))")
         } else if decision == .failClosed {
-            appendRecentEvent("automation trigger fail-closed: \(ctx.projectName()) -> \(triggerId) (\(reasonCode))")
+            appendRecentEvent("automation trigger fail-closed: \(projectDisplayName) -> \(triggerId) (\(reasonCode))")
         }
 
         if emitSystemMessage && decision != .run && ingress.ingressChannel != "hub_connector_receipt_snapshot" {
-            addSystemMessage("automation 外部触发未执行：\(ctx.projectName()) -> \(triggerId) (\(reasonCode))")
+            addSystemMessage("automation 外部触发未执行：\(projectDisplayName) -> \(triggerId) (\(reasonCode))")
         }
 
         return SupervisorAutomationExternalTriggerResult(
@@ -18654,7 +25034,7 @@ audit=\(result.auditRef)
                 "audit_ref": auditRef
             ]
             AXProjectStore.appendRawLog(scheduledRow, for: ctx)
-            appendRecentEvent("automation retry scheduled: \(ctx.projectName()) -> \(prepared.launchRef) from \(sourceRunID)")
+            appendRecentEvent("automation retry scheduled: \(project.displayName) -> \(prepared.launchRef) from \(sourceRunID)")
             return finalized
         } catch {
             let retryLineage = automationRetryLineage(for: retryPackage)
@@ -18681,7 +25061,7 @@ audit=\(result.auditRef)
                 "audit_ref": auditRef
             ]
             AXProjectStore.appendRawLog(failedRow, for: ctx)
-            appendRecentEvent("automation retry scheduling failed: \(ctx.projectName()) -> \(error.localizedDescription)")
+            appendRecentEvent("automation retry scheduling failed: \(project.displayName) -> \(error.localizedDescription)")
             return nil
         }
     }
@@ -19035,7 +25415,7 @@ audit=\(result.auditRef)
             "audit_ref": autoRetryAuditRef
         ]
         AXProjectStore.appendRawLog(pendingRow, for: ctx)
-        appendRecentEvent("automation auto retry pending: \(ctx.projectName()) -> \(prepared.launchRef) depth \(retryDepth)")
+        appendRecentEvent("automation auto retry pending: \(project.displayName) -> \(prepared.launchRef) depth \(retryDepth)")
 
         automationAutoRetryTask = Task { @MainActor [weak self] in
             defer { self?.automationAutoRetryTask = nil }
@@ -19060,7 +25440,7 @@ audit=\(result.auditRef)
                 self.addSystemMessage(
                     """
 automation 自动迭代已继续
-项目: \(ctx.projectName())
+项目: \(project.displayName)
 source_run_id: \(prepared.launchRef)
 retry_run_id: \(launched.retryRunID)
 retry_strategy: \(launched.retryStrategy)
@@ -19151,10 +25531,14 @@ retry_depth: \(retryDepth)
     }
 
     private func automationProjectEntry(for ctx: AXProjectContext) -> AXProjectEntry {
-        AXProjectEntry(
-            projectId: AXProjectRegistryStore.projectId(forRoot: ctx.root),
+        let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+        if let project = knownProjects().first(where: { $0.projectId == projectId }) {
+            return project
+        }
+        return AXProjectEntry(
+            projectId: projectId,
             rootPath: ctx.root.path,
-            displayName: ctx.projectName(),
+            displayName: ctx.displayName(registry: appModel?.registry),
             lastOpenedAt: Date().timeIntervalSince1970,
             manualOrderIndex: nil,
             pinned: false,
@@ -19165,6 +25549,10 @@ retry_depth: \(retryDepth)
             lastSummaryAt: nil,
             lastEventAt: nil
         )
+    }
+
+    private func projectDisplayName(for ctx: AXProjectContext) -> String {
+        automationProjectEntry(for: ctx).displayName
     }
 
     private func latestAutomationLaunchRef(for ctx: AXProjectContext) throws -> String {
@@ -19818,6 +26206,9 @@ skipped：\(skippedText)
         lines.append("🩺 Supervisor Doctor 预检结果")
         lines.append("状态：\(report.ok ? "通过" : "阻断")")
         lines.append("阻断项：\(report.summary.blockingCount) · 告警项：\(report.summary.warningCount)")
+        lines.append(
+            "memory assembly：阻断 \(report.summary.memoryAssemblyBlockingCount) · 告警 \(report.summary.memoryAssemblyWarningCount)"
+        )
         lines.append("配置来源：\(report.configSource)")
         lines.append("Secrets 计划：\(report.secretsPlanSource)")
         lines.append("报告路径：\(doctorReportPath.isEmpty ? "(未落盘)" : doctorReportPath)")
@@ -19864,13 +26255,27 @@ skipped：\(skippedText)
     private func renderXTReadyIncidentExportSummary(
         _ result: XTReadyIncidentEventsExportResult
     ) -> String {
+        let snapshot = xtReadyIncidentExportSnapshot(limit: 120)
         var lines: [String] = []
         lines.append("🧾 XT-Ready incident 事件导出")
         lines.append("状态：\(result.ok ? "成功" : "失败")")
         lines.append("导出条数：\(result.exportedEventCount)")
         lines.append("输出路径：\(result.outputPath)")
+        lines.append("strict_e2e_ready：\(snapshot.strictE2EReady ? "yes" : "no")")
+        lines.append("memory_assembly_ready：\(snapshot.memoryAssemblyReady ? "yes" : "no")")
+        lines.append("memory_assembly_status：\(snapshot.memoryAssemblyStatusLine)")
         if !result.missingIncidentCodes.isEmpty {
             lines.append("缺失必需 incident_code：\(result.missingIncidentCodes.joined(separator: ","))")
+        }
+        if snapshot.memoryAssemblyIssues.isEmpty {
+            lines.append("memory_assembly_issues：none")
+        } else {
+            lines.append("memory_assembly_issues：\(snapshot.memoryAssemblyIssues.joined(separator: ","))")
+        }
+        if snapshot.strictE2EIssues.isEmpty {
+            lines.append("strict_e2e_issues：none")
+        } else {
+            lines.append("strict_e2e_issues：\(snapshot.strictE2EIssues.joined(separator: ","))")
         }
         if result.reason != "ok" {
             lines.append("原因：\(result.reason)")
@@ -19889,11 +26294,18 @@ skipped：\(skippedText)
         lines.append("exported required incidents：\(snapshot.requiredIncidentEventCount)")
         lines.append("status：\(snapshot.status)")
         lines.append("strict_e2e_ready：\(snapshot.strictE2EReady ? "yes" : "no")")
+        lines.append("memory_assembly_ready：\(snapshot.memoryAssemblyReady ? "yes" : "no")")
+        lines.append("memory_assembly_status：\(snapshot.memoryAssemblyStatusLine)")
         lines.append("report_path：\(snapshot.reportPath)")
         if snapshot.missingIncidentCodes.isEmpty {
             lines.append("missing incident_code：none")
         } else {
             lines.append("missing incident_code：\(snapshot.missingIncidentCodes.joined(separator: ","))")
+        }
+        if snapshot.memoryAssemblyIssues.isEmpty {
+            lines.append("memory_assembly_issues：none")
+        } else {
+            lines.append("memory_assembly_issues：\(snapshot.memoryAssemblyIssues.joined(separator: ","))")
         }
         if snapshot.strictE2EIssues.isEmpty {
             lines.append("strict_e2e_issues：none")
@@ -20313,14 +26725,46 @@ extension SupervisorManager {
         schedulerSnapshotRefreshOverride = override
     }
 
+    func installSupervisorMemoryFollowUpReminderOverrideForTesting(
+        _ override: ((String, String, String?) -> Void)?
+    ) {
+        supervisorMemoryFollowUpReminderOverrideForTesting = override
+    }
+
+    func setConnectorIngressSnapshotForTesting(
+        _ snapshot: HubIPCClient.ConnectorIngressSnapshot?,
+        now: Date = Date()
+    ) {
+        connectorIngressSnapshot = snapshot
+        connectorIngressLastSuccessAt = snapshot.map { max(now.timeIntervalSince1970, $0.updatedAtMs / 1000.0) } ?? 0
+    }
+
     func setPendingHubGrantsForTesting(
         _ grants: [SupervisorPendingGrant],
-        source: String = "test"
+        source: String = "test",
+        announceNewArrivals: Bool = false,
+        now: Date = Date()
     ) {
+        let previousGrants = pendingHubGrants
         pendingHubGrants = grants
         pendingHubGrantSource = source
-        pendingHubGrantUpdatedAt = Date().timeIntervalSince1970
+        pendingHubGrantUpdatedAt = now.timeIntervalSince1970
         hasFreshPendingHubGrantSnapshot = true
+        if announceNewArrivals {
+            updatePendingHubGrantVoiceAnnouncementState(
+                previousGrants: previousGrants,
+                now: pendingHubGrantUpdatedAt
+            )
+        }
+    }
+
+    func setPendingGrantSnapshotForTesting(
+        _ snapshot: HubIPCClient.PendingGrantSnapshot?,
+        now: Date = Date()
+    ) {
+        pendingGrantSnapshot = snapshot
+        pendingGrantLastSuccessAt = snapshot.map { max(now.timeIntervalSince1970, $0.updatedAtMs / 1000.0) } ?? 0
+        rebuildPendingHubGrantViewState(now: now.timeIntervalSince1970)
     }
 
     func resetOneShotControlPlaneState() {
@@ -20337,6 +26781,18 @@ extension SupervisorManager {
         _ executor: @escaping (SupervisorOneShotIntakeRequest, AdaptivePoolPlanDecision, SplitProposalBuildResult) async -> GuardedOneShotLaunchResumeOutcome
     ) {
         preparedOneShotLaunchExecutorForTesting = executor
+    }
+
+    func ensureOneShotAnchorProjectForTesting(
+        in supervisor: SupervisorModel,
+        request: SupervisorOneShotIntakeRequest,
+        planDecision: AdaptivePoolPlanDecision
+    ) async -> ProjectModel {
+        await ensureOneShotAnchorProject(
+            in: supervisor,
+            request: request,
+            planDecision: planDecision
+        )
     }
 
     @discardableResult
@@ -20384,6 +26840,7 @@ extension SupervisorManager {
         request: XTAutomationRunRequest,
         emitSystemMessage: Bool = false
     ) throws -> XTAutomationPreparedRun {
+        let projectDisplayName = projectDisplayName(for: ctx)
         let prepared = try automationRunCoordinator.prepareActiveRun(for: ctx, request: request)
         automationPreparedRun = prepared
         automationCurrentCheckpoint = prepared.currentCheckpoint
@@ -20394,9 +26851,9 @@ extension SupervisorManager {
             state: prepared.currentCheckpoint.state,
             detail: prepared.verticalSlice.eventRunner.launchDecision.decision.rawValue
         )
-        appendRecentEvent("automation prepared: \(ctx.projectName()) -> \(prepared.launchRef)")
+        appendRecentEvent("automation prepared: \(projectDisplayName) -> \(prepared.launchRef)")
         if emitSystemMessage {
-            addSystemMessage("automation 已准备：\(ctx.projectName()) -> \(prepared.launchRef)")
+            addSystemMessage("automation 已准备：\(projectDisplayName) -> \(prepared.launchRef)")
         }
         return prepared
     }
@@ -20406,6 +26863,7 @@ extension SupervisorManager {
         ctx: AXProjectContext,
         emitSystemMessage: Bool
     ) throws {
+        let projectDisplayName = projectDisplayName(for: ctx)
         guard prepared.currentCheckpoint.state == .queued else { return }
 
         let config = try AXProjectStore.loadOrCreateConfig(for: ctx)
@@ -20426,7 +26884,7 @@ extension SupervisorManager {
             state: prepared.currentCheckpoint.state,
             detail: "auto_execution_scheduled"
         )
-        appendRecentEvent("automation execution scheduled: \(ctx.projectName()) -> \(prepared.launchRef)")
+        appendRecentEvent("automation execution scheduled: \(projectDisplayName) -> \(prepared.launchRef)")
 
         automationExecutionTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -20445,6 +26903,7 @@ extension SupervisorManager {
         ctx: AXProjectContext,
         emitSystemMessage: Bool
     ) async {
+        let projectDisplayName = projectDisplayName(for: ctx)
         defer { automationExecutionTask = nil }
         let startAuditRef = "audit-xt-auto-action-graph-start-\(Int(Date().timeIntervalSince1970))"
 
@@ -20504,9 +26963,9 @@ extension SupervisorManager {
                 executionDetail: report.detail
             )
             if !heldAtSafePoint {
-                appendRecentEvent("automation executed: \(ctx.projectName()) -> \(report.detail)")
+                appendRecentEvent("automation executed: \(projectDisplayName) -> \(report.detail)")
                 if emitSystemMessage {
-                    addSystemMessage(renderAutomationExecutionSummary(projectName: ctx.projectName(), report: report))
+                    addSystemMessage(renderAutomationExecutionSummary(projectName: projectDisplayName, report: report))
                 }
                 scheduleAutomaticSelfIterationIfNeeded(
                     prepared: prepared,
@@ -20518,9 +26977,9 @@ extension SupervisorManager {
             }
         } catch {
             automationStatusLine = "automation runtime: \(prepared.launchRef) -> failed (\(error.localizedDescription))"
-            appendRecentEvent("automation execution failed: \(ctx.projectName()) -> \(error.localizedDescription)")
+            appendRecentEvent("automation execution failed: \(projectDisplayName) -> \(error.localizedDescription)")
             if emitSystemMessage {
-                addSystemMessage("automation 执行失败：\(ctx.projectName()) -> \(error.localizedDescription)")
+                addSystemMessage("automation 执行失败：\(projectDisplayName) -> \(error.localizedDescription)")
             }
         }
     }
@@ -20559,6 +27018,7 @@ extension SupervisorManager {
         now: Date = Date(),
         emitSystemMessage: Bool = false
     ) throws -> XTAutomationRunCheckpoint {
+        let projectDisplayName = projectDisplayName(for: ctx)
         let resolvedRunID = try resolvedAutomationRunID(runID)
         let checkpoint = try automationRunCoordinator.advanceRun(
             resolvedRunID,
@@ -20583,9 +27043,9 @@ extension SupervisorManager {
         ) {
             return checkpoint
         }
-        appendRecentEvent("automation advanced: \(ctx.projectName()) -> \(checkpoint.state.rawValue)")
+        appendRecentEvent("automation advanced: \(projectDisplayName) -> \(checkpoint.state.rawValue)")
         if emitSystemMessage {
-            addSystemMessage("automation 状态更新：\(ctx.projectName()) -> \(checkpoint.state.rawValue)")
+            addSystemMessage("automation 状态更新：\(projectDisplayName) -> \(checkpoint.state.rawValue)")
         }
         return checkpoint
     }
@@ -20618,6 +27078,7 @@ extension SupervisorManager {
         now: Date = Date(),
         emitSystemMessage: Bool = false
     ) throws -> XTAutomationRestartRecoveryDecision {
+        let projectDisplayName = projectDisplayName(for: ctx)
         let resolvedRunID = try resolvedAutomationRunID(runID)
         automationExecutionTask?.cancel()
         automationExecutionTask = nil
@@ -20641,9 +27102,9 @@ extension SupervisorManager {
             state: decision.recoveredState,
             detail: decision.holdReason
         )
-        appendRecentEvent("automation cancelled: \(ctx.projectName()) -> \(decision.runID)")
+        appendRecentEvent("automation cancelled: \(projectDisplayName) -> \(decision.runID)")
         if emitSystemMessage {
-            addSystemMessage("automation 已取消：\(ctx.projectName()) -> \(decision.runID)")
+            addSystemMessage("automation 已取消：\(projectDisplayName) -> \(decision.runID)")
         }
         return decision
     }
@@ -20691,6 +27152,7 @@ extension SupervisorManager {
         auditRef: String,
         emitSystemMessage: Bool
     ) throws -> XTAutomationRestartRecoveryDecision? {
+        let projectDisplayName = projectDisplayName(for: ctx)
         let decision = try automationRunCoordinator.recoverLatestRun(
             for: ctx,
             checkpointAgeSeconds: checkpointAgeSeconds,
@@ -20715,9 +27177,9 @@ extension SupervisorManager {
                     detail: decision.decision.rawValue
                 )
             }
-            appendRecentEvent("automation recovered: \(ctx.projectName()) -> \(decision.runID)")
+            appendRecentEvent("automation recovered: \(projectDisplayName) -> \(decision.runID)")
             if emitSystemMessage {
-                addSystemMessage("automation 已恢复判定：\(ctx.projectName()) -> \(decision.decision.rawValue)")
+                addSystemMessage("automation 已恢复判定：\(projectDisplayName) -> \(decision.decision.rawValue)")
             }
         }
         return decision

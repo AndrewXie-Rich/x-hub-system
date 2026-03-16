@@ -162,6 +162,154 @@ struct ChatSessionModelDirectReplyTests {
     }
 
     @Test
+    func routeDiagnoseShowsRemoteBackupPlanBeforeLocalFallback() throws {
+        let originalMode = HubAIClient.transportMode()
+        defer { HubAIClient.setTransportMode(originalMode) }
+        HubAIClient.setTransportMode(.auto)
+
+        let root = try makeProjectRoot(named: "project-route-diagnose-remote-backup")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingModelOverride(role: .coder, modelId: "openai/gpt-5.4")
+
+        let store = SettingsStore()
+        let router = LLMRouter(settingsStore: store)
+        let session = ChatSessionModel()
+
+        let rendered = session.projectRouteDiagnosisTextForTesting(
+            ctx: ctx,
+            config: config,
+            router: router,
+            routeSnapshot: ModelStateSnapshot(
+                models: [
+                    HubModel(
+                        id: "openai/gpt-5.4",
+                        name: "GPT 5.4",
+                        backend: "openai",
+                        quant: "n/a",
+                        contextLength: 200_000,
+                        paramsB: 0,
+                        roles: nil,
+                        state: .available,
+                        memoryBytes: nil,
+                        tokensPerSec: nil,
+                        modelPath: nil,
+                        note: nil
+                    ),
+                    HubModel(
+                        id: "openai/gpt-4.1",
+                        name: "GPT 4.1",
+                        backend: "openai",
+                        quant: "n/a",
+                        contextLength: 200_000,
+                        paramsB: 0,
+                        roles: nil,
+                        state: .loaded,
+                        memoryBytes: nil,
+                        tokensPerSec: nil,
+                        modelPath: nil,
+                        note: nil
+                    )
+                ],
+                updatedAt: 130
+            ),
+            localSnapshot: ModelStateSnapshot.empty()
+        )
+
+        #expect(rendered.contains("当前决策：按当前配置继续尝试：openai/gpt-5.4"))
+        #expect(rendered.contains("远端备选：首选远端失败时，XT 会先改试同族已加载远端：openai/gpt-4.1"))
+    }
+
+    @Test
+    func routeDiagnoseShowsLastObservedRemoteRetryExecution() throws {
+        let originalMode = HubAIClient.transportMode()
+        defer { HubAIClient.setTransportMode(originalMode) }
+        HubAIClient.setTransportMode(.auto)
+
+        let root = try makeProjectRoot(named: "project-route-diagnose-remote-retry-observed")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        AXProjectStore.appendUsage(
+            [
+                "type": "ai_usage",
+                "created_at": 200,
+                "stage": "chat_plan",
+                "role": "coder",
+                "requested_model_id": "openai/gpt-5.4",
+                "actual_model_id": "openai/gpt-4.1",
+                "runtime_provider": "Hub (Remote)",
+                "execution_path": "remote_model",
+                "remote_retry_attempted": true,
+                "remote_retry_from_model_id": "openai/gpt-5.4",
+                "remote_retry_to_model_id": "openai/gpt-4.1",
+                "remote_retry_reason_code": "model_not_found",
+            ],
+            for: ctx
+        )
+
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingModelOverride(role: .coder, modelId: "openai/gpt-5.4")
+
+        let store = SettingsStore()
+        let router = LLMRouter(settingsStore: store)
+        let session = ChatSessionModel()
+
+        let rendered = session.projectRouteDiagnosisTextForTesting(
+            ctx: ctx,
+            config: config,
+            router: router,
+            routeSnapshot: ModelStateSnapshot(
+                models: [
+                    HubModel(
+                        id: "openai/gpt-5.4",
+                        name: "GPT 5.4",
+                        backend: "openai",
+                        quant: "n/a",
+                        contextLength: 200_000,
+                        paramsB: 0,
+                        roles: nil,
+                        state: .available,
+                        memoryBytes: nil,
+                        tokensPerSec: nil,
+                        modelPath: nil,
+                        note: nil
+                    ),
+                    HubModel(
+                        id: "openai/gpt-4.1",
+                        name: "GPT 4.1",
+                        backend: "openai",
+                        quant: "n/a",
+                        contextLength: 200_000,
+                        paramsB: 0,
+                        roles: nil,
+                        state: .loaded,
+                        memoryBytes: nil,
+                        tokensPerSec: nil,
+                        modelPath: nil,
+                        note: nil
+                    )
+                ],
+                updatedAt: 220
+            ),
+            localSnapshot: ModelStateSnapshot.empty()
+        )
+
+        #expect(rendered.contains("最近路由异常 / 重试记录"))
+        #expect(rendered.contains("remote_retry=openai/gpt-5.4->openai/gpt-4.1"))
+        #expect(rendered.contains("最近一次 coder 真实记录"))
+        #expect(rendered.contains("- remote_retry_attempted=true"))
+        #expect(rendered.contains("- remote_retry_from_model=openai/gpt-5.4"))
+        #expect(rendered.contains("- remote_retry_to_model=openai/gpt-4.1"))
+        #expect(rendered.contains("- remote_retry_reason=model_not_found"))
+    }
+
+    @Test
     func identityQuestionDoesNotPretendRemoteModelWasUsed() throws {
         let root = try makeProjectRoot(named: "project-direct-identity")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -397,6 +545,267 @@ struct ChatSessionModelDirectReplyTests {
         #expect(history.contains("browser_runtime_driver_state"))
     }
 
+    @Test
+    func resumeDirectReplyUsesStructuredProjectArtifacts() throws {
+        let root = try makeProjectRoot(named: "project-direct-resume")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+
+        var memory = AXMemory.new(projectName: "project-direct-resume", projectRoot: root.path)
+        memory.goal = "Keep resume / handoff summaries accurate across AI switches."
+        memory.currentState = ["Remote retry routing is already in place"]
+        memory.decisions = ["Resume summary must stay local-only and not enter the normal prompt context."]
+        memory.nextSteps = ["Land the /resume entry and direct trigger"]
+        try AXProjectStore.saveMemory(memory, for: ctx)
+
+        AXRecentContextStore.appendUserMessage(
+            ctx: ctx,
+            text: "Need a handoff entry that does not pollute the main prompt.",
+            createdAt: 100
+        )
+        AXRecentContextStore.appendAssistantMessage(
+            ctx: ctx,
+            text: "Use a local-only structured summary built from canonical memory and recent context.",
+            createdAt: 101
+        )
+
+        AXProjectStore.appendUsage(
+            [
+                "type": "ai_usage",
+                "created_at": 120,
+                "stage": "chat_plan",
+                "role": "coder",
+                "requested_model_id": "openai/gpt-5.4",
+                "actual_model_id": "openai/gpt-5.4",
+                "runtime_provider": "Hub (Remote)",
+                "execution_path": "remote_model",
+            ],
+            for: ctx
+        )
+
+        try SupervisorDecisionTrackStore.upsert(
+            SupervisorDecisionTrackBuilder.build(
+                decisionId: "resume-local-only",
+                projectId: projectId,
+                category: .scopeFreeze,
+                status: .approved,
+                statement: "Resume entry reads structured memory only and does not replay the full chat history.",
+                source: "owner",
+                reversible: true,
+                approvalRequired: false,
+                auditRef: "audit:resume-local-only",
+                createdAtMs: 130_000
+            ),
+            for: ctx
+        )
+        try SupervisorBackgroundPreferenceTrackStore.upsert(
+            SupervisorBackgroundPreferenceTrackBuilder.build(
+                noteId: "resume-style",
+                projectId: projectId,
+                domain: .uxStyle,
+                strength: .strong,
+                statement: "交接摘要要短、准、能直接继续，不要灌回主上下文。",
+                createdAtMs: 131_000
+            ),
+            for: ctx
+        )
+
+        let store = SettingsStore()
+        let router = LLMRouter(settingsStore: store)
+        let session = ChatSessionModel()
+
+        let rendered = try #require(
+            session.directProjectReplyIfApplicableForTesting(
+                "帮我接上次的进度",
+                ctx: ctx,
+                config: nil,
+                router: router
+            )
+        )
+
+        #expect(rendered.contains("项目接续摘要（本地整理，不额外调用远端模型）"))
+        #expect(rendered.contains("当前目标：Keep resume / handoff summaries accurate across AI switches."))
+        #expect(rendered.contains("建议下一步：Land the /resume entry and direct trigger"))
+        #expect(rendered.contains("最近一次 coder 执行：远端 openai/gpt-5.4"))
+        #expect(rendered.contains("重要决策："))
+        #expect(rendered.contains("Resume entry reads structured memory only"))
+        #expect(rendered.contains("长期偏好："))
+        #expect(rendered.contains("要不要从这里继续？"))
+    }
+
+    @Test
+    func resumeSlashCommandDoesNotPolluteRecentContextOrRawLog() throws {
+        let root = try makeProjectRoot(named: "project-slash-resume")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        var memory = AXMemory.new(projectName: "project-slash-resume", projectRoot: root.path)
+        memory.goal = "Provide a clean resume entry."
+        memory.currentState = ["Structured memory already exists"]
+        memory.nextSteps = ["Render local-only resume summary"]
+        try AXProjectStore.saveMemory(memory, for: ctx)
+
+        AXRecentContextStore.appendUserMessage(
+            ctx: ctx,
+            text: "Need a clean resume entry",
+            createdAt: 200
+        )
+        AXRecentContextStore.appendAssistantMessage(
+            ctx: ctx,
+            text: "We should keep it local-only.",
+            createdAt: 201
+        )
+
+        let session = ChatSessionModel()
+        session.ensureLoaded(ctx: ctx, limit: 20)
+        session.draft = "/resume"
+        session.send(
+            ctx: ctx,
+            memory: memory,
+            config: nil,
+            router: LLMRouter(settingsStore: SettingsStore())
+        )
+
+        let assistantText = try #require(session.messages.last?.content)
+        #expect(assistantText.contains("项目接续摘要（本地整理，不额外调用远端模型）"))
+
+        let recent = AXRecentContextStore.load(for: ctx)
+        #expect(recent.messages.count == 2)
+        #expect(recent.messages.last?.content == "We should keep it local-only.")
+        #expect(!recent.messages.contains(where: { $0.content == "/resume" }))
+        #expect(!recent.messages.contains(where: { $0.content.contains("项目接续摘要（本地整理，不额外调用远端模型）") }))
+        #expect(!FileManager.default.fileExists(atPath: ctx.rawLogURL.path))
+    }
+
+    @Test
+    func resumeButtonPresentationAppendsAssistantOnlyWithoutPersistingConversation() throws {
+        let root = try makeProjectRoot(named: "project-button-resume")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        var memory = AXMemory.new(projectName: "project-button-resume", projectRoot: root.path)
+        memory.goal = "Expose a clean resume entry in the chat header."
+        memory.currentState = ["The project already has durable memory"]
+        memory.nextSteps = ["Show a local-only resume brief from the UI"]
+        try AXProjectStore.saveMemory(memory, for: ctx)
+
+        AXRecentContextStore.appendUserMessage(
+            ctx: ctx,
+            text: "Keep the resume entry out of the main prompt state.",
+            createdAt: 220
+        )
+        AXRecentContextStore.appendAssistantMessage(
+            ctx: ctx,
+            text: "Use an assistant-only local summary presentation.",
+            createdAt: 221
+        )
+
+        let session = ChatSessionModel()
+        session.presentProjectResumeBrief(ctx: ctx)
+
+        #expect(session.messages.count == 1)
+        #expect(session.messages.first?.role == .assistant)
+        #expect(session.messages.first?.tag == nil)
+        #expect(session.messages.first?.content.contains("项目接续摘要（本地整理，不额外调用远端模型）") == true)
+
+        let recent = AXRecentContextStore.load(for: ctx)
+        #expect(recent.messages.count == 2)
+        #expect(recent.messages.last?.content == "Use an assistant-only local summary presentation.")
+        #expect(!FileManager.default.fileExists(atPath: ctx.rawLogURL.path))
+    }
+
+    @Test
+    func routeDiagnosePresentationAppendsAssistantOnlyWithoutPersistingConversation() async throws {
+        let root = try makeProjectRoot(named: "project-button-route-diagnose")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        AXRecentContextStore.appendUserMessage(
+            ctx: ctx,
+            text: "Keep route diagnosis out of the main prompt state.",
+            createdAt: 260
+        )
+        AXRecentContextStore.appendAssistantMessage(
+            ctx: ctx,
+            text: "Use an assistant-only route diagnosis presentation.",
+            createdAt: 261
+        )
+
+        let session = ChatSessionModel()
+        session.presentProjectRouteDiagnosis(
+            ctx: ctx,
+            config: nil,
+            router: LLMRouter(settingsStore: SettingsStore())
+        )
+
+        try await waitUntil(timeoutMs: 5_000) {
+            session.messages.count == 1 &&
+            session.messages.first?.content.contains("Project route diagnose: coder") == true
+        }
+
+        #expect(session.messages.count == 1)
+        #expect(session.messages.first?.role == .assistant)
+        #expect(session.messages.first?.tag == nil)
+        #expect(session.messages.first?.content.contains("Project route diagnose: coder") == true)
+
+        let recent = AXRecentContextStore.load(for: ctx)
+        #expect(recent.messages.count == 2)
+        #expect(recent.messages.last?.content == "Use an assistant-only route diagnosis presentation.")
+        #expect(!FileManager.default.fileExists(atPath: ctx.rawLogURL.path))
+    }
+
+    @Test
+    func modelSlashWritesSessionSummaryCapsuleBeforeAISwitch() throws {
+        let root = try makeProjectRoot(named: "project-slash-model-summary")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        var memory = AXMemory.new(projectName: "project-slash-model-summary", projectRoot: root.path)
+        memory.goal = "Persist the latest state before switching the coder model."
+        memory.currentState = ["Current project context is active"]
+        memory.nextSteps = ["Switch coder model after writing a session summary"]
+        try AXProjectStore.saveMemory(memory, for: ctx)
+
+        AXRecentContextStore.appendUserMessage(
+            ctx: ctx,
+            text: "Need to preserve a handoff before switching models.",
+            createdAt: 300
+        )
+        AXRecentContextStore.appendAssistantMessage(
+            ctx: ctx,
+            text: "I will keep a session summary at the switch boundary.",
+            createdAt: 301
+        )
+
+        let session = ChatSessionModel()
+        session.ensureLoaded(ctx: ctx, limit: 20)
+        session.draft = "/model openai/gpt-5.4"
+        session.send(
+            ctx: ctx,
+            memory: memory,
+            config: nil,
+            router: LLMRouter(settingsStore: SettingsStore())
+        )
+
+        #expect(FileManager.default.fileExists(atPath: ctx.latestSessionSummaryURL.path))
+        let data = try Data(contentsOf: ctx.latestSessionSummaryURL)
+        let summary = try JSONDecoder().decode(AXSessionSummaryCapsule.self, from: data)
+        #expect(summary.reason == "ai_switch")
+        #expect(summary.memorySummary.goal == "Persist the latest state before switching the coder model.")
+        #expect(summary.workingSetSummary.latestUserMessage == "Need to preserve a handoff before switching models.")
+    }
+
     private func makeProjectRoot(named name: String) throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "xt_chat_direct_reply_\(name)_\(UUID().uuidString)",
@@ -404,5 +813,17 @@ struct ChatSessionModelDirectReplyTests {
         )
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
+    }
+
+    private func waitUntil(timeoutMs: UInt64, condition: @escaping () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000.0)
+        while Date() < deadline {
+            if condition() {
+                return
+            }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        Issue.record("condition not met within \(timeoutMs) ms")
+        throw CancellationError()
     }
 }

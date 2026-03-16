@@ -13,10 +13,14 @@ enum XTProjectCanonicalMemorySync {
     private static let maxListItems = 16
     private static let maxListItemChars = 400
 
-    static func items(memory: AXMemory) -> [XTProjectCanonicalMemoryItem] {
+    static func items(memory: AXMemory, preferredProjectName: String? = nil) -> [XTProjectCanonicalMemoryItem] {
+        let projectName = resolvedProjectName(
+            memory.projectName,
+            preferredProjectName: preferredProjectName
+        )
         let pairs: [(String, String)] = [
             ("schema_version", schemaVersion),
-            ("project_name", normalizedScalar(memory.projectName, maxChars: 240)),
+            ("project_name", normalizedScalar(projectName, maxChars: 240)),
             ("project_root", normalizedScalar(memory.projectRoot, maxChars: 1_200)),
             ("updated_at", isoTimestamp(memory.updatedAt)),
             ("goal", normalizedScalar(memory.goal, maxChars: maxScalarChars)),
@@ -27,7 +31,7 @@ enum XTProjectCanonicalMemorySync {
             ("open_questions", normalizedList(memory.openQuestions)),
             ("risks", normalizedList(memory.risks)),
             ("recommendations", normalizedList(memory.recommendations)),
-            ("summary_json", summaryJSON(memory: memory))
+            ("summary_json", summaryJSON(memory: memory, projectName: projectName))
         ]
 
         return pairs.compactMap { suffix, rawValue in
@@ -63,7 +67,18 @@ enum XTProjectCanonicalMemorySync {
             .joined(separator: "\n")
     }
 
-    private static func summaryJSON(memory: AXMemory) -> String {
+    private static func resolvedProjectName(
+        _ memoryProjectName: String,
+        preferredProjectName: String?
+    ) -> String {
+        let preferred = normalizedScalar(preferredProjectName ?? "", maxChars: 240)
+        if !preferred.isEmpty {
+            return preferred
+        }
+        return normalizedScalar(memoryProjectName, maxChars: 240)
+    }
+
+    private static func summaryJSON(memory: AXMemory, projectName: String) -> String {
         struct Summary: Codable {
             var schemaVersion: String
             var projectName: String
@@ -96,7 +111,7 @@ enum XTProjectCanonicalMemorySync {
 
         let payload = Summary(
             schemaVersion: schemaVersion,
-            projectName: memory.projectName,
+            projectName: projectName,
             projectRoot: memory.projectRoot,
             goal: memory.goal,
             requirements: memory.requirements,

@@ -21,7 +21,8 @@ struct SupervisorDoctorTests {
                 items: []
             ),
             secretsPlanSource: "unit_test",
-            reportURL: workspace.appendingPathComponent("doctor_report.json")
+            reportURL: workspace.appendingPathComponent("doctor_report.json"),
+            memoryAssemblySnapshot: nil
         )
 
         let report = SupervisorDoctorChecker.run(input: input)
@@ -55,7 +56,8 @@ struct SupervisorDoctorTests {
             configSource: "unit_test",
             secretsPlan: plan,
             secretsPlanSource: "unit_test",
-            reportURL: workspace.appendingPathComponent("doctor_report.json")
+            reportURL: workspace.appendingPathComponent("doctor_report.json"),
+            memoryAssemblySnapshot: nil
         )
 
         let report = SupervisorDoctorChecker.run(input: input)
@@ -98,7 +100,8 @@ struct SupervisorDoctorTests {
             configSource: "unit_test",
             secretsPlan: plan,
             secretsPlanSource: "unit_test",
-            reportURL: reportURL
+            reportURL: reportURL,
+            memoryAssemblySnapshot: nil
         )
 
         let report = SupervisorDoctorChecker.runAndPersist(input: input)
@@ -125,5 +128,142 @@ struct SupervisorDoctorTests {
         #expect((doctorSection?["shared_token_auth"] as? Bool) == true)
         #expect((doctorSection?["non_message_ingress_policy_coverage"] as? Int) == 1)
         #expect((doctorSection?["unauthorized_flood_drop_count"] as? Int) == 45)
+    }
+
+    @Test
+    func memoryReviewFloorMissIsSurfacedAsBlockingFinding() {
+        let snapshot = makeMemorySnapshot(
+            profileFloor: XTMemoryServingProfile.m3DeepDive.rawValue,
+            resolvedProfile: XTMemoryServingProfile.m2PlanReview.rawValue
+        )
+        let report = SupervisorDoctorChecker.run(input: makeInput(snapshot: snapshot))
+
+        let finding = report.findings.first { $0.code == "memory_review_floor_not_met" }
+        #expect(finding?.area == "memory_assembly")
+        #expect(finding?.severity == .blocking)
+        #expect(report.summary.memoryAssemblyBlockingCount == 1)
+        #expect(report.summary.memoryAssemblyWarningCount == 0)
+    }
+
+    @Test
+    func truncatedCoreMemoryLayerIsSurfacedAsWarning() {
+        let snapshot = makeMemorySnapshot(
+            truncatedLayers: ["l1_canonical"]
+        )
+        let report = SupervisorDoctorChecker.run(input: makeInput(snapshot: snapshot))
+
+        let finding = report.findings.first { $0.code == "memory_core_layers_truncated" }
+        #expect(finding?.area == "memory_assembly")
+        #expect(finding?.severity == .warning)
+        #expect(report.summary.memoryAssemblyBlockingCount == 0)
+        #expect(report.summary.memoryAssemblyWarningCount == 1)
+    }
+
+    @Test
+    func legacyDoctorSummaryDecodesWithoutMemoryAssemblyFields() throws {
+        let legacyJSON = """
+        {
+          "schemaVersion": "supervisor_doctor.v1",
+          "generatedAtMs": 1773000000000,
+          "workspaceRoot": "/tmp/xterminal_doctor_legacy",
+          "configSource": "legacy",
+          "secretsPlanSource": "legacy",
+          "ok": false,
+          "findings": [],
+          "suggestions": [],
+          "summary": {
+            "doctorReportPresent": 1,
+            "releaseBlockedByDoctorWithoutReport": 0,
+            "blockingCount": 1,
+            "warningCount": 2,
+            "dmAllowlistRiskCount": 0,
+            "wsAuthRiskCount": 1,
+            "preAuthFloodBreakerRiskCount": 0,
+            "secretsPathOutOfScopeCount": 0,
+            "secretsMissingVariableCount": 0,
+            "secretsPermissionBoundaryCount": 0
+          }
+        }
+        """
+
+        let report = try JSONDecoder().decode(
+            SupervisorDoctorReport.self,
+            from: Data(legacyJSON.utf8)
+        )
+
+        #expect(report.summary.memoryAssemblyBlockingCount == 0)
+        #expect(report.summary.memoryAssemblyWarningCount == 0)
+        #expect(report.summary.blockingCount == 1)
+        #expect(report.summary.warningCount == 2)
+    }
+
+    private func makeInput(
+        snapshot: SupervisorMemoryAssemblySnapshot?
+    ) -> SupervisorDoctorInputBundle {
+        let workspace = URL(fileURLWithPath: "/tmp/xterminal_doctor_memory_test", isDirectory: true)
+        return SupervisorDoctorInputBundle(
+            workspaceRoot: workspace,
+            config: .conservativeDefault(),
+            configSource: "unit_test",
+            secretsPlan: SupervisorSecretsDryRunPlan(
+                allowedRoots: [workspace.appendingPathComponent(".axcoder/secrets").path],
+                allowedModes: ["0600"],
+                items: []
+            ),
+            secretsPlanSource: "unit_test",
+            reportURL: workspace.appendingPathComponent("doctor_report.json"),
+            memoryAssemblySnapshot: snapshot
+        )
+    }
+
+    private func makeMemorySnapshot(
+        reviewLevelHint: SupervisorReviewLevel = .r2Strategic,
+        requestedProfile: String = XTMemoryServingProfile.m3DeepDive.rawValue,
+        profileFloor: String = XTMemoryServingProfile.m3DeepDive.rawValue,
+        resolvedProfile: String = XTMemoryServingProfile.m3DeepDive.rawValue,
+        focusedProjectId: String? = "project-alpha",
+        selectedSections: [String] = [
+            "portfolio_brief",
+            "focused_project_anchor_pack",
+            "longterm_outline",
+            "delta_feed",
+            "conflict_set",
+            "context_refs",
+            "evidence_pack",
+        ],
+        omittedSections: [String] = [],
+        contextRefsSelected: Int = 2,
+        contextRefsOmitted: Int = 0,
+        evidenceItemsSelected: Int = 2,
+        evidenceItemsOmitted: Int = 0,
+        truncatedLayers: [String] = []
+    ) -> SupervisorMemoryAssemblySnapshot {
+        SupervisorMemoryAssemblySnapshot(
+            source: "unit_test",
+            resolutionSource: "unit_test",
+            updatedAt: 1_773_000_000,
+            reviewLevelHint: reviewLevelHint.rawValue,
+            requestedProfile: requestedProfile,
+            profileFloor: profileFloor,
+            resolvedProfile: resolvedProfile,
+            attemptedProfiles: [requestedProfile, resolvedProfile],
+            progressiveUpgradeCount: 0,
+            focusedProjectId: focusedProjectId,
+            selectedSections: selectedSections,
+            omittedSections: omittedSections,
+            contextRefsSelected: contextRefsSelected,
+            contextRefsOmitted: contextRefsOmitted,
+            evidenceItemsSelected: evidenceItemsSelected,
+            evidenceItemsOmitted: evidenceItemsOmitted,
+            budgetTotalTokens: 1_800,
+            usedTotalTokens: 1_120,
+            truncatedLayers: truncatedLayers,
+            freshness: "fresh_local_ipc",
+            cacheHit: false,
+            denyCode: nil,
+            downgradeCode: nil,
+            reasonCode: nil,
+            compressionPolicy: "progressive_disclosure"
+        )
     }
 }

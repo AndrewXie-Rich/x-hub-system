@@ -47,6 +47,14 @@ struct AXProjectContext: Equatable {
         xterminalDir.appendingPathComponent("supervisor_background_preference_track.json")
     }
 
+    var supervisorReviewNotesURL: URL {
+        xterminalDir.appendingPathComponent("supervisor_review_notes.json")
+    }
+
+    var supervisorGuidanceInjectionsURL: URL {
+        xterminalDir.appendingPathComponent("supervisor_guidance_injections.json")
+    }
+
     var supervisorPlansURL: URL {
         xterminalDir.appendingPathComponent("supervisor_plans.json")
     }
@@ -65,6 +73,14 @@ struct AXProjectContext: Equatable {
 
     var usageLogURL: URL {
         xterminalDir.appendingPathComponent("usage.jsonl")
+    }
+
+    var modelRouteDiagnosticsLogURL: URL {
+        xterminalDir.appendingPathComponent("model_route_diagnostics.jsonl")
+    }
+
+    var routeRepairLogURL: URL {
+        xterminalDir.appendingPathComponent("route_repair_log.jsonl")
     }
 
     var configURL: URL {
@@ -89,6 +105,46 @@ struct AXProjectContext: Equatable {
 
     var browserRuntimeActionLogURL: URL {
         browserRuntimeDir.appendingPathComponent("action_log.jsonl")
+    }
+
+    var uiObservationDir: URL {
+        xterminalDir.appendingPathComponent("ui_observation", isDirectory: true)
+    }
+
+    var uiObservationBundlesDir: URL {
+        uiObservationDir.appendingPathComponent("bundles", isDirectory: true)
+    }
+
+    var uiObservationArtifactsDir: URL {
+        uiObservationDir.appendingPathComponent("artifacts", isDirectory: true)
+    }
+
+    var uiObservationLatestBrowserPageURL: URL {
+        uiObservationDir.appendingPathComponent("latest_browser_page.json")
+    }
+
+    var uiReviewDir: URL {
+        xterminalDir.appendingPathComponent("ui_review", isDirectory: true)
+    }
+
+    var uiReviewRecordsDir: URL {
+        uiReviewDir.appendingPathComponent("reviews", isDirectory: true)
+    }
+
+    var uiReviewLatestBrowserPageURL: URL {
+        uiReviewDir.appendingPathComponent("latest_browser_page.json")
+    }
+
+    var managedProcessesDir: URL {
+        xterminalDir.appendingPathComponent("managed_processes", isDirectory: true)
+    }
+
+    var managedProcessesLogsDir: URL {
+        managedProcessesDir.appendingPathComponent("logs", isDirectory: true)
+    }
+
+    var managedProcessesSnapshotURL: URL {
+        managedProcessesDir.appendingPathComponent("processes.json")
     }
 
     func ensureDirs() throws {
@@ -117,6 +173,17 @@ struct AXProjectContext: Equatable {
         root.lastPathComponent
     }
 
+    func displayName(
+        registry: AXProjectRegistry? = nil,
+        preferredDisplayName: String? = nil
+    ) -> String {
+        AXProjectRegistryStore.displayName(
+            forRoot: root,
+            registry: registry,
+            preferredDisplayName: preferredDisplayName ?? projectName()
+        )
+    }
+
     func supervisorSkillResultEvidenceURL(requestId: String) -> URL {
         let base = requestId
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -124,5 +191,37 @@ struct AXProjectContext: Equatable {
             .replacingOccurrences(of: ":", with: "_")
         let safe = base.isEmpty ? UUID().uuidString.lowercased() : base
         return supervisorSkillResultsDir.appendingPathComponent("\(safe).json")
+    }
+
+    func managedProcessLogURL(processId: String) -> URL {
+        let base = processId
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+        let safe = base.isEmpty ? UUID().uuidString.lowercased() : base
+        return managedProcessesLogsDir.appendingPathComponent("\(safe).log")
+    }
+
+    func uiObservationBundleURL(bundleID: String) -> URL {
+        let safe = sanitizedObservationToken(bundleID)
+        return uiObservationBundlesDir.appendingPathComponent("\(safe).json")
+    }
+
+    func uiObservationArtifactDir(bundleID: String) -> URL {
+        let safe = sanitizedObservationToken(bundleID)
+        return uiObservationArtifactsDir.appendingPathComponent(safe, isDirectory: true)
+    }
+
+    func uiReviewRecordURL(reviewID: String) -> URL {
+        let safe = sanitizedObservationToken(reviewID)
+        return uiReviewRecordsDir.appendingPathComponent("\(safe).json")
+    }
+
+    private func sanitizedObservationToken(_ raw: String) -> String {
+        let base = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+        return base.isEmpty ? UUID().uuidString.lowercased() : base
     }
 }

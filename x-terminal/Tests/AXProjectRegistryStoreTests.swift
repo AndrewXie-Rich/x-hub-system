@@ -4,6 +4,133 @@ import Testing
 
 struct AXProjectRegistryStoreTests {
     @Test
+    func upsertProjectPreservesFriendlyDisplayNameForExistingEntry() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xt-registry-friendly-name-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+        let reg = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: projectId,
+            projects: [
+                AXProjectEntry(
+                    projectId: projectId,
+                    rootPath: root.path,
+                    displayName: "亮亮",
+                    lastOpenedAt: 1,
+                    manualOrderIndex: 0,
+                    pinned: false,
+                    statusDigest: nil,
+                    currentStateSummary: nil,
+                    nextStepSummary: nil,
+                    blockerSummary: nil,
+                    lastSummaryAt: nil,
+                    lastEventAt: nil
+                )
+            ]
+        )
+
+        let updated = AXProjectRegistryStore.upsertProject(reg, root: root)
+
+        #expect(updated.1.displayName == "亮亮")
+        #expect(updated.0.projects.first?.displayName == "亮亮")
+    }
+
+    @Test
+    func displayNamePrefersFriendlyRegistryEntry() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xt-display-name-friendly-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+        let reg = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: projectId,
+            projects: [
+                AXProjectEntry(
+                    projectId: projectId,
+                    rootPath: root.path,
+                    displayName: "Supervisor 耳机项目",
+                    lastOpenedAt: 1,
+                    manualOrderIndex: 0,
+                    pinned: false,
+                    statusDigest: nil,
+                    currentStateSummary: nil,
+                    nextStepSummary: nil,
+                    blockerSummary: nil,
+                    lastSummaryAt: nil,
+                    lastEventAt: nil
+                )
+            ]
+        )
+
+        #expect(
+            AXProjectRegistryStore.displayName(forRoot: root, registry: reg) == "Supervisor 耳机项目"
+        )
+    }
+
+    @Test
+    func displayNameFallsBackToPreferredFriendlyNameWhenRegistryIsMissing() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xt-display-name-preferred-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        #expect(
+            AXProjectRegistryStore.displayName(
+                forRoot: root,
+                registry: .empty(),
+                preferredDisplayName: "亮亮"
+            ) == "亮亮"
+        )
+    }
+
+    @Test
+    func projectContextDisplayNameUsesFriendlyRegistryEntry() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xt-context-display-name-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+        let reg = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: projectId,
+            projects: [
+                AXProjectEntry(
+                    projectId: projectId,
+                    rootPath: root.path,
+                    displayName: "自然语言耳机项目",
+                    lastOpenedAt: 1,
+                    manualOrderIndex: 0,
+                    pinned: false,
+                    statusDigest: nil,
+                    currentStateSummary: nil,
+                    nextStepSummary: nil,
+                    blockerSummary: nil,
+                    lastSummaryAt: nil,
+                    lastEventAt: nil
+                )
+            ]
+        )
+
+        let ctx = AXProjectContext(root: root)
+        #expect(ctx.displayName(registry: reg) == "自然语言耳机项目")
+    }
+
+    @Test
     func sanitizeLoadedRegistryPrunesMissingTemporaryProjects() {
         let tempRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("xt-supervisor-last-actual-model-\(UUID().uuidString)", isDirectory: true)

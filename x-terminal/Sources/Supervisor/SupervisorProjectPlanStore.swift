@@ -42,6 +42,34 @@ enum SupervisorPlanStepKind: String, Codable, Sendable {
     }
 }
 
+enum SupervisorPlanStepFailurePolicy: String, Codable, Sendable {
+    case failFast = "fail_fast"
+    case continueOnFailure = "continue_on_failure"
+    case retryThenFail = "retry_then_fail"
+    case replan
+    case askUser = "ask_user"
+
+    static func parse(_ raw: String?) -> SupervisorPlanStepFailurePolicy? {
+        let token = (raw ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        switch token {
+        case "fail_fast", "failfast":
+            return .failFast
+        case "continue_on_failure", "continueonfailure", "continue":
+            return .continueOnFailure
+        case "retry_then_fail", "retrythenfail", "retry":
+            return .retryThenFail
+        case "replan":
+            return .replan
+        case "ask_user", "askuser":
+            return .askUser
+        default:
+            return nil
+        }
+    }
+}
+
 enum SupervisorPlanStepStatus: String, Codable, Sendable {
     case pending
     case running
@@ -85,6 +113,10 @@ struct SupervisorPlanStepRecord: Identifiable, Equatable, Codable, Sendable {
     var skillId: String
     var currentOwner: String
     var detail: String
+    var dependsOn: [String]? = nil
+    var timeoutMs: Int? = nil
+    var maxRetries: Int? = nil
+    var failurePolicy: SupervisorPlanStepFailurePolicy? = nil
     var orderIndex: Int
     var updatedAtMs: Int64
 
@@ -99,6 +131,10 @@ struct SupervisorPlanStepRecord: Identifiable, Equatable, Codable, Sendable {
         case skillId = "skill_id"
         case currentOwner = "current_owner"
         case detail
+        case dependsOn = "depends_on"
+        case timeoutMs = "timeout_ms"
+        case maxRetries = "max_retries"
+        case failurePolicy = "failure_policy"
         case orderIndex = "order_index"
         case updatedAtMs = "updated_at_ms"
     }

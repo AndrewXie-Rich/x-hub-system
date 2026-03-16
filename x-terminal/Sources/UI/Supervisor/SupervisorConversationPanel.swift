@@ -35,72 +35,96 @@ struct SupervisorConversationPanel: View {
         }
     }
 
+    private var pendingMemoryFollowUpQuestion: String? {
+        let trimmed = supervisor.supervisorPendingMemoryFactFollowUpQuestion
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     private var voiceStatusRail: some View {
-        HStack(spacing: 10) {
-            Label {
-                Text(voicePhaseLabel)
-            } icon: {
-                Image(systemName: voicePhaseIcon)
-            }
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(voicePhaseColor)
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Label {
+                    Text(voicePhaseLabel)
+                } icon: {
+                    Image(systemName: voicePhaseIcon)
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(voicePhaseColor)
 
-            Text(supervisor.voiceRouteDecision.route.displayName)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                Text(supervisor.voiceRouteDecision.route.displayName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
-            Text("auth=\(supervisor.voiceAuthorizationStatus.rawValue)")
-                .font(.caption2.monospaced())
-                .foregroundStyle(.secondary)
-
-            Text("session=\(supervisor.conversationSessionSnapshot.windowState.rawValue)")
-                .font(.caption2.monospaced())
-                .foregroundStyle(.secondary)
-
-            if supervisor.conversationSessionSnapshot.remainingTTLSeconds > 0 {
-                Text("ttl=\(supervisor.conversationSessionSnapshot.remainingTTLSeconds)s")
+                Text("auth=\(supervisor.voiceAuthorizationStatus.rawValue)")
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
-            }
 
-            let readinessReason = supervisor.voiceReadinessSnapshot.primaryReasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !readinessReason.isEmpty || !supervisor.voiceActiveHealthReasonCode.isEmpty {
-                Text(
-                    readinessReason.isEmpty
-                        ? supervisor.voiceActiveHealthReasonCode
-                        : readinessReason
-                )
+                Text("session=\(supervisor.conversationSessionSnapshot.windowState.rawValue)")
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
 
-            Spacer()
-
-            if supervisor.isProcessing {
-                HStack(spacing: 6) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("Supervisor thinking")
-                        .font(.caption)
+                if supervisor.conversationSessionSnapshot.remainingTTLSeconds > 0 {
+                    Text("ttl=\(supervisor.conversationSessionSnapshot.remainingTTLSeconds)s")
+                        .font(.caption2.monospaced())
                         .foregroundStyle(.secondary)
                 }
-            } else {
-                Text("ready")
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-            }
 
-            if supervisor.conversationSessionSnapshot.isConversing {
-                Button("End Voice Session") {
-                    supervisor.endConversationSession()
+                let readinessReason = supervisor.voiceReadinessSnapshot.primaryReasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !readinessReason.isEmpty || !supervisor.voiceActiveHealthReasonCode.isEmpty {
+                    Text(
+                        readinessReason.isEmpty
+                            ? supervisor.voiceActiveHealthReasonCode
+                            : readinessReason
+                    )
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
-                .buttonStyle(.borderless)
-                .font(.caption)
+
+                Spacer()
+
+                if supervisor.isProcessing {
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Supervisor thinking")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text("ready")
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+
+                if supervisor.conversationSessionSnapshot.isConversing {
+                    Button("End Voice Session") {
+                        supervisor.endConversationSession()
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+
+            if let pendingMemoryFollowUpQuestion {
+                Divider()
+                HStack(spacing: 8) {
+                    Image(systemName: "text.bubble.fill")
+                        .foregroundStyle(.orange)
+                    Text("待补背景：\(pendingMemoryFollowUpQuestion)")
+                        .font(.caption)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(Color.orange.opacity(0.06))
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
         .background(Color(NSColor.controlBackgroundColor).opacity(0.55))
     }
 

@@ -94,7 +94,17 @@ final class VoiceSessionCoordinator: ObservableObject {
     }
 
     func startRecording() async {
-        guard !isRecording else { return }
+        _ = await beginCapture(markReason: nil)
+    }
+
+    @discardableResult
+    func resumeListeningForTalkLoop() async -> Bool {
+        await beginCapture(markReason: "talk_loop_resumed")
+    }
+
+    @discardableResult
+    private func beginCapture(markReason: String?) async -> Bool {
+        guard !isRecording else { return true }
         await refreshRouteAvailability()
         guard let activeTranscriber = activeTranscriber(for: routeDecision.route) else {
             runtimeState = SupervisorVoiceRuntimeState(
@@ -103,7 +113,7 @@ final class VoiceSessionCoordinator: ObservableObject {
                 recognizedText: recognizedText,
                 reasonCode: routeDecision.reasonCode
             )
-            return
+            return false
         }
 
         let status = await activeTranscriber.requestAuthorization()
@@ -117,7 +127,7 @@ final class VoiceSessionCoordinator: ObservableObject {
                 recognizedText: recognizedText,
                 reasonCode: routeDecision.reasonCode
             )
-            return
+            return false
         }
 
         guard status.isAuthorized else {
@@ -129,7 +139,7 @@ final class VoiceSessionCoordinator: ObservableObject {
                     ? "speech_authorization_required"
                     : routeDecision.reasonCode
             )
-            return
+            return false
         }
 
         recognizedText = ""
@@ -138,7 +148,7 @@ final class VoiceSessionCoordinator: ObservableObject {
             state: .listening,
             route: routeDecision.route,
             recognizedText: "",
-            reasonCode: nil
+            reasonCode: markReason
         )
 
         do {
@@ -151,8 +161,10 @@ final class VoiceSessionCoordinator: ObservableObject {
                 }
             )
             isRecording = true
+            return true
         } catch {
             handleTranscriberFailure((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+            return false
         }
     }
 

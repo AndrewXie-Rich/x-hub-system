@@ -150,8 +150,8 @@ class SupervisorOrchestrator: ObservableObject {
             score += Int(project.blockedDuration / 60) * 10
         }
 
-        // 自主性级别（高自主性的项目可以并行）
-        score += project.autonomyLevel.rawValue * 10
+        // 执行档位越高，越适合持续推进并占用更少人工协调带宽。
+        score += project.governanceParallelCapacity * 10
 
         return score
     }
@@ -168,7 +168,7 @@ class SupervisorOrchestrator: ObservableObject {
 
             // 分析项目需求
             let complexity = analyzeComplexity(project)
-            let requiresExclusive = complexity == .high || project.autonomyLevel == .fullAuto
+            let requiresExclusive = complexity == .high || project.governancePrefersExclusiveScheduling
 
             // 查找最佳资源
             if let model = findBestModel(for: project, complexity: complexity) {
@@ -260,9 +260,7 @@ class SupervisorOrchestrator: ObservableObject {
         }
 
         // 根据自主性级别调整
-        let autonomyMultiplier = 1.0 - (Double(project.autonomyLevel.rawValue) * 0.1)
-
-        return baseTime * autonomyMultiplier
+        return baseTime * project.executionTier.schedulingDurationMultiplier
     }
 
     /// 并行执行

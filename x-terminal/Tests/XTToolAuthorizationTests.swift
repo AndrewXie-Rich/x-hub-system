@@ -10,7 +10,12 @@ struct XTToolAuthorizationTests {
         let fixture = ToolExecutorProjectFixture(name: "tool-authorization-dangerous-run-command")
         defer { fixture.cleanup() }
 
-        let config = AXProjectConfig.default(forProjectRoot: fixture.root)
+        let config = AXProjectConfig
+            .default(forProjectRoot: fixture.root)
+            .settingProjectGovernance(
+                executionTier: .a2RepoAuto,
+                supervisorInterventionTier: .s2PeriodicReview
+            )
         let decision = await xtToolAuthorizationDecision(
             call: ToolCall(
                 tool: .run_command,
@@ -27,7 +32,7 @@ struct XTToolAuthorizationTests {
     }
 
     @Test
-    func governedAutoApprovalAllowsBenignRunCommandWhenProjectAuthorityIsActive() async {
+    func governedAutoApprovalAllowsGovernedRepoTestRunCommandWhenProjectAuthorityIsActive() async {
         let fixture = ToolExecutorProjectFixture(name: "tool-authorization-governed-auto-approve-run")
         defer { fixture.cleanup() }
 
@@ -47,7 +52,7 @@ struct XTToolAuthorizationTests {
         let decision = await xtToolAuthorizationDecision(
             call: ToolCall(
                 tool: .run_command,
-                args: ["command": .string("echo hello")]
+                args: ["command": .string("swift test --filter SmokeTests")]
             ),
             config: config,
             projectRoot: fixture.root
@@ -56,7 +61,77 @@ struct XTToolAuthorizationTests {
         #expect(decision.disposition == .allow)
         #expect(decision.risk == .safe)
         #expect(decision.policySource == "project_governed_auto_approval")
-        #expect(decision.policyReason == "governed_device_authority")
+        #expect(decision.policyReason == "governed_repo_command_allowlist")
+    }
+
+    @Test
+    func governedAutoApprovalAllowsGovernedLocalBackupCommandWhenProjectAuthorityIsActive() async {
+        let fixture = ToolExecutorProjectFixture(name: "tool-authorization-governed-auto-approve-backup")
+        defer { fixture.cleanup() }
+
+        let config = AXProjectConfig
+            .default(forProjectRoot: fixture.root)
+            .settingTrustedAutomationBinding(
+                mode: .trustedAutomation,
+                deviceId: "device_xt_001",
+                workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
+            )
+            .settingAutonomyPolicy(
+                mode: .trustedOpenClawMode,
+                updatedAt: Date()
+            )
+            .settingGovernedAutoApproveLocalToolCalls(enabled: true)
+
+        let decision = await xtToolAuthorizationDecision(
+            call: ToolCall(
+                tool: .run_command,
+                args: [
+                    "command": .string(
+                        #"mkdir -p .ax-backups && /usr/bin/tar -czf ".ax-backups/project-backup-$(/bin/date +%Y%m%d-%H%M%S).tgz" --exclude .git --exclude .build --exclude .ax-backups ."#
+                    )
+                ]
+            ),
+            config: config,
+            projectRoot: fixture.root
+        )
+
+        #expect(decision.disposition == .allow)
+        #expect(decision.risk == .safe)
+        #expect(decision.policySource == "project_governed_auto_approval")
+        #expect(decision.policyReason == "governed_repo_command_allowlist")
+    }
+
+    @Test
+    func governedAutoApprovalKeepsNonGovernedRunCommandManualEvenWhenProjectAuthorityIsActive() async {
+        let fixture = ToolExecutorProjectFixture(name: "tool-authorization-governed-auto-approve-run-manual")
+        defer { fixture.cleanup() }
+
+        let config = AXProjectConfig
+            .default(forProjectRoot: fixture.root)
+            .settingTrustedAutomationBinding(
+                mode: .trustedAutomation,
+                deviceId: "device_xt_001",
+                workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
+            )
+            .settingAutonomyPolicy(
+                mode: .trustedOpenClawMode,
+                updatedAt: Date(timeIntervalSince1970: 1_773_800_025)
+            )
+            .settingGovernedAutoApproveLocalToolCalls(enabled: true)
+
+        let decision = await xtToolAuthorizationDecision(
+            call: ToolCall(
+                tool: .run_command,
+                args: ["command": .string("echo hello")]
+            ),
+            config: config,
+            projectRoot: fixture.root
+        )
+
+        #expect(decision.disposition == .ask)
+        #expect(decision.risk == .needsConfirm)
+        #expect(decision.policySource == "governed_command_guard")
+        #expect(decision.policyReason == "command_outside_governed_repo_allowlist")
     }
 
     @Test
@@ -99,6 +174,10 @@ struct XTToolAuthorizationTests {
 
         let config = AXProjectConfig
             .default(forProjectRoot: fixture.root)
+            .settingProjectGovernance(
+                executionTier: .a2RepoAuto,
+                supervisorInterventionTier: .s2PeriodicReview
+            )
             .settingToolPolicy(deny: ["write_file"])
         let call = ToolCall(
             tool: .write_file,
@@ -227,7 +306,7 @@ struct XTToolAuthorizationTests {
                 )
                 .settingAutonomyPolicy(
                     mode: .trustedOpenClawMode,
-                    updatedAt: Date(timeIntervalSince1970: 1_773_500_000)
+                    updatedAt: Date()
                 )
             let decision = await xtToolAuthorizationDecision(
                 call: ToolCall(
@@ -304,6 +383,10 @@ struct XTToolAuthorizationTests {
 
         let config = AXProjectConfig
             .default(forProjectRoot: fixture.root)
+            .settingProjectGovernance(
+                executionTier: .a2RepoAuto,
+                supervisorInterventionTier: .s2PeriodicReview
+            )
             .settingToolPolicy(deny: ["write_file"])
         let calls = [
             ToolCall(

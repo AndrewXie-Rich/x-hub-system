@@ -93,4 +93,51 @@ struct SupervisorSpeechSynthesizerTests {
         #expect(outcome == .spoken)
         #expect(spoken == ["Automation Runtime 命令"])
     }
+
+    @Test
+    func interruptCurrentPlaybackUsesInjectedInterruptSink() {
+        var interruptCount = 0
+        let synthesizer = SupervisorSpeechSynthesizer(
+            deduper: SupervisorVoiceBriefDeduper(cooldown: 1),
+            speakSink: { _ in },
+            interruptSink: {
+                interruptCount += 1
+                return true
+            }
+        )
+
+        let interrupted = synthesizer.interruptCurrentPlayback()
+
+        #expect(interrupted)
+        #expect(interruptCount == 1)
+    }
+
+    @Test
+    func legacyVoiceRuntimePreferencesDecodeUsesPersonaAndInterruptDefaults() throws {
+        let payload = """
+        {
+          "preferredRoute": "automatic",
+          "wakeMode": "push_to_talk",
+          "autoReportMode": "summary",
+          "quietHours": {
+            "enabled": false,
+            "fromLocal": "22:00",
+            "toLocal": "08:00"
+          },
+          "localeIdentifier": "zh-CN",
+          "funASR": {
+            "enabled": false,
+            "transport": "websocket",
+            "webSocketURL": "ws://127.0.0.1:10096",
+            "wakeEnabled": true,
+            "partialsEnabled": true
+          }
+        }
+        """.data(using: .utf8) ?? Data()
+
+        let decoded = try JSONDecoder().decode(VoiceRuntimePreferences.self, from: payload)
+
+        #expect(decoded.persona == .conversational)
+        #expect(decoded.interruptOnSpeech)
+    }
 }

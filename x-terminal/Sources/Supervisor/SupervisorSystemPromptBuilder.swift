@@ -91,17 +91,58 @@ struct SupervisorSystemPromptBuilder {
     }
 
     private func buildMemorySection(_ params: SupervisorSystemPromptParams) -> [String] {
-        [
+        var lines = [
             "## Memory Context",
             "Use the following Memory v1 context as the primary project working set for this turn:",
-            "- If Memory Context contains [focused_project_execution_brief], inspect that section first when the user asks you to review project memory/context or propose the next execution plan.",
-            "- Treat the focused project's goal, done_definition, constraints, approved_decisions, and governance lines as the review anchor before you suggest a new path.",
+        ]
+        lines.append(contentsOf: buildMemoryReadinessSection(params.memoryReadiness))
+        lines.append(contentsOf: [
+            "- If Memory Context contains [PORTFOLIO_BRIEF], inspect it first to understand the global project board before you drill into one project.",
+            "- If Memory Context contains [FOCUSED_PROJECT_ANCHOR_PACK], inspect that section first when the user asks you to review project memory/context or propose the next execution plan.",
+            "- If Memory Context contains [LONGTERM_OUTLINE], use it as the focused project's durable background and approved rationale; do not let recent execution noise overwrite it.",
+            "- If the focused project anchor includes decision_lineage or blocker_lineage, use them to reconstruct why the current path was chosen, what guardrails still apply, and what is actively blocking progress before you recommend a strategic correction.",
+            "- If Memory Context contains [DELTA_FEED], treat it as the shortest path to what materially changed since the previous review.",
+            "- If [DELTA_FEED] says no_material_change or shows unchanged state hashes, do not replay the whole project history; keep the current strategy unless new evidence forces a change.",
+            "- If Memory Context contains [CONFLICT_SET], treat it as explicit unresolved disagreements between anchors, live workflow, and recent guidance; resolve or acknowledge those conflicts before changing strategy.",
+            "- If Memory Context contains [CONTEXT_REFS], use it as a grounding and provenance index before you overturn approved strategy, assert project history, or request drill-down.",
+            "- If Memory Context contains [EVIDENCE_PACK], treat it as selected high-signal evidence with why_included, source_scope, and freshness; use it to justify corrections, not as a full replay log.",
+            "- Treat the focused project's goal, done_definition, constraints, approved_decisions, longterm outline, and governance lines as the review anchor before you suggest a new path.",
+            "- If governance lines distinguish configured, recommended, and effective supervision, treat effective_supervisor_tier and effective_work_order_depth as the runtime floor. Configured values are user preference, not proof that lighter supervision is safe right now.",
+            "- Treat effective_work_order_depth as a minimum specificity floor, not a rigid response template. If you already have a coherent, evidence-backed detailed work order, preserve it instead of flattening it into boilerplate.",
+            "- If governance lines expose project_ai_strength_band or project_ai_strength_reasons, adapt your intervention depth accordingly: weak or unknown means narrower ambiguity, more explicit checkpoints, and less assumption-heavy delegation.",
             "- If Memory Context contains [focused_project_retrieval], treat it as governed drill-down snippets for the focused project and use those refs/snippets to make the plan more specific.",
             "- If Memory Context contains [cross_project_drilldown], treat it as an explicitly opened structured drill-down for that project only; do not assume any other project's full chat history is loaded.",
             "- Ground concrete planning in the focused project's goal, current state, next step, blocker, active job/plan, pending steps, attention steps, and recent relevant messages.",
             params.memoryV1,
             ""
+        ])
+        return lines
+    }
+
+    private func buildMemoryReadinessSection(
+        _ readiness: SupervisorMemoryAssemblyReadiness?
+    ) -> [String] {
+        guard let readiness else { return [] }
+
+        var lines = [
+            "Current assembly readiness: \(readiness.statusLine)"
         ]
+        if readiness.ready {
+            lines.append("- Strategic memory readiness is sufficient for focused review. You may do a strategic correction when evidence supports it, but stay anchored to the project's goal, constraints, key decisions, active blockers, and trusted evidence.")
+            return lines
+        }
+
+        lines.append("- Strategic memory is currently underfed. Do not present a confident strategic correction, project-complete verdict, or replay of project history as reliable.")
+        lines.append("- First state that the current memory supply is insufficient for strategic correction, then ask the user for the long-term goal and done criteria, the key decision reasons, the current blocker plus what has been tried, the trusted logs/results/receipts to use as evidence, and enough memory depth before you re-steer the project.")
+        lines.append("- Until that gap is repaired, you may still help with immediate blocker, grant, and next-step handling that is explicitly grounded in the current Memory Context, but do not invent missing background.")
+        if !readiness.issues.isEmpty {
+            let issueSummary = readiness.issues
+                .prefix(3)
+                .map(\.summary)
+                .joined(separator: " | ")
+            lines.append("- Current memory risks: \(issueSummary)")
+        }
+        return lines
     }
 
     private func buildReviewDisciplineSection(isMinimal: Bool) -> [String] {
@@ -124,6 +165,10 @@ struct SupervisorSystemPromptBuilder {
         lines.append("- Prefer low-churn guidance. If the current path is evidence-backed and still aligned, keep it and point out the next watchpoint.")
         lines.append("- Brainstorm alternative paths when you see drift, blockers, repeated failures, no progress windows, pre-high-risk actions, or weak quality confidence near done.")
         lines.append("- If you recommend a better path, explain why it is better, its switching cost, its risk, and its effect on the original goal/constraints.")
+        lines.append("- If effective_work_order_depth is execution_ready, make executable plans explicit enough to run: include ordered steps, enough execution detail to run safely, a verification checkpoint, and when to escalate or replan.")
+        lines.append("- You may satisfy that execution_ready floor with concise but specific step titles plus dependencies, owners, timeout/retry/failure metadata, and verification gates; do not duplicate the same prose into every step when the structured plan is already clear.")
+        lines.append("- Do not turn a strong, already coherent plan into a rigid checklist just to satisfy formatting. Keep the plan's natural decomposition when it is specific, testable, and audit-safe.")
+        lines.append("- If effective_work_order_depth is step_locked_rescue, treat it as rescue mode: small sequenced steps, explicit detail per step, one active unblock at a time, and a verification or user gate before irreversible or high-risk moves.")
         lines.append("")
         return lines
     }
@@ -160,6 +205,8 @@ struct SupervisorSystemPromptBuilder {
             "- If Memory Context contains skills_registry, only CALL_SKILL skill_ids that appear in that focused-project registry snapshot.",
             "- Use each skills_registry item's risk, grant, caps, dispatch, variant, dispatch_note, and payload hints to shape CALL_SKILL payloads; do not invent unsupported arguments or hidden tool routes.",
             "- If a skills_registry item says grant=yes or has high/critical risk, expect an approval or awaiting-authorization transition unless Memory Context already shows a valid grant path.",
+            "- If you emit UPSERT_PLAN for a focused project, match the effective_work_order_depth shown in Memory Context as a minimum detail floor instead of defaulting to a vague one-line plan.",
+            "- For strong or capable focused projects, execution_ready can stay concise when step titles are specific and the plan already carries dependencies, checkpoints, or failure metadata; do not add filler detail fields just to look formal.",
             "- Never use action tags for examples, hypotheticals, or explanations."
         ]
 

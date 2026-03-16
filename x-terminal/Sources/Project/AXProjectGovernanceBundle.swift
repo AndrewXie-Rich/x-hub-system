@@ -81,6 +81,18 @@ struct AXProjectGovernanceBundle: Codable, Equatable, Sendable {
         return out
     }
 
+    func applyingExecutionTierPreservingReviewConfiguration(
+        _ executionTier: AXProjectExecutionTier
+    ) -> AXProjectGovernanceBundle {
+        var out = self
+        out.executionTier = executionTier
+        out.supervisorInterventionTier = max(
+            out.supervisorInterventionTier,
+            executionTier.minimumSafeSupervisorTier
+        )
+        return out
+    }
+
     static func recommended(
         for executionTier: AXProjectExecutionTier,
         supervisorInterventionTier: AXProjectSupervisorInterventionTier? = nil
@@ -106,9 +118,17 @@ struct AXProjectGovernanceBundle: Codable, Equatable, Sendable {
 struct AXProjectCapabilityBundle: Equatable, Sendable {
     var allowJobPlanAuto: Bool
     var allowRepoWrite: Bool
+    var allowRepoDeleteMove: Bool
     var allowRepoBuild: Bool
     var allowRepoTest: Bool
     var allowGitApply: Bool
+    var allowManagedProcesses: Bool
+    var allowProcessAutoRestart: Bool
+    var allowGitCommit: Bool
+    var allowGitPush: Bool
+    var allowPRCreate: Bool
+    var allowCIRead: Bool
+    var allowCITrigger: Bool
     var allowBrowserRuntime: Bool
     var allowDeviceTools: Bool
     var allowConnectorActions: Bool
@@ -118,9 +138,17 @@ struct AXProjectCapabilityBundle: Equatable, Sendable {
     static let observeOnly = AXProjectCapabilityBundle(
         allowJobPlanAuto: false,
         allowRepoWrite: false,
+        allowRepoDeleteMove: false,
         allowRepoBuild: false,
         allowRepoTest: false,
         allowGitApply: false,
+        allowManagedProcesses: false,
+        allowProcessAutoRestart: false,
+        allowGitCommit: false,
+        allowGitPush: false,
+        allowPRCreate: false,
+        allowCIRead: false,
+        allowCITrigger: false,
         allowBrowserRuntime: false,
         allowDeviceTools: false,
         allowConnectorActions: false,
@@ -149,9 +177,17 @@ struct AXProjectCapabilityBundle: Equatable, Sendable {
         if allowJobPlanAuto { labels.append("job.create") }
         if allowJobPlanAuto { labels.append("plan.upsert") }
         if allowRepoWrite { labels.append("repo.write") }
+        if allowRepoDeleteMove { labels.append("repo.delete_move") }
         if allowRepoBuild { labels.append("repo.build") }
         if allowRepoTest { labels.append("repo.test") }
         if allowGitApply { labels.append("git.apply") }
+        if allowManagedProcesses { labels.append("process.manage") }
+        if allowProcessAutoRestart { labels.append("process.autorestart") }
+        if allowGitCommit { labels.append("git.commit") }
+        if allowGitPush { labels.append("git.push") }
+        if allowPRCreate { labels.append("pr.create") }
+        if allowCIRead { labels.append("ci.read") }
+        if allowCITrigger { labels.append("ci.trigger") }
         if allowBrowserRuntime { labels.append("browser.runtime") }
         if allowDeviceTools { labels.append("device.tools") }
         if allowConnectorActions { labels.append("connector.actions") }
@@ -183,6 +219,7 @@ struct AXProjectResolvedGovernanceState: Equatable {
     var projectId: String
     var configuredBundle: AXProjectGovernanceBundle
     var effectiveBundle: AXProjectGovernanceBundle
+    var supervisorAdaptation: AXProjectSupervisorAdaptationSnapshot
     var compatSource: AXProjectGovernanceCompatSource
     var projectMemoryCeiling: XTMemoryServingProfile
     var supervisorReviewMemoryCeiling: XTMemoryServingProfile
@@ -199,7 +236,16 @@ struct AXProjectResolvedGovernanceState: Equatable {
             "execution_tier": .string(configuredBundle.executionTier.rawValue),
             "effective_execution_tier": .string(effectiveBundle.executionTier.rawValue),
             "supervisor_intervention_tier": .string(configuredBundle.supervisorInterventionTier.rawValue),
+            "recommended_supervisor_intervention_tier": .string(supervisorAdaptation.recommendedSupervisorTier.rawValue),
             "effective_supervisor_intervention_tier": .string(effectiveBundle.supervisorInterventionTier.rawValue),
+            "recommended_supervisor_work_order_depth": .string(supervisorAdaptation.recommendedWorkOrderDepth.rawValue),
+            "effective_supervisor_work_order_depth": .string(supervisorAdaptation.effectiveWorkOrderDepth.rawValue),
+            "supervisor_adaptation_mode": .string(supervisorAdaptation.adaptationPolicy.adaptationMode.rawValue),
+            "supervisor_escalation_reasons": .array(supervisorAdaptation.escalationReasons.map(JSONValue.string)),
+            "project_ai_strength_band": .string(supervisorAdaptation.projectAIStrengthProfile?.strengthBand.rawValue ?? AXProjectAIStrengthBand.unknown.rawValue),
+            "project_ai_strength_confidence": .number(supervisorAdaptation.projectAIStrengthProfile?.confidence ?? 0),
+            "project_ai_strength_reasons": .array((supervisorAdaptation.projectAIStrengthProfile?.reasons ?? []).map(JSONValue.string)),
+            "project_ai_strength_audit_ref": .string(supervisorAdaptation.projectAIStrengthProfile?.auditRef ?? ""),
             "review_policy_mode": .string(effectiveBundle.reviewPolicyMode.rawValue),
             "project_memory_ceiling": .string(projectMemoryCeiling.rawValue),
             "supervisor_review_memory_ceiling": .string(supervisorReviewMemoryCeiling.rawValue),

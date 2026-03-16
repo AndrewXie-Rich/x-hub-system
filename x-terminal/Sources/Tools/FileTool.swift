@@ -1,6 +1,18 @@
 import Foundation
 
 enum FileTool {
+    struct DeleteResult: Equatable, Sendable {
+        var path: String
+        var deleted: Bool
+        var targetType: String
+    }
+
+    struct MoveResult: Equatable, Sendable {
+        var fromPath: String
+        var toPath: String
+        var targetType: String
+    }
+
     static func resolvePath(_ path: String, projectRoot: URL) -> URL {
         let p = path.trimmingCharacters(in: .whitespacesAndNewlines)
         if p.isEmpty { return projectRoot }
@@ -49,7 +61,145 @@ enum FileTool {
         if createDirs {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         }
-        try content.data(using: .utf8)?.write(to: url, options: .atomic)
+        guard let data = content.data(using: .utf8) else {
+            throw NSError(
+                domain: "xterminal",
+                code: 500,
+                userInfo: [NSLocalizedDescriptionKey: "Failed to encode file content as UTF-8"]
+            )
+        }
+        try data.write(to: url, options: .atomic)
+    }
+
+    static func deletePath(
+        path: String,
+        projectRoot: URL,
+        recursive: Bool = false,
+        force: Bool = false
+    ) throws -> DeleteResult {
+        let url = resolvePath(path, projectRoot: projectRoot)
+        let fm = FileManager.default
+        try PathGuard.requireInsideAny(
+            roots: [projectRoot],
+            target: url,
+            denyCode: "path_delete_outside_project_root",
+            policyReason: "project_root_delete_only",
+            detail: "delete_path is limited to the project root"
+        )
+
+        let resolvedTarget = PathGuard.resolve(url)
+        let resolvedRoot = PathGuard.resolve(projectRoot)
+        if resolvedTarget.path == resolvedRoot.path {
+            throw NSError(
+                domain: "xterminal",
+                code: 400,
+                userInfo: [NSLocalizedDescriptionKey: "Refusing to delete the project root"]
+            )
+        }
+
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: resolvedTarget.path, isDirectory: &isDirectory) else {
+            if force {
+                return DeleteResult(path: resolvedTarget.path, deleted: false, targetType: "missing")
+            }
+            throw NSError(
+                domain: "xterminal",
+                code: 404,
+                userInfo: [NSLocalizedDescriptionKey: "No such file or directory: \(resolvedTarget.path)"]
+            )
+        }
+
+        if isDirectory.boolValue {
+            let childItems = try fm.contentsOfDirectory(atPath: resolvedTarget.path)
+            if !recursive && !childItems.isEmpty {
+                throw NSError(
+                    domain: "xterminal",
+                    code: 400,
+                    userInfo: [NSLocalizedDescriptionKey: "Directory is not empty; pass recursive=true to delete it"]
+                )
+            }
+        }
+
+        try fm.removeItem(at: resolvedTarget)
+        return DeleteResult(
+            path: resolvedTarget.path,
+            deleted: true,
+            targetType: isDirectory.boolValue ? "directory" : "file"
+        )
+    }
+
+    static func movePath(
+        from sourcePath: String,
+        to destinationPath: String,
+        projectRoot: URL,
+        createDirs: Bool = true,
+        overwrite: Bool = false
+    ) throws -> MoveResult {
+        let sourceURL = resolvePath(sourcePath, projectRoot: projectRoot)
+        let destinationURL = resolvePath(destinationPath, projectRoot: projectRoot)
+        let fm = FileManager.default
+        try PathGuard.requireInsideAny(
+            roots: [projectRoot],
+            target: sourceURL,
+            denyCode: "path_move_outside_project_root",
+            policyReason: "project_root_move_only",
+            detail: "move_path source is limited to the project root"
+        )
+        try PathGuard.requireInsideAny(
+            roots: [projectRoot],
+            target: destinationURL,
+            denyCode: "path_move_outside_project_root",
+            policyReason: "project_root_move_only",
+            detail: "move_path destination is limited to the project root"
+        )
+
+        let resolvedSource = PathGuard.resolve(sourceURL)
+        let resolvedDestination = PathGuard.resolve(destinationURL)
+        let resolvedRoot = PathGuard.resolve(projectRoot)
+        if resolvedSource.path == resolvedRoot.path || resolvedDestination.path == resolvedRoot.path {
+            throw NSError(
+                domain: "xterminal",
+                code: 400,
+                userInfo: [NSLocalizedDescriptionKey: "Refusing to move the project root"]
+            )
+        }
+        if resolvedSource.path == resolvedDestination.path {
+            throw NSError(
+                domain: "xterminal",
+                code: 400,
+                userInfo: [NSLocalizedDescriptionKey: "Source and destination resolve to the same path"]
+            )
+        }
+
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: resolvedSource.path, isDirectory: &isDirectory) else {
+            throw NSError(
+                domain: "xterminal",
+                code: 404,
+                userInfo: [NSLocalizedDescriptionKey: "No such file or directory: \(resolvedSource.path)"]
+            )
+        }
+
+        if createDirs {
+            try fm.createDirectory(at: resolvedDestination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        }
+        if fm.fileExists(atPath: resolvedDestination.path) {
+            guard overwrite else {
+                throw NSError(
+                    domain: "xterminal",
+                    code: 409,
+                    userInfo: [NSLocalizedDescriptionKey: "Destination already exists: \(resolvedDestination.path)"]
+                )
+            }
+            try fm.removeItem(at: resolvedDestination)
+        }
+
+        try fm.moveItem(at: resolvedSource, to: resolvedDestination)
+        return MoveResult(
+            fromPath: resolvedSource.path,
+            toPath: resolvedDestination.path,
+            targetType: isDirectory.boolValue ? "directory" : "file"
+        )
     }
 
     static func listDir(

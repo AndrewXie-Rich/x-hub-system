@@ -105,6 +105,73 @@ struct SupervisorManagerAutomationRuntimeTests {
     }
 
     @Test
+    func automationCtxRuntimeSystemMessagesUseFriendlyProjectDisplayName() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+        let friendlyName = "Supervisor 耳机项目"
+        let project = AXProjectEntry(
+            projectId: projectId,
+            rootPath: root.path,
+            displayName: friendlyName,
+            lastOpenedAt: 1_773_200_150,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: nil,
+            currentStateSummary: nil,
+            nextStepSummary: nil,
+            blockerSummary: nil,
+            lastSummaryAt: nil,
+            lastEventAt: nil
+        )
+
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: 1_773_200_150,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+        manager.clearMessages()
+
+        let prepared = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeRequest(now: Date(timeIntervalSince1970: 1_773_200_151)),
+            emitSystemMessage: true
+        )
+        _ = try manager.cancelAutomationRun(
+            for: ctx,
+            runID: prepared.launchRef,
+            auditRef: "audit-xt-auto-friendly-name-cancel",
+            now: Date(timeIntervalSince1970: 1_773_200_152),
+            emitSystemMessage: true
+        )
+
+        #expect(manager.messages.contains(where: {
+            $0.role == .system &&
+                $0.content.contains("automation 已准备：\(friendlyName) -> \(prepared.launchRef)") &&
+                !$0.content.contains(root.lastPathComponent)
+        }))
+        #expect(manager.messages.contains(where: {
+            $0.role == .system &&
+                $0.content.contains("automation 已取消：\(friendlyName) -> \(prepared.launchRef)") &&
+                !$0.content.contains(root.lastPathComponent)
+        }))
+    }
+
+    @Test
     func managerProjectEntryWrappersResolveContextAndPrepareRun() throws {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
@@ -420,6 +487,71 @@ struct SupervisorManagerAutomationRuntimeTests {
                 && ($0["decision"] as? String) == "drop"
                 && ($0["reason_code"] as? String) == "external_trigger_replay_detected"
         })
+    }
+
+    @Test
+    func externalTriggerFailureSystemMessageUsesFriendlyProjectDisplayName() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+        let friendlyName = "外出采购项目"
+        let project = AXProjectEntry(
+            projectId: projectId,
+            rootPath: root.path,
+            displayName: friendlyName,
+            lastOpenedAt: 1_773_200_950,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: nil,
+            currentStateSummary: nil,
+            nextStepSummary: nil,
+            blockerSummary: nil,
+            lastSummaryAt: nil,
+            lastEventAt: nil
+        )
+
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: 1_773_200_950,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+        manager.clearMessages()
+
+        let result = manager.ingestAutomationExternalTrigger(
+            SupervisorManager.SupervisorAutomationExternalTriggerIngress(
+                projectId: projectId,
+                triggerId: "webhook/not_allowed",
+                triggerType: .webhook,
+                source: .github,
+                payloadRef: "local://trigger-payload/not-allowed",
+                dedupeKey: "sha256:not-allowed-001",
+                receivedAt: Date(timeIntervalSince1970: 1_773_200_951),
+                ingressChannel: "test_webhook_bridge"
+            ),
+            emitSystemMessage: true
+        )
+
+        #expect(result.decision == .failClosed)
+        #expect(result.reasonCode == "trigger_ingress_not_allowed")
+        #expect(manager.messages.contains(where: {
+            $0.role == .system &&
+                $0.content.contains("automation 外部触发未执行：\(friendlyName) -> webhook/not_allowed (trigger_ingress_not_allowed)") &&
+                !$0.content.contains(root.lastPathComponent)
+        }))
     }
 
     @Test
@@ -972,7 +1104,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
 
-        let root = try makeProjectRoot()
+        let root = try makeRegistryVisibleProjectRoot()
         defer {
             manager.resetAutomationRuntimeState()
             try? FileManager.default.removeItem(at: root)
@@ -1021,7 +1153,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
 
-        let root = try makeProjectRoot()
+        let root = try makeRegistryVisibleProjectRoot()
         defer {
             manager.resetAutomationRuntimeState()
             try? FileManager.default.removeItem(at: root)
@@ -1076,7 +1208,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         }
         let followUpFlag = FollowUpFlag()
 
-        let root = try makeProjectRoot()
+        let root = try makeRegistryVisibleProjectRoot()
         defer {
             manager.resetAutomationRuntimeState()
             try? FileManager.default.removeItem(at: root)
@@ -1289,7 +1421,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
 
-        let root = try makeProjectRoot()
+        let root = try makeRegistryVisibleProjectRoot()
         defer {
             manager.resetAutomationRuntimeState()
             try? FileManager.default.removeItem(at: root)
@@ -1301,6 +1433,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         config.verifyCommands = ["swift test --filter SmokeTests"]
         config.verifyAfterChanges = true
         try AXProjectStore.saveConfig(config, for: ctx)
+        try armRepoAutomationGovernance(for: ctx)
 
         _ = try AXProjectStore.upsertAutomationRecipe(makeMutationRecipe(), activate: true, for: ctx)
         manager.installAutomationRunExecutorForTesting(
@@ -1365,7 +1498,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
 
-        let root = try makeProjectRoot()
+        let root = try makeRegistryVisibleProjectRoot()
         defer {
             manager.resetAutomationRuntimeState()
             try? FileManager.default.removeItem(at: root)
@@ -1377,6 +1510,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         config.verifyCommands = ["swift test --filter SmokeTests"]
         config.verifyAfterChanges = true
         try AXProjectStore.saveConfig(config, for: ctx)
+        try armRepoAutomationGovernance(for: ctx)
 
         _ = try AXProjectStore.upsertAutomationRecipe(makeMutationRecipe(), activate: true, for: ctx)
         let counter = ToolCallCounter()
@@ -1503,6 +1637,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         }
 
         let ctx = AXProjectContext(root: root)
+        try armRepoAutomationGovernance(for: ctx)
         _ = try AXProjectStore.upsertAutomationRecipe(makeGitApplyRecipe(), activate: true, for: ctx)
         manager.installAutomationRunExecutorForTesting(
             XTAutomationRunExecutor { call, _ in
@@ -1555,7 +1690,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
 
-        let root = try makeProjectRoot()
+        let root = try makeRegistryVisibleProjectRoot()
         defer {
             manager.resetAutomationRuntimeState()
             try? FileManager.default.removeItem(at: root)
@@ -1569,6 +1704,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         config.automationSelfIterateEnabled = true
         config.automationMaxAutoRetryDepth = 1
         try AXProjectStore.saveConfig(config, for: ctx)
+        try armRepoAutomationGovernance(for: ctx)
 
         _ = try AXProjectStore.upsertAutomationRecipe(makeMutationRecipe(), activate: true, for: ctx)
         let counter = ToolCallCounter()
@@ -1664,7 +1800,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
 
-        let root = try makeProjectRoot()
+        let root = try makeRegistryVisibleProjectRoot()
         defer {
             manager.resetAutomationRuntimeState()
             try? FileManager.default.removeItem(at: root)
@@ -1676,6 +1812,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         config.verifyCommands = ["swift test --filter SmokeTests"]
         config.verifyAfterChanges = true
         try AXProjectStore.saveConfig(config, for: ctx)
+        try armRepoAutomationGovernance(for: ctx)
 
         _ = try AXProjectStore.upsertAutomationRecipe(makeMutationRecipe(), activate: true, for: ctx)
         manager.installAutomationRunExecutorForTesting(
@@ -1901,6 +2038,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         }
 
         let ctx = AXProjectContext(root: root)
+        try armRepoAutomationGovernance(for: ctx)
         _ = try AXProjectStore.upsertAutomationRecipe(makeResumeFromFailedActionRecipe(), activate: true, for: ctx)
 
         let counter = ToolCallCounter()
@@ -1965,6 +2103,15 @@ struct SupervisorManagerAutomationRuntimeTests {
             deviceId: "device_xt_001",
             deviceToolGroups: ["device.ui.step"],
             workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: ctx.root)
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
+    }
+
+    private func armRepoAutomationGovernance(for ctx: AXProjectContext) throws {
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config = config.settingProjectGovernance(
+            executionTier: .a2RepoAuto,
+            supervisorInterventionTier: .s2PeriodicReview
         )
         try AXProjectStore.saveConfig(config, for: ctx)
     }

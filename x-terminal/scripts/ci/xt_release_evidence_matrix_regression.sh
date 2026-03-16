@@ -3,10 +3,16 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 GATE_SCRIPT="${ROOT_DIR}/scripts/ci/xt_release_gate.sh"
+PROFILE_HELPER="${ROOT_DIR}/scripts/ci/xt_nested_gate_profile.sh"
 KEEP_WORKDIR="${XT_RELEASE_EVIDENCE_MATRIX_KEEP:-0}"
 
 if [[ ! -f "${GATE_SCRIPT}" ]]; then
   echo "[matrix] gate script missing: ${GATE_SCRIPT}" >&2
+  exit 2
+fi
+
+if [[ ! -f "${PROFILE_HELPER}" ]]; then
+  echo "[matrix] nested gate profile helper missing: ${PROFILE_HELPER}" >&2
   exit 2
 fi
 
@@ -111,8 +117,15 @@ run_case() {
     "XT_GATE_REPORT_DIR=${report_dir}"
     "XT_GATE_REPORT_FILE=${report_file}"
     "XT_GATE_REPORT_INDEX_FILE=${report_index_file}"
-    "XT_GATE_VALIDATE_RELEASE_EVIDENCE_MATRIX=0"
   )
+
+  # Keep matrix cases focused on release-evidence behavior itself.
+  # Expensive regressions such as XT-W3-36 governance evidence are exercised by
+  # the top-level gate and do not need to be re-run for each matrix branch.
+  while IFS= read -r line; do
+    [[ -n "${line}" ]] || continue
+    env_vars+=("${line}")
+  done < <(bash "${PROFILE_HELPER}" release_matrix)
 
   if [[ -n "${runtime_override}" ]]; then
     env_vars+=("XT_READY_INCIDENT_EVENTS_JSON=${runtime_override}")

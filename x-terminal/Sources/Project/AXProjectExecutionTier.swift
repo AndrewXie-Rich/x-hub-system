@@ -18,7 +18,7 @@ enum AXProjectExecutionTier: String, Codable, CaseIterable, Sendable {
         case .a3DeliverAuto:
             return "A3 Deliver Auto"
         case .a4OpenClaw:
-            return "A4 OpenClaw"
+            return "A4 Full Surface"
         }
     }
 
@@ -148,22 +148,59 @@ enum AXProjectExecutionTier: String, Codable, CaseIterable, Sendable {
             return AXProjectCapabilityBundle(
                 allowJobPlanAuto: true,
                 allowRepoWrite: false,
+                allowRepoDeleteMove: false,
                 allowRepoBuild: false,
                 allowRepoTest: false,
                 allowGitApply: false,
+                allowManagedProcesses: false,
+                allowProcessAutoRestart: false,
+                allowGitCommit: false,
+                allowGitPush: false,
+                allowPRCreate: false,
+                allowCIRead: false,
+                allowCITrigger: false,
                 allowBrowserRuntime: false,
                 allowDeviceTools: false,
                 allowConnectorActions: false,
                 allowExtensions: false,
                 allowAutoLocalApproval: false
             )
-        case .a2RepoAuto, .a3DeliverAuto:
+        case .a2RepoAuto:
             return AXProjectCapabilityBundle(
                 allowJobPlanAuto: true,
                 allowRepoWrite: true,
+                allowRepoDeleteMove: true,
                 allowRepoBuild: true,
                 allowRepoTest: true,
                 allowGitApply: true,
+                allowManagedProcesses: true,
+                allowProcessAutoRestart: false,
+                allowGitCommit: false,
+                allowGitPush: false,
+                allowPRCreate: false,
+                allowCIRead: false,
+                allowCITrigger: false,
+                allowBrowserRuntime: false,
+                allowDeviceTools: false,
+                allowConnectorActions: false,
+                allowExtensions: false,
+                allowAutoLocalApproval: false
+            )
+        case .a3DeliverAuto:
+            return AXProjectCapabilityBundle(
+                allowJobPlanAuto: true,
+                allowRepoWrite: true,
+                allowRepoDeleteMove: true,
+                allowRepoBuild: true,
+                allowRepoTest: true,
+                allowGitApply: true,
+                allowManagedProcesses: true,
+                allowProcessAutoRestart: true,
+                allowGitCommit: true,
+                allowGitPush: false,
+                allowPRCreate: true,
+                allowCIRead: true,
+                allowCITrigger: false,
                 allowBrowserRuntime: false,
                 allowDeviceTools: false,
                 allowConnectorActions: false,
@@ -174,9 +211,17 @@ enum AXProjectExecutionTier: String, Codable, CaseIterable, Sendable {
             return AXProjectCapabilityBundle(
                 allowJobPlanAuto: true,
                 allowRepoWrite: true,
+                allowRepoDeleteMove: true,
                 allowRepoBuild: true,
                 allowRepoTest: true,
                 allowGitApply: true,
+                allowManagedProcesses: true,
+                allowProcessAutoRestart: true,
+                allowGitCommit: true,
+                allowGitPush: true,
+                allowPRCreate: true,
+                allowCIRead: true,
+                allowCITrigger: true,
                 allowBrowserRuntime: true,
                 allowDeviceTools: true,
                 allowConnectorActions: true,

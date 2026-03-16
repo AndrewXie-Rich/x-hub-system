@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ModelSelectorView: View {
     let config: AXProjectConfig?
+    var focusContext: XTSectionFocusContext? = nil
 
     @EnvironmentObject private var appModel: AppModel
     @State private var showPopover: Bool = false
@@ -11,7 +12,21 @@ struct ModelSelectorView: View {
             Button(action: { showPopover.toggle() }) {
                 HStack(spacing: 6) {
                     Image(systemName: "brain")
-                    Text(selectorTitle)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(selectorTitle)
+                        HStack(spacing: 6) {
+                            Text(routingSelectionState.sourceLabel)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            if let presentation = selectedPresentationModel {
+                                ModelCapabilityStrip(model: presentation, limit: 3, compact: true)
+                            } else {
+                                Text("自动路由")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
                     Image(systemName: "chevron.down")
                 }
                 .padding(.horizontal, 12)
@@ -28,12 +43,7 @@ struct ModelSelectorView: View {
 
     private var modelList: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Hub Loaded Models")
-                .font(.headline)
-                .padding(.horizontal, 12)
-                .padding(.top, 12)
-
-            if let selectedModelId, let warning = selectedModelWarningText(modelId: selectedModelId) {
+            if let warning = selectedModelWarningText() {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("当前配置提示")
                         .font(.caption.weight(.semibold))
@@ -43,70 +53,28 @@ struct ModelSelectorView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(12)
+                Divider()
             }
 
-            Divider()
-
             if appModel.hubInteractive {
-                Button(action: {
-                    appModel.setProjectRoleModel(role: .coder, modelId: nil)
+                HubModelPickerPopover(
+                    title: "为 coder 选择模型",
+                    selectedModelId: explicitModelId,
+                    inheritedModelId: inheritedModelId,
+                    inheritedModelPresentation: routingSelectionState.inheritedPresentation,
+                    models: selectableModels,
+                    focusContext: focusContext,
+                    recommendedModelId: selectedModelRecommendation?.modelId,
+                    recommendationMessage: selectedModelRecommendation?.message,
+                    showContextDetails: false,
+                    automaticTitle: "Auto (使用全局/Hub 路由)",
+                    automaticSelectedBadge: "当前生效",
+                    automaticRestoreBadge: "恢复继承",
+                    inheritedModelLabel: inheritedModelId == nil ? "自动路由" : "全局模型",
+                    automaticDescription: "让 Hub 或全局配置自行路由当前 coder 模型。"
+                ) { modelId in
+                    appModel.setProjectRoleModel(role: .coder, modelId: modelId)
                     showPopover = false
-                }) {
-                    HStack {
-                        Text("Auto (使用全局/Hub 路由)")
-                        Spacer()
-                        if selectedModelId == nil {
-                            Image(systemName: "checkmark")
-                        }
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-
-                Divider()
-
-                if loadedModels.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Hub 当前没有可用模型")
-                            .foregroundStyle(.secondary)
-
-                        // 调试信息
-                        Text("总模型数: \(appModel.modelsState.models.count)")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-
-                        if !appModel.modelsState.models.isEmpty {
-                            Text("请检查模型状态")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        } else {
-                            Text("请在 Hub 中加载模型")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                    .padding(12)
-                } else {
-                    ForEach(loadedModels) { model in
-                        Button(action: {
-                            appModel.setProjectRoleModel(role: .coder, modelId: model.id)
-                            showPopover = false
-                        }) {
-                            HStack {
-                                Text(modelDisplayName(model))
-                                Spacer()
-                                if selectedModelId == model.id {
-                                    Image(systemName: "checkmark")
-                                }
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                    }
                 }
             } else {
                 Text("Hub not connected")
@@ -114,45 +82,57 @@ struct ModelSelectorView: View {
                     .padding(12)
             }
         }
-        .frame(width: 320)
+        .frame(width: 420)
     }
 
-    private var selectedModelId: String? {
+    private var explicitModelId: String? {
         let raw = config?.modelOverride(for: .coder)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return raw.isEmpty ? nil : raw
     }
 
-    private var selectorTitle: String {
-        if let selectedModelId {
-            if let model = loadedModels.first(where: { $0.id == selectedModelId }) {
-                return "Coder: \(modelDisplayName(model))"
-            }
-            if let assessment = selectedModelAssessment {
-                if let exact = assessment.exactMatch {
-                    return "Coder: \(exact.id) (\(HubModelSelectionAdvisor.stateLabel(exact.state)))"
-                }
-                return "Coder: \(selectedModelId) (未找到)"
-            }
-            return "Coder: \(selectedModelId) (待确认)"
-        }
-        return "Coder: Auto"
+    private var inheritedModelId: String? {
+        let raw = appModel.settingsStore.settings.assignment(for: .coder).model?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return raw.isEmpty ? nil : raw
     }
 
-    private var loadedModels: [HubModel] {
+    private var routingSelectionState: HubModelRoutingSelectionState {
+        HubModelRoutingSelectionState.resolved(
+            explicitModelId: explicitModelId,
+            inheritedModelId: inheritedModelId,
+            models: selectableModels,
+            explicitSourceLabel: "项目覆盖",
+            inheritedSourceLabel: inheritedModelId == nil ? "自动路由" : "继承全局",
+            automaticTitle: "Auto"
+        )
+    }
+
+    private var selectorTitle: String {
+        "Coder: \(routingSelectionState.title)"
+    }
+
+    private var selectedPresentationModel: ModelInfo? {
+        routingSelectionState.effectivePresentation
+    }
+
+    private var selectableModels: [HubModel] {
         let source = appModel.modelsState.models
-
-        // 优先显示 loaded 模型
-        let primary = source.filter { $0.state == .loaded }
-
-        // 如果没有 loaded 模型，显示所有模型（而不是空列表）
-        let rows = primary.isEmpty ? source : primary
-
-        return rows.sorted { a, b in
+        var dedup: [String: HubModel] = [:]
+        for model in source {
+            dedup[model.id] = model
+        }
+        return dedup.values.sorted { a, b in
+            let sa = stateRank(a.state)
+            let sb = stateRank(b.state)
+            if sa != sb { return sa < sb }
             let an = (a.name.isEmpty ? a.id : a.name).lowercased()
             let bn = (b.name.isEmpty ? b.id : b.name).lowercased()
             if an != bn { return an < bn }
             return a.id.lowercased() < b.id.lowercased()
         }
+    }
+
+    private var selectedModelId: String? {
+        routingSelectionState.identifier
     }
 
     private var selectedModelAssessment: HubModelAvailabilityAssessment? {
@@ -163,23 +143,79 @@ struct ModelSelectorView: View {
         )
     }
 
-    private func selectedModelWarningText(modelId: String) -> String? {
-        guard let assessment = selectedModelAssessment else { return "当前无法确认 `\(modelId)` 是否可用。" }
+    private var selectedModelRecommendation: (modelId: String, message: String)? {
+        let projectContext = appModel.projectRoot.map { AXProjectContext(root: $0) }
+        if let guidance = AXProjectModelRouteMemoryStore.selectionGuidance(
+            configuredModelId: selectedModelId,
+            role: .coder,
+            ctx: projectContext,
+            snapshot: appModel.modelsState
+        ),
+           let recommendedModelId = guidance.recommendedModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !recommendedModelId.isEmpty {
+            let message = guidance.recommendationText?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (
+                recommendedModelId,
+                (message?.isEmpty == false ? message! : guidance.warningText)
+            )
+        }
+
+        guard let selectedModelId,
+              let assessment = selectedModelAssessment,
+              !assessment.isExactMatchLoaded else {
+            return nil
+        }
+        guard let rawCandidate = assessment.loadedCandidates.first?.id else {
+            return nil
+        }
+        let candidate = rawCandidate.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !candidate.isEmpty,
+              candidate.caseInsensitiveCompare(selectedModelId) != .orderedSame else {
+            return nil
+        }
+
+        if let exact = assessment.exactMatch {
+            return (
+                candidate,
+                "`\(exact.id)` 当前是 \(HubModelSelectionAdvisor.stateLabel(exact.state))；如果你现在就要继续，先切到已加载的 `\(candidate)` 更稳。"
+            )
+        }
+
+        return (
+            candidate,
+            "`\(selectedModelId)` 当前不在可直接执行的 inventory 里；先切到已加载的 `\(candidate)`，可以避免这轮直接掉到本地。"
+        )
+    }
+
+    private func selectedModelWarningText() -> String? {
+        let projectContext = appModel.projectRoot.map { AXProjectContext(root: $0) }
+        if let routeWarning = AXProjectModelRouteMemoryStore.selectionWarningText(
+            configuredModelId: selectedModelId,
+            role: .coder,
+            ctx: projectContext,
+            snapshot: appModel.modelsState
+        ) {
+            return routeWarning
+        }
+
+        guard let selectedModelId else { return nil }
+        let sourceLabel = explicitModelId == nil ? "继承的全局模型" : "项目覆盖模型"
+        guard let assessment = selectedModelAssessment else { return "当前无法确认\(sourceLabel) `\(selectedModelId)` 是否可用。" }
         guard !assessment.isExactMatchLoaded else { return nil }
 
         if let exact = assessment.exactMatch {
             let suggestions = suggestedCandidates(from: assessment)
             if let first = suggestions.first {
-                return "`\(exact.id)` 当前状态是 \(HubModelSelectionAdvisor.stateLabel(exact.state))，这轮请求可能回退到本地。可先改用 `\(first)`。"
+                return "\(sourceLabel) `\(exact.id)` 当前状态是 \(HubModelSelectionAdvisor.stateLabel(exact.state))，这轮请求可能回退到本地。可先改用 `\(first)`。"
             }
-            return "`\(exact.id)` 当前状态是 \(HubModelSelectionAdvisor.stateLabel(exact.state))，这轮请求可能回退到本地。"
+            return "\(sourceLabel) `\(exact.id)` 当前状态是 \(HubModelSelectionAdvisor.stateLabel(exact.state))，这轮请求可能回退到本地。"
         }
 
         let suggestions = suggestedCandidates(from: assessment)
         if !suggestions.isEmpty {
-            return "`\(modelId)` 不在当前 inventory 里。可先改用 `\(suggestions.joined(separator: "`, `"))`。"
+            return "\(sourceLabel) `\(selectedModelId)` 不在当前 inventory 里。可先改用 `\(suggestions.joined(separator: "`, `"))`。"
         }
-        return "`\(modelId)` 不在当前 inventory 里，这轮请求可能直接走本地模式。"
+        return "\(sourceLabel) `\(selectedModelId)` 不在当前 inventory 里，这轮请求可能直接走本地模式。"
     }
 
     private func suggestedCandidates(from assessment: HubModelAvailabilityAssessment) -> [String] {
@@ -187,9 +223,11 @@ struct ModelSelectorView: View {
         return source.prefix(3).map(\.id)
     }
 
-    private func modelDisplayName(_ model: HubModel) -> String {
-        let name = model.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if name.isEmpty { return model.id }
-        return "\(name) (\(model.id))"
+    private func stateRank(_ s: HubModelState) -> Int {
+        switch s {
+        case .loaded: return 0
+        case .available: return 1
+        case .sleeping: return 2
+        }
     }
 }

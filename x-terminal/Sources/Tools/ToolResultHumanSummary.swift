@@ -16,9 +16,22 @@ enum ToolResultHumanSummary {
         return string(summary["browser_runtime_driver_state"]) == "secret_vault_applescript_fill"
     }
 
+    static func isBrowserUIObservationSuccess(_ result: ToolResult) -> Bool {
+        guard result.tool == .deviceBrowserControl,
+              result.ok,
+              let summary = structuredSummary(for: result) else {
+            return false
+        }
+        return string(summary["action"]) == "snapshot"
+            && string(summary["ui_observation_bundle_ref"]) != nil
+    }
+
     static func specializedSummary(for result: ToolResult) -> String? {
         if result.ok, isBrowserSecretFillSuccess(result) {
             return browserSecretFillSuccessBody(for: result)
+        }
+        if result.ok, isBrowserUIObservationSuccess(result) {
+            return browserUIObservationSuccessBody(for: result)
         }
 
         switch result.tool {
@@ -39,8 +52,18 @@ enum ToolResultHumanSummary {
         }
 
         let parsed = ToolExecutor.parseStructuredToolOutput(result.output)
+        let summary = object(parsed.summary)
         let detail = normalizedDiagnostic(parsed.body.isEmpty ? result.output : parsed.body)
         let lower = detail.lowercased()
+
+        if let summary,
+           let guardrailBody = XTGuardrailMessagePresentation.toolResultBody(
+            tool: result.tool,
+            summary: summary,
+            detail: detail
+           ) {
+            return guardrailBody
+        }
 
         switch result.tool {
         case .git_status:
@@ -60,11 +83,42 @@ enum ToolResultHumanSummary {
                 return "The target file could not be found."
             }
             return detail.isEmpty ? "The file could not be read." : "The file could not be read: \(detail)"
-        case .write_file, .git_apply, .git_apply_check:
+        case .write_file, .delete_path, .move_path, .git_apply, .git_apply_check:
             if lower.contains("permission denied") {
                 return "The change was blocked because this path is not writable."
             }
             return detail.isEmpty ? "The requested change could not be applied." : "The requested change could not be applied: \(detail)"
+        case .git_commit:
+            if let preferred = gitFailureBody(summary: summary, tool: .git_commit) {
+                return preferred
+            }
+            return detail.isEmpty ? "The git commit could not be created." : "The git commit could not be created: \(detail)"
+        case .git_push:
+            if let preferred = gitFailureBody(summary: summary, tool: .git_push) {
+                return preferred
+            }
+            return detail.isEmpty ? "The git push could not be completed." : "The git push could not be completed: \(detail)"
+        case .process_start:
+            return detail.isEmpty ? "The managed process could not be started." : "The managed process could not be started: \(detail)"
+        case .process_status, .process_logs:
+            return detail.isEmpty ? "The managed process state could not be read." : "The managed process state could not be read: \(detail)"
+        case .process_stop:
+            return detail.isEmpty ? "The managed process could not be stopped." : "The managed process could not be stopped: \(detail)"
+        case .pr_create:
+            if let preferred = githubDeliveryFailureBody(summary: summary, toolLabel: "pull request") {
+                return preferred
+            }
+            return detail.isEmpty ? "The pull request could not be created." : "The pull request could not be created: \(detail)"
+        case .ci_read:
+            if let preferred = githubDeliveryFailureBody(summary: summary, toolLabel: "CI status") {
+                return preferred
+            }
+            return detail.isEmpty ? "The CI state could not be read." : "The CI state could not be read: \(detail)"
+        case .ci_trigger:
+            if let preferred = githubDeliveryFailureBody(summary: summary, toolLabel: "CI workflow") {
+                return preferred
+            }
+            return detail.isEmpty ? "The CI workflow could not be triggered." : "The CI workflow could not be triggered: \(detail)"
         case .agentImportRecord:
             if lower.contains("missing_agent_staging_id") || lower.contains("missing_agent_import_locator") {
                 return "The Hub import review needs a staging id or a selector such as the latest project import."
@@ -98,6 +152,43 @@ enum ToolResultHumanSummary {
             return "The active browser field \(target) was filled using a Secret Vault credential."
         }
         return "The active browser field was filled using a Secret Vault credential."
+    }
+
+    private static func browserUIObservationSuccessBody(for result: ToolResult) -> String {
+        let summary = structuredSummary(for: result) ?? [:]
+        let status = string(summary["ui_observation_status"]) ?? XTUIObservationBundleStatus.partial.rawValue
+        let probeDepth = string(summary["ui_observation_probe_depth"]) ?? XTUIObservationProbeDepth.standard.rawValue
+        let url = string(summary["browser_runtime_current_url"]) ?? string(summary["url"])
+        let capturedLayers = Int((number(summary["ui_observation_captured_layers"]) ?? 0).rounded())
+        let reviewVerdict = string(summary["ui_review_verdict"])
+        let reviewSummary = string(summary["ui_review_summary"])
+
+        let prefix: String
+        switch status {
+        case XTUIObservationBundleStatus.captured.rawValue:
+            prefix = "A browser UI observation bundle was captured"
+        default:
+            prefix = "A partial browser UI observation bundle was captured"
+        }
+
+        if let url, !url.isEmpty {
+            var body = "\(prefix) for \(url) using the \(probeDepth) probe (\(capturedLayers) layers)."
+            if let reviewVerdict {
+                body += " Review verdict: \(reviewVerdict)."
+            }
+            if let reviewSummary {
+                body += " \(reviewSummary)."
+            }
+            return body
+        }
+        var body = "\(prefix) using the \(probeDepth) probe (\(capturedLayers) layers)."
+        if let reviewVerdict {
+            body += " Review verdict: \(reviewVerdict)."
+        }
+        if let reviewSummary {
+            body += " \(reviewSummary)."
+        }
+        return body
     }
 
     private static func browserControlFailureBody(summary: [String: JSONValue]?, detail: String) -> String? {
@@ -154,11 +245,93 @@ enum ToolResultHumanSummary {
         if denyCode == XTDeviceAutomationRejectCode.browserSessionMissing.rawValue {
             return "The browser session is missing, so XT could not continue the browser action."
         }
+        if let guardrailBody = XTGuardrailMessagePresentation.toolResultBody(
+            tool: .deviceBrowserControl,
+            summary: summary,
+            detail: detail
+        ) {
+            return guardrailBody
+        }
 
         if !denyCode.isEmpty || !detail.isEmpty {
             return detail.isEmpty ? "The browser action could not be completed." : detail
         }
         return nil
+    }
+
+    private static func githubDeliveryFailureBody(summary: [String: JSONValue]?, toolLabel: String) -> String? {
+        guard let summary else { return nil }
+        let reasonCode = string(summary["reason_code"]) ?? ""
+        let provider = string(summary["provider"]) ?? ""
+
+        switch reasonCode {
+        case "not_git_repository":
+            return "Current folder is not a git repository, so \(toolLabel) actions cannot run here."
+        case "github_cli_missing":
+            return "GitHub delivery actions require GitHub CLI (`gh`) on this machine."
+        case "github_auth_missing":
+            return "GitHub CLI is installed, but this machine is not authenticated for GitHub actions yet."
+        case "github_repo_context_unavailable":
+            if let repo = string(summary["repo"]), !repo.isEmpty {
+                return "XT could not resolve GitHub delivery access for \(repo)."
+            }
+            return "XT could not resolve a GitHub repository from the current folder."
+        case "github_cli_execution_failed":
+            return "GitHub CLI could not be started from this project."
+        default:
+            break
+        }
+
+        if provider == "github", !reasonCode.isEmpty {
+            return "GitHub delivery action failed before the \(toolLabel) step could run."
+        }
+        return nil
+    }
+
+    private static func gitFailureBody(summary: [String: JSONValue]?, tool: ToolName) -> String? {
+        guard let summary else { return nil }
+        let reasonCode = string(summary["reason_code"]) ?? ""
+        switch reasonCode {
+        case "not_git_repository":
+            switch tool {
+            case .git_commit:
+                return "Current folder is not a git repository, so git commit cannot run here."
+            case .git_push:
+                return "Current folder is not a git repository, so git push cannot run here."
+            default:
+                return nil
+            }
+        case "git_identity_missing":
+            return "Git user identity is not configured yet. Set `user.name` and `user.email` before committing."
+        case "git_commit_no_changes":
+            if let paths = array(summary["paths"]), !paths.isEmpty {
+                return "The requested commit paths do not have tracked changes ready to commit."
+            }
+            if bool(summary["all"]) == true {
+                return "There are no tracked changes ready to commit."
+            }
+            return "There are no staged changes ready to commit."
+        case "git_commit_pathspec_invalid":
+            return "One or more commit paths are not tracked by git in this repository."
+        case "git_commit_paths_with_all_unsupported":
+            return "Git commit cannot combine `all=true` with explicit `paths`. Choose one mode."
+        case "git_push_detached_head":
+            return "Git push needs an explicit branch because the repository is in detached HEAD state."
+        case "git_push_remote_missing":
+            return "Git push needs a configured remote before it can continue."
+        case "git_push_remote_ambiguous":
+            return "Multiple git remotes are configured, so git push needs an explicit remote."
+        case "git_push_branch_missing":
+            return "The local branch to push does not exist yet."
+        case "git_push_remote_unreachable":
+            return "XT could not reach the configured git remote."
+        case "git_push_non_fast_forward":
+            return "The push was rejected because the remote branch has diverged."
+        case "git_push_remote_rejected":
+            return "The remote rejected this push."
+        default:
+            return nil
+        }
     }
 
     private static func secretVaultReasonText(_ raw: String?) -> String? {
@@ -215,8 +388,18 @@ enum ToolResultHumanSummary {
         return flag
     }
 
+    private static func number(_ value: JSONValue?) -> Double? {
+        guard case .number(let number)? = value else { return nil }
+        return number
+    }
+
     private static func object(_ value: JSONValue?) -> [String: JSONValue]? {
         guard case .object(let object)? = value else { return nil }
         return object
+    }
+
+    private static func array(_ value: JSONValue?) -> [JSONValue]? {
+        guard case .array(let values)? = value else { return nil }
+        return values
     }
 }

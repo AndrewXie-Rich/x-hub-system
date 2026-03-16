@@ -17,6 +17,11 @@ struct ProjectSidebarView: View {
                         ProjectRowView(project: project)
                             .tag(project.projectId)
                             .contextMenu {
+                                Button("接上次进度") {
+                                    appModel.presentResumeBrief(projectId: project.projectId)
+                                }
+                                .disabled(appModel.sessionSummaryPresentation(projectId: project.projectId) == nil)
+
                                 Button("Open Project Folder") {
                                     let url = URL(fileURLWithPath: project.rootPath)
                                     NSWorkspace.shared.open(url)
@@ -44,16 +49,48 @@ private struct ProjectRowView: View {
 
     var body: some View {
         let governed = appModel.governedAuthorityPresentation(for: project)
+        let governancePresentation = ProjectGovernancePresentation(
+            resolved: appModel.resolvedProjectGovernance(for: project)
+        )
+        let latestSessionSummary = appModel.sessionSummaryPresentation(projectId: project.projectId)
+        let latestUIReview = XTUIReviewPresentation.loadLatestBrowserPage(
+            for: AXProjectContext(root: URL(fileURLWithPath: project.rootPath, isDirectory: true))
+        )
 
-        VStack(alignment: .leading, spacing: 2) {
-            Text(project.displayName)
-                .lineLimit(1)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(project.displayName)
+                    .lineLimit(1)
+
+                if latestSessionSummary != nil {
+                    Image(systemName: "arrow.clockwise.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .help(latestSessionSummary?.helpText ?? "")
+                }
+            }
             if let s = project.statusDigest, !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text(s)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
+
+            if let latestSessionSummary {
+                Text(latestSessionSummary.badgeText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .help(latestSessionSummary.helpText)
+            }
+
+            if let latestUIReview {
+                ProjectUIReviewCompactSummaryView(review: latestUIReview)
+                    .help("\(latestUIReview.compactStatusText)\n\(latestUIReview.updatedText)")
+            }
+
+            ProjectGovernanceCompactSummaryView(presentation: governancePresentation)
+
             if governed.hasAnyVisibleSignal {
                 HStack(spacing: 4) {
                     if governed.deviceAuthorityConfigured {

@@ -107,6 +107,7 @@ struct XTMemoryUsePolicyTests {
             displayName: "proj-supervisor",
             latestUser: "审查项目上下文记忆，给出最具体的执行方案",
             constitutionHint: "safe",
+            longtermOutlineText: "goal: keep the delivery path stable\nbackground_memory: do not churn the strategy",
             canonicalText: longCanonical,
             observationsText: "obs",
             workingSetText: "working",
@@ -125,6 +126,7 @@ struct XTMemoryUsePolicyTests {
         #expect(route.payload.servingProfile == XTMemoryServingProfile.m2PlanReview.rawValue)
         #expect(route.payload.budgets?.totalTokens == 2_340)
         #expect(route.payload.canonicalText?.count == 3_000)
+        #expect(route.payload.longtermOutlineText?.contains("background_memory") == true)
     }
 
     @Test

@@ -83,6 +83,33 @@ struct SupervisorConversationSessionControllerTests {
     }
 
     @Test
+    func memoryFollowUpHoldUsesMaxTTLAndStillExpires() {
+        var now = Date(timeIntervalSince1970: 3_500)
+        let controller = SupervisorConversationSessionController.makeForTesting(
+            route: .funasrStreaming,
+            wakeMode: .wakePhrase,
+            nowProvider: { now }
+        )
+
+        controller.registerWakeHit()
+        controller.holdConversationForFollowUp()
+
+        #expect(controller.snapshot.windowState == .conversing)
+        #expect(controller.snapshot.reasonCode == "awaiting_memory_fact_follow_up")
+        #expect(controller.snapshot.remainingTTLSeconds == 180)
+
+        now = now.addingTimeInterval(46)
+        controller.refresh()
+        #expect(controller.snapshot.windowState == .conversing)
+        #expect(controller.snapshot.remainingTTLSeconds == 134)
+
+        now = now.addingTimeInterval(135)
+        controller.refresh()
+        #expect(controller.snapshot.windowState == .armed)
+        #expect(controller.snapshot.reasonCode == "ttl_expired")
+    }
+
+    @Test
     func wakeHitDoesNotOpenConversationWhenPushToTalkIsEffective() {
         let controller = SupervisorConversationSessionController.makeForTesting(
             route: .funasrStreaming,

@@ -27,6 +27,7 @@ struct SupervisorSystemPromptParams: Equatable {
     var memoryV1: String
     var promptMode: SupervisorSystemPromptMode
     var extraSystemPrompt: String?
+    var memoryReadiness: SupervisorMemoryAssemblyReadiness? = nil
 }
 
 enum SupervisorSystemPromptParamsBuilder {
@@ -40,6 +41,7 @@ enum SupervisorSystemPromptParamsBuilder {
         memoryV1: String,
         promptMode: SupervisorSystemPromptMode = .full,
         extraSystemPrompt: String? = nil,
+        memoryReadiness: SupervisorMemoryAssemblyReadiness? = nil,
         now: Date = Date(),
         timeZone: TimeZone = .current,
         locale: Locale = .current,
@@ -64,7 +66,8 @@ enum SupervisorSystemPromptParamsBuilder {
             userMessage: userMessage,
             memoryV1: memoryV1,
             promptMode: promptMode,
-            extraSystemPrompt: extraSystemPrompt
+            extraSystemPrompt: extraSystemPrompt,
+            memoryReadiness: memoryReadiness
         )
     }
 

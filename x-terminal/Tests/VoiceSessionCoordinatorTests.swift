@@ -98,6 +98,27 @@ struct VoiceSessionCoordinatorTests {
         #expect(coordinator.funASRSidecarHealth?.status == .ready)
         #expect(coordinator.funASRSidecarHealth?.endpoint == "ws://127.0.0.1:10096")
     }
+
+    @Test
+    func resumeListeningForTalkLoopRestartsCaptureAfterCompletedTurn() async {
+        let transcriber = MockVoiceStreamingTranscriber()
+        let coordinator = VoiceSessionCoordinator(
+            transcriber: transcriber,
+            preferences: .default()
+        )
+
+        await coordinator.startRecording()
+        transcriber.emit(.init(kind: .final, text: "supervisor"))
+        coordinator.stopRecording()
+
+        let resumed = await coordinator.resumeListeningForTalkLoop()
+
+        #expect(resumed)
+        #expect(coordinator.isRecording)
+        #expect(coordinator.runtimeState.state == .listening)
+        #expect(coordinator.runtimeState.reasonCode == "talk_loop_resumed")
+        #expect(coordinator.recognizedText.isEmpty)
+    }
 }
 
 @MainActor

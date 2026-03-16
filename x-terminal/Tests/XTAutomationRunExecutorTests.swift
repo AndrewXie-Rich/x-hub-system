@@ -156,6 +156,14 @@ struct XTAutomationRunExecutorTests {
                 deviceToolGroups: ["device.browser.control"],
                 workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: root)
             )
+            config = config.settingAutonomyPolicy(
+                mode: .trustedOpenClawMode,
+                updatedAt: Date(timeIntervalSince1970: 1_773_300_002)
+            )
+            config = config.settingProjectGovernance(
+                executionTier: .a4OpenClaw,
+                supervisorInterventionTier: .s2PeriodicReview
+            )
             config = config.settingToolPolicy(allow: ["group:device_automation"])
             try AXProjectStore.saveConfig(config, for: ctx)
 
@@ -703,6 +711,14 @@ struct XTAutomationRunExecutorTests {
                 deviceToolGroups: ["device.ui.observe"],
                 workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: root)
             )
+            config = config.settingAutonomyPolicy(
+                mode: .trustedOpenClawMode,
+                updatedAt: Date(timeIntervalSince1970: 1_773_300_015)
+            )
+            config = config.settingProjectGovernance(
+                executionTier: .a4OpenClaw,
+                supervisorInterventionTier: .s2PeriodicReview
+            )
             try AXProjectStore.saveConfig(config, for: ctx)
 
             let callOrder = LockedStringCollector()
@@ -960,6 +976,14 @@ struct XTAutomationRunExecutorTests {
             deviceToolGroups: ["device.ui.observe"],
             workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: root)
         )
+        config = config.settingAutonomyPolicy(
+            mode: .trustedOpenClawMode,
+            updatedAt: Date(timeIntervalSince1970: 1_773_300_019)
+        )
+        config = config.settingProjectGovernance(
+            executionTier: .a4OpenClaw,
+            supervisorInterventionTier: .s2PeriodicReview
+        )
         config = config.settingToolPolicy(deny: ["group:device_automation"])
         try AXProjectStore.saveConfig(config, for: ctx)
 
@@ -1039,6 +1063,14 @@ struct XTAutomationRunExecutorTests {
                 deviceToolGroups: ["device.ui.observe"],
                 workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: root)
             )
+            config = config.settingAutonomyPolicy(
+                mode: .trustedOpenClawMode,
+                updatedAt: Date(timeIntervalSince1970: 1_773_300_020)
+            )
+            config = config.settingProjectGovernance(
+                executionTier: .a4OpenClaw,
+                supervisorInterventionTier: .s2PeriodicReview
+            )
             try AXProjectStore.saveConfig(config, for: ctx)
 
             let callOrder = LockedStringCollector()
@@ -1117,6 +1149,14 @@ struct XTAutomationRunExecutorTests {
                 deviceId: "device_xt_001",
                 deviceToolGroups: ["device.ui.observe"],
                 workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: root)
+            )
+            config = config.settingAutonomyPolicy(
+                mode: .trustedOpenClawMode,
+                updatedAt: Date(timeIntervalSince1970: 1_773_300_021)
+            )
+            config = config.settingProjectGovernance(
+                executionTier: .a4OpenClaw,
+                supervisorInterventionTier: .s2PeriodicReview
             )
             try AXProjectStore.saveConfig(config, for: ctx)
 

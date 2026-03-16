@@ -176,10 +176,14 @@ enum AXMemoryLifecycleStore {
     static func writeSessionSummaryCapsule(
         ctx: AXProjectContext,
         reason: String,
+        excludingTrailingUserText: String? = nil,
         now: Double = Date().timeIntervalSince1970
     ) -> AXSessionSummaryCapsule? {
         do {
-            let recent = AXRecentContextStore.load(for: ctx)
+            let recent = filteredRecentContext(
+                AXRecentContextStore.load(for: ctx),
+                excludingTrailingUserText: excludingTrailingUserText
+            )
             let memory = try AXProjectStore.loadOrCreateMemory(for: ctx)
             let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
             let summary = AXSessionSummaryCapsule(
@@ -534,6 +538,24 @@ enum AXMemoryLifecycleStore {
         )
     }
 
+    private static func filteredRecentContext(
+        _ recent: AXRecentContext,
+        excludingTrailingUserText: String?
+    ) -> AXRecentContext {
+        let excluded = normalizedComparableText(excludingTrailingUserText ?? "")
+        guard !excluded.isEmpty else {
+            return recent
+        }
+
+        var filtered = recent
+        if let last = filtered.messages.last,
+           last.role == "user",
+           normalizedComparableText(last.content) == excluded {
+            filtered.messages.removeLast()
+        }
+        return filtered
+    }
+
     private static func memorySummary(for memory: AXMemory) -> AXMemoryLifecycleMemorySummary {
         AXMemoryLifecycleMemorySummary(
             goal: memory.goal.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -671,6 +693,13 @@ enum AXMemoryLifecycleStore {
         value
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: " ", with: "_")
+            .lowercased()
+    }
+
+    private static func normalizedComparableText(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\r\n", with: "\n")
             .lowercased()
     }
 

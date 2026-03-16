@@ -61,7 +61,7 @@ class MultiProjectManager: ObservableObject {
             status: .pending,
             modelName: config.modelName,
             isLocalModel: config.isLocalModel,
-            autonomyLevel: config.autonomyLevel,
+            registeredProjectBinding: config.registeredProjectBinding,
             executionTier: config.executionTier,
             supervisorInterventionTier: config.supervisorInterventionTier,
             reviewPolicyMode: config.reviewPolicyMode,
@@ -336,6 +336,7 @@ struct ProjectConfig {
     let modelName: String
     let isLocalModel: Bool
     let autonomyLevel: AutonomyLevel
+    let registeredProjectBinding: ProjectRegistryBinding?
     let executionTier: AXProjectExecutionTier
     let supervisorInterventionTier: AXProjectSupervisorInterventionTier
     let reviewPolicyMode: AXProjectReviewPolicyMode
@@ -353,6 +354,7 @@ struct ProjectConfig {
         modelName: String = "llama-3-70b-local",
         isLocalModel: Bool = true,
         autonomyLevel: AutonomyLevel = .assisted,
+        registeredProjectBinding: ProjectRegistryBinding? = nil,
         executionTier: AXProjectExecutionTier? = nil,
         supervisorInterventionTier: AXProjectSupervisorInterventionTier? = nil,
         reviewPolicyMode: AXProjectReviewPolicyMode? = nil,
@@ -374,6 +376,7 @@ struct ProjectConfig {
         self.modelName = modelName
         self.isLocalModel = isLocalModel
         self.autonomyLevel = .fromExecutionTier(resolvedExecutionTier)
+        self.registeredProjectBinding = registeredProjectBinding
         self.executionTier = resolvedExecutionTier
         self.supervisorInterventionTier = governance.supervisorInterventionTier
         self.reviewPolicyMode = reviewPolicyMode ?? governance.reviewPolicyMode

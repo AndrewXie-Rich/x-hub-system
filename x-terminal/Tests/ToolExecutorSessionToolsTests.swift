@@ -1,7 +1,9 @@
+import Darwin
 import Foundation
 import Testing
 @testable import XTerminal
 
+@Suite(.serialized)
 struct ToolExecutorSessionToolsTests {
 
     @MainActor
@@ -104,21 +106,38 @@ struct ToolExecutorSessionToolsTests {
             #expect(jsonString(snapshotSummary["trusted_automation_state"]) == AXTrustedAutomationProjectState.active.rawValue)
             #expect(jsonArray(snapshotSummary["trusted_automation_required_permissions"])?.isEmpty == true)
             #expect(jsonArray(snapshotSummary["trusted_automation_open_settings_actions"])?.isEmpty == true)
+            let governance = jsonObject(snapshotSummary["governance"])
+            #expect(jsonString(governance?["configured_execution_tier"]) == AXProjectExecutionTier.a0Observe.rawValue)
+            #expect(jsonString(governance?["effective_execution_tier"]) == AXProjectExecutionTier.a0Observe.rawValue)
+            #expect(jsonString(governance?["configured_supervisor_tier"]) == AXProjectSupervisorInterventionTier.s0SilentAudit.rawValue)
+            #expect(jsonString(governance?["effective_supervisor_tier"]) == AXProjectSupervisorInterventionTier.s0SilentAudit.rawValue)
+            #expect(jsonString(governance?["review_policy_mode"]) == AXProjectReviewPolicyMode.milestoneOnly.rawValue)
+            #expect(jsonArray(governance?["event_review_triggers"])?.contains(where: { jsonString($0) == AXProjectReviewTrigger.manualRequest.rawValue }) == true)
+            let runtimeSurface = jsonObject(snapshotSummary["runtime_surface"])
+            #expect(jsonString(runtimeSurface?["configured_surface"]) == AXProjectAutonomyMode.manual.rawValue)
+            #expect(jsonString(runtimeSurface?["effective_surface"]) == AXProjectAutonomyMode.manual.rawValue)
+            #expect(jsonString(runtimeSurface?["hub_override_surface"]) == AXProjectAutonomyHubOverrideMode.none.rawValue)
+            #expect(jsonArray(runtimeSurface?["configured_surfaces"])?.isEmpty == true)
+            #expect(jsonArray(runtimeSurface?["effective_surfaces"])?.isEmpty == true)
             let autonomy = jsonObject(snapshotSummary["autonomy_policy"])
             #expect(jsonString(autonomy?["configured_mode"]) == AXProjectAutonomyMode.manual.rawValue)
             #expect(jsonString(autonomy?["effective_mode"]) == AXProjectAutonomyMode.manual.rawValue)
             #expect(jsonString(autonomy?["hub_override_mode"]) == AXProjectAutonomyHubOverrideMode.none.rawValue)
             #expect(jsonArray(autonomy?["configured_surfaces"])?.isEmpty == true)
             #expect(jsonArray(autonomy?["effective_surfaces"])?.isEmpty == true)
-        } else {
-            let body = toolBody(snapshot.output)
-            #expect(body.contains("trusted_automation_mode=trusted_automation"))
-            #expect(body.contains("trusted_automation_state=active"))
-            #expect(body.contains(ToolName.deviceClipboardRead.rawValue))
-            #expect(body.contains("trusted_automation_required_permissions=(none)"))
-            #expect(body.contains("autonomy_mode=manual"))
-            #expect(body.contains("autonomy_effective_mode=manual"))
         }
+        let body = toolBody(snapshot.output)
+        #expect(body.contains("trusted_automation_mode=trusted_automation"))
+        #expect(body.contains("trusted_automation_state=active"))
+        #expect(body.contains(ToolName.deviceClipboardRead.rawValue))
+        #expect(body.contains("trusted_automation_required_permissions=(none)"))
+        #expect(body.contains("execution_tier=a0_observe"))
+        #expect(body.contains("supervisor_intervention_tier=s0_silent_audit"))
+        #expect(body.contains("review_policy_mode=milestone_only"))
+        #expect(body.contains("runtime_surface_configured=manual"))
+        #expect(body.contains("runtime_surface_effective=manual"))
+        #expect(!body.contains("autonomy_mode=manual"))
+        #expect(!body.contains("autonomy_effective_mode=manual"))
     }
 
     @MainActor
@@ -152,7 +171,7 @@ struct ToolExecutorSessionToolsTests {
             )
             cfg = cfg.settingAutonomyPolicy(
                 mode: .trustedOpenClawMode,
-                updatedAt: Date(timeIntervalSince1970: 1_773_600_000)
+                updatedAt: Date()
             )
             try AXProjectStore.saveConfig(cfg, for: ctx)
 
@@ -185,6 +204,123 @@ struct ToolExecutorSessionToolsTests {
             #expect(toolBody(snapshot.output).contains(url))
         }
     }
+
+    @MainActor
+    @Test
+    func projectSnapshotUsesFriendlyRegistryDisplayNameInSummaryAndBody() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "project-snapshot-friendly-name")
+        defer { fixture.cleanup() }
+
+        let registryBase = fixture.root.appendingPathComponent("registry", isDirectory: true)
+        try FileManager.default.createDirectory(at: registryBase, withIntermediateDirectories: true)
+
+        try await withTemporaryEnvironment([
+            "XTERMINAL_PROJECT_REGISTRY_BASE_DIR": registryBase.path
+        ]) {
+            let projectId = AXProjectRegistryStore.projectId(forRoot: fixture.root)
+            let friendlyName = "Supervisor 耳机项目"
+            let registry = AXProjectRegistry(
+                version: AXProjectRegistry.currentVersion,
+                updatedAt: 500,
+                sortPolicy: "manual_then_last_opened",
+                globalHomeVisible: false,
+                lastSelectedProjectId: projectId,
+                projects: [
+                    AXProjectEntry(
+                        projectId: projectId,
+                        rootPath: fixture.root.path,
+                        displayName: friendlyName,
+                        lastOpenedAt: 500,
+                        manualOrderIndex: 0,
+                        pinned: false,
+                        statusDigest: "review=ready",
+                        currentStateSummary: "Supervisor already knows the strategic context",
+                        nextStepSummary: "Keep using the friendly project identity everywhere",
+                        blockerSummary: nil,
+                        lastSummaryAt: 500,
+                        lastEventAt: 500
+                    )
+                ]
+            )
+            AXProjectRegistryStore.save(registry)
+
+            let snapshot = try await ToolExecutor.execute(
+                call: ToolCall(tool: .project_snapshot, args: [:]),
+                projectRoot: fixture.root
+            )
+
+            #expect(snapshot.ok)
+            let snapshotSummary = try #require(toolSummaryObject(snapshot.output))
+            #expect(jsonString(snapshotSummary["display_name"]) == friendlyName)
+
+            let body = toolBody(snapshot.output)
+            #expect(body.contains("project=\(friendlyName)"))
+            #expect(body.contains("status_digest=review=ready"))
+            #expect(body.contains("project=\(fixture.root.lastPathComponent)") == false)
+        }
+    }
+
+    @MainActor
+    @Test
+    func sessionResumeUsesFriendlyRegistryDisplayNameForAutoCreatedSessionTitle() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "session-friendly-title")
+        defer { fixture.cleanup() }
+
+        let registryBase = fixture.root.appendingPathComponent("registry", isDirectory: true)
+        try FileManager.default.createDirectory(at: registryBase, withIntermediateDirectories: true)
+
+        try await withTemporaryEnvironment([
+            "XTERMINAL_PROJECT_REGISTRY_BASE_DIR": registryBase.path
+        ]) {
+            let projectId = AXProjectRegistryStore.projectId(forRoot: fixture.root)
+            let friendlyName = "自然语言耳机项目"
+            let registry = AXProjectRegistry(
+                version: AXProjectRegistry.currentVersion,
+                updatedAt: 700,
+                sortPolicy: "manual_then_last_opened",
+                globalHomeVisible: false,
+                lastSelectedProjectId: projectId,
+                projects: [
+                    AXProjectEntry(
+                        projectId: projectId,
+                        rootPath: fixture.root.path,
+                        displayName: friendlyName,
+                        lastOpenedAt: 700,
+                        manualOrderIndex: 0,
+                        pinned: false,
+                        statusDigest: nil,
+                        currentStateSummary: nil,
+                        nextStepSummary: nil,
+                        blockerSummary: nil,
+                        lastSummaryAt: nil,
+                        lastEventAt: nil
+                    )
+                ]
+            )
+            AXProjectRegistryStore.save(registry)
+
+            let resume = try await ToolExecutor.execute(
+                call: ToolCall(tool: .session_resume, args: [:]),
+                projectRoot: fixture.root
+            )
+            #expect(resume.ok)
+
+            let listed = try await ToolExecutor.execute(
+                call: ToolCall(tool: .session_list, args: ["limit": .number(5)]),
+                projectRoot: fixture.root
+            )
+
+            #expect(listed.ok)
+            let listSummary = try #require(toolSummaryObject(listed.output))
+            let sessions = try #require(jsonArray(listSummary["sessions"]))
+            let firstSession = try #require(sessions.first.flatMap(jsonObject))
+            #expect(jsonString(firstSession["title"]) == friendlyName)
+
+            let body = toolBody(listed.output)
+            #expect(body.contains(friendlyName))
+            #expect(body.contains(fixture.root.lastPathComponent) == false)
+        }
+    }
 }
 
 private func makeProjectSnapshotPermissionReadiness(
@@ -211,4 +347,33 @@ private func makeProjectSnapshotPermissionReadiness(
         openSettingsActions: AXTrustedAutomationPermissionKey.allCases.map { $0.openSettingsAction },
         auditRef: auditRef
     )
+}
+
+private func currentEnvironmentValue(_ key: String) -> String? {
+    guard let value = getenv(key) else { return nil }
+    return String(cString: value)
+}
+
+private func withTemporaryEnvironment<T>(
+    _ overrides: [String: String?],
+    operation: () async throws -> T
+) async rethrows -> T {
+    let original = Dictionary(uniqueKeysWithValues: overrides.keys.map { ($0, currentEnvironmentValue($0)) })
+    for (key, value) in overrides {
+        if let value {
+            setenv(key, value, 1)
+        } else {
+            unsetenv(key)
+        }
+    }
+    defer {
+        for (key, value) in original {
+            if let value {
+                setenv(key, value, 1)
+            } else {
+                unsetenv(key)
+            }
+        }
+    }
+    return try await operation()
 }

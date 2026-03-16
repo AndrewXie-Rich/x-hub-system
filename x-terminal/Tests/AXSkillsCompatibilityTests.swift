@@ -113,8 +113,8 @@ struct AXSkillsCompatibilityTests {
         #expect(snapshot.projectId == fixture.projectID)
         #expect(snapshot.projectName == fixture.projectName)
         #expect(snapshot.updatedAtMs == 42)
-        #expect(snapshot.memorySource == "hub_skill_registry")
-        #expect(snapshot.items.count == 3)
+        #expect(snapshot.memorySource == "hub_skill_registry+xt_builtin")
+        #expect(snapshot.items.count == 14)
         #expect(!snapshot.items.contains(where: { $0.skillId == "email.send.auto" }))
 
         let git = try #require(snapshot.items.first(where: { $0.skillId == "repo.git.status" }))
@@ -149,6 +149,29 @@ struct AXSkillsCompatibilityTests {
         #expect(readVariant.actionArg.isEmpty)
         #expect(agentBrowser.governedDispatchNotes.contains(where: { $0.contains("device.browser.control") }))
         #expect(agentBrowser.governedDispatchNotes.contains(where: { $0.contains("browser_read") }))
+
+        let builtinDelete = try #require(snapshot.items.first(where: { $0.skillId == "repo.delete.path" }))
+        #expect(builtinDelete.policyScope == "xt_builtin")
+        #expect(builtinDelete.capabilitiesRequired == ["repo.delete_move"])
+        #expect(builtinDelete.governedDispatch?.tool == ToolName.delete_path.rawValue)
+        #expect(builtinDelete.riskLevel == .medium)
+
+        let builtinProcessStart = try #require(snapshot.items.first(where: { $0.skillId == "process.start" }))
+        #expect(builtinProcessStart.policyScope == "xt_builtin")
+        #expect(builtinProcessStart.capabilitiesRequired == ["process.manage", "process.autorestart"])
+        #expect(builtinProcessStart.governedDispatch?.tool == ToolName.process_start.rawValue)
+        #expect(builtinProcessStart.governedDispatchNotes.contains(where: { $0.contains("restart_on_exit") }))
+
+        let builtinGitCommit = try #require(snapshot.items.first(where: { $0.skillId == "repo.git.commit" }))
+        #expect(builtinGitCommit.policyScope == "xt_builtin")
+        #expect(builtinGitCommit.capabilitiesRequired == ["git.commit"])
+        #expect(builtinGitCommit.governedDispatch?.tool == ToolName.git_commit.rawValue)
+
+        let builtinCITrigger = try #require(snapshot.items.first(where: { $0.skillId == "repo.ci.trigger" }))
+        #expect(builtinCITrigger.policyScope == "xt_builtin")
+        #expect(builtinCITrigger.capabilitiesRequired == ["ci.trigger"])
+        #expect(builtinCITrigger.governedDispatch?.tool == ToolName.ci_trigger.rawValue)
+        #expect(builtinCITrigger.governedDispatchNotes.contains(where: { $0.contains("provider=github") }))
     }
 
     @MainActor
@@ -205,8 +228,8 @@ struct AXSkillsCompatibilityTests {
         #expect(memory.contains("variant: actions=open/open_url/navigate/goto/visit -> device.browser.control"))
         #expect(memory.contains("variant: actions=snapshot/inspect/extract -> device.browser.control"))
         #expect(!memory.contains("dispatch_note: actions=open/navigate/snapshot/extract/click/type/upload -> device.browser.control"))
-        #expect(registrySnapshot?.items.count == 3)
-        #expect(resolvedCache?.items.count == 3)
+        #expect(registrySnapshot?.items.count == 14)
+        #expect(resolvedCache?.items.count == 14)
     }
 
     @Test
@@ -228,14 +251,14 @@ struct AXSkillsCompatibilityTests {
         #expect(snapshot.schemaVersion == XTResolvedSkillsCacheSnapshot.currentSchemaVersion)
         #expect(snapshot.projectId == fixture.projectID)
         #expect(snapshot.projectName == fixture.projectName)
-        #expect(snapshot.source == "hub_resolved_skills_snapshot")
+        #expect(snapshot.source == "hub_resolved_skills_snapshot+xt_builtin")
         #expect(snapshot.resolvedSnapshotId == "xt-resolved-skills-12345678-1000")
         #expect(snapshot.resolvedAtMs == 1_000)
         #expect(snapshot.expiresAtMs == 121_000)
         #expect(snapshot.hubIndexUpdatedAtMs == 42)
         #expect(snapshot.auditRef == "audit-xt-w3-34-i-resolved-skills-12345678")
         #expect(snapshot.grantSnapshotRef == "grant-chain:12345678:refresh_required")
-        #expect(snapshot.items.count == 3)
+        #expect(snapshot.items.count == 14)
         #expect(!snapshot.items.contains(where: { $0.skillId == "email.send.auto" }))
 
         let repo = try #require(snapshot.items.first(where: { $0.skillId == "repo.git.status" }))
@@ -256,6 +279,18 @@ struct AXSkillsCompatibilityTests {
         #expect(agentBrowser.pinScope == "project")
         #expect(agentBrowser.riskLevel == "high")
         #expect(agentBrowser.requiresGrant)
+
+        let builtinProcessLogs = try #require(snapshot.items.first(where: { $0.skillId == "process.logs" }))
+        #expect(builtinProcessLogs.pinScope == "xt_builtin")
+        #expect(builtinProcessLogs.sourceId == "xt_builtin")
+        #expect(builtinProcessLogs.riskLevel == "low")
+        #expect(!builtinProcessLogs.requiresGrant)
+
+        let builtinPR = try #require(snapshot.items.first(where: { $0.skillId == "repo.pr.create" }))
+        #expect(builtinPR.pinScope == "xt_builtin")
+        #expect(builtinPR.sourceId == "xt_builtin")
+        #expect(builtinPR.riskLevel == "high")
+        #expect(!builtinPR.requiresGrant)
     }
 
     @Test
@@ -301,6 +336,55 @@ struct AXSkillsCompatibilityTests {
         #expect(mapped.toolCall.tool == .browser_read)
         #expect(mapped.toolCall.args["url"]?.stringValue == "https://example.com")
         #expect(mapped.toolCall.args["grant_id"]?.stringValue == "grant-123")
+    }
+
+    @Test
+    func projectSkillRouterMapsBuiltinProcessStartSkillToToolCall() throws {
+        let fixture = SkillsCompatibilityFixture()
+        defer { fixture.cleanup() }
+        try fixture.writeHubSkillsStoreForSupervisorRegistry()
+
+        let snapshot = try #require(
+            AXSkillsLibrary.supervisorSkillRegistrySnapshot(
+                projectId: fixture.projectID,
+                projectName: fixture.projectName,
+                hubBaseDir: fixture.hubBaseDir
+            )
+        )
+
+        let result = XTProjectSkillRouter.map(
+            call: GovernedSkillCall(
+                id: "skill-process-1",
+                skill_id: "process.start",
+                payload: [
+                    "id": .string("web"),
+                    "name": .string("Web"),
+                    "command": .string("npm run dev"),
+                    "cwd": .string("frontend"),
+                    "restart_on_exit": .bool(true),
+                ]
+            ),
+            projectId: fixture.projectID,
+            projectName: fixture.projectName,
+            registrySnapshot: snapshot
+        )
+
+        let mapped: XTProjectMappedSkillDispatch
+        switch result {
+        case .success(let dispatch):
+            mapped = dispatch
+        case .failure(let failure):
+            Issue.record("unexpected failure: \(failure.reasonCode)")
+            throw failure
+        }
+
+        #expect(mapped.skillId == "process.start")
+        #expect(mapped.toolCall.tool == .process_start)
+        #expect(mapped.toolCall.args["process_id"]?.stringValue == "web")
+        #expect(mapped.toolCall.args["name"]?.stringValue == "Web")
+        #expect(mapped.toolCall.args["command"]?.stringValue == "npm run dev")
+        #expect(mapped.toolCall.args["cwd"]?.stringValue == "frontend")
+        #expect(jsonBool(mapped.toolCall.args["restart_on_exit"]) == true)
     }
 
     @Test

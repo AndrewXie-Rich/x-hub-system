@@ -73,6 +73,34 @@ enum AXProjectStore {
         return stored
     }
 
+    static func loadMemoryIfPresent(for ctx: AXProjectContext) -> AXMemory? {
+        if FileManager.default.fileExists(atPath: ctx.memoryJSONURL.path) {
+            guard let data = try? Data(contentsOf: ctx.memoryJSONURL),
+                  var memory = try? JSONDecoder().decode(AXMemory.self, from: data) else {
+                return nil
+            }
+            memory = AXMemoryModulePrefixer.normalizeIfNeeded(memory, projectRoot: ctx.root)
+            return memory
+        }
+
+        if FileManager.default.fileExists(atPath: ctx.memoryMarkdownURL.path) {
+            let legacyText = (try? String(contentsOf: ctx.memoryMarkdownURL, encoding: .utf8)) ?? ""
+            let legacyTrimmed = legacyText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !legacyTrimmed.isEmpty,
+                  var parsed = parseLegacyMemoryMarkdown(
+                    legacyText,
+                    projectName: ctx.projectName(),
+                    projectRoot: ctx.root.path
+                  ) else {
+                return nil
+            }
+            parsed = AXMemoryModulePrefixer.normalizeIfNeeded(parsed, projectRoot: ctx.root)
+            return parsed
+        }
+
+        return nil
+    }
+
     static func loadOrCreateMemory(for ctx: AXProjectContext) throws -> AXMemory {
         try ctx.ensureDirs()
 
@@ -276,6 +304,7 @@ enum AXProjectStore {
         try? ctx.ensureDirs()
         guard let data = try? JSONSerialization.data(withJSONObject: entry, options: []) else { return }
         appendJSONLLine(data, to: ctx.usageLogURL)
+        AXModelRouteDiagnosticsStore.appendUsageIfNeeded(entry, for: ctx)
     }
 
     static func appendToolLog(

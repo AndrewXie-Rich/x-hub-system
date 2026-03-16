@@ -28,7 +28,7 @@ struct ProjectSettingsGovernanceUITests {
         #expect(!presentation.invalidMessages.isEmpty)
         #expect(presentation.effectiveExecutionTier == .a0Observe)
         #expect(presentation.effectiveSupervisorInterventionTier == .s0SilentAudit)
-        #expect(presentation.statusSummary.contains("configured combo 无效"))
+        #expect(presentation.statusSummary.contains("治理组合无效"))
     }
 
     @Test

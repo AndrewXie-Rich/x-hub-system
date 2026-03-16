@@ -48,7 +48,7 @@ struct AXProjectConfig: Codable, Equatable {
     // Dangerous always-confirm commands still remain manual.
     var governedAutoApproveLocalToolCalls: Bool
 
-    // User-visible autonomy policy preset + hub clamp slot for OpenClaw-style execution.
+    // User-visible autonomy policy preset + hub clamp slot for highest-surface execution.
     var autonomyMode: AXProjectAutonomyMode
     var autonomyAllowDeviceTools: Bool
     var autonomyAllowBrowserRuntime: Bool

@@ -274,10 +274,10 @@ final class LaneAllocator {
     private func evaluateRiskFit(lane: MaterializedLane, project: ProjectModel) -> (fit: Double, hardBlocked: Bool) {
         let capabilityRange = Double(ModelCapability.expert.rawValue - ModelCapability.basic.rawValue)
         let capabilityScore = Double(project.currentModel.capability.rawValue - ModelCapability.basic.rawValue) / max(1, capabilityRange)
-        let autonomyRange = Double(AutonomyLevel.fullAuto.rawValue - AutonomyLevel.manual.rawValue)
-        let autonomyScore = Double(project.autonomyLevel.rawValue - AutonomyLevel.manual.rawValue) / max(1, autonomyRange)
+        let executionScore = project.governanceSchedulingAutonomyScore
+        let supervisionScore = project.governanceSchedulingRiskSupportScore
 
-        let trustScore = capabilityScore * 0.75 + autonomyScore * 0.25
+        let trustScore = capabilityScore * 0.60 + executionScore * 0.25 + supervisionScore * 0.15
         let requiredTrust: Double
 
         switch lane.plan.riskTier {
@@ -327,7 +327,7 @@ final class LaneAllocator {
     }
 
     private func evaluateLoadFit(project: ProjectModel, projectedLoad: Int) -> Double {
-        let capacity = max(1, project.autonomyLevel.rawValue + 1)
+        let capacity = project.governanceParallelCapacity
         let ratio = Double(projectedLoad) / Double(capacity)
         return max(0, min(1, 1 - ratio))
     }

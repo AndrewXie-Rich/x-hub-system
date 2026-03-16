@@ -83,6 +83,9 @@ enum ToolExecutor {
             var sourceID: String
             var packageSHA256: String
             var installHint: String
+            var riskLevel: String
+            var requiresGrant: Bool
+            var sideEffectClass: String
 
             enum CodingKeys: String, CodingKey {
                 case skillID = "skill_id"
@@ -94,6 +97,25 @@ enum ToolExecutor {
                 case sourceID = "source_id"
                 case packageSHA256 = "package_sha256"
                 case installHint = "install_hint"
+                case riskLevel = "risk_level"
+                case requiresGrant = "requires_grant"
+                case sideEffectClass = "side_effect_class"
+            }
+
+            init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                skillID = try container.decode(String.self, forKey: .skillID)
+                name = try container.decode(String.self, forKey: .name)
+                version = try container.decode(String.self, forKey: .version)
+                description = try container.decode(String.self, forKey: .description)
+                publisherID = try container.decode(String.self, forKey: .publisherID)
+                capabilitiesRequired = try container.decodeIfPresent([String].self, forKey: .capabilitiesRequired) ?? []
+                sourceID = try container.decode(String.self, forKey: .sourceID)
+                packageSHA256 = try container.decodeIfPresent(String.self, forKey: .packageSHA256) ?? ""
+                installHint = try container.decodeIfPresent(String.self, forKey: .installHint) ?? ""
+                riskLevel = try container.decodeIfPresent(String.self, forKey: .riskLevel) ?? "low"
+                requiresGrant = try container.decodeIfPresent(Bool.self, forKey: .requiresGrant) ?? false
+                sideEffectClass = try container.decodeIfPresent(String.self, forKey: .sideEffectClass) ?? ""
             }
         }
 
@@ -356,6 +378,122 @@ enum ToolExecutor {
                 )
             }
 
+        case .delete_path:
+            if shouldUseSandbox(call) {
+                return ToolResult(
+                    id: call.id,
+                    tool: call.tool,
+                    ok: false,
+                    output: wrappedFailureOutput(
+                        tool: call.tool,
+                        body: "sandbox_not_supported_for_delete_path",
+                        extra: [:]
+                    )
+                )
+            }
+            let path = strArg(call, "path")
+            let recursive = optBoolArg(call, "recursive") ?? false
+            let force = optBoolArg(call, "force") ?? false
+            do {
+                let deleted = try FileTool.deletePath(
+                    path: path,
+                    projectRoot: projectRoot,
+                    recursive: recursive,
+                    force: force
+                )
+                let relativePath = relativeDisplayPath(deleted.path, projectRoot: projectRoot)
+                let summary: [String: JSONValue] = [
+                    "tool": .string(call.tool.rawValue),
+                    "ok": .bool(true),
+                    "path": .string(relativePath),
+                    "deleted": .bool(deleted.deleted),
+                    "target_type": .string(deleted.targetType),
+                    "recursive": .bool(recursive),
+                    "force": .bool(force),
+                ]
+                let body = deleted.deleted
+                    ? "delete_path completed: \(relativePath)"
+                    : "delete_path no-op: \(relativePath) already missing"
+                return ToolResult(id: call.id, tool: call.tool, ok: true, output: structuredOutput(summary: summary, body: body))
+            } catch let violation as XTPathScopeViolation {
+                return deniedPathScopeResult(
+                    call: call,
+                    projectRoot: projectRoot,
+                    violation: violation
+                )
+            } catch {
+                return ToolResult(
+                    id: call.id,
+                    tool: call.tool,
+                    ok: false,
+                    output: wrappedFailureOutput(
+                        tool: call.tool,
+                        body: error.localizedDescription,
+                        extra: ["path": .string(path)]
+                    )
+                )
+            }
+
+        case .move_path:
+            if shouldUseSandbox(call) {
+                return ToolResult(
+                    id: call.id,
+                    tool: call.tool,
+                    ok: false,
+                    output: wrappedFailureOutput(
+                        tool: call.tool,
+                        body: "sandbox_not_supported_for_move_path",
+                        extra: [:]
+                    )
+                )
+            }
+            let fromPath = strArg(call, "from")
+            let toPath = strArg(call, "to")
+            let overwrite = optBoolArg(call, "overwrite") ?? false
+            let createDirs = optBoolArg(call, "create_dirs") ?? true
+            do {
+                let moved = try FileTool.movePath(
+                    from: fromPath,
+                    to: toPath,
+                    projectRoot: projectRoot,
+                    createDirs: createDirs,
+                    overwrite: overwrite
+                )
+                let relativeFrom = relativeDisplayPath(moved.fromPath, projectRoot: projectRoot)
+                let relativeTo = relativeDisplayPath(moved.toPath, projectRoot: projectRoot)
+                let summary: [String: JSONValue] = [
+                    "tool": .string(call.tool.rawValue),
+                    "ok": .bool(true),
+                    "from": .string(relativeFrom),
+                    "to": .string(relativeTo),
+                    "target_type": .string(moved.targetType),
+                    "overwrite": .bool(overwrite),
+                    "create_dirs": .bool(createDirs),
+                ]
+                let body = "move_path completed: \(relativeFrom) -> \(relativeTo)"
+                return ToolResult(id: call.id, tool: call.tool, ok: true, output: structuredOutput(summary: summary, body: body))
+            } catch let violation as XTPathScopeViolation {
+                return deniedPathScopeResult(
+                    call: call,
+                    projectRoot: projectRoot,
+                    violation: violation
+                )
+            } catch {
+                return ToolResult(
+                    id: call.id,
+                    tool: call.tool,
+                    ok: false,
+                    output: wrappedFailureOutput(
+                        tool: call.tool,
+                        body: error.localizedDescription,
+                        extra: [
+                            "from": .string(fromPath),
+                            "to": .string(toPath),
+                        ]
+                    )
+                )
+            }
+
         case .list_dir:
             let path = strArg(call, "path")
             let useSandbox = shouldUseSandbox(call)
@@ -467,6 +605,130 @@ Please switch to Terminal mode (Chat/Terminal toggle) and run it there:
             let out = "exit: \(res.exitCode)\n" + (res.combined.isEmpty ? "(no output)" : res.combined)
             return ToolResult(id: call.id, tool: call.tool, ok: res.exitCode == 0, output: out)
 
+        case .process_start:
+            let command = strArg(call, "command")
+            let processId = optStrArg(call, "process_id")
+            let name = optStrArg(call, "name")
+            let cwd = optStrArg(call, "cwd")
+            let restartOnExit = optBoolArg(call, "restart_on_exit") ?? false
+            let env = managedProcessEnv(call)
+            do {
+                let record = try await XTManagedProcessStore.shared.start(
+                    projectRoot: projectRoot,
+                    processId: processId,
+                    name: name,
+                    command: command,
+                    cwd: cwd,
+                    env: env,
+                    restartOnExit: restartOnExit
+                )
+                let summary: [String: JSONValue] = [
+                    "tool": .string(call.tool.rawValue),
+                    "ok": .bool(true),
+                    "process": .object(managedProcessSummaryObject(record, projectRoot: projectRoot)),
+                ]
+                let body = "process_start completed: \(record.processId) pid=\(record.pid ?? 0) cwd=\(record.cwd)"
+                return ToolResult(id: call.id, tool: call.tool, ok: true, output: structuredOutput(summary: summary, body: body))
+            } catch {
+                return ToolResult(
+                    id: call.id,
+                    tool: call.tool,
+                    ok: false,
+                    output: wrappedFailureOutput(
+                        tool: call.tool,
+                        body: error.localizedDescription,
+                        extra: [
+                            "command": .string(command),
+                            "process_id": processId.map(JSONValue.string) ?? .null,
+                        ]
+                    )
+                )
+            }
+
+        case .process_status:
+            let processId = optStrArg(call, "process_id")
+            let includeExited = optBoolArg(call, "include_exited") ?? false
+            let records = await XTManagedProcessStore.shared.status(
+                projectRoot: projectRoot,
+                processId: processId,
+                includeExited: includeExited
+            )
+            let summary: [String: JSONValue] = [
+                "tool": .string(call.tool.rawValue),
+                "ok": .bool(true),
+                "process_count": .number(Double(records.count)),
+                "running_count": .number(Double(records.filter { $0.status == .running || $0.status == .restarting || $0.status == .starting }.count)),
+                "processes": .array(records.map { .object(managedProcessSummaryObject($0, projectRoot: projectRoot)) }),
+            ]
+            let body = records.isEmpty
+                ? "(no managed processes)"
+                : records.map { managedProcessStatusLine($0) }.joined(separator: "\n")
+            return ToolResult(id: call.id, tool: call.tool, ok: true, output: structuredOutput(summary: summary, body: body))
+
+        case .process_logs:
+            let processId = strArg(call, "process_id")
+            let tailLines = max(1, min(400, Int(optDoubleArg(call, "tail_lines") ?? 80)))
+            let maxBytes = max(1_024, min(512_000, Int(optDoubleArg(call, "max_bytes") ?? 64_000)))
+            do {
+                let response = try await XTManagedProcessStore.shared.logs(
+                    projectRoot: projectRoot,
+                    processId: processId,
+                    tailLines: tailLines,
+                    maxBytes: maxBytes
+                )
+                let summary: [String: JSONValue] = [
+                    "tool": .string(call.tool.rawValue),
+                    "ok": .bool(true),
+                    "process": .object(managedProcessSummaryObject(response.record, projectRoot: projectRoot)),
+                    "tail_lines": .number(Double(tailLines)),
+                    "max_bytes": .number(Double(maxBytes)),
+                    "truncated": .bool(response.truncated),
+                ]
+                let body = response.text.isEmpty ? "(empty log)" : response.text
+                return ToolResult(id: call.id, tool: call.tool, ok: true, output: structuredOutput(summary: summary, body: body))
+            } catch {
+                return ToolResult(
+                    id: call.id,
+                    tool: call.tool,
+                    ok: false,
+                    output: wrappedFailureOutput(
+                        tool: call.tool,
+                        body: error.localizedDescription,
+                        extra: ["process_id": .string(processId)]
+                    )
+                )
+            }
+
+        case .process_stop:
+            let processId = strArg(call, "process_id")
+            let force = optBoolArg(call, "force") ?? false
+            do {
+                let record = try await XTManagedProcessStore.shared.stop(
+                    projectRoot: projectRoot,
+                    processId: processId,
+                    force: force
+                )
+                let summary: [String: JSONValue] = [
+                    "tool": .string(call.tool.rawValue),
+                    "ok": .bool(true),
+                    "process": .object(managedProcessSummaryObject(record, projectRoot: projectRoot)),
+                    "force": .bool(force),
+                ]
+                let body = "process_stop completed: \(record.processId) status=\(record.status.rawValue)"
+                return ToolResult(id: call.id, tool: call.tool, ok: true, output: structuredOutput(summary: summary, body: body))
+            } catch {
+                return ToolResult(
+                    id: call.id,
+                    tool: call.tool,
+                    ok: false,
+                    output: wrappedFailureOutput(
+                        tool: call.tool,
+                        body: error.localizedDescription,
+                        extra: ["process_id": .string(processId)]
+                    )
+                )
+            }
+
         case .git_status:
             let res = try GitTool.status(root: projectRoot)
             return ToolResult(id: call.id, tool: call.tool, ok: res.exitCode == 0, output: res.combined.isEmpty ? "(clean)" : res.combined)
@@ -475,6 +737,126 @@ Please switch to Terminal mode (Chat/Terminal toggle) and run it there:
             let cached = optBoolArg(call, "cached") ?? false
             let res = try GitTool.diff(root: projectRoot, cached: cached)
             return ToolResult(id: call.id, tool: call.tool, ok: res.exitCode == 0, output: res.combined.isEmpty ? "(empty diff)" : res.combined)
+
+        case .git_commit:
+            let message = strArg(call, "message")
+            let all = optBoolArg(call, "all") ?? false
+            let allowEmpty = optBoolArg(call, "allow_empty") ?? false
+            let paths = stringArrayArg(call, "paths")
+            do {
+                let commit = try GitTool.commit(
+                    root: projectRoot,
+                    message: message,
+                    all: all,
+                    allowEmpty: allowEmpty,
+                    paths: paths
+                )
+                var summary: [String: JSONValue] = [
+                    "tool": .string(call.tool.rawValue),
+                    "ok": .bool(commit.result.exitCode == 0),
+                    "message": .string(message),
+                    "all": .bool(all),
+                    "allow_empty": .bool(allowEmpty),
+                    "paths": .array(paths.map(JSONValue.string)),
+                ]
+                if let failure = commit.inferredFailure {
+                    summary["reason_code"] = .string(failure.reasonCode)
+                    summary["failure_stage"] = .string(failure.failureStage)
+                    if let diagnostic = failure.diagnostic, !diagnostic.isEmpty {
+                        summary["diagnostic"] = .string(diagnostic)
+                    }
+                }
+                let body = "exit: \(commit.result.exitCode)\n" + (commit.result.combined.isEmpty ? "(no output)" : commit.result.combined)
+                return ToolResult(id: call.id, tool: call.tool, ok: commit.result.exitCode == 0, output: structuredOutput(summary: summary, body: body))
+            } catch let failure as GitToolFailure {
+                return ToolResult(
+                    id: call.id,
+                    tool: call.tool,
+                    ok: false,
+                    output: structuredOutput(
+                        summary: [
+                            "tool": .string(call.tool.rawValue),
+                            "ok": .bool(false),
+                            "message": .string(message),
+                            "all": .bool(all),
+                            "allow_empty": .bool(allowEmpty),
+                            "paths": .array(paths.map(JSONValue.string)),
+                            "reason_code": .string(failure.reasonCode),
+                            "failure_stage": .string(failure.failureStage),
+                        ],
+                        body: failure.diagnostic.map { failure.detail + "\n" + $0 } ?? failure.detail
+                    )
+                )
+            } catch let violation as XTPathScopeViolation {
+                return deniedPathScopeResult(
+                    call: call,
+                    projectRoot: projectRoot,
+                    violation: violation
+                )
+            }
+
+        case .git_push:
+            let remote = optStrArg(call, "remote")
+            let branch = optStrArg(call, "branch")
+            let setUpstream = optBoolArg(call, "set_upstream") ?? false
+            do {
+                let push = try GitTool.push(
+                    root: projectRoot,
+                    remote: remote,
+                    branch: branch,
+                    setUpstream: setUpstream
+                )
+                var summary: [String: JSONValue] = [
+                    "tool": .string(call.tool.rawValue),
+                    "ok": .bool(push.result.exitCode == 0),
+                    "remote": .string(push.remote),
+                    "branch": .string(push.branch),
+                    "set_upstream": .bool(setUpstream),
+                ]
+                if let failure = push.inferredFailure {
+                    summary["reason_code"] = .string(failure.reasonCode)
+                    summary["failure_stage"] = .string(failure.failureStage)
+                    if let diagnostic = failure.diagnostic, !diagnostic.isEmpty {
+                        summary["diagnostic"] = .string(diagnostic)
+                    }
+                }
+                let body = "exit: \(push.result.exitCode)\n" + (push.result.combined.isEmpty ? "(no output)" : push.result.combined)
+                return ToolResult(id: call.id, tool: call.tool, ok: push.result.exitCode == 0, output: structuredOutput(summary: summary, body: body))
+            } catch let failure as GitToolFailure {
+                var summary: [String: JSONValue] = [
+                    "tool": .string(call.tool.rawValue),
+                    "ok": .bool(false),
+                    "set_upstream": .bool(setUpstream),
+                    "reason_code": .string(failure.reasonCode),
+                    "failure_stage": .string(failure.failureStage),
+                ]
+                if let remote, !remote.isEmpty {
+                    summary["remote"] = .string(remote)
+                }
+                if let branch, !branch.isEmpty {
+                    summary["branch"] = .string(branch)
+                }
+                return ToolResult(
+                    id: call.id,
+                    tool: call.tool,
+                    ok: false,
+                    output: structuredOutput(
+                        summary: summary,
+                        body: failure.diagnostic.map { failure.detail + "\n" + $0 } ?? failure.detail
+                    )
+                )
+            } catch {
+                return ToolResult(
+                    id: call.id,
+                    tool: call.tool,
+                    ok: false,
+                    output: wrappedFailureOutput(
+                        tool: call.tool,
+                        body: error.localizedDescription,
+                        extra: [:]
+                    )
+                )
+            }
 
         case .git_apply:
             let patch = strArg(call, "patch")
@@ -495,6 +877,89 @@ Please switch to Terminal mode (Chat/Terminal toggle) and run it there:
             let ok = res.exitCode == 0
             let out = "exit: \(res.exitCode)\n" + (res.combined.isEmpty ? "(ok)" : res.combined)
             return ToolResult(id: call.id, tool: call.tool, ok: ok, output: out)
+
+        case .pr_create:
+            let title = optStrArg(call, "title")
+            let body = optStrArg(call, "body")
+            let base = optStrArg(call, "base")
+            let head = optStrArg(call, "head")
+            let draft = optBoolArg(call, "draft") ?? false
+            let fill = optBoolArg(call, "fill") ?? false
+            let labels = stringArrayArg(call, "labels")
+            let reviewers = stringArrayArg(call, "reviewers")
+            let result = try GitHubTool.prCreate(
+                root: projectRoot,
+                title: title,
+                body: body,
+                base: base,
+                head: head,
+                draft: draft,
+                fill: fill,
+                labels: labels,
+                reviewers: reviewers
+            )
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: jsonBoolValue(result.structuredSummary["ok"]) ?? false,
+                output: structuredOutput(summary: result.structuredSummary, body: result.output)
+            )
+
+        case .ci_read:
+            let provider = (optStrArg(call, "provider") ?? "github").lowercased()
+            guard provider == "github" else {
+                return ToolResult(
+                    id: call.id,
+                    tool: call.tool,
+                    ok: false,
+                    output: wrappedFailureOutput(
+                        tool: call.tool,
+                        body: "unsupported_ci_provider",
+                        extra: ["provider": .string(provider)]
+                    )
+                )
+            }
+            let result = try GitHubTool.ciRead(
+                root: projectRoot,
+                workflow: optStrArg(call, "workflow"),
+                branch: optStrArg(call, "branch"),
+                commit: optStrArg(call, "commit"),
+                limit: Int(optDoubleArg(call, "limit") ?? 10)
+            )
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: jsonBoolValue(result.structuredSummary["ok"]) ?? false,
+                output: structuredOutput(summary: result.structuredSummary, body: result.output)
+            )
+
+        case .ci_trigger:
+            let provider = (optStrArg(call, "provider") ?? "github").lowercased()
+            guard provider == "github" else {
+                return ToolResult(
+                    id: call.id,
+                    tool: call.tool,
+                    ok: false,
+                    output: wrappedFailureOutput(
+                        tool: call.tool,
+                        body: "unsupported_ci_provider",
+                        extra: ["provider": .string(provider)]
+                    )
+                )
+            }
+            let inputs = jsonObject(call.args["inputs"]) ?? [:]
+            let result = try GitHubTool.ciTrigger(
+                root: projectRoot,
+                workflow: strArg(call, "workflow"),
+                ref: optStrArg(call, "ref"),
+                inputs: inputs
+            )
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: jsonBoolValue(result.structuredSummary["ok"]) ?? false,
+                output: structuredOutput(summary: result.structuredSummary, body: result.output)
+            )
 
         case .session_list:
             return await executeSessionList(call: call, projectRoot: projectRoot)
@@ -740,7 +1205,7 @@ content_type=\(res.contentType)
 
         return manager.ensurePrimarySession(
             projectId: currentProjectId,
-            title: projectRoot.lastPathComponent,
+            title: AXProjectRegistryStore.displayName(forRoot: projectRoot),
             directory: projectRoot.standardizedFileURL.path
         )
     }
@@ -922,7 +1387,7 @@ content_type=\(res.contentType)
             requesterRole: .tool,
             projectId: projectId,
             projectRoot: projectRoot.standardizedFileURL.path,
-            displayName: projectRoot.lastPathComponent,
+            displayName: AXProjectRegistryStore.displayName(forRoot: projectRoot),
             latestUser: "(memory_snapshot_tool)",
             constitutionHint: nil,
             canonicalText: nil,
@@ -1205,7 +1670,8 @@ content_type=\(res.contentType)
             summary["active_plan_id"] = .string(activePlan.planId)
         }
 
-        var lines: [String] = ["Self Improvement Report", "project: \(projectRoot.lastPathComponent)"]
+        let projectDisplayName = AXProjectRegistryStore.displayName(forRoot: projectRoot)
+        var lines: [String] = ["Self Improvement Report", "project: \(projectDisplayName)"]
         if !focus.isEmpty {
             lines.append("focus: \(focus)")
         }
@@ -1332,6 +1798,11 @@ content_type=\(res.contentType)
             config: resolvedConfig
         )
         let effectiveAutonomy = autonomyState.effectivePolicy
+        let resolvedGovernance = xtResolveProjectGovernance(
+            projectRoot: projectRoot,
+            config: resolvedConfig,
+            effectiveAutonomy: effectiveAutonomy
+        )
         let configuredAutonomySurfaces = resolvedConfig.configuredAutonomySurfaceLabels
         let effectiveTools = ToolPolicy.sortedTools(
             ToolPolicy.effectiveAllowedTools(
@@ -1374,6 +1845,22 @@ content_type=\(res.contentType)
                 (key.rawValue, .string(permissionReadiness.permissionStatus(for: key).rawValue))
             }
         )
+        let runtimeSurfaceObject: JSONValue = .object([
+            "configured_surface": .string(resolvedConfig.autonomyMode.rawValue),
+            "effective_surface": .string(effectiveAutonomy.effectiveMode.rawValue),
+            "hub_override_surface": .string(effectiveAutonomy.hubOverrideMode.rawValue),
+            "local_override_surface": .string(effectiveAutonomy.localOverrideMode.rawValue),
+            "remote_override_surface": .string(effectiveAutonomy.remoteOverrideMode.rawValue),
+            "remote_override_source": .string(effectiveAutonomy.remoteOverrideSource),
+            "remote_override_updated_at_ms": .number(Double(effectiveAutonomy.remoteOverrideUpdatedAtMs)),
+            "ttl_sec": .number(Double(resolvedConfig.autonomyTTLSeconds)),
+            "remaining_sec": .number(Double(effectiveAutonomy.remainingSeconds)),
+            "expired": .bool(effectiveAutonomy.expired),
+            "kill_switch_engaged": .bool(effectiveAutonomy.killSwitchEngaged),
+            "configured_surfaces": .array(configuredAutonomySurfaces.map(JSONValue.string)),
+            "effective_surfaces": .array(effectiveAutonomy.allowedSurfaceLabels.map(JSONValue.string)),
+            "updated_at_ms": .number(Double(resolvedConfig.autonomyUpdatedAtMs)),
+        ])
         let autonomyPolicyObject: JSONValue = .object([
             "configured_mode": .string(resolvedConfig.autonomyMode.rawValue),
             "effective_mode": .string(effectiveAutonomy.effectiveMode.rawValue),
@@ -1390,10 +1877,28 @@ content_type=\(res.contentType)
             "effective_surfaces": .array(effectiveAutonomy.allowedSurfaceLabels.map(JSONValue.string)),
             "updated_at_ms": .number(Double(resolvedConfig.autonomyUpdatedAtMs)),
         ])
+        let governanceObject: JSONValue = .object([
+            "configured_execution_tier": .string(resolvedGovernance.configuredBundle.executionTier.rawValue),
+            "effective_execution_tier": .string(resolvedGovernance.effectiveBundle.executionTier.rawValue),
+            "configured_supervisor_tier": .string(resolvedGovernance.configuredBundle.supervisorInterventionTier.rawValue),
+            "effective_supervisor_tier": .string(resolvedGovernance.effectiveBundle.supervisorInterventionTier.rawValue),
+            "review_policy_mode": .string(resolvedGovernance.effectiveBundle.reviewPolicyMode.rawValue),
+            "progress_heartbeat_sec": .number(Double(resolvedGovernance.effectiveBundle.schedule.progressHeartbeatSeconds)),
+            "review_pulse_sec": .number(Double(resolvedGovernance.effectiveBundle.schedule.reviewPulseSeconds)),
+            "brainstorm_review_sec": .number(Double(resolvedGovernance.effectiveBundle.schedule.brainstormReviewSeconds)),
+            "event_driven_review_enabled": .bool(resolvedGovernance.effectiveBundle.schedule.eventDrivenReviewEnabled),
+            "event_review_triggers": .array(resolvedGovernance.effectiveBundle.schedule.eventReviewTriggers.map { .string($0.rawValue) }),
+            "compat_source": .string(resolvedGovernance.compatSource.rawValue),
+            "project_memory_ceiling": .string(resolvedGovernance.projectMemoryCeiling.rawValue),
+            "supervisor_review_memory_ceiling": .string(resolvedGovernance.supervisorReviewMemoryCeiling.rawValue),
+            "allowed_capabilities": .array(resolvedGovernance.capabilityBundle.allowedCapabilityLabels.map(JSONValue.string)),
+        ])
         let browserRuntimeSession = XTBrowserRuntimeStore.loadSession(for: ctx)
+        let latestUIObservation = XTUIObservationStore.loadLatestBrowserPageReference(for: ctx)
+        let latestUIReview = XTUIReviewStore.loadLatestBrowserPageReference(for: ctx)
         let browserRuntimeObject: JSONValue = {
             guard let browserRuntimeSession else { return .null }
-            return .object([
+            var object: [String: JSONValue] = [
                 "session_id": .string(browserRuntimeSession.sessionID),
                 "profile_id": .string(browserRuntimeSession.profileID),
                 "profile_path": .string(XTBrowserRuntimeStore.managedProfilePath(for: ctx, session: browserRuntimeSession)),
@@ -1405,6 +1910,39 @@ content_type=\(res.contentType)
                 "open_tabs": .number(Double(browserRuntimeSession.openTabs)),
                 "grant_policy_ref": .string(browserRuntimeSession.grantPolicyRef),
                 "audit_ref": .string(browserRuntimeSession.auditRef),
+            ]
+            if let latestUIObservation {
+                object["ui_observation_ref"] = .string(latestUIObservation.bundleRef)
+                object["ui_observation_status"] = .string(latestUIObservation.captureStatus.rawValue)
+                object["ui_observation_probe_depth"] = .string(latestUIObservation.probeDepth.rawValue)
+                object["ui_observation_updated_at_ms"] = .number(Double(latestUIObservation.updatedAtMs))
+            }
+            if let latestUIReview {
+                object["ui_review_ref"] = .string(latestUIReview.reviewRef)
+                object["ui_review_verdict"] = .string(latestUIReview.verdict.rawValue)
+                object["ui_review_confidence"] = .string(latestUIReview.confidence.rawValue)
+                object["ui_review_sufficient_evidence"] = .bool(latestUIReview.sufficientEvidence)
+                object["ui_review_objective_ready"] = .bool(latestUIReview.objectiveReady)
+                object["ui_review_issue_codes"] = .array(latestUIReview.issueCodes.map(JSONValue.string))
+                object["ui_review_summary"] = .string(latestUIReview.summary)
+                object["ui_review_updated_at_ms"] = .number(Double(latestUIReview.updatedAtMs))
+            }
+            return .object(object)
+        }()
+        let uiReviewObject: JSONValue = {
+            guard let latestUIReview else { return .null }
+            return .object([
+                "review_id": .string(latestUIReview.reviewID),
+                "review_ref": .string(latestUIReview.reviewRef),
+                "bundle_id": .string(latestUIReview.bundleID),
+                "bundle_ref": .string(latestUIReview.bundleRef),
+                "verdict": .string(latestUIReview.verdict.rawValue),
+                "confidence": .string(latestUIReview.confidence.rawValue),
+                "sufficient_evidence": .bool(latestUIReview.sufficientEvidence),
+                "objective_ready": .bool(latestUIReview.objectiveReady),
+                "issue_codes": .array(latestUIReview.issueCodes.map(JSONValue.string)),
+                "summary": .string(latestUIReview.summary),
+                "updated_at_ms": .number(Double(latestUIReview.updatedAtMs)),
             ])
         }()
 
@@ -1422,11 +1960,16 @@ content_type=\(res.contentType)
             "runtime_state": .string(session?.runtime?.state.rawValue ?? AXSessionRuntimeState.idle.rawValue),
             "pending_tool_call_count": .number(Double(session?.runtime?.pendingToolCallCount ?? 0)),
         ]
+        let projectDisplayName = AXProjectRegistryStore.displayName(
+            forRoot: projectRoot,
+            registry: registry,
+            preferredDisplayName: entry?.displayName
+        )
         var summary: [String: JSONValue] = [:]
         summary["tool"] = .string(call.tool.rawValue)
         summary["ok"] = .bool(true)
         summary["project_id"] = .string(projectId)
-        summary["display_name"] = .string(entry?.displayName ?? projectRoot.lastPathComponent)
+        summary["display_name"] = .string(projectDisplayName)
         summary["root"] = .string(projectRoot.standardizedFileURL.path)
         summary["status_digest"] = entry?.statusDigest.map(JSONValue.string) ?? .null
         summary["current_state_summary"] = entry?.currentStateSummary.map(JSONValue.string) ?? .null
@@ -1448,8 +1991,22 @@ content_type=\(res.contentType)
         summary["trusted_automation_permission_statuses"] = .object(trustedPermissionStatuses)
         summary["trusted_automation_open_settings_actions"] = .array(trustedOpenSettingsActions.map(JSONValue.string))
         summary["trusted_automation_missing_prerequisites"] = .array(trustedAutomationStatus.missingPrerequisites.map(JSONValue.string))
+        summary["governance"] = governanceObject
+        summary["execution_tier"] = .string(resolvedGovernance.configuredBundle.executionTier.rawValue)
+        summary["effective_execution_tier"] = .string(resolvedGovernance.effectiveBundle.executionTier.rawValue)
+        summary["supervisor_intervention_tier"] = .string(resolvedGovernance.configuredBundle.supervisorInterventionTier.rawValue)
+        summary["effective_supervisor_intervention_tier"] = .string(resolvedGovernance.effectiveBundle.supervisorInterventionTier.rawValue)
+        summary["review_policy_mode"] = .string(resolvedGovernance.effectiveBundle.reviewPolicyMode.rawValue)
+        summary["progress_heartbeat_sec"] = .number(Double(resolvedGovernance.effectiveBundle.schedule.progressHeartbeatSeconds))
+        summary["review_pulse_sec"] = .number(Double(resolvedGovernance.effectiveBundle.schedule.reviewPulseSeconds))
+        summary["brainstorm_review_sec"] = .number(Double(resolvedGovernance.effectiveBundle.schedule.brainstormReviewSeconds))
+        summary["event_driven_review_enabled"] = .bool(resolvedGovernance.effectiveBundle.schedule.eventDrivenReviewEnabled)
+        summary["event_review_triggers"] = .array(resolvedGovernance.effectiveBundle.schedule.eventReviewTriggers.map { .string($0.rawValue) })
+        summary["governance_compat_source"] = .string(resolvedGovernance.compatSource.rawValue)
+        summary["runtime_surface"] = runtimeSurfaceObject
         summary["autonomy_policy"] = autonomyPolicyObject
         summary["browser_runtime"] = browserRuntimeObject
+        summary["ui_review"] = uiReviewObject
         summary["is_git_repo"] = .bool(isGitRepo)
         summary["git_dirty"] = .bool(isGitRepo && !gitSummary.isEmpty)
         summary["session"] = .object(sessionSummary)
@@ -1459,10 +2016,19 @@ content_type=\(res.contentType)
             guard let browserRuntimeSession else { return "(none)" }
             let currentURL = browserRuntimeSession.currentURL.isEmpty ? "(none)" : browserRuntimeSession.currentURL
             let snapshotRef = browserRuntimeSession.snapshotRef.isEmpty ? "(none)" : browserRuntimeSession.snapshotRef
-            return "session=\(browserRuntimeSession.sessionID) mode=\(browserRuntimeSession.actionMode.rawValue) url=\(currentURL) snapshot=\(snapshotRef)"
+            let observationRef = latestUIObservation?.bundleRef ?? "(none)"
+            let reviewRef = latestUIReview?.reviewRef ?? "(none)"
+            return "session=\(browserRuntimeSession.sessionID) mode=\(browserRuntimeSession.actionMode.rawValue) url=\(currentURL) snapshot=\(snapshotRef) ui_observation=\(observationRef) ui_review=\(reviewRef)"
+        }()
+        let uiReviewText: String = {
+            guard let latestUIReview else { return "(none)" }
+            return "ref=\(latestUIReview.reviewRef) verdict=\(latestUIReview.verdict.rawValue) confidence=\(latestUIReview.confidence.rawValue) sufficient_evidence=\(latestUIReview.sufficientEvidence) summary=\(latestUIReview.summary)"
         }()
         let configuredAutonomySurfaceText = configuredAutonomySurfaces.isEmpty ? "(none)" : configuredAutonomySurfaces.joined(separator: ",")
         let effectiveAutonomySurfaceText = effectiveAutonomy.allowedSurfaceLabels.isEmpty ? "(none)" : effectiveAutonomy.allowedSurfaceLabels.joined(separator: ",")
+        let governanceTriggerText = resolvedGovernance.effectiveBundle.schedule.eventReviewTriggers.isEmpty
+            ? "(none)"
+            : resolvedGovernance.effectiveBundle.schedule.eventReviewTriggers.map(\.rawValue).joined(separator: ",")
         let autonomyRemainingText: String = {
             if effectiveAutonomy.killSwitchEngaged {
                 return "kill_switch"
@@ -1476,7 +2042,7 @@ content_type=\(res.contentType)
             return String(effectiveAutonomy.remainingSeconds)
         }()
         let body = """
-project=\(entry?.displayName ?? projectRoot.lastPathComponent)
+project=\(projectDisplayName)
 root=\(projectRoot.standardizedFileURL.path)
 status_digest=\(entry?.statusDigest ?? "(none)")
 verify_commands=\(verifyText)
@@ -1488,17 +2054,28 @@ trusted_automation_device_id=\(trustedAutomationStatus.boundDeviceID.isEmpty ? "
 trusted_automation_required_permissions=\(trustedRequiredPermissions.isEmpty ? "(none)" : trustedRequiredPermissions.joined(separator: ","))
 trusted_automation_open_settings_actions=\(trustedOpenSettingsActions.isEmpty ? "(none)" : trustedOpenSettingsActions.joined(separator: ","))
 trusted_automation_missing=\(trustedAutomationStatus.missingPrerequisites.isEmpty ? "(none)" : trustedAutomationStatus.missingPrerequisites.joined(separator: ","))
-autonomy_mode=\(resolvedConfig.autonomyMode.rawValue)
-autonomy_effective_mode=\(effectiveAutonomy.effectiveMode.rawValue)
-autonomy_hub_override_mode=\(effectiveAutonomy.hubOverrideMode.rawValue)
-autonomy_local_override_mode=\(effectiveAutonomy.localOverrideMode.rawValue)
-autonomy_remote_override_mode=\(effectiveAutonomy.remoteOverrideMode.rawValue)
-autonomy_remote_override_source=\(effectiveAutonomy.remoteOverrideSource.isEmpty ? "(none)" : effectiveAutonomy.remoteOverrideSource)
-autonomy_remote_override_updated_at_ms=\(effectiveAutonomy.remoteOverrideUpdatedAtMs)
-autonomy_configured_surfaces=\(configuredAutonomySurfaceText)
-autonomy_effective_surfaces=\(effectiveAutonomySurfaceText)
-autonomy_ttl_remaining=\(autonomyRemainingText)
+execution_tier=\(resolvedGovernance.configuredBundle.executionTier.rawValue)
+effective_execution_tier=\(resolvedGovernance.effectiveBundle.executionTier.rawValue)
+supervisor_intervention_tier=\(resolvedGovernance.configuredBundle.supervisorInterventionTier.rawValue)
+effective_supervisor_intervention_tier=\(resolvedGovernance.effectiveBundle.supervisorInterventionTier.rawValue)
+review_policy_mode=\(resolvedGovernance.effectiveBundle.reviewPolicyMode.rawValue)
+progress_heartbeat_sec=\(resolvedGovernance.effectiveBundle.schedule.progressHeartbeatSeconds)
+review_pulse_sec=\(resolvedGovernance.effectiveBundle.schedule.reviewPulseSeconds)
+brainstorm_review_sec=\(resolvedGovernance.effectiveBundle.schedule.brainstormReviewSeconds)
+event_driven_review_enabled=\(resolvedGovernance.effectiveBundle.schedule.eventDrivenReviewEnabled)
+event_review_triggers=\(governanceTriggerText)
+governance_compat_source=\(resolvedGovernance.compatSource.rawValue)
+runtime_surface_configured=\(resolvedConfig.autonomyMode.rawValue)
+runtime_surface_effective=\(effectiveAutonomy.effectiveMode.rawValue)
+runtime_surface_hub_override=\(effectiveAutonomy.hubOverrideMode.rawValue)
+runtime_surface_local_override=\(effectiveAutonomy.localOverrideMode.rawValue)
+runtime_surface_remote_override=\(effectiveAutonomy.remoteOverrideMode.rawValue)
+runtime_surface_remote_override_source=\(effectiveAutonomy.remoteOverrideSource.isEmpty ? "(none)" : effectiveAutonomy.remoteOverrideSource)
+runtime_surface_configured_surfaces=\(configuredAutonomySurfaceText)
+runtime_surface_effective_surfaces=\(effectiveAutonomySurfaceText)
+runtime_surface_ttl_remaining=\(autonomyRemainingText)
 browser_runtime=\(browserRuntimeText)
+ui_review=\(uiReviewText)
 session_state=\(session?.runtime?.state.rawValue ?? AXSessionRuntimeState.idle.rawValue)
 git=\(isGitRepo ? (gitSummary.isEmpty ? "clean" : gitSummary) : "not_git_repo")
 """
@@ -2627,6 +3204,51 @@ url=\(url.absoluteString)
                     now: now
                 )
 
+                let probeDepth = XTUIObservationProbeDepth.parse(optStrArg(call, "probe_depth")) ?? .standard
+                var uiObservationRef = ""
+                var uiObservationStatus = "failed"
+                var uiObservationCapturedLayers = 0
+                var uiObservationError = ""
+                var uiReviewRef = ""
+                var uiReviewVerdict = ""
+                var uiReviewConfidence = ""
+                var uiReviewSummaryText = ""
+                var uiReviewSufficientEvidence = false
+                var uiReviewObjectiveReady = false
+                var uiReviewIssueCodes: [String] = []
+                var uiReviewError = ""
+                do {
+                    let stored = try await XTBrowserUIObservationProbe.capture(
+                        session: session,
+                        ctx: ctx,
+                        permissionReadiness: permissionReadiness,
+                        probeDepth: probeDepth,
+                        triggerSource: "browser_snapshot_action",
+                        auditRef: auditRef,
+                        now: now
+                    )
+                    uiObservationRef = stored.bundleRef
+                    uiObservationStatus = stored.bundle.captureStatus.rawValue
+                    uiObservationCapturedLayers = stored.capturedLayers
+                    do {
+                        let review = try XTBrowserUIReviewEngine.review(
+                            storedBundle: stored,
+                            ctx: ctx
+                        )
+                        uiReviewRef = review.reviewRef
+                        uiReviewVerdict = review.review.verdict.rawValue
+                        uiReviewConfidence = review.review.confidence.rawValue
+                        uiReviewSummaryText = review.review.summary
+                        uiReviewSufficientEvidence = review.review.sufficientEvidence
+                        uiReviewObjectiveReady = review.review.objectiveReady
+                        uiReviewIssueCodes = review.review.issueCodes
+                    } catch {
+                        uiReviewError = String(error.localizedDescription)
+                    }
+                } catch {
+                    uiObservationError = String(error.localizedDescription)
+                }
+
                 var summary = deviceAutomationSummaryBase(
                     call: call,
                     projectRoot: projectRoot,
@@ -2635,6 +3257,51 @@ url=\(url.absoluteString)
                 )
                 summary["action"] = .string(requestedAction.rawValue)
                 summary["url"] = .string(targetURL)
+                summary["ui_observation_probe_depth"] = .string(probeDepth.rawValue)
+                summary["ui_observation_status"] = .string(uiObservationStatus)
+                summary["ui_observation_bundle_ref"] = uiObservationRef.isEmpty ? .null : .string(uiObservationRef)
+                summary["ui_observation_captured_layers"] = .number(Double(uiObservationCapturedLayers))
+                if !uiObservationError.isEmpty {
+                    summary["ui_observation_error"] = .string(uiObservationError)
+                }
+                summary["ui_review_ref"] = uiReviewRef.isEmpty ? .null : .string(uiReviewRef)
+                if !uiReviewVerdict.isEmpty {
+                    summary["ui_review_verdict"] = .string(uiReviewVerdict)
+                }
+                if !uiReviewConfidence.isEmpty {
+                    summary["ui_review_confidence"] = .string(uiReviewConfidence)
+                }
+                if !uiReviewSummaryText.isEmpty {
+                    summary["ui_review_summary"] = .string(uiReviewSummaryText)
+                }
+                summary["ui_review_sufficient_evidence"] = .bool(uiReviewSufficientEvidence)
+                summary["ui_review_objective_ready"] = .bool(uiReviewObjectiveReady)
+                summary["ui_review_issue_codes"] = .array(uiReviewIssueCodes.map(JSONValue.string))
+                if !uiReviewError.isEmpty {
+                    summary["ui_review_error"] = .string(uiReviewError)
+                }
+                AXProjectStore.appendRawLog(
+                    [
+                        "type": "ui_review",
+                        "surface": "browser_page",
+                        "action": requestedAction.rawValue,
+                        "project_id": projectID,
+                        "session_id": session.sessionID,
+                        "bundle_ref": uiObservationRef,
+                        "bundle_status": uiObservationStatus,
+                        "review_ref": uiReviewRef,
+                        "verdict": uiReviewVerdict,
+                        "confidence": uiReviewConfidence,
+                        "sufficient_evidence": uiReviewSufficientEvidence,
+                        "objective_ready": uiReviewObjectiveReady,
+                        "issue_codes": uiReviewIssueCodes,
+                        "summary": uiReviewSummaryText,
+                        "review_error": uiReviewError,
+                        "created_at": now.timeIntervalSince1970,
+                        "audit_ref": auditRef
+                    ],
+                    for: ctx
+                )
                 summary.merge(browserRuntimeSummary(session: session, ctx: ctx), uniquingKeysWith: { _, new in new })
                 return ToolResult(
                     id: call.id,
@@ -3609,7 +4276,7 @@ return jsResult
         session: XTBrowserRuntimeSession,
         ctx: AXProjectContext
     ) -> [String: JSONValue] {
-        [
+        var summary: [String: JSONValue] = [
             "browser_runtime_session_id": .string(session.sessionID),
             "browser_runtime_profile_id": .string(session.profileID),
             "browser_runtime_profile_path": .string(XTBrowserRuntimeStore.managedProfilePath(for: ctx, session: session)),
@@ -3621,6 +4288,23 @@ return jsResult
             "browser_runtime_open_tabs": .number(Double(session.openTabs)),
             "browser_runtime_grant_policy_ref": .string(session.grantPolicyRef),
         ]
+        if let latest = XTUIObservationStore.loadLatestBrowserPageReference(for: ctx) {
+            summary["browser_runtime_ui_observation_ref"] = .string(latest.bundleRef)
+            summary["browser_runtime_ui_observation_status"] = .string(latest.captureStatus.rawValue)
+            summary["browser_runtime_ui_observation_probe_depth"] = .string(latest.probeDepth.rawValue)
+            summary["browser_runtime_ui_observation_updated_at_ms"] = .number(Double(latest.updatedAtMs))
+        }
+        if let latest = XTUIReviewStore.loadLatestBrowserPageReference(for: ctx) {
+            summary["browser_runtime_ui_review_ref"] = .string(latest.reviewRef)
+            summary["browser_runtime_ui_review_verdict"] = .string(latest.verdict.rawValue)
+            summary["browser_runtime_ui_review_confidence"] = .string(latest.confidence.rawValue)
+            summary["browser_runtime_ui_review_sufficient_evidence"] = .bool(latest.sufficientEvidence)
+            summary["browser_runtime_ui_review_objective_ready"] = .bool(latest.objectiveReady)
+            summary["browser_runtime_ui_review_issue_codes"] = .array(latest.issueCodes.map(JSONValue.string))
+            summary["browser_runtime_ui_review_summary"] = .string(latest.summary)
+            summary["browser_runtime_ui_review_updated_at_ms"] = .number(Double(latest.updatedAtMs))
+        }
+        return summary
     }
 
     private static func deviceBrowserControlFailure(
@@ -3848,6 +4532,9 @@ return jsResult
                 "source_id": .string(item.sourceID),
                 "package_sha256": .string(item.packageSHA256),
                 "install_hint": .string(item.installHint),
+                "risk_level": .string(item.riskLevel),
+                "requires_grant": .bool(item.requiresGrant),
+                "side_effect_class": .string(item.sideEffectClass),
                 "capabilities_required": .array(item.capabilitiesRequired.map(JSONValue.string)),
             ])
         }
@@ -3868,9 +4555,10 @@ return jsResult
         } else {
             body = resolved.results.prefix(limit).enumerated().map { index, item in
                 let caps = item.capabilitiesRequired.isEmpty ? "caps: (none)" : "caps: " + item.capabilitiesRequired.joined(separator: ", ")
+                let governance = "risk=\(item.riskLevel) grant=\(item.requiresGrant ? "yes" : "no") side_effect=\(item.sideEffectClass.isEmpty ? "unspecified" : item.sideEffectClass)"
                 let install = item.installHint.trimmingCharacters(in: .whitespacesAndNewlines)
                 let installLine = install.isEmpty ? "" : "\n   install: \(install)"
-                return "\(index + 1). \(item.name) [\(item.skillID)] v\(item.version)\n   publisher=\(item.publisherID) source=\(item.sourceID)\n   \(caps)\(installLine)"
+                return "\(index + 1). \(item.name) [\(item.skillID)] v\(item.version)\n   publisher=\(item.publisherID) source=\(item.sourceID)\n   \(governance)\n   \(caps)\(installLine)"
             }.joined(separator: "\n\n")
         }
         return ToolResult(id: call.id, tool: call.tool, ok: true, output: structuredOutput(summary: summary, body: body))
@@ -4307,7 +4995,10 @@ return jsResult
                     capabilitiesRequired: row.skill.capabilitiesRequired,
                     sourceID: row.skill.sourceID,
                     packageSHA256: row.skill.packageSHA256,
-                    installHint: row.skill.installHint
+                    installHint: row.skill.installHint,
+                    riskLevel: row.skill.riskLevel,
+                    requiresGrant: row.skill.requiresGrant,
+                    sideEffectClass: row.skill.sideEffectClass
                 )
             }
 
@@ -4825,6 +5516,96 @@ return jsResult
         return out
     }
 
+    private static func managedProcessEnv(_ call: ToolCall) -> [String: String] {
+        guard case .object(let object)? = call.args["env"] else { return [:] }
+        var env: [String: String] = [:]
+        for key in object.keys.sorted() {
+            let normalizedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalizedKey.isEmpty else { continue }
+            switch object[key] {
+            case .string(let value):
+                env[normalizedKey] = value
+            case .number(let value):
+                env[normalizedKey] = String(value)
+            case .bool(let value):
+                env[normalizedKey] = value ? "true" : "false"
+            default:
+                continue
+            }
+        }
+        return env
+    }
+
+    private static func stringArrayArg(_ call: ToolCall, _ key: String) -> [String] {
+        guard case .array(let values)? = call.args[key] else { return [] }
+        return values.compactMap { value in
+            guard case .string(let text) = value else { return nil }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+    }
+
+    private static func jsonBoolValue(_ value: JSONValue?) -> Bool? {
+        guard case .bool(let flag)? = value else { return nil }
+        return flag
+    }
+
+    private static func managedProcessSummaryObject(
+        _ record: XTManagedProcessRecord,
+        projectRoot: URL
+    ) -> [String: JSONValue] {
+        [
+            "process_id": .string(record.processId),
+            "name": .string(record.name),
+            "command": .string(record.command),
+            "cwd": .string(record.cwd),
+            "status": .string(record.status.rawValue),
+            "pid": record.pid.map { .number(Double($0)) } ?? .null,
+            "restart_on_exit": .bool(record.restartOnExit),
+            "restart_count": .number(Double(record.restartCount)),
+            "created_at_ms": .number(Double(record.createdAtMs)),
+            "started_at_ms": record.startedAtMs.map { .number(Double($0)) } ?? .null,
+            "updated_at_ms": .number(Double(record.updatedAtMs)),
+            "exit_code": record.exitCode.map { .number(Double($0)) } ?? .null,
+            "termination_reason": record.terminationReason.map(JSONValue.string) ?? .null,
+            "last_error": record.lastError.map(JSONValue.string) ?? .null,
+            "log_path": .string(relativeDisplayPath(record.logPath, projectRoot: projectRoot)),
+        ]
+    }
+
+    private static func managedProcessStatusLine(_ record: XTManagedProcessRecord) -> String {
+        var parts = [
+            "- \(record.processId)",
+            "name=\(record.name)",
+            "status=\(record.status.rawValue)",
+            "cwd=\(record.cwd)",
+        ]
+        if let pid = record.pid {
+            parts.append("pid=\(pid)")
+        }
+        if record.restartOnExit {
+            parts.append("restart=\(record.restartCount)")
+        }
+        if let exitCode = record.exitCode {
+            parts.append("exit=\(exitCode)")
+        }
+        return parts.joined(separator: " | ")
+    }
+
+    private static func relativeDisplayPath(_ rawPath: String, projectRoot: URL) -> String {
+        guard rawPath.hasPrefix("/") else { return rawPath }
+        let target = URL(fileURLWithPath: rawPath).standardizedFileURL.path
+        let root = projectRoot.standardizedFileURL.path
+        if target == root {
+            return "."
+        }
+        let prefix = root.hasSuffix("/") ? root : root + "/"
+        if target.hasPrefix(prefix) {
+            return String(target.dropFirst(prefix.count))
+        }
+        return target
+    }
+
     private static func strArg(_ call: ToolCall, _ key: String) -> String {
         if case .string(let s)? = call.args[key] { return s }
         // Some models may emit numbers/bools; coerce.
@@ -5143,7 +5924,7 @@ UI step stage failed: \(stage)
                 requesterRole: .tool,
                 projectId: projectId,
                 projectRoot: projectRoot.standardizedFileURL.path,
-                displayName: projectRoot.lastPathComponent,
+                displayName: AXProjectRegistryStore.displayName(forRoot: projectRoot),
                 latestUser: highRiskMemoryRecheckLatestUser(call: call),
                 constitutionHint: nil,
                 canonicalText: nil,
@@ -5186,7 +5967,7 @@ UI step stage failed: \(stage)
 
     private static func requiresFreshMemoryRecheck(call: ToolCall, projectRoot: URL) -> Bool {
         switch call.tool {
-        case .git_apply, .deviceUIAct, .deviceUIStep, .deviceBrowserControl, .deviceAppleScript:
+        case .delete_path, .move_path, .git_commit, .git_push, .git_apply, .pr_create, .ci_trigger, .process_start, .deviceUIAct, .deviceUIStep, .deviceBrowserControl, .deviceAppleScript:
             return true
         case .write_file:
             guard let path = optStrArg(call, "path") else { return false }
@@ -5203,8 +5984,22 @@ UI step stage failed: \(stage)
         switch call.tool {
         case .write_file:
             return "tool.write_file path=\(optStrArg(call, "path") ?? "(none)")"
+        case .delete_path:
+            return "tool.delete_path path=\(optStrArg(call, "path") ?? "(none)")"
+        case .move_path:
+            return "tool.move_path from=\(optStrArg(call, "from") ?? "(none)") to=\(optStrArg(call, "to") ?? "(none)")"
+        case .git_commit:
+            return "tool.git_commit message=\(optStrArg(call, "message") ?? "(none)")"
+        case .git_push:
+            return "tool.git_push remote=\(optStrArg(call, "remote") ?? "(default)") branch=\(optStrArg(call, "branch") ?? "(default)")"
         case .run_command:
             return "tool.run_command command=\(optStrArg(call, "command") ?? "(none)")"
+        case .pr_create:
+            return "tool.pr_create title=\(optStrArg(call, "title") ?? "(none)")"
+        case .ci_trigger:
+            return "tool.ci_trigger workflow=\(optStrArg(call, "workflow") ?? "(none)")"
+        case .process_start:
+            return "tool.process_start command=\(optStrArg(call, "command") ?? "(none)")"
         case .git_apply:
             return "tool.git_apply patch_mutation"
         default:
@@ -5240,9 +6035,23 @@ project_updated_at: \(updated)
             let path = optStrArg(call, "path") ?? "(none)"
             let content = strArg(call, "content")
             return "write_target=\(path)\ncontent_chars=\(content.count)"
+        case .delete_path:
+            return "delete_target=\(optStrArg(call, "path") ?? "(none)")\nrecursive=\(optBoolArg(call, "recursive") ?? false)"
+        case .move_path:
+            return "move_from=\(optStrArg(call, "from") ?? "(none)")\nmove_to=\(optStrArg(call, "to") ?? "(none)")"
+        case .git_commit:
+            return "message=\(optStrArg(call, "message") ?? "(none)")\nall=\(optBoolArg(call, "all") ?? false)\npaths=\(stringArrayArg(call, "paths").joined(separator: ","))"
+        case .git_push:
+            return "remote=\(optStrArg(call, "remote") ?? "(default)")\nbranch=\(optStrArg(call, "branch") ?? "(default)")\nset_upstream=\(optBoolArg(call, "set_upstream") ?? false)"
         case .run_command:
             let command = optStrArg(call, "command") ?? "(none)"
             return "command=\(command)"
+        case .pr_create:
+            return "title=\(optStrArg(call, "title") ?? "(none)")\nbase=\(optStrArg(call, "base") ?? "(default)")\nhead=\(optStrArg(call, "head") ?? "(default)")"
+        case .ci_trigger:
+            return "workflow=\(optStrArg(call, "workflow") ?? "(none)")\nref=\(optStrArg(call, "ref") ?? "(default)")"
+        case .process_start:
+            return "command=\(optStrArg(call, "command") ?? "(none)")\ncwd=\(optStrArg(call, "cwd") ?? ".")\nrestart_on_exit=\(optBoolArg(call, "restart_on_exit") ?? false)"
         case .git_apply:
             let patch = strArg(call, "patch")
             return "patch_chars=\(patch.count)\nmutation_scope=repo"

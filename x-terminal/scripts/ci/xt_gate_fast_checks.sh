@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+PROFILE_HELPER="${ROOT_DIR}/scripts/ci/xt_nested_gate_profile.sh"
 
 RUN_BUILD="${XT_FAST_CHECK_RUN_BUILD:-0}"
 RUN_VALIDATOR="${XT_FAST_CHECK_RUN_VALIDATOR:-1}"
@@ -30,6 +31,7 @@ matrix_gate_status="pending"
 matrix_gate_note=""
 baseline_gate_status="pending"
 baseline_gate_note=""
+PROFILE_ENV_LINES=()
 
 step() {
   local message="$1"
@@ -39,6 +41,23 @@ step() {
 warn() {
   local message="$1"
   printf '[fast-check][warn] %s\n' "${message}"
+}
+
+require_profile_helper() {
+  if [[ -f "${PROFILE_HELPER}" ]]; then
+    return 0
+  fi
+  echo "[fast-check] nested gate profile helper missing: ${PROFILE_HELPER}" >&2
+  return 1
+}
+
+load_profile_env() {
+  local profile="$1"
+  PROFILE_ENV_LINES=()
+  while IFS= read -r line; do
+    [[ -n "${line}" ]] || continue
+    PROFILE_ENV_LINES+=("${line}")
+  done < <(bash "${PROFILE_HELPER}" "${profile}")
 }
 
 write_summary() {
@@ -253,14 +272,18 @@ run_baseline_matrix_gate() {
 
   step "baseline gate + release evidence matrix"
   local matrix_gate_log="/tmp/xt_fast_check_matrix_gate.log"
+  require_profile_helper
+  load_profile_env "fast_check_matrix"
+  local -a env_vars=(
+    "XT_GATE_MODE=baseline"
+    "${PROFILE_ENV_LINES[@]}"
+    "XT_GATE_SKIP_BUILD=${GATE_SKIP_BUILD}"
+    "XT_GATE_SKIP_XT_READY_CONTRACT=${GATE_SKIP_XT_READY_CONTRACT}"
+    "XT_GATE_SKIP_XT_READY_EXECUTABLE=${GATE_SKIP_XT_READY_EXECUTABLE}"
+  )
   if (
     cd "${ROOT_DIR}" && \
-      XT_GATE_MODE=baseline \
-      XT_GATE_VALIDATE_RELEASE_EVIDENCE_MATRIX=1 \
-      XT_GATE_SKIP_BUILD="${GATE_SKIP_BUILD}" \
-      XT_GATE_SKIP_XT_READY_CONTRACT="${GATE_SKIP_XT_READY_CONTRACT}" \
-      XT_GATE_SKIP_XT_READY_EXECUTABLE="${GATE_SKIP_XT_READY_EXECUTABLE}" \
-      bash scripts/ci/xt_release_gate.sh >"${matrix_gate_log}" 2>&1
+      env "${env_vars[@]}" bash scripts/ci/xt_release_gate.sh >"${matrix_gate_log}" 2>&1
   ); then
     matrix_gate_status="pass"
     matrix_gate_note="${matrix_gate_log}"
@@ -284,13 +307,18 @@ run_baseline_gate() {
 
   step "plain baseline gate"
   local baseline_gate_log="/tmp/xt_fast_check_baseline_gate.log"
+  require_profile_helper
+  load_profile_env "fast_check_baseline"
+  local -a env_vars=(
+    "XT_GATE_MODE=baseline"
+    "${PROFILE_ENV_LINES[@]}"
+    "XT_GATE_SKIP_BUILD=${GATE_SKIP_BUILD}"
+    "XT_GATE_SKIP_XT_READY_CONTRACT=${GATE_SKIP_XT_READY_CONTRACT}"
+    "XT_GATE_SKIP_XT_READY_EXECUTABLE=${GATE_SKIP_XT_READY_EXECUTABLE}"
+  )
   if (
     cd "${ROOT_DIR}" && \
-      XT_GATE_MODE=baseline \
-      XT_GATE_SKIP_BUILD="${GATE_SKIP_BUILD}" \
-      XT_GATE_SKIP_XT_READY_CONTRACT="${GATE_SKIP_XT_READY_CONTRACT}" \
-      XT_GATE_SKIP_XT_READY_EXECUTABLE="${GATE_SKIP_XT_READY_EXECUTABLE}" \
-      bash scripts/ci/xt_release_gate.sh >"${baseline_gate_log}" 2>&1
+      env "${env_vars[@]}" bash scripts/ci/xt_release_gate.sh >"${baseline_gate_log}" 2>&1
   ); then
     baseline_gate_status="pass"
     baseline_gate_note="${baseline_gate_log}"

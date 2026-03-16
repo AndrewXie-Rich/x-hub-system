@@ -12,6 +12,8 @@ struct ProjectSkillActivityItem: Identifiable, Equatable, Sendable {
     var detail: String
     var denyCode: String
     var authorizationDisposition: String
+    var policySource: String = ""
+    var policyReason: String = ""
 
     var id: String { requestID }
 }
@@ -349,7 +351,9 @@ enum AXProjectSkillActivityStore {
             resultSummary: stringValue(object["result_summary"]) ?? "",
             detail: stringValue(object["detail"]) ?? "",
             denyCode: stringValue(object["deny_code"]) ?? "",
-            authorizationDisposition: stringValue(object["authorization_disposition"]) ?? ""
+            authorizationDisposition: stringValue(object["authorization_disposition"]) ?? "",
+            policySource: stringValue(object["policy_source"]) ?? "",
+            policyReason: stringValue(object["policy_reason"]) ?? ""
         )
     }
 

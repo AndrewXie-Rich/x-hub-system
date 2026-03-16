@@ -89,6 +89,8 @@ enum AXMemoryMarkdown {
         out.append("Project memory JSON: `\(dataDir.appendingPathComponent("ax_memory.json").path)`")
         out.append("Recent context (crash-safe): `\(dataDir.appendingPathComponent("AX_RECENT.md").path)`")
         out.append("Recent context JSON: `\(dataDir.appendingPathComponent("recent_context.json").path)`")
+        out.append("Latest UI review: `\(dataDir.appendingPathComponent("ui_review", isDirectory: true).appendingPathComponent("latest_browser_page.json").path)`")
+        out.append("UI review records: `\(dataDir.appendingPathComponent("ui_review", isDirectory: true).appendingPathComponent("reviews", isDirectory: true).path)`")
         out.append("Pending actions (crash-safe): `\(dataDir.appendingPathComponent("pending_actions.json").path)`")
         out.append("Raw log: `\(dataDir.appendingPathComponent("raw_log.jsonl").path)`")
         out.append("Usage log: `\(dataDir.appendingPathComponent("usage.jsonl").path)`")

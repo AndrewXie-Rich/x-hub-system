@@ -4,6 +4,8 @@ struct ModelSettingsView: View {
     @EnvironmentObject private var appModel: AppModel
     @StateObject private var modelManager = HubModelManager.shared
     @State private var selectedRole: AXRole = .supervisor
+    @State private var showRoleModelPicker = false
+    @State private var activeFocusRequest: XTModelSettingsFocusRequest?
     
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -28,9 +30,13 @@ struct ModelSettingsView: View {
         .frame(minWidth: 800, minHeight: 600)
         .onAppear {
             modelManager.setAppModel(appModel)
+            processModelSettingsFocusRequest()
             Task {
                 await modelManager.fetchModels()
             }
+        }
+        .onChange(of: appModel.modelSettingsFocusRequest?.nonce) { _ in
+            processModelSettingsFocusRequest()
         }
     }
     
@@ -56,6 +62,10 @@ struct ModelSettingsView: View {
             Text("本页展示的是 Hub catalog 的模型信息。若某个 paired Terminal 需要独立的本地 context length，请到 Hub 的 Pairing / Edit Device 里设置每设备 local model override。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            if let context = activeFocusRequest?.context {
+                XTFocusContextCard(context: context)
+            }
         }
     }
     
@@ -66,6 +76,25 @@ struct ModelSettingsView: View {
             Divider()
             
             modelList
+        }
+    }
+
+    private func processModelSettingsFocusRequest() {
+        guard let request = appModel.modelSettingsFocusRequest else { return }
+        activeFocusRequest = request
+        if let role = request.role {
+            selectedRole = role
+            showRoleModelPicker = false
+        }
+        appModel.clearModelSettingsFocusRequest(request)
+        scheduleFocusContextClear(nonce: request.nonce)
+    }
+
+    private func scheduleFocusContextClear(nonce: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12) {
+            if activeFocusRequest?.nonce == nonce {
+                activeFocusRequest = nil
+            }
         }
     }
     
@@ -88,6 +117,7 @@ struct ModelSettingsView: View {
     private func roleButton(_ role: AXRole) -> some View {
         Button(action: {
             selectedRole = role
+            showRoleModelPicker = false
         }) {
             HStack(spacing: 8) {
                 roleIcon(role)
@@ -126,7 +156,7 @@ struct ModelSettingsView: View {
     
     private var modelList: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("为 \(selectedRole.displayName) 选择模型")
+            Text("为 \(selectedRole.displayName) 配置默认模型")
                 .font(.headline)
 
             if let warning = selectedRoleWarningText() {
@@ -136,15 +166,57 @@ struct ModelSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             
-            if modelManager.availableModels.isEmpty {
+            if sortedAvailableHubModels.isEmpty {
                 Text("没有可用的模型。请确保 X-Hub 已启动并加载了模型。")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding()
             } else {
+                HubModelRoutingButton(
+                    title: routingSelectionState.title,
+                    identifier: routingSelectionState.identifier,
+                    sourceLabel: routingSelectionState.sourceLabel,
+                    presentation: routingSelectionState.effectivePresentation,
+                    disabled: !appModel.hubInteractive || sortedAvailableHubModels.isEmpty
+                ) {
+                    showRoleModelPicker = true
+                }
+                .frame(maxWidth: 480, alignment: .leading)
+                .popover(isPresented: $showRoleModelPicker, arrowEdge: .bottom) {
+                    HubModelPickerPopover(
+                        title: "为 \(selectedRole.displayName) 选择默认模型",
+                        selectedModelId: currentRoleModelId,
+                        inheritedModelId: nil,
+                        inheritedModelPresentation: nil,
+                        models: sortedAvailableHubModels,
+                        automaticTitle: "使用 Hub 默认设置",
+                        automaticSelectedBadge: "当前默认",
+                        automaticRestoreBadge: "恢复默认",
+                        inheritedModelLabel: "Hub 默认",
+                        automaticDescription: "当前没有为这个角色单独绑定固定模型，会继续使用 Hub 默认/自动路由。"
+                    ) { modelId in
+                        modelManager.setModel(for: selectedRole, modelId: modelId)
+                        showRoleModelPicker = false
+                    }
+                    .frame(width: 460, height: 420)
+                }
+
+                Text(currentRoleModelId == nil
+                     ? "当前未为这个角色固定具体模型，运行时会继续走 Hub 默认/自动路由。"
+                     : "当前已为这个角色固定具体模型；如果清空绑定，会回到 Hub 默认/自动路由。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Divider()
+
+                Text("Hub Catalog 预览")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
-                        ForEach(modelManager.availableModels) { model in
+                        ForEach(sortedAvailableHubModels) { model in
                             modelRow(model)
                         }
                     }
@@ -154,7 +226,8 @@ struct ModelSettingsView: View {
     }
     
     private func modelRow(_ model: HubModel) -> some View {
-        let isSelected = modelManager.getPreferredModel(for: selectedRole) == model.id
+        let isSelected = currentRoleModelId == model.id
+        let presentation = model.capabilityPresentationModel
         
         return Button(action: {
             modelManager.setModel(for: selectedRole, modelId: model.id)
@@ -162,7 +235,7 @@ struct ModelSettingsView: View {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 8) {
-                        Text(model.name)
+                        Text(presentation.displayName)
                             .font(.headline)
                             .foregroundStyle(.primary)
                         
@@ -175,6 +248,21 @@ struct ModelSettingsView: View {
                         Text(model.backend)
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                    }
+
+                    if presentation.displayName != model.id {
+                        Text(model.id)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    ModelCapabilityStrip(model: presentation, limit: 5)
+
+                    if let capabilitySummary = model.capabilitySummaryLine {
+                        Text(capabilitySummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     
                     if let note = model.note, !note.isEmpty {
@@ -217,11 +305,11 @@ struct ModelSettingsView: View {
     }
 
     private func selectedRoleWarningText() -> String? {
-        let configured = (modelManager.getPreferredModel(for: selectedRole) ?? "")
+        let configured = (currentRoleModelId ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !configured.isEmpty else { return nil }
         let snapshot = ModelStateSnapshot(
-            models: modelManager.availableModels,
+            models: sortedAvailableHubModels,
             updatedAt: Date().timeIntervalSince1970
         )
         let assessment = HubModelSelectionAdvisor.assess(requestedId: configured, snapshot: snapshot)
@@ -247,5 +335,52 @@ struct ModelSettingsView: View {
     private func suggestedModelIDs(from assessment: HubModelAvailabilityAssessment) -> [String] {
         let source = assessment.loadedCandidates.isEmpty ? assessment.inventoryCandidates : assessment.loadedCandidates
         return source.prefix(3).map(\.id)
+    }
+
+    private var currentRoleModelId: String? {
+        let raw = (modelManager.getPreferredModel(for: selectedRole) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return raw.isEmpty ? nil : raw
+    }
+
+    private var sortedAvailableHubModels: [HubModel] {
+        var dedup: [String: HubModel] = [:]
+        for model in modelManager.availableModels {
+            dedup[model.id] = model
+        }
+        return dedup.values.sorted { a, b in
+            let sa = stateRank(a.state)
+            let sb = stateRank(b.state)
+            if sa != sb { return sa < sb }
+            let an = (a.name.isEmpty ? a.id : a.name).lowercased()
+            let bn = (b.name.isEmpty ? b.id : b.name).lowercased()
+            if an != bn { return an < bn }
+            return a.id.lowercased() < b.id.lowercased()
+        }
+    }
+
+    private var routingSelectionState: HubModelRoutingSelectionState {
+        let explicitModelId = currentRoleModelId
+        let explicitPresentation = explicitModelId.flatMap { modelId in
+            sortedAvailableHubModels.first(where: { $0.id == modelId })?.capabilityPresentationModel
+                ?? XTModelCatalog.modelInfo(for: modelId)
+        }
+        return HubModelRoutingSelectionState(
+            explicitModelId: explicitModelId,
+            inheritedModelId: nil,
+            explicitPresentation: explicitPresentation,
+            inheritedPresentation: nil,
+            explicitSourceLabel: "当前绑定",
+            inheritedSourceLabel: "Hub 默认",
+            automaticTitle: "使用 Hub 默认设置"
+        )
+    }
+
+    private func stateRank(_ s: HubModelState) -> Int {
+        switch s {
+        case .loaded: return 0
+        case .available: return 1
+        case .sleeping: return 2
+        }
     }
 }

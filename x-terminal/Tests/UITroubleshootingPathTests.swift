@@ -24,6 +24,18 @@ struct UITroubleshootingPathTests {
     }
 
     @Test
+    func troubleshootingCopyKeepsGrantLanguageTaskOriented() {
+        let grantGuide = UITroubleshootKnowledgeBase.guide(for: .grantRequired)
+        let permissionGuide = UITroubleshootKnowledgeBase.guide(for: .permissionDenied)
+        let paidGuide = UITroubleshootKnowledgeBase.guide(for: .paidModelAccessBlocked)
+
+        #expect(grantGuide.summary.contains("能力范围与配额"))
+        #expect(grantGuide.steps[1].instruction.contains("能力范围"))
+        #expect(permissionGuide.summary.contains("安全边界"))
+        #expect(paidGuide.summary.contains("设备信任、模型与预算"))
+    }
+
+    @Test
     func settingsIaStaysTaskOrientedAndConsumesFrozenFields() throws {
         #expect(XTSettingsCenterManifest.sections.map(\.id) == [
             "pair_hub",
@@ -76,7 +88,7 @@ struct UITroubleshootingPathTests {
         #expect(status.machineStatusRef.contains("launch_deny=grant_required"))
         #expect(actions.map(\.id) == ["pair_hub", "run_smoke", "review_grants"])
         #expect(actions.first(where: { $0.id == "run_smoke" })?.subtitle == "replay fail-closed；先看 denyCode / diagnostics")
-        #expect(actions.first(where: { $0.id == "review_grants" })?.subtitle?.contains("resume baton") == true)
+        #expect(actions.first(where: { $0.id == "review_grants" })?.subtitle?.contains("grant_required") == true)
         #expect(diagnostics.contains(where: { $0.contains("allowed_public_statements=") }))
         #expect(diagnostics.contains(where: { $0.contains("resume_baton=continue_current_task_only") }))
         #expect(diagnostics.contains(where: { $0.contains("replay=") }))

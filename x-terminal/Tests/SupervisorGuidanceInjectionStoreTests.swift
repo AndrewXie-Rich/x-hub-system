@@ -108,6 +108,75 @@ struct SupervisorGuidanceInjectionStoreTests {
         #expect(snapshot.updatedAtMs == 70)
     }
 
+    @Test
+    func deferredGuidanceBecomesActionableAgainWhenRetryIsDue() throws {
+        let root = try makeProjectRoot(named: "guidance-store-retry-due")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        try SupervisorGuidanceInjectionStore.upsert(
+            makeGuidance(
+                injectionId: "guidance-retry-due",
+                injectedAtMs: 100,
+                ackRequired: true,
+                ackStatus: .pending,
+                expiresAtMs: 10_000_000,
+                retryAtMs: 0,
+                retryCount: 0,
+                maxRetryCount: 2
+            ),
+            for: ctx
+        )
+
+        try SupervisorGuidanceInjectionStore.acknowledge(
+            injectionId: "guidance-retry-due",
+            status: .deferred,
+            note: "need a later safe point",
+            atMs: 1_000,
+            for: ctx
+        )
+
+        let stored = try #require(SupervisorGuidanceInjectionStore.latest(for: ctx))
+        #expect(stored.ackStatus == .deferred)
+        #expect(stored.retryCount == 1)
+        #expect(stored.retryAtMs > 1_000)
+        #expect(SupervisorGuidanceInjectionStore.latestPendingAck(for: ctx, nowMs: stored.retryAtMs - 1) == nil)
+        #expect(
+            SupervisorGuidanceInjectionStore.latestPendingAck(for: ctx, nowMs: stored.retryAtMs)?.injectionId
+            == "guidance-retry-due"
+        )
+    }
+
+    @Test
+    func expiredGuidanceIsNotReturnedAsActionablePendingAck() throws {
+        let root = try makeProjectRoot(named: "guidance-store-expired")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        try SupervisorGuidanceInjectionStore.upsert(
+            makeGuidance(
+                injectionId: "guidance-expired",
+                injectedAtMs: 100,
+                ackRequired: true,
+                ackStatus: .pending,
+                expiresAtMs: 500,
+                retryAtMs: 0,
+                retryCount: 0,
+                maxRetryCount: 1
+            ),
+            for: ctx
+        )
+
+        #expect(SupervisorGuidanceInjectionStore.latestPendingAck(for: ctx, nowMs: 499)?.injectionId == "guidance-expired")
+        #expect(SupervisorGuidanceInjectionStore.latestPendingAck(for: ctx, nowMs: 500) == nil)
+        let stored = try #require(SupervisorGuidanceInjectionStore.latest(for: ctx))
+        #expect(SupervisorGuidanceInjectionStore.lifecycleSummary(for: stored, nowMs: 500) == "expired")
+    }
+
     private func makeProjectRoot(named name: String) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(name)-\(UUID().uuidString)", isDirectory: true)
@@ -119,7 +188,11 @@ struct SupervisorGuidanceInjectionStoreTests {
         injectionId: String,
         injectedAtMs: Int64,
         ackRequired: Bool,
-        ackStatus: SupervisorGuidanceAckStatus
+        ackStatus: SupervisorGuidanceAckStatus,
+        expiresAtMs: Int64 = 0,
+        retryAtMs: Int64 = 0,
+        retryCount: Int = 0,
+        maxRetryCount: Int = 0
     ) -> SupervisorGuidanceInjectionRecord {
         SupervisorGuidanceInjectionBuilder.build(
             injectionId: injectionId,
@@ -135,6 +208,10 @@ struct SupervisorGuidanceInjectionStoreTests {
             ackNote: "",
             injectedAtMs: injectedAtMs,
             ackUpdatedAtMs: 0,
+            expiresAtMs: expiresAtMs,
+            retryAtMs: retryAtMs,
+            retryCount: retryCount,
+            maxRetryCount: maxRetryCount,
             auditRef: "audit-\(injectionId)"
         )
     }

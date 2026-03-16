@@ -20,6 +20,33 @@ struct SupervisorHeartbeatReviewCandidate: Equatable, Sendable {
 }
 
 enum SupervisorReviewPolicyEngine {
+    static func eventFollowUpCadenceLabel(
+        governance: AXProjectResolvedGovernanceState
+    ) -> String {
+        let cooldown = eventReviewCooldownSeconds(governance: governance)
+        let cadence: String
+        switch cooldown {
+        case ...120:
+            cadence = "tight"
+        case ...300:
+            cadence = "active"
+        case ...900:
+            cadence = "balanced"
+        default:
+            cadence = "light"
+        }
+
+        return "cadence=\(cadence) · blocker cooldown≈\(cooldown)s"
+    }
+
+    static func eventFollowUpCadenceSummary(
+        governance: AXProjectResolvedGovernanceState
+    ) -> String {
+        let adaptation = governance.supervisorAdaptation
+        let strengthBand = adaptation.projectAIStrengthProfile?.strengthBand ?? .unknown
+        return "\(eventFollowUpCadenceLabel(governance: governance)) · tier=\(governance.effectiveBundle.supervisorInterventionTier.displayName) · depth=\(adaptation.effectiveWorkOrderDepth.displayName) · strength=\(strengthBand.displayName)"
+    }
+
     static func resolve(
         governance: AXProjectResolvedGovernanceState,
         trigger: SupervisorReviewTrigger,
@@ -41,15 +68,28 @@ enum SupervisorReviewPolicyEngine {
             )
         }
 
+        let effectiveWorkOrderDepth = governance.supervisorAdaptation.effectiveWorkOrderDepth
         let resolvedReviewLevel = max(
             requestedReviewLevel,
-            minimumReviewLevel(for: governance.effectiveBundle.supervisorInterventionTier, runKind: runKind, trigger: trigger)
+            minimumReviewLevel(
+                for: governance.effectiveBundle.supervisorInterventionTier,
+                runKind: runKind,
+                trigger: trigger
+            ),
+            minimumReviewLevel(
+                for: effectiveWorkOrderDepth,
+                runKind: runKind,
+                trigger: trigger
+            )
         )
         let ackRequired = requestedAckRequired
             || (governance.effectiveBundle.supervisorInterventionTier.defaultAckRequired && resolvedReviewLevel != .r1Pulse)
+            || (effectiveWorkOrderDepth >= .executionReady && resolvedReviewLevel != .r1Pulse)
+            || effectiveWorkOrderDepth == .stepLockedRescue
         let interventionMode = resolvedInterventionMode(
             deliveryMode: requestedDeliveryMode,
             supervisorTier: governance.effectiveBundle.supervisorInterventionTier,
+            workOrderDepth: effectiveWorkOrderDepth,
             reviewLevel: resolvedReviewLevel,
             verdict: verdict,
             ackRequired: ackRequired
@@ -57,7 +97,8 @@ enum SupervisorReviewPolicyEngine {
         let safePointPolicy = resolvedSafePointPolicy(
             deliveryMode: requestedDeliveryMode,
             interventionMode: interventionMode,
-            reviewLevel: resolvedReviewLevel
+            reviewLevel: resolvedReviewLevel,
+            workOrderDepth: effectiveWorkOrderDepth
         )
 
         return SupervisorReviewPolicyDecision(
@@ -67,7 +108,7 @@ enum SupervisorReviewPolicyEngine {
             interventionMode: interventionMode,
             safePointPolicy: safePointPolicy,
             ackRequired: ackRequired,
-            policyReason: "governance_review_policy_resolved"
+            policyReason: "governance_review_policy_resolved:tier=\(governance.effectiveBundle.supervisorInterventionTier.rawValue):depth=\(effectiveWorkOrderDepth.rawValue)"
         )
     }
 
@@ -79,6 +120,7 @@ enum SupervisorReviewPolicyEngine {
     ) -> SupervisorHeartbeatReviewCandidate? {
         let triggers = Set(governance.effectiveBundle.schedule.eventReviewTriggers)
         let cooldownMs = Int64(eventReviewCooldownSeconds(governance: governance)) * 1000
+        let effectiveWorkOrderDepth = governance.supervisorAdaptation.effectiveWorkOrderDepth
 
         if blockerDetected,
            governance.effectiveBundle.schedule.eventDrivenReviewEnabled,
@@ -88,13 +130,20 @@ enum SupervisorReviewPolicyEngine {
                 projectId: governance.projectId,
                 trigger: .blockerDetected,
                 runKind: .eventDriven,
-                reviewLevel: minimumReviewLevel(
-                    for: governance.effectiveBundle.supervisorInterventionTier,
-                    runKind: .eventDriven,
-                    trigger: .blockerDetected
+                reviewLevel: max(
+                    minimumReviewLevel(
+                        for: governance.effectiveBundle.supervisorInterventionTier,
+                        runKind: .eventDriven,
+                        trigger: .blockerDetected
+                    ),
+                    minimumReviewLevel(
+                        for: effectiveWorkOrderDepth,
+                        runKind: .eventDriven,
+                        trigger: .blockerDetected
+                    )
                 ),
-                priority: 300,
-                policyReason: "event_trigger=blocker_detected"
+                priority: effectiveWorkOrderDepth == .stepLockedRescue ? 350 : 300,
+                policyReason: "event_trigger=blocker_detected depth=\(effectiveWorkOrderDepth.rawValue)"
             )
         }
 
@@ -103,13 +152,20 @@ enum SupervisorReviewPolicyEngine {
                 projectId: governance.projectId,
                 trigger: .noProgressWindow,
                 runKind: .brainstorm,
-                reviewLevel: minimumReviewLevel(
-                    for: governance.effectiveBundle.supervisorInterventionTier,
-                    runKind: .brainstorm,
-                    trigger: .noProgressWindow
+                reviewLevel: max(
+                    minimumReviewLevel(
+                        for: governance.effectiveBundle.supervisorInterventionTier,
+                        runKind: .brainstorm,
+                        trigger: .noProgressWindow
+                    ),
+                    minimumReviewLevel(
+                        for: effectiveWorkOrderDepth,
+                        runKind: .brainstorm,
+                        trigger: .noProgressWindow
+                    )
                 ),
-                priority: 200,
-                policyReason: "brainstorm_review_due"
+                priority: effectiveWorkOrderDepth >= .executionReady ? 220 : 200,
+                policyReason: "brainstorm_review_due depth=\(effectiveWorkOrderDepth.rawValue)"
             )
         }
 
@@ -118,13 +174,20 @@ enum SupervisorReviewPolicyEngine {
                 projectId: governance.projectId,
                 trigger: .periodicPulse,
                 runKind: .pulse,
-                reviewLevel: minimumReviewLevel(
-                    for: governance.effectiveBundle.supervisorInterventionTier,
-                    runKind: .pulse,
-                    trigger: .periodicPulse
+                reviewLevel: max(
+                    minimumReviewLevel(
+                        for: governance.effectiveBundle.supervisorInterventionTier,
+                        runKind: .pulse,
+                        trigger: .periodicPulse
+                    ),
+                    minimumReviewLevel(
+                        for: effectiveWorkOrderDepth,
+                        runKind: .pulse,
+                        trigger: .periodicPulse
+                    )
                 ),
-                priority: 100,
-                policyReason: "pulse_review_due"
+                priority: effectiveWorkOrderDepth >= .executionReady ? 120 : 100,
+                policyReason: "pulse_review_due depth=\(effectiveWorkOrderDepth.rawValue)"
             )
         }
 
@@ -210,13 +273,58 @@ enum SupervisorReviewPolicyEngine {
         }
     }
 
+    private static func minimumReviewLevel(
+        for workOrderDepth: AXProjectSupervisorWorkOrderDepth,
+        runKind: SupervisorReviewRunKind,
+        trigger: SupervisorReviewTrigger
+    ) -> SupervisorReviewLevel {
+        switch workOrderDepth {
+        case .none, .brief:
+            switch trigger {
+            case .preHighRiskAction, .preDoneSummary:
+                return .r3Rescue
+            default:
+                return .r1Pulse
+            }
+        case .milestoneContract:
+            switch trigger {
+            case .preHighRiskAction, .preDoneSummary:
+                return .r3Rescue
+            case .blockerDetected, .planDrift, .failureStreak, .noProgressWindow:
+                return .r2Strategic
+            case .periodicPulse, .periodicHeartbeat, .manualRequest, .userOverride:
+                return runKind == .brainstorm ? .r2Strategic : .r1Pulse
+            }
+        case .executionReady:
+            switch trigger {
+            case .preHighRiskAction, .preDoneSummary:
+                return .r3Rescue
+            case .blockerDetected, .planDrift, .failureStreak, .noProgressWindow:
+                return .r2Strategic
+            case .periodicPulse, .periodicHeartbeat, .manualRequest, .userOverride:
+                return .r2Strategic
+            }
+        case .stepLockedRescue:
+            switch trigger {
+            case .preHighRiskAction, .preDoneSummary, .blockerDetected, .planDrift, .failureStreak, .noProgressWindow:
+                return .r3Rescue
+            case .periodicPulse, .periodicHeartbeat, .manualRequest, .userOverride:
+                return .r2Strategic
+            }
+        }
+    }
+
     private static func resolvedInterventionMode(
         deliveryMode: SupervisorGuidanceDeliveryMode,
         supervisorTier: AXProjectSupervisorInterventionTier,
+        workOrderDepth: AXProjectSupervisorWorkOrderDepth,
         reviewLevel: SupervisorReviewLevel,
         verdict: SupervisorReviewVerdict,
         ackRequired: Bool
     ) -> SupervisorGuidanceInterventionMode {
+        let structuredReplanPreferred = reviewLevel == .r3Rescue
+            || workOrderDepth == .stepLockedRescue
+            || (workOrderDepth >= .executionReady && ackRequired && reviewLevel != .r1Pulse)
         switch deliveryMode {
         case .stopSignal:
             return .stopImmediately
@@ -226,10 +334,16 @@ enum SupervisorReviewPolicyEngine {
             if supervisorTier == .s4TightSupervision && reviewLevel == .r3Rescue {
                 return .replanNextSafePoint
             }
+            if structuredReplanPreferred && reviewLevel != .r1Pulse {
+                return .replanNextSafePoint
+            }
             return .suggestNextSafePoint
         case .contextAppend:
             if verdict == .highRisk {
                 return .stopImmediately
+            }
+            if structuredReplanPreferred && reviewLevel != .r1Pulse {
+                return .replanNextSafePoint
             }
             if ackRequired || reviewLevel != .r1Pulse {
                 return supervisorTier == .s0SilentAudit ? .suggestNextSafePoint : .suggestNextSafePoint
@@ -241,20 +355,27 @@ enum SupervisorReviewPolicyEngine {
     private static func resolvedSafePointPolicy(
         deliveryMode: SupervisorGuidanceDeliveryMode,
         interventionMode: SupervisorGuidanceInterventionMode,
-        reviewLevel: SupervisorReviewLevel
+        reviewLevel: SupervisorReviewLevel,
+        workOrderDepth: AXProjectSupervisorWorkOrderDepth
     ) -> SupervisorGuidanceSafePointPolicy {
         if interventionMode == .stopImmediately {
             return .immediate
+        }
+        if interventionMode == .replanNextSafePoint {
+            return workOrderDepth == .stepLockedRescue ? .checkpointBoundary : .nextStepBoundary
         }
         switch deliveryMode {
         case .replanRequest:
             return .nextStepBoundary
         case .priorityInsert:
-            return .nextToolBoundary
+            return workOrderDepth >= .executionReady ? .nextStepBoundary : .nextToolBoundary
         case .stopSignal:
             return .immediate
         case .contextAppend:
-            return reviewLevel == .r3Rescue ? .checkpointBoundary : .nextToolBoundary
+            if workOrderDepth == .stepLockedRescue || reviewLevel == .r3Rescue {
+                return .checkpointBoundary
+            }
+            return workOrderDepth >= .executionReady ? .nextStepBoundary : .nextToolBoundary
         }
     }
 
@@ -285,6 +406,43 @@ enum SupervisorReviewPolicyEngine {
     }
 
     private static func eventReviewCooldownSeconds(
+        governance: AXProjectResolvedGovernanceState
+    ) -> Int {
+        let baseCooldown = baseEventReviewCooldownSeconds(governance: governance)
+        let workOrderDepth = governance.supervisorAdaptation.effectiveWorkOrderDepth
+        let strengthBand = governance.supervisorAdaptation.projectAIStrengthProfile?.strengthBand ?? .unknown
+        let supervisorTier = governance.effectiveBundle.supervisorInterventionTier
+
+        if workOrderDepth == .stepLockedRescue {
+            return min(baseCooldown, 90)
+        }
+
+        if workOrderDepth == .executionReady {
+            switch strengthBand {
+            case .strong:
+                return max(baseCooldown, 360)
+            case .capable:
+                return max(baseCooldown, 300)
+            case .developing:
+                return min(baseCooldown, 180)
+            case .weak, .unknown:
+                return min(baseCooldown, 120)
+            }
+        }
+
+        switch strengthBand {
+        case .strong:
+            return supervisorTier <= .s2PeriodicReview ? max(baseCooldown, 1200) : max(baseCooldown, 360)
+        case .capable:
+            return supervisorTier <= .s2PeriodicReview ? max(baseCooldown, 900) : max(baseCooldown, 300)
+        case .developing:
+            return supervisorTier >= .s3StrategicCoach ? min(baseCooldown, 240) : min(baseCooldown, 420)
+        case .weak, .unknown:
+            return supervisorTier >= .s3StrategicCoach ? min(baseCooldown, 180) : min(baseCooldown, 300)
+        }
+    }
+
+    private static func baseEventReviewCooldownSeconds(
         governance: AXProjectResolvedGovernanceState
     ) -> Int {
         let pulse = governance.effectiveBundle.schedule.reviewPulseSeconds

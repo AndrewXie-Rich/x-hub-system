@@ -80,7 +80,7 @@ struct OneShotAutonomyPolicyEngine {
     ) -> OneShotAutonomyPolicy {
         let highestRisk = lanes.map(\.plan.riskTier).max() ?? .medium
         let autoConfirmPolicy: OneShotAutoConfirmPolicy = highestRisk >= .critical ? .safeOnly : .safePlusLowRisk
-        let autoLaunchPolicy: OneShotAutoLaunchPolicy = project.autonomyLevel.rawValue >= AutonomyLevel.auto.rawValue
+        let autoLaunchPolicy: OneShotAutoLaunchPolicy = project.executionTier >= .a3DeliverAuto
             ? .mainlineOnly
             : .directedSafeOnly
 
@@ -205,7 +205,7 @@ struct OneShotAutonomyPolicyEngine {
             decision: .allow,
             denyCode: "none",
             blockedReason: nil,
-            note: "auto_launch_allowed:lane=\(laneID),policy=\(policy.autoLaunchPolicy.rawValue),autonomy=\(project.autonomyLevel.rawValue)",
+            note: "auto_launch_allowed:lane=\(laneID),policy=\(policy.autoLaunchPolicy.rawValue),execution_tier=\(project.executionTier.rawValue),supervisor_tier=\(project.supervisorInterventionTier.rawValue)",
             autoLaunchAllowed: true,
             failClosed: false,
             requiresHumanTouch: false
@@ -412,7 +412,8 @@ struct OneShotReplayHarness {
             name: "XT-W3-26 Replay Harness",
             taskDescription: "one-shot runtime regression harness",
             modelName: "gpt-4.1",
-            autonomyLevel: .auto
+            executionTier: .a3DeliverAuto,
+            supervisorInterventionTier: .s3StrategicCoach
         )
 
         let grantDecision = policyEngine.evaluateLaunch(

@@ -194,15 +194,32 @@ func xtToolAuthorizationDecision(
         effectiveRisk = ToolPolicy.risk(for: call)
     }
 
+    let governedRepoCommandProfile = call.tool == .run_command
+        ? xtGovernedRepoCommandProfile(for: call)
+        : nil
+
+    if call.tool == .run_command,
+       effectiveRisk == .needsConfirm,
+       governedRepoCommandProfile == nil {
+        return .ask(
+            risk: .needsConfirm,
+            policySource: "governed_command_guard",
+            policyReason: "command_outside_governed_repo_allowlist"
+        )
+    }
+
     if effectiveRisk == .needsConfirm,
        xtProjectGovernedAutoApprovalEnabled(
         projectRoot: projectRoot,
         config: config,
         effectiveAutonomy: autonomyState.effectivePolicy
        ) {
+        let policyReason = call.tool == .run_command
+            ? "governed_repo_command_allowlist"
+            : "governed_device_authority"
         return .allowAutoApproved(
             policySource: "project_governed_auto_approval",
-            policyReason: "governed_device_authority"
+            policyReason: policyReason
         )
     }
 

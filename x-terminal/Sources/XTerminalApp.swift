@@ -19,6 +19,9 @@ struct XTerminalApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(appModel)
+                .onAppear {
+                    appDelegate.bind(appModel: appModel)
+                }
         }
         
         Window("Supervisor AI", id: "supervisor") {
@@ -54,6 +57,14 @@ struct XTerminalApp: App {
             }
 
             CommandMenu("Project") {
+                Button(appModel.preferredResumeCommandTitle) {
+                    appModel.presentPreferredResumeBrief()
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .disabled(!appModel.canPresentPreferredResumeBrief)
+
+                Divider()
+
                 Button("Open .xterminal Folder") {
                     if let ctx = appModel.projectContext {
                         NSWorkspace.shared.open(ctx.xterminalDir)
@@ -139,6 +150,12 @@ struct XTerminalApp: App {
 }
 
 final class XTerminalAppDelegate: NSObject, NSApplicationDelegate {
+    private weak var appModel: AppModel?
+
+    func bind(appModel: AppModel) {
+        self.appModel = appModel
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         if XTerminalGateSmokeRunner.isSmokeInvocation(arguments: CommandLine.arguments) {
             return
@@ -147,6 +164,10 @@ final class XTerminalAppDelegate: NSObject, NSApplicationDelegate {
         // so keyboard events are routed to text inputs correctly.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        appModel?.persistSessionSummariesForLifecycle(reason: "app_exit")
     }
 }
 

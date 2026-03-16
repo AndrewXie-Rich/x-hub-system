@@ -73,6 +73,200 @@ struct ToolExecutorRuntimePolicyTests {
     }
 
     @Test
+    func deletePathFailsClosedWhenExecutionTierDoesNotAllowRepoDeleteMove() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "runtime-policy-delete-path-deny")
+        defer { fixture.cleanup() }
+
+        let target = fixture.root.appendingPathComponent("Sources/Legacy.swift")
+        try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "legacy".write(to: target, atomically: true, encoding: .utf8)
+
+        let ctx = AXProjectContext(root: fixture.root)
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config = config.settingProjectGovernance(
+            executionTier: .a1Plan,
+            supervisorInterventionTier: .s1MilestoneReview
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let result = try await ToolExecutor.execute(
+            call: ToolCall(
+                tool: .delete_path,
+                args: ["path": .string("Sources/Legacy.swift")]
+            ),
+            projectRoot: fixture.root
+        )
+
+        #expect(!result.ok)
+        let summary = try #require(toolSummaryObject(result.output))
+        #expect(jsonString(summary["deny_code"]) == "governance_capability_denied")
+        #expect(jsonString(summary["policy_reason"]) == "execution_tier_missing_repo_delete_move")
+        #expect(FileManager.default.fileExists(atPath: target.path))
+    }
+
+    @Test
+    func processStartFailsClosedWhenExecutionTierDoesNotAllowManagedProcesses() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "runtime-policy-process-manage-deny")
+        defer { fixture.cleanup() }
+
+        let ctx = AXProjectContext(root: fixture.root)
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config = config.settingProjectGovernance(
+            executionTier: .a1Plan,
+            supervisorInterventionTier: .s1MilestoneReview
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let result = try await ToolExecutor.execute(
+            call: ToolCall(
+                tool: .process_start,
+                args: ["command": .string("printf ready")]
+            ),
+            projectRoot: fixture.root
+        )
+
+        #expect(!result.ok)
+        let summary = try #require(toolSummaryObject(result.output))
+        #expect(jsonString(summary["deny_code"]) == "governance_capability_denied")
+        #expect(jsonString(summary["policy_reason"]) == "execution_tier_missing_managed_processes")
+    }
+
+    @Test
+    func processAutoRestartFailsClosedWhenExecutionTierDoesNotAllowIt() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "runtime-policy-process-autorestart-deny")
+        defer { fixture.cleanup() }
+
+        let ctx = AXProjectContext(root: fixture.root)
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config = config.settingProjectGovernance(
+            executionTier: .a2RepoAuto,
+            supervisorInterventionTier: .s2PeriodicReview
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let result = try await ToolExecutor.execute(
+            call: ToolCall(
+                tool: .process_start,
+                args: [
+                    "command": .string("printf ready"),
+                    "restart_on_exit": .bool(true),
+                ]
+            ),
+            projectRoot: fixture.root
+        )
+
+        #expect(!result.ok)
+        let summary = try #require(toolSummaryObject(result.output))
+        #expect(jsonString(summary["deny_code"]) == "governance_capability_denied")
+        #expect(jsonString(summary["policy_reason"]) == "execution_tier_missing_process_autorestart")
+    }
+
+    @Test
+    func gitCommitFailsClosedWhenExecutionTierDoesNotAllowIt() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "runtime-policy-git-commit-deny")
+        defer { fixture.cleanup() }
+
+        let ctx = AXProjectContext(root: fixture.root)
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config = config.settingProjectGovernance(
+            executionTier: .a2RepoAuto,
+            supervisorInterventionTier: .s2PeriodicReview
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let result = try await ToolExecutor.execute(
+            call: ToolCall(
+                tool: .git_commit,
+                args: ["message": .string("commit me")]
+            ),
+            projectRoot: fixture.root
+        )
+
+        #expect(!result.ok)
+        let summary = try #require(toolSummaryObject(result.output))
+        #expect(jsonString(summary["deny_code"]) == "governance_capability_denied")
+        #expect(jsonString(summary["policy_reason"]) == "execution_tier_missing_git_commit")
+    }
+
+    @Test
+    func gitPushFailsClosedWhenExecutionTierDoesNotAllowIt() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "runtime-policy-git-push-deny")
+        defer { fixture.cleanup() }
+
+        let ctx = AXProjectContext(root: fixture.root)
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config = config.settingProjectGovernance(
+            executionTier: .a3DeliverAuto,
+            supervisorInterventionTier: .s3StrategicCoach
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let result = try await ToolExecutor.execute(
+            call: ToolCall(tool: .git_push, args: [:]),
+            projectRoot: fixture.root
+        )
+
+        #expect(!result.ok)
+        let summary = try #require(toolSummaryObject(result.output))
+        #expect(jsonString(summary["deny_code"]) == "governance_capability_denied")
+        #expect(jsonString(summary["policy_reason"]) == "execution_tier_missing_git_push")
+    }
+
+    @Test
+    func ciReadFailsClosedWhenExecutionTierDoesNotAllowIt() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "runtime-policy-ci-read-deny")
+        defer { fixture.cleanup() }
+
+        let ctx = AXProjectContext(root: fixture.root)
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config = config.settingProjectGovernance(
+            executionTier: .a2RepoAuto,
+            supervisorInterventionTier: .s2PeriodicReview
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let result = try await ToolExecutor.execute(
+            call: ToolCall(
+                tool: .ci_read,
+                args: ["workflow": .string("build")]
+            ),
+            projectRoot: fixture.root
+        )
+
+        #expect(!result.ok)
+        let summary = try #require(toolSummaryObject(result.output))
+        #expect(jsonString(summary["deny_code"]) == "governance_capability_denied")
+        #expect(jsonString(summary["policy_reason"]) == "execution_tier_missing_ci_read")
+    }
+
+    @Test
+    func ciTriggerFailsClosedWhenExecutionTierDoesNotAllowIt() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "runtime-policy-ci-trigger-deny")
+        defer { fixture.cleanup() }
+
+        let ctx = AXProjectContext(root: fixture.root)
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config = config.settingProjectGovernance(
+            executionTier: .a3DeliverAuto,
+            supervisorInterventionTier: .s3StrategicCoach
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let result = try await ToolExecutor.execute(
+            call: ToolCall(
+                tool: .ci_trigger,
+                args: ["workflow": .string("build.yml")]
+            ),
+            projectRoot: fixture.root
+        )
+
+        #expect(!result.ok)
+        let summary = try #require(toolSummaryObject(result.output))
+        #expect(jsonString(summary["deny_code"]) == "governance_capability_denied")
+        #expect(jsonString(summary["policy_reason"]) == "execution_tier_missing_ci_trigger")
+    }
+
+    @Test
     func deviceUIStepFailsClosedWhenCompositeRuntimeDependenciesAreMissing() async throws {
         try await Self.permissionGate.run {
             let fixture = ToolExecutorProjectFixture(name: "runtime-policy-device-step-deny")
@@ -185,6 +379,14 @@ struct ToolExecutorRuntimePolicyTests {
             #expect(jsonString(summary["deny_code"]) == "autonomy_policy_denied")
             #expect(jsonString(summary["policy_source"]) == "project_autonomy_policy")
             #expect(jsonString(summary["policy_reason"]) == "surface=browser_runtime_disallowed")
+            #expect(jsonString(summary["runtime_surface_policy_reason"]) == "surface=browser_runtime_disallowed")
+            let runtimeSurface = try #require(jsonObject(summary["runtime_surface"]))
+            #expect(jsonString(runtimeSurface["configured_surface"]) == AXProjectAutonomyMode.guided.rawValue)
+            #expect(jsonString(runtimeSurface["effective_surface"]) == AXProjectAutonomyMode.guided.rawValue)
+            #expect(jsonBool(runtimeSurface["expired"]) == false)
+            #expect(jsonArray(runtimeSurface["configured_surfaces"])?.isEmpty == true)
+            #expect(jsonArray(runtimeSurface["effective_surfaces"])?.isEmpty == true)
+            #expect(jsonString(summary["runtime_surface_effective"]) == AXProjectAutonomyMode.guided.rawValue)
             #expect(jsonString(summary["autonomy_effective_mode"]) == AXProjectAutonomyMode.guided.rawValue)
             #expect(toolBody(result.output).contains("browser_runtime"))
         }
@@ -227,6 +429,13 @@ struct ToolExecutorRuntimePolicyTests {
         #expect(jsonString(summary["deny_code"]) == "autonomy_policy_denied")
         #expect(jsonString(summary["policy_source"]) == "project_autonomy_policy")
         #expect(jsonString(summary["policy_reason"]) == "autonomy_ttl_expired")
+        #expect(jsonString(summary["runtime_surface_policy_reason"]) == "runtime_surface_ttl_expired")
+        let runtimeSurface = try #require(jsonObject(summary["runtime_surface"]))
+        #expect(jsonString(runtimeSurface["configured_surface"]) == AXProjectAutonomyMode.trustedOpenClawMode.rawValue)
+        #expect(jsonString(runtimeSurface["effective_surface"]) == AXProjectAutonomyMode.manual.rawValue)
+        #expect(jsonBool(runtimeSurface["expired"]) == true)
+        #expect(jsonArray(runtimeSurface["effective_surfaces"])?.isEmpty == true)
+        #expect(jsonString(summary["runtime_surface_effective"]) == AXProjectAutonomyMode.manual.rawValue)
         #expect(jsonString(summary["autonomy_effective_mode"]) == AXProjectAutonomyMode.manual.rawValue)
         #expect(toolBody(result.output).contains("device.clipboard.read"))
     }
@@ -306,6 +515,14 @@ struct ToolExecutorRuntimePolicyTests {
             #expect(jsonString(summary["deny_code"]) == "autonomy_policy_denied")
             #expect(jsonString(summary["policy_source"]) == "project_autonomy_policy")
             #expect(jsonString(summary["policy_reason"]) == "hub_override=clamp_guided")
+            #expect(jsonString(summary["runtime_surface_policy_reason"]) == "hub_override=clamp_guided")
+            let runtimeSurface = try #require(jsonObject(summary["runtime_surface"]))
+            #expect(jsonString(runtimeSurface["configured_surface"]) == AXProjectAutonomyMode.trustedOpenClawMode.rawValue)
+            #expect(jsonString(runtimeSurface["effective_surface"]) == AXProjectAutonomyMode.guided.rawValue)
+            #expect(jsonString(runtimeSurface["hub_override_surface"]) == AXProjectAutonomyHubOverrideMode.clampGuided.rawValue)
+            #expect(jsonString(runtimeSurface["remote_override_surface"]) == AXProjectAutonomyHubOverrideMode.clampGuided.rawValue)
+            #expect(jsonString(runtimeSurface["remote_override_source"]) == "hub_autonomy_policy_overrides_file")
+            #expect(jsonString(summary["runtime_surface_effective"]) == AXProjectAutonomyMode.guided.rawValue)
             #expect(jsonString(summary["autonomy_effective_mode"]) == AXProjectAutonomyMode.guided.rawValue)
             #expect(jsonString(summary["autonomy_hub_override_mode"]) == AXProjectAutonomyHubOverrideMode.clampGuided.rawValue)
             #expect(jsonString(summary["autonomy_local_override_mode"]) == AXProjectAutonomyHubOverrideMode.none.rawValue)

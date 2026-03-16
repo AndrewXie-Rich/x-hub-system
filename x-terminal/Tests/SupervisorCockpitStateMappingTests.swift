@@ -88,6 +88,43 @@ struct SupervisorCockpitStateMappingTests {
     }
 
     @Test
+    func memoryUnderfedPreventsReviewReadyAndFreezePromotion() {
+        let presentation = SupervisorCockpitPresentation.map(
+            input: SupervisorCockpitPresentationInput(
+                isProcessing: false,
+                pendingGrantCount: 0,
+                hasFreshPendingGrantSnapshot: true,
+                doctorStatusLine: "Doctor 已通过（0 个告警）",
+                doctorSuggestionCount: 0,
+                releaseBlockedByDoctorWithoutReport: 0,
+                laneSummary: .empty,
+                abnormalLaneStatus: nil,
+                abnormalLaneRecommendation: nil,
+                xtReadyStatus: "ok",
+                xtReadyStrictE2EReady: true,
+                xtReadyIssueCount: 0,
+                xtReadyReportPath: "build/xt_ready_gate_e2e_report.json",
+                memoryAssemblyReady: false,
+                memoryAssemblyIssueCount: 2,
+                memoryAssemblyStatusLine: "underfed:memory_review_floor_not_met,memory_focus_evidence_missing",
+                memoryAssemblyTopIssueCode: "memory_review_floor_not_met",
+                oneShotRuntimeState: OneShotRunStateStatus.completed.rawValue,
+                oneShotRuntimeOwner: "xt_l2",
+                oneShotRuntimeTopBlocker: "none",
+                oneShotRuntimeSummary: "主执行链已完成，但 strategic review memory 仍需补齐。",
+                oneShotRuntimeNextTarget: "review_delivery",
+                oneShotRuntimeActiveLaneCount: 0
+            )
+        )
+
+        #expect(presentation.intakeStatus.state == .diagnosticRequired)
+        #expect(presentation.intakeStatus.headline.contains("strategic memory"))
+        #expect(presentation.blockerStatus.headline.contains("memory_context_underfed"))
+        #expect(presentation.plannerExplain.contains("memory_context_underfed"))
+        #expect(stage(presentation, id: "freeze")?.surfaceState == .diagnosticRequired)
+    }
+
+    @Test
     func oneShotAwaitingGrantMapsGrantRequiredWithoutPendingGrantSnapshot() {
         let presentation = SupervisorCockpitPresentation.map(
             input: SupervisorCockpitPresentationInput(

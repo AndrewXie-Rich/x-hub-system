@@ -245,7 +245,11 @@ Merge rules:
                     actualModelId: u.actualModelId,
                     runtimeProvider: u.runtimeProvider,
                     executionPath: u.executionPath,
-                    fallbackReasonCode: u.fallbackReasonCode
+                    fallbackReasonCode: u.fallbackReasonCode,
+                    remoteRetryAttempted: u.remoteRetryAttempted,
+                    remoteRetryFromModelId: u.remoteRetryFromModelId,
+                    remoteRetryToModelId: u.remoteRetryToModelId,
+                    remoteRetryReasonCode: u.remoteRetryReasonCode
                 )
             } else {
                 coarseUsage = nil
@@ -281,6 +285,18 @@ Merge rules:
         }
         if let reason = coarseUsage?.fallbackReasonCode, !reason.isEmpty {
             coarseUsageEntry["fallback_reason_code"] = reason
+        }
+        if coarseUsage?.remoteRetryAttempted == true {
+            coarseUsageEntry["remote_retry_attempted"] = true
+        }
+        if let retryFrom = coarseUsage?.remoteRetryFromModelId, !retryFrom.isEmpty {
+            coarseUsageEntry["remote_retry_from_model_id"] = retryFrom
+        }
+        if let retryTo = coarseUsage?.remoteRetryToModelId, !retryTo.isEmpty {
+            coarseUsageEntry["remote_retry_to_model_id"] = retryTo
+        }
+        if let retryReason = coarseUsage?.remoteRetryReasonCode, !retryReason.isEmpty {
+            coarseUsageEntry["remote_retry_reason_code"] = retryReason
         }
         if let configured = coarseRouteDecision.configuredModelId, !configured.isEmpty {
             coarseUsageEntry["route_configured_model_id"] = configured
@@ -444,7 +460,11 @@ Merge rules:
                     actualModelId: u.actualModelId,
                     runtimeProvider: u.runtimeProvider,
                     executionPath: u.executionPath,
-                    fallbackReasonCode: u.fallbackReasonCode
+                    fallbackReasonCode: u.fallbackReasonCode,
+                    remoteRetryAttempted: u.remoteRetryAttempted,
+                    remoteRetryFromModelId: u.remoteRetryFromModelId,
+                    remoteRetryToModelId: u.remoteRetryToModelId,
+                    remoteRetryReasonCode: u.remoteRetryReasonCode
                 )
             } else {
                 refineUsage = nil
@@ -479,6 +499,18 @@ Merge rules:
         }
         if let reason = refineUsage?.fallbackReasonCode, !reason.isEmpty {
             refineUsageEntry["fallback_reason_code"] = reason
+        }
+        if refineUsage?.remoteRetryAttempted == true {
+            refineUsageEntry["remote_retry_attempted"] = true
+        }
+        if let retryFrom = refineUsage?.remoteRetryFromModelId, !retryFrom.isEmpty {
+            refineUsageEntry["remote_retry_from_model_id"] = retryFrom
+        }
+        if let retryTo = refineUsage?.remoteRetryToModelId, !retryTo.isEmpty {
+            refineUsageEntry["remote_retry_to_model_id"] = retryTo
+        }
+        if let retryReason = refineUsage?.remoteRetryReasonCode, !retryReason.isEmpty {
+            refineUsageEntry["remote_retry_reason_code"] = retryReason
         }
         if let configured = refineRouteDecision.configuredModelId, !configured.isEmpty {
             refineUsageEntry["route_configured_model_id"] = configured

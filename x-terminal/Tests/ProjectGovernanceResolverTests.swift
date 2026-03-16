@@ -104,6 +104,134 @@ struct ProjectGovernanceResolverTests {
         #expect(config.supervisorInterventionTier == .s2PeriodicReview)
         #expect(config.autonomyMode == .guided)
     }
+
+    @Test
+    func legacyAutonomyShadowIsOnlyConsumedForCompatSources() {
+        let root = URL(fileURLWithPath: "/tmp/project-governance-compat-shadow-\(UUID().uuidString)", isDirectory: true)
+        let defaultConfig = AXProjectConfig.default(forProjectRoot: root)
+
+        #expect(defaultConfig.governanceCompatSource == .defaultConservative)
+        #expect(defaultConfig.consumesLegacyAutonomyLevelResolverInput == false)
+        #expect(defaultConfig.governanceResolverLegacyAutonomyLevel(.fullAuto) == nil)
+
+        let compatConfig = defaultConfig.settingAutonomyPolicy(
+            mode: .guided,
+            updatedAt: Date(timeIntervalSince1970: 1_773_900_200)
+        )
+
+        #expect(compatConfig.governanceCompatSource == .legacyAutonomyMode)
+        #expect(compatConfig.consumesLegacyAutonomyLevelResolverInput)
+        #expect(compatConfig.governanceResolverLegacyAutonomyLevel(.fullAuto) == .fullAuto)
+
+        let explicitConfig = compatConfig.settingProjectGovernance(
+            executionTier: .a2RepoAuto,
+            supervisorInterventionTier: .s2PeriodicReview
+        )
+
+        #expect(explicitConfig.governanceCompatSource == .explicitDualDial)
+        #expect(explicitConfig.consumesLegacyAutonomyLevelResolverInput == false)
+        #expect(explicitConfig.governanceResolverLegacyAutonomyLevel(.fullAuto) == nil)
+    }
+
+    @Test
+    func applyingExecutionTierPreservesReviewAxesButRaisesSupervisorFloor() {
+        let original = AXProjectGovernanceBundle(
+            executionTier: .a1Plan,
+            supervisorInterventionTier: .s0SilentAudit,
+            reviewPolicyMode: .aggressive,
+            schedule: AXProjectGovernanceSchedule(
+                progressHeartbeatSeconds: 3600,
+                reviewPulseSeconds: 5400,
+                brainstormReviewSeconds: 7200,
+                eventDrivenReviewEnabled: false,
+                eventReviewTriggers: [.manualRequest, .preDoneSummary]
+            )
+        )
+
+        let updated = original.applyingExecutionTierPreservingReviewConfiguration(.a4OpenClaw)
+
+        #expect(updated.executionTier == .a4OpenClaw)
+        #expect(updated.supervisorInterventionTier == .s2PeriodicReview)
+        #expect(updated.reviewPolicyMode == .aggressive)
+        #expect(updated.schedule == original.schedule)
+    }
+
+    @Test
+    func weakProjectAIRaisesEffectiveSupervisorTierAndWorkOrderDepth() {
+        let root = URL(fileURLWithPath: "/tmp/project-governance-weak-ai-\(UUID().uuidString)", isDirectory: true)
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingProjectGovernance(
+            executionTier: .a3DeliverAuto,
+            supervisorInterventionTier: .s2PeriodicReview
+        )
+
+        let strength = AXProjectAIStrengthProfile(
+            strengthBand: .weak,
+            confidence: 0.92,
+            recommendedSupervisorFloor: .s4TightSupervision,
+            recommendedWorkOrderDepth: .stepLockedRescue,
+            reasons: [
+                "failure streak remains elevated",
+                "recent regressions required repeated correction"
+            ]
+        )
+
+        let resolved = xtResolveProjectGovernance(
+            projectRoot: root,
+            config: config,
+            projectAIStrengthProfile: strength,
+            permissionReadiness: makeGovernancePermissionReadiness()
+        )
+        let snapshot = resolved.debugSnapshot()
+
+        #expect(!resolved.validation.shouldFailClosed)
+        #expect(resolved.configuredBundle.supervisorInterventionTier == .s2PeriodicReview)
+        #expect(resolved.supervisorAdaptation.recommendedSupervisorTier == .s4TightSupervision)
+        #expect(resolved.effectiveBundle.supervisorInterventionTier == .s4TightSupervision)
+        #expect(resolved.supervisorAdaptation.recommendedWorkOrderDepth == .stepLockedRescue)
+        #expect(resolved.supervisorAdaptation.effectiveWorkOrderDepth == .stepLockedRescue)
+        #expect(snapshot["recommended_supervisor_intervention_tier"] == .string("s4_tight_supervision"))
+        #expect(snapshot["effective_supervisor_work_order_depth"] == .string("step_locked_rescue"))
+    }
+
+    @Test
+    func manualOnlyAdaptationKeepsConfiguredTierWhileExposingRecommendations() {
+        let root = URL(fileURLWithPath: "/tmp/project-governance-manual-adapt-\(UUID().uuidString)", isDirectory: true)
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingProjectGovernance(
+            executionTier: .a3DeliverAuto,
+            supervisorInterventionTier: .s2PeriodicReview
+        )
+
+        let strength = AXProjectAIStrengthProfile(
+            strengthBand: .unknown,
+            confidence: 0.35,
+            recommendedSupervisorFloor: .s4TightSupervision,
+            recommendedWorkOrderDepth: .executionReady,
+            reasons: ["new model route has not yet proven stable on this project"]
+        )
+        let policy = AXProjectSupervisorAdaptationPolicy(
+            adaptationMode: .manualOnly,
+            allowAutoRelax: false,
+            stabilityWindowMinutes: 180,
+            failureStreakRaiseThreshold: 3,
+            insufficientEvidenceRaiseThreshold: 2,
+            incidentRaiseEnabled: true
+        )
+
+        let resolved = xtResolveProjectGovernance(
+            projectRoot: root,
+            config: config,
+            projectAIStrengthProfile: strength,
+            adaptationPolicy: policy,
+            permissionReadiness: makeGovernancePermissionReadiness()
+        )
+
+        #expect(resolved.supervisorAdaptation.recommendedSupervisorTier == .s4TightSupervision)
+        #expect(resolved.effectiveBundle.supervisorInterventionTier == .s2PeriodicReview)
+        #expect(resolved.supervisorAdaptation.recommendedWorkOrderDepth == .stepLockedRescue)
+        #expect(resolved.supervisorAdaptation.effectiveWorkOrderDepth == .milestoneContract)
+    }
 }
 
 private func makeGovernancePermissionReadiness() -> AXTrustedAutomationPermissionOwnerReadiness {

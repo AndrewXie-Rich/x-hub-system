@@ -82,4 +82,35 @@ struct ToolResultPresentationTests {
         #expect(summary.contains("does not contain the target field"))
         #expect(summary.contains("#password"))
     }
+
+    @Test
+    func browserUIObservationSuccessGetsVisibleSuccessCard() throws {
+        let result = ToolResult(
+            id: "tool_browser_observation_ok",
+            tool: .deviceBrowserControl,
+            ok: true,
+            output: ToolExecutor.structuredOutput(
+                summary: [
+                    "tool": .string(ToolName.deviceBrowserControl.rawValue),
+                    "ok": .bool(true),
+                    "action": .string("snapshot"),
+                    "browser_runtime_current_url": .string("https://example.com/login"),
+                    "ui_observation_bundle_ref": .string("local://.xterminal/ui_observation/bundles/uob-1.json"),
+                    "ui_observation_status": .string(XTUIObservationBundleStatus.captured.rawValue),
+                    "ui_observation_probe_depth": .string(XTUIObservationProbeDepth.standard.rawValue),
+                    "ui_observation_captured_layers": .number(5),
+                    "ui_review_verdict": .string(XTUIReviewVerdict.ready.rawValue),
+                    "ui_review_summary": .string("ready; confidence=high; all core review checks passed"),
+                ],
+                body: "local://.xterminal/browser_runtime/snapshots/brsnap-1.json"
+            )
+        )
+
+        #expect(ToolResultPresentation.shouldShowTimelineCard(for: result))
+        #expect(ToolResultPresentation.iconName(for: result) == "eye.fill")
+        #expect(ToolResultPresentation.title(for: result) == "Browser UI observation captured")
+        #expect(ToolResultPresentation.body(for: result).contains("https://example.com/login"))
+        #expect(ToolResultPresentation.body(for: result).contains("5 layers"))
+        #expect(ToolResultPresentation.body(for: result).contains("Review verdict: ready"))
+    }
 }

@@ -1,7 +1,9 @@
+import Darwin
 import Foundation
 import Testing
 @testable import XTerminal
 
+@Suite(.serialized)
 struct ToolExecutorMemorySnapshotTests {
 
     @Test
@@ -204,6 +206,8 @@ struct ToolExecutorMemorySnapshotTests {
                 releaseBlockedByDoctorWithoutReport: 0,
                 blockingCount: 1,
                 warningCount: 0,
+                memoryAssemblyBlockingCount: 0,
+                memoryAssemblyWarningCount: 0,
                 dmAllowlistRiskCount: 0,
                 wsAuthRiskCount: 1,
                 preAuthFloodBreakerRiskCount: 0,
@@ -275,4 +279,95 @@ struct ToolExecutorMemorySnapshotTests {
         #expect(body.contains("doctor ws_origin_missing [blocking]"))
         #expect(body.contains("Restore XT-ready incident coverage"))
     }
+
+    @Test
+    func retrospectiveMemorySnapshotUsesFriendlyProjectDisplayNameInReportHeader() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "memory-snapshot-friendly-report")
+        defer { fixture.cleanup() }
+
+        let registryBase = fixture.root.appendingPathComponent("registry", isDirectory: true)
+        try FileManager.default.createDirectory(at: registryBase, withIntermediateDirectories: true)
+
+        try await withTemporaryEnvironment([
+            "XTERMINAL_PROJECT_REGISTRY_BASE_DIR": registryBase.path
+        ]) {
+            let ctx = AXProjectContext(root: fixture.root)
+            let projectId = AXProjectRegistryStore.projectId(forRoot: fixture.root)
+            let friendlyName = "远程运营增长项目"
+            let registry = AXProjectRegistry(
+                version: AXProjectRegistry.currentVersion,
+                updatedAt: 800,
+                sortPolicy: "manual_then_last_opened",
+                globalHomeVisible: false,
+                lastSelectedProjectId: projectId,
+                projects: [
+                    AXProjectEntry(
+                        projectId: projectId,
+                        rootPath: fixture.root.path,
+                        displayName: friendlyName,
+                        lastOpenedAt: 800,
+                        manualOrderIndex: 0,
+                        pinned: false,
+                        statusDigest: nil,
+                        currentStateSummary: nil,
+                        nextStepSummary: nil,
+                        blockerSummary: nil,
+                        lastSummaryAt: nil,
+                        lastEventAt: nil
+                    )
+                ]
+            )
+            AXProjectRegistryStore.save(registry)
+
+            var memory = AXMemory.new(projectName: fixture.root.lastPathComponent, projectRoot: fixture.root.path)
+            memory.goal = "Keep retrospective reports aligned with the friendly project identity."
+            try AXProjectStore.saveMemory(memory, for: ctx)
+
+            let result = try await ToolExecutor.execute(
+                call: ToolCall(
+                    tool: .memory_snapshot,
+                    args: [
+                        "mode": .string(XTMemoryUseMode.supervisorOrchestration.rawValue),
+                        "retrospective": .bool(true),
+                    ]
+                ),
+                projectRoot: fixture.root
+            )
+
+            #expect(result.ok)
+            let body = toolBody(result.output)
+            #expect(body.contains("Self Improvement Report"))
+            #expect(body.contains("project: \(friendlyName)"))
+            #expect(body.contains("project: \(fixture.root.lastPathComponent)") == false)
+        }
+    }
+}
+
+private func currentEnvironmentValue(_ key: String) -> String? {
+    guard let value = getenv(key) else { return nil }
+    return String(cString: value)
+}
+
+private func withTemporaryEnvironment<T>(
+    _ overrides: [String: String?],
+    operation: () async throws -> T
+) async rethrows -> T {
+    let original = Dictionary(uniqueKeysWithValues: overrides.keys.map { ($0, currentEnvironmentValue($0)) })
+    for (key, value) in overrides {
+        if let value {
+            setenv(key, value, 1)
+        } else {
+            unsetenv(key)
+        }
+    }
+    defer {
+        for (key, value) in original {
+            if let value {
+                setenv(key, value, 1)
+            } else {
+                unsetenv(key)
+            }
+        }
+    }
+    return try await operation()
 }

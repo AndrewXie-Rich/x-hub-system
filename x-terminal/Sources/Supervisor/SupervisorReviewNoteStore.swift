@@ -52,6 +52,12 @@ struct SupervisorReviewNoteRecord: Identifiable, Equatable, Codable, Sendable {
     var targetRole: SupervisorGuidanceTargetRole
     var deliveryMode: SupervisorGuidanceDeliveryMode
     var ackRequired: Bool
+    var effectiveSupervisorTier: AXProjectSupervisorInterventionTier? = nil
+    var effectiveWorkOrderDepth: AXProjectSupervisorWorkOrderDepth? = nil
+    var projectAIStrengthBand: AXProjectAIStrengthBand? = nil
+    var projectAIStrengthConfidence: Double? = nil
+    var projectAIStrengthAuditRef: String? = nil
+    var workOrderRef: String? = nil
     var summary: String
     var recommendedActions: [String]
     var anchorGoal: String
@@ -60,6 +66,9 @@ struct SupervisorReviewNoteRecord: Identifiable, Equatable, Codable, Sendable {
     var currentState: String
     var nextStep: String
     var blocker: String
+    var memoryCursor: String?
+    var projectStateHash: String?
+    var portfolioStateHash: String?
     var createdAtMs: Int64
     var auditRef: String
 
@@ -75,6 +84,12 @@ struct SupervisorReviewNoteRecord: Identifiable, Equatable, Codable, Sendable {
         case targetRole = "target_role"
         case deliveryMode = "delivery_mode"
         case ackRequired = "ack_required"
+        case effectiveSupervisorTier = "effective_supervisor_tier"
+        case effectiveWorkOrderDepth = "effective_work_order_depth"
+        case projectAIStrengthBand = "project_ai_strength_band"
+        case projectAIStrengthConfidence = "project_ai_strength_confidence"
+        case projectAIStrengthAuditRef = "project_ai_strength_audit_ref"
+        case workOrderRef = "work_order_ref"
         case summary
         case recommendedActions = "recommended_actions"
         case anchorGoal = "anchor_goal"
@@ -83,6 +98,9 @@ struct SupervisorReviewNoteRecord: Identifiable, Equatable, Codable, Sendable {
         case currentState = "current_state"
         case nextStep = "next_step"
         case blocker
+        case memoryCursor = "memory_cursor"
+        case projectStateHash = "project_state_hash"
+        case portfolioStateHash = "portfolio_state_hash"
         case createdAtMs = "created_at_ms"
         case auditRef = "audit_ref"
     }
@@ -112,6 +130,12 @@ enum SupervisorReviewNoteBuilder {
         targetRole: SupervisorGuidanceTargetRole,
         deliveryMode: SupervisorGuidanceDeliveryMode,
         ackRequired: Bool,
+        effectiveSupervisorTier: AXProjectSupervisorInterventionTier? = nil,
+        effectiveWorkOrderDepth: AXProjectSupervisorWorkOrderDepth? = nil,
+        projectAIStrengthBand: AXProjectAIStrengthBand? = nil,
+        projectAIStrengthConfidence: Double? = nil,
+        projectAIStrengthAuditRef: String? = nil,
+        workOrderRef: String? = nil,
         summary: String,
         recommendedActions: [String],
         anchorGoal: String,
@@ -120,6 +144,9 @@ enum SupervisorReviewNoteBuilder {
         currentState: String,
         nextStep: String,
         blocker: String,
+        memoryCursor: String? = nil,
+        projectStateHash: String? = nil,
+        portfolioStateHash: String? = nil,
         createdAtMs: Int64,
         auditRef: String
     ) -> SupervisorReviewNoteRecord {
@@ -133,6 +160,12 @@ enum SupervisorReviewNoteBuilder {
             targetRole: targetRole,
             deliveryMode: deliveryMode,
             ackRequired: ackRequired,
+            effectiveSupervisorTier: effectiveSupervisorTier,
+            effectiveWorkOrderDepth: effectiveWorkOrderDepth,
+            projectAIStrengthBand: projectAIStrengthBand,
+            projectAIStrengthConfidence: projectAIStrengthConfidence.map { min(1, max(0, $0)) },
+            projectAIStrengthAuditRef: normalizedOptionalReviewScalar(projectAIStrengthAuditRef),
+            workOrderRef: normalizedOptionalReviewScalar(workOrderRef),
             summary: normalizedReviewScalar(summary),
             recommendedActions: orderedUniqueReviewScalars(recommendedActions),
             anchorGoal: normalizedReviewScalar(anchorGoal),
@@ -141,6 +174,9 @@ enum SupervisorReviewNoteBuilder {
             currentState: normalizedReviewScalar(currentState),
             nextStep: normalizedReviewScalar(nextStep),
             blocker: normalizedReviewScalar(blocker),
+            memoryCursor: normalizedOptionalReviewScalar(memoryCursor),
+            projectStateHash: normalizedOptionalReviewScalar(projectStateHash),
+            portfolioStateHash: normalizedOptionalReviewScalar(portfolioStateHash),
             createdAtMs: max(0, createdAtMs),
             auditRef: normalizedReviewScalar(auditRef)
         )
@@ -213,7 +249,12 @@ private func normalizedReviewScalar(_ value: String) -> String {
     value.trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
-private func orderedUniqueReviewScalars(_ values: [String]) -> [String] {
+private func normalizedOptionalReviewScalar(_ value: String?) -> String? {
+    let normalized = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    return normalized.isEmpty ? nil : normalized
+}
+
+func orderedUniqueReviewScalars(_ values: [String]) -> [String] {
     var seen = Set<String>()
     var ordered: [String] = []
     for value in values {

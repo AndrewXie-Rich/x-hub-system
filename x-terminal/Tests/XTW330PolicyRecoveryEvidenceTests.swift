@@ -96,10 +96,14 @@ struct XTW330PolicyRecoveryEvidenceTests {
                 deviceToolGroups: ["device.clipboard.read"],
                 workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: clampGuidedFixture.root)
             )
+            clampGuidedConfig = clampGuidedConfig.settingProjectGovernance(
+                executionTier: .a4OpenClaw,
+                supervisorInterventionTier: .s2PeriodicReview
+            )
             clampGuidedConfig = clampGuidedConfig.settingAutonomyPolicy(
                 mode: .trustedOpenClawMode,
                 hubOverrideMode: .clampGuided,
-                updatedAt: Date(timeIntervalSince1970: 1_773_600_200)
+                updatedAt: Date()
             )
             try AXProjectStore.saveConfig(clampGuidedConfig, for: clampGuidedCtx)
 
@@ -117,10 +121,14 @@ struct XTW330PolicyRecoveryEvidenceTests {
                 deviceToolGroups: ["device.browser.control"],
                 workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: clampManualFixture.root)
             )
+            clampManualConfig = clampManualConfig.settingProjectGovernance(
+                executionTier: .a4OpenClaw,
+                supervisorInterventionTier: .s2PeriodicReview
+            )
             clampManualConfig = clampManualConfig.settingAutonomyPolicy(
                 mode: .trustedOpenClawMode,
                 hubOverrideMode: .clampManual,
-                updatedAt: Date(timeIntervalSince1970: 1_773_600_220)
+                updatedAt: Date()
             )
             try AXProjectStore.saveConfig(clampManualConfig, for: clampManualCtx)
 
@@ -138,6 +146,7 @@ struct XTW330PolicyRecoveryEvidenceTests {
 
             manager.resetAutomationRuntimeState()
             let recoveryCtx = AXProjectContext(root: recoveryRoot)
+            try armRepoAutomationGovernance(for: recoveryCtx)
             _ = try AXProjectStore.upsertAutomationRecipe(
                 makeResumeFromFailedActionRecipe(),
                 activate: true,
@@ -156,17 +165,31 @@ struct XTW330PolicyRecoveryEvidenceTests {
                 }
             )
 
-            _ = try manager.startAutomationRun(
+            let initialPrepared = try manager.startAutomationRun(
                 for: recoveryCtx,
                 request: makeManualRequest(now: Date(timeIntervalSince1970: 1_773_600_300))
             )
+            let recoveryProjectID = AXProjectRegistryStore.projectId(forRoot: recoveryRoot)
+            let sourceRunID = initialPrepared.launchRef
 
             try await waitUntil("initial recovery source run blocked") {
-                manager.automationCurrentCheckpoint?.state == .blocked
-                    && manager.automationLatestExecutionReport?.holdReason == "automation_action_failed"
+                guard let report = xtAutomationLoadExecutionReport(
+                    for: sourceRunID,
+                    ctx: recoveryCtx
+                ) else {
+                    return false
+                }
+                return report.finalState == .blocked
+                    && report.holdReason == "automation_action_failed"
             }
 
-            let sourceRunID = try #require(manager.automationLatestExecutionReport?.runID)
+            if xtAutomationLoadExecutionReport(for: sourceRunID, ctx: recoveryCtx) == nil {
+                Issue.record("initial source run raw log summary: \(rawLogSummary(for: recoveryCtx))")
+            }
+
+            _ = try #require(
+                xtAutomationLoadExecutionReport(for: sourceRunID, ctx: recoveryCtx)
+            )
             let recoveryDecision = try #require(
                 try manager.recoverLatestAutomationRun(
                     for: recoveryCtx,
@@ -175,25 +198,49 @@ struct XTW330PolicyRecoveryEvidenceTests {
                 )
             )
 
-            try await waitUntil("restart recovery retry scheduled and blocked") {
-                let retryRunID = manager.automationLatestRetryPackage?.retryRunID ?? ""
-                return !retryRunID.isEmpty
-                    && retryRunID != sourceRunID
-                    && manager.automationCurrentCheckpoint?.runID == retryRunID
-                    && manager.automationCurrentCheckpoint?.state == .blocked
+            try await waitUntil("restart recovery retry scheduled") {
+                xtAutomationReadRawLogRows(for: recoveryCtx).contains(where: {
+                    ($0["type"] as? String) == "automation_retry"
+                        && ($0["status"] as? String) == "scheduled"
+                        && ($0["source_run_id"] as? String) == sourceRunID
+                        && (($0["retry_run_id"] as? String) ?? "").isEmpty == false
+                })
             }
 
-            let retryPackage = try #require(manager.automationLatestRetryPackage)
-            let retryLineage = try #require(retryPackage.lineage)
-            let retryRunID = retryPackage.retryRunID
             let recoveryRows = try rawLogEntries(for: recoveryCtx)
             let scheduledRetryRow = try #require(
                 recoveryRows.last(where: {
                     ($0["type"] as? String) == "automation_retry"
                         && ($0["status"] as? String) == "scheduled"
                         && ($0["source_run_id"] as? String) == sourceRunID
-                        && ($0["retry_run_id"] as? String) == retryRunID
                 })
+            )
+            let retryRunID = try #require(scheduledRetryRow["retry_run_id"] as? String)
+
+            try await waitUntil("restart recovery retry blocked") {
+                guard let report = xtAutomationLoadExecutionReport(
+                    for: retryRunID,
+                    ctx: recoveryCtx
+                ) else {
+                    return false
+                }
+                return report.runID == retryRunID && report.finalState == .blocked
+            }
+
+            if xtAutomationLoadExecutionReport(for: retryRunID, ctx: recoveryCtx) == nil {
+                Issue.record("retry run raw log summary: \(rawLogSummary(for: recoveryCtx))")
+            }
+
+            let retryPackage = try #require(
+                xtAutomationLoadRetryPackage(
+                    forRetryRunID: retryRunID,
+                    projectID: recoveryProjectID,
+                    ctx: recoveryCtx
+                )
+            )
+            let retryLineage = try #require(retryPackage.lineage)
+            let retryReport = try #require(
+                xtAutomationLoadExecutionReport(for: retryRunID, ctx: recoveryCtx)
             )
             let retryLaunchRow = try #require(
                 recoveryRows.last(where: {
@@ -221,6 +268,8 @@ struct XTW330PolicyRecoveryEvidenceTests {
                 && jsonString(clampGuidedSummary["deny_code"]) == "autonomy_policy_denied"
                 && jsonString(clampGuidedSummary["policy_source"]) == "project_autonomy_policy"
                 && jsonString(clampGuidedSummary["policy_reason"]) == "hub_override=clamp_guided"
+                && jsonString(clampGuidedSummary["runtime_surface_policy_reason"]) == "hub_override=clamp_guided"
+                && jsonString(jsonObject(clampGuidedSummary["runtime_surface"])?["effective_surface"]) == AXProjectAutonomyMode.guided.rawValue
                 && jsonString(clampGuidedSummary["autonomy_effective_mode"]) == AXProjectAutonomyMode.guided.rawValue
 
             let clampManualPass =
@@ -228,6 +277,8 @@ struct XTW330PolicyRecoveryEvidenceTests {
                 && jsonString(clampManualSummary["deny_code"]) == "autonomy_policy_denied"
                 && jsonString(clampManualSummary["policy_source"]) == "project_autonomy_policy"
                 && jsonString(clampManualSummary["policy_reason"]) == "hub_override=clamp_manual"
+                && jsonString(clampManualSummary["runtime_surface_policy_reason"]) == "hub_override=clamp_manual"
+                && jsonString(jsonObject(clampManualSummary["runtime_surface"])?["effective_surface"]) == AXProjectAutonomyMode.manual.rawValue
                 && jsonString(clampManualSummary["autonomy_effective_mode"]) == AXProjectAutonomyMode.manual.rawValue
 
             let recoverySchedulePass =
@@ -296,7 +347,7 @@ struct XTW330PolicyRecoveryEvidenceTests {
                     ),
                     PolicyRecoverySurfaceEvidence(
                         surface: "restart_recovery_retry_surface",
-                        state: manager.automationCurrentCheckpoint?.state.rawValue ?? "unknown",
+                        state: retryReport.finalState.rawValue,
                         exercised: true,
                         decision: recoveryDecision.decision.rawValue,
                         holdReason: recoveryDecision.holdReason.isEmpty ? nil : recoveryDecision.holdReason,
@@ -384,6 +435,31 @@ struct XTW330PolicyRecoveryEvidenceTests {
                 }
                 return object
             }
+    }
+
+    private func rawLogSummary(for ctx: AXProjectContext) -> String {
+        let rows = (try? rawLogEntries(for: ctx)) ?? []
+        guard !rows.isEmpty else { return "(empty)" }
+        return rows.map { row in
+            let type = (row["type"] as? String) ?? "?"
+            let phase = (row["phase"] as? String) ?? ""
+            let runID = (row["run_id"] as? String) ?? ""
+            let state = (row["state"] as? String) ?? ((row["final_state"] as? String) ?? "")
+            let holdReason = (row["hold_reason"] as? String) ?? ""
+            let status = (row["status"] as? String) ?? ""
+            return [type, phase, status, runID, state, holdReason]
+                .filter { !$0.isEmpty }
+                .joined(separator: ":")
+        }.joined(separator: " | ")
+    }
+
+    private func armRepoAutomationGovernance(for ctx: AXProjectContext) throws {
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config = config.settingProjectGovernance(
+            executionTier: .a2RepoAuto,
+            supervisorInterventionTier: .s2PeriodicReview
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
     }
 
     private func makeScheduleRecipe(

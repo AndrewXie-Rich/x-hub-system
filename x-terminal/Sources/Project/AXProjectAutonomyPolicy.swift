@@ -3,6 +3,7 @@ import Foundation
 enum AXProjectAutonomyMode: String, Codable, Equatable, CaseIterable {
     case manual
     case guided
+    // Legacy raw value retained for on-disk and bridge compatibility.
     case trustedOpenClawMode = "trusted_openclaw_mode"
 
     var displayName: String {
@@ -12,7 +13,7 @@ enum AXProjectAutonomyMode: String, Codable, Equatable, CaseIterable {
         case .guided:
             return "Guided"
         case .trustedOpenClawMode:
-            return "Trusted OpenClaw Mode"
+            return "Trusted Full Surface Mode"
         }
     }
 }
@@ -207,6 +208,20 @@ extension AXProjectConfig {
         if autonomyAllowConnectorActions { labels.append("connector") }
         if autonomyAllowExtensions { labels.append("extension") }
         return labels
+    }
+
+    var consumesLegacyAutonomyLevelResolverInput: Bool {
+        switch governanceCompatSource {
+        case .legacyAutonomyLevel, .legacyAutonomyMode:
+            return true
+        case .explicitDualDial, .defaultConservative:
+            return false
+        }
+    }
+
+    func governanceResolverLegacyAutonomyLevel(_ candidate: AutonomyLevel?) -> AutonomyLevel? {
+        guard consumesLegacyAutonomyLevelResolverInput else { return nil }
+        return candidate
     }
 
     func settingAutonomyPolicy(

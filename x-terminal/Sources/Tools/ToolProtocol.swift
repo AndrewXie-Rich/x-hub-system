@@ -3,13 +3,24 @@ import Foundation
 enum ToolName: String, Codable, CaseIterable, Sendable {
     case read_file
     case write_file
+    case delete_path
+    case move_path
     case list_dir
     case search
     case run_command
+    case process_start
+    case process_status
+    case process_logs
+    case process_stop
     case git_status
     case git_diff
+    case git_commit
+    case git_push
     case git_apply_check
     case git_apply
+    case pr_create
+    case ci_read
+    case ci_trigger
 
     case session_list
     case session_resume
@@ -176,11 +187,18 @@ enum ToolPolicy {
             return [
                 .read_file,
                 .write_file,
+                .delete_path,
+                .move_path,
                 .list_dir,
                 .search,
                 .run_command,
+                .process_start,
+                .process_status,
+                .process_logs,
+                .process_stop,
                 .git_status,
                 .git_diff,
+                .git_commit,
                 .git_apply_check,
                 .git_apply,
                 .session_list,
@@ -197,13 +215,24 @@ enum ToolPolicy {
             return [
                 .read_file,
                 .write_file,
+                .delete_path,
+                .move_path,
                 .list_dir,
                 .search,
                 .run_command,
+                .process_start,
+                .process_status,
+                .process_logs,
+                .process_stop,
                 .git_status,
                 .git_diff,
+                .git_commit,
+                .git_push,
                 .git_apply_check,
                 .git_apply,
+                .pr_create,
+                .ci_read,
+                .ci_trigger,
                 .session_list,
                 .session_resume,
                 .session_compact,
@@ -276,20 +305,42 @@ enum ToolPolicy {
             return "- read_file {path, sandbox?}"
         case .write_file:
             return "- write_file {path, content, sandbox?}"
+        case .delete_path:
+            return "- delete_path {path, recursive?, force?, sandbox?}"
+        case .move_path:
+            return "- move_path {from, to, overwrite?, create_dirs?, sandbox?}"
         case .list_dir:
             return "- list_dir {path, sandbox?}"
         case .search:
             return "- search {pattern, path?, glob?, sandbox?}"
         case .run_command:
             return "- run_command {command, timeout_sec?, sandbox?}"
+        case .process_start:
+            return "- process_start {command, name?, process_id?, cwd?, env?, restart_on_exit?}"
+        case .process_status:
+            return "- process_status {process_id?, include_exited?}"
+        case .process_logs:
+            return "- process_logs {process_id, tail_lines?, max_bytes?}"
+        case .process_stop:
+            return "- process_stop {process_id, force?}"
         case .git_status:
             return "- git_status {}"
         case .git_diff:
             return "- git_diff {cached?}"
+        case .git_commit:
+            return "- git_commit {message, all?, allow_empty?, paths?}"
+        case .git_push:
+            return "- git_push {remote?, branch?, set_upstream?}"
         case .git_apply_check:
             return "- git_apply_check {patch}"
         case .git_apply:
             return "- git_apply {patch}"
+        case .pr_create:
+            return "- pr_create {title?, body?, base?, head?, draft?, fill?, labels?, reviewers?}"
+        case .ci_read:
+            return "- ci_read {provider?, workflow?, branch?, commit?, limit?}"
+        case .ci_trigger:
+            return "- ci_trigger {provider?, workflow, ref?, inputs?}"
         case .session_list:
             return "- session_list {project_id?, limit?}"
         case .session_resume:
@@ -315,7 +366,7 @@ enum ToolPolicy {
         case .deviceScreenCapture:
             return "- device.screen.capture {path?}"
         case .deviceBrowserControl:
-            return "- device.browser.control {action=open|open_url|navigate|snapshot|extract|click|type|upload, url?, session_id?, selector?, field_role?, text|content|value?, secret_item_id?|secret_scope?|secret_name?|secret_project_id?, path?, grant_id?, timeout_sec?, max_bytes?}"
+            return "- device.browser.control {action=open|open_url|navigate|snapshot|extract|click|type|upload, url?, session_id?, selector?, field_role?, text|content|value?, secret_item_id?|secret_scope?|secret_name?|secret_project_id?, path?, grant_id?, timeout_sec?, max_bytes?, probe_depth?}"
         case .deviceAppleScript:
             return "- device.applescript {source}"
         case .bridge_status:
@@ -357,11 +408,23 @@ enum ToolPolicy {
                     .summarize,
                 ])
             case "group:fs":
-                out.formUnion([.read_file, .write_file, .list_dir, .search])
+                out.formUnion([.read_file, .write_file, .delete_path, .move_path, .list_dir, .search])
             case "group:runtime":
-                out.formUnion([.run_command, .session_list, .session_resume, .session_compact, .project_snapshot])
+                out.formUnion([
+                    .run_command,
+                    .process_start,
+                    .process_status,
+                    .process_logs,
+                    .process_stop,
+                    .session_list,
+                    .session_resume,
+                    .session_compact,
+                    .project_snapshot,
+                ])
             case "group:git":
-                out.formUnion([.git_status, .git_diff, .git_apply_check, .git_apply])
+                out.formUnion([.git_status, .git_diff, .git_commit, .git_push, .git_apply_check, .git_apply])
+            case "group:delivery":
+                out.formUnion([.git_push, .pr_create, .ci_read, .ci_trigger])
             case "group:network":
                 out.formUnion([.bridge_status, .need_network, .web_fetch, .web_search, .browser_read])
             case "group:device_automation":
@@ -387,7 +450,11 @@ enum ToolPolicy {
             return .safe
         case .git_apply_check:
             return .safe
+        case .ci_read:
+            return .safe
         case .session_list, .session_resume, .session_compact, .agentImportRecord, .memory_snapshot, .project_snapshot:
+            return .safe
+        case .process_status, .process_logs:
             return .safe
         case .deviceUIObserve:
             return .needsConfirm
@@ -412,17 +479,25 @@ enum ToolPolicy {
         case .web_fetch, .web_search, .browser_read:
             // Network approvals are handled in Hub; avoid local confirmations.
             return .safe
-        case .write_file, .run_command, .git_apply:
+        case .write_file, .delete_path, .move_path, .run_command, .process_start, .process_stop, .git_commit, .git_push, .git_apply, .pr_create, .ci_trigger:
             return .needsConfirm
         }
     }
 
     static func isAlwaysConfirm(call: ToolCall) -> Bool {
         // A small guardrail: even in auto mode, force confirmation for blatantly dangerous commands.
-        if call.tool != .run_command { return false }
-        guard case .string(let cmd)? = call.args["command"] else { return false }
-        let s = cmd.lowercased()
-        let bad = ["sudo ", "shutdown", "reboot", "rm -rf /", "rm -rf /*", ":(){ :|:& };:"]
-        return bad.contains(where: { s.contains($0) })
+        switch call.tool {
+        case .run_command:
+            guard case .string(let cmd)? = call.args["command"] else { return false }
+            let s = cmd.lowercased()
+            let bad = ["sudo ", "shutdown", "reboot", "rm -rf /", "rm -rf /*", ":(){ :|:& };:"]
+            return bad.contains(where: { s.contains($0) })
+        case .delete_path:
+            guard case .string(let path)? = call.args["path"] else { return false }
+            let normalized = path.trimmingCharacters(in: .whitespacesAndNewlines)
+            return normalized.isEmpty || normalized == "." || normalized == "./" || normalized == "/"
+        default:
+            return false
+        }
     }
 }

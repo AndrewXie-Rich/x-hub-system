@@ -35,7 +35,12 @@ struct ToolExecutorSkillsAndSummarizeTests {
         #expect(jsonString(summary["tool"]) == ToolName.skills_search.rawValue)
         #expect(jsonString(summary["source"]) == "local_hub_index")
         #expect(jsonNumber(summary["results_count"]) == 1)
+        let first = try #require(jsonArray(summary["results"])?.first)
+        #expect(jsonString(jsonObject(first)?["risk_level"]) == "medium")
+        #expect(jsonBool(jsonObject(first)?["requires_grant"]) == false)
+        #expect(jsonString(jsonObject(first)?["side_effect_class"]) == "read_only")
         #expect(toolBody(result.output).contains("Summarize [summarize]"))
+        #expect(toolBody(result.output).contains("risk=medium grant=no side_effect=read_only"))
     }
 
     @Test
@@ -269,7 +274,10 @@ struct ToolExecutorSkillsAndSummarizeTests {
               "capabilities_required": ["skills.search"],
               "source_id": "builtin:catalog",
               "package_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
-              "install_hint": "Pin from the Agent Baseline."
+              "install_hint": "Pin from the Agent Baseline.",
+              "risk_level": "low",
+              "requires_grant": false,
+              "side_effect_class": "read_only"
             },
             {
               "skill_id": "summarize",
@@ -280,7 +288,10 @@ struct ToolExecutorSkillsAndSummarizeTests {
               "capabilities_required": ["document.summarize"],
               "source_id": "builtin:catalog",
               "package_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
-              "install_hint": "Pin from the Agent Baseline."
+              "install_hint": "Pin from the Agent Baseline.",
+              "risk_level": "medium",
+              "requires_grant": false,
+              "side_effect_class": "read_only"
             }
           ]
         }

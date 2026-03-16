@@ -114,16 +114,21 @@ enum ProjectSkillActivityPresentation {
             if !item.detail.isEmpty { return item.detail }
             return "\(skillLabel) failed while running \(toolLabel)."
         case "blocked":
-            if !item.detail.isEmpty { return item.detail }
-            if !item.denyCode.isEmpty {
-                return "\(skillLabel) was blocked before \(toolLabel) could run (\(item.denyCode))."
-            }
-            return "\(skillLabel) was blocked before \(toolLabel) could run."
+            return XTGuardrailMessagePresentation.blockedBody(
+                tool: ToolName(rawValue: item.toolName),
+                toolLabel: toolLabel,
+                denyCode: item.denyCode,
+                policySource: item.policySource,
+                policyReason: item.policyReason,
+                fallbackSummary: item.resultSummary,
+                fallbackDetail: item.detail
+            )
         case "awaiting_approval":
-            if let preview = requestPreview(for: item), !preview.isEmpty {
-                return "\(skillLabel) is waiting for approval to run \(toolLabel) for \(preview)."
-            }
-            return "\(skillLabel) is waiting for approval to run \(toolLabel)."
+            return XTGuardrailMessagePresentation.awaitingApprovalBody(
+                toolLabel: toolLabel,
+                target: requestPreview(for: item),
+                denyCode: item.denyCode
+            )
         case "resolved":
             if let preview = requestPreview(for: item), !preview.isEmpty {
                 return "\(skillLabel) was routed to \(toolLabel) for \(preview)."
@@ -153,6 +158,12 @@ enum ProjectSkillActivityPresentation {
         }
         if !item.denyCode.isEmpty {
             lines.append("deny_code=\(item.denyCode)")
+        }
+        if !item.policySource.isEmpty {
+            lines.append("policy_source=\(item.policySource)")
+        }
+        if !item.policyReason.isEmpty {
+            lines.append("policy_reason=\(item.policyReason)")
         }
         if !item.resolutionSource.isEmpty {
             lines.append("resolution_source=\(item.resolutionSource)")
@@ -220,6 +231,14 @@ enum ProjectSkillActivityPresentation {
             evidence?.status,
             supervisorCall?.status.rawValue
         ) ?? ""
+        let latestPolicySource = events
+            .reversed()
+            .compactMap { nonEmpty($0.item.policySource) }
+            .first
+        let latestPolicyReason = events
+            .reversed()
+            .compactMap { nonEmpty($0.item.policyReason) }
+            .first
         let toolArgsText = preferredToolArgumentsText(
             latestToolArgs: latest?.toolArgs ?? [:],
             evidenceToolArgs: evidence?.toolArgs
@@ -247,6 +266,8 @@ enum ProjectSkillActivityPresentation {
         let approvalFields = recordFields([
             ("authorization_disposition", latest?.authorizationDisposition),
             ("deny_code", firstNonEmpty(latest?.denyCode, evidence?.denyCode, supervisorCall?.denyCode)),
+            ("policy_source", latestPolicySource),
+            ("policy_reason", latestPolicyReason),
             ("required_capability", supervisorCall?.requiredCapability),
             ("grant_request_id", supervisorCall?.grantRequestId),
             ("grant_id", supervisorCall?.grantId)
@@ -401,6 +422,28 @@ enum ProjectSkillActivityPresentation {
         }
 
         switch tool {
+        case .delete_path:
+            return "delete path"
+        case .move_path:
+            return "move path"
+        case .process_start:
+            return "start process"
+        case .process_status:
+            return "process status"
+        case .process_logs:
+            return "process logs"
+        case .process_stop:
+            return "stop process"
+        case .git_commit:
+            return "git commit"
+        case .git_push:
+            return "git push"
+        case .pr_create:
+            return "create pull request"
+        case .ci_read:
+            return "read ci"
+        case .ci_trigger:
+            return "trigger ci"
         case .skills_search:
             return "skills search"
         case .summarize:
@@ -494,6 +537,12 @@ enum ProjectSkillActivityPresentation {
         }
         if !event.item.authorizationDisposition.isEmpty {
             lines.append("authorization_disposition=\(event.item.authorizationDisposition)")
+        }
+        if !event.item.policySource.isEmpty {
+            lines.append("policy_source=\(event.item.policySource)")
+        }
+        if !event.item.policyReason.isEmpty {
+            lines.append("policy_reason=\(event.item.policyReason)")
         }
         if !event.item.resolutionSource.isEmpty {
             lines.append("resolution_source=\(event.item.resolutionSource)")

@@ -8,6 +8,10 @@ struct ModernChatView: View {
     let hubConnected: Bool
     @ObservedObject var session: ChatSessionModel
     @EnvironmentObject private var appModel: AppModel
+    @State private var highlightPendingToolApprovalCard: Bool = false
+    @State private var highlightedPendingToolApprovalRequestId: String?
+    @State private var highlightedSkillActivityRequestId: String?
+    @State private var highlightedSkillActivityFocusNonce: Int?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -23,6 +27,7 @@ struct ModernChatView: View {
                 // 消息时间线
                 MessageTimelineView(
                     ctx: ctx,
+                    config: config,
                     session: session,
                     hubConnected: hubConnected,
                     onApproveSkillActivity: { requestID in
@@ -31,6 +36,8 @@ struct ModernChatView: View {
                     onRetrySkillActivity: { item in
                         session.retryProjectSkillActivity(item, router: appModel.llmRouter)
                     },
+                    focusedSkillActivityRequestId: highlightedSkillActivityRequestId,
+                    focusedSkillActivityNonce: highlightedSkillActivityFocusNonce,
                     bottomPadding: session.pendingToolCalls.isEmpty ? 24 : 160
                 )
 
@@ -41,6 +48,8 @@ struct ModernChatView: View {
                         PendingToolApprovalView(
                             session: session,
                             hubConnected: hubConnected,
+                            isFocused: highlightPendingToolApprovalCard,
+                            focusedRequestId: highlightedPendingToolApprovalRequestId,
                             onApprove: {
                                 session.approvePendingTools(router: appModel.llmRouter)
                             },
@@ -75,11 +84,83 @@ struct ModernChatView: View {
         .onChange(of: ctx.root.path) { _ in
             session.ensureLoaded(ctx: ctx, limit: 200)
         }
+        .onAppear {
+            processProjectFocusRequest()
+        }
+        .onChange(of: appModel.projectFocusRequest?.nonce) { _ in
+            processProjectFocusRequest()
+        }
+        .onChange(of: session.isSending) { _ in
+            if !session.isSending {
+                processProjectFocusRequest()
+            }
+        }
+        .onChange(of: session.pendingToolCalls.map(\.id).joined(separator: ",")) { _ in
+            if session.pendingToolCalls.isEmpty {
+                highlightPendingToolApprovalCard = false
+                highlightedPendingToolApprovalRequestId = nil
+                highlightedSkillActivityRequestId = nil
+                highlightedSkillActivityFocusNonce = nil
+            } else if let focusedRequestId = highlightedPendingToolApprovalRequestId,
+                      !session.pendingToolCalls.contains(where: { $0.id == focusedRequestId }) {
+                highlightedPendingToolApprovalRequestId = nil
+                highlightedSkillActivityRequestId = nil
+                highlightedSkillActivityFocusNonce = nil
+            }
+            processProjectFocusRequest()
+        }
+    }
+
+    private var projectId: String {
+        AXProjectRegistryStore.projectId(forRoot: ctx.root)
+    }
+
+    private func processProjectFocusRequest() {
+        guard let request = appModel.projectFocusRequest,
+              request.projectId == projectId else {
+            return
+        }
+
+        switch request.subject {
+        case let .toolApproval(requestId):
+            guard !session.pendingToolCalls.isEmpty else { return }
+            highlightedSkillActivityFocusNonce = request.nonce
+
+            if let requestId = requestId?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !requestId.isEmpty {
+                if session.pendingToolCalls.contains(where: { $0.id == requestId }) {
+                    highlightPendingToolApprovalCard = true
+                    highlightedPendingToolApprovalRequestId = requestId
+                    highlightedSkillActivityRequestId = requestId
+                    appModel.clearProjectFocusRequest(request)
+                    return
+                }
+                highlightPendingToolApprovalCard = true
+                highlightedPendingToolApprovalRequestId = nil
+                highlightedSkillActivityRequestId = nil
+                appModel.clearProjectFocusRequest(request)
+                return
+            }
+
+            highlightPendingToolApprovalCard = true
+            highlightedPendingToolApprovalRequestId = nil
+            highlightedSkillActivityRequestId = nil
+            appModel.clearProjectFocusRequest(request)
+        case .routeDiagnose:
+            guard !session.isSending else { return }
+            session.presentProjectRouteDiagnosis(
+                ctx: ctx,
+                config: config,
+                router: appModel.llmRouter
+            )
+            appModel.clearProjectFocusRequest(request)
+        }
     }
 
     private var projectRuntimeSection: some View {
         let snapshots = AXRoleExecutionSnapshots.latestSnapshots(for: ctx)
         let coderSnapshot = snapshots[.coder] ?? .empty(role: .coder)
+        let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
         let configuredModelId = AXRoleExecutionSnapshots.configuredModelId(
             for: .coder,
             projectConfig: config,
@@ -90,31 +171,100 @@ struct ModernChatView: View {
             snapshot: coderSnapshot
         )
         let statusColor = ExecutionRoutePresentation.statusColor(snapshot: coderSnapshot)
+        let latestSessionSummary = AXSessionSummaryCapsulePresentation.load(for: ctx)
+        let resumeReminder = appModel.resumeReminderPresentation(projectId: projectId)
 
-        return HStack(spacing: 8) {
-            Image(systemName: "hammer.circle.fill")
-                .foregroundColor(.blue)
-                .font(.system(size: 14))
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "hammer.circle.fill")
+                    .foregroundColor(.blue)
+                    .font(.system(size: 14))
 
-            Text(ctx.projectName())
-                .font(.system(size: 13, weight: .medium))
-                .lineLimit(1)
+                Text(ctx.displayName())
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
 
-            Spacer(minLength: 0)
+                Spacer(minLength: 0)
 
-            Text("Coder (\(ExecutionRoutePresentation.activeModelLabel(configuredModelId: configuredModelId, snapshot: coderSnapshot)))")
-                .font(.system(size: 13, weight: .medium))
-                .lineLimit(1)
-                .help(tooltip)
+                Text("Coder (\(ExecutionRoutePresentation.activeModelLabel(configuredModelId: configuredModelId, snapshot: coderSnapshot)))")
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+                    .help(tooltip)
 
-            Text(ExecutionRoutePresentation.statusText(snapshot: coderSnapshot))
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(statusColor)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(statusColor.opacity(0.12))
-                .clipShape(Capsule())
-                .help(tooltip)
+                Text(ExecutionRoutePresentation.statusText(snapshot: coderSnapshot))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(statusColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(statusColor.opacity(0.12))
+                    .clipShape(Capsule())
+                    .help(tooltip)
+            }
+
+            HStack(spacing: 8) {
+                Button {
+                    session.presentProjectResumeBrief(ctx: ctx)
+                } label: {
+                    Label("接上次进度", systemImage: "arrow.clockwise.circle")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(session.isSending)
+                .help("基于 canonical memory、session summary 与最近执行记录，本地生成项目接续摘要；不会写入主上下文。")
+
+                if let latestSessionSummary {
+                    Text(latestSessionSummary.badgeText)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Color.secondary.opacity(0.08))
+                        .clipShape(Capsule())
+                        .help(latestSessionSummary.helpText)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            if let resumeReminder {
+                HStack(alignment: .center, spacing: 10) {
+                    Image(systemName: "clock.arrow.trianglehead.counterclockwise.rotate.90")
+                        .foregroundColor(.orange)
+                        .font(.system(size: 13, weight: .semibold))
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("检测到最近交接摘要")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text("\(resumeReminder.reasonLabel) · \(resumeReminder.relativeText)；如果你要从上次边界继续，可以直接恢复。")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    Button("稍后") {
+                        appModel.dismissResumeReminder(projectId: projectId)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+
+                    Button("接上次进度") {
+                        appModel.presentResumeBrief(projectId: projectId)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(session.isSending)
+                }
+                .padding(12)
+                .background(Color.orange.opacity(0.08))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.orange.opacity(0.22), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)

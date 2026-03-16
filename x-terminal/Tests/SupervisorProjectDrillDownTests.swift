@@ -26,6 +26,18 @@ struct SupervisorProjectDrillDownTests {
 
         let ctx = AXProjectContext(root: projectRoot)
         try ctx.ensureDirs()
+        var config = AXProjectConfig.default(forProjectRoot: projectRoot)
+        config = config.settingProjectGovernance(
+            executionTier: .a3DeliverAuto,
+            supervisorInterventionTier: .s3StrategicCoach,
+            reviewPolicyMode: .hybrid,
+            progressHeartbeatSeconds: 600,
+            reviewPulseSeconds: 1200,
+            brainstormReviewSeconds: 2400,
+            eventDrivenReviewEnabled: true,
+            eventReviewTriggers: [.blockerDetected, .planDrift, .preDoneSummary]
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
         AXRecentContextStore.appendUserMessage(ctx: ctx, text: "Need the latest status", createdAt: now - 3)
         AXRecentContextStore.appendAssistantMessage(ctx: ctx, text: "Working on the local contract", createdAt: now - 2)
         try SupervisorProjectSpecCapsuleStore.upsert(
@@ -70,6 +82,63 @@ struct SupervisorProjectDrillDownTests {
                 strength: .medium,
                 statement: "Prefer concise structured summaries over prose-heavy context dumps.",
                 createdAtMs: Int64(now * 1000) - 1500
+            ),
+            for: ctx
+        )
+        try SupervisorReviewNoteStore.upsert(
+            SupervisorReviewNoteBuilder.build(
+                reviewId: "review-1",
+                projectId: project.projectId,
+                trigger: .manualRequest,
+                reviewLevel: .r2Strategic,
+                verdict: .betterPathFound,
+                targetRole: .projectChat,
+                deliveryMode: .replanRequest,
+                ackRequired: true,
+                effectiveSupervisorTier: .s3StrategicCoach,
+                effectiveWorkOrderDepth: .executionReady,
+                projectAIStrengthBand: .strong,
+                projectAIStrengthConfidence: 0.92,
+                projectAIStrengthAuditRef: "audit-strength-1",
+                workOrderRef: "wo-1",
+                summary: "Use the scoped drill-down as the shared audit surface instead of free-form recap.",
+                recommendedActions: [
+                    "Expose the latest review and pending guidance in the supervisor drill-down."
+                ],
+                anchorGoal: "Ship a scope-safe supervisor-facing audit view",
+                anchorDoneDefinition: "Supervisor can inspect governance, workflow, and recent context without opening raw chat logs.",
+                anchorConstraints: ["Keep the panel compact and scope-safe."],
+                currentState: "Project governance is visible only from the project-side activity view.",
+                nextStep: "Promote the same summary into the supervisor drill-down.",
+                blocker: "",
+                createdAtMs: Int64(now * 1000) - 1_400,
+                auditRef: "audit-review-1"
+            ),
+            for: ctx
+        )
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-1",
+                reviewId: "review-1",
+                projectId: project.projectId,
+                targetRole: .supervisor,
+                deliveryMode: .priorityInsert,
+                interventionMode: .replanNextSafePoint,
+                safePointPolicy: .nextStepBoundary,
+                guidanceText: "Surface the latest governance metadata in the drill-down before opening broader recent context.",
+                ackStatus: .pending,
+                ackRequired: true,
+                effectiveSupervisorTier: .s3StrategicCoach,
+                effectiveWorkOrderDepth: .executionReady,
+                workOrderRef: "wo-1",
+                ackNote: "",
+                injectedAtMs: Int64(now * 1000) - 1_200,
+                ackUpdatedAtMs: Int64(now * 1000) - 1_200,
+                expiresAtMs: Int64(now * 1000) + 30 * 24 * 3_600_000,
+                retryAtMs: 0,
+                retryCount: 0,
+                maxRetryCount: 0,
+                auditRef: "audit-guidance-1"
             ),
             for: ctx
         )
@@ -158,12 +227,19 @@ struct SupervisorProjectDrillDownTests {
         #expect(snapshot.capsule?.projectId == project.projectId)
         #expect(snapshot.specCapsule?.goal == "Ship structured drill-down without leaking full chat history")
         #expect(snapshot.decisionRails?.decisionTrack.first?.category == .techStack)
+        #expect(snapshot.latestReview?.reviewId == "review-1")
+        #expect(snapshot.latestGuidance?.injectionId == "guidance-1")
+        #expect(snapshot.pendingAckGuidance?.injectionId == "guidance-1")
+        #expect(snapshot.followUpRhythmSummary?.contains("blocker cooldown") == true)
+        #expect(snapshot.followUpRhythmSummary?.contains("Execution Ready") == true)
         #expect(snapshot.workflow?.activeJob?.jobId == "job-1")
         #expect(snapshot.recentMessages.count == 2)
         #expect(snapshot.refs.contains(where: { $0.contains("xterminal.project.capsule.summary_json") }))
         #expect(snapshot.refs.contains(where: { $0.contains("xterminal.project.action.summary_json") }))
         #expect(snapshot.refs.contains(AXRecentContextStore.jsonURL(for: ctx).path))
         #expect(snapshot.refs.contains(ctx.xterminalDir.appendingPathComponent("supervisor_project_spec_capsule.json").path))
+        #expect(snapshot.refs.contains(ctx.supervisorReviewNotesURL.path))
+        #expect(snapshot.refs.contains(ctx.supervisorGuidanceInjectionsURL.path))
         #expect(snapshot.refs.contains(ctx.supervisorJobsURL.path))
         #expect(snapshot.refs.contains("/tmp/decision-evidence.json"))
         #expect(snapshot.refs.contains("/tmp/workflow-evidence.json"))

@@ -254,6 +254,125 @@ struct SupervisorIncidentExportTests {
         #expect(readiness.issues.contains("\(LaneBlockedReason.grantPending.rawValue):takeover_latency_exceeded"))
     }
 
+    @MainActor
+    @Test
+    func xtReadyIncidentExportSnapshotIncludesMemoryAssemblyRisk() {
+        let manager = SupervisorManager.makeForTesting()
+        manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+        manager.setSupervisorMemoryAssemblySnapshotForTesting(
+            makeMemorySnapshot(
+                profileFloor: XTMemoryServingProfile.m3DeepDive.rawValue,
+                resolvedProfile: XTMemoryServingProfile.m2PlanReview.rawValue
+            )
+        )
+
+        let snapshot = manager.xtReadyIncidentExportSnapshot(limit: 20)
+
+        #expect(snapshot.memoryAssemblyReady == false)
+        #expect(snapshot.memoryAssemblyIssues.contains("memory_review_floor_not_met"))
+        #expect(snapshot.strictE2EReady == false)
+        #expect(snapshot.strictE2EIssues.contains("memory:memory_review_floor_not_met"))
+    }
+
+    @MainActor
+    @Test
+    func exportReportPersistsMemoryAssemblySummary() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+        manager.setSupervisorMemoryAssemblySnapshotForTesting(
+            makeMemorySnapshot(
+                truncatedLayers: ["l1_canonical"]
+            )
+        )
+
+        let outputURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("xt_ready_incident_export_\(UUID().uuidString).json")
+        let result = manager.exportXTReadyIncidentEventsReport(outputURL: outputURL, limit: 20)
+        #expect(result.ok)
+
+        let data = try Data(contentsOf: outputURL)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let summary = json?["summary"] as? [String: Any]
+
+        #expect((summary?["memory_assembly_ready"] as? Bool) == false)
+        #expect((summary?["memory_assembly_issue_count"] as? Int) == 1)
+        #expect((summary?["memory_assembly_requested_profile"] as? String) == XTMemoryServingProfile.m3DeepDive.rawValue)
+        #expect((summary?["memory_assembly_resolved_profile"] as? String) == XTMemoryServingProfile.m3DeepDive.rawValue)
+        #expect((summary?["memory_assembly_truncated_layer_count"] as? Int) == 1)
+    }
+
+    @MainActor
+    private func makeReadyIncidentLedger() -> [SupervisorLaneIncident] {
+        [
+            makeIncident(
+                code: LaneBlockedReason.grantPending.rawValue,
+                laneID: "lane-1",
+                status: .handled,
+                detectedAt: 100,
+                handledAt: 900
+            ),
+            makeIncident(
+                code: LaneBlockedReason.awaitingInstruction.rawValue,
+                laneID: "lane-2",
+                status: .handled,
+                detectedAt: 200,
+                handledAt: 800
+            ),
+            makeIncident(
+                code: LaneBlockedReason.runtimeError.rawValue,
+                laneID: "lane-3",
+                status: .handled,
+                detectedAt: 300,
+                handledAt: 1_300
+            ),
+        ]
+    }
+
+    private func makeMemorySnapshot(
+        reviewLevelHint: SupervisorReviewLevel = .r2Strategic,
+        requestedProfile: String = XTMemoryServingProfile.m3DeepDive.rawValue,
+        profileFloor: String = XTMemoryServingProfile.m3DeepDive.rawValue,
+        resolvedProfile: String = XTMemoryServingProfile.m3DeepDive.rawValue,
+        truncatedLayers: [String] = [],
+        omittedSections: [String] = []
+    ) -> SupervisorMemoryAssemblySnapshot {
+        SupervisorMemoryAssemblySnapshot(
+            source: "unit_test",
+            resolutionSource: "unit_test",
+            updatedAt: 1_773_000_000,
+            reviewLevelHint: reviewLevelHint.rawValue,
+            requestedProfile: requestedProfile,
+            profileFloor: profileFloor,
+            resolvedProfile: resolvedProfile,
+            attemptedProfiles: [requestedProfile, resolvedProfile],
+            progressiveUpgradeCount: 0,
+            focusedProjectId: "project-alpha",
+            selectedSections: [
+                "portfolio_brief",
+                "focused_project_anchor_pack",
+                "longterm_outline",
+                "delta_feed",
+                "conflict_set",
+                "context_refs",
+                "evidence_pack",
+            ],
+            omittedSections: omittedSections,
+            contextRefsSelected: 2,
+            contextRefsOmitted: 0,
+            evidenceItemsSelected: 2,
+            evidenceItemsOmitted: 0,
+            budgetTotalTokens: 1_800,
+            usedTotalTokens: 1_050,
+            truncatedLayers: truncatedLayers,
+            freshness: "fresh_local_ipc",
+            cacheHit: false,
+            denyCode: nil,
+            downgradeCode: nil,
+            reasonCode: nil,
+            compressionPolicy: "progressive_disclosure"
+        )
+    }
+
     private func makeIncident(
         code: String,
         laneID: String,

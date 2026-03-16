@@ -178,6 +178,95 @@ struct SupervisorCommandGuardTests {
     }
 
     @Test
+    func stepLockedRescueRejectsSingleStepPlan() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-step-locked-rescue-single-step")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let ctx = AXProjectContext(root: root)
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingProjectGovernance(
+            executionTier: .a3DeliverAuto,
+            supervisorInterventionTier: .s4TightSupervision
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let createRendered = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"亮亮","goal":"救火修复 browser runtime","priority":"high"}[/CREATE_JOB]"#,
+            userMessage: "给亮亮建一个任务：救火修复 browser runtime"
+        )
+        #expect(createRendered.contains("✅ 已为项目 亮亮 创建任务：救火修复 browser runtime"))
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        let rendered = manager.processSupervisorResponseForTesting(
+            #"""
+            我会先写入一版 step_locked_rescue 救火计划。
+            [UPSERT_PLAN]{"project_ref":"亮亮","job_id":"\#(job.jobId)","plan_id":"plan-rescue-single-step-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"直接修掉 browser runtime","kind":"call_skill","status":"pending","skill_id":"agent-browser"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划，给亮亮补一版救火计划"
+        )
+
+        #expect(rendered.contains("step_locked_rescue"))
+        #expect(rendered.contains("计划至少需要 2 个步骤"))
+        #expect(SupervisorProjectPlanStore.load(for: ctx).plans.isEmpty)
+    }
+
+    @Test
+    func stepLockedRescueAutoChainsDependenciesAndBackfillsDetails() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-step-locked-rescue-normalize")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let ctx = AXProjectContext(root: root)
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingProjectGovernance(
+            executionTier: .a3DeliverAuto,
+            supervisorInterventionTier: .s4TightSupervision
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let createRendered = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"亮亮","goal":"逐步修复 browser runtime","priority":"high"}[/CREATE_JOB]"#,
+            userMessage: "给亮亮建一个任务：逐步修复 browser runtime"
+        )
+        #expect(createRendered.contains("✅ 已为项目 亮亮 创建任务：逐步修复 browser runtime"))
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        let rendered = manager.processSupervisorResponseForTesting(
+            #"""
+            我会先写入一版逐步 rescue 计划。
+            [UPSERT_PLAN]{"project_ref":"亮亮","job_id":"\#(job.jobId)","plan_id":"plan-rescue-ordered-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"采集当前 browser runtime 失败证据","kind":"call_skill","status":"running","skill_id":"agent-browser"},{"step_id":"step-002","title":"根据失败证据生成修复动作","kind":"write_memory","status":"pending"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划，给亮亮补一版逐步救火计划"
+        )
+
+        #expect(rendered.contains("✅ 已为项目 亮亮 写入计划：plan-rescue-ordered-v1"))
+        #expect(rendered.contains("depth=step_locked_rescue"))
+        #expect(rendered.contains("auto_normalized="))
+
+        let plan = try #require(SupervisorProjectPlanStore.load(for: ctx).plans.first)
+        #expect(plan.steps.count == 2)
+        #expect(plan.steps[0].detail == "采集当前 browser runtime 失败证据")
+        #expect(plan.steps[1].detail == "根据失败证据生成修复动作")
+        #expect(plan.steps[1].dependsOn == ["step-001"])
+
+        let rawEntries = try readRawLogEntries(at: ctx.rawLogURL)
+        let rawPlan = try #require(rawEntries.last(where: { ($0["type"] as? String) == "supervisor_plan" }))
+        #expect(rawPlan["effective_work_order_depth"] as? String == "step_locked_rescue")
+        #expect(rawPlan["effective_supervisor_tier"] as? String == "s4_tight_supervision")
+    }
+
+    @Test
     func localMemoryFocusedProjectBriefPrefersExplicitlyMentionedProject() async throws {
         let manager = SupervisorManager.makeForTesting()
         let selectedRoot = try makeProjectRoot(named: "supervisor-memory-selected-project")
@@ -215,9 +304,12 @@ struct SupervisorCommandGuardTests {
             "审查亮亮项目的上下文记忆，给出最具体的执行方案"
         )
 
-        #expect(localMemory.contains("[focused_project_execution_brief]"))
+        #expect(localMemory.contains("[PORTFOLIO_BRIEF]"))
+        #expect(localMemory.contains("[FOCUSED_PROJECT_ANCHOR_PACK]"))
+        #expect(localMemory.contains("[LONGTERM_OUTLINE]"))
+        #expect(localMemory.contains("[DELTA_FEED]"))
         #expect(localMemory.contains("focus_source: explicit_user_mention"))
-        #expect(localMemory.contains("project: 亮亮 (\(focusedProject.projectId))"))
+        #expect(localMemory.contains("project: 亮亮 ("))
         #expect(localMemory.contains("current_state: focused-project-state"))
         #expect(localMemory.contains("next_step: focused-project-next"))
         #expect(localMemory.contains("blocker: focused-project-blocker"))
@@ -268,7 +360,8 @@ struct SupervisorCommandGuardTests {
             "审查亮亮项目的上下文记忆，给出最具体的执行方案"
         )
 
-        #expect(localMemory.contains("[focused_project_execution_brief]"))
+        #expect(localMemory.contains("[FOCUSED_PROJECT_ANCHOR_PACK]"))
+        #expect(localMemory.contains("[LONGTERM_OUTLINE]"))
         #expect(localMemory.contains("active_job_goal: 梳理项目结构并给出重构建议"))
         #expect(localMemory.contains("active_plan_id: plan-liang-structure-v1"))
         #expect(localMemory.contains("next_pending_steps:"))
@@ -328,12 +421,16 @@ struct SupervisorCommandGuardTests {
             "审查亮亮项目的上下文记忆，给出最具体的执行方案"
         )
 
-        #expect(localMemory.contains("[focused_project_execution_brief]"))
+        #expect(localMemory.contains("[FOCUSED_PROJECT_ANCHOR_PACK]"))
+        #expect(localMemory.contains("[LONGTERM_OUTLINE]"))
         #expect(localMemory.contains("done_definition: review 必须能防跑偏、看质量，并在需要时提出更好的路径"))
         #expect(localMemory.contains("constraints:"))
         #expect(localMemory.contains("non_goals: 不要把 supervisor 做成僵硬 checklist agent"))
         #expect(localMemory.contains("approved_decisions:"))
         #expect(localMemory.contains("scope_freeze=Supervisor review 必须保留自由度"))
+        #expect(localMemory.contains("longterm_outline:"))
+        #expect(localMemory.contains("strategic_milestones:"))
+        #expect(localMemory.contains("approved_tech_stack: SwiftUI | Hub-governed memory"))
         #expect(localMemory.contains("governance:"))
         #expect(localMemory.contains("latest_review_note:"))
         #expect(localMemory.contains("latest_review_note=(none)"))
@@ -343,6 +440,78 @@ struct SupervisorCommandGuardTests {
         #expect(localMemory.contains("pending_ack_guidance=(none)"))
         #expect(localMemory.contains("constraints=non_goals=不要把 supervisor 做成僵硬 checklist agent"))
         #expect(localMemory.contains("approved_decisions=scope_freeze=Supervisor review 必须保留自由度"))
+        #expect(localMemory.contains("longterm_outline=project: 亮亮 ("))
+    }
+
+    @Test
+    func localMemoryFocusedProjectBriefIncludesAdaptiveGovernanceRuntimeLines() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-memory-adaptive-governance")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let ctx = AXProjectContext(root: root)
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingProjectGovernance(
+            executionTier: .a3DeliverAuto,
+            supervisorInterventionTier: .s2PeriodicReview
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let localMemory = await manager.buildSupervisorLocalMemoryV1ForTesting(
+            "审查亮亮项目的上下文记忆，给出最具体的执行方案"
+        )
+
+        #expect(localMemory.contains("runtime_surface: configured=manual effective=manual"))
+        #expect(localMemory.contains("execution_tier: configured=a3_deliver_auto effective=a3_deliver_auto"))
+        #expect(localMemory.contains("supervisor_tier: configured=s2_periodic_review baseline_recommended=s3_strategic_coach recommended=s3_strategic_coach effective=s3_strategic_coach"))
+        #expect(localMemory.contains("work_order_depth: recommended=execution_ready effective=execution_ready adaptation_mode=raise_only"))
+        #expect(localMemory.contains("project_ai_strength: band=unknown"))
+        #expect(localMemory.contains("project_ai_strength_reasons: recent project evidence is still sparse"))
+        #expect(localMemory.contains("governance=exec=a3_deliver_auto supervisor=s2_periodic_review->s3_strategic_coach depth=execution_ready strength=unknown"))
+        #expect(!localMemory.contains("autonomy: configured="))
+    }
+
+    @Test
+    func localMemoryNormalizesLegacyAutonomyConstraintNotesWithoutFakeDelta() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-memory-legacy-constraint-normalization")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let ctx = AXProjectContext(root: root)
+        manager.captureSupervisorReviewNoteForTesting(
+            userMessage: "审查亮亮项目当前状态",
+            response: """
+            当前路径正常，继续按现有约束推进。
+            1. 保持当前执行边界。
+            2. 继续沿着已确认步骤推进。
+            """,
+            triggerSource: "user_turn"
+        )
+
+        let latest = try #require(SupervisorReviewNoteStore.latest(for: ctx))
+        var legacyCompatNote = latest
+        legacyCompatNote.anchorConstraints = latest.anchorConstraints.map { item in
+            item.replacingOccurrences(of: "surface=", with: "autonomy=")
+        }
+        try SupervisorReviewNoteStore.upsert(legacyCompatNote, for: ctx)
+
+        let localMemory = await manager.buildSupervisorLocalMemoryV1ForTesting("继续执行当前项目")
+
+        #expect(localMemory.contains("constraints=surface=manual->manual | override=none"))
+        #expect(!localMemory.contains("constraints/guardrails changed since last review"))
+        #expect(!localMemory.contains("before=autonomy=manual->manual"))
     }
 
     @Test
@@ -413,6 +582,9 @@ struct SupervisorCommandGuardTests {
         #expect(note.anchorConstraints.contains(where: { $0.contains("non_goal=不要把 review 做成僵硬 checklist") }))
         #expect(note.recommendedActions.count >= 3)
         #expect(note.summary.contains("当前路径基本成立"))
+        #expect(note.memoryCursor?.contains("review:") == true)
+        #expect(note.projectStateHash?.contains("sha256:") == true)
+        #expect(note.portfolioStateHash?.contains("sha256:") == true)
 
         let guidanceSnapshot = SupervisorGuidanceInjectionStore.load(for: ctx)
         let guidance = try #require(guidanceSnapshot.items.first)
@@ -428,6 +600,276 @@ struct SupervisorCommandGuardTests {
     }
 
     @Test
+    func captureSupervisorReviewNoteCarriesAdaptiveGovernanceAndWorkOrderRef() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-review-note-adaptive-governance")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let ctx = AXProjectContext(root: root)
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingProjectGovernance(
+            executionTier: .a3DeliverAuto,
+            supervisorInterventionTier: .s2PeriodicReview
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"亮亮","goal":"补齐 review follow-up","priority":"high"}[/CREATE_JOB]"#,
+            userMessage: "给亮亮建一个任务：补齐 review follow-up"
+        )
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            我会先写入一版 execution-ready 计划。
+            [UPSERT_PLAN]{"project_ref":"亮亮","job_id":"\#(job.jobId)","plan_id":"plan-review-follow-up-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"读取当前 review anchor","kind":"write_memory","status":"running"},{"step_id":"step-002","title":"生成后续执行方案","kind":"write_memory","status":"pending"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划，给亮亮补一版 execution-ready 计划"
+        )
+
+        manager.captureSupervisorReviewNoteForTesting(
+            userMessage: "审查亮亮项目的上下文记忆，给出更稳的执行方案",
+            response: """
+            当前方向可以继续，但需要更明确的执行工单。
+            1. 先固定 review anchor。
+            2. 再按现有计划逐步补强执行细节。
+            """,
+            triggerSource: "user_turn"
+        )
+
+        let note = try #require(SupervisorReviewNoteStore.load(for: ctx).notes.first)
+        #expect(note.effectiveSupervisorTier == .s3StrategicCoach)
+        #expect(note.effectiveWorkOrderDepth == .executionReady)
+        #expect(note.projectAIStrengthBand == .unknown)
+        #expect(note.workOrderRef == "plan:plan-review-follow-up-v1")
+
+        let guidance = try #require(SupervisorGuidanceInjectionStore.load(for: ctx).items.first)
+        #expect(guidance.effectiveSupervisorTier == .s3StrategicCoach)
+        #expect(guidance.effectiveWorkOrderDepth == .executionReady)
+        #expect(guidance.workOrderRef == "plan:plan-review-follow-up-v1")
+        #expect(guidance.guidanceText.contains("effective_work_order_depth=execution_ready"))
+        #expect(guidance.guidanceText.contains("work_order_ref=plan:plan-review-follow-up-v1"))
+    }
+
+    @Test
+    func captureSupervisorReviewNoteExecutionReadyPrependsStructuredWorkOrderActions() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-review-note-execution-ready-actions")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let ctx = AXProjectContext(root: root)
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingProjectGovernance(
+            executionTier: .a3DeliverAuto,
+            supervisorInterventionTier: .s2PeriodicReview
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"亮亮","goal":"补齐 review work order","priority":"high"}[/CREATE_JOB]"#,
+            userMessage: "给亮亮建一个任务：补齐 review work order"
+        )
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            我会先写入一版 execution-ready 计划。
+            [UPSERT_PLAN]{"project_ref":"亮亮","job_id":"\#(job.jobId)","plan_id":"plan-review-work-order-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"固定 review anchor","kind":"write_memory","status":"running"},{"step_id":"step-002","title":"生成具体 follow-up 工单","kind":"write_memory","status":"pending"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划，给亮亮补一版 execution-ready 计划"
+        )
+
+        manager.captureSupervisorReviewNoteForTesting(
+            userMessage: "审查亮亮项目的上下文记忆，给出更稳的执行方案",
+            response: """
+            当前方向可以继续。
+            1. 继续推进当前路径。
+            2. 补一下后续计划。
+            """,
+            triggerSource: "user_turn"
+        )
+
+        let note = try #require(SupervisorReviewNoteStore.load(for: ctx).notes.first)
+        #expect(note.effectiveWorkOrderDepth == .executionReady)
+        #expect(note.recommendedActions.first?.contains("execution-ready 工单") == true)
+        #expect(note.recommendedActions.first?.contains("step-002") == true)
+        #expect(note.recommendedActions.contains(where: { $0.contains("plan-review-work-order-v1") }))
+
+        let guidance = try #require(SupervisorGuidanceInjectionStore.load(for: ctx).items.first)
+        #expect(guidance.guidanceText.contains("actions="))
+        #expect(guidance.guidanceText.contains("execution-ready 工单"))
+    }
+
+    @Test
+    func captureSupervisorReviewNoteStepLockedRescuePrependsSingleUnblockDiscipline() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-review-note-step-locked-actions")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let ctx = AXProjectContext(root: root)
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingProjectGovernance(
+            executionTier: .a3DeliverAuto,
+            supervisorInterventionTier: .s4TightSupervision
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"亮亮","goal":"救火修复 browser runtime","priority":"high"}[/CREATE_JOB]"#,
+            userMessage: "给亮亮建一个任务：救火修复 browser runtime"
+        )
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            我会先写入一版 rescue 计划。
+            [UPSERT_PLAN]{"project_ref":"亮亮","job_id":"\#(job.jobId)","plan_id":"plan-browser-rescue-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"回收 browser runtime 失败证据","kind":"call_skill","status":"blocked","skill_id":"agent-browser"},{"step_id":"step-002","title":"按证据生成修复动作","kind":"write_memory","status":"pending"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划，给亮亮补一版救火计划"
+        )
+
+        manager.captureSupervisorReviewNoteForTesting(
+            userMessage: "审查亮亮项目的上下文记忆，给出救火方案",
+            response: """
+            当前方向可以继续。
+            1. 继续推进当前路径。
+            2. 补一下后续计划。
+            """,
+            triggerSource: "user_turn"
+        )
+
+        let note = try #require(SupervisorReviewNoteStore.load(for: ctx).notes.first)
+        #expect(note.effectiveWorkOrderDepth == .stepLockedRescue)
+        #expect(note.recommendedActions.first?.contains("step_locked_rescue") == true)
+        #expect(note.recommendedActions.first?.contains("step-001") == true)
+        #expect(note.recommendedActions.contains(where: { $0.contains("depends_on") || $0.contains("验证/回滚检查点") }))
+
+        let guidance = try #require(SupervisorGuidanceInjectionStore.load(for: ctx).items.first)
+        #expect(guidance.guidanceText.contains("step_locked_rescue"))
+        #expect(guidance.guidanceText.contains("只推进"))
+    }
+
+    @Test
+    func captureSupervisorReviewNoteStrongProjectKeepsAnchoredExecutionActionsFlexible() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-review-note-strong-flexible-actions")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let ctx = AXProjectContext(root: root)
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingProjectGovernance(
+            executionTier: .a3DeliverAuto,
+            supervisorInterventionTier: .s2PeriodicReview
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
+        try seedStrongProjectAIStrengthEvidence(ctx: ctx, projectID: project.projectId)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"亮亮","goal":"补齐 review work order","priority":"high"}[/CREATE_JOB]"#,
+            userMessage: "给亮亮建一个任务：补齐 review work order"
+        )
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            我会先写入一版 execution-ready 计划。
+            [UPSERT_PLAN]{"project_ref":"亮亮","job_id":"\#(job.jobId)","plan_id":"plan-review-work-order-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"固定 review anchor","kind":"write_memory","status":"running"},{"step_id":"step-002","title":"生成具体 follow-up 工单","kind":"write_memory","status":"pending"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划，给亮亮补一版 execution-ready 计划"
+        )
+
+        manager.captureSupervisorReviewNoteForTesting(
+            userMessage: "审查亮亮项目的上下文记忆，给出更稳的执行方案",
+            response: """
+            当前方向可以继续。
+            1. 先固定 step-001 review anchor，并把 step-002 的输入输出约束补齐。
+            2. 再推进 step-002 生成具体 follow-up 工单，回执里带上 plan-review-work-order-v1 的更新摘要。
+            """,
+            triggerSource: "user_turn"
+        )
+
+        let note = try #require(SupervisorReviewNoteStore.load(for: ctx).notes.first)
+        #expect(note.projectAIStrengthBand == .strong)
+        #expect(note.effectiveWorkOrderDepth == .executionReady)
+        #expect(note.recommendedActions.first?.contains("step-001") == true)
+        #expect(note.recommendedActions.contains(where: { $0.contains("step-002") }))
+        #expect(note.recommendedActions.contains(where: { $0.contains("plan-review-work-order-v1") }))
+        #expect(!note.recommendedActions.contains(where: { $0.contains("execution-ready 工单") }))
+
+        let guidance = try #require(SupervisorGuidanceInjectionStore.load(for: ctx).items.first)
+        #expect(guidance.guidanceText.contains("step-001"))
+        #expect(guidance.guidanceText.contains("plan-review-work-order-v1"))
+        #expect(!guidance.guidanceText.contains("execution-ready 工单"))
+    }
+
+    @Test
+    func captureSupervisorReviewNoteFlagsUnderfedStrategicMemory() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-review-note-memory-underfed")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+        manager.setSupervisorMemoryAssemblySnapshotForTesting(
+            makeSupervisorMemoryAssemblySnapshot(
+                projectID: project.projectId,
+                profileFloor: XTMemoryServingProfile.m3DeepDive.rawValue,
+                resolvedProfile: XTMemoryServingProfile.m2PlanReview.rawValue,
+                contextRefsSelected: 0,
+                evidenceItemsSelected: 0,
+                omittedSections: [
+                    "focused_project_anchor_pack",
+                    "longterm_outline",
+                    "evidence_pack",
+                ],
+                truncatedLayers: ["l1_canonical"]
+            )
+        )
+
+        manager.captureSupervisorReviewNoteForTesting(
+            userMessage: "审查亮亮项目的上下文记忆，直接做战略纠偏",
+            response: """
+            当前路径可能需要调整。
+            1. 先重新审查最近的实现方向。
+            2. 再决定是否重写执行计划。
+            """,
+            triggerSource: "user_turn"
+        )
+
+        let ctx = AXProjectContext(root: root)
+        let snapshot = SupervisorReviewNoteStore.load(for: ctx)
+        let note = try #require(snapshot.notes.first)
+        #expect(note.summary.contains("当前 strategic memory 供给不足"))
+        #expect(note.summary.contains("不适合直接做战略纠偏"))
+        #expect(note.recommendedActions.contains(where: { $0.contains("先补齐长期目标和完成标准、关键决策原因、当前卡点与已试动作、以及可作为依据的日志或结果") }))
+        #expect(note.recommendedActions.contains(where: { $0.contains("先把当前项目的深度记忆拉到至少 m3") }))
+        #expect(note.recommendedActions.contains(where: { $0.contains("先补你认可的日志、回执、实验结果这些依据") }))
+    }
+
+    @Test
     func localMemoryFocusedProjectBriefIncludesLatestReviewNoteDigest() async throws {
         let manager = SupervisorManager.makeForTesting()
         let root = try makeProjectRoot(named: "supervisor-memory-latest-review-note")
@@ -440,6 +882,12 @@ struct SupervisorCommandGuardTests {
         manager.setAppModel(appModel)
 
         let ctx = AXProjectContext(root: root)
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingProjectGovernance(
+            executionTier: .a3DeliverAuto,
+            supervisorInterventionTier: .s2PeriodicReview
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
         let spec = SupervisorProjectSpecCapsuleBuilder.build(
             projectId: project.projectId,
             goal: "让 supervisor review note 进入 focused brief",
@@ -471,17 +919,161 @@ struct SupervisorCommandGuardTests {
         )
 
         #expect(localMemory.contains("latest_review_note:"))
+        #expect(localMemory.contains("memory_cursor: review:"))
+        #expect(localMemory.contains("project_state_hash: sha256:"))
+        #expect(localMemory.contains("portfolio_state_hash: sha256:"))
         #expect(localMemory.contains("trigger: manual_request"))
         #expect(localMemory.contains("verdict: better_path_found"))
         #expect(localMemory.contains("delivery: coder/replan_request ack_required=true"))
+        #expect(localMemory.contains("effective_work_order_depth: execution_ready"))
+        #expect(localMemory.contains("work_order_ref:"))
         #expect(localMemory.contains("recommended_actions: 先把 latest review note 放进 focused brief。 | 再让 coder 默认读取最新 verdict 和 recommended actions。"))
-        #expect(localMemory.contains("latest_review_note=verdict=better_path_found level=r2_strategic delivery=replan_request ack_required=true"))
+        #expect(localMemory.contains("latest_review_note=cursor=review:"))
+        #expect(localMemory.contains("verdict=better_path_found level=r2_strategic delivery=replan_request ack_required=true"))
+        #expect(localMemory.contains("depth=execution_ready"))
         #expect(localMemory.contains("latest_guidance_injection:"))
         #expect(localMemory.contains("intervention_mode: replan_next_safe_point"))
         #expect(localMemory.contains("safe_point_policy: next_step_boundary"))
         #expect(localMemory.contains("ack_status: pending"))
+        #expect(localMemory.contains("effective_work_order_depth: execution_ready"))
         #expect(localMemory.contains("pending_ack_guidance:"))
-        #expect(localMemory.contains("pending_ack_guidance=ack_status=pending ack_required=true ack_note=(none) delivery=replan_request intervention=replan_next_safe_point safe_point=next_step_boundary"))
+        #expect(localMemory.contains("pending_ack_guidance=ack_status=pending ack_required=true ack_note=(none) delivery=replan_request intervention=replan_next_safe_point safe_point=next_step_boundary depth=execution_ready"))
+    }
+
+    @Test
+    func localMemoryDeltaFeedIncludesCursorHashesAndStructuredItems() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-memory-delta-feed-structured")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var project = makeProjectEntry(root: root, displayName: "亮亮")
+        project.currentStateSummary = "旧状态：先收口 review anchor"
+        project.nextStepSummary = "旧步骤：冻结目标和约束"
+        project.blockerSummary = ""
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let ctx = AXProjectContext(root: root)
+        let spec = SupervisorProjectSpecCapsuleBuilder.build(
+            projectId: project.projectId,
+            goal: "让 delta feed 能准确说明上次 review 后的变化",
+            mvpDefinition: "delta feed 要给出 cursor/hash/materialized delta items",
+            nonGoals: ["不要只给散乱 recent events"],
+            approvedTechStack: ["SwiftUI", "Hub memory"],
+            milestoneMap: [
+                SupervisorProjectSpecMilestone(
+                    milestoneId: "m1",
+                    title: "先做结构化 delta feed",
+                    status: .active
+                )
+            ]
+        )
+        try SupervisorProjectSpecCapsuleStore.save(spec, for: ctx)
+
+        manager.captureSupervisorReviewNoteForTesting(
+            userMessage: "审查亮亮项目的上下文记忆，并给出执行方案",
+            response: """
+            当前路径成立。
+            1. 先冻结 review anchor。
+            2. 然后只在发生 material changes 时重播背景。
+            """,
+            triggerSource: "user_turn"
+        )
+
+        project.currentStateSummary = "新状态：delta feed 已切到 cursor/hash"
+        project.nextStepSummary = "新步骤：补 delta_items 和 guidance delta"
+        project.blockerSummary = "需要验证 no_material_change 分支"
+        appModel.registry = registry(with: [project])
+
+        let localMemory = await manager.buildSupervisorLocalMemoryV1ForTesting(
+            "继续审查亮亮项目的上下文记忆，并判断上次 review 之后发生了什么变化"
+        )
+
+        #expect(localMemory.contains("[DELTA_FEED]"))
+        #expect(localMemory.contains("cursor_from: review:"))
+        #expect(localMemory.contains("cursor_to: memory_build:"))
+        #expect(localMemory.contains("project_state_hash_before: sha256:"))
+        #expect(localMemory.contains("project_state_hash_after: sha256:"))
+        #expect(localMemory.contains("portfolio_state_hash_before: sha256:"))
+        #expect(localMemory.contains("portfolio_state_hash_after: sha256:"))
+        #expect(localMemory.contains("delta_items:"))
+        #expect(localMemory.contains("[progress_delta] current_state: before=旧状态：先收口 review anchor after=新状态：delta feed 已切到 cursor/hash"))
+        #expect(localMemory.contains("[progress_delta] next_step: before=旧步骤：冻结目标和约束 after=新步骤：补 delta_items 和 guidance delta"))
+        #expect(localMemory.contains("[blocker_delta] blocker: before=(none) after=需要验证 no_material_change 分支"))
+    }
+
+    @Test
+    func localMemoryIncludesConflictSetContextRefsAndEvidencePack() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-memory-serving-objects")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let ctx = AXProjectContext(root: root)
+        let spec = SupervisorProjectSpecCapsuleBuilder.build(
+            projectId: project.projectId,
+            goal: "让 supervisor memory serving object 能稳定支撑战略纠偏",
+            mvpDefinition: "冲突、来源索引、证据包都能直接喂给 supervisor",
+            nonGoals: ["不要退回成只看最近消息的短记忆"],
+            approvedTechStack: ["SwiftUI", "Hub memory"],
+            milestoneMap: [
+                SupervisorProjectSpecMilestone(
+                    milestoneId: "m1",
+                    title: "补齐 serving objects",
+                    status: .active
+                )
+            ]
+        )
+        try SupervisorProjectSpecCapsuleStore.save(spec, for: ctx)
+
+        let decision = SupervisorDecisionTrackBuilder.build(
+            decisionId: "decision-memory-anchor",
+            projectId: project.projectId,
+            category: .scopeFreeze,
+            status: .approved,
+            statement: "先以长期 anchor 和 approved decisions 为准，再决定是否 replan。",
+            source: "user_confirmed_protocol",
+            reversible: true,
+            approvalRequired: false,
+            auditRef: "audit-memory-anchor",
+            createdAtMs: 1_773_720_000_000
+        )
+        _ = try SupervisorDecisionTrackStore.upsert(decision, for: ctx)
+
+        manager.captureSupervisorReviewNoteForTesting(
+            userMessage: "审查亮亮项目的上下文记忆，并给我更稳的下一步",
+            response: """
+            当前方向基本对，但最新 guidance 需要把 replan 明确化。
+            1. 先确认长期 anchor 与 approved decision 不被 recent noise 覆盖。
+            2. 再按 latest review note 的建议调整执行顺序。
+            """,
+            triggerSource: "user_turn"
+        )
+
+        let localMemory = await manager.buildSupervisorLocalMemoryV1ForTesting(
+            "继续审查亮亮项目的上下文记忆，并判断是否需要战略纠偏"
+        )
+
+        #expect(localMemory.contains("[CONFLICT_SET]"))
+        #expect(localMemory.contains("conflict_kind: decision_vs_guidance"))
+        #expect(localMemory.contains("resolution_status: pending_guidance_ack"))
+        #expect(localMemory.contains("[CONTEXT_REFS]"))
+        #expect(localMemory.contains("source_scope=spec_capsule"))
+        #expect(localMemory.contains("source_scope=decision_track"))
+        #expect(localMemory.contains("source_scope=review_note"))
+        #expect(localMemory.contains("source_scope=guidance_injection"))
+        #expect(localMemory.contains("[EVIDENCE_PACK]"))
+        #expect(localMemory.contains("selected_items:"))
+        #expect(localMemory.contains("why_included=latest_supervisor_verdict"))
+        #expect(localMemory.contains("why_included=active_guidance_guardrail_pending_ack"))
     }
 
     @Test
@@ -554,7 +1146,8 @@ struct SupervisorCommandGuardTests {
         )
 
         #expect(rendered.contains("我会把执行路径写成结构化计划。"))
-        #expect(rendered.contains("✅ 已为项目 \(project.displayName) 写入计划：plan-browser-smoke-v1（job=\(job.jobId), steps=2）"))
+        #expect(rendered.contains("✅ 已为项目 \(project.displayName) 写入计划：plan-browser-smoke-v1"))
+        #expect(rendered.contains("job=\(job.jobId), steps=2"))
         #expect(!rendered.contains("[UPSERT_PLAN]"))
 
         let planSnapshot = SupervisorProjectPlanStore.load(for: ctx)
@@ -591,6 +1184,101 @@ struct SupervisorCommandGuardTests {
         #expect(localMemory.contains("plan-browser-smoke-v1"))
         #expect(localMemory.contains("browser.runtime.smoke"))
         #expect(localMemory.contains("step-001"))
+    }
+
+    @Test
+    func executionReadyPlanBackfillsDetailForUnknownProjectAI() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-upsert-plan-unknown-detail-floor")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let ctx = AXProjectContext(root: root)
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingProjectGovernance(
+            executionTier: .a3DeliverAuto,
+            supervisorInterventionTier: .s2PeriodicReview
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"亮亮","goal":"补一版执行计划","priority":"high"}[/CREATE_JOB]"#,
+            userMessage: "给亮亮建一个任务：补一版执行计划"
+        )
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+
+        let rendered = manager.processSupervisorResponseForTesting(
+            #"""
+            我会先把路径写成 execution-ready 计划。
+            [UPSERT_PLAN]{"project_ref":"亮亮","job_id":"\#(job.jobId)","plan_id":"plan-liang-execution-ready-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"固定 review anchor","kind":"write_memory","status":"running"},{"step_id":"step-002","title":"生成具体 follow-up 工单","kind":"write_memory","status":"pending"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划，给亮亮补一版 execution-ready 计划"
+        )
+
+        #expect(rendered.contains("depth=execution_ready"))
+        #expect(rendered.contains("auto_normalized="))
+        #expect(rendered.contains("detail_from_title:step-001"))
+        #expect(rendered.contains("detail_from_title:step-002"))
+
+        let plan = try #require(SupervisorProjectPlanStore.load(for: ctx).plans.first)
+        #expect(plan.steps[0].detail == "固定 review anchor")
+        #expect(plan.steps[1].detail == "生成具体 follow-up 工单")
+    }
+
+    @Test
+    func strongProjectExecutionReadyPlanKeepsConciseSpecificStepsWithoutDetailBackfill() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-upsert-plan-strong-concise-detail")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let ctx = AXProjectContext(root: root)
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingProjectGovernance(
+            executionTier: .a3DeliverAuto,
+            supervisorInterventionTier: .s2PeriodicReview
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
+        try seedStrongProjectAIStrengthEvidence(ctx: ctx, projectID: project.projectId)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"亮亮","goal":"补一版执行计划","priority":"high"}[/CREATE_JOB]"#,
+            userMessage: "给亮亮建一个任务：补一版执行计划"
+        )
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+
+        let rendered = manager.processSupervisorResponseForTesting(
+            #"""
+            我会先把路径写成 execution-ready 计划。
+            [UPSERT_PLAN]{"project_ref":"亮亮","job_id":"\#(job.jobId)","plan_id":"plan-liang-execution-ready-strong-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"固定 review anchor 并确认输入边界","kind":"write_memory","status":"running"},{"step_id":"step-002","title":"生成具体 follow-up 工单并带回 plan 更新摘要","kind":"write_memory","status":"pending","depends_on":["step-001"],"failure_policy":"replan"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划，给亮亮补一版 execution-ready 计划"
+        )
+
+        #expect(rendered.contains("depth=execution_ready"))
+        #expect(!rendered.contains("auto_normalized="))
+
+        let plan = try #require(SupervisorProjectPlanStore.load(for: ctx).plans.first)
+        #expect(plan.steps[0].detail.isEmpty)
+        #expect(plan.steps[1].detail.isEmpty)
+        #expect(plan.steps[1].dependsOn == ["step-001"])
+        #expect(plan.steps[1].failurePolicy == .replan)
+
+        let rawEntries = try readRawLogEntries(at: ctx.rawLogURL)
+        let rawPlan = try #require(rawEntries.last(where: { ($0["type"] as? String) == "supervisor_plan" }))
+        #expect(rawPlan["project_ai_strength_band"] as? String == AXProjectAIStrengthBand.strong.rawValue)
+        #expect(rawPlan["effective_work_order_depth"] as? String == AXProjectSupervisorWorkOrderDepth.executionReady.rawValue)
+        #expect((rawPlan["plan_normalization_notes"] as? [String])?.isEmpty == true)
     }
 
     @Test
@@ -809,7 +1497,7 @@ struct SupervisorCommandGuardTests {
             )
             .settingAutonomyPolicy(
                 mode: .trustedOpenClawMode,
-                updatedAt: Date(timeIntervalSince1970: 1_773_500_000)
+                updatedAt: freshTrustedAutonomyUpdatedAt()
             )
         try AXProjectStore.saveConfig(config, for: ctx)
 
@@ -899,7 +1587,7 @@ struct SupervisorCommandGuardTests {
             )
             .settingAutonomyPolicy(
                 mode: .trustedOpenClawMode,
-                updatedAt: Date(timeIntervalSince1970: 1_773_500_200)
+                updatedAt: freshTrustedAutonomyUpdatedAt()
             )
             .settingGovernedAutoApproveLocalToolCalls(enabled: true)
         try AXProjectStore.saveConfig(config, for: ctx)
@@ -981,7 +1669,7 @@ struct SupervisorCommandGuardTests {
             )
             .settingAutonomyPolicy(
                 mode: .trustedOpenClawMode,
-                updatedAt: Date(timeIntervalSince1970: 1_773_800_300)
+                updatedAt: freshTrustedAutonomyUpdatedAt()
             )
             .settingGovernedAutoApproveLocalToolCalls(enabled: true)
         try AXProjectStore.saveConfig(config, for: ctx)
@@ -1066,7 +1754,7 @@ struct SupervisorCommandGuardTests {
             )
             .settingAutonomyPolicy(
                 mode: .trustedOpenClawMode,
-                updatedAt: Date(timeIntervalSince1970: 1_773_800_350)
+                updatedAt: freshTrustedAutonomyUpdatedAt()
             )
             .settingGovernedAutoApproveLocalToolCalls(enabled: true)
         try AXProjectStore.saveConfig(config, for: ctx)
@@ -1148,7 +1836,7 @@ struct SupervisorCommandGuardTests {
             )
             .settingAutonomyPolicy(
                 mode: .trustedOpenClawMode,
-                updatedAt: Date(timeIntervalSince1970: 1_773_800_360)
+                updatedAt: freshTrustedAutonomyUpdatedAt()
             )
             .settingGovernedAutoApproveLocalToolCalls(enabled: true)
         try AXProjectStore.saveConfig(config, for: ctx)
@@ -1238,7 +1926,7 @@ struct SupervisorCommandGuardTests {
             )
             .settingAutonomyPolicy(
                 mode: .trustedOpenClawMode,
-                updatedAt: Date(timeIntervalSince1970: 1_773_800_370)
+                updatedAt: freshTrustedAutonomyUpdatedAt()
             )
             .settingGovernedAutoApproveLocalToolCalls(enabled: true)
         try AXProjectStore.saveConfig(config, for: ctx)
@@ -1834,7 +2522,7 @@ struct SupervisorCommandGuardTests {
             )
             .settingAutonomyPolicy(
                 mode: .trustedOpenClawMode,
-                updatedAt: Date(timeIntervalSince1970: 1_773_501_000)
+                updatedAt: freshTrustedAutonomyUpdatedAt()
             )
             .settingGovernedAutoApproveLocalToolCalls(enabled: true)
         try AXProjectStore.saveConfig(config, for: ctx)
@@ -1931,7 +2619,7 @@ struct SupervisorCommandGuardTests {
             )
             .settingAutonomyPolicy(
                 mode: .trustedOpenClawMode,
-                updatedAt: Date(timeIntervalSince1970: 1_773_501_200)
+                updatedAt: freshTrustedAutonomyUpdatedAt()
             )
             .settingGovernedAutoApproveLocalToolCalls(enabled: true)
         try AXProjectStore.saveConfig(config, for: ctx)
@@ -2480,7 +3168,7 @@ struct SupervisorCommandGuardTests {
             )
             .settingAutonomyPolicy(
                 mode: .trustedOpenClawMode,
-                updatedAt: Date(timeIntervalSince1970: 1_773_800_500)
+                updatedAt: freshTrustedAutonomyUpdatedAt()
             )
             .settingGovernedAutoApproveLocalToolCalls(enabled: true)
         try AXProjectStore.saveConfig(config, for: ctx)
@@ -2566,7 +3254,7 @@ struct SupervisorCommandGuardTests {
             )
             .settingAutonomyPolicy(
                 mode: .trustedOpenClawMode,
-                updatedAt: Date(timeIntervalSince1970: 1_773_800_700)
+                updatedAt: freshTrustedAutonomyUpdatedAt()
             )
             .settingGovernedAutoApproveLocalToolCalls(enabled: true)
         try AXProjectStore.saveConfig(config, for: ctx)
@@ -3110,6 +3798,9 @@ struct SupervisorCommandGuardTests {
             #expect(triggerSource == "skill_callback")
             #expect(userMessage.contains("trigger=skill_callback"))
             #expect(userMessage.contains("status=completed"))
+            #expect(userMessage.contains("review_trigger=periodic_pulse"))
+            #expect(userMessage.contains("review_level_hint=r1_pulse"))
+            #expect(userMessage.contains("review_run_kind=event_driven"))
             #expect(userMessage.contains("next_pending_steps:"))
             #expect(userMessage.contains("step-002"))
             return #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"处理 skill callback 后的下一步","priority":"normal","source":"skill_callback","current_owner":"supervisor"}[/CREATE_JOB]"#
@@ -3149,6 +3840,177 @@ struct SupervisorCommandGuardTests {
         let followUp = try #require(jobs.first(where: { $0.goal == "处理 skill callback 后的下一步" }))
         #expect(followUp.source == .skillCallback)
         #expect(followUp.currentOwner == "supervisor")
+
+        let reviewSnapshot = SupervisorReviewNoteStore.load(for: ctx)
+        let review = try #require(reviewSnapshot.notes.first)
+        #expect(review.trigger == .periodicPulse)
+        #expect(review.reviewLevel == .r1Pulse)
+        #expect(review.targetRole == .supervisor)
+        #expect(review.deliveryMode == .contextAppend)
+        #expect(!review.ackRequired)
+        #expect(review.summary.contains("已为项目"))
+
+        let guidanceSnapshot = SupervisorGuidanceInjectionStore.load(for: ctx)
+        #expect(guidanceSnapshot.items.isEmpty)
+    }
+
+    @Test
+    func skillCallbackFailureFollowUpUsesBlockerReviewTrigger() async throws {
+        let manager = SupervisorManager.makeForTesting(enableSupervisorEventLoopAutoFollowUp: true)
+        let fixture = SupervisorSkillRegistryFixture()
+        defer { fixture.cleanup() }
+
+        let root = try makeProjectRoot(named: "supervisor-skill-callback-failure-review")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "我的世界还原项目")
+        try fixture.writeHubSkillsStore(projectID: project.projectId)
+        HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+
+        manager.setSupervisorToolExecutorOverrideForTesting { call, _ in
+            #expect(call.tool == .project_snapshot)
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: "snapshot export failed"
+            )
+        }
+        manager.setSupervisorEventLoopResponseOverrideForTesting { userMessage, triggerSource in
+            #expect(triggerSource == "skill_callback")
+            #expect(userMessage.contains("status=failed"))
+            #expect(userMessage.contains("review_trigger=blocker_detected"))
+            #expect(userMessage.contains("review_level_hint=r2_strategic"))
+            #expect(userMessage.contains("review_run_kind=event_driven"))
+            #expect(userMessage.contains("attention_steps:"))
+            #expect(userMessage.contains("step-001"))
+            return #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"处理失败 skill callback","priority":"high","source":"skill_callback","current_owner":"supervisor"}[/CREATE_JOB]"#
+        }
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"导出 project snapshot","priority":"high"}[/CREATE_JOB]"#,
+            userMessage: "请创建任务"
+        )
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [UPSERT_PLAN]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","plan_id":"plan-project-snapshot-failure-review-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"读取当前 project snapshot","kind":"call_skill","status":"pending","skill_id":"project.snapshot"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划"
+        )
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [CALL_SKILL]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","step_id":"step-001","skill_id":"project.snapshot","payload":{}}[/CALL_SKILL]
+            """#,
+            userMessage: "请执行 project snapshot 技能"
+        )
+
+        await manager.waitForSupervisorSkillDispatchForTesting()
+        await manager.waitForSupervisorEventLoopForTesting()
+
+        let jobs = SupervisorProjectJobStore.load(for: ctx).jobs
+        let followUp = try #require(jobs.first(where: { $0.goal == "处理失败 skill callback" }))
+        #expect(followUp.source == .skillCallback)
+
+        let reviewSnapshot = SupervisorReviewNoteStore.load(for: ctx)
+        let review = try #require(reviewSnapshot.notes.first)
+        #expect(review.trigger == .blockerDetected)
+        #expect(review.reviewLevel == .r2Strategic)
+        #expect(review.targetRole == .supervisor)
+        #expect(review.deliveryMode == .contextAppend)
+        #expect(!review.ackRequired)
+
+        let guidanceSnapshot = SupervisorGuidanceInjectionStore.load(for: ctx)
+        #expect(guidanceSnapshot.items.isEmpty)
+    }
+
+    @Test
+    func skillCallbackTerminalCompletionUsesPreDoneReviewTrigger() async throws {
+        let manager = SupervisorManager.makeForTesting(enableSupervisorEventLoopAutoFollowUp: true)
+        let fixture = SupervisorSkillRegistryFixture()
+        defer { fixture.cleanup() }
+
+        let root = try makeProjectRoot(named: "supervisor-skill-callback-pre-done-review")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "我的世界还原项目")
+        try fixture.writeHubSkillsStore(projectID: project.projectId)
+        HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+
+        manager.setSupervisorToolExecutorOverrideForTesting { call, _ in
+            #expect(call.tool == .project_snapshot)
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: true,
+                output: "snapshot export completed"
+            )
+        }
+        manager.setSupervisorEventLoopResponseOverrideForTesting { userMessage, triggerSource in
+            #expect(triggerSource == "skill_callback")
+            #expect(userMessage.contains("status=completed"))
+            #expect(userMessage.contains("review_trigger=pre_done_summary"))
+            #expect(userMessage.contains("review_level_hint=r3_rescue"))
+            #expect(userMessage.contains("review_run_kind=event_driven"))
+            #expect(userMessage.contains("active_plan_status=completed"))
+            #expect(userMessage.contains("next_pending_steps:"))
+            return #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"处理 pre-done review 后的下一步","priority":"high","source":"skill_callback","current_owner":"supervisor"}[/CREATE_JOB]"#
+        }
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"导出最终 project snapshot","priority":"high"}[/CREATE_JOB]"#,
+            userMessage: "请创建任务"
+        )
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [UPSERT_PLAN]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","plan_id":"plan-project-snapshot-pre-done-review-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"导出最终 project snapshot","kind":"call_skill","status":"pending","skill_id":"project.snapshot"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划"
+        )
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [CALL_SKILL]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","step_id":"step-001","skill_id":"project.snapshot","payload":{}}[/CALL_SKILL]
+            """#,
+            userMessage: "请执行 project snapshot 技能"
+        )
+
+        await manager.waitForSupervisorSkillDispatchForTesting()
+        await manager.waitForSupervisorEventLoopForTesting()
+
+        let jobs = SupervisorProjectJobStore.load(for: ctx).jobs
+        let followUp = try #require(jobs.first(where: { $0.goal == "处理 pre-done review 后的下一步" }))
+        #expect(followUp.source == .skillCallback)
+
+        let reviewSnapshot = SupervisorReviewNoteStore.load(for: ctx)
+        let review = try #require(reviewSnapshot.notes.first)
+        #expect(review.trigger == .preDoneSummary)
+        #expect(review.reviewLevel == .r3Rescue)
+        #expect(review.targetRole == .coder)
+        #expect(review.deliveryMode == .contextAppend)
+
+        let guidanceSnapshot = SupervisorGuidanceInjectionStore.load(for: ctx)
+        let guidance = try #require(guidanceSnapshot.items.first)
+        #expect(guidance.targetRole == .coder)
+        #expect(guidance.deliveryMode == .contextAppend)
     }
 
     @Test
@@ -3483,6 +4345,393 @@ struct SupervisorCommandGuardTests {
     }
 
     @Test
+    func casualMetaQuestionDoesNotGetHijackedByProjectBriefShortcut() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let rendered = manager.directSupervisorReplyIfApplicableForTesting("你在这套系统里感觉如何")
+        #expect(rendered == nil)
+    }
+
+    @Test
+    func casualChatQuestionDoesNotGetHijackedEvenWhenProjectIsSelected() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-casual-chat-not-brief")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let rendered = manager.directSupervisorReplyIfApplicableForTesting("你最近怎么样")
+        #expect(rendered == nil)
+    }
+
+    @Test
+    func underfedStrategicReviewRequestPromptsForNaturalFactCollection() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-underfed-follow-up")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+        manager.setSupervisorMemoryAssemblySnapshotForTesting(
+            makeSupervisorMemoryAssemblySnapshot(
+                projectID: project.projectId,
+                profileFloor: XTMemoryServingProfile.m3DeepDive.rawValue,
+                resolvedProfile: XTMemoryServingProfile.m2PlanReview.rawValue,
+                contextRefsSelected: 0,
+                evidenceItemsSelected: 0,
+                omittedSections: [
+                    "focused_project_anchor_pack",
+                    "longterm_outline",
+                    "evidence_pack",
+                ],
+                truncatedLayers: ["l1_canonical"]
+            )
+        )
+
+        let rendered = try #require(
+            manager.directSupervisorActionIfApplicableForTesting(
+                "审查亮亮项目的上下文记忆，直接做战略纠偏"
+            )
+        )
+
+        #expect(rendered.contains("《亮亮》当前项目背景还不够完整"))
+        #expect(rendered.contains("我们一项一项补"))
+        #expect(rendered.contains("长期目标和完成标准分别是什么"))
+        #expect(rendered.contains("你可以直接说：目标是……，完成标准是……"))
+        #expect(rendered.contains("后面我还会继续补：关键决策和原因"))
+    }
+
+    @Test
+    func underfedStrategicReviewPromptRequiresProjectWhenNoFocusIsResolved() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let rootA = try makeProjectRoot(named: "supervisor-underfed-follow-up-project-a")
+        let rootB = try makeProjectRoot(named: "supervisor-underfed-follow-up-project-b")
+        defer { try? FileManager.default.removeItem(at: rootA) }
+        defer { try? FileManager.default.removeItem(at: rootB) }
+
+        let projectA = makeProjectEntry(root: rootA, displayName: "亮亮")
+        let projectB = makeProjectEntry(root: rootB, displayName: "Hub Runtime")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [projectA, projectB])
+        manager.setAppModel(appModel)
+        manager.setSupervisorMemoryAssemblySnapshotForTesting(
+            makeSupervisorMemoryAssemblySnapshot(
+                projectID: projectA.projectId,
+                profileFloor: XTMemoryServingProfile.m3DeepDive.rawValue,
+                resolvedProfile: XTMemoryServingProfile.m2PlanReview.rawValue,
+                contextRefsSelected: 0,
+                evidenceItemsSelected: 0,
+                omittedSections: [
+                    "focused_project_anchor_pack",
+                    "longterm_outline",
+                    "evidence_pack",
+                ],
+                truncatedLayers: ["l1_canonical"]
+            )
+        )
+
+        let rendered = try #require(
+            manager.directSupervisorActionIfApplicableForTesting(
+                "直接做战略纠偏，帮我判断方向"
+            )
+        )
+
+        #expect(rendered.contains("先告诉我你要纠偏哪个项目"))
+        #expect(rendered.contains("长期目标和完成标准分别是什么"))
+        #expect(rendered.contains("某某项目，目标是……，完成标准是……"))
+    }
+
+    @Test
+    func underfedStrategicReviewFollowUpStillAllowsNaturalMemoryPatchFacts() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-underfed-follow-up-patch")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+        manager.setSupervisorMemoryAssemblySnapshotForTesting(
+            makeSupervisorMemoryAssemblySnapshot(
+                projectID: project.projectId,
+                profileFloor: XTMemoryServingProfile.m3DeepDive.rawValue,
+                resolvedProfile: XTMemoryServingProfile.m2PlanReview.rawValue,
+                contextRefsSelected: 0,
+                evidenceItemsSelected: 0,
+                omittedSections: [
+                    "focused_project_anchor_pack",
+                    "longterm_outline",
+                    "evidence_pack",
+                ],
+                truncatedLayers: ["l1_canonical"]
+            )
+        )
+
+        let followUp = try #require(
+            manager.directSupervisorActionIfApplicableForTesting(
+                "先审查亮亮项目的上下文记忆，再决定要不要纠偏"
+            )
+        )
+        #expect(followUp.contains("我先不直接做战略纠偏"))
+
+        let patchReply = try #require(
+            manager.directSupervisorActionIfApplicableForTesting(
+                "目标是让 supervisor 在耳机里自然汇报项目状态，完成标准是能连续播报并接收一句话授权"
+            )
+        )
+
+        #expect(patchReply.contains("项目 anchor"))
+        #expect(patchReply.contains("下一项我还要补"))
+        #expect(patchReply.contains("我们为什么走当前这条路径？关键决策和原因是什么？"))
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let capsule = try #require(SupervisorProjectSpecCapsuleStore.load(for: ctx))
+        #expect(capsule.goal.contains("耳机里自然汇报项目状态"))
+        #expect(capsule.mvpDefinition.contains("连续播报并接收一句话授权"))
+    }
+
+    @Test
+    func underfedStrategicReviewFollowUpCarriesProjectAcrossTurnsWithoutSelection() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let rootA = try makeProjectRoot(named: "supervisor-underfed-follow-up-carry-a")
+        let rootB = try makeProjectRoot(named: "supervisor-underfed-follow-up-carry-b")
+        defer { try? FileManager.default.removeItem(at: rootA) }
+        defer { try? FileManager.default.removeItem(at: rootB) }
+
+        let projectA = makeProjectEntry(root: rootA, displayName: "亮亮")
+        let projectB = makeProjectEntry(root: rootB, displayName: "Hub Runtime")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [projectA, projectB])
+        manager.setAppModel(appModel)
+        manager.setSupervisorMemoryAssemblySnapshotForTesting(
+            makeSupervisorMemoryAssemblySnapshot(
+                projectID: projectA.projectId,
+                profileFloor: XTMemoryServingProfile.m3DeepDive.rawValue,
+                resolvedProfile: XTMemoryServingProfile.m2PlanReview.rawValue,
+                contextRefsSelected: 0,
+                evidenceItemsSelected: 0,
+                omittedSections: [
+                    "focused_project_anchor_pack",
+                    "longterm_outline",
+                    "evidence_pack",
+                ],
+                truncatedLayers: ["l1_canonical"]
+            )
+        )
+
+        let followUp = try #require(
+            manager.directSupervisorActionIfApplicableForTesting(
+                "审查亮亮项目的上下文记忆，再决定要不要纠偏"
+            )
+        )
+        #expect(followUp.contains("《亮亮》当前项目背景还不够完整"))
+
+        let goalReply = try #require(
+            manager.directSupervisorActionIfApplicableForTesting(
+                "目标是让 supervisor 用耳机持续汇报项目，完成标准是能语音接收一句话授权"
+            )
+        )
+        #expect(goalReply.contains("项目 anchor"))
+        #expect(goalReply.contains("下一项我还要补"))
+        #expect(goalReply.contains("关键决策和原因是什么"))
+
+        let decisionReply = try #require(
+            manager.directSupervisorActionIfApplicableForTesting(
+                "我们决定先走 Hub 通道，原因是权限和审计统一"
+            )
+        )
+        #expect(decisionReply.contains("关键路径决策我已经记下了"))
+        #expect(decisionReply.contains("现在卡在哪里"))
+
+        let completionReply = try #require(
+            manager.directSupervisorActionIfApplicableForTesting(
+                "现在卡在 voice wake 误触发太多，已经试过调阈值，下一步是先把唤醒日志打通，证据是 staging smoke 已稳定通过 12 次"
+            )
+        )
+        #expect(completionReply.contains("这轮关键背景我已经先补进《亮亮》了"))
+        #expect(completionReply.contains("你现在可以直接再让我审查一次方向"))
+
+        let ctxA = try #require(appModel.projectContext(for: projectA.projectId))
+        let capsule = try #require(SupervisorProjectSpecCapsuleStore.load(for: ctxA))
+        #expect(capsule.goal.contains("用耳机持续汇报项目"))
+        let decision = try #require(SupervisorDecisionTrackStore.load(for: ctxA).events.first)
+        #expect(decision.statement.contains("Hub 通道"))
+        let updatedProject = try #require(appModel.registry.project(for: projectA.projectId))
+        #expect(updatedProject.blockerSummary?.contains("voice wake 误触发太多") == true)
+        #expect(updatedProject.nextStepSummary == "先把唤醒日志打通")
+        let evidence = try #require(SupervisorSelectedEvidencePinStore.latest(for: ctxA))
+        #expect(evidence.summary.contains("staging smoke"))
+
+        let ctxB = AXProjectContext(root: rootB)
+        #expect(SupervisorProjectSpecCapsuleStore.load(for: ctxB) == nil)
+        #expect(SupervisorDecisionTrackStore.load(for: ctxB).events.isEmpty)
+    }
+
+    @Test
+    func underfedStrategicReviewMixedFactUtteranceBypassesDirectBriefShortcut() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-underfed-follow-up-mixed-facts")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+        manager.setSupervisorMemoryAssemblySnapshotForTesting(
+            makeSupervisorMemoryAssemblySnapshot(
+                projectID: project.projectId,
+                profileFloor: XTMemoryServingProfile.m3DeepDive.rawValue,
+                resolvedProfile: XTMemoryServingProfile.m2PlanReview.rawValue,
+                contextRefsSelected: 0,
+                evidenceItemsSelected: 0,
+                omittedSections: [
+                    "focused_project_anchor_pack",
+                    "longterm_outline",
+                    "evidence_pack",
+                ],
+                truncatedLayers: ["l1_canonical"]
+            )
+        )
+
+        let prompt = try #require(
+            manager.directSupervisorActionIfApplicableForTesting(
+                "审查亮亮项目的上下文记忆，直接做战略纠偏"
+            )
+        )
+        #expect(prompt.contains("我们一项一项补"))
+
+        let mixedFacts = "目标是让 supervisor 用耳机持续汇报项目，完成标准是能一句话授权；我们决定先走 Hub 通道，原因是权限和审计统一；现在卡在 voice wake 误触发太多，已经试过调阈值，下一步是先把唤醒日志打通；证据是 staging smoke 已稳定通过 12 次"
+
+        #expect(manager.directSupervisorReplyIfApplicableForTesting(mixedFacts) == nil)
+
+        let completionReply = try #require(
+            manager.directSupervisorActionIfApplicableForTesting(mixedFacts)
+        )
+
+        #expect(completionReply.contains("这轮关键背景我已经先补进《亮亮》了"))
+        #expect(completionReply.contains("你现在可以直接再让我审查一次方向"))
+    }
+
+    @Test
+    func naturalLanguageMemoryPatchUpsertsLongtermProjectAnchor() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-memory-patch-longterm")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let rendered = try #require(
+            manager.directSupervisorActionIfApplicableForTesting(
+                "这个项目的目标是让 supervisor 能在耳机里主动汇报，完成标准是能连续语音播报状态并接收一句话授权，先不做视频通话，必须用 SwiftUI、gRPC"
+            )
+        )
+
+        #expect(rendered.contains("项目 anchor"))
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let capsule = try #require(SupervisorProjectSpecCapsuleStore.load(for: ctx))
+        #expect(capsule.goal.contains("耳机里主动汇报"))
+        #expect(capsule.mvpDefinition.contains("连续语音播报状态"))
+        #expect(capsule.nonGoals.contains("视频通话"))
+        #expect(capsule.approvedTechStack.contains("SwiftUI"))
+        #expect(capsule.approvedTechStack.contains("gRPC"))
+    }
+
+    @Test
+    func naturalLanguageMemoryPatchWritesDecisionLineageAndSelectedEvidence() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-memory-patch-decision")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let rendered = try #require(
+            manager.directSupervisorActionIfApplicableForTesting(
+                "我们决定先把 Slack、WhatsApp、Feishu 接在 Hub 端，不走 X-terminal 直连，原因是权限和审计统一，证据是 openclaw 这套路由已经验证过"
+            )
+        )
+
+        #expect(rendered.contains("关键路径决策我已经记下了"))
+        #expect(rendered.contains("优先证据"))
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let decisionEvent = try #require(SupervisorDecisionTrackStore.load(for: ctx).events.first)
+        #expect(decisionEvent.status == .approved)
+        #expect(decisionEvent.statement.contains("Hub 端"))
+        #expect(decisionEvent.source.contains("权限和审计统一"))
+        #expect(!decisionEvent.evidenceRefs.isEmpty)
+
+        let evidence = try #require(SupervisorSelectedEvidencePinStore.latest(for: ctx))
+        #expect(evidence.summary.contains("openclaw"))
+    }
+
+    @Test
+    func naturalLanguageMemoryPatchUpdatesBlockerLineageFromColloquialFacts() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-memory-patch-blocker")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let rendered = try #require(
+            manager.directSupervisorActionIfApplicableForTesting(
+                "现在卡在 voice wake 误触发太多，已经试过调阈值、重建 session，下一步是先把唤醒链路日志打通"
+            )
+        )
+
+        #expect(rendered.contains("当前卡点我已经记进项目现状了"))
+
+        let updated = try #require(appModel.registry.project(for: project.projectId))
+        #expect(updated.blockerSummary?.contains("voice wake 误触发太多") == true)
+        #expect(updated.blockerSummary?.contains("调阈值") == true)
+        #expect(updated.nextStepSummary == "先把唤醒链路日志打通")
+    }
+
+    @Test
+    func naturalLanguageSelectedEvidenceFeedsFocusedMemoryAssembly() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-memory-patch-evidence-assembly")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        _ = manager.directSupervisorActionIfApplicableForTesting(
+            "证据是 staging smoke 已稳定通过 12 次，这个要作为后续纠偏的依据"
+        )
+
+        let snapshot = await manager.buildSupervisorMemoryAssemblySnapshotForTesting(
+            "审查亮亮项目的上下文记忆，给出最具体的执行方案"
+        )
+
+        #expect(snapshot?.focusedProjectId == project.projectId)
+        #expect(snapshot?.selectedSections.contains("evidence_pack") == true)
+        #expect(snapshot?.evidenceItemsSelected ?? 0 > 0)
+    }
+
+    @Test
     func naturalLanguageGuidanceAckAcceptsFocusedPendingGuidance() throws {
         let manager = SupervisorManager.makeForTesting()
         let root = try makeProjectRoot(named: "supervisor-natural-guidance-ack")
@@ -3719,6 +4968,68 @@ struct SupervisorCommandGuardTests {
     }
 
     @Test
+    func naturalLanguageGuidanceAckContextDoesNotCarryAcrossInterveningUserTurn() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-natural-guidance-context-expire-turn")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+        let now = Date().timeIntervalSince1970
+        manager.messages = [
+            SupervisorMessage(
+                id: "assistant-guidance-old-context",
+                role: .assistant,
+                content: "当前有一条待确认 guidance：先把 release 风险和 staging 证据对齐，再决定是否推进。",
+                isVoice: false,
+                timestamp: now - 20
+            ),
+            SupervisorMessage(
+                id: "user-unrelated-follow-up",
+                role: .user,
+                content: "顺便说下现在项目进度",
+                isVoice: false,
+                timestamp: now - 10
+            ),
+            SupervisorMessage(
+                id: "assistant-unrelated-follow-up",
+                role: .assistant,
+                content: "现在状态还是阻塞中，主要卡在 staging 回执。",
+                isVoice: false,
+                timestamp: now - 5
+            )
+        ]
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-natural-context-expire-turn-1",
+                reviewId: "review-natural-context-expire-turn-1",
+                projectId: project.projectId,
+                targetRole: .coder,
+                deliveryMode: .replanRequest,
+                interventionMode: .replanNextSafePoint,
+                safePointPolicy: .nextStepBoundary,
+                guidanceText: "先把 release 风险和 staging 证据对齐，再决定是否推进。",
+                ackStatus: .pending,
+                ackRequired: true,
+                ackNote: "",
+                injectedAtMs: 1_773_386_365_000,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-guidance-natural-context-expire-turn-1"
+            ),
+            for: ctx
+        )
+
+        #expect(manager.directSupervisorActionIfApplicableForTesting("可以") == nil)
+        let updated = try #require(SupervisorGuidanceInjectionStore.latest(for: ctx))
+        #expect(updated.ackStatus == .pending)
+    }
+
+    @Test
     func naturalLanguageGrantApprovalStartsHubGrantAction() async throws {
         actor ApprovalCapture {
             private(set) var grantIDs: [String] = []
@@ -3783,7 +5094,8 @@ struct SupervisorCommandGuardTests {
             manager.directSupervisorActionIfApplicableForTesting("批准这个授权")
         )
 
-        #expect(rendered.contains("开始处理《亮亮》这笔联网访问（web_fetch） Hub 授权"))
+        #expect(rendered.contains("开始处理《亮亮》的联网访问 Hub 授权"))
+        #expect(rendered.contains("授权范围：TTL 15 分钟"))
         for _ in 0..<40 {
             if await capture.count() == 1 {
                 break
@@ -3791,6 +5103,166 @@ struct SupervisorCommandGuardTests {
             await Task.yield()
         }
         #expect(await capture.count() == 1)
+    }
+
+    @Test
+    func naturalLanguageGrantApprovalUsesFriendlyProjectNameFromPendingSnapshotNormalization() async throws {
+        actor ApprovalCapture {
+            private(set) var grantIDs: [String] = []
+
+            func record(_ grantID: String) {
+                grantIDs.append(grantID)
+            }
+
+            func count() -> Int {
+                grantIDs.count
+            }
+        }
+
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-natural-grant-snapshot-normalization")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let friendlyName = "外出采购项目"
+        let project = makeProjectEntry(root: root, displayName: friendlyName)
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let capture = ApprovalCapture()
+        manager.installPendingHubGrantApproveOverrideForTesting { grantRequestId, _, _, _, _ in
+            await capture.record(grantRequestId)
+            return HubIPCClient.PendingGrantActionResult(
+                ok: true,
+                decision: .approved,
+                source: "test",
+                grantRequestId: grantRequestId,
+                grantId: "grant-live-snapshot-1",
+                expiresAtMs: nil,
+                reasonCode: nil
+            )
+        }
+        manager.installSchedulerSnapshotRefreshOverrideForTesting { _ in }
+        manager.setPendingGrantSnapshotForTesting(
+            HubIPCClient.PendingGrantSnapshot(
+                source: "hub_runtime_grpc",
+                updatedAtMs: Date().timeIntervalSince1970 * 1000.0,
+                items: [
+                    HubIPCClient.PendingGrantItem(
+                        grantRequestId: "grant-snapshot-1",
+                        requestId: "req-snapshot-1",
+                        deviceId: "device_xt_001",
+                        userId: "user-1",
+                        appId: "x-terminal",
+                        projectId: project.projectId,
+                        capability: "web.fetch",
+                        modelId: "",
+                        reason: "buy groceries from remote workflow",
+                        requestedTtlSec: 900,
+                        requestedTokenCap: 0,
+                        status: "pending",
+                        decision: "queued",
+                        createdAtMs: Date().timeIntervalSince1970 * 1000.0,
+                        decidedAtMs: 0
+                    )
+                ]
+            )
+        )
+
+        #expect(manager.pendingHubGrants.count == 1)
+        #expect(manager.pendingHubGrants.first?.projectName == friendlyName)
+        #expect(manager.pendingHubGrants.first?.projectName.contains(root.lastPathComponent) == false)
+
+        let rendered = try #require(
+            manager.directSupervisorActionIfApplicableForTesting("批准这个授权")
+        )
+
+        #expect(rendered.contains("开始处理《\(friendlyName)》的联网访问 Hub 授权"))
+        #expect(rendered.contains("授权范围：TTL 15 分钟"))
+        #expect(!rendered.contains(root.lastPathComponent))
+        for _ in 0..<40 {
+            if await capture.count() == 1 {
+                break
+            }
+            await Task.yield()
+        }
+        #expect(await capture.count() == 1)
+    }
+
+    @Test
+    func naturalLanguageGrantContextExpiresAfterCarryWindow() async throws {
+        actor ApprovalCapture {
+            private(set) var grantIDs: [String] = []
+
+            func record(_ grantID: String) {
+                grantIDs.append(grantID)
+            }
+
+            func count() -> Int {
+                grantIDs.count
+            }
+        }
+
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-natural-grant-context-expire-time")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+        let now = Date().timeIntervalSince1970
+        manager.messages = [
+            SupervisorMessage(
+                id: "system-grant-stale-context",
+                role: .system,
+                content: "当前有一笔待授权的 Hub grant：亮亮 / 联网访问。",
+                isVoice: false,
+                timestamp: now - 600
+            )
+        ]
+
+        let capture = ApprovalCapture()
+        manager.installPendingHubGrantApproveOverrideForTesting { grantRequestId, _, _, _, _ in
+            await capture.record(grantRequestId)
+            return HubIPCClient.PendingGrantActionResult(
+                ok: true,
+                decision: .approved,
+                source: "test",
+                grantRequestId: grantRequestId,
+                grantId: "grant-live-context-stale",
+                expiresAtMs: nil,
+                reasonCode: nil
+            )
+        }
+        manager.installSchedulerSnapshotRefreshOverrideForTesting { _ in }
+        manager.setPendingHubGrantsForTesting(
+            [
+                SupervisorManager.SupervisorPendingGrant(
+                    id: "grant-natural-context-stale",
+                    dedupeKey: "grant-natural-context-stale",
+                    grantRequestId: "grant-natural-context-stale",
+                    requestId: "req-natural-context-stale",
+                    projectId: project.projectId,
+                    projectName: project.displayName,
+                    capability: "web.fetch",
+                    modelId: "",
+                    reason: "need web access",
+                    requestedTtlSec: 900,
+                    requestedTokenCap: 0,
+                    createdAt: Date().timeIntervalSince1970,
+                    actionURL: nil,
+                    priorityRank: 1,
+                    priorityReason: "network",
+                    nextAction: "approve"
+                )
+            ]
+        )
+
+        #expect(manager.directSupervisorActionIfApplicableForTesting("批了吧") == nil)
+        #expect(await capture.count() == 0)
     }
 
     @Test
@@ -3820,7 +5292,7 @@ struct SupervisorCommandGuardTests {
             SupervisorMessage(
                 id: "system-grant-context-1",
                 role: .system,
-                content: "当前有一笔待授权的 Hub grant：亮亮 / 联网访问（web_fetch）。",
+                content: "当前有一笔待授权的 Hub grant：亮亮 / 联网访问。",
                 isVoice: false,
                 timestamp: Date().timeIntervalSince1970
             )
@@ -3867,7 +5339,8 @@ struct SupervisorCommandGuardTests {
             manager.directSupervisorActionIfApplicableForTesting("批了吧")
         )
 
-        #expect(rendered.contains("开始处理《亮亮》这笔联网访问（web_fetch） Hub 授权"))
+        #expect(rendered.contains("开始处理《亮亮》的联网访问 Hub 授权"))
+        #expect(rendered.contains("授权范围：TTL 15 分钟"))
         for _ in 0..<40 {
             if await capture.count() == 1 {
                 break
@@ -3904,7 +5377,7 @@ struct SupervisorCommandGuardTests {
             SupervisorMessage(
                 id: "system-grant-context-2",
                 role: .system,
-                content: "当前有一笔待授权的 Hub grant：亮亮 / 联网访问（web_fetch）。",
+                content: "当前有一笔待授权的 Hub grant：亮亮 / 联网访问。",
                 isVoice: false,
                 timestamp: Date().timeIntervalSince1970
             )
@@ -3951,7 +5424,8 @@ struct SupervisorCommandGuardTests {
             manager.directSupervisorActionIfApplicableForTesting("先别批")
         )
 
-        #expect(rendered.contains("先拦下《亮亮》这笔联网访问（web_fetch） Hub 授权"))
+        #expect(rendered.contains("先拦下《亮亮》的联网访问 Hub 授权"))
+        #expect(rendered.contains("授权范围：TTL 15 分钟"))
         for _ in 0..<40 {
             if await capture.count() == 1 {
                 break
@@ -4026,7 +5500,8 @@ struct SupervisorCommandGuardTests {
             manager.directSupervisorActionIfApplicableForTesting("这个你直接批了吧")
         )
 
-        #expect(rendered.contains("开始处理《亮亮》这笔联网访问（web_fetch） Hub 授权"))
+        #expect(rendered.contains("开始处理《亮亮》的联网访问 Hub 授权"))
+        #expect(rendered.contains("授权范围：TTL 15 分钟"))
         for _ in 0..<40 {
             if await capture.count() == 1 {
                 break
@@ -4101,7 +5576,8 @@ struct SupervisorCommandGuardTests {
             manager.directSupervisorActionIfApplicableForTesting("这个联网权限先别批，先拦下")
         )
 
-        #expect(rendered.contains("先拦下《亮亮》这笔联网访问（web_fetch） Hub 授权"))
+        #expect(rendered.contains("先拦下《亮亮》的联网访问 Hub 授权"))
+        #expect(rendered.contains("授权范围：TTL 15 分钟"))
         for _ in 0..<40 {
             if await capture.count() == 1 {
                 break
@@ -4416,6 +5892,10 @@ struct SupervisorCommandGuardTests {
         return root
     }
 
+    private func freshTrustedAutonomyUpdatedAt(offsetSec: TimeInterval = -60) -> Date {
+        Date().addingTimeInterval(offsetSec)
+    }
+
     private func readRawLogEntries(at url: URL) throws -> [[String: Any]] {
         guard FileManager.default.fileExists(atPath: url.path) else { return [] }
         let raw = try String(contentsOf: url, encoding: .utf8)
@@ -4448,6 +5928,141 @@ struct SupervisorCommandGuardTests {
             }
         }
         return escaped
+    }
+
+    private func seedStrongProjectAIStrengthEvidence(
+        ctx: AXProjectContext,
+        projectID: String
+    ) throws {
+        try ctx.ensureDirs()
+
+        try writeJSONLines(
+            [
+                [
+                    "type": "project_skill_call",
+                    "request_id": "req-strong-004",
+                    "skill_id": "agent-browser",
+                    "tool_name": "device.browser.control",
+                    "status": "completed",
+                    "created_at": 400,
+                    "resolution_source": "test",
+                    "tool_args": ["action": "snapshot"],
+                    "result_summary": "captured the latest page state",
+                    "detail": "latest browser page observation completed"
+                ],
+                [
+                    "type": "project_skill_call",
+                    "request_id": "req-strong-003",
+                    "skill_id": "summarize",
+                    "tool_name": "summarize",
+                    "status": "completed",
+                    "created_at": 300,
+                    "resolution_source": "test",
+                    "tool_args": ["source": "artifact://latest-review"],
+                    "result_summary": "summarized review anchor",
+                    "detail": "review anchor summary completed"
+                ],
+                [
+                    "type": "project_skill_call",
+                    "request_id": "req-strong-002",
+                    "skill_id": "repo.test.run",
+                    "tool_name": "repo.test.run",
+                    "status": "completed",
+                    "created_at": 200,
+                    "resolution_source": "test",
+                    "tool_args": ["command": "swift test --filter SupervisorReviewPolicyEngineTests"],
+                    "result_summary": "tests passed",
+                    "detail": "targeted supervisor tests passed"
+                ],
+                [
+                    "type": "project_skill_call",
+                    "request_id": "req-strong-001",
+                    "skill_id": "repo.write.file",
+                    "tool_name": "repo.write.file",
+                    "status": "completed",
+                    "created_at": 100,
+                    "resolution_source": "test",
+                    "tool_args": ["path": "Sources/Supervisor/SupervisorManager.swift"],
+                    "result_summary": "updated runtime governance logic",
+                    "detail": "patched supervisor runtime relaxation logic"
+                ],
+            ],
+            to: ctx.rawLogURL
+        )
+
+        try writeJSONLines(
+            [
+                [
+                    "type": "ai_usage",
+                    "role": AXRole.coder.rawValue,
+                    "created_at": 500,
+                    "stage": "assist",
+                    "requested_model_id": "openai/gpt-5.4",
+                    "actual_model_id": "openai/gpt-5.4",
+                    "runtime_provider": "Hub",
+                    "execution_path": "remote_model"
+                ],
+                [
+                    "type": "ai_usage",
+                    "role": AXRole.reviewer.rawValue,
+                    "created_at": 450,
+                    "stage": "review",
+                    "requested_model_id": "openai/gpt-5.4",
+                    "actual_model_id": "openai/gpt-5.4",
+                    "runtime_provider": "Hub",
+                    "execution_path": "remote_model"
+                ],
+            ],
+            to: ctx.usageLogURL
+        )
+
+        let review = XTUIReviewRecord(
+            schemaVersion: XTUIReviewRecord.currentSchemaVersion,
+            reviewID: "uir-strong-flex-ready",
+            projectID: projectID,
+            bundleID: "bundle-strong-flex-ready",
+            bundleRef: "local://.xterminal/ui_observation/bundles/bundle-strong-flex-ready.json",
+            surfaceType: .browserPage,
+            probeDepth: .deep,
+            objective: "browser_page_actionability",
+            verdict: .ready,
+            confidence: .high,
+            sufficientEvidence: true,
+            objectiveReady: true,
+            interactiveTargetCount: 3,
+            criticalActionExpected: true,
+            criticalActionVisible: true,
+            issueCodes: [],
+            checks: [
+                XTUIReviewCheck(
+                    code: "interactive_target_present",
+                    status: .pass,
+                    detail: "Interactive targets and primary action are both visible."
+                )
+            ],
+            summary: "ready; confidence=high; execution-ready browser evidence is stable",
+            createdAtMs: 700_000,
+            auditRef: "audit-ui-review-strong-flex"
+        )
+        _ = try XTUIReviewStore.writeReview(review, for: ctx)
+    }
+
+    private func writeJSONLines(
+        _ objects: [[String: Any]],
+        to url: URL
+    ) throws {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let lines = try objects.map { object -> String in
+            let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+            guard let line = String(data: data, encoding: .utf8) else {
+                throw CocoaError(.coderInvalidValue)
+            }
+            return line
+        }
+        try (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
     }
 }
 
@@ -4849,6 +6464,54 @@ private func loadJSONObject(at url: URL) throws -> [String: Any] {
 private func writeJSONObject(_ object: [String: Any], to url: URL) throws {
     let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
     try data.write(to: url, options: .atomic)
+}
+
+private func makeSupervisorMemoryAssemblySnapshot(
+    projectID: String,
+    reviewLevelHint: SupervisorReviewLevel = .r2Strategic,
+    requestedProfile: String = XTMemoryServingProfile.m3DeepDive.rawValue,
+    profileFloor: String = XTMemoryServingProfile.m3DeepDive.rawValue,
+    resolvedProfile: String = XTMemoryServingProfile.m3DeepDive.rawValue,
+    contextRefsSelected: Int = 2,
+    evidenceItemsSelected: Int = 2,
+    omittedSections: [String] = [],
+    truncatedLayers: [String] = []
+) -> SupervisorMemoryAssemblySnapshot {
+    SupervisorMemoryAssemblySnapshot(
+        source: "unit_test",
+        resolutionSource: "unit_test",
+        updatedAt: 1_773_000_000,
+        reviewLevelHint: reviewLevelHint.rawValue,
+        requestedProfile: requestedProfile,
+        profileFloor: profileFloor,
+        resolvedProfile: resolvedProfile,
+        attemptedProfiles: [requestedProfile, resolvedProfile],
+        progressiveUpgradeCount: 0,
+        focusedProjectId: projectID,
+        selectedSections: [
+            "portfolio_brief",
+            "focused_project_anchor_pack",
+            "longterm_outline",
+            "delta_feed",
+            "conflict_set",
+            "context_refs",
+            "evidence_pack",
+        ],
+        omittedSections: omittedSections,
+        contextRefsSelected: contextRefsSelected,
+        contextRefsOmitted: max(0, 2 - contextRefsSelected),
+        evidenceItemsSelected: evidenceItemsSelected,
+        evidenceItemsOmitted: max(0, 2 - evidenceItemsSelected),
+        budgetTotalTokens: 1_800,
+        usedTotalTokens: 1_080,
+        truncatedLayers: truncatedLayers,
+        freshness: "fresh_local_ipc",
+        cacheHit: false,
+        denyCode: nil,
+        downgradeCode: resolvedProfile == profileFloor ? nil : "budget_guardrail",
+        reasonCode: nil,
+        compressionPolicy: "progressive_disclosure"
+    )
 }
 
 private func makeSupervisorTrustedAutomationPermissionReadiness() -> AXTrustedAutomationPermissionOwnerReadiness {

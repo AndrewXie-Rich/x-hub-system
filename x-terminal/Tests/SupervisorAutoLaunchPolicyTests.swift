@@ -142,6 +142,39 @@ struct SupervisorAutoLaunchPolicyTests {
 
     @MainActor
     @Test
+    func autoLaunchPolicyFollowsExecutionTierEvenIfLegacyAutonomyShadowWasManuallyLowered() {
+        let engine = OneShotAutonomyPolicyEngine()
+        let project = ProjectModel(
+            name: "XT-W3-26 Runtime",
+            taskDescription: "execution tier should drive auto launch",
+            modelName: "gpt-4.1",
+            autonomyLevel: .manual,
+            executionTier: .a3DeliverAuto,
+            supervisorInterventionTier: .s3StrategicCoach
+        )
+        project.autonomyLevel = .manual
+
+        let lane = makeLane(
+            laneID: "XT-W3-26-E-tier",
+            risk: .low,
+            metadata: [
+                "requested_scope": DeliveryScopeFreezeStore.defaultValidatedScope.joined(separator: ","),
+                "validated_scope": DeliveryScopeFreezeStore.defaultValidatedScope.joined(separator: ",")
+            ]
+        )
+
+        let policy = engine.buildPolicy(
+            project: project,
+            lanes: [lane],
+            splitPlanID: "run-execution-tier-policy",
+            now: Date(timeIntervalSince1970: 1_773_000_250)
+        )
+
+        #expect(policy.autoLaunchPolicy == .mainlineOnly)
+    }
+
+    @MainActor
+    @Test
     func xtW326ECaptureEmitsMachineReadablePolicyEvidence() throws {
         guard ProcessInfo.processInfo.environment["XT_W3_26_E_CAPTURE"] == "1" else { return }
 

@@ -115,8 +115,8 @@ class TaskAssigner {
         score += modelScore * 0.4
 
         // 2. 自主性级别评分 (20%)
-        let autonomyScore = evaluateAutonomyLevel(project.autonomyLevel, for: task)
-        score += autonomyScore * 0.2
+        let governanceScore = evaluateAutonomyLevel(project, for: task)
+        score += governanceScore * 0.2
 
         // 3. 历史表现评分 (20%)
         let performanceScore = evaluateHistoricalPerformance(project, for: task)
@@ -167,19 +167,16 @@ class TaskAssigner {
     }
 
     /// 评估自主性级别
-    private func evaluateAutonomyLevel(_ level: AutonomyLevel, for task: DecomposedTask) -> Double {
-        switch level {
-        case .fullAuto:
-            return 1.0 // 完全自主，适合所有任务
-        case .auto:
-            return 0.9 // 自动，适合大多数任务
-        case .semiAuto:
-            return 0.7 // 半自动
-        case .assisted:
-            return 0.6 // 辅助模式
-        case .manual:
-            return 0.5 // 手动控制，适合简单任务
-        }
+    private func evaluateAutonomyLevel(_ project: ProjectModel, for task: DecomposedTask) -> Double {
+        let executionScore = project.governanceSchedulingAutonomyScore
+        let supervisionScore = project.governanceSchedulingRiskSupportScore
+        let needsStrongerGovernance = task.complexity >= .complex
+            || task.type == .deployment
+            || task.type == .refactoring
+
+        let supervisionWeight = needsStrongerGovernance ? 0.20 : 0.10
+        let score = executionScore * 0.85 + supervisionScore * supervisionWeight
+        return max(0.45, min(1.0, score))
     }
 
     /// 评估历史表现

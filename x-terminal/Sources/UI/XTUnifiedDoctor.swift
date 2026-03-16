@@ -124,6 +124,7 @@ struct XTUnifiedDoctorInput: Sendable {
     var conversationSession: SupervisorConversationSessionSnapshot
     var skillsSnapshot: AXSkillsDoctorSnapshot
     var reportPath: String
+    var modelRouteDiagnostics: AXModelRouteDiagnosticsSummary
 
     init(
         generatedAt: Date = Date(),
@@ -157,7 +158,8 @@ struct XTUnifiedDoctorInput: Sendable {
             route: .manualText
         ),
         skillsSnapshot: AXSkillsDoctorSnapshot,
-        reportPath: String = XTUnifiedDoctorStore.defaultReportURL().path
+        reportPath: String = XTUnifiedDoctorStore.defaultReportURL().path,
+        modelRouteDiagnostics: AXModelRouteDiagnosticsSummary = .empty
     ) {
         self.generatedAt = generatedAt
         self.localConnected = localConnected
@@ -187,6 +189,7 @@ struct XTUnifiedDoctorInput: Sendable {
         self.conversationSession = conversationSession
         self.skillsSnapshot = skillsSnapshot
         self.reportPath = reportPath
+        self.modelRouteDiagnostics = modelRouteDiagnostics
     }
 }
 
@@ -227,8 +230,9 @@ enum XTUnifiedDoctorBuilder {
                 internetHost: trimmedHost,
                 route: route
             )
-        let modelRoute = voiceReadiness.check(.modelRouteReadiness)?.asDoctorSection()
-            ?? buildModelRouteFallback(
+        let modelRoute = enrichModelRouteSection(
+            voiceReadiness.check(.modelRouteReadiness)?.asDoctorSection()
+                ?? buildModelRouteFallback(
                 hubInteractive: hubInteractive,
                 runtimeAlive: runtimeAlive,
                 availableModelCount: availableModelCount,
@@ -237,7 +241,9 @@ enum XTUnifiedDoctorBuilder {
                 totalModelRoles: input.totalModelRoles,
                 missingAssignedModels: missingAssignedModels,
                 configuredModelIDs: configuredModelIDs
-            )
+                ),
+            diagnostics: input.modelRouteDiagnostics
+        )
         let bridgeTool = voiceReadiness.check(.bridgeToolReadiness)?.asDoctorSection()
             ?? buildBridgeToolFallback(
                 hubInteractive: hubInteractive,
@@ -538,6 +544,26 @@ enum XTUnifiedDoctorBuilder {
             repairEntry: .xtChooseModel,
             detailLines: details
         )
+    }
+
+    private static func enrichModelRouteSection(
+        _ base: XTUnifiedDoctorSection,
+        diagnostics: AXModelRouteDiagnosticsSummary
+    ) -> XTUnifiedDoctorSection {
+        guard diagnostics.recentEventCount > 0 else { return base }
+
+        var section = base
+        section.detailLines = orderedUnique(base.detailLines + diagnostics.detailLines)
+
+        guard base.state == .ready,
+              diagnostics.recentFailureCount > 0 else {
+            return section
+        }
+
+        section.headline = "Model route is ready, but recent project routes degraded"
+        section.summary = "XT 当前能看到可分配模型，但最近仍有项目请求在执行时降到本地或远端失败；这通常不是“完全没连上 Hub”，而是具体项目选中的远端没有稳定命中。"
+        section.nextStep = "打开受影响项目后运行 `/route diagnose`，或在 Choose Model 里把它切到已加载的推荐远端。"
+        return section
     }
 
     private static func buildBridgeToolFallback(

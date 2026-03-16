@@ -3,10 +3,16 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 GATE_SCRIPT="${ROOT_DIR}/scripts/ci/xt_release_gate.sh"
+PROFILE_HELPER="${ROOT_DIR}/scripts/ci/xt_nested_gate_profile.sh"
 KEEP_WORKDIR="${XT_SPLIT_FLOW_POLICY_REGRESSION_KEEP:-0}"
 
 if [[ ! -f "${GATE_SCRIPT}" ]]; then
   echo "[split-flow-policy] gate script missing: ${GATE_SCRIPT}" >&2
+  exit 2
+fi
+
+if [[ ! -f "${PROFILE_HELPER}" ]]; then
+  echo "[split-flow-policy] nested gate profile helper missing: ${PROFILE_HELPER}" >&2
   exit 2
 fi
 
@@ -136,19 +142,18 @@ run_case() {
 
   local -a env_vars=(
     "XT_GATE_MODE=${mode}"
-    "XT_GATE_SKIP_BUILD=1"
     "XT_GATE_RELEASE_PRESET=${release_preset}"
-    "XT_GATE_SKIP_XT_READY_CONTRACT=1"
-    "XT_GATE_SKIP_XT_READY_EXECUTABLE=1"
-    "XT_GATE_VALIDATE_RELEASE_EVIDENCE_MATRIX=0"
-    "XT_GATE_VALIDATE_SPLIT_FLOW_RUNTIME_POLICY=0"
-    "XT_GATE_AUTO_PREPARE_RELEASE_EVIDENCE=0"
     "XT_DOCTOR_REPORT=${doctor_report_path}"
     "XT_SECRETS_DRY_RUN_REPORT=${secrets_report_path}"
     "XT_GATE_REPORT_DIR=${report_dir}"
     "XT_GATE_REPORT_FILE=${report_file}"
     "XT_GATE_REPORT_INDEX_FILE=${report_index_file}"
   )
+
+  while IFS= read -r line; do
+    [[ -n "${line}" ]] || continue
+    env_vars+=("${line}")
+  done < <(bash "${PROFILE_HELPER}" split_flow_policy)
 
   if [[ "${runtime_regression}" != "__unset__" ]]; then
     env_vars+=("XT_GATE_SPLIT_FLOW_RUNTIME_REGRESSION=${runtime_regression}")

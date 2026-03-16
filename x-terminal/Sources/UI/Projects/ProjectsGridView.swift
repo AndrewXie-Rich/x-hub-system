@@ -41,6 +41,7 @@ struct ProjectsGridView: View {
 /// 项目卡片
 struct ProjectCard: View {
     @ObservedObject var project: ProjectModel
+    @EnvironmentObject private var appModel: AppModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -126,35 +127,18 @@ struct ProjectCard: View {
     }
 
     private var modelInfo: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "brain")
-                .foregroundColor(.purple)
-                .font(.caption)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "brain")
+                    .foregroundColor(.purple)
+                    .font(.caption)
 
-            Text(project.currentModel.displayName)
-                .font(.caption)
-
-            if project.currentModel.isLocal {
-                Text("(本地)")
-                    .font(.caption2)
-                    .foregroundColor(.green)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(
-                        Capsule()
-                            .fill(Color.green.opacity(0.1))
-                    )
-            } else {
-                Text("(付费)")
-                    .font(.caption2)
-                    .foregroundColor(.orange)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(
-                        Capsule()
-                            .fill(Color.orange.opacity(0.1))
-                    )
+                Text(project.currentModel.displayName)
+                    .font(.caption)
+                    .lineLimit(1)
             }
+
+            ModelCapabilityStrip(model: project.currentModel, limit: 4, compact: true)
         }
     }
 
@@ -206,7 +190,43 @@ struct ProjectCard: View {
                         .foregroundColor(.secondary)
                 }
             }
+
+            if let latestSessionSummary {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.clockwise.circle")
+                        .foregroundColor(.secondary)
+                        .font(.caption)
+
+                    Text(latestSessionSummary.badgeText)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+                .help(latestSessionSummary.helpText)
+            }
+
+            if let registeredProjectId {
+                Button("接上次进度") {
+                    appModel.presentResumeBrief(projectId: registeredProjectId)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
         }
+    }
+
+    private var registeredProjectId: String? {
+        let projectId = project.registeredProjectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return projectId.isEmpty ? nil : projectId
+    }
+
+    private var latestSessionSummary: AXSessionSummaryCapsulePresentation? {
+        guard let rootPath = project.registeredProjectRootPath?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !rootPath.isEmpty else {
+            return nil
+        }
+        let ctx = AXProjectContext(root: URL(fileURLWithPath: rootPath, isDirectory: true))
+        return AXSessionSummaryCapsulePresentation.load(for: ctx)
     }
 }
 
@@ -216,6 +236,7 @@ struct ProjectCard: View {
 struct ProjectsGridView_Previews: PreviewProvider {
     static var previews: some View {
         ProjectsGridView(projectsManager: MultiProjectManager.preview)
+            .environmentObject(AppModel())
     }
 }
 
@@ -232,7 +253,7 @@ extension MultiProjectManager {
                 taskIcon: "doc.text",
                 modelName: "claude-opus-4.6",
                 isLocalModel: false,
-                autonomyLevel: .auto,
+                executionTier: .a3DeliverAuto,
                 autoStart: true
             ))
 
@@ -242,7 +263,7 @@ extension MultiProjectManager {
                 taskIcon: "ladybug",
                 modelName: "llama-3-70b-local",
                 isLocalModel: true,
-                autonomyLevel: .assisted,
+                executionTier: .a1Plan,
                 autoStart: false
             ))
 
@@ -252,7 +273,7 @@ extension MultiProjectManager {
                 taskIcon: "doc.richtext",
                 modelName: "llama-3-8b-local",
                 isLocalModel: true,
-                autonomyLevel: .semiAuto,
+                executionTier: .a2RepoAuto,
                 autoStart: false
             ))
         }

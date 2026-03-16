@@ -184,6 +184,58 @@ struct XTUnifiedDoctorReportTests {
         #expect(section?.detailLines.contains("baseline_publishers=xhub.local.dev") == true)
         #expect(section?.detailLines.contains("baseline_local_dev=4/4") == true)
     }
+
+    @Test
+    func modelRouteSectionSurfacesRecentProjectIncidentsWithoutPretendingHubIsMissing() {
+        let model = sampleModel(id: "hub.model.coder")
+        let diagnostics = AXModelRouteDiagnosticsSummary(
+            recentEventCount: 1,
+            recentFailureCount: 1,
+            recentRemoteRetryRecoveryCount: 0,
+            latestEvent: AXModelRouteDiagnosticEvent(
+                schemaVersion: AXModelRouteDiagnosticEvent.currentSchemaVersion,
+                createdAt: 1_741_300_020,
+                projectId: "project-alpha",
+                projectDisplayName: "Alpha",
+                role: "coder",
+                stage: "chat_plan",
+                requestedModelId: "openai/gpt-5.4",
+                actualModelId: "qwen3-14b-mlx",
+                runtimeProvider: "Hub (Local)",
+                executionPath: "hub_downgraded_to_local",
+                fallbackReasonCode: "downgrade_to_local",
+                remoteRetryAttempted: false,
+                remoteRetryFromModelId: "",
+                remoteRetryToModelId: "",
+                remoteRetryReasonCode: ""
+            ),
+            detailLines: [
+                "recent_route_events_24h=1",
+                "recent_route_failures_24h=1",
+                "route_event_1=project=Alpha role=coder path=hub_downgraded_to_local requested=openai/gpt-5.4 actual=qwen3-14b-mlx reason=downgrade_to_local provider=Hub (Local)"
+            ]
+        )
+
+        let report = XTUnifiedDoctorBuilder.build(
+            input: makeDoctorInput(
+                localConnected: true,
+                remoteConnected: false,
+                configuredModelIDs: [model.id],
+                models: [model],
+                bridgeAlive: true,
+                bridgeEnabled: true,
+                sessionRuntime: nil,
+                skillsSnapshot: readySkillsSnapshot(),
+                modelRouteDiagnostics: diagnostics
+            )
+        )
+
+        let section = report.section(.modelRouteReadiness)
+        #expect(section?.state == .ready)
+        #expect(section?.headline == "Model route is ready, but recent project routes degraded")
+        #expect(section?.detailLines.contains("recent_route_failures_24h=1") == true)
+        #expect(section?.detailLines.contains(where: { $0.contains("hub_downgraded_to_local") }) == true)
+    }
 }
 
 private func makeDoctorInput(
@@ -196,7 +248,8 @@ private func makeDoctorInput(
     sessionRuntime: AXSessionRuntimeSnapshot?,
     sessionID: String? = nil,
     skillsSnapshot: AXSkillsDoctorSnapshot,
-    reportPath: String = "/tmp/xt_unified_doctor_report.json"
+    reportPath: String = "/tmp/xt_unified_doctor_report.json",
+    modelRouteDiagnostics: AXModelRouteDiagnosticsSummary = .empty
 ) -> XTUnifiedDoctorInput {
     XTUnifiedDoctorInput(
         generatedAt: Date(timeIntervalSince1970: 1_741_300_000),
@@ -228,7 +281,8 @@ private func makeDoctorInput(
         sessionTitle: sessionID == nil ? nil : "Doctor Session",
         sessionRuntime: sessionRuntime,
         skillsSnapshot: skillsSnapshot,
-        reportPath: reportPath
+        reportPath: reportPath,
+        modelRouteDiagnostics: modelRouteDiagnostics
     )
 }
 

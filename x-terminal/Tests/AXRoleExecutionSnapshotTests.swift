@@ -38,4 +38,21 @@ struct AXRoleExecutionSnapshotTests {
         #expect(coder.compactSummary.contains("requested=gpt-5.4"))
         #expect(coder.compactSummary.contains("actual=qwen3-17b-mlx-bf16"))
     }
+
+    @Test
+    func latestSnapshotPreservesRemoteRetryMetadata() throws {
+        let usageText = """
+        {"type":"ai_usage","created_at":50,"role":"coder","requested_model_id":"openai/gpt-5.4","actual_model_id":"openai/gpt-4.1","runtime_provider":"Hub (Remote)","execution_path":"remote_model","remote_retry_attempted":true,"remote_retry_from_model_id":"openai/gpt-5.4","remote_retry_to_model_id":"openai/gpt-4.1","remote_retry_reason_code":"model_not_found"}
+        """
+
+        let snapshots = AXRoleExecutionSnapshots.latestSnapshots(fromUsageText: usageText)
+        let coder = try #require(snapshots[.coder])
+
+        #expect(coder.remoteRetryAttempted)
+        #expect(coder.remoteRetryFromModelId == "openai/gpt-5.4")
+        #expect(coder.remoteRetryToModelId == "openai/gpt-4.1")
+        #expect(coder.remoteRetryReasonCode == "model_not_found")
+        #expect(coder.compactSummary.contains("remote_retry=openai/gpt-5.4->openai/gpt-4.1"))
+        #expect(coder.detailedSummary.contains("remote_retry_attempted=true"))
+    }
 }

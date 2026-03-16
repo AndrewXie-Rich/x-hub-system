@@ -60,7 +60,7 @@ struct XTDeviceAppleScriptResult: Equatable {
     var errorMessage: String
 }
 
-struct XTDeviceUIElementSnapshot: Equatable, Sendable {
+struct XTDeviceUIElementSnapshot: Codable, Equatable, Sendable {
     var role: String
     var subrole: String
     var title: String

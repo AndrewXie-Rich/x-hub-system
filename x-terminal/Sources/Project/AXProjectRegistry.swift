@@ -125,17 +125,76 @@ enum AXProjectRegistryStore {
         }
     }
 
+    private static func defaultDisplayName(forNormalizedRoot normalizedRoot: String) -> String {
+        let trimmedRoot = normalizedRoot.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedRoot.isEmpty else { return "" }
+        let rootURL = URL(fileURLWithPath: trimmedRoot, isDirectory: true)
+        let basename = rootURL.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+        return basename.isEmpty ? trimmedRoot : basename
+    }
+
+    private static func resolvedDisplayName(
+        existing existingDisplayName: String?,
+        existingRootPath: String?,
+        projectId: String,
+        normalizedRootPath: String
+    ) -> String {
+        let candidate = defaultDisplayName(forNormalizedRoot: normalizedRootPath)
+        let existing = (existingDisplayName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !existing.isEmpty else { return candidate }
+        guard existing != projectId else { return candidate }
+
+        let previousDefault = defaultDisplayName(
+            forNormalizedRoot: (existingRootPath ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        if !previousDefault.isEmpty, existing == previousDefault {
+            return candidate
+        }
+
+        return existing
+    }
+
+    static func displayName(
+        forRoot root: URL,
+        registry: AXProjectRegistry? = nil,
+        preferredDisplayName: String? = nil
+    ) -> String {
+        let normalizedRoot = normalizeRoot(root)
+        let projectId = self.projectId(for: normalizedRoot)
+        let availableRegistry = registry ?? load()
+        let normalizedRegistry = sanitizeLoadedRegistry(availableRegistry).registry
+
+        if let displayName = normalizedRegistry.projects.first(where: { $0.projectId == projectId })?.displayName {
+            let cleaned = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !cleaned.isEmpty, cleaned != projectId {
+                return cleaned
+            }
+        }
+
+        let preferred = (preferredDisplayName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !preferred.isEmpty, preferred != projectId {
+            return preferred
+        }
+
+        return defaultDisplayName(forNormalizedRoot: normalizedRoot)
+    }
+
     static func upsertProject(_ reg: AXProjectRegistry, root: URL) -> (AXProjectRegistry, AXProjectEntry) {
         let normalized = normalizeRoot(root)
         let pid = projectId(for: normalized)
-        let name = root.lastPathComponent.isEmpty ? normalized : root.lastPathComponent
+        let name = defaultDisplayName(forNormalizedRoot: normalized)
         let now = Date().timeIntervalSince1970
 
         var out = reg
         if let idx = out.projects.firstIndex(where: { $0.projectId == pid }) {
             var cur = out.projects[idx]
             cur.rootPath = normalized
-            cur.displayName = name
+            cur.displayName = resolvedDisplayName(
+                existing: cur.displayName,
+                existingRootPath: cur.rootPath,
+                projectId: pid,
+                normalizedRootPath: normalized
+            )
             cur.lastOpenedAt = now
             out.projects[idx] = cur
             return (out, cur)
@@ -253,14 +312,20 @@ enum AXProjectRegistryStore {
         let normalized = normalizeRoot(root)
         let projectId = self.projectId(for: normalized)
         let existedBefore = reg.projects.contains(where: { $0.projectId == projectId })
-        let displayName = root.lastPathComponent.isEmpty ? normalized : root.lastPathComponent
+        let displayName = defaultDisplayName(forNormalizedRoot: normalized)
         let now = max(0, eventAt ?? Date().timeIntervalSince1970)
         let minInterval = max(0, minIntervalSec)
 
         if let idx = reg.projects.firstIndex(where: { $0.projectId == projectId }) {
             var entry = reg.projects[idx]
+            let resolvedDisplayName = resolvedDisplayName(
+                existing: entry.displayName,
+                existingRootPath: entry.rootPath,
+                projectId: projectId,
+                normalizedRootPath: normalized
+            )
             let prevEventAt = entry.lastEventAt ?? 0
-            let sameMetadata = entry.rootPath == normalized && entry.displayName == displayName
+            let sameMetadata = entry.rootPath == normalized && entry.displayName == resolvedDisplayName
             let throttled = prevEventAt > 0 && now < (prevEventAt + minInterval)
             if throttled && sameMetadata {
                 return AXProjectActivityTouchResult(
@@ -272,7 +337,7 @@ enum AXProjectRegistryStore {
             }
 
             entry.rootPath = normalized
-            entry.displayName = displayName
+            entry.displayName = resolvedDisplayName
             entry.lastOpenedAt = max(entry.lastOpenedAt, now)
             entry.lastEventAt = max(prevEventAt, now)
             reg.projects[idx] = entry

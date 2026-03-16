@@ -51,6 +51,8 @@ struct SupervisorStatusBar: View {
             snapshot: snapshot
         )
         let statusColor = supervisorStatusColor(snapshot: snapshot)
+        let pendingMemoryFollowUpQuestion = supervisorManager.supervisorPendingMemoryFactFollowUpQuestion
+            .trimmingCharacters(in: .whitespacesAndNewlines)
 
         return HStack(spacing: 8) {
             Image(systemName: "brain.head.profile")
@@ -75,6 +77,17 @@ struct SupervisorStatusBar: View {
                 Label(supervisor.memorySize, systemImage: "internaldrive")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
+            }
+
+            if !pendingMemoryFollowUpQuestion.isEmpty {
+                Label("待补背景", systemImage: "text.bubble.fill")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.orange)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.orange.opacity(0.12))
+                    .clipShape(Capsule())
+                    .help(pendingMemoryFollowUpQuestion)
             }
         }
     }

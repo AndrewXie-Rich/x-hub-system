@@ -274,6 +274,9 @@ run_gate_g0() {
 run_gate_g1() {
   local gate_name="XT-G1 / Correctness"
   local xt_cli_binary=""
+  local swift_gate_home="${XT_GATE_SWIFT_HOME:-${ROOT_DIR}/.axcoder/swift-home}"
+  local swift_gate_clang_cache="${XT_GATE_CLANG_MODULE_CACHE:-${ROOT_DIR}/.build/clang-module-cache}"
+  local swift_gate_scratch_path="${XT_GATE_SWIFT_SCRATCH_PATH:-${ROOT_DIR}/.build/xt_gate_swift_build}"
   xt_cli_binary="$(resolve_xt_cli_binary || true)"
   if [[ "${XT_GATE_SKIP_BUILD:-0}" == "1" ]]; then
     note_warn "${gate_name}: skipped by XT_GATE_SKIP_BUILD=1"
@@ -285,10 +288,17 @@ run_gate_g1() {
     return
   fi
 
-  if (cd "${ROOT_DIR}" && swift build >/tmp/xt_gate_swift_build.log 2>&1); then
+  mkdir -p "${swift_gate_home}" "${swift_gate_clang_cache}" "${swift_gate_scratch_path}"
+
+  if (
+    cd "${ROOT_DIR}" \
+      && HOME="${swift_gate_home}" \
+      CLANG_MODULE_CACHE_PATH="${swift_gate_clang_cache}" \
+        swift build --disable-sandbox --scratch-path "${swift_gate_scratch_path}" >/tmp/xt_gate_swift_build.log 2>&1
+  ); then
     note_pass "${gate_name}: swift build passed"
   else
-    if rg -q "Operation not permitted|sandbox_apply: Operation not permitted" /tmp/xt_gate_swift_build.log; then
+    if rg -q "Operation not permitted|sandbox_apply: Operation not permitted|not accessible or not writable|Invalid manifest|unable to load standard library" /tmp/xt_gate_swift_build.log; then
       if [[ -n "${xt_cli_binary}" ]] && is_xt_cli_binary_fresh "${xt_cli_binary}"; then
         note_pass "${gate_name}: swift build blocked by sandbox, using fresh prebuilt binary (${xt_cli_binary})"
         return

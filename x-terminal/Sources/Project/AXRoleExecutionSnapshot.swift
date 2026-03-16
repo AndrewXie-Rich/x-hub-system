@@ -9,6 +9,10 @@ struct AXRoleExecutionSnapshot: Equatable, Identifiable, Sendable {
     var runtimeProvider: String
     var executionPath: String
     var fallbackReasonCode: String
+    var remoteRetryAttempted: Bool
+    var remoteRetryFromModelId: String
+    var remoteRetryToModelId: String
+    var remoteRetryReasonCode: String
     var source: String
 
     var id: String { role.rawValue }
@@ -23,6 +27,10 @@ struct AXRoleExecutionSnapshot: Equatable, Identifiable, Sendable {
             runtimeProvider: "",
             executionPath: "no_record",
             fallbackReasonCode: "",
+            remoteRetryAttempted: false,
+            remoteRetryFromModelId: "",
+            remoteRetryToModelId: "",
+            remoteRetryReasonCode: "",
             source: source
         )
     }
@@ -34,6 +42,10 @@ struct AXRoleExecutionSnapshot: Equatable, Identifiable, Sendable {
             || !runtimeProvider.isEmpty
             || executionPath != "no_record"
             || !fallbackReasonCode.isEmpty
+            || remoteRetryAttempted
+            || !remoteRetryFromModelId.isEmpty
+            || !remoteRetryToModelId.isEmpty
+            || !remoteRetryReasonCode.isEmpty
     }
 
     var effectiveModelId: String {
@@ -65,13 +77,29 @@ struct AXRoleExecutionSnapshot: Equatable, Identifiable, Sendable {
     var compactSummary: String {
         switch executionPath {
         case "remote_model":
-            if !actualModelId.isEmpty {
-                return "actual=\(actualModelId)"
-            }
+            var parts: [String] = []
             if !requestedModelId.isEmpty {
-                return "requested=\(requestedModelId)"
+                parts.append("requested=\(requestedModelId)")
             }
-            return "remote_model"
+            if !actualModelId.isEmpty {
+                parts.append("actual=\(actualModelId)")
+            }
+            if remoteRetryAttempted {
+                let retryFrom = remoteRetryFromModelId.isEmpty ? requestedModelId : remoteRetryFromModelId
+                let retryTo = remoteRetryToModelId
+                let retryReason = remoteRetryReasonCode
+                if !retryFrom.isEmpty || !retryTo.isEmpty {
+                    let fromText = retryFrom.isEmpty ? "remote" : retryFrom
+                    let toText = retryTo.isEmpty ? "backup_remote" : retryTo
+                    parts.append("remote_retry=\(fromText)->\(toText)")
+                } else {
+                    parts.append("remote_retry=true")
+                }
+                if !retryReason.isEmpty {
+                    parts.append("retry_reason=\(retryReason)")
+                }
+            }
+            return parts.isEmpty ? "remote_model" : parts.joined(separator: " | ")
         case "hub_downgraded_to_local":
             var parts: [String] = []
             if !requestedModelId.isEmpty {
@@ -94,6 +122,21 @@ struct AXRoleExecutionSnapshot: Equatable, Identifiable, Sendable {
             }
             if !fallbackReasonCode.isEmpty {
                 parts.append("reason=\(fallbackReasonCode)")
+            }
+            if remoteRetryAttempted {
+                let retryFrom = remoteRetryFromModelId.isEmpty ? requestedModelId : remoteRetryFromModelId
+                let retryTo = remoteRetryToModelId
+                let retryReason = remoteRetryReasonCode
+                if !retryFrom.isEmpty || !retryTo.isEmpty {
+                    let fromText = retryFrom.isEmpty ? "remote" : retryFrom
+                    let toText = retryTo.isEmpty ? "backup_remote" : retryTo
+                    parts.append("remote_retry=\(fromText)->\(toText)")
+                } else {
+                    parts.append("remote_retry=true")
+                }
+                if !retryReason.isEmpty {
+                    parts.append("retry_reason=\(retryReason)")
+                }
             }
             return parts.isEmpty ? "fallback" : parts.joined(separator: " | ")
         case "local_runtime":
@@ -133,6 +176,18 @@ struct AXRoleExecutionSnapshot: Equatable, Identifiable, Sendable {
         }
         if !fallbackReasonCode.isEmpty {
             lines.append("fallback_reason=\(fallbackReasonCode)")
+        }
+        if remoteRetryAttempted {
+            lines.append("remote_retry_attempted=true")
+        }
+        if !remoteRetryFromModelId.isEmpty {
+            lines.append("remote_retry_from_model=\(remoteRetryFromModelId)")
+        }
+        if !remoteRetryToModelId.isEmpty {
+            lines.append("remote_retry_to_model=\(remoteRetryToModelId)")
+        }
+        if !remoteRetryReasonCode.isEmpty {
+            lines.append("remote_retry_reason=\(remoteRetryReasonCode)")
         }
         if !stage.isEmpty {
             lines.append("stage=\(stage)")
@@ -196,6 +251,10 @@ enum AXRoleExecutionSnapshots {
         runtimeProvider: String,
         executionPath: String,
         fallbackReasonCode: String,
+        remoteRetryAttempted: Bool = false,
+        remoteRetryFromModelId: String = "",
+        remoteRetryToModelId: String = "",
+        remoteRetryReasonCode: String = "",
         source: String
     ) -> AXRoleExecutionSnapshot {
         AXRoleExecutionSnapshot(
@@ -211,6 +270,10 @@ enum AXRoleExecutionSnapshots {
                 fallbackReasonCode: fallbackReasonCode
             ),
             fallbackReasonCode: normalizedReasonCode(fallbackReasonCode),
+            remoteRetryAttempted: remoteRetryAttempted,
+            remoteRetryFromModelId: normalize(remoteRetryFromModelId),
+            remoteRetryToModelId: normalize(remoteRetryToModelId),
+            remoteRetryReasonCode: normalizedReasonCode(remoteRetryReasonCode),
             source: normalize(source)
         )
     }
@@ -233,6 +296,10 @@ enum AXRoleExecutionSnapshots {
         let fallbackReasonCode = text(obj["fallback_reason_code"])
             ?? text(obj["failure_reason_code"])
             ?? ""
+        let remoteRetryAttempted = bool(obj["remote_retry_attempted"]) ?? false
+        let remoteRetryFromModelId = text(obj["remote_retry_from_model_id"]) ?? ""
+        let remoteRetryToModelId = text(obj["remote_retry_to_model_id"]) ?? ""
+        let remoteRetryReasonCode = text(obj["remote_retry_reason_code"]) ?? ""
 
         return snapshot(
             role: role,
@@ -243,6 +310,10 @@ enum AXRoleExecutionSnapshots {
             runtimeProvider: runtimeProvider,
             executionPath: executionPath,
             fallbackReasonCode: fallbackReasonCode,
+            remoteRetryAttempted: remoteRetryAttempted,
+            remoteRetryFromModelId: remoteRetryFromModelId,
+            remoteRetryToModelId: remoteRetryToModelId,
+            remoteRetryReasonCode: remoteRetryReasonCode,
             source: "usage_log"
         )
     }
@@ -317,5 +388,25 @@ enum AXRoleExecutionSnapshots {
         if let int = value as? Int { return Double(int) }
         if let string = value as? String, let double = Double(string) { return double }
         return 0
+    }
+
+    private static func bool(_ value: Any?) -> Bool? {
+        if let bool = value as? Bool {
+            return bool
+        }
+        if let number = value as? NSNumber {
+            return number.boolValue
+        }
+        if let string = value as? String {
+            switch normalize(string).lowercased() {
+            case "true", "1", "yes":
+                return true
+            case "false", "0", "no":
+                return false
+            default:
+                return nil
+            }
+        }
+        return nil
     }
 }

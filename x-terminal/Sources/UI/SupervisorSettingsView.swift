@@ -6,6 +6,7 @@ struct SupervisorSettingsView: View {
     @StateObject private var supervisorManager = SupervisorManager.shared
     @State private var selectedProjectId: String?
     @State private var selectedRole: AXRole = .coder
+    @State private var showProjectModelPicker = false
     @State private var wakeTriggerWordsDraft: String = ""
     @State private var supervisorPromptDraft: SupervisorPromptPreferences = .default()
     @State private var voiceDiagnosticsExpanded: Bool = false
@@ -248,6 +249,18 @@ struct SupervisorSettingsView: View {
                 .pickerStyle(.menu)
             }
 
+            HStack(spacing: 12) {
+                Picker("Voice Persona", selection: voicePersonaBinding) {
+                    ForEach(VoicePersonaPreset.allCases) { persona in
+                        Text(persona.displayName).tag(persona)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                Toggle("Interrupt On Speech", isOn: voiceInterruptOnSpeechBinding)
+                    .toggleStyle(.switch)
+            }
+
             Toggle("Enable FunASR Sidecar", isOn: funASREnabledBinding)
                 .toggleStyle(.switch)
 
@@ -319,11 +332,15 @@ struct SupervisorSettingsView: View {
                 }
                 Text("Current Route: \(supervisorManager.voiceRouteDecision.route.rawValue)")
                     .font(.caption)
+                Text("Voice Persona: \(appModel.settingsStore.settings.voice.persona.displayName)")
+                    .font(.caption)
                 Text("Reason: \(supervisorManager.voiceRouteDecision.reasonCode)")
                     .font(.caption)
                 Text("Authorization: \(supervisorManager.voiceAuthorizationStatus.rawValue)")
                     .font(.caption)
                 Text("Session State: \(supervisorManager.voiceRuntimeState.state.rawValue)")
+                    .font(.caption)
+                Text("Interrupt On Speech: \(appModel.settingsStore.settings.voice.interruptOnSpeech ? "enabled" : "disabled")")
                     .font(.caption)
                 Text("Wake Profile Sync: \(supervisorManager.voiceWakeProfileSnapshot.syncState.rawValue)")
                     .font(.caption)
@@ -495,6 +512,7 @@ struct SupervisorSettingsView: View {
     private func projectRow(_ project: AXProjectEntry) -> some View {
         Button(action: {
             selectedProjectId = project.projectId
+            showProjectModelPicker = false
         }) {
             HStack(alignment: .top, spacing: 8) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -528,7 +546,7 @@ struct SupervisorSettingsView: View {
                 
                 Divider()
                 
-                modelList(for: projectId)
+                modelRoutingPanel(for: projectId)
             } else {
                 Text("请从左侧选择一个项目")
                     .foregroundStyle(.secondary)
@@ -558,6 +576,7 @@ struct SupervisorSettingsView: View {
     private func roleButton(_ role: AXRole) -> some View {
         Button(action: {
             selectedRole = role
+            showProjectModelPicker = false
         }) {
             HStack(spacing: 8) {
                 roleIcon(role)
@@ -594,13 +613,13 @@ struct SupervisorSettingsView: View {
         }
     }
     
-    private func modelList(for projectId: String) -> some View {
+    private func modelRoutingPanel(for projectId: String) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("为 \(selectedRole.displayName) 选择模型")
                     .font(.headline)
                 Spacer()
-                if let modelId = getCurrentModel(for: projectId, role: selectedRole), !modelId.isEmpty {
+                if let modelId = currentProjectModelOverrideId(for: projectId, role: selectedRole), !modelId.isEmpty {
                     Button("应用到全部项目") {
                         assignModelToAllProjects(role: selectedRole, modelId: modelId)
                     }
@@ -609,117 +628,285 @@ struct SupervisorSettingsView: View {
                 }
             }
             
-            if modelManager.availableModels.isEmpty {
+            if sortedAvailableHubModels.isEmpty {
                 Text("没有可用的模型。请确保 X-Hub 已启动并加载了模型。")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding()
             } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 8) {
-                        ForEach(modelManager.availableModels) { model in
-                            modelRow(model, for: projectId)
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    private func modelRow(_ model: HubModel, for projectId: String) -> some View {
-        let currentModel = getCurrentModel(for: projectId, role: selectedRole)
-        let isSelected = currentModel == model.id
-        
-        return Button(action: {
-            assignModelToProject(projectId: projectId, role: selectedRole, modelId: model.id)
-        }) {
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 8) {
-                        Text(model.name)
-                            .font(.headline)
-                            .foregroundStyle(.primary)
-                        
-                        if model.state == .loaded {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundColor(.green)
-                                .font(.caption)
-                        }
-                        
-                        Text(model.backend)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    
-                    if let note = model.note, !note.isEmpty {
-                        Text(note)
-                            .font(.body)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
-                    
-                    Text("Hub 默认上下文：\(model.hubDefaultContextLength) tokens")
+                if let selectedProject = appModel.sortedProjects.first(where: { $0.projectId == projectId }) {
+                    Text("当前项目：\(selectedProject.displayName)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-
-                    if model.isLocalModel {
-                        Text("本地上限：\(model.hubMaxContextLength) tokens")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    
-                    if let roles = model.roles, !roles.isEmpty {
-                        Text("角色：\(roles.joined(separator: ", "))")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
                 }
-                
-                Spacer()
-                
-                if isSelected {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.accentColor)
-                        .font(.title2)
+
+                if let warning = modelAvailabilityWarningText(for: projectId, role: selectedRole) {
+                    Text(warning)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                HubModelRoutingButton(
+                    title: selectedModelButtonTitle(for: projectId, role: selectedRole),
+                    identifier: selectedModelIdentifier(for: projectId, role: selectedRole),
+                    sourceLabel: selectedModelPresentationSourceLabel(for: projectId, role: selectedRole),
+                    presentation: selectedModelPresentation(for: projectId, role: selectedRole),
+                    disabled: !appModel.hubInteractive || sortedAvailableHubModels.isEmpty
+                ) {
+                    showProjectModelPicker = true
+                }
+                .frame(maxWidth: 480, alignment: .leading)
+                .popover(isPresented: $showProjectModelPicker, arrowEdge: .bottom) {
+                    let recommendation = projectModelSelectionRecommendation(
+                        for: projectId,
+                        role: selectedRole
+                    )
+                    HubModelPickerPopover(
+                        title: "为 \(selectedRole.displayName) 选择模型",
+                        selectedModelId: currentProjectModelOverrideId(for: projectId, role: selectedRole),
+                        inheritedModelId: globalModelId(selectedRole),
+                        inheritedModelPresentation: globalModelPresentation(for: selectedRole),
+                        models: sortedAvailableHubModels,
+                        recommendedModelId: recommendation?.modelId,
+                        recommendationMessage: recommendation?.message,
+                        onSelect: { modelId in
+                            appModel.setProjectRoleModelOverride(projectId: projectId, role: selectedRole, modelId: modelId)
+                            showProjectModelPicker = false
+                        }
+                    )
+                    .frame(width: 460, height: 420)
+                }
+
+                if let globalHint = inheritedGlobalModelHint(for: projectId, role: selectedRole) {
+                    Text(globalHint)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .padding(12)
-            .background(isSelected ? Color.accentColor.opacity(0.1) : Color(NSColor.controlBackgroundColor))
-            .cornerRadius(8)
         }
-        .buttonStyle(.plain)
     }
-    
-    private func getCurrentModel(for projectId: String, role: AXRole) -> String? {
+
+    private func currentProjectModelOverrideId(for projectId: String, role: AXRole) -> String? {
         guard let ctx = appModel.projectContext(for: projectId),
               let cfg = try? AXProjectStore.loadOrCreateConfig(for: ctx) else {
             return nil
         }
-        return cfg.modelOverride(for: role)
+        let raw = cfg.modelOverride(for: role)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return raw.isEmpty ? nil : raw
     }
-    
-    private func assignModelToProject(projectId: String, role: AXRole, modelId: String) {
-        guard let ctx = appModel.projectContext(for: projectId) else { return }
-        
-        guard var cfg = try? AXProjectStore.loadOrCreateConfig(for: ctx) else { return }
-        
-        cfg.setModelOverride(role: role, modelId: modelId)
-        
-        do {
-            try AXProjectStore.saveConfig(cfg, for: ctx)
-        } catch {
-            print("保存项目配置失败：\(error.localizedDescription)")
+
+    private func availableHubModels() -> [HubModel] {
+        modelManager.availableModels.isEmpty ? appModel.modelsState.models : modelManager.availableModels
+    }
+
+    private var sortedAvailableHubModels: [HubModel] {
+        var dedup: [String: HubModel] = [:]
+        for model in availableHubModels() {
+            dedup[model.id] = model
         }
+        return dedup.values.sorted { a, b in
+            let sa = stateRank(a.state)
+            let sb = stateRank(b.state)
+            if sa != sb { return sa < sb }
+            let an = (a.name.isEmpty ? a.id : a.name).lowercased()
+            let bn = (b.name.isEmpty ? b.id : b.name).lowercased()
+            if an != bn { return an < bn }
+            return a.id.lowercased() < b.id.lowercased()
+        }
+    }
+
+    private func globalModelId(_ role: AXRole) -> String? {
+        appModel.settingsStore.settings.assignment(for: role).model
+    }
+
+    private func selectedModelPresentation(for projectId: String, role: AXRole) -> ModelInfo? {
+        if let projectModelId = currentProjectModelOverrideId(for: projectId, role: role) {
+            return availableHubModels().first(where: { $0.id == projectModelId })?.capabilityPresentationModel
+                ?? XTModelCatalog.modelInfo(for: projectModelId)
+        }
+
+        let inheritedModelId = globalModelId(role)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !inheritedModelId.isEmpty else { return nil }
+        return availableHubModels().first(where: { $0.id == inheritedModelId })?.capabilityPresentationModel
+            ?? XTModelCatalog.modelInfo(for: inheritedModelId)
+    }
+
+    private func globalModelPresentation(for role: AXRole) -> ModelInfo? {
+        let inheritedModelId = globalModelId(role)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !inheritedModelId.isEmpty else { return nil }
+        return availableHubModels().first(where: { $0.id == inheritedModelId })?.capabilityPresentationModel
+            ?? XTModelCatalog.modelInfo(for: inheritedModelId)
+    }
+
+    private func selectedModelPresentationSourceLabel(for projectId: String, role: AXRole) -> String {
+        currentProjectModelOverrideId(for: projectId, role: role) == nil ? "继承全局" : "项目覆盖"
+    }
+
+    private func selectedModelButtonTitle(for projectId: String, role: AXRole) -> String {
+        if let presentation = selectedModelPresentation(for: projectId, role: role) {
+            return presentation.displayName
+        }
+        return "使用全局设置"
+    }
+
+    private func selectedModelIdentifier(for projectId: String, role: AXRole) -> String? {
+        if let projectModelId = currentProjectModelOverrideId(for: projectId, role: role) {
+            return projectModelId
+        }
+        let inheritedModelId = globalModelId(role)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return inheritedModelId.isEmpty ? nil : inheritedModelId
+    }
+
+    private func inheritedGlobalModelHint(for projectId: String, role: AXRole) -> String? {
+        guard currentProjectModelOverrideId(for: projectId, role: role) != nil else { return nil }
+        if let global = globalModelId(role)?.trimmingCharacters(in: .whitespacesAndNewlines), !global.isEmpty {
+            return "当前不选项目覆盖时，会回到全局模型 `\(global)`。"
+        }
+        return "当前不选项目覆盖时，会回到全局自动路由。"
+    }
+
+    private func modelInventorySnapshot() -> ModelStateSnapshot {
+        ModelStateSnapshot(
+            models: availableHubModels(),
+            updatedAt: appModel.modelsState.updatedAt
+        )
+    }
+
+    private func projectModelSelectionRecommendation(
+        for projectId: String,
+        role: AXRole
+    ) -> (modelId: String, message: String)? {
+        let configured = selectedModelIdentifier(for: projectId, role: role)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !configured.isEmpty else { return nil }
+
+        if let guidance = AXProjectModelRouteMemoryStore.selectionGuidance(
+            configuredModelId: configured,
+            role: role,
+            ctx: appModel.projectContext(for: projectId),
+            snapshot: modelInventorySnapshot()
+        ),
+           let recommendedModelId = guidance.recommendedModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !recommendedModelId.isEmpty {
+            let message = guidance.recommendationText?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (
+                recommendedModelId,
+                (message?.isEmpty == false ? message! : guidance.warningText)
+            )
+        }
+
+        let assessment = HubModelSelectionAdvisor.assess(
+            requestedId: configured,
+            snapshot: modelInventorySnapshot()
+        )
+        guard let assessment,
+              assessment.isExactMatchLoaded != true,
+              let rawCandidate = assessment.loadedCandidates.first?.id else {
+            return nil
+        }
+        let candidate = rawCandidate.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !candidate.isEmpty,
+              candidate.caseInsensitiveCompare(configured) != .orderedSame else {
+            return nil
+        }
+
+        if let exact = assessment.exactMatch {
+            return (
+                candidate,
+                "`\(exact.id)` 当前是 \(HubModelSelectionAdvisor.stateLabel(exact.state))；如果你现在就要继续，先切到已加载的 `\(candidate)` 更稳。"
+            )
+        }
+
+        return (
+            candidate,
+            "`\(configured)` 当前不在可直接执行的 inventory 里；先切到已加载的 `\(candidate)`，可以避免这轮继续掉本地。"
+        )
+    }
+
+    private func modelAvailabilityWarningText(for projectId: String, role: AXRole) -> String? {
+        guard let configuredBinding = warningConfiguredModelBinding(for: projectId, role: role) else {
+            return nil
+        }
+        let configured = configuredBinding.modelId
+        if let routeWarning = AXProjectModelRouteMemoryStore.selectionWarningText(
+            configuredModelId: configured,
+            role: role,
+            ctx: configuredBinding.ctx,
+            snapshot: modelInventorySnapshot()
+        ) {
+            return routeWarning
+        }
+        let assessment = HubModelSelectionAdvisor.assess(
+            requestedId: configured,
+            snapshot: modelInventorySnapshot()
+        )
+        guard assessment?.isExactMatchLoaded != true else { return nil }
+
+        if let assessment, let exact = assessment.exactMatch {
+            let candidates = suggestedModelIDs(from: assessment)
+            if let first = candidates.first {
+                return "\(configuredBinding.subject) `\(exact.id)`，但它现在是 \(HubModelSelectionAdvisor.stateLabel(exact.state))。若你现在执行，这一路可能会回退到本地；可先切到 `\(first)`。"
+            }
+            return "\(configuredBinding.subject) `\(exact.id)`，但它现在是 \(HubModelSelectionAdvisor.stateLabel(exact.state))。若你现在执行，这一路可能会回退到本地。"
+        }
+
+        if let assessment {
+            let candidates = suggestedModelIDs(from: assessment)
+            if !candidates.isEmpty {
+                return "\(configuredBinding.subject) `\(configured)`，但 inventory 里没有精确匹配。可先试 `\(candidates.joined(separator: "`, `"))`。"
+            }
+        }
+        return "\(configuredBinding.subject) `\(configured)`，但现在无法确认它可执行。"
+    }
+
+    private func warningConfiguredModelBinding(
+        for projectId: String,
+        role: AXRole
+    ) -> (modelId: String, subject: String, ctx: AXProjectContext?)? {
+        if let projectModelId = currentProjectModelOverrideId(for: projectId, role: role)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !projectModelId.isEmpty {
+            return (
+                projectModelId,
+                "当前 project 为 \(role.displayName) 配的是",
+                appModel.projectContext(for: projectId)
+            )
+        }
+
+        if let inheritedModelId = globalModelId(role)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !inheritedModelId.isEmpty {
+            return (
+                inheritedModelId,
+                "\(role.displayName) 当前继承的全局模型是",
+                appModel.projectContext(for: projectId)
+            )
+        }
+
+        return nil
+    }
+
+    private func suggestedModelIDs(from assessment: HubModelAvailabilityAssessment) -> [String] {
+        let source = assessment.loadedCandidates.isEmpty ? assessment.inventoryCandidates : assessment.loadedCandidates
+        return source.prefix(3).map(\.id)
+    }
+
+    private func stateRank(_ s: HubModelState) -> Int {
+        switch s {
+        case .loaded: return 0
+        case .available: return 1
+        case .sleeping: return 2
+        }
+    }
+
+    private func assignModelToProject(projectId: String, role: AXRole, modelId: String) {
+        appModel.setProjectRoleModelOverride(projectId: projectId, role: role, modelId: modelId)
     }
 
     private func assignModelToAllProjects(role: AXRole, modelId: String) {
         for project in appModel.sortedProjects {
-            guard let ctx = appModel.projectContext(for: project.projectId),
-                  var cfg = try? AXProjectStore.loadOrCreateConfig(for: ctx) else {
-                continue
-            }
-            cfg.setModelOverride(role: role, modelId: modelId)
-            try? AXProjectStore.saveConfig(cfg, for: ctx)
+            appModel.setProjectRoleModelOverride(projectId: project.projectId, role: role, modelId: modelId)
         }
     }
 
@@ -746,6 +933,24 @@ struct SupervisorSettingsView: View {
             get: { appModel.settingsStore.settings.voice.autoReportMode },
             set: { value in
                 updateVoiceSettings { $0.autoReportMode = value }
+            }
+        )
+    }
+
+    private var voicePersonaBinding: Binding<VoicePersonaPreset> {
+        Binding(
+            get: { appModel.settingsStore.settings.voice.persona },
+            set: { value in
+                updateVoiceSettings { $0.persona = value }
+            }
+        )
+    }
+
+    private var voiceInterruptOnSpeechBinding: Binding<Bool> {
+        Binding(
+            get: { appModel.settingsStore.settings.voice.interruptOnSpeech },
+            set: { value in
+                updateVoiceSettings { $0.interruptOnSpeech = value }
             }
         )
     }

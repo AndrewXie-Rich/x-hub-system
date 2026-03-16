@@ -116,6 +116,7 @@ struct XTW330AutonomyPolicySurfaceEvidenceTests {
             HubPaths.setPinnedBaseDirOverride(hubBase)
             let clampSnapshot = try await projectSnapshotSummary(for: projectARoot)
             let clampAutonomy = try #require(jsonObject(clampSnapshot["autonomy_policy"]))
+            let clampRuntimeSurface = try #require(jsonObject(clampSnapshot["runtime_surface"]))
             HubPaths.setPinnedBaseDirOverride(hubBase)
             let clampBrowser = try await ToolExecutor.execute(
                 call: ToolCall(
@@ -133,6 +134,7 @@ struct XTW330AutonomyPolicySurfaceEvidenceTests {
                 projectRoot: projectARoot
             )
             let clampDeviceSummary = try #require(toolSummaryObject(clampDevice.output))
+            let clampDeniedRuntimeSurface = try #require(jsonObject(clampDeviceSummary["runtime_surface"]))
 
             try writeHubAutonomyPolicyOverrides(
                 to: hubBase,
@@ -156,6 +158,7 @@ struct XTW330AutonomyPolicySurfaceEvidenceTests {
             HubPaths.setPinnedBaseDirOverride(hubBase)
             let killSwitchSnapshot = try await projectSnapshotSummary(for: projectARoot)
             let killSwitchAutonomy = try #require(jsonObject(killSwitchSnapshot["autonomy_policy"]))
+            let killSwitchRuntimeSurface = try #require(jsonObject(killSwitchSnapshot["runtime_surface"]))
             HubPaths.setPinnedBaseDirOverride(hubBase)
             let killSwitchBrowser = try await ToolExecutor.execute(
                 call: ToolCall(
@@ -168,6 +171,7 @@ struct XTW330AutonomyPolicySurfaceEvidenceTests {
                 projectRoot: projectARoot
             )
             let killSwitchBrowserSummary = try #require(toolSummaryObject(killSwitchBrowser.output))
+            let killSwitchDeniedRuntimeSurface = try #require(jsonObject(killSwitchBrowserSummary["runtime_surface"]))
 
             HubPaths.setPinnedBaseDirOverride(hubBase)
             let projectBRemoteOverride = await HubIPCClient.requestProjectAutonomyPolicyOverride(
@@ -177,6 +181,7 @@ struct XTW330AutonomyPolicySurfaceEvidenceTests {
             HubPaths.setPinnedBaseDirOverride(hubBase)
             let projectBSnapshot = try await projectSnapshotSummary(for: projectBRoot)
             let projectBAutonomy = try #require(jsonObject(projectBSnapshot["autonomy_policy"]))
+            let projectBRuntimeSurface = try #require(jsonObject(projectBSnapshot["runtime_surface"]))
             let projectBRawLog = try rawLogEntries(for: projectBCtx)
 
             let ttlCtx = AXProjectContext(root: ttlFixture.root)
@@ -195,11 +200,13 @@ struct XTW330AutonomyPolicySurfaceEvidenceTests {
             try AXProjectStore.saveConfig(ttlConfig, for: ttlCtx)
             let ttlSnapshot = try await projectSnapshotSummary(for: ttlFixture.root)
             let ttlAutonomy = try #require(jsonObject(ttlSnapshot["autonomy_policy"]))
+            let ttlRuntimeSurface = try #require(jsonObject(ttlSnapshot["runtime_surface"]))
             let ttlDevice = try await ToolExecutor.execute(
                 call: ToolCall(tool: .deviceClipboardRead, args: [:]),
                 projectRoot: ttlFixture.root
             )
             let ttlDeviceSummary = try #require(toolSummaryObject(ttlDevice.output))
+            let ttlDeniedRuntimeSurface = try #require(jsonObject(ttlDeviceSummary["runtime_surface"]))
 
             let clampConfiguredSurfaces = jsonArray(clampAutonomy["configured_surfaces"]) ?? []
             let clampEffectiveSurfaces = jsonArray(clampAutonomy["effective_surfaces"]) ?? []
@@ -209,13 +216,24 @@ struct XTW330AutonomyPolicySurfaceEvidenceTests {
             let terminalClampAuditPass =
                 localClampConfig.autonomyMode == .trustedOpenClawMode
                 && localClampConfig.autonomyHubOverrideMode == .clampGuided
+                && (localClampAuditRow["runtime_surface_configured"] as? String) == AXProjectAutonomyMode.trustedOpenClawMode.rawValue
+                && (localClampAuditRow["effective_runtime_surface"] as? String) == AXProjectAutonomyMode.guided.rawValue
+                && (localClampAuditRow["previous_effective_runtime_surface"] as? String) == AXProjectAutonomyMode.trustedOpenClawMode.rawValue
+                && (localClampAuditRow["runtime_surface_hub_override"] as? String) == AXProjectAutonomyHubOverrideMode.clampGuided.rawValue
+                && (localClampAuditRow["runtime_surface_local_override"] as? String) == AXProjectAutonomyHubOverrideMode.clampGuided.rawValue
+                && (localClampAuditRow["runtime_surface_remote_override"] as? String) == AXProjectAutonomyHubOverrideMode.none.rawValue
+                && (localClampAuditRow["runtime_surface_expired"] as? Bool) == false
                 && (localClampAuditRow["effective_mode"] as? String) == AXProjectAutonomyMode.guided.rawValue
                 && (localClampAuditRow["previous_effective_mode"] as? String) == AXProjectAutonomyMode.trustedOpenClawMode.rawValue
                 && (localClampAuditRow["project_id"] as? String) == projectAEntry.projectId
                 && (localClampAuditRow["effective_hub_override_mode"] as? String) == AXProjectAutonomyHubOverrideMode.clampGuided.rawValue
 
             let projectSnapshotClampPass =
-                jsonString(clampAutonomy["configured_mode"]) == AXProjectAutonomyMode.trustedOpenClawMode.rawValue
+                jsonString(clampRuntimeSurface["configured_surface"]) == AXProjectAutonomyMode.trustedOpenClawMode.rawValue
+                && jsonString(clampRuntimeSurface["effective_surface"]) == AXProjectAutonomyMode.guided.rawValue
+                && jsonString(clampRuntimeSurface["remote_override_surface"]) == AXProjectAutonomyHubOverrideMode.clampGuided.rawValue
+                && jsonString(clampRuntimeSurface["remote_override_source"]) == "hub_autonomy_policy_overrides_file"
+                && jsonString(clampAutonomy["configured_mode"]) == AXProjectAutonomyMode.trustedOpenClawMode.rawValue
                 && jsonString(clampAutonomy["effective_mode"]) == AXProjectAutonomyMode.guided.rawValue
                 && jsonString(clampAutonomy["hub_override_mode"]) == AXProjectAutonomyHubOverrideMode.clampGuided.rawValue
                 && jsonString(clampAutonomy["local_override_mode"]) == AXProjectAutonomyHubOverrideMode.none.rawValue
@@ -234,12 +252,17 @@ struct XTW330AutonomyPolicySurfaceEvidenceTests {
                 && !clampDevice.ok
                 && jsonString(clampDeviceSummary["deny_code"]) == "autonomy_policy_denied"
                 && jsonString(clampDeviceSummary["policy_reason"]) == "hub_override=clamp_guided"
+                && jsonString(clampDeviceSummary["runtime_surface_policy_reason"]) == "hub_override=clamp_guided"
+                && jsonString(clampDeniedRuntimeSurface["effective_surface"]) == AXProjectAutonomyMode.guided.rawValue
+                && jsonString(clampDeniedRuntimeSurface["remote_override_surface"]) == AXProjectAutonomyHubOverrideMode.clampGuided.rawValue
                 && jsonString(clampDeviceSummary["autonomy_effective_mode"]) == AXProjectAutonomyMode.guided.rawValue
                 && jsonString(clampDeviceSummary["autonomy_local_override_mode"]) == AXProjectAutonomyHubOverrideMode.none.rawValue
                 && jsonString(clampDeviceSummary["autonomy_remote_override_mode"]) == AXProjectAutonomyHubOverrideMode.clampGuided.rawValue
 
             let killSwitchPass =
-                jsonString(killSwitchAutonomy["effective_mode"]) == AXProjectAutonomyMode.manual.rawValue
+                jsonString(killSwitchRuntimeSurface["effective_surface"]) == AXProjectAutonomyMode.manual.rawValue
+                && jsonBool(killSwitchRuntimeSurface["kill_switch_engaged"]) == true
+                && jsonString(killSwitchAutonomy["effective_mode"]) == AXProjectAutonomyMode.manual.rawValue
                 && jsonString(killSwitchAutonomy["hub_override_mode"]) == AXProjectAutonomyHubOverrideMode.killSwitch.rawValue
                 && jsonString(killSwitchAutonomy["local_override_mode"]) == AXProjectAutonomyHubOverrideMode.none.rawValue
                 && jsonString(killSwitchAutonomy["remote_override_mode"]) == AXProjectAutonomyHubOverrideMode.killSwitch.rawValue
@@ -248,19 +271,30 @@ struct XTW330AutonomyPolicySurfaceEvidenceTests {
                 && !killSwitchBrowser.ok
                 && jsonString(killSwitchBrowserSummary["deny_code"]) == "autonomy_policy_denied"
                 && jsonString(killSwitchBrowserSummary["policy_reason"]) == "hub_override=kill_switch"
+                && jsonString(killSwitchBrowserSummary["runtime_surface_policy_reason"]) == "hub_override=kill_switch"
+                && jsonString(killSwitchDeniedRuntimeSurface["effective_surface"]) == AXProjectAutonomyMode.manual.rawValue
+                && jsonBool(killSwitchDeniedRuntimeSurface["kill_switch_engaged"]) == true
                 && jsonString(killSwitchBrowserSummary["autonomy_effective_mode"]) == AXProjectAutonomyMode.manual.rawValue
                 && jsonString(killSwitchBrowserSummary["autonomy_remote_override_mode"]) == AXProjectAutonomyHubOverrideMode.killSwitch.rawValue
 
             let ttlExpiryPass =
-                jsonString(ttlAutonomy["configured_mode"]) == AXProjectAutonomyMode.trustedOpenClawMode.rawValue
+                jsonString(ttlRuntimeSurface["configured_surface"]) == AXProjectAutonomyMode.trustedOpenClawMode.rawValue
+                && jsonString(ttlRuntimeSurface["effective_surface"]) == AXProjectAutonomyMode.manual.rawValue
+                && jsonBool(ttlRuntimeSurface["expired"]) == true
+                && jsonString(ttlAutonomy["configured_mode"]) == AXProjectAutonomyMode.trustedOpenClawMode.rawValue
                 && jsonString(ttlAutonomy["effective_mode"]) == AXProjectAutonomyMode.manual.rawValue
                 && jsonBool(ttlAutonomy["expired"]) == true
                 && !ttlDevice.ok
                 && jsonString(ttlDeviceSummary["deny_code"]) == "autonomy_policy_denied"
                 && jsonString(ttlDeviceSummary["policy_reason"]) == "autonomy_ttl_expired"
+                && jsonString(ttlDeviceSummary["runtime_surface_policy_reason"]) == "runtime_surface_ttl_expired"
+                && jsonString(ttlDeniedRuntimeSurface["effective_surface"]) == AXProjectAutonomyMode.manual.rawValue
+                && jsonBool(ttlDeniedRuntimeSurface["expired"]) == true
 
             let projectIsolationPass =
-                jsonString(projectBAutonomy["configured_mode"]) == AXProjectAutonomyMode.manual.rawValue
+                jsonString(projectBRuntimeSurface["configured_surface"]) == AXProjectAutonomyMode.manual.rawValue
+                && jsonString(projectBRuntimeSurface["effective_surface"]) == AXProjectAutonomyMode.manual.rawValue
+                && jsonString(projectBAutonomy["configured_mode"]) == AXProjectAutonomyMode.manual.rawValue
                 && jsonString(projectBAutonomy["effective_mode"]) == AXProjectAutonomyMode.manual.rawValue
                 && jsonString(projectBAutonomy["hub_override_mode"]) == AXProjectAutonomyHubOverrideMode.none.rawValue
                 && jsonString(projectBAutonomy["remote_override_mode"]) == AXProjectAutonomyHubOverrideMode.none.rawValue
