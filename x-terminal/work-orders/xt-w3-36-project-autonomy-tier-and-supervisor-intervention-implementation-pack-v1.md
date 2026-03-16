@@ -1,8 +1,8 @@
 # XT-W3-36 Project Autonomy Tier + Supervisor Intervention Implementation Pack v1
 
 - owner: XT-L2（Primary）/ Supervisor / Hub-L5 / Security / QA / Product
-- status: planned
-- last_updated: 2026-03-13
+- status: in_progress
+- last_updated: 2026-03-15
 - purpose: 把当前混合在单一 `autonomy` 语义里的“执行权限、supervisor 介入强度、progress heartbeat”三件事拆开，正式落成 `A0..A4` 执行档位、`S0..S4` 介入档位和独立 review/heartbeat 调度，使 project coder 与 supervisor 都能在更清晰、更可审计、更可迁移的治理框架下推进项目。
 - depends_on:
   - `docs/memory-new/xhub-project-autonomy-tier-and-supervisor-review-protocol-v1.md`
@@ -14,6 +14,29 @@
   - `x-terminal/work-orders/xt-w3-35-supervisor-memory-retrieval-progressive-disclosure-implementation-pack-v1.md`
   - `docs/memory-new/xhub-trusted-automation-device-execution-plane-implementation-pack-v1.md`
   - `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
+
+## Status Notes
+
+- 2026-03-15:
+  - `XT-W3-36-B/C` 继续把旧 `autonomy_*` 外显层向新 `runtime_surface` 协议迁移：runtime deny summary 现已补齐结构化 `runtime_surface` / `autonomy_policy` 对象、surface arrays、TTL/kill-switch/updated-at 字段，同时保留旧 top-level 兼容键不删。
+  - `AppModel` 写入的 `project_autonomy_profile` / `project_autonomy_policy` / `project_governance_bundle` raw log 现已双写 `runtime_surface_configured/effective/...` 审计字段，证据测试会同时校验新旧命名，方便后续导出层切换。
+  - `XTGuardrailMessagePresentation` 已兼容 `runtime_surface_effective=guided` 等新 reason alias，避免 deny reason 逐步迁移时 guardrail 文案退回默认提示。
+  - `project_snapshot` 现已补齐结构化 `governance` 对象和 `execution_tier / supervisor_intervention_tier / review_policy_mode` 顶层字段；文本 body 也改为优先展示 `A-tier / S-tier / review cadence + runtime_surface`，不再把旧 `autonomy_*` 行直接暴露给用户。
+  - runtime deny summary 现已新增 `runtime_surface_policy_reason` 规范化别名；guardrail 展示层会优先使用新字段，同时继续保留旧 `policy_reason` 作为兼容证据键。
+  - `XT-W3-36-B` 已把 project UI 主路径切到 `A-tier / S-tier / review cadence`，并修复 create flow 在切换 execution tier 时误重置 review 轴的问题。
+  - `XT-W3-36-B` 已补齐治理解释层：`ProjectGovernanceBadge` / inspector 现在会明确标出当前治理来源是 `A/S 档位显式配置`、`兼容旧项目卡片档位`、还是 `兼容旧执行面预设`；保守默认项目也会明确提示当前是 conservative baseline。
+  - `XT-W3-36-B` 已把设置页里旧 `执行面策略` 文案收口为 `运行时 Surface`，避免把 `autonomyMode` 误读成 project 总治理档位；supervisor 本地记忆摘要也同步改用 `runtime_surface`，与 `execution_tier / supervisor_tier` 分层表达。
+  - `XT-W3-36-B` 已新增 `ProjectGovernancePresentationSummaryTests.governanceSourceHintSurfacesCompatAndConservativeProjects`，并在隔离快照中通过 `ProjectGovernancePresentationSummaryTests / ProjectSettingsGovernanceUITests / ProjectGovernanceResolverTests / ProjectModelGovernanceBindingTests` 共 26 条回归。
+  - `XT-W3-36-C` 已新增共享 `XTGovernedRepoCommandPolicy`，统一 supervisor skill mapping、runtime capability 分类与 tool authorization 的 governed repo build/test 命令判定。
+  - `run_command` 现在会把受治理命令细分成 `repo_build` / `repo_test` / `repo_build_test` deny reason；只有 allowlist 内的 repo build/test 命令可走 governed auto-approval，普通 shell 仍保留本地人工确认。
+  - `XT-W3-36-D` 已把 `brainstorm review` 的窗口基准改成“上次观察到的真实项目进展”，并通过 `SupervisorReviewScheduleStore` 回写 `last_observed_progress_at_ms`；heartbeat 不会再把 brainstorm 当成单纯定时器，而是只在 no-progress window 真正到期后触发。
+  - `XT-W3-36-D` 已把 `skill callback` follow-up 从泛化 `periodic_pulse` 升级成按 workflow 实态发出显式 `review_trigger / review_level_hint / review_run_kind`：失败/阻塞回调会走 `blocker_detected`，终态完成回调会走 `pre_done_summary`，普通中间完成仍保持 `periodic_pulse`。
+  - `XT-W3-36-D` 已补齐 event-loop structured-only follow-up 的 `ReviewNote` 审计闭环：即使当前 policy 不允许把这轮 follow-up 投递成 guidance，也会落一条 audit-only review note；只有真正允许投递时才写 guidance injection。
+  - `XT-W3-36-G/H` 继续收口：lane allocator、task assigner、one-shot auto-launch、child project materialization、one-shot anchor project 初始化已改为直接看 `executionTier / supervisorInterventionTier`，旧 `autonomyLevel` 只保留为 compat shadow 与 resolver 输入，不再主导新建 project 的运行调度判断。
+  - `XT-W3-36-G/H` 进一步收紧 compat bridge：`AppModel` 现在只会在 `legacyAutonomyMode / legacyAutonomyLevel` 配置下把 project card 的旧 `autonomyLevel` shadow 传给 governance resolver；`defaultConservative` 与 `explicitDualDial` 都会忽略这类旧影子输入，保持 fail-closed 或显式双档位配置为准。
+  - 新增 `AppModelMultiProjectGovernanceTests`，覆盖 `MultiProjectManager.createProject` 与 `AppModel.createMultiProject` 的显式治理透传、绑定 project root、legacy shadow 对齐，防止后续把多项目创建入口重新接回旧 `autonomyLevel` 驱动路径。
+  - 新增 `SupervisorManagerVoiceAuthorizationTests` 的 one-shot anchor governance 回归，以及 `TaskAssignerGovernanceTests`，分别锁定 supervisor 起 Root project 的 A/S 档位映射、以及 task capability 评估优先看新治理字段而不是被 legacy shadow 误导。
+  - 新增 `ProjectGovernanceResolverTests.legacyAutonomyShadowIsOnlyConsumedForCompatSources` 和 `ProjectModelGovernanceBindingTests.boundProjectKeepsDefaultConservativeGovernanceInsteadOfProjectCardShadow`，锁定 compat bridge 收口行为，防止绑定 project 在 schema v10 conservative 配置下被旧 project card 阴影值重新抬升到高自治档位。
 
 ## 0) 为什么要单开这份包
 
@@ -513,6 +536,14 @@ supervisor 的 review 结果不能只靠自然语言漂在聊天里。
 
 - priority: `P0`
 - 目标：把 project 顶部与设置页升级为双拨盘治理面。
+- progress_update_2026_03_15:
+  - `GlobalHomeView` 项目卡片已改为展示 `A-tier / S-tier / review` 治理拨盘摘要，不再沿用旧 `Autonomy` 单拨盘标题。
+  - `ProjectSettingsView` 已切到 `A-tier / S-tier / review policy / cadence / clamp / guidance ack` 展示。
+  - `CreateProjectSheet` 已切到新治理拨盘；切 `Execution Tier` 时不再重置独立的 review policy / cadence。
+  - `ProjectDetailView` 顶部与详情卡已突出显示 `A-tier / S-tier / review` 摘要，不再依赖旧 `autonomy level` 语义。
+  - `ProjectGovernanceBadge` / `ProjectGovernanceInspector` 已补上治理来源解释，能明确区分 `显式双拨盘`、`legacy card compat`、`legacy surface compat`、`default conservative`。
+  - `ProjectSettingsView` 已把旧 `执行面策略` 标签降级成 `运行时 Surface`，强调它只是 runtime preset，不是 project 治理主档位。
+  - 相关解释层回归已覆盖 compat / conservative 提示，避免 UI 重新把旧 `autonomy` 语义抬回主路径。
 - 推荐落点：
   - `x-terminal/Sources/UI/ProjectSettingsView.swift`
   - `x-terminal/Sources/UI/Projects/CreateProjectSheet.swift`
@@ -720,3 +751,26 @@ supervisor 的 review 结果不能只靠自然语言漂在聊天里。
 6. 旧项目迁移后有没有被错误放权？
 
 如果这 6 个问题都能由统一的 governance resolver、UI 解释层和审计对象给出一致答案，`XT-W3-36` 才算真正完成。
+
+## 11) 最新推进记录
+
+### 2026-03-15
+
+- 已完成一轮 supervisor/runtime 回归收口：
+  - `SupervisorManager.makeForTesting()` 不再读取或写回持久化 `supervisor_jurisdiction_registry` / `action_ledger`，同时禁用测试态下对全局 project registry 的 fallback，避免测试被机器本地遗留项目污染。
+  - `SupervisorCommandGuardTests` 里依赖 `trustedOpenClawMode` 的 `updatedAt` 已改成相对当前时间，避免 TTL 过期后误退回 `manual`。
+  - `directSupervisorActionIfApplicable` 已优先处理自然语言模型切换，再处理 memory patch，修复“把项目模型换成 5.3”被误记成决策语句的问题。
+  - governed repo command policy 新增官方本地备份命令白名单，`agent-backup create` 现在能作为受治理本地备份动作自动通过，而不会误报 `command_outside_governed_repo_allowlist`。
+  - runtime surface 解释层已统一：`AXProjectAutonomyExplanation` 新增共享 `runtime surface` 文案，`ProjectSettingsView` 和 `XTGuardrailMessagePresentation` 不再回退到 `Manual / Guided / autonomy policy` 旧说法。
+  - `ToolExecutor` / `XTToolRuntimePolicy` / `AppModel` 的对外输出开始补发 `runtime_surface_*` 新字段；旧 `autonomy_*` 字段继续保留作为 compat alias，方便外部消费者平滑迁移。
+- 已补充回归：
+  - `XTToolAuthorizationTests.governedAutoApprovalAllowsGovernedLocalBackupCommandWhenProjectAuthorityIsActive`
+  - `ProjectAutonomyExplanationTests.runtimeSurfaceExplanationUsesSurfaceLanguageInsteadOfLegacyAutonomyCopy`
+  - `XTGuardrailMessagePresentationTests.blockedBodyUsesRuntimeSurfaceLanguageForGuidedSurfaceBlock`
+  - `ToolExecutorSessionToolsTests` / `ToolExecutorRuntimePolicyTests` / `XTToolRuntimePolicyGovernanceClampTests` 新增 `runtime_surface_*` 断言
+- 本轮验证结果：
+  - `swift test --filter SupervisorCommandGuardTests` 通过，96 tests passed。
+  - `swift test --filter XTToolAuthorizationTests` 通过，11 tests passed。
+  - `swift test --skip-build --filter ProjectAutonomyExplanationTests` 通过，2 tests passed。
+  - `swift test --skip-build --filter XTGuardrailMessagePresentationTests` 通过，5 tests passed。
+  - `swift test --skip-build --filter ProjectSettingsGovernanceUITests` 通过，3 tests passed。

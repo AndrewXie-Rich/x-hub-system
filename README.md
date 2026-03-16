@@ -14,10 +14,14 @@
 >
 > X-Hub keeps model routing, memory truth, constitutional constraints, grants, policy, audit, and execution safety inside one governed Hub, while terminals stay lightweight and untrusted by default.
 
-**X-Hub-System is not just another AI terminal. It is a security-first architecture for governable Agent execution.**
+**X-Hub-System is not another terminal-first Agent wrapper. It is a Hub-first, operator-owned architecture for governed Agent execution.**
+
+If most Agent tools are optimized to make models act, X-Hub is optimized to make them act under control.
+The terminal should not be the trust root.
+X-Hub centralizes memory truth, policy, grants, audit, and runtime truth inside an operator-owned Hub, while clients remain replaceable execution surfaces.
 
 If you only want an Agent that can act, many tools already exist.
-If you want one that can act without making one prompt injection, one exposed runtime, one bad plugin, or one unsafe default turn into full compromise, that is the problem X-Hub-System is built to tackle.
+If you want one that can act without letting one prompt injection, one exposed runtime, one risky plugin, or one unsafe default turn into full compromise, that is the problem X-Hub-System is built to tackle.
 If you also want the trusted control plane, policy, keys, and privacy decisions to stay under operator control instead of disappearing into a vendor cloud, that is another core reason this system exists.
 
 X-Hub is also built around **governed autonomy**:
@@ -30,7 +34,7 @@ Trademark rights are not granted by the software license; see `TRADEMARKS.md`.
 
 X-Hub-System is currently a **public tech preview** of a system architecture for safe, governable Agent execution.
 
-Core Hub and X-Terminal paths already run: Hub-governed local and paid model routing, paired terminal execution, early Supervisor orchestration, Hub-backed memory governance, and honest runtime route visibility in X-Terminal.
+Core Hub and X-Terminal paths already run: Hub-governed local and paid model routing, paired terminal execution, project-governance tiers with runtime clamps, Supervisor review and voice-authorization surfaces, governed channel ingress and onboarding flows, governed skill trust surfaces, Hub-backed memory governance, and honest runtime route visibility in X-Terminal.
 
 But this is still a **test version**, not a polished production release:
 
@@ -171,6 +175,99 @@ The active governance direction in this repository is moving toward protocol-bac
 That still does **not** mean "unlimited agent freedom."
 Even the highest-autonomy path is intended to mean high-autonomy execution with continuing supervision, Hub clamp authority, TTL, grants, kill-switches, and audit.
 
+## What Is Actually Different Here
+
+X-Hub is not claiming to be the first model gateway, the first tool-approval system, or the first multi-agent orchestrator.
+Its novelty is architectural.
+
+Instead of letting prompts, tools, browser state, memory, side effects, and cloud defaults collapse into one runtime trust zone, X-Hub moves the trust anchor into an operator-owned Hub.
+
+That means:
+
+- the Hub is designed to hold routing truth, memory truth, grants, policy, audit, and kill authority together instead of scattering them across terminals and plugins
+- X-Terminal is the paired deep client, while generic terminals remain thinner capability consumers instead of silently becoming equivalent trust roots
+- remote channels and external surfaces are supposed to enter through the Hub first, then be projected to trusted paired surfaces
+- higher autonomy is designed to increase execution range without dissolving supervision
+- skills are treated as governed capability units rather than "install plugin = expand full trust boundary"
+
+This is why the project is better described as a **Hub-first governed execution architecture** than as another AI terminal or another agent runtime wrapper.
+The innovation is not one isolated feature.
+It is the combination of trust-boundary redesign, governed autonomy, governed skills, memory truth, and multimodal supervision under one operator-owned control plane.
+
+You can think of the innovation signature in four layers:
+
+### 1. Trust Plane Innovation
+
+- **Hub-first trust anchor**: the trust root is intentionally moved out of the terminal, plugin bundle, and vendor cloud default and into the Hub.
+- **Operator-owned control plane**: permissions, keys, memory truth, audit, release timing, and kill authority are designed to stay under operator control.
+- **Asymmetric client model**: X-Terminal is a paired deep client, while generic terminals remain thinner capability consumers instead of silently becoming equivalent trust roots.
+- **Remote-world-first-into-Hub routing**: operator channels, remote surfaces, and external ingress are supposed to enter through the Hub first rather than bypassing governance.
+- **Project-first remote routing with honest downgrade**: external threads are supposed to resolve against a project first, while `preferred_device_id` remains only a route hint and offline states are surfaced explicitly instead of faked as success.
+
+### 2. Governance Plane Innovation
+
+- **Governed autonomy instead of one vague auto mode**: project execution rights are being separated from supervision depth, review cadence, and intervention behavior.
+- **Heartbeat, review, and intervention are treated as different things**: progress reporting is not allowed to stand in for strategic review or corrective action.
+- **Explain-understand-execute policy loop**: higher-consequence decisions are designed to preserve key-consequence explanation, user-understanding acknowledgement, explain rounds, and options-presented state as auditable policy facts instead of ephemeral chat wording.
+- **Safe-point guidance with acknowledgement**: Supervisor guidance can be inserted into the execution chain and tracked as something that can be accepted, deferred, or rejected instead of vanishing into chat text.
+- **High autonomy is still governable**: higher-autonomy runs are intended to remain clampable, pausable, redirectable, and kill-switchable from the Hub side.
+- **Trusted automation is multi-plane, not one toggle**: higher-risk device execution is designed to require paired-device trust, project binding, local permission-owner readiness, and Hub-side posture or grant allowance together.
+- **Event-driven rhythm instead of broadcast supervision**: the broader Supervisor direction includes directed baton, blocked-age cadence loops, and no-broadcast unblock routing so orchestration can stay explainable without degenerating into noisy manual chase patterns.
+
+### 3. Execution Plane Innovation
+
+- **Governed skills instead of loose plugins**: skills are treated as reusable capability units with manifests, trust roots, pinning, routing, and policy boundaries.
+- **Layered skill authority instead of flat install state**: skill resolution is designed to support Memory-Core, Global, and Project scopes under one Hub authority rather than letting each client improvise its own final active set.
+- **Explicit dispatch path**: the runtime path is `skill intent -> governed dispatch -> tool execution`, so there is room for risk classification, grants, deny codes, and fail-closed rejection before side effects happen.
+- **Replayable and auditable execution**: request identity, tool arguments, approval disposition, evidence refs, and audit refs can stay attached to one governed execution record instead of dissolving into prose.
+- **Recovery without model improvisation**: blocked or failed skill runs can be retried by replaying the governed dispatch path instead of asking the model to invent a fresh tool sequence from scratch.
+- **Hub-native skill trust chain**: the Hub is designed to store, pin, audit, and revoke skill packages without turning itself into a place where arbitrary third-party skill code becomes the trust anchor.
+- **No-bypass import path**: the X-Terminal skill import direction is intentionally moving through governed staging, packaging, upload, review, and promotion instead of treating “local import succeeded” as sufficient trust.
+
+### 4. Memory, Evidence, And Surface Innovation
+
+- **Memory truth is a control-plane primitive**: the system is designed around Hub-anchored memory truth rather than letting each client accumulate its own private version of reality.
+- **X-Constitution is reinforced by memory and policy**: behavioral guardrails are meant to live above any single prompt and be reinforced by policy, grants, audit, and kill-switches.
+- **Five-layer memory plus adaptive serving**: raw evidence, observations, longterm, canonical memory, and working-set usage are treated as separate layers instead of one undifferentiated context dump.
+- **Serving plane separated from storage plane**: what the system stores as durable truth and what a given task is allowed to consume as context are intentionally different control problems, so bigger context windows do not collapse memory governance back into full-dump prompting.
+- **Honest runtime truth**: configured route, actual route, fallback, downgrade, and blocked reasons are meant to stay visible to the operator.
+- **Multimodal Supervisor control plane**: UI, voice, mobile, operator channels, and runner-style surfaces are being converged onto one Hub-governed route / brief / checkpoint chain.
+- **Portfolio-aware projection instead of transcript spray**: Supervisor-facing views are designed to consume briefs, digests, queue state, pending grants, and project deltas rather than broadcasting full project transcripts everywhere.
+- **Evidence-first high-risk workflows**: higher-risk approvals are designed around evidence, challenge, replay protection, timeout semantics, and audit instead of "the model sounded confident."
+
+Not every element above is equally productized today.
+Some already exist as preview runtime surfaces, some are protocol-backed implementation in progress, and some are the active architecture direction.
+The innovation claim is the system combination and boundary design, not that every isolated ingredient is globally new by itself.
+
+## Governed Skills, Not Plugin Roulette
+
+Many Agent stacks stop at exposing tools and hoping prompts are enough to keep usage safe.
+
+X-Hub takes a different approach:
+skills are governed capability units that can be cataloged, pinned, mapped, audited, replayed, approved, denied, and revoked through a governed dispatch path.
+The goal is not just more tools.
+The goal is a reusable execution system that remains reviewable and fail-closed under risk.
+
+In practice, that means:
+
+- a skill can carry stable input/output expectations, execution mapping, risk boundaries, and failure handling instead of relying on one-off model improvisation
+- skill authority can be layered across Memory-Core, Global, and Project scopes instead of flattening every install into one indistinguishable local plugin set
+- the runtime path is `skill intent -> governed dispatch -> tool execution`, with room for policy, grants, local approval, Hub approval, deny codes, and fail-closed rejection before side effects occur
+- per-project boundaries can decide whether a given skill is available at all, whether it may reach a device-capable tool, and whether local approval or Hub approval is required
+- skill activity can leave a structured trail such as `request_id`, `skill_id`, `tool_name`, `tool_args`, `authorization_disposition`, `deny_code`, `result_summary`, `result_evidence_ref`, `raw_output_preview`, and `audit_ref`
+- the current preview direction already goes beyond log-only tooling, with recent skill activity, full-record inspection, approval / reject handling, and governed retry surfaces
+- failed or blocked runs can be retried by replaying the last governed dispatch with the same guarded tool arguments instead of asking the model to "just try again" from scratch
+- skill results, evidence refs, and review artifacts are meant to stay attached to project continuity and Hub memory layers instead of disappearing into transient chat text
+- the official skill surface is designed around manifests, packaging, publisher trust roots, pinning, and revocation rather than a loose plugin bazaar
+- the governed import direction is intentionally `restage -> package -> upload -> review/promote`, so X-Terminal does not treat local enablement as the final trust decision
+- the Hub is intended to store, pin, audit, and revoke skill packages without turning itself into a place where arbitrary third-party skill code becomes the trust anchor
+
+Key references:
+
+- `docs/xhub-skills-placement-and-execution-boundary-v1.md`
+- `docs/xhub-skills-signing-distribution-and-runner-v1.md`
+- `protocol/hub_protocol_v1.md`
+
 ## Validated Release Scope
 
 This GitHub package is intentionally narrow.
@@ -199,9 +296,14 @@ The current repository and preview builds already demonstrate working foundation
 - X-Hub-System macOS app build and runtime
 - X-Terminal source build and packaged app flow
 - paired Hub <-> Terminal routing across local and remote paths
-- Hub-governed local and paid model execution
-- Hub-governed operator channel workers for Slack, Telegram, and Feishu, with higher-risk channel paths kept explicitly gated until require-real evidence is complete
-- truthful configured-model vs actual-model visibility in X-Terminal
+- Hub-governed local and paid model execution, with truthful configured-model vs actual-model visibility in X-Terminal
+- project-governance surfaces with `A0..A4` execution tiers and `S0..S4` Supervisor tiers, plus runtime capability clamps over write/build/test/commit/push/PR/CI/browser/device actions
+- Supervisor review and guidance surfaces with heartbeat, review pulse, brainstorm cadence, event-driven review triggers, and safe-point acknowledgement direction
+- voice authorization preview surfaces with Hub-issued challenge state, proactive pending-grant briefing, source-aware repeat/cancel behavior, remote-channel-aware grant targeting, and mobile-confirmation latch handling for higher-risk actions
+- Hub-governed operator channel workers and onboarding automation paths for Slack, Telegram, and Feishu, with the same Hub-first boundary extending toward WhatsApp Cloud and other remote surfaces; higher-risk channel paths remain explicitly gated until require-real evidence is complete
+- governed official-skill catalog, package pinning, publisher trust roots, and terminal-side skills compatibility / doctor surfaces
+- preview local-provider runtime surfaces for embeddings, speech-to-text, vision, and OCR under the same Hub routing, capability, and kill-switch posture, plus provider-pack truth, compatibility policy, import guidance, quick bench, and recovery-oriented operator feedback
+- governed browser UI observation and visual-review surfaces that keep captured evidence, review summaries, and browser-side action context attached to the project record instead of dissolving into terminal prose
 - early Supervisor and project-coder orchestration surfaces
 - Hub-backed memory, policy, and audit integration as the system-of-record direction
 
@@ -213,11 +315,14 @@ Even in preview form, the system direction is already broader than a thin chat w
 
 - **Supervisor as an execution layer**: the architecture is built toward multi-project supervision, module-aware decomposition, pool and lane scheduling, directed unblocks, and governed delivery progression.
 - **Project autonomy with continuing supervision**: the system direction separates per-project execution autonomy from review depth and cadence, so higher-autonomy runs can still be reviewed, clamped, corrected, or stopped instead of turning into unsupervised agent sprawl.
-- **Governed project autonomy**: the current governance direction already formalizes `A0..A4` execution tiers and is separating execution authority from supervision depth, heartbeat/review cadence, and structured safe-point guidance, so higher-autonomy runs do not collapse into one ambiguous autonomy slider.
+- **Governed project autonomy**: the current governance surface already exposes `A0..A4` execution tiers plus `S0..S4` Supervisor tiers, so execution authority, supervision depth, review cadence, and safe-point guidance no longer collapse into one ambiguous autonomy slider.
+- **Concrete runtime ceilings, not abstract policy text**: governance tiers now clamp concrete capabilities such as repo writes, build/test, commit/push, PR/CI, browser runtime, device tools, connector actions, and auto-local approval before the action fires.
 - **X-Constitution as a behavioral genome**: the goal is to write durable value constraints into the system's behavioral DNA, anchored to Hub memory and reinforced by policy, grants, audit, and kill-switches instead of disappearing into ad hoc prompts.
 - **High-risk workflows with explicit evidence**: the same control-plane model can support evidence-first approvals, governed payment-style flows, and future multi-party approval patterns for irreversible actions.
 - **Structured review and guidance, not chat-only commentary**: the architecture direction includes Supervisor review notes, guidance injection, acknowledgement state, and safe-point delivery so corrective advice does not disappear into one transient conversation turn.
-- **Voice as an operational interface, not just dictation**: the broader design direction includes wake, guided authorization, and progress conversations with Supervisor over auditable runtime state.
+- **Voice as an operational interface, not just dictation**: the broader design direction includes wake, guided authorization, repeat/cancel semantics, mobile-confirmation handoff, and progress conversations with Supervisor over auditable runtime state.
+- **Remote channels as governed ingress, not shadow control planes**: remote operator surfaces can enter through Hub authz, replay guard, audit, memory, and grant handling first, then get projected to trusted paired surfaces instead of bypassing governance.
+- **Governed skills with trust roots**: the architecture already goes beyond loose tool calls toward manifests, packaging, pinning, publisher trust roots, compatibility checks, and auditable retryable execution.
 - **Honest runtime truth**: configured route, actual route, downgrade, fallback, and readiness state are intended to stay visible instead of being silently masked from the operator.
 
 These points describe the architecture-backed direction of the system. The validated public release claims remain narrower and are intentionally bounded above.
@@ -227,6 +332,9 @@ These points describe the architecture-backed direction of the system. The valid
 - **Hub-first trust model**: pairing, grants, policies, and audit live in one place.
 - **Unified model governance**: local inference and paid APIs use the same operational guardrails.
 - **Governed autonomy**: projects can move faster without turning into unsupervised agent runs.
+- **Per-project execution ceilings**: one project can stay read-only while another is allowed to build, commit, open PRs, or use higher-risk surfaces under stronger supervision.
+- **Governed skills**: reusable capability units can be approved, audited, retried, and pinned instead of behaving like full-trust plugins.
+- **Paired operational control**: voice, mobile confirmation, and remote-channel ingress can stay attached to Hub grants instead of becoming shadow authority paths.
 - **Execution safety**: high-risk actions do not proceed on incomplete evidence.
 - **Long-horizon stability**: Hub-backed memory reduces drift across multi-step work.
 - **Multi-terminal design**: terminals can stay fast and replaceable without becoming the trust anchor.
@@ -236,8 +344,12 @@ These points describe the architecture-backed direction of the system. The valid
 - **Reduced blast radius by design**: UI, tools, model routing, memory, grants, and side effects do not all collapse into one terminal-local trust zone.
 - **Better than prompt-only safety**: X-Constitution, policy, grants, manifests, audit, and kill-switches are meant to reinforce each other.
 - **Operator-owned control plane**: deployment, keys, secrets policy, audit, and memory truth can stay on infrastructure the user controls instead of being SaaS-default black boxes.
+- **Project-level capability gating**: execution tiers can deny repo writes, commits, CI triggers, browser runtime, or device tools before the runtime takes action.
 - **Operator-selectable local-only posture**: when remote providers and connector paths are disabled, the core control plane and inference path can stay off third-party cloud infrastructure.
+- **Local multimodal path under the same guardrails**: embeddings, speech, vision, and OCR can sit under Hub routing, capability checks, and kill-switch posture instead of spawning separate ungoverned sidecars.
 - **Safer connector model**: operator-channel paths can exist without letting every chat surface become an ungoverned control plane.
+- **Paired authorization instead of chat-surface trust**: spoken challenge flows and mobile confirmation can assist high-risk actions without moving final grant authority out of the Hub.
+- **Safer skill ecosystem**: skills can be pinned, reviewed, revoked, and routed through grants and deny codes instead of treating "plugin installed" as blanket trust.
 - **Stronger response posture**: revoke, fail closed, inspect audit, and cut execution from the Hub when something looks wrong.
 - **More honest operations**: the system is designed to show what actually ran, what downgraded, what was blocked, and why.
 

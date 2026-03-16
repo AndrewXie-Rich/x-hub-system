@@ -29,7 +29,15 @@ After that, choose the relevant track below.
 - `docs/xhub-scenario-map-v1.md`
 - `docs/xhub-runtime-stability-and-launch-recovery-v1.md`
 - `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md`
+- `docs/memory-new/README-local-provider-runtime-productization-v1.md`
+- `docs/memory-new/xhub-local-provider-runtime-require-real-runbook-v1.md`
+- `docs/memory-new/xhub-local-bench-fixture-pack-v1.md`
+- `docs/memory-new/xhub-governed-autonomy-switchboard-productization-work-orders-v1.md`
 - `docs/memory-new/xhub-project-autonomy-tier-and-supervisor-review-protocol-v1.md`
+- `docs/memory-new/xhub-supervisor-adaptive-intervention-and-work-order-depth-work-orders-v1.md`
+- `docs/memory-new/xhub-supervisor-event-loop-stability-work-orders-v1.md`
+- `docs/memory-new/xhub-supervisor-memory-serving-contract-v1.md`
+- `docs/memory-new/xhub-supervisor-memory-serving-work-orders-v1.md`
 - `docs/memory-new/schema/xhub_project_autonomy_and_supervisor_review_contract.v1.json`
 - `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`
 - `docs/xhub-client-modes-and-connectors-v1.md`
@@ -37,10 +45,13 @@ After that, choose the relevant track below.
 - `docs/memory-new/xhub-multimodal-supervisor-control-plane-architecture-memo-v1.md`
 - `docs/memory-new/xhub-multimodal-supervisor-control-plane-contract-freeze-v1.md`
 - `docs/memory-new/xhub-multimodal-supervisor-control-plane-work-orders-v1.md`
+- `x-terminal/work-orders/xt-w3-37-agent-ui-observation-and-governed-visual-review-implementation-pack-v1.md`
 
 ### Memory
 
 - `docs/memory-new/xhub-memory-serving-profiles-and-adaptive-context-v1.md`
+- `docs/memory-new/xhub-supervisor-memory-serving-contract-v1.md`
+- `docs/memory-new/xhub-supervisor-memory-serving-work-orders-v1.md`
 - `docs/xhub-memory-system-spec-v2.md`
 - `docs/xhub-memory-hybrid-index-v1.md`
 - `docs/xhub-memory-fusion-v1.md`
@@ -58,6 +69,9 @@ If you are tracing behavior boundaries, risk controls, or fail-closed reasoning,
 ### Skills
 
 - `official-agent-skills/`
+- `docs/memory-new/xhub-agent-asset-reuse-map-v1.md`
+- `docs/memory-new/xhub-dynamic-official-agent-skills-governance-work-orders-v1.md`
+- `docs/memory-new/xhub-official-agent-skills-signing-sync-and-hub-signer-work-orders-v1.md`
 - `docs/xhub-skills-placement-and-execution-boundary-v1.md`
 - `docs/xhub-skills-discovery-and-import-v1.md`
 - `docs/xhub-skills-signing-distribution-and-runner-v1.md`
@@ -66,12 +80,20 @@ If you are tracing behavior boundaries, risk controls, or fail-closed reasoning,
 
 ### Security, Gates, And Governance
 
+- `docs/memory-new/xhub-governed-autonomy-switchboard-productization-work-orders-v1.md`
 - `docs/memory-new/xhub-project-autonomy-tier-and-supervisor-review-protocol-v1.md`
+- `docs/memory-new/xhub-supervisor-adaptive-intervention-and-work-order-depth-work-orders-v1.md`
 - `docs/memory-new/schema/xhub_project_autonomy_and_supervisor_review_contract.v1.json`
 - `docs/memory-new/xhub-security-innovation-work-orders-v1.md`
 - `docs/memory-new/xhub-spec-gates-work-orders-v1.md`
+- `docs/memory-new/xhub-supervisor-event-loop-stability-work-orders-v1.md`
 - `docs/memory-new/xhub-lane-command-board-v2.md`
 - `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
+- `scripts/m3_check_xt_ready_gate.js`
+- `scripts/m3_generate_xt_ready_e2e_evidence.js`
+- `scripts/m3_extract_xt_ready_incident_events_from_audit.js`
+- `scripts/m3_resolve_xt_ready_audit_input.js`
+- `scripts/m3_export_xt_ready_audit_from_db.js`
 - `docs/memory-new/xhub-trusted-automation-mode-work-orders-v1.md`
 - `docs/memory-new/xhub-trusted-automation-device-execution-plane-implementation-pack-v1.md`
 - `docs/memory-new/xhub-terminal-hub-memory-governance-work-orders-v1.md`
@@ -85,6 +107,7 @@ If you are tracing behavior boundaries, risk controls, or fail-closed reasoning,
 - `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`
 - `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`
 - `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`
+- `x-terminal/work-orders/xt-w3-24-safe-operator-channel-onboarding-automation-implementation-pack-v1.md`
 - `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-hub-security-impact-gate-v1.md`
 - `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`
 - `x-terminal/work-orders/xt-w3-25-governed-automation-recipe-runtime-implementation-pack-v1.md`
@@ -96,10 +119,16 @@ If you are tracing behavior boundaries, risk controls, or fail-closed reasoning,
 - `x-terminal/work-orders/xt-w3-34-openclaw-skill-reuse-and-execution-surface-implementation-pack-v1.md`
 - `x-terminal/work-orders/xt-w3-35-supervisor-memory-retrieval-progressive-disclosure-implementation-pack-v1.md`
 - `x-terminal/work-orders/xt-w3-36-project-autonomy-tier-and-supervisor-intervention-implementation-pack-v1.md`
+- `x-terminal/work-orders/xt-w3-37-agent-ui-observation-and-governed-visual-review-implementation-pack-v1.md`
 
 ### Project Governance And Supervisor Review
 
+- `docs/memory-new/xhub-governed-autonomy-switchboard-productization-work-orders-v1.md`
 - `docs/memory-new/xhub-project-autonomy-tier-and-supervisor-review-protocol-v1.md`
+- `docs/memory-new/xhub-supervisor-adaptive-intervention-and-work-order-depth-work-orders-v1.md`
+- `docs/memory-new/xhub-supervisor-event-loop-stability-work-orders-v1.md`
+- `docs/memory-new/xhub-supervisor-memory-serving-contract-v1.md`
+- `docs/memory-new/xhub-supervisor-memory-serving-work-orders-v1.md`
 - `docs/memory-new/schema/xhub_project_autonomy_and_supervisor_review_contract.v1.json`
 - `x-terminal/work-orders/xt-w3-36-project-autonomy-tier-and-supervisor-intervention-implementation-pack-v1.md`
 - `x-terminal/Sources/Project/AXProjectGovernanceBundle.swift`
@@ -179,11 +208,17 @@ Use the root `README.md` for the external product narrative. Use this page for w
 ### Active Specs And Work Orders
 
 - `docs/xhub-skills-placement-and-execution-boundary-v1.md`
+- `docs/memory-new/xhub-agent-asset-reuse-map-v1.md`
 - `docs/xhub-skills-discovery-and-import-v1.md`
+- `docs/memory-new/xhub-dynamic-official-agent-skills-governance-work-orders-v1.md`
+- `docs/memory-new/xhub-official-agent-skills-signing-sync-and-hub-signer-work-orders-v1.md`
 - `docs/memory-new/xhub-agent-skill-vetter-gate-work-orders-v1.md`
+- `docs/memory-new/xhub-governed-autonomy-switchboard-productization-work-orders-v1.md`
 - `docs/memory-new/xhub-multimodal-supervisor-control-plane-contract-freeze-v1.md`
 - `docs/memory-new/xhub-multimodal-supervisor-control-plane-work-orders-v1.md`
+- `docs/memory-new/xhub-supervisor-event-loop-stability-work-orders-v1.md`
 - `x-terminal/work-orders/xt-w3-34-openclaw-skill-reuse-and-execution-surface-implementation-pack-v1.md`
+- `x-terminal/work-orders/xt-w3-37-agent-ui-observation-and-governed-visual-review-implementation-pack-v1.md`
 
 ## Active Entry Points
 
@@ -272,6 +307,7 @@ bash x-terminal/scripts/ci/xt_release_gate.sh
 ### Project Governance, Review, And Intervention
 
 - `docs/memory-new/xhub-project-autonomy-tier-and-supervisor-review-protocol-v1.md`
+- `docs/memory-new/xhub-supervisor-adaptive-intervention-and-work-order-depth-work-orders-v1.md`
 - `x-terminal/Sources/Project/AXProjectConfig.swift`
 - `x-terminal/Sources/Project/AXProjectGovernanceResolver.swift`
 - `x-terminal/Sources/UI/ProjectSettingsView.swift`

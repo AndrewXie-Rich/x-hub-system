@@ -1,7 +1,7 @@
 # X-Hub Local Provider Runtime + Transformers Integration v1（可执行规范 / Draft）
 
 - Status: Draft
-- Updated: 2026-03-12
+- Updated: 2026-03-15
 - Applies to: X-Hub macOS App（SwiftUI）+ embedded Node gRPC server + `x-hub/python-runtime/python_service/` + local model catalog / runtime status / Hub policy & audit
 - Decision (2026-03-12):
   - **MLX 保持本地文本生成主路径**
@@ -108,6 +108,33 @@ v1 明确不做：
   - `relflowhub_local_runtime.py`
 - `mlx` 必须收敛成 provider adapter，而不是继续代表“全部本地能力”
 
+### 1.4 外部参考基线（LM Studio / OpenCode）
+
+X-Hub 可以借 `LM Studio` 与 `OpenCode` 的产品做法，但只借模式，不直接替换当前 Hub-first 架构。
+
+固定借用：
+- 从 LM Studio 借 `provider pack / engine manifest`
+- 从 LM Studio 借 `typed load config`
+- 从 LM Studio 借 `ModelInfo` 与 `LoadedInstanceInfo` 分层
+- 从 LM Studio 借 `Loaded Models / Runtime Operations` 作为一等产品面
+- 从 OpenCode 借 `provider_id + model_id` 身份、`capabilities / modalities / limits` 元数据形状
+- 从 OpenCode 借 unsupported modality / unsupported task 的 fail-closed 行为
+
+明确不借：
+- 不把 LM Studio daemon 直接当成 X-Hub runtime
+- 不把 OpenCode 的云端 auth / pricing / SaaS 假设带入本地模型主链
+- 不把 backend/provider 手工选择保留成普通用户的日常主路径
+
+2026-03-15 本机 LM Studio 安装体已验证：
+- 它是 `daemon + domain workers + engine extensions`
+- 已能看到独立 worker：`llmworker / embeddingworker / asrworker / imagegenworker`
+- 已能看到独立 engine manifest：`mlx-llm / llama.cpp`
+- MLX engine release 记录长期跟踪 `mlx-vlm`
+
+这直接说明：
+- X-Hub 不该继续把“MLX 文本”和“MLX 视觉”当成同一个黑盒
+- `mlx_vlm` 与 `llama.cpp` 必须走 pack-aware 扩展路线，而不是再做两次散装集成
+
 ---
 
 ## 2) Provider 抽象（唯一接口）
@@ -205,11 +232,25 @@ Provider 健康信息最小字段：
 
 这对 MLX LLM 足够，但对音频、视觉、embedding 模型明显不够。
 
+另外，当前 `contextLength` 还是一个混合语义字段：
+- 有时被当作“模型能力上限”
+- 有时被当作“当前加载配置”
+- 有时又被 UI 当作“推荐默认值”
+
+一旦 Hub 需要给不同 paired terminal 设备设置不同的本地上下文长度，这三个语义必须拆开，否则同一模型会出现“catalog 静态元数据”和“设备运行态”互相覆盖的问题。
+
 ### 4.2 ModelDescriptor（v1 必须新增的字段）
 
 `ModelCatalogEntry` / `HubModel` 必须扩展以下字段：
 - `backend`
 - `model_format`（`mlx|hf_transformers|gguf|onnx|other`）
+- `max_context_length`（若 provider / manifest 可判）
+- `default_load_profile`
+  - `context_length`
+  - `gpu_offload`
+  - `rope_frequency_base`
+  - `rope_frequency_scale`
+  - `eval_batch_size`
 - `task_kinds[]`
 - `input_modalities[]`
 - `output_modalities[]`
@@ -225,6 +266,11 @@ Provider 健康信息最小字段：
   - `tokenizer_required`
   - `processor_required`
   - `feature_extractor_required`
+
+兼容要求：
+- 现有 `contextLength` 字段在迁移期继续保留
+- 其 canonical 语义改为 `default_load_profile.context_length` 的兼容别名
+- “模型能力上限”不得再复用 `contextLength`，应使用 `max_context_length`
 
 ### 4.3 本地 manifest（推荐强制）
 
@@ -257,9 +303,19 @@ Provider 健康信息最小字段：
 
 ### 4.4 Hub UI 行为
 
-`Add Model` 必须改成 backend-aware：
-- 第一步：选择 `backend`
-- 第二步：按 backend 执行不同校验
+`Add Model` 的 canonical 产品路径必须从“手工选 backend/role”演进成“自动探测 + capability-first 导入”。
+
+兼容期允许：
+- 在 debug / advanced 面板里手工 override backend/provider
+- 在旧 UI 未完全收口前暂时保留显式 backend 选择
+
+正式路径最低要求：
+1. 用户选择本地模型目录
+2. Hub 自动探测 manifest / format / provider candidate / task kinds / modalities / runtime pack readiness
+3. 推断失败时阻断导入，并返回 machine-readable reason
+4. `Role` 与 `Backend Override` 不得继续作为普通导入路径的前置步骤
+
+backend-aware 校验仍然必须存在，但应作为自动探测后的内部校验，而不是普通用户第一步：
 
 最低要求：
 - `MLX`
@@ -269,6 +325,75 @@ Provider 健康信息最小字段：
   - 校验 `config.json`
   - 校验 tokenizer / processor / feature_extractor 中至少满足该 task 所需组合
   - 若缺失 manifest，则 Hub 尝试推断；推断失败必须阻断导入
+
+### 4.5 Canonical 分层：Model Identity != Load Profile
+
+参考 LM Studio 这类本地模型产品，X-Hub v1 后续演进必须固定以下唯一分层：
+
+1. **Model Identity（静态工件身份）**
+   - `model_id`
+   - `model_path`
+   - `backend`
+   - `model_format`
+   - `task_kinds`
+   - `input/output modalities`
+   - `trust_profile`
+   - `resource_profile`
+   - `max_context_length`
+
+2. **Hub Default Load Profile（Hub 默认加载配置）**
+   - 属于 Hub 控制面默认值
+   - 可由 operator 在 Hub 上设置
+   - 用于未显式配置 terminal 设备 override 的场景
+
+3. **Terminal Device Load Profile Override（设备级加载配置）**
+   - key 必须至少包含：`device_id + model_id`
+   - 只允许覆盖 machine-dependent / runtime-dependent 参数
+   - v1 首批至少允许：
+     - `context_length`
+   - v1.1/v2 可继续扩到：
+     - `gpu_offload`
+     - `rope_frequency_base`
+     - `rope_frequency_scale`
+     - `eval_batch_size`
+     - `flash_attention`
+
+强制要求：
+- paired terminal 不得直接改写 `models_catalog.json` 中的模型身份字段
+- 设备级 override 不得写进 `trust_profile` 或模型 manifest
+- `max_context_length`、`task_kinds`、`model_path` 之类静态字段不允许被 terminal 设备覆盖
+
+推荐新增单独存储，而不是复用 model catalog：
+- `hub_paired_terminal_local_model_profiles.json`
+
+原因：
+- trust/pairing profile 属于授权与身份域
+- local load profile 属于运行调优域
+- 两者更新频率、审计口径和冲突策略不同，不应混写
+
+### 4.6 Provider Pack / Runtime Bundle / Loaded Instance Contract（W4 基线）
+
+为了避免 `mlx_vlm`、`llama.cpp` 和后续 provider 再次退化成一次性接入，W4 起固定以下结构：
+
+1. **Provider Pack / Engine Manifest**
+   - 记录 `provider_id / engine / version / supported_formats / supported_domains / runtime_requirements`
+   - Hub / runtime / diagnostics 必须共享同一份 installed-pack truth
+
+2. **Provider-owned Runtime Bundle**
+   - provider 可以声明自己依赖的 `python / wheel bundle / helper binary / native dylib`
+   - 运行态必须明确区分：
+     - `pack_runtime_ready`
+     - `user_runtime_fallback`
+     - `runtime_missing`
+
+3. **ModelInfo vs LoadedInstanceInfo**
+   - `ModelInfo` 只表达磁盘上的静态模型信息
+   - `LoadedInstanceInfo` 只表达内存里当前实例、effective load config、ttl、progress、last_used
+   - Hub UI 不得再混用两套语义
+
+4. **Loaded Instance Inventory**
+   - `warmup / unload / evict / bench / monitor` 都必须读同一份 loaded-instance truth
+   - provider pack、runtime bundle、load config source 也必须能挂到实例视图上解释
 
 ---
 
@@ -358,6 +483,25 @@ v1 兼容要求：
 - UI 不得再把“本地 runtime 可用”简化成 `mlxOk`
 - 若 MLX 不可用但 Transformers 可用，Hub 必须明确呈现“部分本地能力可用”
 
+### 5.5 Loaded Instance Identity（新增）
+
+一旦引入 per-device `context_length` 等 load profile，同一个 `model_id` 不能再被假定为“全局只有一个唯一加载实例”。
+
+v1 后续规范要求：
+- runtime loaded instance 的 canonical key 必须至少包含：
+  - `provider`
+  - `model_id`
+  - `load_profile_hash`
+- scheduler 应优先复用 effective load profile 完全相同的已加载实例
+- 当两个 terminal 设备对同一模型要求不同 `context_length` 时：
+  - 若资源允许，可保留多个 loaded instances
+  - 若资源不允许，按 `LPR-W3-02` 资源策略执行 `queue / reject / unload-then-load`
+
+这样做的目的：
+- 避免 A 设备把 `context_length` 改成 32k 后，B 设备正在使用的 8k 实例被隐式篡改
+- 让 scheduler 能基于 profile hash 正确估算资源占用和实例复用率
+- 让 doctor / diagnostics 能解释“模型已加载，但当前设备 profile 不匹配”的状态
+
 ---
 
 ## 6) 路由与策略（Hub-first，不允许退化成 terminal-first）
@@ -367,6 +511,7 @@ v1 兼容要求：
 本地任务路由最小输入：
 - `task_kind`
 - `input_modality`
+- `device_id`
 - `preferred_model_id`（可选 hint）
 - `policy profile`
 - `sensitivity`
@@ -385,7 +530,22 @@ v1 兼容要求：
 - `preferred_model_id` 只是 hint，不得绕过能力/策略检查
 - `text_generate` 不能抢占 `speech_to_text` / `vision_understand` 的请求
 
-### 6.3 capability 划分（必须细化）
+### 6.3 Effective Load Profile Resolution（新增）
+
+当请求命中本地 provider 时，Hub 必须先解析 effective load profile，再决定是否复用已加载实例。
+
+唯一推荐合并顺序：
+1. provider safe defaults
+2. model descriptor 的 `default_load_profile`
+3. paired terminal 的 `device_id + model_id` override
+4. request 级临时 hint（仅在 policy 显式允许时）
+
+强制要求：
+- 若 override 超过 `max_context_length` 或 provider 可接受上限，保存阶段必须阻断
+- 若 runtime 发现 provider 的真实上限低于 catalog 记录，可 runtime clamp，但必须写审计并暴露 `load_profile_clamped=true`
+- 不得 silent mutate 全局 model catalog 来表达某一台 terminal 的加载偏好
+
+### 6.4 capability 划分（必须细化）
 
 本地任务 capability 不得全部塞进一个 `ai.generate.local`。
 
@@ -399,7 +559,7 @@ v1 建议至少拆成：
 - 音频/视觉输入体积、资源占用、风险面都和文本生成不同
 - 后续 policy、配额、kill-switch 需要单独控制
 
-### 6.4 kill-switch
+### 6.5 kill-switch
 
 v1 必须支持以下最小 kill-switch 粒度：
 - 禁用全部本地任务
@@ -487,6 +647,25 @@ v1 规范要求：
 - 不要求把 Intel 变成本地大模型正式支持平台
 - 允许将小型 `embedding` / `speech_to_text` 以 CPU fallback 作为开发能力，但不得默认承诺生产可用
 
+### 8.4 Per-Device Load Profile 与调度协同
+
+per-device local load profile 不是单纯 UI 偏好，它必须直接接入资源调度：
+
+- `context_length` 提升会改变 KV cache / 内存占用估算
+- `gpu_offload` / `eval_batch_size` 后续引入时也会改变实例占用与并发上限
+- 因此 scheduler 的资源画像必须基于 effective load profile，而不是只看 `model_id`
+
+v1 要求：
+- diagnostics 至少展示：
+  - `max_context_length`
+  - `default_context_length`
+  - `effective_context_length`
+  - `effective_profile_source`（`provider_default|hub_default|device_override|request_hint`）
+- paired terminal 设备修改 local load profile 后：
+  - Hub 必须重新评估资源是否允许
+  - 若不允许，必须显式拒绝或排队，不得静默降级成另一个上下文长度
+- X-Terminal UI 不得直接声称“上下文已改为 32k”，除非 Hub 已返回已生效的 effective profile
+
 ---
 
 ## 9) 与现有代码的迁移方案（必须渐进式）
@@ -506,6 +685,25 @@ v1 推荐新增：
 - `x-hub/python-runtime/python_service/providers/base.py`
 - `x-hub/python-runtime/python_service/providers/mlx_provider.py`
 - `x-hub/python-runtime/python_service/providers/transformers_provider.py`
+- `hub_paired_terminal_local_model_profiles.json`（或同级单独存储）
+
+### 9.2.1 `contextLength` 迁移口径（新增）
+
+为了避免一次性推翻现有 UI / catalog：
+
+1. 现有 `ModelCatalogEntry.contextLength` / `HubModel.contextLength`
+   - 暂继续保留
+   - 视为 `default_load_profile.context_length` 的兼容映射
+2. 后续 provider / manifest 若能给出能力上限：
+   - 新增 `max_context_length`
+3. paired terminal 的设备级差异：
+   - 进入独立的 local load profile store
+   - 不写回 model catalog
+
+迁移目标很明确：
+- catalog 表示“这是什么模型 + Hub 默认怎么加载”
+- runtime state 表示“当前加载了哪些 instance + effective context 是多少”
+- paired terminal profile 表示“某台 terminal 想怎么用这台 Hub 的本地模型”
 
 ### 9.3 Swift 侧必须修改的入口
 
@@ -576,9 +774,39 @@ v1 推荐新增：
 - 至少 1 个 embeddings、1 个 audio、1 个 vision 样例通过
 - Hub diagnostics 能明确区分 `mlx unavailable` 与 `transformers unavailable`
 
+### M6：Managed Provider Pack + Typed Load Config
+
+完成标准：
+- `mlx`、`transformers` 迁入 installed provider pack registry
+- provider runtime bundle 状态可被 doctor / diagnostics / monitor 一致解释
+- `context_length / ttl / parallel / gpu_offload` 进入 typed load config
+- `ModelInfo` 与 `LoadedInstanceInfo` 正式分层
+
+### M7：Loaded Instance UX + Bench / Monitor Fusion
+
+完成标准：
+- Add Model 正常路径改成 auto-detect + capability-first
+- Loaded Models / Runtime Operations 成为一等 UI
+- Bench 与 Monitor 共享同一份 loaded-instance / load-config truth
+- 普通用户不再需要手工选择 backend/provider
+
+### M8：Expanded Provider Coverage（`mlx_vlm` / `llama.cpp`）
+
+完成标准：
+- 至少一类真实 MLX 视觉模型可完成 `add -> load -> route -> bench -> monitor`
+- GGUF 模型可被识别并映射到 `llama.cpp` provider pack
+- 新 provider 继续走相同 policy / audit / kill-switch / diagnostics 主链
+
+### M9：Product Exit / Migration
+
+完成标准：
+- 旧 catalog / bench / runtime settings 能迁移到新 schema
+- real-machine matrix 覆盖 MLX 文本、MLX 视觉、Transformers embed+ASR、GGUF
+- operator runbook 可明确区分 `missing_pack / runtime_missing / provider_mismatch / unsupported_task`
+
 ---
 
-## 11) 验收门禁（LPR-G0..G6）
+## 11) 验收门禁（LPR-G0..G10）
 
 ### LPR-G0 Schema Freeze
 - `task_kind` / `modality` / model manifest / runtime status v2 冻结
@@ -607,22 +835,49 @@ v1 推荐新增：
 - 真机样本与真实本地模型目录完成演练
 - 诊断与 root-cause 可定位
 
+### LPR-G7 Managed Provider Pack / Engine Manifest
+- installed provider pack registry 成立
+- `mlx`、`transformers` 至少走 pack inventory
+- pack 缺失、版本不兼容、依赖缺失都有 machine-readable reason
+
+### LPR-G8 Typed Load Config / Loaded Instance UX
+- `context_length / ttl / parallel / gpu_offload` 进入 typed load config
+- `ModelInfo` 与 `LoadedInstanceInfo` 明确分层
+- Hub 可显示 loaded instances、load config source、ttl、progress、last_used
+
+### LPR-G9 Expanded Provider Coverage
+- `mlx_vlm` 至少一类真实模型可 load / run / bench / monitor
+- `llama.cpp` / GGUF 至少一类真实模型可 import / run / bench / monitor
+- 新 provider 不得绕过 Hub-first policy / audit / kill-switch
+
+### LPR-G10 Product Exit / Migration / Operator Usability
+- 旧用户升级后不会因为 schema 变化丢模型或 bench 历史
+- 至少四类真实本地样本完成 `add -> load -> route -> bench -> monitor`
+- operator 有明确 runbook，可解释 pack/runtime/provider 层失败原因
+
 ---
 
-## 12) 推荐的第一批实现顺序（务实版本）
+## 12) 推荐的下一阶段实现顺序（按 2026-03-15 仓库状态）
 
-若只做最值钱的第一批，建议顺序是：
+如果从当前仓库状态继续推进，而不是回到 v1 起点，顺序固定为：
 
-1. 先补 `ModelDescriptor` 与 `runtime status v2`
-2. 再做 `Local Provider Runtime` 骨架
-3. 优先落 `Transformers embeddings`
-4. 其次落 `Transformers speech_to_text`
-5. 最后再做 `vision_understand / ocr`
+1. `LPR-W3-04` residual closure（补齐 legacy MLX IPC 与 load-profile-aware lifecycle 收口）
+2. `LPR-W3-03` require-real
+3. `LPR-W4-01` managed provider pack / engine manifest
+4. `LPR-W4-02` managed runtime bundle / dependency isolation
+5. `LPR-W4-03` typed load config / loaded instance contract
+6. `LPR-W4-04` Add Model / library UX simplification
+7. `LPR-W4-05` loaded models / runtime operations console
+8. `LPR-W4-06` bench + monitor fusion
+9. `LPR-W4-07` `mlx_vlm` provider pack
+10. `LPR-W4-08` `llama.cpp` / GGUF provider pack
+11. `LPR-W4-09` product exit / migration / require-real closure
 
 原因：
-- embeddings 直接服务 Memory v2/v3，系统性收益最大
-- ASR 直接服务 voice / operator / Supervisor 语音链路
-- vision/OCR 价值高，但预处理、输入限制和 UI 成本更大，适合排在后面
+- 先补 `W3-04/W3-03`，避免当前主线在 require-real 之前继续扩张
+- 先做 provider pack，再做新 provider，避免 `mlx_vlm` 与 `llama.cpp` 继续散装集成
+- 先做 typed load config，再做 UI，避免 `context_length` 一类字段再次分散到多个临时控件
+- 先做 loaded-instance console，再做 bench-monitor 融合，才能保证用户看到的是同一份运行态真相
 
 ---
 

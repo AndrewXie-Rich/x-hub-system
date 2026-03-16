@@ -42,7 +42,8 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # Required by hub db.js, which imports Node's built-in node:sqlite.
+          node-version: "22"
 
       - name: Run connector ingress + webhook pre-auth/replay tests
         run: |

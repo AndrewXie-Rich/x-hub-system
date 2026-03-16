@@ -135,6 +135,24 @@ Telegram operator supports the same governed text command surface, plus inline `
 
 WhatsApp Cloud operator currently stays text-only on purpose: high-risk actions still go through explicit commands such as `grant approve <grant_request_id>` and `grant reject <grant_request_id> reason <why>`. `whatsapp_personal_qr` remains a separate trusted-runner path and is not shipped through the Hub connector worker.
 
+Export operator-channel live-test evidence for `XT-W3-24-S` after the first real Slack / Telegram / Feishu / WhatsApp Cloud onboarding run:
+```bash
+HUB_ADMIN_TOKEN='replace-admin-token' \
+npm run generate-operator-live-test-evidence -- \
+  --provider slack \
+  --ticket-id ticket_live_1 \
+  --verdict passed \
+  --summary "first live onboarding reply succeeded" \
+  --performed-at 2026-03-15T11:00:00Z \
+  --evidence-ref build/reports/slack-first-live-thread.png
+```
+
+Notes:
+- This script stays on the local admin surface. It only reads `GET /admin/operator-channels/readiness`, `GET /admin/operator-channels/runtime-status`, and optionally `GET /admin/operator-channels/onboarding/tickets/:ticket_id`.
+- Default base URL is `http://127.0.0.1:<HUB_PAIRING_PORT or HUB_PORT+1>` and the default output path is `x-terminal/build/reports/xt_w3_24_s_<provider>_live_test_evidence.v1.json`.
+- `derived_status=pass` means command entry, delivery readiness, quarantine ticket, approval, first smoke, and onboarding outbox drainage all passed in the captured snapshot.
+- `whatsapp_cloud_api` can use this report for onboarding evidence, but it still does not replace the separate `XT-W3-24-N` require-real bundle.
+
 ## Connect from another computer (LAN)
 
 On another computer (with this repo + deps), run:

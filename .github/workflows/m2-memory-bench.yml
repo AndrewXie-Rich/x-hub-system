@@ -68,7 +68,8 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # Required by benchmark/export scripts that import Node's built-in node:sqlite.
+          node-version: "22"
 
       - name: Generate current benchmark report
         env:

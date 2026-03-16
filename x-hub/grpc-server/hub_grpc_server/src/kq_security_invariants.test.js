@@ -183,19 +183,19 @@ await runAsync('KQ-W1-03/CP-Grant-001 denies paid generate without active grant'
       const rows = listAuditByRequestId(db, request_id);
       const denied = rows.find((r) => String(r.event_type || '') === 'ai.generate.denied');
       assert.ok(denied, 'expected ai.generate.denied audit event');
-      assert.equal(String(denied.error_code || ''), 'grant_required');
+      assert.equal(String(denied.error_code || ''), 'legacy_grant_flow_required');
 
       const deniedExt = JSON.parse(String(denied.ext_json || '{}'));
       assert.equal(deniedExt.metrics?.security?.blocked, true);
-      assert.equal(String(deniedExt.metrics?.security?.deny_code || ''), 'grant_required');
+      assert.equal(String(deniedExt.metrics?.security?.deny_code || ''), 'legacy_grant_flow_required');
 
       const policyRows = rows.filter((r) => String(r.event_type || '') === 'policy_eval');
       assert.equal(policyRows.length > 0, true, 'expected policy_eval audit for deny decision');
       const policyExtRows = policyRows.map((r) => JSON.parse(String(r.ext_json || '{}')));
       const matchedPolicy = policyExtRows.find((ext) =>
-        Array.isArray(ext.rule_ids) && ext.rule_ids.includes('grant_required')
+        Array.isArray(ext.rule_ids) && ext.rule_ids.includes('legacy_grant_flow_required')
       );
-      assert.ok(matchedPolicy, 'expected grant_required policy rule to be recorded');
+      assert.ok(matchedPolicy, 'expected legacy_grant_flow_required policy rule to be recorded');
       assert.equal(String(matchedPolicy.policy_decision || ''), 'deny');
     } finally {
       db.close();
@@ -326,7 +326,7 @@ await runAsync('KQ-W1-03/CP-Tamper-003 replay guard rejects expired paid grant',
       const rows = listAuditByRequestId(db, request_id);
       const denied = rows.find((r) => String(r.event_type || '') === 'ai.generate.denied');
       assert.ok(denied, 'expected deny event for expired grant replay');
-      assert.equal(String(denied.error_code || ''), 'grant_required');
+      assert.equal(String(denied.error_code || ''), 'legacy_grant_flow_required');
     } finally {
       db.close();
       cleanupDbArtifacts(dbPath);

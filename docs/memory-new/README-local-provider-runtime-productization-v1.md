@@ -1,12 +1,13 @@
 # X-Hub Local Provider Runtime Productization README
 
-Last updated: `2026-03-13`
+Last updated: `2026-03-15`
 
 Scope:
 - `LPR-W3-05` Provider-aware Warmup / Unload / Instance Lifecycle
 - `LPR-W3-08` Task-aware Local Model Routing / Use-For Binding
 - `LPR-W3-07` Runtime Monitor / Useful Telemetry
 - `LPR-W3-06` Task-aware Bench v2 / Capability Summary
+- `LPR-W4-01..09` LM Studio-aligned provider-pack, load-config, model-library, runtime-console, `mlx_vlm`, `llama.cpp` productization
 
 This document is the operator-facing README for the next local-model productization phase of X-Hub.
 Its purpose is simple: turn the current "local runtime can execute some non-MLX tasks" state into a complete Hub product path where users can import a local model, bind it to a real task, warm it up when needed, monitor it while it runs, and bench it with results they can actually interpret.
@@ -21,28 +22,80 @@ What is already true:
 - Per-device load profile and context-length controls were added in `LPR-W3-04-A/B/C`, so runtime identity is no longer only `model_id`; it can now resolve by effective load profile and device.
 
 What is not finished yet:
-- Hub still does not expose a provider-aware `Warmup / Unload / Evict` control plane for all supported local tasks.
-- Hub still does not let users bind a model directly to real task kinds like `Generate / Embedding / ASR / Vision / OCR`.
-- Runtime truth is still too thin for operators; `Loaded / Available` is not enough.
-- Bench is still too close to the old MLX text-only path and does not tell users what a non-MLX local model is good for.
+- `LPR-W3-05 / W3-06 / W3-07 / W3-08` are now delivered under `LPR-G5`, but `LPR-G6` still needs require-real smoke with actual local model directories.
+- `process_local` providers intentionally remain on-demand; only `runtime_process` providers can truthfully expose Hub `Warmup / Unload`.
+- resident lifecycle, bench, and monitor now share one control plane, but they still need a real-machine validation pass for memory pressure and eviction behavior.
 
 The product target is not "support more loaders."
 The product target is "make local models governable and useful through one Hub control plane."
 
-## Current Reality On 2026-03-13
+## External Reference Baseline
+
+This line should explicitly reference both `lmstudio-js` and `opencode`, but only as pattern sources.
+X-Hub should not replace its resident runtime architecture with either project wholesale.
+
+What to borrow from LM Studio:
+- typed separation between disk model info and loaded instance info, as seen in [ModelInfoBase.ts](/Users/andrew.xie/Documents/AX/Opensource/lmstudio-js-main/packages/lms-shared-types/src/ModelInfoBase.ts)
+- first-class load config, especially `contextLength`, device targeting, progress, and TTL semantics, as seen in [ModelNamespace.ts](/Users/andrew.xie/Documents/AX/Opensource/lmstudio-js-main/packages/lms-client/src/modelShared/ModelNamespace.ts), [baseModelBackendInterface.ts](/Users/andrew.xie/Documents/AX/Opensource/lmstudio-js-main/packages/lms-external-backend-interfaces/src/baseModelBackendInterface.ts), [LLMLoadModelConfig.ts](/Users/andrew.xie/Documents/AX/Opensource/lmstudio-js-main/packages/lms-shared-types/src/llm/LLMLoadModelConfig.ts), and [EmbeddingLoadModelConfig.ts](/Users/andrew.xie/Documents/AX/Opensource/lmstudio-js-main/packages/lms-shared-types/src/embedding/EmbeddingLoadModelConfig.ts)
+- domain-specific model metadata where the model and the loaded instance each expose effective context fields, as seen in [EmbeddingModelInfo.ts](/Users/andrew.xie/Documents/AX/Opensource/lmstudio-js-main/packages/lms-shared-types/src/embedding/EmbeddingModelInfo.ts)
+
+What to borrow from OpenCode:
+- provider-agnostic `providerID + modelID` identity and capability-first model metadata, as seen in [provider.ts](/Users/andrew.xie/Documents/AX/Opensource/opencode/opencode/packages/opencode/src/provider/provider.ts) and [types.gen.ts](/Users/andrew.xie/Documents/AX/Opensource/opencode/opencode/packages/sdk/js/src/gen/types.gen.ts)
+- explicit `capabilities`, `modalities`, and `limit.context / limit.output` shape for model picker, routing, and UI filtering, as seen in [models.ts](/Users/andrew.xie/Documents/AX/Opensource/opencode/opencode/packages/opencode/src/provider/models.ts)
+- transform-time fail-closed behavior for unsupported modalities instead of silent best effort, as seen in [transform.ts](/Users/andrew.xie/Documents/AX/Opensource/opencode/opencode/packages/opencode/src/provider/transform.ts)
+
+What X-Hub should not borrow:
+- do not replace the current resident daemon + provider registry with LM Studio's full backend/client contract
+- do not import OpenCode's cloud-provider auth/cost assumptions into local-runtime UX
+- do not collapse multimodal local models back into a generic text-only picker
+
+What the 2026-03-15 local LM Studio install confirmed:
+- it really ships as `daemon + workers + engine extensions`, not one monolithic runtime
+- the current local install exposes dedicated workers for LLM, embedding, ASR, and image generation
+- the current local install already carries separate engine manifests for `mlx-llm` and `llama.cpp`
+- the MLX engine release data explicitly tracks `mlx-vlm`, which is the strongest signal that X-Hub should stop treating multimodal MLX as "just another text-only MLX edge case"
+- the CLI already treats `context-length / gpu / parallel / ttl / identifier` as explicit load parameters, which matches the direction X-Hub has already started with `load_profile_hash / effective_context_length`
+
+Direct X-Hub mapping:
+- model catalog should expose stable provider-aware identity, capability/modality fields, and context limits
+- paired terminal devices should own load-profile overrides such as `context_length`, later extensible to GPU/offload parameters
+- runtime loaded instances should remain keyed by `provider + model_id + device_id + load_profile_hash`
+- warmup, bench, and monitor should all read the same loaded-instance truth instead of inventing separate state
+
+## What We Should Stop Rebuilding Ourselves
+
+The next local-model phase should explicitly avoid repeating product problems LM Studio already solved reasonably well.
+
+Stop rebuilding:
+- a manual backend picker as the normal user path
+- one-off context-length widgets that are detached from runtime instance identity
+- hidden runtime state where `loaded`, `warm`, and `currently usable` mean different things in different screens
+- model-library cards that show only format/backend but not actual task capability
+- a bench page that knows nothing about the currently loaded instance and runtime pressure
+
+Start reusing the same product shape:
+- capability-first model library
+- typed load config
+- loaded-instance inventory as a first-class surface
+- provider pack / engine manifest inventory
+- one runtime operations console for warmup / unload / evict / diagnostics
+- bench + monitor fused into one explainable capability view
+
+## Current Reality On 2026-03-15
 
 If the question is "can Hub already load non-MLX models," the answer is:
-- partially yes in runtime capability
-- not yet as a complete product workflow
+- yes for the supported local task kinds and product path
+- with the remaining caveat that require-real smoke is still pending
 
 If the question is "can Hub UI already use Bench to evaluate these models," the answer is:
-- not yet in the product sense
-- Bench v2 is still pending under `LPR-W3-06`
+- yes
+- Bench v2 is delivered, but it still needs require-real fixture runs on actual user model directories
 
 In practical terms:
-- runtime-side Transformers execution exists for selected task kinds
+- runtime-side Transformers execution exists for the currently supported local task kinds
 - per-device effective context and load-profile resolution exists
-- Hub UI still lacks the common lifecycle, routing, monitor, and bench layers that make this usable for normal operators
+- Hub now has the common lifecycle, routing, monitor, and bench layers needed for normal operators
+- the remaining gap is proof on real local model directories rather than missing product surfaces
 
 ## What Already Landed
 
@@ -72,6 +125,36 @@ Why this matters:
 - `LPR-W3-05-A` only makes sense after instance identity is explicit
 - warmup/unload/bench/monitor all depend on stable instance identity
 
+## Next Tranche After W3
+
+The W3 chain gave X-Hub the minimum complete local-model loop:
+- provider-aware lifecycle
+- task-aware routing
+- runtime monitor
+- task-aware bench
+
+That is enough to stop being MLX-only in practice.
+It is not yet enough to become the best local-model product surface.
+
+The next tranche is therefore fixed as:
+
+1. `LPR-W3-03` require-real closure
+2. `LPR-W4-01` managed provider pack / engine manifest
+3. `LPR-W4-02` managed runtime bundle / dependency isolation
+4. `LPR-W4-03` typed load config + loaded instance contract
+5. `LPR-W4-04` Add Model / library UX simplification
+6. `LPR-W4-05` loaded models / runtime operations console
+7. `LPR-W4-06` bench + monitor fusion
+8. `LPR-W4-07` `mlx_vlm` provider pack
+9. `LPR-W4-08` `llama.cpp` / GGUF provider pack
+10. `LPR-W4-09` product exit / migration / require-real closure
+
+Why this order is correct:
+- provider packs come before new backends because otherwise `mlx_vlm` and `llama.cpp` will become one-off integrations
+- typed load config comes before UI because otherwise the UI will hard-code behavior again
+- runtime operations console comes before bench fusion because the user must first see loaded-instance truth
+- `mlx_vlm` comes before `llama.cpp` because the current user-critical target is real local MLX vision success, not broad format count
+
 ## Recommended Execution Order
 
 The next chain should be executed in this exact order:
@@ -91,12 +174,15 @@ Why this order is correct:
 
 | Workstream | Status | Immediate Value | Depends On | Blocks |
 |---|---|---|---|---|
-| `LPR-W3-05` | `planned` | gives Hub a real lifecycle control plane | `LPR-W3-04-C` | routing, monitor, bench |
-| `LPR-W3-08` | `planned` | lets users bind models to real tasks | `LPR-W3-05` | monitor, bench |
-| `LPR-W3-07` | `planned` | gives operators usable runtime truth | `LPR-W3-05`, `LPR-W3-08` | bench, diagnostics |
-| `LPR-W3-06` | `planned` | turns bench into task-aware capability summary | `LPR-W3-05`, `LPR-W3-07`, `LPR-W3-08` | final product loop |
+| `LPR-W3-05` | `delivered` | gives Hub a real lifecycle control plane | `LPR-W3-04-C` | require-real smoke |
+| `LPR-W3-08` | `delivered` | lets users bind models to real tasks | `LPR-W3-05` | require-real smoke |
+| `LPR-W3-07` | `delivered` | gives operators usable runtime truth | `LPR-W3-05`, `LPR-W3-08` | require-real smoke |
+| `LPR-W3-06` | `delivered` | turns bench into task-aware capability summary | `LPR-W3-05`, `LPR-W3-07`, `LPR-W3-08` | require-real fixture runs |
 
 ## Detailed Execution Plan
+
+The breakdown below preserves the original execution granularity.
+The authoritative current status is the summary table above plus the lane board and evidence files.
 
 ### `LPR-W3-05` Provider-aware Warmup / Unload / Instance Lifecycle
 
@@ -493,6 +579,12 @@ This work is complete only when the full user path is true:
 
 If any one of those is missing, the product loop is still incomplete.
 
+For the next tranche, add three more conditions:
+
+8. the operator can see which provider pack and which runtime bundle each loaded instance is using
+9. the user does not need to manually choose backend/provider in the normal Add Model flow
+10. at least one real MLX vision model and one real GGUF model can complete `add -> load -> route -> bench -> monitor`
+
 ## Known Gaps And Guardrails
 
 Known gaps:
@@ -505,14 +597,17 @@ Guardrails:
 - providers that are only on-demand must be labeled `ephemeral_on_demand`
 - no status view should fake green when queue, memory, fallback, or error data is unknown
 - bench results must preserve task kind and load-profile identity, or they will mislead users
+- provider-pack absence, runtime-bundle absence, and model-format mismatch must be different failure reasons
+- visual MLX support should land as a dedicated provider path, not as a hidden Transformers fallback
+- GGUF support should land as a dedicated provider path, not as "try importing into Transformers and hope"
 
 ## Immediate Next Action
 
 The next implementation entry point is:
 
-- `LPR-W3-05-A` Local Runtime Warmup / Unload Contract
+- `LPR-W3-03` require-real closure, then `LPR-W4-01` Managed Provider Pack / Engine Manifest
 
 Reason:
-- it is the shared prerequisite for Warmup/UI/Routing/Bench/Monitor
-- it converts instance lifecycle from implicit behavior into an explicit product contract
-- it gives the rest of the chain one stable control surface to build on
+- W3 is already functionally closed enough for real use, but not yet release-credible without require-real
+- once require-real is in place, provider-pack inventory becomes the single highest-leverage next step
+- that step prevents `mlx_vlm`, `llama.cpp`, and future local runtimes from repeating the current ad-hoc dependency pattern
