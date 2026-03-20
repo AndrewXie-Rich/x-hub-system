@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="X-Hub monogram">
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0c4f3b" />
+      <stop offset="62%" stop-color="#127758" />
+      <stop offset="100%" stop-color="#af7c28" />
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="56" height="56" rx="16" fill="#f7f4ee" />
+  <path d="M18 18h10l4 7 4-7h10L38 31l10 15H38l-6-10-6 10H16l10-15Z" fill="url(#g)" />
+</svg>
