@@ -28,7 +28,7 @@ X-Hub exists for the harder problem:
 | Trust root | The active client, runtime, or plugin bundle quietly becomes the place where trust lives | Trust stays anchored in the Hub so clients can stay replaceable |
 | Capabilities | Installed tools and plugins often expand privilege by default | Skills and higher-risk execution paths are treated as governed capability paths |
 | Autonomy | More power often means blurrier supervision and less honest runtime truth | Execution range, review depth, intervention, and clamps are separated into explicit controls |
-| Memory | Context, notes, and execution state drift across surfaces | Memory truth is meant to stay attached to the Hub-side system of record |
+| Memory | Context, notes, and execution state drift across surfaces, and the active runtime often quietly becomes the memory authority | Memory truth stays attached to the Hub-side system of record; the user chooses which AI executes memory jobs, and durable writes still terminate through `Writer + Gate` |
 | Cloud control | Vendor-hosted defaults can become the hidden control plane | The primary posture is a user-owned Hub with optional external services under governance |
 
 ## What X-Hub Is Actually Optimizing For

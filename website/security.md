@@ -47,6 +47,7 @@ X-Hub is built around layered controls:
 - policy and authorization in the control plane
 - runtime posture that stays visible to the operator
 - memory and guidance that remain attached to the system of record
+- memory maintenance authority that stays governed on the Hub side: the user chooses which AI executes memory jobs, while durable writes still terminate through `Writer + Gate`
 - audit trails that help explain what happened
 - a local-first operating path for teams that want tighter control over privacy and dependencies
 

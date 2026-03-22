@@ -48,6 +48,8 @@ Compared with a generic agent terminal, X-Terminal adds:
 - project continuity and supervisor orchestration;
 - stronger policy coupling (X-Constitution + Memory-Core skill constraints).
 
+Here `Memory-Core` should be read as a Hub-governed rule asset rather than a local plugin, user choice over which AI executes memory jobs remains in X-Hub, and durable memory writes still terminate through Writer/Gate.
+
 Result: even if terminal state is compromised, attacker impact is constrained to local surface; Hub state and cross-project memory integrity remain protected.
 
 ## 5) Agent Integration Options (Email First: IMAP+SMTP)

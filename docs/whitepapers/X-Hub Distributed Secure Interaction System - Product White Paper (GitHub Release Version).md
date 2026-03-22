@@ -136,7 +136,7 @@ The circulation of memory is fully lifecycle-managed by X-Hub's built-in dedicat
 
 ## 2.3 Memory-Core Skill: The "Core Rule Engine" of the Memory System
 
-The Memory-Core Skill is the only set of guiding rules for X-Hub memory processing, determining the acquisition, generation, and processing logic of memory. The core design is as follows:
+The Memory-Core Skill is the only guiding rule set for X-Hub memory processing. The product-facing `Skill` label can stay, but at the implementation boundary it should be understood as a Hub-built-in governed rule asset rather than a single execution AI with direct cross-layer write authority. Which AI maintains memory is selected explicitly by the user in X-Hub; X-Hub performs routing and audit; durable writes still terminate in Writer/Gate. The core design is as follows:
 
 - Tamper-Proof: Cannot be dynamically modified during operation, and neither terminals nor ordinary Skills have modification permissions;
 
@@ -146,7 +146,7 @@ The Memory-Core Skill is the only set of guiding rules for X-Hub memory processi
   - Guide the circulation rules (extraction/aggregation/solidification/injection) of the five-layer memory architecture;
   - Control the isolation dimensions of memory (device/project/thread);
   - Define memory desensitization rules (e.g., content with <private> tags is discarded/desensitized by default);
-  - Schedule the calling timing and priority of Skills to ensure "seamless calling";
+  - Constrain the role boundaries of the Memory Scheduler / Worker / Writer, and schedule the calling timing and priority of related Skills to ensure "seamless calling";
   - Control the injection timing, permissions, and effective scope of the X-Constitution.
 
 # III. Skill Upgrade/Downgrade and Classification System
@@ -173,7 +173,7 @@ On the X-Hub side, Skills are divided into three categories according to the sco
 
 |Skill Type|Positioning|Management Method|Calling Rules|
 |---|---|---|---|
-|Memory-Core Skill|System-Level Core Rules|Exclusive to X-Hub, can only be modified through cold storage Token, and universally applicable to the entire X-Hub|Automatically called with the highest priority|
+|Memory-Core Skill|System-Level Core Rule Asset|Exclusive to X-Hub, can only be modified through cold storage Token, and is globally applicable across the entire X-Hub; it does not run under the ordinary skill permission model|Highest-priority governed rule asset; constrains Scheduler/Worker/Writer and does not mean a single execution AI|
 |General Skill|Cross-Project Reuse|Can be imported from external sources through the "Import Button" on X-Terminal and uniformly managed by X-Hub|Can be called after project authorization|
 |Single-Project Exclusive Skill|Only Available for the Corresponding Project|Generated from the interaction memory of the project, edited on the X-Terminal side, and stored on the X-Hub|Automatically called only within the affiliated project|
 ## 3.4 Skill "Seamless Calling" Guarantee Mechanism
@@ -182,7 +182,7 @@ To ensure that Skills are accurately called when needed, X-Hub has built-in sche
 
 1. Calling Trigger Conditions: Automatically matched according to the current interaction context, project identifier, and device/terminal permissions;
 
-2. Priority Rules: Memory-Core Skill > General Skill > Single-Project Exclusive Skill;
+2. Governance Precedence: the Memory-Core rule asset constrains Scheduler/Worker/Writer and stays outside the ordinary skill runner resolution; ordinary executable skill resolution remains General Skill > Single-Project Exclusive Skill;
 
 3. Conflict-Free Guarantee: Match Skills according to the `device/project/thread` isolation domain, and cross-domain Skills are invisible;
 
@@ -437,7 +437,8 @@ If C is a single-sign hot wallet, C compromise can still sign malicious transact
 |Short-Term Context Storage (for Crash Recovery)|`<project_root>/.xterminal/recent_context.json` + `.xterminal/AX_RECENT.md`|
 |Candidate Skills/Automatic Upgrade|`x-terminal/Sources/Project/AXSkillCandidates.swift`|
 |Forgotten Vault|`<skills_dir>/_projects/<project>/forgotten-vault/`|
-|Global Skill Library|`<skills_dir>/_global/` (Memory-Core Skill: `<skills_dir>/memory-core/`)|
+|Global Skill Library|`<skills_dir>/_global/` (ordinary user-global skills only; excludes Memory-Core)|
+|Memory-Core Recipe Asset|Hub-built-in governed rule asset (`memory_core` version manifest + active state), separate from ordinary `<skills_dir>` libraries|
 |Project-Specific Skill Library|`<skills_dir>/_projects/<project>/`|
 |X-Constitution Storage|`<memory_dir>/longterm/_constitution/` (Separately encrypted, only accessible through cold storage Token)|
 ## 7.2 Multi-Terminal Continuous Dialogue/New Dialogue Specifications

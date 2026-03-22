@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 860" role="img" aria-labelledby="title desc">
   <title id="title">X-Hub Deployment And Runtime Topology</title>
-  <desc id="desc">A static deployment topology diagram showing user devices on the left, the operator-owned Hub host in the center, and optional external systems on the right.</desc>
+  <desc id="desc">A static deployment topology diagram showing user devices on the left, the user-owned Hub host in the center, and optional external systems on the right.</desc>
   <defs>
     <marker id="arrow-gray" markerWidth="7" markerHeight="7" refX="5.8" refY="3.5" orient="auto" markerUnits="strokeWidth">
       <path d="M 0 0 L 7 3.5 L 0 7 z" fill="#64748b" />

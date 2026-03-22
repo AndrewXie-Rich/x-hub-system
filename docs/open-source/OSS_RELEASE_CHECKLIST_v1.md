@@ -1,7 +1,7 @@
 # OSS Release Checklist v1
 
 - version: v1.0
-- updatedAt: 2026-03-02
+- updatedAt: 2026-03-20
 - owner: Core Maintainers / Security / QA / Release
 - status: active
 - scope: first public GitHub release for `x-hub-system`
@@ -37,6 +37,8 @@ For the current public GitHub package, validated external wording is limited to:
 - `Hub-first governed automations`
 
 Internal work-order packs, operator docs, and implementation-progress evidence may describe broader repo activity. They do not expand public release claims by themselves.
+
+If any release-facing wording mentions memory posture, it must stay inside the same public boundary: the user chooses which AI executes memory jobs in X-Hub, `Memory-Core` is a governed Hub-side rule asset rather than a normal plugin tier, and durable writes still terminate through `Writer + Gate`.
 
 ## 0.2 Release Operator Read Order
 
@@ -110,6 +112,9 @@ DoD:
 Evidence:
 - `README.md`
 - selected CI workflow reports
+- optional supporting evidence for the unified doctor source-run shell: `build/reports/xhub_doctor_source_gate_summary.v1.json`
+- optional focused XT context-export evidence: `build/reports/xhub_doctor_xt_source_smoke_evidence.v1.json`
+- optional aggregate Hub + XT context-export evidence: `build/reports/xhub_doctor_all_source_smoke_evidence.v1.json`
 
 DoD:
 - independent maintainer can reproduce quick start on clean machine.
@@ -182,6 +187,14 @@ rg --files | rg -n "(^|/)(build|data|\\.axcoder)(/|$)|\\.sqlite3$|\\.sqlite3-(sh
 
 Optional: produce machine-readable summary report for release evidence.
 
+Recommended helper:
+
+```bash
+bash scripts/refresh_oss_release_evidence.sh
+```
+
+This helper now also regenerates `build/reports/xhub_local_service_operator_recovery_report.v1.json`, so the OSS boundary/readiness packet can reuse one machine-readable `action_category / external_status_line / top_recommended_action` source.
+
 ## 5) Minimal Public Package (first release)
 
 Must include:
@@ -200,6 +213,10 @@ Can be deferred to later releases:
 Recommended files to attach to release approval:
 - `build/reports/oss_release_readiness_v1.json`
 - `build/reports/oss_secret_scrub_report.v1.json`
+- `build/reports/xhub_doctor_source_gate_summary.v1.json` (supporting evidence for the cross-product source-run doctor shell, including `project_context_summary_support`, `durable_candidate_mirror_support`, and `memory_route_truth_support`)
+- `build/reports/xhub_local_service_operator_recovery_report.v1.json` (supporting evidence for structured local-service recovery wording consumed by the boundary/readiness bundle)
+- `build/reports/xhub_doctor_xt_source_smoke_evidence.v1.json` (should also prove `xt.unified_doctor_report_contract.v1` is present in XT source/export evidence)
+- `build/reports/xhub_doctor_all_source_smoke_evidence.v1.json` (should also prove aggregate XT export preserves `xt.unified_doctor_report_contract.v1`)
 - CI run links or exported summaries
 - final checklist decision (`GO|NO-GO|INSUFFICIENT_EVIDENCE`)
 

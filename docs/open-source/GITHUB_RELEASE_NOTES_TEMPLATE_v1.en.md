@@ -42,6 +42,8 @@ Validated public statements for this release:
 
 X-Hub keeps model routing, memory truth, grants, policy, audit, and execution safety inside one governed Hub, while terminals stay lightweight and untrusted by default.
 
+If memory posture is mentioned in public wording, keep it inside this boundary: the user chooses which AI executes memory jobs in X-Hub, `Memory-Core` is a governed Hub-side rule asset rather than a normal plugin, and durable writes still terminate through `Writer + Gate`.
+
 Compared with a terminal-only AI setup, this release emphasizes:
 
 - Hub-first trust boundaries
@@ -105,6 +107,7 @@ Developer note: the public Hub source-run entrypoint is `bash x-hub/tools/run_xh
 - high-risk paths fail closed when critical readiness is incomplete
 - the terminal is not the trust anchor
 - constitutional guidance is intended to be pinned on the Hub side and reinforced by policy controls
+- any memory-control wording should keep `Memory-Core` on the governed rule layer and keep durable writes on `Writer + Gate`
 - grants, routing, and execution safety stay under Hub control
 
 If you mention constitutional or memory-backed guardrails in release notes, keep them in the system safety posture lane. Do not present them as additional validated feature claims beyond the approved release slice.

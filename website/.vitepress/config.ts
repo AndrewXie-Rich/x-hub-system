@@ -1,24 +1,46 @@
 import { defineConfig } from 'vitepress'
 
 const enNav = [
-  { text: 'Platform', link: '/architecture' },
-  { text: 'Trust Model', link: '/security' },
-  { text: 'Why Not Just An Agent?', link: '/why-not-just-an-agent' },
-  { text: 'Governance', link: '/governed-autonomy' },
-  { text: 'Surfaces', link: '/channels-and-voice' },
-  { text: 'Runtime', link: '/local-first' },
-  { text: 'Capabilities', link: '/skills' },
-  { text: 'Reading Path', link: '/docs' }
+  { text: 'Overview', link: '/' },
+  {
+    text: 'Control Plane',
+    items: [
+      { text: 'Architecture', link: '/architecture' },
+      { text: 'Trust Model', link: '/security' },
+      { text: 'Why X-Hub', link: '/why-not-just-an-agent' }
+    ]
+  },
+  {
+    text: 'Governed Execution',
+    items: [
+      { text: 'Governance', link: '/governed-autonomy' },
+      { text: 'Surfaces & Channels', link: '/channels-and-voice' },
+      { text: 'Local Runtime', link: '/local-first' },
+      { text: 'Capabilities', link: '/skills' }
+    ]
+  },
+  { text: 'Docs', link: '/docs' }
 ]
 
 const zhNav = [
-  { text: '平台', link: '/zh-CN/architecture' },
-  { text: '信任模型', link: '/zh-CN/security' },
-  { text: '为什么不直接用 Agent？', link: '/zh-CN/why-not-just-an-agent' },
-  { text: '治理', link: '/zh-CN/governed-autonomy' },
-  { text: '交互表面', link: '/zh-CN/channels-and-voice' },
-  { text: '本地运行', link: '/zh-CN/local-first' },
-  { text: '能力体系', link: '/zh-CN/skills' },
+  { text: '总览', link: '/zh-CN/' },
+  {
+    text: '控制平面',
+    items: [
+      { text: '平台架构', link: '/zh-CN/architecture' },
+      { text: '信任模型', link: '/zh-CN/security' },
+      { text: '为什么是 X-Hub', link: '/zh-CN/why-not-just-an-agent' }
+    ]
+  },
+  {
+    text: '受控执行',
+    items: [
+      { text: '治理模型', link: '/zh-CN/governed-autonomy' },
+      { text: '交互表面与通道', link: '/zh-CN/channels-and-voice' },
+      { text: '本地运行', link: '/zh-CN/local-first' },
+      { text: '能力体系', link: '/zh-CN/skills' }
+    ]
+  },
   { text: '阅读路径', link: '/zh-CN/docs' }
 ]
 
@@ -27,13 +49,28 @@ const enSidebar = [
     text: 'Overview',
     items: [
       { text: 'Why X-Hub', link: '/' },
+      { text: 'Why Not Just An Agent?', link: '/why-not-just-an-agent' }
+    ]
+  },
+  {
+    text: 'Control Plane',
+    items: [
       { text: 'Platform Architecture', link: '/architecture' },
-      { text: 'Trust Model', link: '/security' },
-      { text: 'Why Not Just An Agent?', link: '/why-not-just-an-agent' },
+      { text: 'Trust Model', link: '/security' }
+    ]
+  },
+  {
+    text: 'Governed Execution',
+    items: [
       { text: 'Governance', link: '/governed-autonomy' },
       { text: 'Surfaces and Channels', link: '/channels-and-voice' },
       { text: 'Local Runtime', link: '/local-first' },
-      { text: 'Capabilities', link: '/skills' },
+      { text: 'Capabilities', link: '/skills' }
+    ]
+  },
+  {
+    text: 'Reference',
+    items: [
       { text: 'Reading Path', link: '/docs' }
     ]
   }
@@ -44,13 +81,28 @@ const zhSidebar = [
     text: '总览',
     items: [
       { text: '为什么是 X-Hub', link: '/zh-CN/' },
+      { text: '为什么不直接用 Agent？', link: '/zh-CN/why-not-just-an-agent' }
+    ]
+  },
+  {
+    text: '控制平面',
+    items: [
       { text: '平台架构', link: '/zh-CN/architecture' },
-      { text: '信任模型', link: '/zh-CN/security' },
-      { text: '为什么不直接用 Agent？', link: '/zh-CN/why-not-just-an-agent' },
+      { text: '信任模型', link: '/zh-CN/security' }
+    ]
+  },
+  {
+    text: '受控执行',
+    items: [
       { text: '治理模型', link: '/zh-CN/governed-autonomy' },
       { text: '交互表面与通道', link: '/zh-CN/channels-and-voice' },
       { text: '本地运行', link: '/zh-CN/local-first' },
-      { text: '能力体系', link: '/zh-CN/skills' },
+      { text: '能力体系', link: '/zh-CN/skills' }
+    ]
+  },
+  {
+    text: '参考',
+    items: [
       { text: '阅读路径', link: '/zh-CN/docs' }
     ]
   }

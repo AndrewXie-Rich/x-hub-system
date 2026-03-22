@@ -37,6 +37,8 @@ The repository also documents a broader safety posture around Hub-side memory, X
 
 That posture should be described as a Hub-side, memory-backed behavioral boundary reinforced by policy controls, audit, grants, and fail-closed execution. It is not a license to describe terminal-local prompt wording as if it were the trust boundary.
 
+If release wording needs to mention memory control at all, keep it inside the frozen public boundary: the user chooses which AI executes memory jobs in X-Hub, `Memory-Core` stays a governed Hub-side rule asset rather than a normal plugin, and durable writes still terminate through `Writer + Gate`.
+
 That material may be referenced in release notes as part of the system's security posture, but it must not be used to expand the validated public release slice beyond the three approved statements above.
 
 ## 1) Release Types
@@ -72,6 +74,32 @@ rg --files | rg -n "(^|/)(build|data|\\.axcoder)(/|$)|\\.sqlite3$|\\.sqlite3-(sh
 ```
 
 Confirm no forbidden runtime artifacts are staged.
+
+Additional engineering validation for the in-progress unified doctor shell:
+
+```bash
+bash scripts/ci/xhub_doctor_source_gate.sh
+```
+
+Machine-readable supporting evidence produced by that gate:
+
+- `build/reports/xhub_doctor_source_gate_summary.v1.json`
+- `build/reports/xhub_doctor_xt_source_smoke_evidence.v1.json`
+- `build/reports/xhub_doctor_all_source_smoke_evidence.v1.json`
+
+The gate summary now also carries `project_context_summary_support`, `durable_candidate_mirror_support`, and `memory_route_truth_support`, so release evidence can show that XT source-run export preserved the structured `session_runtime_readiness.project_context_summary`, `session_runtime_readiness.durable_candidate_mirror_snapshot`, and `model_route_readiness.memory_route_truth_snapshot` rather than only reporting a green smoke status.
+
+The OSS refresh helper now also regenerates `build/reports/xhub_local_service_operator_recovery_report.v1.json`, so boundary/readiness reports can reuse the same machine-readable `action_category / external_status_line / top_recommended_action` instead of inventing a second wording layer.
+
+To refresh the OSS release evidence bundle after the upstream gates have produced their inputs:
+
+```bash
+bash scripts/refresh_oss_release_evidence.sh
+```
+
+CI workflow path for the same gate:
+
+- `.github/workflows/xhub-doctor-source-gate.yml`
 
 ## 4) Version And Notes
 

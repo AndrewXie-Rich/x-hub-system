@@ -16,6 +16,7 @@ Many agent systems collapse prompts, tools, memory, secrets, and side-effect exe
 X-Hub takes the opposite position:
 
 - the Hub should own trust, policy, grants, audit, and memory truth
+- memory maintenance should stay on a Hub control plane where the user chooses which AI executes memory jobs, rather than turning memory into a terminal-local or plugin-local black box
 - paired surfaces should be powerful without silently becoming sovereign runtimes
 - thinner clients should be able to consume governed capabilities without inheriting equivalent authority
 - external channels should converge through the same control plane before they can influence higher-trust execution
@@ -29,6 +30,12 @@ The trust and control plane diagram is meant to show three things:
 - X-Terminal follows the deep paired path and is designed as the primary high-trust product surface.
 - Generic terminals and other clients can still attach to governed capability surfaces without becoming equivalent trust roots.
 - The shared Hub layer is where system truth, policy, authorization, and user control stay anchored.
+
+For memory specifically, the public boundary is intentionally simple:
+
+- `Memory-Core` is a governed Hub-side rule asset, not an ordinary plugin tier
+- the user still chooses which AI executes memory jobs in X-Hub
+- durable memory truth still terminates through `Writer + Gate` instead of through an arbitrary client or skill runtime
 
 ## Deployment Posture
 
