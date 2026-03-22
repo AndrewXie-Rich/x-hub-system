@@ -278,6 +278,7 @@ struct SupervisorDoctorInputBundle {
     var secretsPlanSource: String
     var reportURL: URL
     var memoryAssemblySnapshot: SupervisorMemoryAssemblySnapshot?
+    var canonicalMemorySyncSnapshot: HubIPCClient.CanonicalMemorySyncStatusSnapshot? = nil
 }
 
 struct SupervisorDoctorGateDecision {
@@ -321,6 +322,23 @@ enum SupervisorDoctorGateEvaluator {
 }
 
 enum SupervisorDoctorChecker {
+    typealias ReportWriteAttemptOverride = @Sendable (Data, URL, Data.WritingOptions) throws -> Void
+    typealias ReportLogSink = @Sendable (String) -> Void
+    typealias ReportNowProvider = @Sendable () -> Date
+
+    private struct WriteFailureLogState {
+        var signature: String
+        var nextAllowedLogAt: Date
+        var suppressedCount: Int
+    }
+
+    private static let reportWriteTestingLock = NSLock()
+    private static var reportWriteAttemptOverrideForTesting: ReportWriteAttemptOverride?
+    private static var reportLogSinkForTesting: ReportLogSink?
+    private static var reportNowProviderForTesting: ReportNowProvider?
+    private static var reportWriteFailureLogStateByPath: [String: WriteFailureLogState] = [:]
+    private static let reportWriteFailureLogCooldown: TimeInterval = 30
+
     static let schemaVersion = "supervisor_doctor.v1"
 
     static func run(input: SupervisorDoctorInputBundle, now: Date = Date()) -> SupervisorDoctorReport {
@@ -329,7 +347,12 @@ enum SupervisorDoctorChecker {
         findings.append(contentsOf: checkWebSocketSecurity(config: input.config))
         findings.append(contentsOf: checkPreAuthFloodBreaker(config: input.config))
         findings.append(contentsOf: checkSecretsDryRun(plan: input.secretsPlan, workspaceRoot: input.workspaceRoot))
-        findings.append(contentsOf: checkMemoryAssembly(snapshot: input.memoryAssemblySnapshot))
+        findings.append(
+            contentsOf: checkMemoryAssembly(
+                snapshot: input.memoryAssemblySnapshot,
+                canonicalSyncSnapshot: input.canonicalMemorySyncSnapshot
+            )
+        )
 
         let blockingCount = findings.filter { $0.severity == .blocking }.count
         let warningCount = findings.filter { $0.severity == .warning }.count
@@ -398,7 +421,8 @@ enum SupervisorDoctorChecker {
     static func loadDefaultInputBundle(
         workspaceRoot: URL = defaultWorkspaceRoot(),
         env: [String: String] = ProcessInfo.processInfo.environment,
-        memoryAssemblySnapshot: SupervisorMemoryAssemblySnapshot? = nil
+        memoryAssemblySnapshot: SupervisorMemoryAssemblySnapshot? = nil,
+        canonicalMemorySyncSnapshot: HubIPCClient.CanonicalMemorySyncStatusSnapshot? = nil
     ) -> SupervisorDoctorInputBundle {
         let configURL = URL(fileURLWithPath: env["XTERMINAL_SUPERVISOR_DOCTOR_CONFIG"] ?? "")
         let hasCustomConfigURL = !(env["XTERMINAL_SUPERVISOR_DOCTOR_CONFIG"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -445,7 +469,9 @@ enum SupervisorDoctorChecker {
             secretsPlan: secretsPlan,
             secretsPlanSource: secretsSource,
             reportURL: resolvedReportURL,
-            memoryAssemblySnapshot: memoryAssemblySnapshot
+            memoryAssemblySnapshot: memoryAssemblySnapshot,
+            canonicalMemorySyncSnapshot: canonicalMemorySyncSnapshot
+                ?? HubIPCClient.canonicalMemorySyncStatusSnapshot(limit: 120)
         )
     }
 
@@ -459,16 +485,11 @@ enum SupervisorDoctorChecker {
     }
 
     static func writeReport(_ report: SupervisorDoctorReport, to url: URL) {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? encoder.encode(report) else { return }
-        do {
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try data.write(to: url, options: .atomic)
-        } catch {
-            // Keep doctor check pure fail-closed: report write failure should not crash app loop.
-            print("SupervisorDoctor write report failed: \(error)")
-        }
+        writeEncodedJSON(
+            report,
+            to: url,
+            failurePrefix: "SupervisorDoctor write report failed"
+        )
     }
 
     static func writeDoctorCompatReport(
@@ -505,19 +526,11 @@ enum SupervisorDoctorChecker {
             )
         )
 
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? encoder.encode(compat) else { return }
-        do {
-            try FileManager.default.createDirectory(
-                at: destinationURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try data.write(to: destinationURL, options: .atomic)
-        } catch {
-            // Keep doctor check pure fail-closed: sidecar write failure should not crash app loop.
-            print("SupervisorDoctor write doctor compat report failed: \(error)")
-        }
+        writeEncodedJSON(
+            compat,
+            to: destinationURL,
+            failurePrefix: "SupervisorDoctor write doctor compat report failed"
+        )
     }
 
     static func writeSecretsDryRunCompatReport(
@@ -552,22 +565,170 @@ enum SupervisorDoctorChecker {
                 }
         )
 
+        writeEncodedJSON(
+            payload,
+            to: destinationURL,
+            failurePrefix: "SupervisorDoctor write secrets dry-run compat report failed"
+        )
+    }
+
+    static func installReportWriteAttemptOverrideForTesting(_ override: ReportWriteAttemptOverride?) {
+        withReportWriteTestingLock {
+            reportWriteAttemptOverrideForTesting = override
+        }
+    }
+
+    static func installReportLogSinkForTesting(_ sink: ReportLogSink?) {
+        withReportWriteTestingLock {
+            reportLogSinkForTesting = sink
+        }
+    }
+
+    static func installReportNowProviderForTesting(_ provider: ReportNowProvider?) {
+        withReportWriteTestingLock {
+            reportNowProviderForTesting = provider
+        }
+    }
+
+    static func resetReportWriteBehaviorForTesting() {
+        withReportWriteTestingLock {
+            reportWriteAttemptOverrideForTesting = nil
+            reportLogSinkForTesting = nil
+            reportNowProviderForTesting = nil
+            reportWriteFailureLogStateByPath = [:]
+        }
+    }
+
+    // MARK: - Private
+
+    private static func writeEncodedJSON<Payload: Encodable>(
+        _ payload: Payload,
+        to url: URL,
+        failurePrefix: String
+    ) {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(payload) else { return }
         do {
             try FileManager.default.createDirectory(
-                at: destinationURL.deletingLastPathComponent(),
+                at: url.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            try data.write(to: destinationURL, options: .atomic)
         } catch {
-            // Keep doctor check pure fail-closed: sidecar write failure should not crash app loop.
-            print("SupervisorDoctor write secrets dry-run compat report failed: \(error)")
+            emitReportWriteFailureLog(error, url: url, failurePrefix: failurePrefix, usedFallback: false)
+            return
+        }
+
+        if existingEncodedReportMatches(data, at: url) {
+            clearReportWriteFailureLogState(for: url)
+            return
+        }
+
+        do {
+            try writeReportData(data, to: url, options: .atomic)
+            clearReportWriteFailureLogState(for: url)
+            return
+        } catch {
+            guard looksLikeDiskSpaceExhaustion(error),
+                  FileManager.default.fileExists(atPath: url.path) else {
+                emitReportWriteFailureLog(error, url: url, failurePrefix: failurePrefix, usedFallback: false)
+                return
+            }
+
+            do {
+                try writeReportData(data, to: url, options: [])
+                clearReportWriteFailureLogState(for: url)
+            } catch {
+                emitReportWriteFailureLog(error, url: url, failurePrefix: failurePrefix, usedFallback: true)
+            }
         }
     }
 
-    // MARK: - Private
+    private static func writeReportData(_ data: Data, to url: URL, options: Data.WritingOptions) throws {
+        if let override = withReportWriteTestingLock({ reportWriteAttemptOverrideForTesting }) {
+            try override(data, url, options)
+            return
+        }
+        try data.write(to: url, options: options)
+    }
+
+    private static func existingEncodedReportMatches(_ data: Data, at url: URL) -> Bool {
+        guard let existing = try? Data(contentsOf: url) else { return false }
+        return existing == data
+    }
+
+    private static func looksLikeDiskSpaceExhaustion(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain, nsError.code == NSFileWriteOutOfSpaceError {
+            return true
+        }
+        if nsError.domain == NSPOSIXErrorDomain, nsError.code == 28 {
+            return true
+        }
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? Error {
+            return looksLikeDiskSpaceExhaustion(underlying)
+        }
+        return false
+    }
+
+    private static func emitReportWriteFailureLog(
+        _ error: Error,
+        url: URL,
+        failurePrefix: String,
+        usedFallback: Bool
+    ) {
+        let nsError = error as NSError
+        let now = currentReportWriteDate()
+        let signature = "\(usedFallback ? "fallback" : "direct"):\(nsError.domain):\(nsError.code)"
+        let path = url.path
+        let maybeMessage = withReportWriteTestingLock { () -> String? in
+            if var state = reportWriteFailureLogStateByPath[path],
+               state.signature == signature,
+               now < state.nextAllowedLogAt {
+                state.suppressedCount += 1
+                reportWriteFailureLogStateByPath[path] = state
+                return nil
+            }
+
+            let suppressedCount = reportWriteFailureLogStateByPath[path]?.suppressedCount ?? 0
+            reportWriteFailureLogStateByPath[path] = WriteFailureLogState(
+                signature: signature,
+                nextAllowedLogAt: now.addingTimeInterval(reportWriteFailureLogCooldown),
+                suppressedCount: 0
+            )
+
+            let prefix = usedFallback ? "\(failurePrefix) after non-atomic fallback" : failurePrefix
+            let suppressedSuffix = suppressedCount > 0 ? " suppressed=\(suppressedCount)" : ""
+            return "\(prefix): \(error) path=\(path)\(suppressedSuffix)"
+        }
+
+        guard let message = maybeMessage else { return }
+        if let sink = withReportWriteTestingLock({ reportLogSinkForTesting }) {
+            sink(message)
+            return
+        }
+        print(message)
+    }
+
+    private static func clearReportWriteFailureLogState(for url: URL) {
+        withReportWriteTestingLock {
+            reportWriteFailureLogStateByPath.removeValue(forKey: url.path)
+        }
+    }
+
+    private static func currentReportWriteDate() -> Date {
+        if let provider = withReportWriteTestingLock({ reportNowProviderForTesting }) {
+            return provider()
+        }
+        return Date()
+    }
+
+    @discardableResult
+    private static func withReportWriteTestingLock<T>(_ body: () -> T) -> T {
+        reportWriteTestingLock.lock()
+        defer { reportWriteTestingLock.unlock() }
+        return body()
+    }
 
     private static func checkDirectMessageAllowlist(config: SupervisorDoctorConfig) -> [SupervisorDoctorFinding] {
         let policy = config.dmPolicy.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -905,9 +1066,13 @@ enum SupervisorDoctorChecker {
     }
 
     private static func checkMemoryAssembly(
-        snapshot: SupervisorMemoryAssemblySnapshot?
+        snapshot: SupervisorMemoryAssemblySnapshot?,
+        canonicalSyncSnapshot: HubIPCClient.CanonicalMemorySyncStatusSnapshot?
     ) -> [SupervisorDoctorFinding] {
-        SupervisorMemoryAssemblyDiagnostics.evaluate(snapshot: snapshot).issues.map { issue in
+        SupervisorMemoryAssemblyDiagnostics.evaluate(
+            snapshot: snapshot,
+            canonicalSyncSnapshot: canonicalSyncSnapshot
+        ).issues.map { issue in
             finding(
                 code: issue.code,
                 area: "memory_assembly",
@@ -963,6 +1128,8 @@ enum SupervisorDoctorChecker {
         switch issue.code {
         case "memory_assembly_snapshot_missing":
             return .p2
+        case "memory_canonical_sync_delivery_failed":
+            return issue.severity == .blocking ? .p0 : .p1
         case "memory_review_floor_not_met":
             return issue.severity == .blocking ? .p0 : .p1
         default:
@@ -976,6 +1143,8 @@ enum SupervisorDoctorChecker {
         switch issue.code {
         case "memory_assembly_snapshot_missing":
             return "没有 snapshot 时，Doctor 无法判断 Supervisor 的 strategic review 是否拿到了足够背景。"
+        case "memory_canonical_sync_delivery_failed":
+            return "canonical memory 最近没有成功同步进 Hub 时，Supervisor 看到的项目背景和当前状态可能已经落后于真实进展。"
         case "memory_review_floor_not_met":
             return "resolved profile 低于 review floor 时，Supervisor 做战略纠偏时只会看到被压缩过的浅层上下文。"
         case "memory_strategic_anchor_underfed":
@@ -997,6 +1166,11 @@ enum SupervisorDoctorChecker {
             return [
                 "先触发一次 focused strategic / rescue review，生成最新的 memory assembly snapshot。",
                 "确认 X-Hub memory context 请求成功返回，再重新运行 doctor / incident export。"
+            ]
+        case "memory_canonical_sync_delivery_failed":
+            return [
+                "先修复 canonical memory 的投递链路，再重新同步当前项目 / Supervisor 的 canonical memory。",
+                "确认 `canonical_memory_sync_status.json` 中相关 scope 的最新状态变回 ok=true，再重新运行 doctor / incident export。"
             ]
         case "memory_review_floor_not_met":
             return [
@@ -1031,6 +1205,8 @@ enum SupervisorDoctorChecker {
         switch issue.code {
         case "memory_assembly_snapshot_missing":
             return "doctor / incident export 不再出现 memory_assembly_snapshot_missing"
+        case "memory_canonical_sync_delivery_failed":
+            return "canonical_memory_sync_status 中相关 scope 的最新条目恢复为 ok=true"
         case "memory_review_floor_not_met":
             return "memory snapshot 中 resolvedProfile >= profileFloor"
         case "memory_strategic_anchor_underfed":

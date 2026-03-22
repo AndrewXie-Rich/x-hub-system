@@ -175,6 +175,87 @@ struct SupervisorAutoLaunchPolicyTests {
 
     @MainActor
     @Test
+    func autoLaunchPolicyDoesNotEscalateFromLegacyFullAutoShadowWhenExecutionTierStaysLow() {
+        let engine = OneShotAutonomyPolicyEngine()
+        let project = ProjectModel(
+            name: "XT-W3-26 Runtime",
+            taskDescription: "legacy shadow should not elevate low execution tier",
+            modelName: "gpt-4.1",
+            autonomyLevel: .fullAuto,
+            executionTier: .a1Plan,
+            supervisorInterventionTier: .s2PeriodicReview
+        )
+        project.autonomyLevel = .fullAuto
+
+        let lane = makeLane(
+            laneID: "XT-W3-26-E-tier-low",
+            risk: .low,
+            metadata: [
+                "requested_scope": DeliveryScopeFreezeStore.defaultValidatedScope.joined(separator: ","),
+                "validated_scope": DeliveryScopeFreezeStore.defaultValidatedScope.joined(separator: ",")
+            ]
+        )
+
+        let policy = engine.buildPolicy(
+            project: project,
+            lanes: [lane],
+            splitPlanID: "run-execution-tier-low-policy",
+            now: Date(timeIntervalSince1970: 1_773_000_275)
+        )
+
+        #expect(policy.autoLaunchPolicy == .directedSafeOnly)
+    }
+
+    @MainActor
+    @Test
+    func workModeClampsAutoLaunchEvenWhenProjectExecutionTierIsHigh() {
+        let engine = OneShotAutonomyPolicyEngine()
+        let project = ProjectModel(
+            name: "XT-W3-26 Runtime",
+            taskDescription: "work mode should clamp auto launch",
+            modelName: "gpt-4.1",
+            autonomyLevel: .auto,
+            executionTier: .a4OpenClaw,
+            supervisorInterventionTier: .s4TightSupervision
+        )
+        let lane = makeLane(
+            laneID: "XT-W3-26-E-work-mode",
+            risk: .low,
+            metadata: [
+                "requested_scope": DeliveryScopeFreezeStore.defaultValidatedScope.joined(separator: ","),
+                "validated_scope": DeliveryScopeFreezeStore.defaultValidatedScope.joined(separator: ",")
+            ]
+        )
+
+        let conversationPolicy = engine.buildPolicy(
+            project: project,
+            lanes: [lane],
+            splitPlanID: "run-work-mode-conversation",
+            workMode: .conversationOnly,
+            now: Date(timeIntervalSince1970: 1_773_000_290)
+        )
+        let guidedPolicy = engine.buildPolicy(
+            project: project,
+            lanes: [lane],
+            splitPlanID: "run-work-mode-guided",
+            workMode: .guidedProgress,
+            now: Date(timeIntervalSince1970: 1_773_000_291)
+        )
+        let automationPolicy = engine.buildPolicy(
+            project: project,
+            lanes: [lane],
+            splitPlanID: "run-work-mode-automation",
+            workMode: .governedAutomation,
+            now: Date(timeIntervalSince1970: 1_773_000_292)
+        )
+
+        #expect(conversationPolicy.autoLaunchPolicy == .manual)
+        #expect(guidedPolicy.autoLaunchPolicy == .manual)
+        #expect(automationPolicy.autoLaunchPolicy == .mainlineOnly)
+    }
+
+    @MainActor
+    @Test
     func xtW326ECaptureEmitsMachineReadablePolicyEvidence() throws {
         guard ProcessInfo.processInfo.environment["XT_W3_26_E_CAPTURE"] == "1" else { return }
 

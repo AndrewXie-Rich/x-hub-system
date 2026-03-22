@@ -80,6 +80,30 @@ struct SupervisorProjectModelOverrideRoutingTests {
         #expect(appModel.projectConfig?.modelOverride(for: .reviewer) == "beta-existing-reviewer")
     }
 
+    @Test
+    func repeatingSameProjectOverrideDoesNotWriteAiSwitchSummary() throws {
+        let root = try makeProjectRoot(named: "supervisor-project-override-noop")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "Alpha", manualOrderIndex: 0)
+        let ctx = AXProjectContext(root: root)
+
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config.setModelOverride(role: .coder, modelId: "openai/gpt-5.4")
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+
+        appModel.setProjectRoleModelOverride(
+            projectId: project.projectId,
+            role: .coder,
+            modelId: "openai/gpt-5.4"
+        )
+
+        #expect(FileManager.default.fileExists(atPath: ctx.latestSessionSummaryURL.path) == false)
+    }
+
     private func registry(with projects: [AXProjectEntry]) -> AXProjectRegistry {
         AXProjectRegistry(
             version: AXProjectRegistry.currentVersion,

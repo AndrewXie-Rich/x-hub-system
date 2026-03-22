@@ -88,6 +88,17 @@ enum SupervisorProjectNotificationPolicy {
                 recommendation: recommendation
             )
         case .badgeOnly:
+            if recommendation.recommendationType == .decisionRailCleanup,
+               recommendation.isSubstantiveChange {
+                return SupervisorProjectNotificationDecision(
+                    channel: .briefCard,
+                    dedupeWindowSec: 120,
+                    shouldAddSystemMessage: false,
+                    shouldOpenConversationWindow: false,
+                    systemMessage: nil,
+                    recommendation: recommendation
+                )
+            }
             return SupervisorProjectNotificationDecision(
                 channel: .badgeOnly,
                 dedupeWindowSec: 60,
@@ -97,6 +108,17 @@ enum SupervisorProjectNotificationPolicy {
                 recommendation: recommendation
             )
         case .silentLog:
+            if recommendation.recommendationType == .decisionRailCleanup,
+               recommendation.isSubstantiveChange {
+                return SupervisorProjectNotificationDecision(
+                    channel: .briefCard,
+                    dedupeWindowSec: 120,
+                    shouldAddSystemMessage: false,
+                    shouldOpenConversationWindow: false,
+                    systemMessage: nil,
+                    recommendation: recommendation
+                )
+            }
             return SupervisorProjectNotificationDecision(
                 channel: .silentLog,
                 dedupeWindowSec: 45,

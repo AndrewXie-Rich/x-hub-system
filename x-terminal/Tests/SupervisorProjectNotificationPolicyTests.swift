@@ -66,6 +66,27 @@ struct SupervisorProjectNotificationPolicyTests {
         #expect(SupervisorProjectNotificationPolicy.decide(for: progressEvent).channel == .silentLog)
     }
 
+    @Test
+    func policyElevatesDecisionRailCleanupEvenWhenProgressSeverityStartsSilent() {
+        let event = SupervisorProjectActionEvent(
+            eventId: "rail",
+            projectId: "p-rail",
+            projectName: "Decision Rail Project",
+            eventType: .progressed,
+            severity: .silentLog,
+            actionTitle: "项目推进：Decision Rail Project",
+            actionSummary: "Decision rail cleanup: 1 shadowed background note",
+            whyItMatters: "Shadowed background notes should stay visibly non-binding so the approved decision remains the only hard constraint.",
+            nextAction: "Review 1 shadowed background note for Decision Rail Project and confirm it stays non-binding under the approved decision.",
+            occurredAt: 1
+        )
+
+        let decision = SupervisorProjectNotificationPolicy.decide(for: event)
+
+        #expect(decision.channel == .briefCard)
+        #expect(decision.recommendation.recommendationType == .decisionRailCleanup)
+    }
+
     @MainActor
     @Test
     func managerOnlyInterruptsAuthorizationAndSuppressesDuplicates() {
@@ -236,7 +257,7 @@ struct SupervisorProjectNotificationPolicyTests {
         let deadline = Date().addingTimeInterval(1.5)
         while Date() < deadline {
             let files = (try? FileManager.default.contentsOfDirectory(at: eventDir, includingPropertiesForKeys: nil))?
-                .filter { $0.lastPathComponent.hasPrefix("xterminal_notify_") }
+                .filter(isNotificationEventFile(_:))
                 .sorted { $0.lastPathComponent < $1.lastPathComponent } ?? []
             if files.count >= expectedCount {
                 return files
@@ -245,7 +266,12 @@ struct SupervisorProjectNotificationPolicyTests {
         }
 
         return try FileManager.default.contentsOfDirectory(at: eventDir, includingPropertiesForKeys: nil)
-            .filter { $0.lastPathComponent.hasPrefix("xterminal_notify_") }
+            .filter(isNotificationEventFile(_:))
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    private func isNotificationEventFile(_ url: URL) -> Bool {
+        let name = url.lastPathComponent
+        return name.hasPrefix("xterminal_notify_") && !name.hasPrefix("xterminal_notify_remove_")
     }
 }

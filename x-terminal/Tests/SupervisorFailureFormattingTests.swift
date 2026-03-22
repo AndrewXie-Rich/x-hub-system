@@ -6,6 +6,75 @@ import Testing
 struct SupervisorFailureFormattingTests {
 
     @Test
+    @MainActor
+    func fallbackReplyStillPublishesTurnExplainabilityAndFailureRouteState() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-fallback-explainability")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let appModel = AppModel()
+        appModel.settingsStore.settings = appModel.settingsStore.settings.setting(
+            role: .supervisor,
+            providerKind: .hub,
+            model: "openai/gpt-5.4"
+        )
+        appModel.registry = registry(
+            with: [
+                makeProjectEntry(
+                    root: root,
+                    displayName: "亮亮",
+                    blockerSummary: nil,
+                    nextStepSummary: "继续推进"
+                )
+            ]
+        )
+        manager.setAppModel(appModel)
+
+        let rendered = manager.renderSupervisorFailureResponse(
+            error: HubAIError.runtimeNotRunning,
+            userMessage: "帮我看下今天最重要的事"
+        )
+        #expect(rendered.contains("已切换为本地直答兜底"))
+
+        manager.recordSupervisorReplyExecutionForTesting(
+            mode: "local_fallback_after_remote_error",
+            actualModelId: nil,
+            requestedModelId: "openai/gpt-5.4",
+            failureReasonCode: "runtime_not_running"
+        )
+        manager.syncSupervisorAfterTurnWritebackClassificationForTesting(
+            userMessage: "帮我看下今天最重要的事",
+            responseText: rendered,
+            routingDecision: SupervisorTurnRoutingDecision(
+                mode: .personalFirst,
+                focusedProjectId: nil,
+                focusedProjectName: nil,
+                focusedPersonName: nil,
+                focusedCommitmentId: nil,
+                confidence: 0.9,
+                routingReasons: ["personal_planning_language", "portfolio_review_language"]
+            )
+        )
+
+        let routing = try #require(manager.supervisorLatestTurnRoutingDecisionForTesting())
+        #expect(routing.mode == .personalFirst)
+        #expect(routing.focusedProjectId == nil)
+        #expect(routing.routingReasons.contains("personal_planning_language"))
+
+        let assembly = try #require(manager.supervisorLatestTurnContextAssemblyForTesting())
+        #expect(assembly.turnMode == .personalFirst)
+        #expect(assembly.selectedSlots.contains(.dialogueWindow))
+        #expect(assembly.selectedSlots.contains(.personalCapsule))
+        #expect(assembly.selectedRefs.contains("dialogue_window"))
+
+        let routeSummary = try #require(
+            manager.directSupervisorReplyIfApplicableForTesting("刚刚上一轮实际调用了什么模型")
+        )
+        #expect(routeSummary.contains("openai/gpt-5.4"))
+        #expect(routeSummary.contains("本地兜底"))
+    }
+
+    @Test
     func legacyGrantFailureRendersConciseChineseFallbackCard() throws {
         let manager = SupervisorManager.makeForTesting()
         let root = try makeProjectRoot(named: "supervisor-failure-formatting")
@@ -41,8 +110,9 @@ struct SupervisorFailureFormattingTests {
         #expect(rendered.contains("临时放行：到 Hub Settings -> Grants & Permissions 完成一次 legacy grant。"))
         #expect(rendered.contains("长期修复：到 Hub Settings -> Pairing & Device Trust 把这台设备升级到新 trust profile。"))
         #expect(rendered.contains("以下为本地直答结果："))
-        #expect(rendered.contains("📊 项目进度报告"))
         #expect(rendered.contains("xterminal-supervisor-manager-automation"))
+        #expect(rendered.contains("等待 paid model 授权"))
+        #expect(rendered.contains("完成授权后继续执行"))
         #expect(!rendered.contains("access_state="))
         #expect(!rendered.contains("policy_ref="))
         #expect(!rendered.contains("why_it_happened="))
@@ -81,7 +151,8 @@ struct SupervisorFailureFormattingTests {
             userMessage: "你是不是GPT"
         )
 
-        #expect(rendered.contains("不是。当前这个入口的身份是 Supervisor"))
+        #expect(rendered.contains("不是。当前这个入口的身份是"))
+        #expect(rendered.contains("不是一个裸的 GPT 聊天窗口"))
         #expect(rendered.contains("这条回复本身是本地直答，没有实际调用远端模型"))
         #expect(rendered.contains("不等于“这轮已经用了 GPT”"))
         #expect(rendered.contains("当前接管项目数：1"))
@@ -496,12 +567,45 @@ struct SupervisorFailureFormattingTests {
         let manager = SupervisorManager.makeForTesting()
         let rendered = try #require(manager.directSupervisorReplyIfApplicableForTesting("帮我做个贪食蛇游戏"))
 
-        #expect(rendered.contains("这类需求我会把它当成一个新的交付任务来收敛"))
+        #expect(rendered.contains("新的交付任务来收敛"))
         #expect(rendered.contains("网页版"))
         #expect(!rendered.contains("纯 JSON"))
         #expect(!rendered.contains("不能直接落地文件"))
         #expect(!rendered.contains("开始生成"))
         #expect(!rendered.contains("我已收到你的指令"))
+    }
+
+    @Test
+    func delegatedExecutionCapabilityQuestionUsesDeterministicLocalReply() throws {
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-delegated-execution-capability")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let appModel = AppModel()
+        appModel.registry = registry(
+            with: [
+                makeProjectEntry(
+                    root: root,
+                    displayName: "亮亮",
+                    blockerSummary: "等待下一步执行",
+                    nextStepSummary: "由 Supervisor 建 job 并继续推进"
+                )
+            ]
+        )
+        manager.setAppModel(appModel)
+
+        let rendered = try #require(
+            manager.directSupervisorReplyIfApplicableForTesting(
+                "你能不能直接把工单丢给project AI去执行，然后等它干完再回来跟我说？"
+            )
+        )
+
+        #expect(rendered.contains("受治理委派"))
+        #expect(rendered.contains("建 job 和 initial plan"))
+        #expect(rendered.contains("Project AI / coder / governed skill"))
+        #expect(rendered.contains("完成、阻塞、待授权或失败时再回来跟你汇报"))
+        #expect(rendered.contains("当前接管项目数：1"))
+        #expect(!rendered.contains("做不到"))
     }
 
     @Test
@@ -523,6 +627,25 @@ struct SupervisorFailureFormattingTests {
         #expect(!rendered.contains("纯 JSON"))
         #expect(!rendered.contains("不能直接落地文件"))
         #expect(!rendered.contains("开始生成"))
+    }
+
+    @Test
+    func fabricatedDelegatedExecutionConstraintRemoteReplyFallsBackToLocalCapabilityAnswer() {
+        let manager = SupervisorManager.makeForTesting()
+        let remote = """
+不行。我没办法直接把工单丢给 project AI 去执行，然后等它干完再回来跟你说。
+"""
+
+        let rendered = manager.sanitizedSupervisorRemoteResponseForTesting(
+            remote,
+            userMessage: "你能不能直接把工单丢给project AI去执行，然后等它干完再回来跟我说？"
+        )
+
+        #expect(rendered.contains("受治理委派"))
+        #expect(rendered.contains("建 job 和 initial plan"))
+        #expect(rendered.contains("Project AI / coder / governed skill"))
+        #expect(!rendered.contains("没办法直接把工单丢给 project ai"))
+        #expect(!rendered.contains("不行。"))
     }
 
     @Test

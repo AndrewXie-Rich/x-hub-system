@@ -1,7 +1,10 @@
 import Foundation
 
 enum SupervisorPortfolioActionabilityKind: String, Codable, Sendable {
+    case decisionAssist = "decision_assist"
     case decisionBlocker = "decision_blocker"
+    case specGap = "spec_gap"
+    case decisionRail = "decision_rail"
     case missingNextStep = "missing_next_step"
     case stalled
     case zombie
@@ -38,8 +41,14 @@ struct SupervisorPortfolioActionabilityItem: Identifiable, Equatable, Codable, S
 
     var kindLabel: String {
         switch kind {
+        case .decisionAssist:
+            return "Decision assist"
         case .decisionBlocker:
             return "Decision blocker"
+        case .specGap:
+            return "Spec gap"
+        case .decisionRail:
+            return "Decision rail"
         case .missingNextStep:
             return "Missing next"
         case .stalled:
@@ -59,6 +68,7 @@ struct SupervisorPortfolioActionabilitySnapshot: Equatable, Codable, Sendable {
     var updatedAtMs: Int64
     var projectsChangedLast24h: Int
     var decisionBlockerProjectsCount: Int
+    var projectsMissingSpec: Int = 0
     var projectsMissingNextStep: Int
     var stalledProjects: Int
     var zombieProjects: Int
@@ -70,6 +80,7 @@ struct SupervisorPortfolioActionabilitySnapshot: Equatable, Codable, Sendable {
         updatedAtMs: 0,
         projectsChangedLast24h: 0,
         decisionBlockerProjectsCount: 0,
+        projectsMissingSpec: 0,
         projectsMissingNextStep: 0,
         stalledProjects: 0,
         zombieProjects: 0,
@@ -82,6 +93,7 @@ struct SupervisorPortfolioActionabilitySnapshot: Equatable, Codable, Sendable {
         case updatedAtMs = "updated_at_ms"
         case projectsChangedLast24h = "projects_changed_last_24h"
         case decisionBlockerProjectsCount = "decision_blocker_projects_count"
+        case projectsMissingSpec = "projects_missing_spec"
         case projectsMissingNextStep = "projects_missing_next_step"
         case stalledProjects = "stalled_projects"
         case zombieProjects = "zombie_projects"
@@ -90,7 +102,7 @@ struct SupervisorPortfolioActionabilitySnapshot: Equatable, Codable, Sendable {
     }
 
     var statusLine: String {
-        "changed_24h=\(projectsChangedLast24h) · decision=\(decisionBlockerProjectsCount) · missing_next=\(projectsMissingNextStep) · stalled=\(stalledProjects) · zombie=\(zombieProjects) · today=\(actionableToday)"
+        "changed_24h=\(projectsChangedLast24h) · decision=\(decisionBlockerProjectsCount) · spec_gap=\(projectsMissingSpec) · missing_next=\(projectsMissingNextStep) · stalled=\(stalledProjects) · zombie=\(zombieProjects) · today=\(actionableToday)"
     }
 }
 
@@ -126,6 +138,7 @@ enum SupervisorPortfolioActionabilitySnapshotBuilder {
     ) -> SupervisorPortfolioActionabilitySnapshot {
         let changedProjects = cards.filter { changedWithinLast24Hours($0, now: now) }
         let decisionBlockers = cards.filter { isDecisionBlocker($0) }
+        let specGaps = cards.filter { isSpecGap($0) }
         let missingNext = cards.filter { isMissingNextStep($0) }
         let stalled = cards.filter { isStalled($0, now: now) }
         let zombie = cards.filter { isZombie($0, now: now) }
@@ -152,6 +165,7 @@ enum SupervisorPortfolioActionabilitySnapshotBuilder {
             updatedAtMs: max(0, Int64((now * 1000.0).rounded())),
             projectsChangedLast24h: changedProjects.count,
             decisionBlockerProjectsCount: decisionBlockers.count,
+            projectsMissingSpec: specGaps.count,
             projectsMissingNextStep: missingNext.count,
             stalledProjects: stalled.count,
             zombieProjects: zombie.count,
@@ -168,6 +182,19 @@ enum SupervisorPortfolioActionabilitySnapshotBuilder {
 
         let staleAgeHours = ageHours(for: card, now: now)
 
+        if isDecisionAssist(card) {
+            return SupervisorPortfolioActionabilityItem(
+                projectId: card.projectId,
+                projectName: card.displayName,
+                kind: .decisionAssist,
+                priority: .now,
+                reasonSummary: decisionAssistReason(card),
+                recommendedNextAction: recommendedActionForDecisionAssist(card),
+                whyItMatters: decisionAssistWhyItMatters(card),
+                staleAgeHours: staleAgeHours
+            )
+        }
+
         if isDecisionBlocker(card) {
             let reason = firstNonEmpty(
                 normalizedReason(card.topBlocker),
@@ -183,6 +210,32 @@ enum SupervisorPortfolioActionabilitySnapshotBuilder {
                 whyItMatters: card.projectState == .awaitingAuthorization
                     ? "This project is waiting on a governed approval before it can continue."
                     : "This blocker is decision-shaped, so the portfolio cannot route a safe next move until it is resolved.",
+                staleAgeHours: staleAgeHours
+            )
+        }
+
+        if isSpecGap(card) {
+            return SupervisorPortfolioActionabilityItem(
+                projectId: card.projectId,
+                projectName: card.displayName,
+                kind: .specGap,
+                priority: .now,
+                reasonSummary: specGapReason(card),
+                recommendedNextAction: recommendedActionForSpecGap(card),
+                whyItMatters: "Without a complete formal spec capsule, Supervisor keeps guessing project intent instead of routing against a stable contract.",
+                staleAgeHours: staleAgeHours
+            )
+        }
+
+        if isDecisionRailReview(card) {
+            return SupervisorPortfolioActionabilityItem(
+                projectId: card.projectId,
+                projectName: card.displayName,
+                kind: .decisionRail,
+                priority: .today,
+                reasonSummary: decisionRailReason(card),
+                recommendedNextAction: recommendedActionForDecisionRail(card),
+                whyItMatters: decisionRailWhyItMatters(card),
                 staleAgeHours: staleAgeHours
             )
         }
@@ -273,16 +326,22 @@ enum SupervisorPortfolioActionabilitySnapshotBuilder {
 
     private static func kindScore(_ kind: SupervisorPortfolioActionabilityKind) -> Int {
         switch kind {
-        case .decisionBlocker:
+        case .decisionAssist:
             return 0
-        case .missingNextStep:
+        case .decisionBlocker:
             return 1
-        case .activeFollowUp:
+        case .specGap:
             return 2
-        case .stalled:
+        case .missingNextStep:
             return 3
-        case .zombie:
+        case .decisionRail:
             return 4
+        case .activeFollowUp:
+            return 5
+        case .stalled:
+            return 6
+        case .zombie:
+            return 7
         }
     }
 
@@ -316,27 +375,14 @@ enum SupervisorPortfolioActionabilitySnapshotBuilder {
     private static func isDecisionBlocker(_ card: SupervisorPortfolioProjectCard) -> Bool {
         guard card.projectState != .completed else { return false }
         if card.projectState == .awaitingAuthorization { return true }
-        let merged = [card.topBlocker, card.currentAction, card.nextStep].joined(separator: " ").lowercased()
-        let decisionTokens = [
-            "decision",
-            "approve",
-            "approval",
-            "authorization",
-            "grant_required",
-            "review_required",
-            "needs review",
-            "needs approval",
-            "sign off",
-            "policy decision",
-            "决策",
-            "审批",
-            "授权",
-            "确认",
-            "拍板",
-            "定案",
-            "选择",
-        ]
-        return decisionTokens.contains { merged.contains($0) }
+        if card.decisionAssist != nil { return true }
+        let fields = [card.topBlocker, card.currentAction, card.nextStep]
+        return fields.contains(where: containsDecisionCue)
+    }
+
+    private static func isDecisionAssist(_ card: SupervisorPortfolioProjectCard) -> Bool {
+        guard card.projectState != .completed else { return false }
+        return card.decisionAssist != nil
     }
 
     private static func isMissingNextStep(_ card: SupervisorPortfolioProjectCard) -> Bool {
@@ -354,6 +400,18 @@ enum SupervisorPortfolioActionabilitySnapshotBuilder {
             "n/a",
         ]
         return placeholders.contains(next)
+    }
+
+    private static func isSpecGap(_ card: SupervisorPortfolioProjectCard) -> Bool {
+        guard card.projectState != .completed else { return false }
+        return !card.missingSpecFields.isEmpty
+    }
+
+    private static func isDecisionRailReview(_ card: SupervisorPortfolioProjectCard) -> Bool {
+        guard card.projectState != .completed else { return false }
+        guard card.hasDecisionRailSignal else { return false }
+        guard card.projectState == .active || card.projectState == .idle else { return false }
+        return true
     }
 
     private static func isStalled(
@@ -394,6 +452,92 @@ enum SupervisorPortfolioActionabilitySnapshotBuilder {
             return "Review the pending approval and record a decision before asking the project to continue."
         }
         return "Resolve the decision blocker or choose an explicit lower-risk fallback."
+    }
+
+    private static func recommendedActionForDecisionAssist(
+        _ card: SupervisorPortfolioProjectCard
+    ) -> String {
+        guard let assist = card.decisionAssist else {
+            return recommendedActionForDecisionBlocker(card)
+        }
+
+        let option = decisionAssistOption(assist)
+        if let timeoutMs = assist.timeoutEscalationAfterMs, timeoutMs > 0 {
+            return "Review decision assist for \(card.displayName): \(option). If no decision arrives, escalate after \(decisionAssistTimeoutText(timeoutMs))."
+        }
+        if assist.failClosed || assist.requiresUserDecision {
+            return "Review decision assist for \(card.displayName): \(option), then record an explicit decision before work continues."
+        }
+        if assist.autoAdoptAllowed {
+            return "Review decision assist for \(card.displayName): \(option). If policy still allows, Supervisor can auto-adopt it on the governed path."
+        }
+        return "Review decision assist for \(card.displayName): \(option), then approve it or choose another explicit fallback."
+    }
+
+    private static func recommendedActionForSpecGap(
+        _ card: SupervisorPortfolioProjectCard
+    ) -> String {
+        let fieldList = specGapFieldList(card.missingSpecFields)
+        guard !fieldList.isEmpty else {
+            return "Complete the formal spec capsule before routing more work."
+        }
+        return "Fill formal spec fields for \(card.displayName): \(fieldList)."
+    }
+
+    private static func recommendedActionForDecisionRail(
+        _ card: SupervisorPortfolioProjectCard
+    ) -> String {
+        SupervisorDecisionRailMessaging.recommendedNextAction(
+            projectName: card.displayName,
+            shadowedBackgroundNoteCount: card.shadowedBackgroundNoteCount,
+            weakOnlyBackgroundNoteCount: card.weakOnlyBackgroundNoteCount
+        )
+    }
+
+    private static func specGapReason(_ card: SupervisorPortfolioProjectCard) -> String {
+        let fieldList = specGapFieldList(card.missingSpecFields)
+        guard !fieldList.isEmpty else {
+            return "formal_spec_missing"
+        }
+        return "formal_spec_missing: \(fieldList)"
+    }
+
+    private static func decisionAssistReason(_ card: SupervisorPortfolioProjectCard) -> String {
+        guard let assist = card.decisionAssist else {
+            return normalizedReason(card.topBlocker)
+        }
+        return "\(assist.blockerCategory.rawValue) \(assist.governanceMode.rawValue): \(decisionAssistOption(assist))"
+    }
+
+    private static func decisionAssistWhyItMatters(_ card: SupervisorPortfolioProjectCard) -> String {
+        guard let assist = card.decisionAssist else {
+            return "A concrete default proposal is ready, so this blocker should move to an explicit governed decision instead of staying open-ended."
+        }
+        if assist.failClosed {
+            return "Supervisor already has a reusable default proposal, but this blocker stays fail-closed until an explicit governed decision is recorded."
+        }
+        switch assist.governanceMode {
+        case .proposalOnly:
+            return "A concrete default proposal is ready, so this blocker can move to a governed accept-or-reject decision."
+        case .proposalWithTimeoutEscalation:
+            return "A reversible low-risk default is ready, so the blocker should move to an explicit decision instead of open-ended debate."
+        case .autoAdoptIfPolicyAllows:
+            return "A low-risk reversible default is ready and may auto-adopt on the governed path if policy still permits it."
+        }
+    }
+
+    private static func decisionRailReason(_ card: SupervisorPortfolioProjectCard) -> String {
+        SupervisorDecisionRailMessaging.reasonSummary(
+            shadowedBackgroundNoteCount: card.shadowedBackgroundNoteCount,
+            weakOnlyBackgroundNoteCount: card.weakOnlyBackgroundNoteCount
+        )
+    }
+
+    private static func decisionRailWhyItMatters(_ card: SupervisorPortfolioProjectCard) -> String {
+        SupervisorDecisionRailMessaging.whyItMatters(
+            shadowedBackgroundNoteCount: card.shadowedBackgroundNoteCount,
+            weakOnlyBackgroundNoteCount: card.weakOnlyBackgroundNoteCount
+        )
     }
 
     private static func zombieReason(
@@ -453,5 +597,72 @@ enum SupervisorPortfolioActionabilitySnapshotBuilder {
         text
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
+    }
+
+    private static func containsDecisionCue(_ text: String) -> Bool {
+        let normalized = normalizeToken(text)
+        guard !normalized.isEmpty else { return false }
+
+        let phraseCues = [
+            "grant_required",
+            "review_required",
+            "needs review",
+            "needs approval",
+            "sign off",
+            "policy decision",
+            "decision pending",
+            "approval pending",
+            "pending approval",
+            "pending authorization",
+            "awaiting approval",
+            "awaiting authorization",
+            "requires approval",
+            "requires review",
+        ]
+        if phraseCues.contains(where: normalized.contains) {
+            return true
+        }
+
+        let englishWordPatterns = [
+            #"\bdecision\b"#,
+            #"\bapprove\b"#,
+            #"\bapproval\b"#,
+            #"\bauthorization\b"#,
+        ]
+        if englishWordPatterns.contains(where: { normalized.range(of: $0, options: .regularExpression) != nil }) {
+            return true
+        }
+
+        let cjkCues = [
+            "决策",
+            "审批",
+            "授权",
+            "拍板",
+            "定案",
+            "选择",
+        ]
+        return cjkCues.contains(where: normalized.contains)
+    }
+
+    private static func specGapFieldList(_ fields: [SupervisorProjectSpecField]) -> String {
+        fields.map(\.summaryToken).joined(separator: " / ")
+    }
+
+    private static func decisionAssistOption(_ assist: SupervisorDecisionBlockerAssist) -> String {
+        let option = assist.recommendedOption ?? assist.templateCandidates.first ?? assist.blockerCategory.rawValue
+        let trimmed = option.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? assist.blockerCategory.rawValue : trimmed
+    }
+
+    private static func decisionAssistTimeoutText(_ timeoutMs: Int64) -> String {
+        let minutes = max(1, Int((Double(timeoutMs) / 60_000.0).rounded(.down)))
+        if minutes < 60 { return "\(minutes)m" }
+
+        let hours = minutes / 60
+        let remainingMinutes = minutes % 60
+        if remainingMinutes == 0 {
+            return "\(hours)h"
+        }
+        return "\(hours)h \(remainingMinutes)m"
     }
 }

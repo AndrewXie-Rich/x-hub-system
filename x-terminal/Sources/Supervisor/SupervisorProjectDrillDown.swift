@@ -22,6 +22,7 @@ struct SupervisorProjectDrillDownSnapshot: Equatable, Codable, Sendable {
     var latestGuidance: SupervisorGuidanceInjectionRecord?
     var pendingAckGuidance: SupervisorGuidanceInjectionRecord?
     var followUpRhythmSummary: String?
+    var memoryCompactionRollup: SupervisorMemoryCompactionRollup? = nil
     var workflow: SupervisorProjectWorkflowSnapshot?
     var recentMessages: [AXRecentContextMessage]
     var denyReason: String?
@@ -51,6 +52,7 @@ struct SupervisorProjectDrillDownSnapshot: Equatable, Codable, Sendable {
             latestGuidance: nil,
             pendingAckGuidance: nil,
             followUpRhythmSummary: nil,
+            memoryCompactionRollup: nil,
             workflow: nil,
             recentMessages: [],
             denyReason: denyReason,
@@ -66,6 +68,8 @@ enum SupervisorProjectDrillDownRefsBuilder {
         requestedScope: SupervisorProjectDrillDownScope,
         specCapsule: SupervisorProjectSpecCapsule?,
         decisionRails: SupervisorProjectDecisionRails?,
+        decisionAssist: SupervisorDecisionBlockerAssist?,
+        memoryCompactionRollup: SupervisorMemoryCompactionRollup?,
         latestReview: SupervisorReviewNoteRecord?,
         latestGuidance: SupervisorGuidanceInjectionRecord?,
         pendingAckGuidance: SupervisorGuidanceInjectionRecord?,
@@ -88,6 +92,15 @@ enum SupervisorProjectDrillDownRefsBuilder {
                 refs.append(ctx.xterminalDir.appendingPathComponent("supervisor_background_preference_track.json").path)
             }
             refs.append(contentsOf: decisionRails.decisionTrack.flatMap(\.evidenceRefs))
+        }
+        if let decisionAssist {
+            refs.append(decisionAssist.auditRef)
+            refs.append(contentsOf: decisionAssist.evidenceRefs)
+        }
+        if let memoryCompactionRollup {
+            refs.append(contentsOf: memoryCompactionRollup.keptAuditRefs)
+            refs.append(contentsOf: memoryCompactionRollup.keptReleaseGateRefs)
+            refs.append(contentsOf: memoryCompactionRollup.archivedRefs)
         }
         if latestReview != nil {
             refs.append(ctx.supervisorReviewNotesURL.path)

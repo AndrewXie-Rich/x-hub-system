@@ -19,7 +19,15 @@ struct SupervisorSystemPromptBuilder {
 
         lines.append(contentsOf: buildTimeSection(params))
         lines.append(contentsOf: buildRuntimeSection(params, isMinimal: isMinimal))
+        lines.append(contentsOf: buildWorkModeSection(params))
+        lines.append(contentsOf: buildPrivacyModeSection(params))
         lines.append(contentsOf: buildConversationStyleSection(params, isMinimal: isMinimal))
+        lines.append(contentsOf: buildPersonalAssistantContextSection(params))
+        lines.append(contentsOf: buildPersonalMemoryContextSection(params))
+        lines.append(contentsOf: buildPersonalFollowUpContextSection(params))
+        lines.append(contentsOf: buildPersonalReviewContextSection(params))
+        lines.append(contentsOf: buildTurnRoutingSection(params))
+        lines.append(contentsOf: buildTurnContextAssemblySection(params))
         lines.append(contentsOf: buildMemorySection(params))
         lines.append(contentsOf: buildReviewDisciplineSection(isMinimal: isMinimal))
         lines.append(contentsOf: buildTaskSection(params, isMinimal: isMinimal))
@@ -55,7 +63,7 @@ struct SupervisorSystemPromptBuilder {
         }
 
         let preferredModel = cleaned(params.runtimeInfo.preferredSupervisorModelId) ?? "(default_hub_route)"
-        return [
+        var lines = [
             "## Runtime",
             "App: \(params.runtimeInfo.appName)",
             "Host: \(params.runtimeInfo.host)",
@@ -65,7 +73,32 @@ struct SupervisorSystemPromptBuilder {
             "Managed project count: \(params.runtimeInfo.projectCount)",
             "Preferred supervisor model id: \(preferredModel)",
             "Supervisor model route summary: \(params.runtimeInfo.supervisorModelRouteSummary)",
-            "Memory source: \(params.runtimeInfo.memorySource)",
+        ]
+        if let retrieval = cleaned(params.runtimeInfo.retrievalModelSummary) {
+            lines.append("Retrieval helper models: \(retrieval)")
+        }
+        lines.append("Memory source: \(params.runtimeInfo.memorySource)")
+        lines.append("")
+        return lines
+    }
+
+    private func buildWorkModeSection(_ params: SupervisorSystemPromptParams) -> [String] {
+        [
+            "## Supervisor Operating Mode",
+            "- Configured work mode: \(params.workMode.rawValue)",
+            "- Contract: \(params.workMode.promptSummary)",
+            "- Effective behavior must still respect project governance, authorization state, runtime availability, and every fail-closed safety gate.",
+            "- If the current work mode forbids governed automation, do not emit action tags as a workaround for that restriction.",
+            ""
+        ]
+    }
+
+    private func buildPrivacyModeSection(_ params: SupervisorSystemPromptParams) -> [String] {
+        [
+            "## Privacy Mode",
+            "- Configured privacy mode: \(params.privacyMode.rawValue)",
+            "- Contract: \(params.privacyMode.promptSummary)",
+            "- Long-term memory, session handoff capsules, and project state reconstruction remain available; privacy mode only tightens recent raw dialogue exposure.",
             ""
         ]
     }
@@ -78,14 +111,205 @@ struct SupervisorSystemPromptBuilder {
             "## Conversation Style",
             "Primary stance: \(params.identity.nonProjectConversationPolicy)"
         ]
+        if params.privacyMode == .tightenedContext {
+            lines.append("- Prefer concise summaries over verbatim replay of recent dialogue unless the exact wording is necessary to avoid a mistake.")
+        }
         lines.append(contentsOf: params.identity.toneGuidance.map { "- \($0)" })
         if !isMinimal {
             lines.append("- If the user asks whether you are GPT or whether the correct model is active, answer directly and include the current supervisor model route summary.")
             lines.append("- If the current turn is handled locally instead of by a remote model, say that plainly.")
             lines.append("- Never invent runtime restrictions. Do not claim you can only return JSON, cannot create or edit files, or require a magic confirmation phrase unless that limitation is explicitly present in the current turn context.")
+            lines.append("- Embedding/retrieval helper models are reserved for retrieval and memory lookup. Do not treat them as the main supervisor chat route.")
             lines.append("- For build requests such as making a game, app, tool, or feature, treat them as real work intake. Either propose a sensible default execution path or ask for the single missing constraint.")
             lines.append("- Never invent a vendor, company, or training origin for yourself or for the active model route.")
         }
+        lines.append("")
+        return lines
+    }
+
+    private func buildPersonalAssistantContextSection(
+        _ params: SupervisorSystemPromptParams
+    ) -> [String] {
+        let profile = params.personalProfile.normalized()
+        let policy = params.personalPolicy.normalized()
+        guard !profile.isEffectivelyEmpty || policy.hasNonDefaultConfiguration else {
+            return []
+        }
+
+        var lines = [
+            "## Personal Assistant Context",
+            "- Keep project governance and personal-life follow-through distinct, but allow them to inform each other when timing, energy, or commitments collide.",
+            "- Treat this section as durable user preference context and planning guidance, not as permission to invent commitments.",
+            "- Use it when the user asks for prioritization, reminders, life/work tradeoffs, daily planning, weekly review, or follow-up strategy."
+        ]
+
+        if !profile.preferredName.isEmpty {
+            lines.append("- Preferred user name: \(profile.preferredName)")
+        }
+        if !profile.goalsSummary.isEmpty {
+            lines.append("- Long-term goals: \(profile.goalsSummary)")
+        }
+        if !profile.workStyle.isEmpty {
+            lines.append("- Work style: \(profile.workStyle)")
+        }
+        if !profile.communicationPreferences.isEmpty {
+            lines.append("- Communication preferences: \(profile.communicationPreferences)")
+        }
+        if !profile.dailyRhythm.isEmpty {
+            lines.append("- Daily rhythm: \(profile.dailyRhythm)")
+        }
+        if !profile.reviewPreferences.isEmpty {
+            lines.append("- Review preferences: \(profile.reviewPreferences)")
+        }
+
+        if policy.hasNonDefaultConfiguration {
+            lines.append("- Relationship mode: \(policy.relationshipMode.displayName). \(policy.relationshipMode.promptSummary)")
+            lines.append("- Briefing style: \(policy.briefingStyle.displayName). \(policy.briefingStyle.promptSummary)")
+            lines.append("- Risk tolerance: \(policy.riskTolerance.displayName). \(policy.riskTolerance.promptSummary)")
+            lines.append("- Interruption tolerance: \(policy.interruptionTolerance.displayName). \(policy.interruptionTolerance.promptSummary)")
+            lines.append("- Reminder aggressiveness: \(policy.reminderAggressiveness.displayName). \(policy.reminderAggressiveness.promptSummary)")
+            lines.append("- Preferred morning brief time: \(policy.preferredMorningBriefTime)")
+            lines.append("- Preferred evening wrap-up time: \(policy.preferredEveningWrapUpTime)")
+            lines.append("- Preferred weekly review day: \(policy.weeklyReviewDay)")
+        }
+
+        lines.append("")
+        return lines
+    }
+
+    private func buildPersonalMemoryContextSection(
+        _ params: SupervisorSystemPromptParams
+    ) -> [String] {
+        if let assembly = params.turnContextAssembly,
+           !assembly.selectedSlots.contains(.personalCapsule) {
+            return []
+        }
+        guard let summary = cleaned(params.personalMemorySummary), !summary.isEmpty else {
+            return []
+        }
+
+        return [
+            "## Personal Memory Context",
+            "- Treat this as structured long-term memory for the user: facts, habits, preferences, relationships, commitments, and recurring obligations.",
+            "- Use it to keep personal follow-through sharp, but do not invent commitments, due dates, or relationship history that is not grounded here.",
+            summary,
+            ""
+        ]
+    }
+
+    private func buildPersonalFollowUpContextSection(
+        _ params: SupervisorSystemPromptParams
+    ) -> [String] {
+        if let assembly = params.turnContextAssembly,
+           !assembly.selectedSlots.contains(.personalCapsule) {
+            return []
+        }
+        guard let summary = cleaned(params.personalFollowUpSummary), !summary.isEmpty else {
+            return []
+        }
+
+        return [
+            "## Follow-Up Queue Context",
+            "- Treat this as the current personal follow-up queue derived from structured memory.",
+            "- Use it when the user asks what is slipping, who is waiting, what to reply first, or what should happen in today's personal admin sweep.",
+            summary,
+            ""
+        ]
+    }
+
+    private func buildPersonalReviewContextSection(
+        _ params: SupervisorSystemPromptParams
+    ) -> [String] {
+        if let assembly = params.turnContextAssembly,
+           !assembly.selectedSlots.contains(.personalCapsule) {
+            return []
+        }
+        guard let summary = cleaned(params.personalReviewSummary), !summary.isEmpty else {
+            return []
+        }
+
+        return [
+            "## Personal Review Context",
+            "- Treat this as the user's current daily and weekly personal review loop state.",
+            "- Use it when the user asks for a morning brief, evening wrap-up, weekly reset, or when you need to surface which personal review is already due.",
+            summary,
+            ""
+        ]
+    }
+
+    private func buildTurnRoutingSection(
+        _ params: SupervisorSystemPromptParams
+    ) -> [String] {
+        guard let decision = params.turnRoutingDecision else { return [] }
+
+        var lines = [
+            "## Turn Routing Hint",
+            "- Dominant turn mode: \(decision.mode.rawValue)",
+            "- Primary memory domain: \(decision.primaryMemoryDomain)",
+            "- Supporting memory domains: \(decision.supportingMemoryDomains.joined(separator: ", "))"
+        ]
+
+        if let focusedProjectName = cleaned(decision.focusedProjectName) {
+            lines.append("- Focused project: \(focusedProjectName)")
+        }
+        if let focusedPersonName = cleaned(decision.focusedPersonName) {
+            lines.append("- Focused person: \(focusedPersonName)")
+        }
+        if let focusedCommitmentId = cleaned(decision.focusedCommitmentId) {
+            lines.append("- Focused commitment id: \(focusedCommitmentId)")
+        }
+        if !decision.routingReasons.isEmpty {
+            lines.append("- Routing reasons: \(decision.routingReasons.joined(separator: " | "))")
+        }
+
+        switch decision.mode {
+        case .personalFirst:
+            lines.append("- Answer from personal memory first. Use project memory only when a current project, blocker, or delivery pressure materially changes the recommendation.")
+        case .projectFirst:
+            lines.append("- Answer from project memory first. Use personal memory only as supporting context for user preference, timing, energy, follow-up pressure, or stakeholder impact.")
+        case .hybrid:
+            lines.append("- Treat personal memory and project memory as co-equal inputs for this turn. Resolve tension between commitments, people waiting, and project execution instead of flattening the answer to one side.")
+        case .portfolioReview:
+            lines.append("- Start from the portfolio brief. Only drill into a focused project if the current turn clearly needs a deeper single-project recommendation.")
+        }
+
+        lines.append("")
+        return lines
+    }
+
+    private func buildTurnContextAssemblySection(
+        _ params: SupervisorSystemPromptParams
+    ) -> [String] {
+        guard let assembly = params.turnContextAssembly else { return [] }
+
+        var lines = [
+            "## Turn Context Assembly",
+            "- Turn mode: \(assembly.turnMode.rawValue)",
+            "- Dominant plane: \(assembly.dominantPlane)",
+            "- Supporting planes: \(assembly.supportingPlanes.isEmpty ? "(none)" : assembly.supportingPlanes.joined(separator: ", "))",
+            "- Continuity lane: \(assembly.continuityLaneDepth.rawValue)",
+            "- Assistant plane: \(assembly.assistantPlaneDepth.rawValue)",
+            "- Project plane: \(assembly.projectPlaneDepth.rawValue)",
+            "- Cross-link plane: \(assembly.crossLinkPlaneDepth.rawValue)",
+            "- Selected slots: \(assembly.selectedSlots.map(\.rawValue).joined(separator: ", "))",
+            "- Omitted slots: \(assembly.omittedSlots.map(\.rawValue).joined(separator: ", "))",
+            "- Selected refs: \(assembly.selectedRefs.isEmpty ? "(none)" : assembly.selectedRefs.joined(separator: ", "))"
+        ]
+
+        if let focusedProjectId = cleaned(assembly.focusPointers.currentProjectId) {
+            lines.append("- Focus pointer project id: \(focusedProjectId)")
+        }
+        if let focusedPersonName = cleaned(assembly.focusPointers.currentPersonName) {
+            lines.append("- Focus pointer person: \(focusedPersonName)")
+        }
+        if let focusedCommitmentId = cleaned(assembly.focusPointers.currentCommitmentId) {
+            lines.append("- Focus pointer commitment id: \(focusedCommitmentId)")
+        }
+        if !assembly.assemblyReason.isEmpty {
+            lines.append("- Assembly reasons: \(assembly.assemblyReason.joined(separator: " | "))")
+        }
+
+        lines.append("- Treat selected slots as the intended serving contract for this turn. If a requested slot is omitted or unavailable, say so instead of fabricating missing memory.")
         lines.append("")
         return lines
     }
@@ -204,7 +428,14 @@ struct SupervisorSystemPromptBuilder {
             "- For review or planning requests that do not clearly ask for immediate execution, do not emit action tags; return a concrete plan with sequence, dependencies, checkpoints, blockers, and the first action to take.",
             "- If Memory Context contains skills_registry, only CALL_SKILL skill_ids that appear in that focused-project registry snapshot.",
             "- Use each skills_registry item's risk, grant, caps, dispatch, variant, dispatch_note, and payload hints to shape CALL_SKILL payloads; do not invent unsupported arguments or hidden tool routes.",
+            "- Treat `routing: prefers_builtin=...` and `routing: entrypoints=...` as skill-family metadata. Wrapper ids, entrypoint ids, and builtin ids may describe one governed execution family.",
+            "- If the user explicitly names a registered wrapper or entrypoint skill_id, preserve that exact registered skill_id in CALL_SKILL when it matches the requested intent; do not silently swap it to a sibling family member just because the runtime may converge on the same builtin.",
+            "- If the user asks for a capability without naming a specific skill_id, and the relevant skills_registry family advertises `routing: prefers_builtin=...`, choose that preferred builtin instead of an arbitrary sibling wrapper.",
+            "- Do not emit duplicate CALL_SKILL actions across sibling entrypoints in the same routed family for one intent. One well-formed governed call is enough.",
             "- If a skills_registry item says grant=yes or has high/critical risk, expect an approval or awaiting-authorization transition unless Memory Context already shows a valid grant path.",
+            "- If a skills_registry item says scope=xt_builtin, treat it as an XT native governed skill that is already available locally; do not tell the user to install, import, or enable it through Hub package lifecycle first.",
+            "- If the user does not name a different installed wrapper/entrypoint and skills_registry contains guarded-automation, prefer it for trusted automation readiness checks and governed browser actions instead of inventing direct browser/device execution paths outside the registry.",
+            "- If skills_registry contains supervisor-voice, prefer it for local Supervisor playback status / preview / speak / stop requests instead of answering as if voice control were only descriptive.",
             "- If you emit UPSERT_PLAN for a focused project, match the effective_work_order_depth shown in Memory Context as a minimum detail floor instead of defaulting to a vague one-line plan.",
             "- For strong or capable focused projects, execution_ready can stay concise when step titles are specific and the plan already carries dependencies, checkpoints, or failure metadata; do not add filler detail fields just to look formal.",
             "- Never use action tags for examples, hypotheticals, or explanations."

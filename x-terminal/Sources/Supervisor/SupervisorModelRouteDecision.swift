@@ -174,3 +174,8 @@ struct SupervisorModelRouteDecision: Codable, Equatable, Sendable {
         self.explainability = explainability
     }
 }
+
+struct SupervisorModelRouteContext: Equatable, Sendable {
+    var projectName: String?
+    var decision: SupervisorModelRouteDecision
+}

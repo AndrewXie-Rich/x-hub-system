@@ -79,6 +79,7 @@ struct SupervisorPortfolioActionabilitySnapshotTests {
         #expect(actionability.schemaVersion == "xt.supervisor_portfolio_actionability_snapshot.v1")
         #expect(actionability.projectsChangedLast24h == 3)
         #expect(actionability.decisionBlockerProjectsCount == 1)
+        #expect(actionability.projectsMissingSpec == 0)
         #expect(actionability.projectsMissingNextStep == 1)
         #expect(actionability.stalledProjects == 1)
         #expect(actionability.zombieProjects == 1)
@@ -109,6 +110,141 @@ struct SupervisorPortfolioActionabilitySnapshotTests {
         #expect(actionability.actionableToday == 1)
         #expect(actionability.recommendedActions.first?.kind == .missingNextStep)
         #expect(actionability.recommendedActions.first?.recommendedNextAction.contains("Define one concrete next step") == true)
+    }
+
+    @Test
+    func specGapProjectsSurfaceAsActionableTodayBeforeGenericFollowUps() {
+        let now = Date(timeIntervalSince1970: 1_776_001_000).timeIntervalSince1970
+        let cards = [
+            SupervisorPortfolioProjectCard(
+                projectId: "p-spec",
+                displayName: "Spec Gap Project",
+                projectState: .active,
+                runtimeState: "进行中",
+                currentAction: "规格待补齐：goal / tech_stack",
+                topBlocker: "formal_spec_missing: goal / tech_stack",
+                nextStep: "补齐 formal spec 字段：goal / tech_stack",
+                memoryFreshness: .fresh,
+                updatedAt: now - 3_600,
+                recentMessageCount: 2,
+                missingSpecFields: [.goal, .approvedTechStack]
+            ),
+            SupervisorPortfolioProjectCard(
+                projectId: "p-active",
+                displayName: "Active Project",
+                projectState: .active,
+                runtimeState: "进行中",
+                currentAction: "Landing dashboard bindings",
+                topBlocker: "",
+                nextStep: "Review dashboard bindings",
+                memoryFreshness: .fresh,
+                updatedAt: now - 1_800,
+                recentMessageCount: 3
+            )
+        ]
+
+        let actionability = SupervisorPortfolioActionabilitySnapshotBuilder.build(from: cards, now: now)
+
+        #expect(actionability.projectsMissingSpec == 1)
+        #expect(actionability.actionableToday == 2)
+        #expect(actionability.recommendedActions.first?.projectId == "p-spec")
+        #expect(actionability.recommendedActions.first?.kind == .specGap)
+        #expect(actionability.recommendedActions.first?.reasonSummary == "formal_spec_missing: goal / tech_stack")
+        #expect(actionability.recommendedActions.first?.recommendedNextAction.contains("goal / tech_stack") == true)
+    }
+
+    @Test
+    func decisionRailSignalsSurfaceBeforeGenericActiveFollowUps() {
+        let now = Date(timeIntervalSince1970: 1_776_050_000).timeIntervalSince1970
+        let cards = [
+            SupervisorPortfolioProjectCard(
+                projectId: "p-rails",
+                displayName: "Decision Rails Project",
+                projectState: .active,
+                runtimeState: "进行中",
+                currentAction: "Using approved stack with shadowed notes still present",
+                topBlocker: "",
+                nextStep: "Continue implementation",
+                memoryFreshness: .fresh,
+                updatedAt: now - 1_800,
+                recentMessageCount: 2,
+                shadowedBackgroundNoteCount: 2,
+                weakOnlyBackgroundNoteCount: 1
+            ),
+            SupervisorPortfolioProjectCard(
+                projectId: "p-active",
+                displayName: "Active Project",
+                projectState: .active,
+                runtimeState: "进行中",
+                currentAction: "Ship the next dashboard patch",
+                topBlocker: "",
+                nextStep: "Ship the next dashboard patch",
+                memoryFreshness: .fresh,
+                updatedAt: now - 900,
+                recentMessageCount: 3
+            )
+        ]
+
+        let actionability = SupervisorPortfolioActionabilitySnapshotBuilder.build(from: cards, now: now)
+
+        #expect(actionability.actionableToday == 2)
+        #expect(actionability.recommendedActions.map(\.projectId) == ["p-rails", "p-active"])
+        #expect(actionability.recommendedActions.first?.kind == .decisionRail)
+        #expect(actionability.recommendedActions.first?.reasonSummary == "2 shadowed background notes + 1 weak-only preference")
+        #expect(actionability.recommendedActions.first?.recommendedNextAction.contains("formalize") == true)
+    }
+
+    @Test
+    func decisionAssistSignalsSurfaceBeforeGenericDecisionBlockers() {
+        let now = Date(timeIntervalSince1970: 1_776_060_000).timeIntervalSince1970
+        let assist = SupervisorDecisionBlockerAssistEngine.build(
+            context: SupervisorDecisionBlockerContext(
+                projectId: "p-assist",
+                blockerId: "blk-test-stack",
+                category: .testStack,
+                reversible: true,
+                riskLevel: .low,
+                timeoutEscalationAfterMs: 900_000
+            ),
+            nowMs: 1_776_060_000_000
+        )
+        let cards = [
+            SupervisorPortfolioProjectCard(
+                projectId: "p-assist",
+                displayName: "Assist Project",
+                projectState: .blocked,
+                runtimeState: "阻塞中",
+                currentAction: "默认建议待确认：swift_testing_contract_default（proposal_pending）",
+                topBlocker: "default_proposal_pending:test_stack=swift_testing_contract_default",
+                nextStep: "审阅待定默认建议：swift_testing_contract_default，确认后再走 governed adoption",
+                memoryFreshness: .fresh,
+                updatedAt: now - 1_200,
+                recentMessageCount: 2,
+                decisionAssist: assist
+            ),
+            SupervisorPortfolioProjectCard(
+                projectId: "p-blocked",
+                displayName: "Generic Blocker",
+                projectState: .blocked,
+                runtimeState: "阻塞中",
+                currentAction: "需要拍板：是否切换备用模型",
+                topBlocker: "decision pending: choose fallback model",
+                nextStep: "Pick the fallback model and resume execution",
+                memoryFreshness: .fresh,
+                updatedAt: now - 900,
+                recentMessageCount: 1
+            )
+        ]
+
+        let actionability = SupervisorPortfolioActionabilitySnapshotBuilder.build(from: cards, now: now)
+
+        #expect(actionability.decisionBlockerProjectsCount == 2)
+        #expect(actionability.actionableToday == 2)
+        #expect(actionability.recommendedActions.map(\.projectId) == ["p-assist", "p-blocked"])
+        #expect(actionability.recommendedActions.first?.kind == .decisionAssist)
+        #expect(actionability.recommendedActions.first?.reasonSummary == "test_stack proposal_with_timeout_escalation: swift_testing_contract_default")
+        #expect(actionability.recommendedActions.first?.recommendedNextAction == "Review decision assist for Assist Project: swift_testing_contract_default. If no decision arrives, escalate after 15m.")
+        #expect(actionability.recommendedActions.first?.whyItMatters.contains("reversible low-risk default") == true)
     }
 
     @Test
@@ -150,6 +286,7 @@ struct SupervisorPortfolioActionabilitySnapshotTests {
 
         #expect(actionability.projectsChangedLast24h == 2)
         #expect(actionability.decisionBlockerProjectsCount == 1)
+        #expect(actionability.projectsMissingSpec == 0)
         #expect(actionability.actionableToday == 1)
         #expect(actionability.recommendedActions.count == 1)
         #expect(actionability.recommendedActions.first?.projectId == "p-proposal")

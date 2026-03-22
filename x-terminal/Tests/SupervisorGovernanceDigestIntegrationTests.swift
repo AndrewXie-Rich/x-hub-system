@@ -115,8 +115,12 @@ struct SupervisorGovernanceDigestIntegrationTests {
         #expect(digest.source.contains("background_preference_track"))
         #expect(digest.currentState.contains("Use SwiftUI + Hub canonical memory."))
         #expect(!digest.currentState.contains("cross-platform web"))
+        #expect(digest.shadowedBackgroundNoteCount == 1)
+        #expect(digest.weakOnlyBackgroundNoteCount == 0)
         #expect(digest.nextStep.contains("tech_stack"))
         #expect(!snapshot.projects.first!.currentAction.contains("cross-platform web"))
+        #expect(snapshot.projects.first?.shadowedBackgroundNoteCount == 1)
+        #expect(snapshot.projects.first?.hasDecisionRailSignal == true)
         #expect(snapshot.projects.first?.nextStep == digest.nextStep)
     }
 
@@ -154,7 +158,10 @@ struct SupervisorGovernanceDigestIntegrationTests {
         #expect(digest.blocker == "(无)")
         #expect(digest.currentState.contains("背景偏好（弱参考）"))
         #expect(!digest.currentState.contains("已批准决策"))
+        #expect(digest.shadowedBackgroundNoteCount == 0)
+        #expect(digest.weakOnlyBackgroundNoteCount == 1)
         #expect(snapshot.projects.first?.projectState != .blocked)
+        #expect(snapshot.projects.first?.weakOnlyBackgroundNoteCount == 1)
         #expect(snapshot.projects.first?.nextStep == "继续当前任务")
     }
 }

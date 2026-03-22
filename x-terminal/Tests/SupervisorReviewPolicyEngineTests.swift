@@ -25,7 +25,7 @@ struct SupervisorReviewPolicyEngineTests {
         let governance = xtResolveProjectGovernance(
             projectRoot: fixture.root,
             config: config,
-            effectiveAutonomy: config.effectiveAutonomyPolicy()
+            effectiveRuntimeSurface: config.effectiveRuntimeSurfacePolicy()
         )
         _ = try SupervisorReviewScheduleStore.touchHeartbeat(for: ctx, config: config, nowMs: 1_773_900_000_000)
         let schedule = SupervisorReviewScheduleStore.load(for: ctx)
@@ -65,7 +65,7 @@ struct SupervisorReviewPolicyEngineTests {
         let governance = xtResolveProjectGovernance(
             projectRoot: fixture.root,
             config: config,
-            effectiveAutonomy: config.effectiveAutonomyPolicy()
+            effectiveRuntimeSurface: config.effectiveRuntimeSurfacePolicy()
         )
         _ = try SupervisorReviewScheduleStore.touchHeartbeat(for: ctx, config: config, nowMs: 1_773_900_000_000)
         var schedule = SupervisorReviewScheduleStore.load(for: ctx)
@@ -93,7 +93,7 @@ struct SupervisorReviewPolicyEngineTests {
         let governance = xtResolveProjectGovernance(
             projectRoot: FileManager.default.temporaryDirectory,
             config: config,
-            effectiveAutonomy: config.effectiveAutonomyPolicy()
+            effectiveRuntimeSurface: config.effectiveRuntimeSurfacePolicy()
         )
 
         let decision = SupervisorReviewPolicyEngine.resolve(
@@ -135,7 +135,7 @@ struct SupervisorReviewPolicyEngineTests {
         let governance = xtResolveProjectGovernance(
             projectRoot: fixture.root,
             config: config,
-            effectiveAutonomy: config.effectiveAutonomyPolicy()
+            effectiveRuntimeSurface: config.effectiveRuntimeSurfacePolicy()
         )
         let nowMs: Int64 = 1_773_900_000_000
         let staleProgressAtMs = nowMs - 3_000_000
@@ -183,7 +183,7 @@ struct SupervisorReviewPolicyEngineTests {
         let governance = xtResolveProjectGovernance(
             projectRoot: fixture.root,
             config: config,
-            effectiveAutonomy: config.effectiveAutonomyPolicy()
+            effectiveRuntimeSurface: config.effectiveRuntimeSurfacePolicy()
         )
         let nowMs: Int64 = 1_773_900_000_000
         let staleProgressAtMs = nowMs - 3_000_000
@@ -234,7 +234,7 @@ struct SupervisorReviewPolicyEngineTests {
         let governance = xtResolveProjectGovernance(
             projectRoot: FileManager.default.temporaryDirectory,
             config: config,
-            effectiveAutonomy: config.effectiveAutonomyPolicy(),
+            effectiveRuntimeSurface: config.effectiveRuntimeSurfacePolicy(),
             projectAIStrengthProfile: strength
         )
 
@@ -288,7 +288,7 @@ struct SupervisorReviewPolicyEngineTests {
         let governance = xtResolveProjectGovernance(
             projectRoot: fixture.root,
             config: config,
-            effectiveAutonomy: config.effectiveAutonomyPolicy(),
+            effectiveRuntimeSurface: config.effectiveRuntimeSurfacePolicy(),
             projectAIStrengthProfile: strength
         )
         _ = try SupervisorReviewScheduleStore.touchHeartbeat(for: ctx, config: config, nowMs: 1_773_900_000_000)
@@ -342,7 +342,7 @@ struct SupervisorReviewPolicyEngineTests {
         let governance = xtResolveProjectGovernance(
             projectRoot: fixture.root,
             config: config,
-            effectiveAutonomy: config.effectiveAutonomyPolicy(),
+            effectiveRuntimeSurface: config.effectiveRuntimeSurfacePolicy(),
             projectAIStrengthProfile: strength
         )
         _ = try SupervisorReviewScheduleStore.touchHeartbeat(for: ctx, config: config, nowMs: 1_773_900_000_000)
@@ -390,7 +390,7 @@ struct SupervisorReviewPolicyEngineTests {
         let governance = xtResolveProjectGovernance(
             projectRoot: fixture.root,
             config: config,
-            effectiveAutonomy: config.effectiveAutonomyPolicy(),
+            effectiveRuntimeSurface: config.effectiveRuntimeSurfacePolicy(),
             projectAIStrengthProfile: strength
         )
         _ = try SupervisorReviewScheduleStore.touchHeartbeat(for: ctx, config: config, nowMs: 1_773_900_000_000)

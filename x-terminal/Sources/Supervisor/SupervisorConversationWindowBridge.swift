@@ -1,31 +1,111 @@
 import Foundation
 
+struct SupervisorConversationWindowOpenRequest: Equatable {
+    static let reasonUserInfoKey = "reason"
+    static let focusConversationUserInfoKey = "focusConversation"
+
+    let reason: String
+    let focusConversation: Bool
+
+    init(
+        reason: String,
+        focusConversation: Bool = true
+    ) {
+        let trimmedReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.reason = trimmedReason.isEmpty ? "unknown" : trimmedReason
+        self.focusConversation = focusConversation
+    }
+
+    init(notification: Notification) {
+        let reason = notification.userInfo?[Self.reasonUserInfoKey] as? String ?? ""
+        let focusConversation = notification.userInfo?[Self.focusConversationUserInfoKey] as? Bool ?? true
+        self.init(
+            reason: reason,
+            focusConversation: focusConversation
+        )
+    }
+
+    var userInfo: [AnyHashable: Any] {
+        [
+            Self.reasonUserInfoKey: reason,
+            Self.focusConversationUserInfoKey: focusConversation
+        ]
+    }
+}
+
+enum SupervisorConversationWindowOpenDeduplicationPolicy {
+    static func shouldPost(
+        request: SupervisorConversationWindowOpenRequest,
+        lastRequest: SupervisorConversationWindowOpenRequest?,
+        lastOpenAt: Date,
+        now: Date,
+        dedupeInterval: TimeInterval,
+        isWindowVisible: Bool
+    ) -> Bool {
+        guard let lastRequest else { return true }
+        guard request == lastRequest else { return true }
+        guard now.timeIntervalSince(lastOpenAt) < dedupeInterval else { return true }
+        return !isWindowVisible
+    }
+}
+
 @MainActor
 final class SupervisorConversationWindowBridge {
     static let shared = SupervisorConversationWindowBridge()
 
     private let notificationCenter: NotificationCenter
+    private let windowVisibleProvider: @MainActor () -> Bool
     private var lastOpenAt: Date = .distantPast
+    private var lastOpenRequest: SupervisorConversationWindowOpenRequest?
     private let dedupeInterval: TimeInterval
+    private(set) var latestRequest: SupervisorConversationWindowOpenRequest?
 
     init(
         notificationCenter: NotificationCenter = .default,
-        dedupeInterval: TimeInterval = 0.8
+        dedupeInterval: TimeInterval = 0.8,
+        windowVisibleProvider: (@MainActor () -> Bool)? = nil
     ) {
         self.notificationCenter = notificationCenter
         self.dedupeInterval = dedupeInterval
+        self.windowVisibleProvider = windowVisibleProvider ?? Self.defaultWindowVisibleProvider
     }
 
-    func requestOpen(reason: String) {
+    func requestOpen(
+        reason: String,
+        focusConversation: Bool = true
+    ) {
+        requestOpen(
+            SupervisorConversationWindowOpenRequest(
+                reason: reason,
+                focusConversation: focusConversation
+            )
+        )
+    }
+
+    func requestOpen(_ request: SupervisorConversationWindowOpenRequest) {
         let now = Date()
-        guard now.timeIntervalSince(lastOpenAt) >= dedupeInterval else {
+        let shouldPost = SupervisorConversationWindowOpenDeduplicationPolicy.shouldPost(
+            request: request,
+            lastRequest: lastOpenRequest,
+            lastOpenAt: lastOpenAt,
+            now: now,
+            dedupeInterval: dedupeInterval,
+            isWindowVisible: windowVisibleProvider()
+        )
+        guard shouldPost else {
             return
         }
         lastOpenAt = now
+        lastOpenRequest = request
+        latestRequest = request
         notificationCenter.post(
             name: .xterminalOpenSupervisorWindow,
             object: nil,
-            userInfo: ["reason": reason]
+            userInfo: request.userInfo
         )
+    }
+
+    private static func defaultWindowVisibleProvider() -> Bool {
+        XTSupervisorWindowVisibilityRegistry.shared.isWindowVisible
     }
 }

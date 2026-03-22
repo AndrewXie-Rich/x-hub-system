@@ -169,12 +169,6 @@ enum SupervisorProjectJobStore {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(snapshot)
         let target = ctx.supervisorJobsURL
-        let temp = target.deletingLastPathComponent()
-            .appendingPathComponent(".\(target.lastPathComponent).tmp-\(UUID().uuidString)")
-        try data.write(to: temp, options: .atomic)
-        if FileManager.default.fileExists(atPath: target.path) {
-            try? FileManager.default.removeItem(at: target)
-        }
-        try FileManager.default.moveItem(at: temp, to: target)
+        try SupervisorStoreWriteSupport.writeSnapshotData(data, to: target)
     }
 }

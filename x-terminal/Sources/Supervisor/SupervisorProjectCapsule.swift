@@ -26,6 +26,11 @@ struct SupervisorProjectCapsule: Equatable, Codable, Sendable {
     var statusDigest: String
     var evidenceRefs: [String]
     var auditRef: String
+    var missingSpecFields: [SupervisorProjectSpecField]
+    var shadowedBackgroundNoteCount: Int
+    var weakOnlyBackgroundNoteCount: Int
+    var decisionAssist: SupervisorDecisionBlockerAssist?
+    var memoryCompactionSignal: SupervisorMemoryCompactionSignal?
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -42,6 +47,101 @@ struct SupervisorProjectCapsule: Equatable, Codable, Sendable {
         case statusDigest = "status_digest"
         case evidenceRefs = "evidence_refs"
         case auditRef = "audit_ref"
+        case missingSpecFields = "missing_spec_fields"
+        case shadowedBackgroundNoteCount = "shadowed_background_note_count"
+        case weakOnlyBackgroundNoteCount = "weak_only_background_note_count"
+        case decisionAssist = "decision_assist"
+        case memoryCompactionSignal = "memory_compaction_signal"
+    }
+
+    init(
+        schemaVersion: String,
+        projectId: String,
+        projectName: String,
+        projectState: SupervisorProjectCapsuleState,
+        goal: String,
+        currentPhase: String,
+        currentAction: String,
+        topBlocker: String,
+        nextStep: String,
+        memoryFreshness: SupervisorPortfolioMemoryFreshness,
+        updatedAtMs: Int64,
+        statusDigest: String,
+        evidenceRefs: [String],
+        auditRef: String,
+        missingSpecFields: [SupervisorProjectSpecField] = [],
+        shadowedBackgroundNoteCount: Int = 0,
+        weakOnlyBackgroundNoteCount: Int = 0,
+        decisionAssist: SupervisorDecisionBlockerAssist? = nil,
+        memoryCompactionSignal: SupervisorMemoryCompactionSignal? = nil
+    ) {
+        self.schemaVersion = schemaVersion
+        self.projectId = projectId
+        self.projectName = projectName
+        self.projectState = projectState
+        self.goal = goal
+        self.currentPhase = currentPhase
+        self.currentAction = currentAction
+        self.topBlocker = topBlocker
+        self.nextStep = nextStep
+        self.memoryFreshness = memoryFreshness
+        self.updatedAtMs = updatedAtMs
+        self.statusDigest = statusDigest
+        self.evidenceRefs = evidenceRefs
+        self.auditRef = auditRef
+        self.missingSpecFields = missingSpecFields
+        self.shadowedBackgroundNoteCount = max(0, shadowedBackgroundNoteCount)
+        self.weakOnlyBackgroundNoteCount = max(0, weakOnlyBackgroundNoteCount)
+        self.decisionAssist = decisionAssist
+        self.memoryCompactionSignal = memoryCompactionSignal
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            schemaVersion: try container.decode(String.self, forKey: .schemaVersion),
+            projectId: try container.decode(String.self, forKey: .projectId),
+            projectName: try container.decode(String.self, forKey: .projectName),
+            projectState: try container.decode(SupervisorProjectCapsuleState.self, forKey: .projectState),
+            goal: try container.decode(String.self, forKey: .goal),
+            currentPhase: try container.decode(String.self, forKey: .currentPhase),
+            currentAction: try container.decode(String.self, forKey: .currentAction),
+            topBlocker: try container.decode(String.self, forKey: .topBlocker),
+            nextStep: try container.decode(String.self, forKey: .nextStep),
+            memoryFreshness: try container.decode(SupervisorPortfolioMemoryFreshness.self, forKey: .memoryFreshness),
+            updatedAtMs: try container.decode(Int64.self, forKey: .updatedAtMs),
+            statusDigest: try container.decode(String.self, forKey: .statusDigest),
+            evidenceRefs: try container.decode([String].self, forKey: .evidenceRefs),
+            auditRef: try container.decode(String.self, forKey: .auditRef),
+            missingSpecFields: try container.decodeIfPresent([SupervisorProjectSpecField].self, forKey: .missingSpecFields) ?? [],
+            shadowedBackgroundNoteCount: try container.decodeIfPresent(Int.self, forKey: .shadowedBackgroundNoteCount) ?? 0,
+            weakOnlyBackgroundNoteCount: try container.decodeIfPresent(Int.self, forKey: .weakOnlyBackgroundNoteCount) ?? 0,
+            decisionAssist: try container.decodeIfPresent(SupervisorDecisionBlockerAssist.self, forKey: .decisionAssist),
+            memoryCompactionSignal: try container.decodeIfPresent(SupervisorMemoryCompactionSignal.self, forKey: .memoryCompactionSignal)
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(projectId, forKey: .projectId)
+        try container.encode(projectName, forKey: .projectName)
+        try container.encode(projectState, forKey: .projectState)
+        try container.encode(goal, forKey: .goal)
+        try container.encode(currentPhase, forKey: .currentPhase)
+        try container.encode(currentAction, forKey: .currentAction)
+        try container.encode(topBlocker, forKey: .topBlocker)
+        try container.encode(nextStep, forKey: .nextStep)
+        try container.encode(memoryFreshness, forKey: .memoryFreshness)
+        try container.encode(updatedAtMs, forKey: .updatedAtMs)
+        try container.encode(statusDigest, forKey: .statusDigest)
+        try container.encode(evidenceRefs, forKey: .evidenceRefs)
+        try container.encode(auditRef, forKey: .auditRef)
+        try container.encode(missingSpecFields, forKey: .missingSpecFields)
+        try container.encode(shadowedBackgroundNoteCount, forKey: .shadowedBackgroundNoteCount)
+        try container.encode(weakOnlyBackgroundNoteCount, forKey: .weakOnlyBackgroundNoteCount)
+        try container.encodeIfPresent(decisionAssist, forKey: .decisionAssist)
+        try container.encodeIfPresent(memoryCompactionSignal, forKey: .memoryCompactionSignal)
     }
 }
 
@@ -80,7 +180,12 @@ enum SupervisorProjectCapsuleBuilder {
                 nextStep: nextStep
             ),
             evidenceRefs: evidenceRefs.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty },
-            auditRef: auditRef(projectId: digest.projectId, updatedAt: digest.updatedAt)
+            auditRef: auditRef(projectId: digest.projectId, updatedAt: digest.updatedAt),
+            missingSpecFields: digest.missingSpecFields,
+            shadowedBackgroundNoteCount: digest.shadowedBackgroundNoteCount,
+            weakOnlyBackgroundNoteCount: digest.weakOnlyBackgroundNoteCount,
+            decisionAssist: digest.decisionAssist,
+            memoryCompactionSignal: digest.memoryCompactionRollup.map(SupervisorMemoryCompactionSignalBuilder.build)
         )
         return capsule
     }
@@ -99,7 +204,12 @@ enum SupervisorProjectCapsuleBuilder {
             nextStep: capsule.nextStep,
             memoryFreshness: capsule.memoryFreshness,
             updatedAt: Double(capsule.updatedAtMs) / 1000.0,
-            recentMessageCount: recentMessageCount
+            recentMessageCount: recentMessageCount,
+            missingSpecFields: capsule.missingSpecFields,
+            shadowedBackgroundNoteCount: capsule.shadowedBackgroundNoteCount,
+            weakOnlyBackgroundNoteCount: capsule.weakOnlyBackgroundNoteCount,
+            decisionAssist: capsule.decisionAssist,
+            memoryCompactionSignal: capsule.memoryCompactionSignal
         )
     }
 

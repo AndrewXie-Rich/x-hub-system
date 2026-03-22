@@ -979,6 +979,169 @@ struct SupervisorManagerVoiceAuthorizationTests {
     }
 
     @Test
+    func voicePendingGrantApproveUsesFriendlyProjectNameFromPendingSnapshotNormalization() async throws {
+        try await Self.gate.run {
+            var spoken: [String] = []
+            let synthesizer = SupervisorSpeechSynthesizer(
+                deduper: SupervisorVoiceBriefDeduper(cooldown: 0),
+                speakSink: { spoken.append($0) }
+            )
+            let manager = SupervisorManager.makeForTesting(
+                supervisorSpeechSynthesizer: synthesizer
+            )
+            manager.resetVoiceAuthorizationState()
+            manager.clearMessages()
+            defer {
+                manager.resetVoiceAuthorizationState()
+                manager.clearMessages()
+            }
+
+            let root = try makeProjectRoot(named: "voice-pending-grant-snapshot-friendly-name")
+            defer { try? FileManager.default.removeItem(at: root) }
+
+            let friendlyName = "Headset Grocery Run"
+            let project = makeProjectEntry(root: root, displayName: friendlyName)
+            let approveProbe = SupervisorPendingGrantApproveProbe()
+
+            let appModel = AppModel()
+            appModel.registry = registry(with: [project])
+            appModel.selectedProjectId = project.projectId
+            appModel.settingsStore.settings = configuredSettings(from: appModel.settingsStore.settings)
+            manager.setAppModel(appModel)
+            manager.setPendingGrantSnapshotForTesting(
+                HubIPCClient.PendingGrantSnapshot(
+                    source: "hub_runtime_grpc",
+                    updatedAtMs: Date().timeIntervalSince1970 * 1000.0,
+                    items: [
+                        HubIPCClient.PendingGrantItem(
+                            grantRequestId: "grant-snapshot-voice-1",
+                            requestId: "request-snapshot-voice-1",
+                            deviceId: "device_xt_001",
+                            userId: "user-voice-1",
+                            appId: "x-terminal",
+                            projectId: project.projectId,
+                            capability: "web.fetch",
+                            modelId: "",
+                            reason: "buy groceries from remote workflow",
+                            requestedTtlSec: 900,
+                            requestedTokenCap: 0,
+                            status: "pending",
+                            decision: "queued",
+                            createdAtMs: Date().timeIntervalSince1970 * 1000.0,
+                            decidedAtMs: 0
+                        )
+                    ]
+                )
+            )
+            manager.installSchedulerSnapshotRefreshOverrideForTesting { _ in }
+            manager.installPendingHubGrantApproveOverrideForTesting { grantRequestId, projectId, requestedTtlSec, requestedTokenCap, note in
+                await approveProbe.record(
+                    grantRequestId: grantRequestId,
+                    projectId: projectId,
+                    requestedTtlSec: requestedTtlSec,
+                    requestedTokenCap: requestedTokenCap,
+                    note: note
+                )
+                return HubIPCClient.PendingGrantActionResult(
+                    ok: true,
+                    decision: .approved,
+                    source: "test",
+                    grantRequestId: grantRequestId,
+                    grantId: grantRequestId,
+                    expiresAtMs: nil,
+                    reasonCode: nil
+                )
+            }
+            manager.installSupervisorBriefProjectionFetcherForTesting { payload in
+                HubIPCClient.SupervisorBriefProjectionResult(
+                    ok: false,
+                    source: "test",
+                    projection: nil,
+                    reasonCode: payload.trigger
+                )
+            }
+            manager.installVoiceAuthorizationBridgeForTesting(
+                SupervisorVoiceAuthorizationBridge(
+                    issueHandler: { payload in
+                        HubIPCClient.VoiceGrantChallengeResult(
+                            ok: true,
+                            source: "test",
+                            challenge: makeChallenge(
+                                challengeId: "voice_chal_pending_grant_snapshot_friendly",
+                                templateId: payload.templateId,
+                                actionDigest: payload.actionDigest,
+                                scopeDigest: payload.scopeDigest,
+                                amountDigest: payload.amountDigest ?? "",
+                                challengeCode: "765432",
+                                requiresMobileConfirm: payload.requiresMobileConfirm,
+                                allowVoiceOnly: payload.allowVoiceOnly,
+                                riskLevel: payload.riskLevel,
+                                boundDeviceId: payload.boundDeviceId ?? "",
+                                mobileTerminalId: payload.mobileTerminalId ?? ""
+                            ),
+                            reasonCode: nil
+                        )
+                    },
+                    verifyHandler: { payload in
+                        HubIPCClient.VoiceGrantVerificationResult(
+                            ok: true,
+                            verified: true,
+                            decision: .allow,
+                            source: "test",
+                            denyCode: nil,
+                            challengeId: payload.challengeId,
+                            transcriptHash: "sha256:voice-grant-snapshot-friendly",
+                            semanticMatchScore: payload.semanticMatchScore ?? 0,
+                            challengeMatch: true,
+                            deviceBindingOK: true,
+                            mobileConfirmed: payload.mobileConfirmed,
+                            reasonCode: nil
+                        )
+                    }
+                )
+            )
+
+            #expect(manager.pendingHubGrants.count == 1)
+            #expect(manager.pendingHubGrants.first?.projectName == friendlyName)
+            #expect(manager.pendingHubGrants.first?.projectName.contains(root.lastPathComponent) == false)
+
+            manager.sendMessage("批准这个 grant", fromVoice: true)
+
+            try await waitUntil("pending grant voice challenge issued with normalized friendly name") {
+                manager.voiceAuthorizationResolution?.state == .escalatedToMobile &&
+                    manager.activeVoiceChallenge?.challengeId == "voice_chal_pending_grant_snapshot_friendly" &&
+                    manager.messages.contains(where: {
+                        $0.role == .assistant &&
+                            $0.content.contains(friendlyName) &&
+                            !$0.content.contains(root.lastPathComponent)
+                    })
+            }
+
+            let resolution = await manager.retryVoiceAuthorizationVerification(
+                transcript: "Approve Hub grant for \(friendlyName)",
+                semanticMatchScore: 0.99,
+                mobileConfirmed: true
+            )
+            #expect(resolution.state == .verified)
+
+            try await waitUntil("pending grant friendly fallback reply emitted") {
+                manager.messages.contains(where: {
+                    $0.role == .assistant &&
+                        $0.content.contains("已批准 \(friendlyName) 的 联网访问 Hub 授权") &&
+                        !$0.content.contains(root.lastPathComponent)
+                })
+            }
+
+            let approveCall = await approveProbe.first()
+            #expect(approveCall?.grantRequestId == "grant-snapshot-voice-1")
+            #expect(approveCall?.projectId == project.projectId)
+            #expect(manager.pendingHubGrants.isEmpty)
+            #expect(spoken.contains(where: { $0.contains(friendlyName) }))
+            #expect(spoken.allSatisfy { !$0.contains(root.lastPathComponent) })
+        }
+    }
+
+    @Test
     func voicePendingGrantDenyIntentVerifiedResolutionExecutesDenyAndFallsBackWithoutBrief() async throws {
         try await Self.gate.run {
             var spoken: [String] = []
@@ -1093,7 +1256,7 @@ struct SupervisorManagerVoiceAuthorizationTests {
             try await waitUntil("pending grant deny fallback reply emitted") {
                 manager.messages.contains(where: {
                     $0.role == .assistant &&
-                        $0.content.contains("已拒绝 Local Runtime 的 本地模型调用 Hub grant")
+                        $0.content.contains("已拒绝 Local Runtime 的 本地模型调用 Hub 授权")
                 })
             }
 
@@ -1104,7 +1267,7 @@ struct SupervisorManagerVoiceAuthorizationTests {
             #expect(manager.pendingHubGrants.isEmpty)
             #expect(spoken.contains(where: { $0.contains("Voice authorization challenge issued") }))
             #expect(spoken.contains(where: { $0.contains("Voice authorization verified") }))
-            #expect(spoken.contains(where: { $0.contains("已拒绝 Local Runtime 的 本地模型调用 Hub grant") }))
+            #expect(spoken.contains(where: { $0.contains("已拒绝 Local Runtime 的 本地模型调用 Hub 授权") }))
         }
     }
 
@@ -1203,15 +1366,20 @@ struct SupervisorManagerVoiceAuthorizationTests {
             try await waitUntil("ambiguous pending grant reply emitted") {
                 manager.messages.contains(where: {
                     $0.role == .assistant &&
-                        $0.content.contains("多个待处理 Hub grant")
+                        $0.content.contains("多笔待处理的 Hub 授权")
                 })
             }
 
             #expect(manager.voiceAuthorizationResolution == nil)
             #expect(manager.activeVoiceChallenge == nil)
-            #expect(spoken.contains(where: { $0.contains("多个待处理 Hub grant") }))
-            #expect(manager.messages.last?.content.contains("来源：Slack / 私聊消息入口") == true)
-            #expect(manager.messages.last?.content.contains("来源：Telegram / 群聊消息入口") == true)
+            #expect(spoken.contains(where: { $0.contains("多笔待处理的 Hub 授权") }))
+            #expect(
+                manager.messages.contains(where: {
+                    $0.role == .assistant &&
+                        $0.content.contains("来源：Slack / 私聊消息入口") &&
+                        $0.content.contains("来源：Telegram / 群聊消息入口")
+                })
+            )
         }
     }
 
@@ -1978,8 +2146,8 @@ struct SupervisorManagerVoiceAuthorizationTests {
             pinned: false,
             statusDigest: "runtime=blocked",
             currentStateSummary: "等待授权",
-            nextStepSummary: "等待 Hub grant 处理",
-            blockerSummary: "等待 Hub grant",
+            nextStepSummary: "等待 Hub 授权处理",
+            blockerSummary: "等待 Hub 授权",
             lastSummaryAt: Date().timeIntervalSince1970,
             lastEventAt: Date().timeIntervalSince1970
         )

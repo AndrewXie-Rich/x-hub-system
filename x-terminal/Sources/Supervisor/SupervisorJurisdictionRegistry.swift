@@ -238,6 +238,6 @@ enum SupervisorJurisdictionRegistryStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(current) else { return }
-        try? data.write(to: url(), options: .atomic)
+        try? SupervisorStoreWriteSupport.writeSnapshotData(data, to: url())
     }
 }

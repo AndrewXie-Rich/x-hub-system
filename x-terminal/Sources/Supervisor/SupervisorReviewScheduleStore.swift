@@ -157,7 +157,7 @@ enum SupervisorReviewScheduleStore {
     ) throws {
         try ctx.ensureDirs()
         let data = try JSONEncoder().encode(state)
-        try data.write(to: url(for: ctx), options: .atomic)
+        try SupervisorStoreWriteSupport.writeSnapshotData(data, to: url(for: ctx))
     }
 
     private static func url(for ctx: AXProjectContext) -> URL {

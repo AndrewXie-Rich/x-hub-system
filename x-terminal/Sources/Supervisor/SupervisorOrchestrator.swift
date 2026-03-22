@@ -30,6 +30,7 @@ class SupervisorOrchestrator: ObservableObject {
     @Published private(set) var lastLaneAllocationResult: LaneAllocationResult?
     @Published private(set) var lastLaneLaunchReport: LaneLaunchReport?
     @Published private(set) var lastMergebackGateReport: LaneMergebackGateReport?
+    @Published private(set) var lastMergebackQualityReport: MergebackQualityGateReport?
     @Published private(set) var oneShotAutonomyPolicy: OneShotAutonomyPolicy?
     @Published private(set) var latestDeliveryScopeFreeze: DeliveryScopeFreeze?
     @Published private(set) var latestReplayHarnessReport: OneShotReplayReport?
@@ -41,6 +42,8 @@ class SupervisorOrchestrator: ObservableObject {
     private let splitProposalEngine = SplitProposalEngine()
     private let promptFactory = PromptFactory()
     private let mergebackGateEvaluator = LaneMergebackGateEvaluator()
+    private let mergebackQualityEvaluator = MergebackQualityGateEvaluator()
+    private let mergebackRunSnapshotBuilder = MergebackRunSnapshotBuilder()
     private let autonomyPolicyEngine = OneShotAutonomyPolicyEngine()
     private let deliveryScopeFreezeStore = DeliveryScopeFreezeStore()
     private let replayHarness = OneShotReplayHarness()
@@ -774,6 +777,64 @@ class SupervisorOrchestrator: ObservableObject {
         return report
     }
 
+    /// XT-W3-11：从生产态 lane/task/runtime state 构建 mergeback quality run audits。
+    @discardableResult
+    func evaluateMergebackQuality(
+        conflicts: [AssemblyConflict] = [],
+        strictIncidentCoverage: Bool = true,
+        now: Date = Date()
+    ) -> MergebackQualityGateReport {
+        let gateReport = evaluateMergebackReadiness(
+            strictIncidentCoverage: strictIncidentCoverage,
+            now: now
+        )
+        return evaluateMergebackQuality(
+            gateReport: gateReport,
+            materialization: lastMaterializationResult,
+            promptCompilationResult: promptCompilationResult,
+            taskStates: executionMonitor.taskStates,
+            laneStates: executionMonitor.laneStates,
+            incidents: executionMonitor.incidents,
+            conflicts: conflicts,
+            now: now
+        )
+    }
+
+    @discardableResult
+    func evaluateMergebackQuality(
+        gateReport: LaneMergebackGateReport,
+        materialization: MaterializationResult?,
+        promptCompilationResult: PromptCompilationResult?,
+        taskStates: [UUID: TaskExecutionState],
+        laneStates: [String: LaneRuntimeState],
+        incidents: [SupervisorLaneIncident],
+        conflicts: [AssemblyConflict] = [],
+        now: Date = Date()
+    ) -> MergebackQualityGateReport {
+        let runs = mergebackRunSnapshotBuilder.build(
+            lanes: materialization?.lanes ?? [],
+            promptCompilationResult: promptCompilationResult,
+            taskStates: taskStates,
+            laneStates: laneStates,
+            rollbackPoints: gateReport.rollbackPoints,
+            incidents: incidents,
+            conflicts: conflicts
+        )
+        let report = mergebackQualityEvaluator.evaluate(runs: runs, now: now)
+        lastMergebackQualityReport = report
+        return report
+    }
+
+    func exportMergebackQualityReport(
+        _ report: MergebackQualityGateReport,
+        to url: URL
+    ) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(report)
+        try SupervisorStoreWriteSupport.writeSnapshotData(data, to: url)
+    }
+
     // MARK: - Lane launcher (XT-W2-12)
 
     private func launchAllocatedLanes(
@@ -801,6 +862,7 @@ class SupervisorOrchestrator: ObservableObject {
                 project: anchorProject,
                 lanes: materialization.lanes,
                 splitPlanID: materialization.splitPlanID,
+                workMode: SupervisorManager.shared.currentSupervisorWorkMode,
                 now: launchNow
             )
             oneShotAutonomyPolicy = policy

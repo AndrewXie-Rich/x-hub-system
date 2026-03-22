@@ -26,6 +26,21 @@ enum SupervisorProjectSpecField: String, CaseIterable, Codable, Sendable {
     case nonGoals = "non_goals"
     case approvedTechStack = "approved_tech_stack"
     case milestones
+
+    var summaryToken: String {
+        switch self {
+        case .goal:
+            return "goal"
+        case .mvpDefinition:
+            return "mvp_definition"
+        case .nonGoals:
+            return "non_goals"
+        case .approvedTechStack:
+            return "tech_stack"
+        case .milestones:
+            return "milestones"
+        }
+    }
 }
 
 struct SupervisorProjectSpecModule: Equatable, Codable, Sendable {
@@ -252,13 +267,7 @@ enum SupervisorProjectSpecCapsuleStore {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(capsule)
         let target = url(for: ctx)
-        let temp = target.deletingLastPathComponent()
-            .appendingPathComponent(".\(target.lastPathComponent).tmp-\(UUID().uuidString)")
-        try data.write(to: temp, options: .atomic)
-        if FileManager.default.fileExists(atPath: target.path) {
-            try? FileManager.default.removeItem(at: target)
-        }
-        try FileManager.default.moveItem(at: temp, to: target)
+        try SupervisorStoreWriteSupport.writeSnapshotData(data, to: target)
     }
 
     private static func url(for ctx: AXProjectContext) -> URL {

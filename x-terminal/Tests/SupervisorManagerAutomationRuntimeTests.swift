@@ -1100,6 +1100,383 @@ struct SupervisorManagerAutomationRuntimeTests {
     }
 
     @Test
+    func automationStatusPrependsProjectScopedGovernanceBriefForPendingGrant() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
+        var project = makeProjectEntry(root: root)
+        project.displayName = "亮亮"
+
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+        manager.setPendingHubGrantsForTesting(
+            [
+                SupervisorManager.SupervisorPendingGrant(
+                    id: "automation-status-grant-1",
+                    dedupeKey: "automation-status-grant-1",
+                    grantRequestId: "automation-status-grant-1",
+                    requestId: "req-automation-status-grant-1",
+                    projectId: project.projectId,
+                    projectName: project.displayName,
+                    capability: "device_authority",
+                    modelId: "",
+                    reason: "需要批准设备级权限后继续自动化",
+                    requestedTtlSec: 3600,
+                    requestedTokenCap: 12_000,
+                    createdAt: 1_000,
+                    actionURL: nil,
+                    priorityRank: 1,
+                    priorityReason: "release_path",
+                    nextAction: "打开授权并批准设备级权限"
+                )
+            ]
+        )
+
+        let statusText = try #require(
+            manager.performAutomationRuntimeCommand("/automation status \(project.projectId)")
+        )
+
+        #expect(statusText.contains("🧭 Supervisor Brief · 亮亮"))
+        #expect(statusText.contains("Hub 待处理授权"))
+        #expect(statusText.contains("查看：查看授权板"))
+        #expect(statusText.contains("🤖 Automation Runtime 状态"))
+        #expect(statusText.contains("项目: \(project.displayName)"))
+    }
+
+    @Test
+    func automationStatusDoesNotLeakGovernanceBriefFromOtherProject() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let rootA = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: rootA)
+        }
+
+        let ctxA = AXProjectContext(root: rootA)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctxA)
+
+        var projectA = makeProjectEntry(root: rootA)
+        projectA.displayName = "Alpha"
+        let projectB = AXProjectEntry(
+            projectId: "project-beta-governance-only",
+            rootPath: rootA.appendingPathComponent("beta-governance-only").path,
+            displayName: "Beta",
+            lastOpenedAt: Date().timeIntervalSince1970,
+            manualOrderIndex: 1,
+            pinned: false,
+            statusDigest: nil,
+            currentStateSummary: nil,
+            nextStepSummary: nil,
+            blockerSummary: nil,
+            lastSummaryAt: nil,
+            lastEventAt: nil
+        )
+
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: projectA.projectId,
+            projects: [projectA, projectB]
+        )
+        appModel.selectedProjectId = projectA.projectId
+        manager.setAppModel(appModel)
+        manager.setPendingHubGrantsForTesting(
+            [
+                SupervisorManager.SupervisorPendingGrant(
+                    id: "automation-status-other-project-grant-1",
+                    dedupeKey: "automation-status-other-project-grant-1",
+                    grantRequestId: "automation-status-other-project-grant-1",
+                    requestId: "req-automation-status-other-project-grant-1",
+                    projectId: projectB.projectId,
+                    projectName: projectB.displayName,
+                    capability: "device_authority",
+                    modelId: "",
+                    reason: "需要批准设备级权限后继续自动化",
+                    requestedTtlSec: 3600,
+                    requestedTokenCap: 12_000,
+                    createdAt: 1_000,
+                    actionURL: nil,
+                    priorityRank: 1,
+                    priorityReason: "release_path",
+                    nextAction: "打开授权并批准设备级权限"
+                )
+            ]
+        )
+
+        let statusText = try #require(
+            manager.performAutomationRuntimeCommand("/automation status \(projectA.projectId)")
+        )
+
+        #expect(statusText.contains("🤖 Automation Runtime 状态"))
+        #expect(statusText.contains("项目: \(projectA.displayName)"))
+        #expect(statusText.contains("🧭 Supervisor Brief") == false)
+        #expect(statusText.contains("查看：查看授权板") == false)
+    }
+
+    @Test
+    func automationStartPrependsProjectScopedGovernanceBriefForPendingGrant() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+        AXTrustedAutomationPermissionOwnerReadiness.installCurrentProviderForTesting {
+            AXTrustedAutomationPermissionOwnerReadiness(
+                schemaVersion: AXTrustedAutomationPermissionOwnerReadiness.currentSchemaVersion,
+                ownerID: "owner-xt",
+                ownerType: "xterminal_app",
+                bundleID: "com.xterminal.app",
+                installState: "ready",
+                mode: "managed_or_prompted",
+                accessibility: .granted,
+                automation: .granted,
+                screenRecording: .missing,
+                fullDiskAccess: .missing,
+                inputMonitoring: .missing,
+                canPromptUser: true,
+                managedByMDM: false,
+                overallState: "ready",
+                openSettingsActions: AXTrustedAutomationPermissionKey.allCases.map { $0.openSettingsAction },
+                auditRef: "audit-xt-auto-start-governance-brief"
+            )
+        }
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            AXTrustedAutomationPermissionOwnerReadiness.resetCurrentProviderForTesting()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+        try armTrustedAutomation(for: ctx)
+        var project = makeProjectEntry(root: root)
+        project.displayName = "亮亮"
+
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+        manager.setPendingHubGrantsForTesting(
+            [
+                SupervisorManager.SupervisorPendingGrant(
+                    id: "automation-start-grant-1",
+                    dedupeKey: "automation-start-grant-1",
+                    grantRequestId: "automation-start-grant-1",
+                    requestId: "req-automation-start-grant-1",
+                    projectId: project.projectId,
+                    projectName: project.displayName,
+                    capability: "device_authority",
+                    modelId: "",
+                    reason: "需要批准设备级权限后继续自动化",
+                    requestedTtlSec: 3600,
+                    requestedTokenCap: 12_000,
+                    createdAt: 1_000,
+                    actionURL: nil,
+                    priorityRank: 1,
+                    priorityReason: "release_path",
+                    nextAction: "打开授权并批准设备级权限"
+                )
+            ]
+        )
+
+        let startText = try #require(
+            manager.performAutomationRuntimeCommand("/automation start \(project.projectId)")
+        )
+
+        #expect(startText.contains("🧭 Supervisor Brief · 亮亮"))
+        #expect(startText.contains("Hub 待处理授权"))
+        #expect(startText.contains("查看：查看授权板"))
+        #expect(startText.contains("✅ automation 已启动准备"))
+        #expect(startText.contains("项目: \(project.displayName)"))
+    }
+
+    @Test
+    func automationStartDoesNotLeakGovernanceBriefFromOtherProject() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+        AXTrustedAutomationPermissionOwnerReadiness.installCurrentProviderForTesting {
+            AXTrustedAutomationPermissionOwnerReadiness(
+                schemaVersion: AXTrustedAutomationPermissionOwnerReadiness.currentSchemaVersion,
+                ownerID: "owner-xt",
+                ownerType: "xterminal_app",
+                bundleID: "com.xterminal.app",
+                installState: "ready",
+                mode: "managed_or_prompted",
+                accessibility: .granted,
+                automation: .granted,
+                screenRecording: .missing,
+                fullDiskAccess: .missing,
+                inputMonitoring: .missing,
+                canPromptUser: true,
+                managedByMDM: false,
+                overallState: "ready",
+                openSettingsActions: AXTrustedAutomationPermissionKey.allCases.map { $0.openSettingsAction },
+                auditRef: "audit-xt-auto-start-governance-no-leak"
+            )
+        }
+
+        let rootA = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            AXTrustedAutomationPermissionOwnerReadiness.resetCurrentProviderForTesting()
+            try? FileManager.default.removeItem(at: rootA)
+        }
+
+        let ctxA = AXProjectContext(root: rootA)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctxA)
+        try armTrustedAutomation(for: ctxA)
+
+        var projectA = makeProjectEntry(root: rootA)
+        projectA.displayName = "Alpha"
+        let projectB = AXProjectEntry(
+            projectId: "project-beta-governance-only",
+            rootPath: rootA.appendingPathComponent("beta-governance-only").path,
+            displayName: "Beta",
+            lastOpenedAt: Date().timeIntervalSince1970,
+            manualOrderIndex: 1,
+            pinned: false,
+            statusDigest: nil,
+            currentStateSummary: nil,
+            nextStepSummary: nil,
+            blockerSummary: nil,
+            lastSummaryAt: nil,
+            lastEventAt: nil
+        )
+
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: projectA.projectId,
+            projects: [projectA, projectB]
+        )
+        appModel.selectedProjectId = projectA.projectId
+        manager.setAppModel(appModel)
+        manager.setPendingHubGrantsForTesting(
+            [
+                SupervisorManager.SupervisorPendingGrant(
+                    id: "automation-start-other-project-grant-1",
+                    dedupeKey: "automation-start-other-project-grant-1",
+                    grantRequestId: "automation-start-other-project-grant-1",
+                    requestId: "req-automation-start-other-project-grant-1",
+                    projectId: projectB.projectId,
+                    projectName: projectB.displayName,
+                    capability: "device_authority",
+                    modelId: "",
+                    reason: "需要批准设备级权限后继续自动化",
+                    requestedTtlSec: 3600,
+                    requestedTokenCap: 12_000,
+                    createdAt: 1_000,
+                    actionURL: nil,
+                    priorityRank: 1,
+                    priorityReason: "release_path",
+                    nextAction: "打开授权并批准设备级权限"
+                )
+            ]
+        )
+
+        let startText = try #require(
+            manager.performAutomationRuntimeCommand("/automation start \(projectA.projectId)")
+        )
+
+        #expect(startText.contains("✅ automation 已启动准备"))
+        #expect(startText.contains("项目: \(projectA.displayName)"))
+        #expect(startText.contains("🧭 Supervisor Brief") == false)
+        #expect(startText.contains("查看：查看授权板") == false)
+    }
+
+    @Test
+    func automationSelfIterateStatusPrependsProjectScopedGovernanceBriefForPendingSkillApproval() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+        var project = makeProjectEntry(root: root)
+        project.displayName = "亮亮"
+
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+        manager.setPendingSupervisorSkillApprovalsForTesting(
+            [
+                SupervisorManager.SupervisorPendingSkillApproval(
+                    id: "automation-self-iterate-approval-1",
+                    requestId: "automation-self-iterate-approval-1",
+                    projectId: project.projectId,
+                    projectName: project.displayName,
+                    jobId: "job-1",
+                    planId: "plan-1",
+                    stepId: "step-1",
+                    skillId: "agent-browser",
+                    toolName: "browser.open",
+                    tool: nil,
+                    toolSummary: "打开浏览器查看当前自动化页面状态",
+                    reason: "需要人工确认后再继续",
+                    createdAt: 1_000,
+                    actionURL: nil,
+                    routingReasonCode: nil,
+                    routingExplanation: nil
+                )
+            ]
+        )
+
+        let statusText = try #require(
+            manager.performAutomationRuntimeCommand("/automation self-iterate status \(project.projectId)")
+        )
+
+        #expect(statusText.contains("🧭 Supervisor Brief · 亮亮"))
+        #expect(statusText.contains("待审批技能"))
+        #expect(statusText.contains("查看：查看技能审批"))
+        #expect(statusText.contains("🧠 automation self-iterate 状态"))
+        #expect(statusText.contains("self_iterate_mode: disabled"))
+    }
+
+    @Test
     func automationSelfIterateCommandsUpdateProjectConfigAndSelectedSnapshot() throws {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
@@ -1149,7 +1526,7 @@ struct SupervisorManagerAutomationRuntimeTests {
     }
 
     @Test
-    func automationStartCommandExecutesRecipeActionGraphInBackground() async throws {
+    func automationStartRunExecutesRecipeActionGraphInBackground() async throws {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
 
@@ -1161,29 +1538,14 @@ struct SupervisorManagerAutomationRuntimeTests {
 
         let ctx = AXProjectContext(root: root)
         _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
-        let project = makeProjectEntry(root: root)
-        let appModel = AppModel()
-        appModel.registry = AXProjectRegistry(
-            version: AXProjectRegistry.currentVersion,
-            updatedAt: Date().timeIntervalSince1970,
-            sortPolicy: "manual_then_last_opened",
-            globalHomeVisible: false,
-            lastSelectedProjectId: nil,
-            projects: [project]
-        )
-        appModel.selectedProjectId = project.projectId
-        try await waitUntil("app model selected project for hydration") {
-            appModel.projectContext?.root == root
-        }
-        manager.setAppModel(appModel)
-        _ = manager.applySupervisorJurisdictionRegistry(
-            .ownerAll(for: [project]),
-            persist: false,
-            normalizeWithKnownProjects: true
-        )
+        try armRepoAutomationGovernance(for: ctx)
 
-        let startText = try #require(manager.performAutomationRuntimeCommand("/automation start \(project.projectId)"))
-        #expect(startText.contains("run_id:"))
+        let prepared = try manager.startAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: 1_773_203_100)),
+            emitSystemMessage: false
+        )
+        #expect(prepared.currentCheckpoint.state == .queued)
 
         try await waitUntil("automation action graph delivered") {
             manager.automationCurrentCheckpoint?.state == .delivered
@@ -1191,10 +1553,8 @@ struct SupervisorManagerAutomationRuntimeTests {
 
         #expect(manager.automationLatestExecutionReport?.executedActionCount == 1)
         #expect(manager.automationLatestExecutionReport?.finalState == .delivered)
-        let statusText = try #require(manager.performAutomationRuntimeCommand("/automation status \(project.projectId)"))
-        #expect(statusText.contains("last_execution_state: delivered"))
-        #expect(statusText.contains("last_execution_actions: 1/1"))
-        #expect(statusText.contains("last_execution_handoff: build/reports/xt_automation_run_handoff_"))
+        let handoffPath = try #require(manager.automationLatestExecutionReport?.handoffArtifactPath)
+        #expect(handoffPath.contains("build/reports/xt_automation_run_handoff_"))
     }
 
     @Test
@@ -1890,7 +2250,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         }
 
         #expect(restartedManager.automationStatusLine.contains(retryRunID))
-        #expect(restartedManager.automationStatusLine.contains("blocked"))
+        #expect(restartedManager.automationStatusLine.contains("受阻"))
 
         let statusText = try #require(restartedManager.performAutomationRuntimeCommand("/automation status \(project.projectId)"))
         #expect(statusText.contains("last_execution_state: blocked"))

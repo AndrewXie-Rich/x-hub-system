@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import XTerminal
 
+@Suite(.serialized)
 struct SupervisorDoctorTests {
 
     @Test
@@ -131,6 +132,94 @@ struct SupervisorDoctorTests {
     }
 
     @Test
+    func writeReportFallsBackToNonAtomicOverwriteWhenAtomicWriteRunsOutOfSpace() throws {
+        let workspace = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("xterminal_doctor_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspace) }
+
+        let capture = SupervisorDoctorReportWriterTestCapture()
+        let reportURL = workspace.appendingPathComponent(".axcoder/reports/supervisor_doctor_report.json")
+        try FileManager.default.createDirectory(
+            at: reportURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("{\"stale\":true}\n".utf8).write(to: reportURL)
+
+        let report = SupervisorDoctorChecker.run(input: makeInput(snapshot: nil))
+
+        SupervisorDoctorChecker.installReportWriteAttemptOverrideForTesting { data, url, options in
+            capture.appendWriteOption(options)
+            if options.contains(.atomic) {
+                throw NSError(domain: NSPOSIXErrorDomain, code: 28)
+            }
+            try data.write(to: url, options: options)
+        }
+        SupervisorDoctorChecker.installReportLogSinkForTesting { line in
+            capture.appendLogLine(line)
+        }
+        defer { SupervisorDoctorChecker.resetReportWriteBehaviorForTesting() }
+
+        SupervisorDoctorChecker.writeReport(report, to: reportURL)
+
+        let decoded = try JSONDecoder().decode(
+            SupervisorDoctorReport.self,
+            from: Data(contentsOf: reportURL)
+        )
+        let options = capture.writeOptionsSnapshot()
+        #expect(options.count == 2)
+        #expect(options[0].contains(.atomic))
+        #expect(options[1].isEmpty)
+        #expect(capture.logLinesSnapshot().isEmpty)
+        #expect(decoded.schemaVersion == SupervisorDoctorChecker.schemaVersion)
+    }
+
+    @Test
+    func runAndPersistSuppressesRepeatedCompatWriteFailureLogsDuringCooldown() throws {
+        let workspace = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("xterminal_doctor_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspace) }
+
+        let capture = SupervisorDoctorReportWriterTestCapture()
+        let input = SupervisorDoctorInputBundle(
+            workspaceRoot: workspace,
+            config: .conservativeDefault(),
+            configSource: "unit_test",
+            secretsPlan: SupervisorSecretsDryRunPlan(
+                allowedRoots: [workspace.appendingPathComponent(".axcoder/secrets").path],
+                allowedModes: ["0600"],
+                items: []
+            ),
+            secretsPlanSource: "unit_test",
+            reportURL: workspace.appendingPathComponent(".axcoder/reports/supervisor_doctor_report.json"),
+            memoryAssemblySnapshot: nil
+        )
+
+        SupervisorDoctorChecker.installReportNowProviderForTesting {
+            Date(timeIntervalSince1970: 1_773_000_000)
+        }
+        SupervisorDoctorChecker.installReportWriteAttemptOverrideForTesting { _, _, options in
+            capture.appendWriteOption(options)
+            throw NSError(domain: NSPOSIXErrorDomain, code: 28)
+        }
+        SupervisorDoctorChecker.installReportLogSinkForTesting { line in
+            capture.appendLogLine(line)
+        }
+        defer { SupervisorDoctorChecker.resetReportWriteBehaviorForTesting() }
+
+        _ = SupervisorDoctorChecker.runAndPersist(input: input)
+        _ = SupervisorDoctorChecker.runAndPersist(input: input)
+
+        let logLines = capture.logLinesSnapshot()
+        #expect(logLines.count == 3)
+        #expect(logLines.contains(where: { $0.contains("SupervisorDoctor write report failed") }))
+        #expect(logLines.contains(where: { $0.contains("SupervisorDoctor write doctor compat report failed") }))
+        #expect(logLines.contains(where: { $0.contains("SupervisorDoctor write secrets dry-run compat report failed") }))
+        #expect(capture.writeOptionsSnapshot().count == 6)
+    }
+
+    @Test
     func memoryReviewFloorMissIsSurfacedAsBlockingFinding() {
         let snapshot = makeMemorySnapshot(
             profileFloor: XTMemoryServingProfile.m3DeepDive.rawValue,
@@ -157,6 +246,70 @@ struct SupervisorDoctorTests {
         #expect(finding?.severity == .warning)
         #expect(report.summary.memoryAssemblyBlockingCount == 0)
         #expect(report.summary.memoryAssemblyWarningCount == 1)
+    }
+
+    @Test
+    func continuityFloorMissIsSurfacedWhenDialogueWindowIsPresent() {
+        let snapshot = makeMemorySnapshot(
+            selectedSections: [
+                "dialogue_window",
+                "portfolio_brief",
+                "focused_project_anchor_pack",
+                "longterm_outline",
+                "delta_feed",
+                "conflict_set",
+                "context_refs",
+                "evidence_pack",
+            ],
+            rawWindowSelectedPairs: 6,
+            continuityFloorSatisfied: false,
+            rawWindowSource: "mixed",
+            lowSignalDroppedMessages: 2,
+            continuityTraceLines: [
+                "remote_continuity=ok cache_hit=false working_entries=14 assembled_source=mixed"
+            ],
+            lowSignalDropSampleLines: [
+                "role=user reason=pure_ack_or_greeting text=你好"
+            ]
+        )
+        let report = SupervisorDoctorChecker.run(input: makeInput(snapshot: snapshot))
+
+        let finding = report.findings.first { $0.code == "memory_continuity_floor_not_met" }
+        #expect(finding?.area == "memory_assembly")
+        #expect(finding?.severity == .blocking)
+        #expect(finding?.detail.contains("selected_pairs=6") == true)
+        #expect(finding?.detail.contains("raw_source=mixed") == true)
+    }
+
+    @Test
+    func canonicalSyncFailureForFocusedProjectBecomesMemoryAssemblyFinding() {
+        let snapshot = makeMemorySnapshot()
+        let syncSnapshot = HubIPCClient.CanonicalMemorySyncStatusSnapshot(
+            schemaVersion: "canonical_memory_sync_status.v1",
+            updatedAtMs: 1_773_000_010_000,
+            items: [
+                HubIPCClient.CanonicalMemorySyncStatusItem(
+                    scopeKind: "project",
+                    scopeId: "project-alpha",
+                    displayName: "Alpha",
+                    source: "file_ipc",
+                    ok: false,
+                    updatedAtMs: 1_773_000_010_000,
+                    reasonCode: "project_canonical_memory_write_failed",
+                    detail: "xterminal_project_memory_write_failed=NSError:No space left on device"
+                )
+            ]
+        )
+
+        let report = SupervisorDoctorChecker.run(
+            input: makeInput(snapshot: snapshot, canonicalSyncSnapshot: syncSnapshot)
+        )
+
+        let finding = report.findings.first { $0.code == "memory_canonical_sync_delivery_failed" }
+        #expect(finding?.area == "memory_assembly")
+        #expect(finding?.severity == .blocking)
+        #expect(finding?.detail.contains("scope=project") == true)
+        #expect(report.summary.memoryAssemblyBlockingCount == 1)
     }
 
     @Test
@@ -197,8 +350,217 @@ struct SupervisorDoctorTests {
         #expect(report.summary.warningCount == 2)
     }
 
+    @MainActor
+    @Test
+    func doctorSummaryIncludesCanonicalRetryFeedback() {
+        let manager = SupervisorManager.makeForTesting()
+        manager.setCanonicalMemoryRetryFeedbackForTesting(
+            .init(
+                statusLine: "canonical_sync_retry: failed ok=0 · failed=2",
+                detailLine: "failed: device:supervisor-main(Supervisor) reason=device_canonical_memory_write_failed detail=broken pipe",
+                metaLine: "attempt: 刚刚 · last_status: 刚刚",
+                tone: .danger
+            )
+        )
+        let report = SupervisorDoctorReport(
+            schemaVersion: "xt.supervisor_doctor_report.v1",
+            generatedAtMs: 100,
+            workspaceRoot: "/tmp/workspace",
+            configSource: "config.json",
+            secretsPlanSource: "secrets.json",
+            ok: true,
+            findings: [],
+            suggestions: [],
+            summary: SupervisorDoctorSummary(
+                doctorReportPresent: 1,
+                releaseBlockedByDoctorWithoutReport: 0,
+                blockingCount: 0,
+                warningCount: 0,
+                memoryAssemblyBlockingCount: 0,
+                memoryAssemblyWarningCount: 0,
+                dmAllowlistRiskCount: 0,
+                wsAuthRiskCount: 0,
+                preAuthFloodBreakerRiskCount: 0,
+                secretsPathOutOfScopeCount: 0,
+                secretsMissingVariableCount: 0,
+                secretsPermissionBoundaryCount: 0
+            )
+        )
+
+        let text = manager.renderDoctorSummaryForTesting(report)
+
+        #expect(text.contains("canonical_sync_retry: failed ok=0 · failed=2"))
+        #expect(text.contains("canonical_sync_retry_meta：attempt: 刚刚 · last_status: 刚刚"))
+        #expect(text.contains("canonical_sync_retry_detail：failed: device:supervisor-main(Supervisor) reason=device_canonical_memory_write_failed detail=broken pipe"))
+    }
+
+    @MainActor
+    @Test
+    func doctorSummaryPrependsWorkbenchGovernanceBriefWhenPendingGrantExists() {
+        let manager = SupervisorManager.makeForTesting()
+        manager.setPendingHubGrantsForTesting(
+            [
+                SupervisorManager.SupervisorPendingGrant(
+                    id: "doctor-brief-grant-1",
+                    dedupeKey: "doctor-brief-grant-1",
+                    grantRequestId: "doctor-brief-grant-1",
+                    requestId: "req-doctor-brief-grant-1",
+                    projectId: "project-release",
+                    projectName: "Release Runtime",
+                    capability: "device_authority",
+                    modelId: "",
+                    reason: "需要批准设备级权限后继续自动化",
+                    requestedTtlSec: 3600,
+                    requestedTokenCap: 12_000,
+                    createdAt: 1_000,
+                    actionURL: nil,
+                    priorityRank: 1,
+                    priorityReason: "release_path",
+                    nextAction: "打开授权并批准设备级权限"
+                )
+            ]
+        )
+        let report = SupervisorDoctorReport(
+            schemaVersion: "xt.supervisor_doctor_report.v1",
+            generatedAtMs: 100,
+            workspaceRoot: "/tmp/workspace",
+            configSource: "config.json",
+            secretsPlanSource: "secrets.json",
+            ok: true,
+            findings: [],
+            suggestions: [],
+            summary: SupervisorDoctorSummary(
+                doctorReportPresent: 1,
+                releaseBlockedByDoctorWithoutReport: 0,
+                blockingCount: 0,
+                warningCount: 0,
+                memoryAssemblyBlockingCount: 0,
+                memoryAssemblyWarningCount: 0,
+                dmAllowlistRiskCount: 0,
+                wsAuthRiskCount: 0,
+                preAuthFloodBreakerRiskCount: 0,
+                secretsPathOutOfScopeCount: 0,
+                secretsMissingVariableCount: 0,
+                secretsPermissionBoundaryCount: 0
+            )
+        )
+
+        let text = manager.renderDoctorSummaryForTesting(report)
+
+        #expect(text.contains("🧭 Supervisor Brief · 当前工作台"))
+        #expect(text.contains("Hub 待处理授权"))
+        #expect(text.contains("查看：查看授权板"))
+        #expect(text.contains("🩺 Supervisor Doctor 预检结果"))
+    }
+
+    @MainActor
+    @Test
+    func secretsDryRunSummaryPrependsWorkbenchGovernanceBriefWhenPendingSkillApprovalExists() {
+        let manager = SupervisorManager.makeForTesting()
+        manager.setPendingSupervisorSkillApprovalsForTesting(
+            [
+                SupervisorManager.SupervisorPendingSkillApproval(
+                    id: "doctor-secrets-approval-1",
+                    requestId: "doctor-secrets-approval-1",
+                    projectId: "project-security",
+                    projectName: "Security Runtime",
+                    jobId: "job-1",
+                    planId: "plan-1",
+                    stepId: "step-1",
+                    skillId: "secret-vault-browser-fill",
+                    toolName: "browser.fill",
+                    tool: nil,
+                    toolSummary: "向浏览器页面填写凭据",
+                    reason: "需要人工确认凭据写入动作",
+                    createdAt: 1_000,
+                    actionURL: nil,
+                    routingReasonCode: nil,
+                    routingExplanation: nil
+                )
+            ]
+        )
+        let report = SupervisorDoctorReport(
+            schemaVersion: "xt.supervisor_doctor_report.v1",
+            generatedAtMs: 100,
+            workspaceRoot: "/tmp/workspace",
+            configSource: "config.json",
+            secretsPlanSource: "secrets.json",
+            ok: false,
+            findings: [],
+            suggestions: [],
+            summary: SupervisorDoctorSummary(
+                doctorReportPresent: 1,
+                releaseBlockedByDoctorWithoutReport: 0,
+                blockingCount: 1,
+                warningCount: 0,
+                memoryAssemblyBlockingCount: 0,
+                memoryAssemblyWarningCount: 0,
+                dmAllowlistRiskCount: 0,
+                wsAuthRiskCount: 0,
+                preAuthFloodBreakerRiskCount: 0,
+                secretsPathOutOfScopeCount: 1,
+                secretsMissingVariableCount: 0,
+                secretsPermissionBoundaryCount: 0
+            )
+        )
+
+        let text = manager.renderSecretsDryRunSummaryForTesting(report)
+
+        #expect(text.contains("🧭 Supervisor Brief · 当前工作台"))
+        #expect(text.contains("待审批技能"))
+        #expect(text.contains("查看：查看技能审批"))
+        #expect(text.contains("🔐 Secrets dry-run 摘要"))
+    }
+
+    @MainActor
+    @Test
+    func doctorSummaryIncludesDurableCandidateMirrorDetailWhenPresent() {
+        let manager = SupervisorManager.makeForTesting()
+        manager.setSupervisorMemoryAssemblySnapshotForTesting(
+            makeMemorySnapshot(
+                continuityTraceLines: [
+                    "remote_continuity=ok cache_hit=false working_entries=18 assembled_source=mixed"
+                ],
+                durableCandidateMirrorStatus: .hubMirrorFailed,
+                durableCandidateMirrorTarget: XTSupervisorDurableCandidateMirror.mirrorTarget,
+                durableCandidateMirrorAttempted: true,
+                durableCandidateMirrorErrorCode: "remote_route_not_preferred"
+            )
+        )
+        let report = SupervisorDoctorReport(
+            schemaVersion: "xt.supervisor_doctor_report.v1",
+            generatedAtMs: 100,
+            workspaceRoot: "/tmp/workspace",
+            configSource: "config.json",
+            secretsPlanSource: "secrets.json",
+            ok: true,
+            findings: [],
+            suggestions: [],
+            summary: SupervisorDoctorSummary(
+                doctorReportPresent: 1,
+                releaseBlockedByDoctorWithoutReport: 0,
+                blockingCount: 0,
+                warningCount: 0,
+                memoryAssemblyBlockingCount: 0,
+                memoryAssemblyWarningCount: 0,
+                dmAllowlistRiskCount: 0,
+                wsAuthRiskCount: 0,
+                preAuthFloodBreakerRiskCount: 0,
+                secretsPathOutOfScopeCount: 0,
+                secretsMissingVariableCount: 0,
+                secretsPermissionBoundaryCount: 0
+            )
+        )
+
+        let text = manager.renderDoctorSummaryForTesting(report)
+
+        #expect(text.contains("durable_candidate_mirror status=hub_mirror_failed"))
+        #expect(text.contains("reason=remote_route_not_preferred"))
+    }
+
     private func makeInput(
-        snapshot: SupervisorMemoryAssemblySnapshot?
+        snapshot: SupervisorMemoryAssemblySnapshot?,
+        canonicalSyncSnapshot: HubIPCClient.CanonicalMemorySyncStatusSnapshot? = nil
     ) -> SupervisorDoctorInputBundle {
         let workspace = URL(fileURLWithPath: "/tmp/xterminal_doctor_memory_test", isDirectory: true)
         return SupervisorDoctorInputBundle(
@@ -212,7 +574,8 @@ struct SupervisorDoctorTests {
             ),
             secretsPlanSource: "unit_test",
             reportURL: workspace.appendingPathComponent("doctor_report.json"),
-            memoryAssemblySnapshot: snapshot
+            memoryAssemblySnapshot: snapshot,
+            canonicalMemorySyncSnapshot: canonicalSyncSnapshot
         )
     }
 
@@ -232,11 +595,22 @@ struct SupervisorDoctorTests {
             "evidence_pack",
         ],
         omittedSections: [String] = [],
+        rawWindowSelectedPairs: Int = 12,
+        continuityFloorSatisfied: Bool = true,
+        rawWindowSource: String = "hub_thread",
+        lowSignalDroppedMessages: Int = 0,
+        continuityTraceLines: [String] = [],
+        lowSignalDropSampleLines: [String] = [],
         contextRefsSelected: Int = 2,
         contextRefsOmitted: Int = 0,
         evidenceItemsSelected: Int = 2,
         evidenceItemsOmitted: Int = 0,
-        truncatedLayers: [String] = []
+        truncatedLayers: [String] = [],
+        durableCandidateMirrorStatus: SupervisorDurableCandidateMirrorStatus = .notNeeded,
+        durableCandidateMirrorTarget: String? = nil,
+        durableCandidateMirrorAttempted: Bool = false,
+        durableCandidateMirrorErrorCode: String? = nil,
+        durableCandidateLocalStoreRole: String = XTSupervisorDurableCandidateMirror.localStoreRole
     ) -> SupervisorMemoryAssemblySnapshot {
         SupervisorMemoryAssemblySnapshot(
             source: "unit_test",
@@ -249,6 +623,12 @@ struct SupervisorDoctorTests {
             attemptedProfiles: [requestedProfile, resolvedProfile],
             progressiveUpgradeCount: 0,
             focusedProjectId: focusedProjectId,
+            rawWindowSelectedPairs: rawWindowSelectedPairs,
+            lowSignalDroppedMessages: lowSignalDroppedMessages,
+            rawWindowSource: rawWindowSource,
+            continuityFloorSatisfied: continuityFloorSatisfied,
+            continuityTraceLines: continuityTraceLines,
+            lowSignalDropSampleLines: lowSignalDropSampleLines,
             selectedSections: selectedSections,
             omittedSections: omittedSections,
             contextRefsSelected: contextRefsSelected,
@@ -263,7 +643,42 @@ struct SupervisorDoctorTests {
             denyCode: nil,
             downgradeCode: nil,
             reasonCode: nil,
-            compressionPolicy: "progressive_disclosure"
+            compressionPolicy: "progressive_disclosure",
+            durableCandidateMirrorStatus: durableCandidateMirrorStatus,
+            durableCandidateMirrorTarget: durableCandidateMirrorTarget,
+            durableCandidateMirrorAttempted: durableCandidateMirrorAttempted,
+            durableCandidateMirrorErrorCode: durableCandidateMirrorErrorCode,
+            durableCandidateLocalStoreRole: durableCandidateLocalStoreRole
         )
+    }
+}
+
+private final class SupervisorDoctorReportWriterTestCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var writeOptions: [Data.WritingOptions] = []
+    private var logLines: [String] = []
+
+    func appendWriteOption(_ option: Data.WritingOptions) {
+        lock.lock()
+        defer { lock.unlock() }
+        writeOptions.append(option)
+    }
+
+    func appendLogLine(_ line: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        logLines.append(line)
+    }
+
+    func writeOptionsSnapshot() -> [Data.WritingOptions] {
+        lock.lock()
+        defer { lock.unlock() }
+        return writeOptions
+    }
+
+    func logLinesSnapshot() -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return logLines
     }
 }

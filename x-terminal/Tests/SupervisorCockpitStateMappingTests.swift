@@ -156,7 +156,7 @@ struct SupervisorCockpitStateMappingTests {
         #expect(presentation.plannerExplain.contains("awaiting_grant"))
         #expect(stage(presentation, id: "access")?.surfaceState == .grantRequired)
         #expect(stage(presentation, id: "runtime")?.progress == .pending)
-        #expect(stage(presentation, id: "access")?.actionLabel == "Open grant")
+        #expect(stage(presentation, id: "access")?.actionLabel == "打开授权")
     }
 
     @Test
@@ -270,7 +270,7 @@ struct SupervisorCockpitStateMappingTests {
 
         #expect(stage(presentation, id: "runtime")?.progress == .blocked)
         #expect(stage(presentation, id: "runtime")?.actionID == "directed_resume")
-        #expect(stage(presentation, id: "runtime")?.actionLabel == "Continue lane")
+        #expect(stage(presentation, id: "runtime")?.actionLabel == "继续泳道")
     }
 
 

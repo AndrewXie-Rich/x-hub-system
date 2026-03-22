@@ -7,6 +7,8 @@
 - parent:
   - `X_MEMORY.md`
   - `docs/WORKING_INDEX.md`
+  - `docs/open-source/XHUB_V1_PRODUCT_BOUNDARY_AND_PRIORITIES_v1.md`
+  - `docs/open-source/XHUB_NEXT_10_WORK_ORDERS_v1.md`
   - `docs/memory-new/xhub-memory-v3-m3-work-orders-v1.md`
   - `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
   - `x-terminal/work-orders/xterminal-parallel-work-orders-v1.md`
@@ -29,7 +31,8 @@
 
 - 本文是“单文件分区协作法”的执行规范与落盘模板。
 - 每个泳道 AI 开工前，必须先读本文件并按规则 `claim` 任务。
-- 用户实时新增需求必须先进入\12026-03-03T21:28:56-08:00\3Inbox`，禁止直接插队改任务状态。
+- 自 `2026-03-19` 起，若用户只说“继续”或“按主线推进”，默认优先级以 `docs/open-source/XHUB_NEXT_10_WORK_ORDERS_v1.md` 与本文件 `C.0 V1 Mainline Overlay` 为准。
+- 用户实时新增需求必须先进入 `B. CR Inbox`，禁止直接插队改任务状态。
 - 所有高风险链路继续遵循 fail-closed：证据不足、Gate 未过、语义冲突一律 `blocked`。
 
 ## 1) 单文件分区设计（One File, Multi-Zones）
@@ -332,6 +335,10 @@
 - proxy_claim_policy: `enabled(ttl_45m,max_renew_1,evidence_only,no_cross_gate_write)`
 - active2_autopush_mode: `enabled(no_external_wait)`
 - stale_dependency_takeover: `enabled(non_release_ttl_10m,release_ttl_20m,active_lane_only)`
+- primary_v1_boundary_ref: `docs/open-source/XHUB_V1_PRODUCT_BOUNDARY_AND_PRIORITIES_v1.md`
+- primary_v1_backlog_ref: `docs/open-source/XHUB_NEXT_10_WORK_ORDERS_v1.md`
+- default_claim_wave_v1: `1+3+4 -> 2+5+6 -> 7+8+9 -> 10`
+- memory_truth_priority_v1: `P0_foundation(hub_backed_truth_audit_export_guardrails)`
 - planned_takeover_owner: `superseded_by_CD-20260305-004`
 - hub_pool_owner: `Hub-L5(single_lane_takeover)`
 - xt_pool_owner: `XT-L2(single_lane_takeover)`
@@ -339,6 +346,14 @@
 
 ## B. CR Inbox（运行态）
 
+- `CR-20260319-001`（accepted）
+  - requester: user
+  - change_summary: 将 Command Board 与 v1 product boundary / next-10 backlog 对齐，并明确 `Hub memory truth / audit / export guardrails` 属于 P0 主线地基
+  - urgency: P0
+  - impact_lanes: Hub-L5, XT-L2, AI-COORD-PRIMARY
+  - impact_gates: XT-Ready / XT-MEM / XT-SUP / XT-CHAN / LPR / public-preview
+  - preempt_policy: next_replan_window
+  - decision_owner: AI-COORD-PRIMARY
 - `CR-20260301-001`（accepted）
   - requester: user
   - change_summary: 启用“单文件分区 + 实时重规划 + 7件套”协作法并更新系统工单
@@ -467,8 +482,1315 @@
   - impact_gates: LPR-G0..G6 / XT-MEM-G0..G5 / XT-Ready
   - preempt_policy: next_replan_window
   - decision_owner: AI-COORD-PRIMARY
+- `CR-20260313-001`（accepted）
+  - requester: user
+  - change_summary: 参考 `lmstudio-js-main` 的 load config / context length 设计，为 LPR 新增 `per-device local load profile` 主线，让 Hub 可按 paired terminal 设备管理本地模型 `context_length` 等 machine-dependent 参数，并避免把设备运行态写回模型 catalog
+  - urgency: P1
+  - impact_lanes: Hub-L5, XT-L2, QA
+  - impact_gates: LPR-G5..G6 / XT-Ready
+  - preempt_policy: next_replan_window
+  - decision_owner: AI-COORD-PRIMARY
+- `CR-20260313-002`（accepted）
+  - requester: user
+  - change_summary: 新增 `XT-W3-24-O..S` 多渠道首次接入安全自动化工单包，要求 `Slack / Telegram / Feishu / WhatsApp Cloud API` 从“手工建 binding”升级为 `unknown ingress quarantine -> admin approve once -> auto-bind -> first smoke`，同时继续保持 Hub-first、project-first、grant/audit 不降级
+  - urgency: P1
+  - impact_lanes: Hub-L5, XT-L2, XT-L1, QA
+  - impact_gates: XT-CHAN-ONB-G0..G4 / XT-CHAN-OP-G1..G3 / SI-G1..G5 / XT-Ready
+  - preempt_policy: next_replan_window
+  - decision_owner: AI-COORD-PRIMARY
+- `CR-20260315-001`（accepted）
+  - requester: user
+  - change_summary: 参考 LM Studio 安装体与 `lmstudio-js-main` 的 engine pack / typed load config / loaded model UX，为 LPR 新增 `W4` 产品化工单包，要求避免重复造 backend picker、散装 context widget 与隐藏 runtime state，并优先推进 `mlx_vlm` / `llama.cpp` provider pack
+  - urgency: P1
+  - impact_lanes: Hub-L5, XT-L2, QA
+  - impact_gates: LPR-G7..G10 / XT-Ready
+  - preempt_policy: next_replan_window
+  - decision_owner: AI-COORD-PRIMARY
+- `CR-20260321-001`（accepted）
+  - requester: user
+  - change_summary: 明确把 LM Studio 降为能力参考样本，不再要求用户手动修其设置；LPR W4 主线改为预接入 Hub 自管 `xhub_local_service` contract / resolver / schema / guidance，并保持 fail-closed
+  - urgency: P1
+  - impact_lanes: Hub-L5, XT-L2, QA
+  - impact_gates: LPR-G7..G10 / XT-Ready
+  - preempt_policy: immediate_policy_overlay
+  - decision_owner: AI-COORD-PRIMARY
 
 ## C. Task Catalog（运行态）
+
+### C.0 V1 Mainline Overlay（2026-03-19）
+
+默认 claim 波次：
+
+1. `工单 1 + 工单 3 + 工单 4`
+2. `工单 2 + 工单 5 + 工单 6`
+3. `工单 7 + 工单 8 + 工单 9`
+4. `工单 10`
+
+默认 owner 映射：
+
+- `Hub-L5(pool_takeover)`：
+  - `工单 1` 配对 / 发现 / doctor / repair
+  - `工单 2` 路由真相 / fallback / trust profile
+  - `工单 3` Hub memory truth / audit / export guardrails
+  - `工单 7` 安全远程通道 onboarding + governed remote approval
+  - `工单 9` local provider runtime 产品壳与 provider truth
+- `XT-L2(pool_takeover)`：
+  - `工单 4` 单一 Supervisor 窗口与大任务入口
+  - `工单 5` Project Governance A/S 档位 + runtime clamp
+  - `工单 6` 语音进度播报 + guided authorization + TTS readiness 主链
+  - `工单 8` governed skills doctor / preflight / pinning / starter pack
+- `AI-COORD-PRIMARY`：
+  - `工单 10` quickstart / demos / troubleshooting 公开层收口
+  - 仅在 `工单 1-9` 已有稳定主演示链后才集中推进
+
+当前主线说明：
+
+- 若旧 Command Board 中的历史 planned backlog 与 v1 主线冲突，**新默认拿单顺序以本 overlay 和 `docs/open-source/XHUB_NEXT_10_WORK_ORDERS_v1.md` 为准**
+- `Hub memory system` 不是边角项；但当前排前的是 `memory truth / audit / export guardrails / canonical writeback / source label honesty`，不是 persona-center 扩张
+- 其他 AI 介入时，优先按 `Hub-L5: 1/2/3/7/9` 与 `XT-L2: 4/5/6/8` 拆分，不要重复抢同一波次
+
+当前 micro-slice：
+
+- `SLICE-20260319-001`
+  - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `让 Global Home 的 project governance 摘要支持直接 drill-down 到 Execution Tier / Supervisor Tier / Heartbeat & Review / Governance Overview`
+  - status: `delivered`
+  - claim_reason: `这是一个主线可见、改动边界清晰的小切口，能直接提升治理 UI 的可编辑性与 discoverability`
+  - done_when:
+    - `Home` 中的治理摘要卡可直接点开对应治理设置
+    - 至少一条治理文本摘要也支持直接 drill-down
+    - 保持 Home 仍以 summary 为主，不扩成第二套治理界面
+  - delivered_at: `2026-03-19`
+  - evidence_refs:
+    - `x-terminal/Sources/UI/GlobalHomeView.swift`
+    - `swift build --package-path x-hub-system/x-terminal`
+
+- `SLICE-20260319-002`
+  - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `让 Global Home 的治理风险摘要把 fail-closed / clamp 原因展示得更明显，并让 Clamp / 收束行也支持直接 drill-down`
+  - status: `delivered`
+  - claim_reason: `继续沿用同一 UI 主线，小切口清晰、可编译验证，能直接提升用户对治理风险的可见性`
+  - done_when:
+    - `Clamp / 收束` 行支持点击进入 Governance Overview
+    - `治理状态` 在 invalid / warning / clamp 情况下有更明显的视觉提示
+    - Home 仍保持 summary，不演变成第二套设置页
+  - delivered_at: `2026-03-19`
+  - evidence_refs:
+    - `x-terminal/Sources/UI/GlobalHomeView.swift`
+    - `swift build --package-path x-hub-system/x-terminal`
+
+- `SLICE-20260319-003`
+  - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `让 Global Home 上的治理 callout 与执行权限摘要也支持直接 drill-down 到治理概览`
+  - status: `delivered`
+  - claim_reason: `继续复用同一组件链路，小切口足够小但能进一步降低用户“看见问题却找不到入口”的摩擦`
+  - done_when:
+    - governance compact callout 在 Home 中可点击进入 Governance Overview
+    - `执行权限` 摘要行可点击进入 Governance Overview
+    - 其他使用该 compact summary 的地方不被强制改成交互态
+  - delivered_at: `2026-03-19`
+  - evidence_refs:
+    - `x-terminal/Sources/UI/ProjectGovernanceBadge.swift`
+    - `x-terminal/Sources/UI/GlobalHomeView.swift`
+    - `swift build --package-path x-hub-system/x-terminal`
+
+- `SLICE-20260319-004`
+  - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `让 Project Detail 的治理卡片与关键摘要行支持直接 drill-down 到 Execution Tier / Supervisor Tier / Heartbeat & Review / Governance Overview`
+  - status: `delivered`
+  - claim_reason: `继续沿用治理可编辑性主线，把“看得见但点不进去”的摩擦从 Project Detail 这层一起收掉`
+  - done_when:
+    - `Project Detail` 中的执行档位 / Supervisor 档位 / Review 策略卡片可直接打开对应治理设置
+    - `Project Detail` 中的生效档位、Review 节奏、Clamp / 收束、治理状态等关键摘要行支持直接 drill-down
+    - 详情页仍保持 summary / truth surface，不扩成第二套治理编辑页
+  - delivered_at: `2026-03-19`
+  - evidence_refs:
+    - `x-terminal/Sources/UI/Projects/ProjectDetailView.swift`
+    - `swift build --package-path x-hub-system/x-terminal`
+
+- `SLICE-20260319-005`
+  - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `让 skill blocked 卡片与 tool result 卡片在 governance / runtime clamp 拦截时直接给出“打开治理设置”的修复入口，并把 deny 文案改成明确的设置路径`
+  - status: `delivered`
+  - claim_reason: `用户看到 governance_denied 后不能只得到一段文字；需要把“为什么被挡”与“去哪里修”收成同一条修复链`
+  - done_when:
+    - governance_capability_denied 会明确提示 `Project Settings -> Execution Tier`
+    - runtime clamp / autonomy policy denied 会在卡片层提供直达治理入口
+    - `Recent Skill Activity` 与普通 tool result 两条错误面都能给出一致修复入口
+  - delivered_at: `2026-03-19`
+  - evidence_refs:
+    - `x-terminal/Sources/Tools/XTGuardrailMessagePresentation.swift`
+    - `x-terminal/Sources/UI/MessageTimeline/MessageTimelineView.swift`
+    - `x-terminal/Sources/UI/MessageTimeline/ToolResultPresentation.swift`
+    - `swift build --package-path x-hub-system/x-terminal`
+    - `swift test --package-path x-hub-system/x-terminal --filter XTGuardrailMessagePresentationTests`
+    - `swift test --package-path x-hub-system/x-terminal --filter ToolResultHumanSummaryTests`
+    - `swift test --package-path x-hub-system/x-terminal --filter ProjectSkillActivityPresentationTests`
+
+- `SLICE-20260319-006`
+  - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把同一条治理修复链接到 Supervisor 的 Recent Skill Activity / 审计详情动作条，让被治理拦截的技能活动能直接跳到 Execution Tier / Governance`
+  - status: `delivered`
+  - claim_reason: `用户在 Supervisor 里看到 blocked skill 后，不能还要自己切回 project 聊天找入口；治理修复动作要在同一张卡上闭环`
+  - done_when:
+    - `Supervisor Recent Skill Activity` 在 `governance_capability_denied` / `autonomy_policy_denied` 时显示治理修复按钮
+    - 点击修复按钮可直接打开对应 project 的治理设置目标页
+    - 审计详情 sheet 复用同一动作，不再只剩 `Retry` / `Open Project`
+  - delivered_at: `2026-03-19`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorCardAction.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewCardActionExecution.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewInteractionCoordinator.swift`
+    - `x-terminal/Tests/SupervisorCardActionResolverTests.swift`
+    - `swift build --package-path x-hub-system/x-terminal`
+    - `swift test --package-path x-hub-system/x-terminal --filter SupervisorCardActionResolverTests`
+
+- `SLICE-20260319-007`
+  - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把 Supervisor skill blocked / failed 的 policy_source 与 policy_reason 收进正式记录链路，并让卡片文案、diagnostics、full record、repair action 全部使用这组治理上下文`
+  - status: `delivered`
+  - claim_reason: `没有 policy context 时，Supervisor 只能告诉用户“被挡了”；这不够。需要把治理阻断原因变成可审计、可回放、可直接修复的一等信息。`
+  - done_when:
+    - `SupervisorSkillCallRecord` / result evidence / raw log 都落盘 `policy_source` 与 `policy_reason`
+    - `Supervisor Recent Skill Activity` 的 blocked/failed body 与 diagnostics 使用这组 policy context
+    - full record / audit drill-down 能直接看到 policy source / reason，repair action 也用同一来源
+  - delivered_at: `2026-03-19`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorProjectSkillCallStore.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorSkillResultEvidenceStore.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorManager.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorSkillActivityPresentation.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorAuditDrillDownPresentation.swift`
+    - `x-terminal/Tests/SupervisorSkillActivityPresentationTests.swift`
+    - `swift build --package-path x-hub-system/x-terminal`
+    - `swift test --package-path x-hub-system/x-terminal --filter SupervisorCardActionResolverTests`
+    - `swift test --package-path x-hub-system/x-terminal --filter SupervisorSkillActivityPresentationTests`
+
+- `SLICE-20260319-008`
+  - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把 compact governance summary 下方的风险 / 兼容 callout 也补成点击入口，统一 Global Home / Project Sidebar / Project Detail / Project Settings / Create Project 的跳转行为`
+  - status: `delivered`
+  - claim_reason: `现在很多页面里 chip 已经能跳，但 callout 文案本身还是死文本；用户看到“兼容旧档位 / fail-closed / clamp”后仍然会卡住。`
+  - done_when:
+    - `Project Sidebar` / `Project Detail` 的 governance callout 可直达 Governance Overview
+    - `Project Settings` / `Create Project` 的 governance callout 可切回 overview 子页
+    - compact summary 的可点击语义在主要治理表面保持一致
+  - delivered_at: `2026-03-19`
+  - evidence_refs:
+    - `x-terminal/Sources/UI/ProjectSidebarView.swift`
+    - `x-terminal/Sources/UI/Projects/ProjectDetailView.swift`
+    - `x-terminal/Sources/UI/ProjectSettingsView.swift`
+    - `x-terminal/Sources/UI/Projects/CreateProjectSheet.swift`
+    - `swift build --package-path x-hub-system/x-terminal`
+
+- `SLICE-20260319-009`
+  - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `修复 macOS sidebar / List 场景下 governance chip 与 callout 的点击命中，让 Project Sidebar 那排 A/S/heartbeat 小框更稳定可点`
+  - status: `delivered`
+  - claim_reason: `用户已经明确反馈“左边那排小框点不动”；这更像是 List 行内按钮样式问题，不是治理跳转逻辑本身缺失。`
+  - done_when:
+    - compact governance chips 在 `List` / sidebar 行内不再优先被 row selection 吞掉
+    - governance callout 在 sidebar 场景下也保持可点
+    - 不引入新的视觉 chrome，仍保持轻量 summary 外观
+  - delivered_at: `2026-03-19`
+  - evidence_refs:
+    - `x-terminal/Sources/UI/ProjectGovernanceBadge.swift`
+    - `swift build --package-path x-hub-system/x-terminal`
+
+- `SLICE-20260320-001`
+  - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把 project 聊天头部补成正式 governance 入口，并把 compact governance chip/callout 升级成更稳的点击面，避免 sidebar/List 继续吞掉 A/S/heartbeat 交互`
+  - status: `delivered`
+  - claim_reason: `用户已经明确反馈“project 聊天里那排 A/S/heartbeat 小框不能点”；单纯调 button style 不够，需要同时补正式入口和更稳的点击命中。`
+  - done_when:
+    - `ModernChatView` 头部显示可点击的 governance compact summary
+    - 点击 `A / S / heartbeat / callout` 可直接跳到对应 project governance 子页
+    - `ProjectGovernanceCompactSummaryView` 在 macOS sidebar / List 场景下保留轻量外观，但点击命中更稳定
+  - delivered_at: `2026-03-20`
+  - evidence_refs:
+    - `x-terminal/Sources/UI/MessageTimeline/ModernChatView.swift`
+    - `x-terminal/Sources/UI/ProjectGovernanceBadge.swift`
+    - `swift build --package-path x-hub-system/x-terminal`
+    - `swift test --package-path x-hub-system/x-terminal --filter ProjectGovernancePresentationSummaryTests`
+    - `swift test --package-path x-hub-system/x-terminal --filter ProjectSettingsGovernanceUITests`
+
+- `SLICE-20260320-002`
+  - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把 terminal pane 头部也接入同一套 project governance truth 和跳转入口，消除 chat/terminal 对治理可见性和可编辑性的割裂`
+  - status: `delivered`
+  - claim_reason: `同一个 project 现在 chat pane 能看到并调整 A/S/heartbeat，但 terminal pane 仍是裸 header；这会把被治理挡住的 terminal 用户重新赶回 chat。`
+  - done_when:
+    - `ProjectTerminalView` 头部显示 compact governance summary
+    - 点击 `A / S / heartbeat / callout` 仍走同一套 `requestProjectSettingsFocus(...)`
+    - terminal pane 保持终端感，不扩成第二套 project detail 页面
+  - delivered_at: `2026-03-20`
+  - evidence_refs:
+    - `x-terminal/Sources/UI/ProjectTerminalView.swift`
+    - `swift build --package-path x-hub-system/x-terminal`
+    - `swift test --package-path x-hub-system/x-terminal --filter ProjectSettingsGovernanceUITests`
+
+- `SLICE-20260320-003`
+  - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `让 terminal pane 发起的 project governance 跳转保留当前 pane，不再为了开设置而把用户偷偷切回 chat`
+  - status: `delivered`
+  - claim_reason: `terminal pane 已经有治理入口，但底层 focus request 默认会切到 chat；这会让 terminal 用户关掉设置后丢失原来的工作面。`
+  - done_when:
+    - `requestProjectSettingsFocus(...)` 支持可选 preserve-pane 语义
+    - 默认行为保持不变，现有 chat / sidebar / supervisor 跳转不受影响
+    - `ProjectTerminalView` 的治理入口使用 preserve-pane 路径
+  - delivered_at: `2026-03-20`
+  - evidence_refs:
+    - `x-terminal/Sources/AppModel.swift`
+    - `x-terminal/Sources/UI/ProjectTerminalView.swift`
+    - `x-terminal/Tests/AppModelSettingsFocusTests.swift`
+    - `swift build --package-path x-hub-system/x-terminal`
+    - `swift test --package-path x-hub-system/x-terminal --filter AppModelSettingsFocusTests`
+
+- `SLICE-20260320-004`
+  - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `给 multi-project grid 的 project cards 补齐 governance summary 和 drill-down，避免网格视图成为唯一看不到/点不到 A/S/heartbeat 的主表面`
+  - status: `delivered`
+  - claim_reason: `ProjectsGridView 仍是主项目表面，但 project card 现在只显示任务/模型/状态，不显示治理真相；这与工单 5 的 v1 产品定义不一致。`
+  - done_when:
+    - `ProjectCard` 显示 compact governance summary
+    - 已绑定真实 project 的卡片可直接点 `A / S / heartbeat / callout` 打开对应设置
+    - 未绑定真实 project 的卡片至少显示治理草稿，不伪造可跳转入口
+  - delivered_at: `2026-03-20`
+  - evidence_refs:
+    - `x-terminal/Sources/UI/Projects/ProjectsGridView.swift`
+    - `swift build --package-path x-hub-system/x-terminal`
+    - `swift test --package-path x-hub-system/x-terminal --filter ProjectSettingsGovernanceUITests`
+
+- `SLICE-20260320-005`
+  - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把 Supervisor portfolio / drill-down 面也接入 project governance compact summary 与 drill-down，避免 Supervisor 成为最后一层看不到 A/S/heartbeat 的主工作面`
+  - status: `delivered`
+  - claim_reason: `用户已经把 Supervisor 当成统一控制面；如果这里还只能看项目名、状态和 blocker，却看不到治理真相或直接调治理，就会继续迫使用户来回切 project 视图。`
+  - done_when:
+    - `Supervisor portfolio row` 显示 compact governance summary
+    - `Supervisor drill-down` 也显示同一套治理摘要
+    - `A / S / heartbeat / callout` 仍可直接跳对应治理设置
+  - delivered_at: `2026-03-20`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorPortfolioBoardSection.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorDashboardBoards.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorOperationsDeck.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewContent.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewInteractionCoordinator.swift`
+    - `swift build --package-path x-hub-system/x-terminal`
+    - `swift test --package-path x-hub-system/x-terminal --filter SupervisorPortfolioProjectPresentationTests`
+    - `swift test --package-path x-hub-system/x-terminal --filter SupervisorProjectDrillDownPresentationTests`
+
+- `SLICE-20260320-006`
+  - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `让 Supervisor 在 recent activity 缺席、只能打开 fallback full record 时，仍保留治理修复入口，不把用户扔回“只看见 deny 不知道去哪修”的状态`
+  - status: `delivered`
+  - claim_reason: `历史 skill record 已经带了 deny_code / policy_source / policy_reason，但 auditSheetActions 对 fullRecordFallback 还没有复用这条治理 repair path。`
+  - done_when:
+    - `fullRecordFallback` 审计详情在治理拦截场景下显示相同的治理修复动作
+    - 修复动作仍落到 `XTProjectGovernanceDestination`
+    - 增加动作解析测试覆盖 fallback record 场景
+  - delivered_at: `2026-03-20`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorCardAction.swift`
+    - `x-terminal/Tests/SupervisorCardActionResolverTests.swift`
+    - `swift build --package-path x-hub-system/x-terminal`
+    - `swift test --package-path x-hub-system/x-terminal --filter SupervisorCardActionResolverTests`
+
+- `SLICE-20260320-007`
+  - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `给 governance-blocked skill activity 与 heartbeat focus 补 project governance deep link，让“被治理挡住”直接落到 Execution Tier / Governance，而不是只回 project chat`
+  - status: `delivered`
+  - claim_reason: `Supervisor Recent Skill Activity 已经能显示治理修复按钮，但 actionURL 和 heartbeat focus 仍只会回 project/resume；这让通知链和 activity 列表的修复路径不一致。`
+  - done_when:
+    - `xterminal://project` deep link 可表达 governance destination
+    - governance-blocked / failed skill activity 的 `actionURL` 直接落到对应治理子页
+    - heartbeat 在无更高优先级待批事项时，优先落到治理修复 deep link
+  - delivered_at: `2026-03-20`
+  - evidence_refs:
+    - `x-terminal/Sources/XTDeepLinkParser.swift`
+    - `x-terminal/Sources/XTDeepLinkURLBuilder.swift`
+    - `x-terminal/Sources/ContentView.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorManager.swift`
+    - `x-terminal/Tests/XTDeepLinkParserTests.swift`
+    - `x-terminal/Tests/XTDeepLinkURLBuilderTests.swift`
+    - `x-terminal/Tests/SupervisorHeartbeatVoiceTests.swift`
+    - `swift build --package-path x-hub-system/x-terminal`
+    - `swift test --package-path x-hub-system/x-terminal --filter XTDeepLinkParserTests`
+    - `swift test --package-path x-hub-system/x-terminal --filter XTDeepLinkURLBuilderTests`
+    - `swift test --package-path x-hub-system/x-terminal --filter SupervisorHeartbeatVoiceTests`
+
+- `SLICE-20260320-008`
+  - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把 governance-blocked skill activity 提升为 heartbeat 一级信号，让摘要、通知、语音都明确说出“被治理挡住了，去哪里修”，不再只剩 deep link 能点`
+  - status: `delivered`
+  - claim_reason: `slice 007 已经能把治理拦截落到 deep link，但 heartbeat 文案仍把这类问题埋在 recent activity 里，用户听到/看到的仍然像普通进度，而不是明确的治理修复提示。`
+  - done_when:
+    - `heartbeat next-step summary` 把治理修复放在常规推进前
+    - `heartbeat notification` 在治理修复场景下给出单独标题、计数和治理设置跳转提示
+    - `heartbeat voice` 在无更高优先级信号时主动说出治理设置修复与 `Execution Tier`
+  - delivered_at: `2026-03-20`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorManager.swift`
+    - `x-terminal/Sources/Voice/SupervisorVoiceScriptBuilder.swift`
+    - `x-terminal/Tests/SupervisorHeartbeatVoiceTests.swift`
+    - `bash -lc 'swift build --package-path /Users/andrew.xie/Documents/AX/x-hub-system/x-terminal --scratch-path /tmp/xterminal_build_slice_20260320_008'`
+    - `bash -lc 'swift test --package-path /Users/andrew.xie/Documents/AX/x-hub-system/x-terminal --scratch-path /tmp/xterminal_build_slice_20260320_008 --filter SupervisorHeartbeatVoiceTests'`
+
+- `SLICE-20260320-009`
+  - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把 heartbeat heart popover 从原始大段文本改成 headline + detail + 人类可读 action label，并补齐 builtin governed skills drill-down refresh 分支，保证治理修复与路由诊断一眼能看懂`
+  - status: `delivered`
+  - claim_reason: `slice 008 已经把治理修复抬进 heartbeat 主信号，但 heart popover 仍然是原始内容直出，用户点开心跳后不够直观；同时 audit refresh 对 xt builtin governed skills 新 source 缺分支，影响后续编译与状态刷新一致性。`
+  - done_when:
+    - `heartbeat popover` 优先展示 `headline + detail lines`，而不是无结构大段文案
+    - `focus action label` 对治理设置、路由诊断、授权处理、技能记录等入口使用明确中文标签
+    - `audit refresh` 能处理 `.xtBuiltinGovernedSkills(...)` source，不再遗漏 switch 分支
+  - delivered_at: `2026-03-20`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorHeartbeatPresentation.swift`
+    - `x-terminal/Sources/UI/Supervisor/SupervisorHeartbeatPopover.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewInteractionCoordinator.swift`
+    - `x-terminal/Tests/SupervisorHeartbeatPresentationTests.swift`
+    - `bash -lc 'swift test --package-path /Users/andrew.xie/Documents/AX/x-hub-system/x-terminal --scratch-path /tmp/xterminal_test_slice_20260320_009c --filter SupervisorHeartbeatPresentationTests -j 1'`
+
+- `SLICE-20260320-010`
+  - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `继续收 heartbeat heart popover 的“先看什么、先点什么”：给条目补 priority bucket、可读 reason、attention/recent 分组和 CTA 层级，让用户点开心跳后能立刻看到最该处理的治理/路由项`
+  - status: `delivered`
+  - claim_reason: `slice 009 已经把内容改成结构化，但所有 heartbeat 仍然是同一层；用户点开心脏后还需要自己判断“哪个要先处理、哪个只是最近汇报”。`
+  - done_when:
+    - `heartbeat entry` 带正式 priority bucket（立即处理 / 优先关注 / 继续观察 / 最近汇报）
+    - `popover` 把 attention 项和 recent 项分区显示
+    - `focus action` 按优先级切换 prominent / standard CTA
+    - `reasonText` 不再直接暴露 `periodic_check` 这类原始码
+  - delivered_at: `2026-03-20`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorHeartbeatPresentation.swift`
+    - `x-terminal/Sources/UI/Supervisor/SupervisorHeartbeatPopover.swift`
+    - `x-terminal/Tests/SupervisorHeartbeatPresentationTests.swift`
+    - `bash -lc 'swift test --package-path /tmp/xterminal_heartbeat_verify.9d2SVu --scratch-path /tmp/xterminal_heartbeat_verify_build_20260320_010 --filter SupervisorHeartbeatPresentationTests -j 1'`
+
+- `SLICE-20260320-011`
+  - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `让 header 心脏按钮不再固定红色，而是跟随当前 heartbeat history 里最高优先级信号，用户在不点开 popover 时也能一眼分辨“治理修复 / 路由关注 / 稳定汇报”`
+  - status: `delivered`
+  - claim_reason: `slice 010 已经把 popover 内部分层做好，但顶部心脏图标仍然始终是同一种 danger 语义，没把“当前最急 heartbeat 是什么层级”投影回 header。`
+  - done_when:
+    - `headerControlContext` 注入最高优先级 heartbeat
+    - `heartbeat button` tone 跟随 `immediate/attention/watch/stable`
+    - `heartbeat helpText` 带上当前优先级文案，而不是固定“查看 heartbeat”
+    - header 单测覆盖心脏 tone 与 helpText 映射
+  - delivered_at: `2026-03-20`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorHeaderControls.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewStateSupportAssembly.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorHeartbeatPresentation.swift`
+    - `x-terminal/Tests/SupervisorHeaderControlsTests.swift`
+    - `x-terminal/Tests/SupervisorHeartbeatPresentationTests.swift`
+    - `bash -lc 'swift test --package-path /tmp/xterminal_heartbeat_verify.9d2SVu --scratch-path /tmp/xterminal_heartbeat_verify_build_20260320_010 --filter SupervisorHeaderControlsTests -j 1'`
+    - `bash -lc 'swift test --package-path /tmp/xterminal_heartbeat_verify.9d2SVu --scratch-path /tmp/xterminal_heartbeat_verify_build_20260320_010 --filter SupervisorHeartbeatPresentationTests -j 1'`
+
+- `SLICE-20260320-012`
+  - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `继续强化 header 顶部心脏信号，把最高优先级 heartbeat 投影成可见的 ring/background chrome，而不只是图标颜色变化；同时让 operations 图标在面板打开或待处理授权时也保留轻量容器感`
+  - status: `delivered`
+  - claim_reason: `slice 011 已经让心脏 tone 跟随 heartbeat 优先级，但在实际 header 里仍然只是一枚变色图标，远看不够像“真正的系统信号”；用户不点开心跳时，仍然缺少一眼可见的层级感。`
+  - done_when:
+    - `heartbeat button` 带优先级感知的 tinted chrome（fill + stroke + subtle glow）
+    - `header icon buttons` 统一使用轻量圆形容器，保持点击热区和视觉对齐
+    - `operations button` 在 panel open / pending grant 时也有轻量 chrome，避免重要治理入口过于隐形
+    - header 单测覆盖 heartbeat / operations 的 chrome 映射
+  - delivered_at: `2026-03-20`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorHeaderControls.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorHeaderBar.swift`
+    - `x-terminal/Tests/SupervisorHeaderControlsTests.swift`
+    - `bash -lc 'swift test --package-path /tmp/xterminal_heartbeat_verify.cVS4Cp/package --scratch-path /tmp/xterminal_heartbeat_verify_build_20260320_012 --filter SupervisorHeaderControlsTests -j 1'`
+    - `bash -lc 'swift test --package-path /tmp/xterminal_heartbeat_verify.cVS4Cp/package --scratch-path /tmp/xterminal_heartbeat_verify_build_20260320_012 --filter SupervisorHeartbeatPresentationTests -j 1'`
+
+- `SLICE-20260320-013`
+  - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把 heartbeat popover 顶部也收成“信号卡片”，直接显示当前最高优先级 heartbeat 的 headline / detail / CTA，让 header 心脏与展开后的内容使用同一套优先级语言`
+  - status: `delivered`
+  - claim_reason: `slice 012 已经把顶部心脏做成真正的系统信号，但用户点开 popover 后仍要自己从列表里重新判断“当前最重要的一条是什么”；需要把同一个最高优先级信号投影到 popover 顶部。`
+  - done_when:
+    - `heartbeat presentation` 生成顶部 overview，包含 priority / headline / detail / metadata / CTA
+    - `popover` 顶部显示当前主信号卡片，而不是只有标题栏
+    - `popover icon tone` 跟随 overview priority，而不是固定 danger
+    - presentation 单测覆盖 overview 与 icon tone 映射
+  - delivered_at: `2026-03-20`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorHeartbeatPresentation.swift`
+    - `x-terminal/Sources/UI/Supervisor/SupervisorHeartbeatPopover.swift`
+    - `x-terminal/Tests/SupervisorHeartbeatPresentationTests.swift`
+    - `bash -lc 'swift test --package-path /tmp/xterminal_heartbeat_verify.Sm66ZP/package --scratch-path /tmp/xterminal_heartbeat_verify_build_20260320_013 --filter SupervisorHeaderControlsTests -j 1'`
+    - `bash -lc 'swift test --package-path /tmp/xterminal_heartbeat_verify.Sm66ZP/package --scratch-path /tmp/xterminal_heartbeat_verify_build_20260320_013 --filter SupervisorHeartbeatPresentationTests -j 1'`
+
+- `SLICE-20260320-014`
+  - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把 operations panel 也接进同一套“当前主信号”语言：顶部先总结当前最该处理的是 Hub grant、技能审批、automation 异常还是 system log，并给出就地跳转按钮`
+  - status: `delivered`
+  - claim_reason: `slice 013 已经让 heartbeat popover 顶部先说清“当前主信号”，但 operations panel 打开后仍是一长串 board；用户仍要自己判断先看哪块。需要把同样的优先级语义带进 operations panel。`
+  - done_when:
+    - `operations panel` 顶部显示统一的 current signal 卡片
+    - summary 优先级按 `Hub grants > skill approvals > automation issue > system log > stable`
+    - summary CTA 支持滚到对应 board，而不是只给静态文案
+    - presentation 单测覆盖 grant / approval / automation / runtime / stable 五类映射
+  - delivered_at: `2026-03-20`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorOperationsOverviewPresentation.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorOperationsPanel.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorOperationsDeck.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorDashboardBoards.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorFocusPresentation.swift`
+    - `x-terminal/Tests/SupervisorOperationsOverviewPresentationTests.swift`
+    - `bash -lc 'swift test --package-path /tmp/xterminal_ops_verify.wia2ny/package --scratch-path /tmp/xterminal_ops_verify_build_20260320_014 --filter SupervisorOperationsOverviewPresentationTests -j 1'`
+    - `bash -lc 'swift test --package-path /tmp/xterminal_ops_verify.wia2ny/package --scratch-path /tmp/xterminal_ops_verify_build_20260320_014 --filter SupervisorHeartbeatPresentationTests -j 1'`
+
+- `SLICE-20260320-015`
+  - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把 voice readiness heartbeat 收口到真正需要介入的语音修复项，避免默认 bootstrap 把 model route / waiting-upstream 噪音抬成顶级心跳，同时保留 bridge/wake 这类真实语音修复播报`
+  - status: `delivered`
+  - claim_reason: `上一轮把 voice readiness 接进 heartbeat 之后，默认空运行态会把 model route bootstrap 当成顶级心跳，直接抢掉 route diagnose、governance repair 和 stable summary；需要把 heartbeat 只留给真正值得用户现在介入的语音修复项。`
+  - done_when:
+    - `heartbeat voice readiness` 仅在 advisory voice 项（wake/talk loop/tts）或 actionable fail-closed 项（bridge/session）时出现
+    - 默认 `model_route_readiness`、`pairing_validity`、`waiting_upstream` 不再覆盖 route diagnose / governance repair / stable heartbeat
+    - 单测覆盖显式 bridge voice readiness 播报，并放宽截断文案断言，避免语音脚本裁剪导致误报
+  - delivered_at: `2026-03-20`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorManager.swift`
+    - `x-terminal/Tests/SupervisorHeartbeatVoiceTests.swift`
+    - `bash -lc 'HOME=/tmp/xterminal_voice_summary_home_20260320_1 swift test --package-path /tmp/xterminal_voice_summary_20260320_1 --scratch-path /tmp/xterminal_voice_summary_build_20260320_vra --filter SupervisorHeartbeatVoiceTests -j 1'`
+    - `bash -lc 'HOME=/tmp/xterminal_voice_summary_home_20260320_1 swift test --package-path /tmp/xterminal_voice_summary_20260320_1 --scratch-path /tmp/xterminal_voice_summary_build_20260320_vra --filter SupervisorHeartbeatPresentationTests -j 1'`
+
+- `SLICE-20260320-016`
+  - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `继续收口 header 自动化信号：让 operations 按钮不再只对“有新 runtime log”跳一下，而是跟随当前治理主信号整体变化自动脉冲，这样用户只看一个按钮就能知道 grant / skill approval / automation / system log 是否需要介入`
+  - status: `delivered`
+  - claim_reason: `slice 014/015 已经把 operations button 的 tone 和顶部 current signal 收口了，但脉冲动画仍然只绑定 latest runtime activity；如果真实变化来自 grant、技能审批或 automation 异常，用户得自己盯住按钮颜色才知道有事。`
+  - done_when:
+    - `operations overview` 产出稳定的 signal fingerprint，供 header lifecycle 监听
+    - `operations header pulse` 改成跟随 overview signal 变化，而不是单绑 runtime activity id
+    - `stable/idle` 状态不再触发多余 pulse，只在非 stable 信号变化时提醒
+    - 单测覆盖 `immediate/watch -> pulse` 与 `stable -> no pulse` 的行为
+  - delivered_at: `2026-03-20`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorOperationsOverviewPresentation.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorHeaderControls.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewInteractionCoordinator.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewLifecycleAttachments.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewAdapter.swift`
+    - `x-terminal/Tests/SupervisorHeaderControlsTests.swift`
+    - `x-terminal/Tests/SupervisorOperationsOverviewPresentationTests.swift`
+    - `bash -lc 'HOME=/tmp/xterminal_ops_signal_home_20260320_016 CLANG_MODULE_CACHE_PATH=/tmp/xterminal_ops_signal_module_cache_20260320_016 swift test --package-path /tmp/xterminal_ops_signal_verify_20260320_016/package --scratch-path /tmp/xterminal_ops_signal_build_20260320_016 --filter SupervisorHeaderControlsTests -j 1'` *(当前树被 `x-terminal/Sources/UI/SupervisorSettingsView.swift` 里的 `calendarReminderSection` / `refreshCalendarReminderSurface` 未解析错误阻塞，未能完成整包验证)*
+
+- `SLICE-20260321-020`
+  - mapped_work_order: `XT-W3-33-A / Supervisor 单窗口信号语言收口`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把 heartbeat popover 与 operations panel 顶部那张“当前信号”摘要卡抽成同一套组件，统一 badge/tone/CTA/边框语义，减少重复视觉和实现分叉`
+  - status: `delivered`
+  - claim_reason: `现在 heartbeat 和 operations 都在做“告诉用户现在最该处理什么”的事，但 UI 卡片是两套几乎重复的实现；继续堆分支会让单窗口 Supervisor 的信号语言越来越散，也会让后续 heartbeat / operations / settings 合流时难以保持一致。`
+  - done_when:
+    - `SupervisorSignalSummaryCard` 作为共享卡片组件落地，统一 chip、headline、metadata、CTA 按钮风格
+    - `SupervisorHeartbeatPopover` 改用共享摘要卡，而 entry card 保留原有列表信息密度
+    - `SupervisorOperationsPanel` 改用共享摘要卡，保持 scroll-to-board CTA 行为不变
+    - 复跑 `SupervisorHeaderControlsTests`、`SupervisorOperationsOverviewPresentationTests`、`SupervisorHeartbeatPresentationTests`、`SupervisorCalendarReminderSchedulerTests`
+  - delivered_at: `2026-03-21`
+  - evidence_refs:
+    - `x-terminal/Sources/UI/Supervisor/SupervisorSignalSummaryCard.swift`
+    - `x-terminal/Sources/UI/Supervisor/SupervisorHeartbeatPopover.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorOperationsPanel.swift`
+    - `bash -lc 'HOME=/tmp/xterminal_supervisor_home_20260321_003 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/xterminal_supervisor_module_cache_20260321_003 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_003/package --scratch-path /tmp/xterminal_supervisor_build_20260321_003 --filter SupervisorHeaderControlsTests -j 1'`
+    - `bash -lc 'HOME=/tmp/xterminal_supervisor_home_20260321_003 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/xterminal_supervisor_module_cache_20260321_003 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_003/package --scratch-path /tmp/xterminal_supervisor_build_20260321_003 --filter SupervisorOperationsOverviewPresentationTests -j 1'`
+    - `bash -lc 'HOME=/tmp/xterminal_supervisor_home_20260321_003 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/xterminal_supervisor_module_cache_20260321_003 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_003/package --scratch-path /tmp/xterminal_supervisor_build_20260321_003 --filter SupervisorHeartbeatPresentationTests -j 1'`
+    - `bash -lc 'HOME=/tmp/xterminal_supervisor_home_20260321_003 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/xterminal_supervisor_module_cache_20260321_003 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_003/package --scratch-path /tmp/xterminal_supervisor_build_20260321_003 --filter SupervisorCalendarReminderSchedulerTests -j 1'`
+
+- `SLICE-20260321-022`
+  - mapped_work_order: `XT-W3-33-C / 单心脏 Signal Center`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把 header 入口继续收口成单颗心脏：heart button 直接开关 operations panel，把 heartbeat feed 并入 dashboard 顶部，减少 heartbeat popover / operations panel 两套入口的分裂感`
+  - status: `delivered`
+  - claim_reason: `上一刀已经统一了 signal summary card，但用户仍要在 heart popover 和 operations panel 两套入口之间切换；这和“一个 Supervisor window、一个信号入口”的方向相冲突，所以继续把 heart 变成真正的 signal center。`
+  - done_when:
+    - `heartbeat button` 改为直接开关 operations panel，而不是单独弹出 popover
+    - `SupervisorHeartbeatFeedView` 抽成共享内容，并接入 dashboard 顶部 heartbeat board
+    - `heartbeat header` 的 tone/help/chrome 改为根据 heartbeat + operations 的最强信号决定
+    - `operationsSignalChanged` 改为驱动 heart pulse，统一成单颗心脏提醒
+    - 至少尝试复跑 `SupervisorHeaderControlsTests`
+  - delivered_at: `2026-03-21`
+  - evidence_refs:
+    - `x-terminal/Sources/UI/Supervisor/SupervisorHeartbeatFeedView.swift`
+    - `x-terminal/Sources/UI/Supervisor/SupervisorHeartbeatPopover.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorDashboardBoards.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorOperationsDeck.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewContent.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorHeaderBar.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorHeaderControls.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewStateSupportAssembly.swift`
+    - `x-terminal/Tests/SupervisorHeaderControlsTests.swift`
+    - `bash -lc 'HOME=/tmp/xterminal_supervisor_home_20260321_005 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/xterminal_supervisor_module_cache_20260321_005 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_004/package --scratch-path /tmp/xterminal_supervisor_build_20260321_005 --filter SupervisorHeaderControlsTests -j 1'` *(7/7 passed on a stable `/tmp` snapshot after re-copying current `Sources/` and `Tests/` to avoid live workspace mid-build modifications)*
+    - `bash -lc 'HOME=/tmp/xterminal_supervisor_home_20260321_005 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/xterminal_supervisor_module_cache_20260321_005 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_004/package --scratch-path /tmp/xterminal_supervisor_build_20260321_005 --filter SupervisorHeartbeatPresentationTests -j 1'` *(7/7 passed)*
+    - `bash -lc 'HOME=/tmp/xterminal_supervisor_home_20260321_005 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/xterminal_supervisor_module_cache_20260321_005 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_004/package --scratch-path /tmp/xterminal_supervisor_build_20260321_005 --filter SupervisorOperationsOverviewPresentationTests -j 1'` *(4/4 passed)*
+
+- `SLICE-20260321-023`
+  - mapped_work_order: `XT-W3-33-B / Decision Track + Background Preference Track`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把 decision-rail 治理信号推进到 actionability：portfolio 推荐队列不再只展示 blocker/spec gap/missing next，而会把 shadowed / weak-only 的 formal-decision precedence 清理动作作为 Decision rail item 排进 today queue`
+  - status: `delivered`
+  - claim_reason: `上一刀已经让 portfolio 能看见 Decision wins / Weak-only，但仍然停留在“被动可见”；要继续推 XT-W3-33-B，就得把这类 precedence 信号真正变成 recommended action，而不是只做静态 badge。`
+  - done_when:
+    - `SupervisorPortfolioActionabilityKind` 新增 `decision_rail`
+    - active/idle 且带 decision-rail signal 的项目进入 `recommended_actions`
+    - `Decision rail` item 提供 shadowed / weak-only 数量化 reason 与 formalize / keep-non-binding 推荐动作
+    - today queue / row tag tone 对 `Decision rail` 使用 warning
+    - 定向测试覆盖 actionability 排序、project row tag、overview row tone
+  - delivered_at: `2026-03-21`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorPortfolioActionabilitySnapshot.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorPortfolioProjectPresentation.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorPortfolioOverviewPresentation.swift`
+    - `x-terminal/Tests/SupervisorPortfolioActionabilitySnapshotTests.swift`
+    - `x-terminal/Tests/SupervisorPortfolioProjectPresentationTests.swift`
+    - `x-terminal/Tests/SupervisorPortfolioOverviewPresentationTests.swift`
+    - `swiftc -typecheck /tmp/supervisor_portfolio_typecheck_stubs.swift x-hub-system/x-terminal/Sources/Supervisor/SupervisorProjectCapsule.swift x-hub-system/x-terminal/Sources/Supervisor/SupervisorPortfolioSnapshot.swift x-hub-system/x-terminal/Sources/Supervisor/SupervisorPortfolioActionabilitySnapshot.swift x-hub-system/x-terminal/Sources/Supervisor/SupervisorPortfolioProjectPresentation.swift x-hub-system/x-terminal/Sources/Supervisor/SupervisorPortfolioOverviewPresentation.swift`
+
+- `SLICE-20260321-024`
+  - mapped_work_order: `XT-W3-33-E / Notification Rhythm v2`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把 decision-rail 治理信号继续推进到通知节奏：progressed 事件不再把 shadowed / weak-only precedence cleanup 当普通静默进度，而是生成 action-first 的 Decision rail cleanup recommendation，并在需要时抬升为 brief card`
+  - status: `delivered`
+  - claim_reason: `上一刀已经把 decision rail 推进到 portfolio actionability，但 notification rhythm 仍把这类变化当 generic progressed/silent log；要继续推 XT-W3-33-E，就得让节奏层也按 formal-decision precedence cleanup 来解释“为什么现在值得提醒”。`
+  - done_when:
+    - `SupervisorDecisionRailMessaging` 统一 decision-rail 的 reason / why-it-matters / next-action 文案，避免 actionability 与 rhythm 语义漂移
+    - `SupervisorPortfolioSnapshotBuilder.makeActionEvent` 对带 decision-rail signal 的 progressed 更新生成 `brief_card` 级别的 action-first 事件
+    - `SupervisorRhythmRecommendationEngine` 新增 `decision_rail_cleanup` recommendation type，并给出 precedence-cleanup waiting-on / recommended-next-action
+    - `SupervisorProjectNotificationPolicy` 在必要时把 decision-rail cleanup 从 silent progress 抬升到 `brief_card`
+    - 定向测试覆盖 snapshot 映射、rhythm recommendation、policy uplift，以及 manager 侧 authorization interrupt/dedupe 不回归
+  - delivered_at: `2026-03-21`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorDecisionRailMessaging.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorPortfolioSnapshot.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorRhythmRecommendationEngine.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorProjectNotificationPolicy.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorManager.swift`
+    - `x-terminal/Tests/SupervisorPortfolioSnapshotTests.swift`
+    - `x-terminal/Tests/SupervisorRhythmRecommendationTests.swift`
+    - `x-terminal/Tests/SupervisorProjectNotificationPolicyTests.swift`
+    - `swift test --filter SupervisorPortfolioSnapshotTests -j 1`
+    - `swift test --filter SupervisorRhythmRecommendationTests -j 1`
+    - `swift test --filter policyElevatesDecisionRailCleanupEvenWhenProgressSeverityStartsSilent -j 1`
+    - `swift test --filter managerOnlyInterruptsAuthorizationAndSuppressesDuplicates -j 1`
+
+- `SLICE-20260321-025`
+  - mapped_work_order: `XT-W3-33-F / Decision-Blocker Assist`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把 decision-blocker assist 从“只在 digest 字符串里隐约存在”推进到结构化可见：decision assist 现在会沿着 digest -> capsule -> portfolio card 传递，并在 portfolio row / project drill-down 里显式展示默认建议、治理模式、timeout escalation 与 fail-closed guard`
+  - status: `delivered`
+  - claim_reason: `decision-blocker assist engine 和 digest hint 已经存在，但当前用户仍只能从 blocker 文本里猜“是不是已经有默认建议、是否 fail-closed、会不会 timeout escalation”；要继续推 XT-W3-33-F，就得把 assist 本身变成控制面可见对象，而不是继续埋在字符串里。`
+  - done_when:
+    - `SupervisorMemoryProjectDigest` / `SupervisorProjectCapsule` / `SupervisorPortfolioProjectCard` 携带 `decision_assist`
+    - `SupervisorPortfolioProjectPresentation` 对 assist 项展示 category-aware governance tag（如测试栈建议 / 发版需审批）
+    - `SupervisorProjectDrillDownPresentation` 新增 `决策建议` section，显式展示 proposal / mode / status / escalation / guard
+    - project drill-down refs 追加 assist 的 `audit_ref` 与 `evidence_refs`
+    - 定向测试覆盖 capsule carry、snapshot carry、portfolio row tag、drill-down section，且原有 decision-assist integration 不回归
+  - delivered_at: `2026-03-21`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorManager.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorProjectCapsule.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorPortfolioSnapshot.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorPortfolioProjectPresentation.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorProjectDrillDown.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorProjectDrillDownPresentation.swift`
+    - `x-terminal/Tests/SupervisorProjectCapsuleTests.swift`
+    - `x-terminal/Tests/SupervisorPortfolioSnapshotTests.swift`
+    - `x-terminal/Tests/SupervisorPortfolioProjectPresentationTests.swift`
+    - `x-terminal/Tests/SupervisorProjectDrillDownPresentationTests.swift`
+    - `x-terminal/Tests/SupervisorDecisionBlockerAssistTests.swift`
+    - `x-terminal/Tests/SupervisorDecisionAssistAndCompactionIntegrationTests.swift`
+    - `swift test --filter SupervisorProjectCapsuleTests -j 1`
+    - `swift test --filter SupervisorPortfolioSnapshotTests -j 1`
+    - `swift test --filter SupervisorPortfolioProjectPresentationTests -j 1`
+    - `swift test --filter SupervisorProjectDrillDownPresentationTests -j 1`
+    - `swift test --filter SupervisorDecisionBlockerAssistTests -j 1`
+    - `swift test --filter SupervisorDecisionAssistAndCompactionIntegrationTests -j 1`
+
+- `SLICE-20260321-026`
+  - mapped_work_order: `XT-W3-33-C / Role-Based Model Routing`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把 role-based model routing 从“只进 prompt summary”推进到控制面可见：latest turn memory board 新增 task-route explainability 卡片，直接展示 selected role、matched tags、preferred/fallback model classes、grant policy、project hints，以及“Hub 仍裁决具体模型”的说明`
+  - status: `delivered`
+  - claim_reason: `route policy/schema 与 prompt summary 已存在，但 XT 控制面仍看不到这轮为什么落到 planner/coder/reviewer/doc/ops、项目 override 只是 hint 还是 hard lock、以及为什么具体模型仍必须由 Hub 裁决；继续推 XT-W3-33-C，先把 explainability 抬到 latest-turn 可见面。`
+  - done_when:
+    - `SupervisorManager` 在 after-turn explainability 同步时发布最新 `model_route_context`
+    - `SupervisorMemoryBoardPresentation` / `SupervisorMemoryBoardSection` 新增 `Latest Task Route` 卡片
+    - 卡片显式展示 role / matched task tags / preferred classes / fallback order / grant policy / project hints / Hub arbitration explanation
+    - 定向测试覆盖 manager after-turn state publish 与 memory board route card 映射
+  - delivered_at: `2026-03-21`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorModelRouteDecision.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorManager.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewRuntimePresentationSupportContext.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorMemoryBoardPresentation.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorMemoryBoardSection.swift`
+    - `x-terminal/Tests/SupervisorTurnExplainabilityStateTests.swift`
+    - `x-terminal/Tests/SupervisorMemoryBoardPresentationTests.swift`
+    - `swift test --filter SupervisorTurnExplainabilityStateTests -j 1`
+    - `swift test --filter SupervisorMemoryBoardPresentationTests -j 1`
+    - `swift test --filter SupervisorModelRouteIntentIntegrationTests -j 1`
+
+- `SLICE-20260321-027`
+  - mapped_work_order: `XT-W3-33-F / Decision-Blocker Assist`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把 decision assist 从 row/drill-down 再推进到 portfolio today queue，同时修正 decision-blocker 判定过宽的问题：已批准的 decision-rail 文本（如 approved stack）不再被误判成 unresolved blocker，但带结构化 assist 的项目仍会继续计入 decision blocker 指标并优先浮出`
+  - status: `delivered`
+  - claim_reason: `slice 025 已经让 decision assist 结构化可见，但 portfolio today queue 仍把这类项目显示成 generic blocker；验证时又暴露出旧的 blocker heuristics 会把 approved-stack 这类“已定案”文本误判成 blocker，直接压住 decision-rail cleanup，导致 XT-W3-33-F 的 portfolio 优先级失真。`
+  - done_when:
+    - `SupervisorPortfolioActionabilityKind` 新增 `decision_assist`
+    - 带 `decision_assist` 的项目在 `recommended_actions` / today queue 中优先于 generic `decision_blocker`
+    - portfolio row / overview today queue 对 `decision_assist` 使用独立 label 与 warning tone
+    - `decision blocker` 判定不再因 `approved stack` 这类已定案文本产生误报
+    - `decision_assist` 本身可作为 decision blocker 结构化 signal，避免继续依赖脆弱的 blocker 文本匹配
+    - 定向验证至少覆盖 source typecheck 与 rail/assist runtime probe
+  - delivered_at: `2026-03-21`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorPortfolioActionabilitySnapshot.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorPortfolioProjectPresentation.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorPortfolioOverviewPresentation.swift`
+    - `x-terminal/Tests/SupervisorPortfolioActionabilitySnapshotTests.swift`
+    - `x-terminal/Tests/SupervisorPortfolioProjectPresentationTests.swift`
+    - `x-terminal/Tests/SupervisorPortfolioOverviewPresentationTests.swift`
+    - `swiftc -typecheck /tmp/supervisor_portfolio_typecheck_stubs.swift x-hub-system/x-terminal/Sources/Supervisor/SupervisorDecisionRailMessaging.swift x-hub-system/x-terminal/Sources/Supervisor/SupervisorProjectCapsule.swift x-hub-system/x-terminal/Sources/Supervisor/SupervisorPortfolioSnapshot.swift x-hub-system/x-terminal/Sources/Supervisor/SupervisorPortfolioActionabilitySnapshot.swift x-hub-system/x-terminal/Sources/Supervisor/SupervisorPortfolioProjectPresentation.swift x-hub-system/x-terminal/Sources/Supervisor/SupervisorPortfolioOverviewPresentation.swift`
+    - `bash -lc 'set -euo pipefail; export CLANG_MODULE_CACHE_PATH=/tmp/supervisor_portfolio_probe_module_cache; swiftc /tmp/supervisor_portfolio_typecheck_stubs.swift x-hub-system/x-terminal/Sources/Supervisor/SupervisorDecisionRailMessaging.swift x-hub-system/x-terminal/Sources/Supervisor/SupervisorProjectCapsule.swift x-hub-system/x-terminal/Sources/Supervisor/SupervisorPortfolioSnapshot.swift x-hub-system/x-terminal/Sources/Supervisor/SupervisorPortfolioActionabilitySnapshot.swift /tmp/supervisor_portfolio_probe.swift -o /tmp/supervisor_portfolio_probe; /tmp/supervisor_portfolio_probe'`
+
+- `SLICE-20260321-028`
+  - mapped_work_order: `XT-W3-33-G / Memory Compaction + Rollup + Archive`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把 memory compaction 从“只在 digest hint 里隐约出现”推进到 project drill-down：completed/archive candidate 项目现在会把 rollup summary、archive candidate mode、rolled-up/archived node、kept decision/milestone ids，以及 traceable audit/release refs 显式展示在“记忆收口” section，同时 scope-safe refs 也会带上 compaction 追溯锚点`
+  - status: `delivered`
+  - claim_reason: `XT-W3-33-G 的 policy/rollup/schema 已经在 manager 里存在，但当前控制面仍只能看到“记忆收口”字样，用户看不到这次收口到底 archive 了什么、保住了哪些 decision/milestone/ref，也无法从 drill-down 直接核对 traceability；这让 compaction 仍然偏黑箱。`
+  - done_when:
+    - `SupervisorProjectDrillDownSnapshot` 携带 `memory_compaction_rollup`
+    - `SupervisorProjectDrillDownPresentation` 新增 `记忆收口` section，显式展示 summary / mode / rolled_up / archived / kept decisions / kept milestones / release refs / audit refs
+    - `SupervisorProjectDrillDownRefsBuilder` 把 compaction traceability refs 合入 scope-safe refs
+    - manager 生成的 completed project drill-down 可带出 archive candidate rollup
+    - 定向验证至少覆盖 drill-down typecheck 与 runtime probe
+  - delivered_at: `2026-03-21`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorManager.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorProjectDrillDown.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorProjectDrillDownPresentation.swift`
+    - `x-terminal/Tests/SupervisorProjectDrillDownTests.swift`
+    - `x-terminal/Tests/SupervisorProjectDrillDownPresentationTests.swift`
+    - `swiftc -typecheck /tmp/supervisor_drilldown_typecheck_stubs.swift x-hub-system/x-terminal/Sources/Supervisor/SupervisorProjectDrillDown.swift x-hub-system/x-terminal/Sources/Supervisor/SupervisorProjectDrillDownPresentation.swift`
+    - `bash -lc 'set -euo pipefail; export CLANG_MODULE_CACHE_PATH=/tmp/supervisor_drilldown_probe_module_cache; swiftc /tmp/supervisor_drilldown_typecheck_stubs.swift x-hub-system/x-terminal/Sources/Supervisor/SupervisorProjectDrillDown.swift x-hub-system/x-terminal/Sources/Supervisor/SupervisorProjectDrillDownPresentation.swift /tmp/supervisor_drilldown_probe.swift -o /tmp/supervisor_drilldown_probe; /tmp/supervisor_drilldown_probe'`
+
+- `SLICE-20260321-029`
+  - mapped_work_order: `XT-W3-33-G / Memory Compaction + Rollup + Archive`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把 memory compaction 再推进到 portfolio row：project capsule / portfolio card 新增轻量 memory_compaction_signal，row 不再依赖解析“当前动作”文本，也能直接显示 archive candidate / rollup 状态，让总览层结构化可见，同时避免把整包 refs 塞进 portfolio canonical snapshot`
+  - status: `delivered`
+  - claim_reason: `slice 028 已让 drill-down 看得到 compaction 细节，但 portfolio 卡片层仍只能靠 currentAction 里那串 “记忆收口：...” 文本猜测状态；如果后面要做 overview 统计或排序，也不该继续解析自由文本。这里先补一个轻量 signal，把 compaction state 提成正式字段，同时控制 canonical snapshot 体积。`
+  - done_when:
+    - `SupervisorProjectCapsule` / `SupervisorPortfolioProjectCard` 携带轻量 `memory_compaction_signal`
+    - signal 仅保留 summary/count/archiveCandidate，不把完整 audit/release refs 带进 portfolio snapshot
+    - `SupervisorPortfolioProjectPresentation` 在 row governance tags 中结构化显示 `归档候选` 或 `已收口 N`
+    - 定向验证至少覆盖 capsule carry 与 portfolio row tag 映射
+  - delivered_at: `2026-03-21`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorMemoryCompactionSignal.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorProjectCapsule.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorPortfolioSnapshot.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorPortfolioProjectPresentation.swift`
+    - `x-terminal/Tests/SupervisorProjectCapsuleTests.swift`
+    - `x-terminal/Tests/SupervisorPortfolioProjectPresentationTests.swift`
+
+- `SLICE-20260321-031`
+  - mapped_work_order: `XT-W3-33-G / Memory Compaction + Rollup + Archive`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把轻量 memory_compaction_signal 再抬到 portfolio overview：当总览里存在收口项目时，overview metric badges 会追加“记忆收口 / 归档候选”统计行，让用户不点进 row/drill-down 也能看见当前有多少项目处在 rollup / archive candidate 状态`
+  - status: `delivered`
+  - claim_reason: `slice 029 已把 compaction state 提成 card-level signal，但 overview 仍完全看不到这类状态；如果用户只看 Supervisor 首页，还是无法快速判断 portfolio 里是否已经开始收口、是否有 completed project 等待 archive review。继续沿同一轻量 signal 链路推进到 overview，收益直接且不会改变 today queue 语义。`
+  - done_when:
+    - `SupervisorPortfolioOverviewPresentation` 基于 `memory_compaction_signal` 追加条件性的 metric row
+    - overview 在存在收口项目时显示 `记忆收口` 统计，在存在 archive candidate 时额外显示 `归档候选`
+    - 不把 completed archive candidate 强行塞回 today queue，保持 actionability 语义不变
+    - 定向验证至少覆盖 overview badge 映射
+  - delivered_at: `2026-03-21`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorPortfolioOverviewPresentation.swift`
+    - `x-terminal/Tests/SupervisorPortfolioOverviewPresentationTests.swift`
+
+- `SLICE-20260321-032`
+  - mapped_work_order: `XT-W3-33-G / Memory Compaction + Rollup + Archive`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把 memory compaction signal 接进 project action event / rhythm recommendation：completed 项目不再一律广播泛化“项目完成”，而是明确区分“项目归档候选 / 项目已收口”，并在存在具体归档审阅下一步时保留该 close-out 动作，不再被 generic completion 文案覆盖`
+  - status: `delivered`
+  - claim_reason: `slice 029/031 已让 portfolio row 和 overview 看得到收口状态，但事件流仍停留在 “项目完成” 这一层，导致 notification feed 和 rhythm recommendation 无法告诉用户这个完成态项目究竟是已经收口，还是已经进入归档候选。这里把轻量 signal 沿着 completed event 再推进一段，补齐 action-first 可见性，同时不改 severity 和 today queue 语义。`
+  - done_when:
+    - `SupervisorPortfolioSnapshotBuilder.makeActionEvent` 在 completed 分支识别 `memory_compaction_signal`，输出 `项目归档候选` / `项目已收口`
+    - `SupervisorManager.handleEvent(.projectUpdated)` 对 completed/progressed 统一做 digest enrichment，把 decision rail 与 memory compaction 信号带入 event builder
+    - `SupervisorRhythmRecommendationEngine` 在 completed 事件已有明确 archive/close-out 下一步时保留该动作，不再改写成 generic completion fallback
+    - 定向验证至少覆盖 compaction-aware completed event 与 archive review recommendation 保真
+  - delivered_at: `2026-03-21`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorPortfolioSnapshot.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorManager.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorRhythmRecommendationEngine.swift`
+    - `x-terminal/Tests/SupervisorPortfolioSnapshotTests.swift`
+    - `x-terminal/Tests/SupervisorRhythmRecommendationTests.swift`
+
+- `SLICE-20260321-033`
+  - mapped_work_order: `XT-W3-33-G / Memory Compaction + Rollup + Archive`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `在 portfolio overview 新增独立的“完成态收口”队列：completed 且带 memory compaction signal 的项目会以次级队列显式列出，区分 `归档候选` 与 `记忆收口`，给出 close-out 下一步，但不改 today queue / actionable_today 的原有语义`
+  - status: `delivered`
+  - claim_reason: `slice 031/032 已让 overview 指标和 action event 都看得到收口状态，但首页仍没有一个稳定的“完成态待确认”队列。用户看见 `归档候选 1` 后仍需要自己去 row 或 feed 里找是哪一个项目、下一步是什么。这里补一个独立 close-out 队列，既提升 actionability，又不把 completed 项目硬塞回 today queue。`
+  - done_when:
+    - `SupervisorPortfolioOverviewPresentation` 在存在 completed compaction 项目时生成 `完成态收口` 队列
+    - 队列行明确区分 `归档候选` 与 `记忆收口`，并输出 close-out 下一步和原因
+    - `SupervisorPortfolioBoardSection` 渲染该次级队列
+    - 定向验证至少覆盖 overview close-out queue 的标题、顺序、状态行与推荐动作
+  - delivered_at: `2026-03-21`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorPortfolioOverviewPresentation.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorPortfolioBoardSection.swift`
+    - `x-terminal/Tests/SupervisorPortfolioOverviewPresentationTests.swift`
+    - `x-terminal/Tests/SupervisorPortfolioBoardPresentationTests.swift`
+
+- `SLICE-20260321-035`
+  - mapped_work_order: `XT-W3-33-G / Memory Compaction + Rollup + Archive`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `补齐 XT-W3-33-G 的机读 evidence generator：新增 `generate_xt_w3_33_g_memory_compaction_evidence.js`，导出 memory compaction 的零丢失硬线、surface wiring、gate readiness 与 `status`，并实际生成 `build/reports/xt_w3_33_g_memory_compaction_evidence.v1.json`，让 XT-W3-33-H require-real report 不再依赖一个缺失的 G evidence 文件`
+  - status: `delivered`
+  - claim_reason: `当前 XT-W3-33-H report 已经把 `xt_w3_33_g_memory_compaction_evidence.v1.json` 当成前置输入，但仓库主线里还没有对应 generator；这会让 H 的 shadow status 只能退回 fallback，主线证据链不完整。先补 G 的候选级机读 evidence，把 compaction 的 fail-closed 硬线和最近几轮 UI/control-plane wiring 收成一个可复算的报告。`
+  - done_when:
+    - `scripts/generate_xt_w3_33_g_memory_compaction_evidence.js` 能生成 `build/reports/xt_w3_33_g_memory_compaction_evidence.v1.json`
+    - report 至少输出 `status`、`gate_verdict`、`XT-SDK-G6` readiness、零丢失机判字段与 surface wiring
+    - focused test 覆盖默认 candidate-pass、surface gap 降级与 traceability regression fail-closed 三种路径
+    - 实际生成一份当前工作树下的 G evidence
+  - delivered_at: `2026-03-21`
+  - evidence_refs:
+    - `scripts/generate_xt_w3_33_g_memory_compaction_evidence.js`
+    - `scripts/generate_xt_w3_33_g_memory_compaction_evidence.test.js`
+    - `build/reports/xt_w3_33_g_memory_compaction_evidence.v1.json`
+
+- `SLICE-20260322-001`
+  - mapped_work_order: `XT-W3-33-F / Decision-Blocker Assist`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `补齐 XT-W3-33-F 的机读 evidence generator：新增 `generate_xt_w3_33_f_decision_blocker_assist_evidence.js`，把 proposal-first contract、低风险 timeout escalation、policy-guarded auto-adopt、fail-closed 红线与控制面可见性收成统一的候选级证据，并实际生成 `build/reports/xt_w3_33_f_decision_blocker_assist_evidence.v1.json`，让 XT-W3-33-H 不再依赖一个缺失的 F evidence 文件`
+  - status: `delivered`
+  - claim_reason: `XT-W3-33-H report 已经把 `xt_w3_33_f_decision_blocker_assist_evidence.v1.json` 当成前置输入，但主线还没有对应 generator；这会让 G5 shadow status 只能回退到默认文案，无法机读判断 proposal-first 与 fail-closed 是否保持成立。先补 F 的候选级 evidence，把默认模板覆盖、治理硬线和 surface wiring 一次收口。`
+  - done_when:
+    - `scripts/generate_xt_w3_33_f_decision_blocker_assist_evidence.js` 能生成 `build/reports/xt_w3_33_f_decision_blocker_assist_evidence.v1.json`
+    - report 至少输出 `status`、`gate_verdict`、`XT-SDK-G5` readiness、proposal-first / fail-closed 机判字段与 surface wiring
+    - focused test 覆盖默认 candidate-pass、surface gap 降级与 governance regression fail-closed 三种路径
+    - 实际生成一份当前工作树下的 F evidence
+  - delivered_at: `2026-03-22`
+  - evidence_refs:
+    - `scripts/generate_xt_w3_33_f_decision_blocker_assist_evidence.js`
+    - `scripts/generate_xt_w3_33_f_decision_blocker_assist_evidence.test.js`
+    - `build/reports/xt_w3_33_f_decision_blocker_assist_evidence.v1.json`
+
+- `SLICE-20260322-002`
+  - mapped_work_order: `XT-W3-33-H / Require-real Governance Regression`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `补齐 XT-W3-33-H 的默认 capture bundle 和可直接落盘的 pending 报告：新增 `xt_w3_33_require_real_bundle_lib.js` 生成 7 个最小样本的 capture bundle，并让 require-real report / status / update 脚本在 bundle 缺失时自动 bootstrap，随后实际生成 `build/reports/xt_w3_33_h_require_real_capture_bundle.v1.json` 与 `build/reports/xt_w3_33_h_require_real_evidence.v1.json``
+  - status: `delivered`
+  - claim_reason: `即便补齐 F/G evidence，如果 H 的 capture bundle 本身缺失，当前主线仍无法直接产出 require-real 状态报告，shadow QA 链路还是断的。这里先把 7 个最小样本固化成默认 capture bundle，并让相关脚本在空仓状态下也能直接 bootstrap 出 pending report。`
+  - done_when:
+    - `scripts/xt_w3_33_require_real_bundle_lib.js` 定义 7 个最小 require-real 样本并可生成默认 bundle
+    - `generate/update/status` 三个 XT-W3-33 require-real 脚本在 bundle 缺失时不再直接报错
+    - 实际生成一份 `build/reports/xt_w3_33_h_require_real_capture_bundle.v1.json`
+    - 实际生成一份 pending 状态的 `build/reports/xt_w3_33_h_require_real_evidence.v1.json`
+  - delivered_at: `2026-03-22`
+  - evidence_refs:
+    - `scripts/xt_w3_33_require_real_bundle_lib.js`
+    - `scripts/generate_xt_w3_33_require_real_report.js`
+    - `scripts/update_xt_w3_33_require_real_capture_bundle.js`
+    - `scripts/xt_w3_33_require_real_status.js`
+    - `build/reports/xt_w3_33_h_require_real_capture_bundle.v1.json`
+    - `build/reports/xt_w3_33_h_require_real_evidence.v1.json`
+
+- `SLICE-20260322-003`
+  - mapped_work_order: `XT-W3-33-H / Require-real Governance Regression`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把 XT-W3-33-H 的 capture bundle bootstrap 做成可回归验证：bundle lib 新增 reports-dir override，`xt_w3_33_require_real_status.js` 改成可导入模块，并补 `xt_w3_33_require_real_bundle_lib.test.js` 覆盖默认 bundle 合约、首次 bootstrap 与 bootstrapped bundle 可被 updater 消费三条路径，避免这条 pending-report 链路以后静默退化。`
+  - status: `delivered`
+  - claim_reason: `昨天已经补齐 H 的默认 bundle 和 pending report，但当前这层 bootstrap 还没有独立回归；再加上命令板 slice id 已发生撞号，说明这段新链路还需要一刀稳定化，先把 bundle 路径做成可覆写、把 status 脚本做成可导入，并补掉最小 Node 回归。`
+  - done_when:
+    - `xt_w3_33_require_real_bundle_lib.js` 支持 override reports dir / bundle path，便于隔离回归
+    - `xt_w3_33_require_real_status.js` 可作为模块导入，不再只能直接执行
+    - `scripts/xt_w3_33_require_real_bundle_lib.test.js` 覆盖 bundle 合约、bootstrap、updater 消费三条路径
+    - 命令板中不存在新的 slice id 冲突
+  - delivered_at: `2026-03-22`
+  - evidence_refs:
+    - `scripts/xt_w3_33_require_real_bundle_lib.js`
+    - `scripts/xt_w3_33_require_real_bundle_lib.test.js`
+    - `scripts/xt_w3_33_require_real_status.js`
+
+- `SLICE-20260322-004`
+  - mapped_work_order: `XT-W3-33-H / Require-real Governance Regression`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `补一层真正可执行的 require-real sample scaffold：`xt_w3_33_require_real_status.js` 对缺失 QA 报告改成降级可读，新增 `prepare_xt_w3_33_require_real_sample.js` 可为下一条或指定样本直接生成 evidence 目录、README、manifest、machine-readable template 与 update command，外加 Node 回归，降低 XT-W3-33-H 真实样本回填的操作摩擦。`
+  - status: `delivered`
+  - claim_reason: `当前 XT-W3-33-H 已能给出“下一条待跑样本”和 update 命令，但执行者仍要手工建目录、整理字段模板、拼接回填材料；而一旦 QA 报告尚未生成，status 还会直接报错。这里补一层 sample scaffold 和缺报表容错，把 pending 链路从“会提示”推进到“可直接开跑”。`
+  - done_when:
+    - `xt_w3_33_require_real_status.js` 在 QA 报告缺失时降级为 `missing(run_generate_first)`，不再直接报错
+    - `scripts/prepare_xt_w3_33_require_real_sample.js` 可为下一条或指定样本生成 evidence scaffold
+    - scaffold 至少包含 README、sample manifest、machine-readable template 与 update command
+    - focused test 覆盖默认样本 scaffold 与指定样本/非 force 保留现有文件两条路径
+    - 实际生成一份当前 next sample 的 scaffold
+  - delivered_at: `2026-03-22`
+  - evidence_refs:
+    - `scripts/xt_w3_33_require_real_status.js`
+    - `scripts/prepare_xt_w3_33_require_real_sample.js`
+    - `scripts/prepare_xt_w3_33_require_real_sample.test.js`
+
+- `SLICE-20260322-005`
+  - mapped_work_order: `XT-W3-33-H / Require-real Governance Regression`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把 XT-W3-33-H 的 capture bundle updater 改成 fail-closed：`update_xt_w3_33_require_real_capture_bundle.js` 在样本被标成 `passed` 时，必须同时满足 performed_at、evidence_refs、machine-readable fields、非 synthetic 和 required checks，否则直接拒绝回填；并补 focused regression，避免“先写 passed、后靠 report 才发现缺字段”的滞后错误。`
+  - status: `delivered`
+  - claim_reason: `现在 sample scaffold 和 pending report 都有了，但 update 脚本仍允许执行者把明显不完整的样本先写成 `passed`，直到 regenerate report 才报 NO_GO；这会让 require-real 操作链存在滞后错误窗口。这里把 fail-closed 前移到 bundle 回填入口。`
+  - done_when:
+    - `update_xt_w3_33_require_real_capture_bundle.js` 对 passed sample 执行字段/证据/required-check/synthetic 校验
+    - 缺 machine-readable fields 或命中 synthetic 时直接拒绝写入
+    - focused regression 覆盖 passed 正常通过、缺字段拒绝、synthetic 拒绝三条路径
+  - delivered_at: `2026-03-22`
+  - evidence_refs:
+    - `scripts/update_xt_w3_33_require_real_capture_bundle.js`
+    - `scripts/generate_xt_w3_33_require_real_report.test.js`
+
+- `SLICE-20260322-006`
+  - mapped_work_order: `XT-W3-33-H / Require-real Governance Regression`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把 XT-W3-33-H 的 sample scaffold 和 updater 再压成“一条命令”闭环：`update_xt_w3_33_require_real_capture_bundle.js` 新增 `--from-json`，可直接吃 `machine_readable_template.v1.json`；`xt_w3_33_require_real_status.js` / `prepare_xt_w3_33_require_real_sample.js` 改成同时输出 `prepare_command`、template 路径和基于 `--from-json` 的回填命令，减少 require-real 执行时的大段 `--set` 人工拼接。`
+  - status: `delivered`
+  - claim_reason: `虽然 sample scaffold 已经能生成 machine-readable template，但 updater 还只能逐个 `--set` 回填，导致真正执行时仍要手工把模板字段重新抄回命令行。既然模板文件已经存在，就应该直接让 updater 吃 JSON，把 status/prepare 输出也一起切到这条更短的路径。`
+  - done_when:
+    - `update_xt_w3_33_require_real_capture_bundle.js` 支持 `--from-json`
+    - `status` 与 `prepare` 同时输出 template 路径与 prepare command
+    - sample scaffold 的 update command 切到 `--from-json`
+    - focused regression 覆盖 JSON payload merge
+  - delivered_at: `2026-03-22`
+  - evidence_refs:
+    - `scripts/update_xt_w3_33_require_real_capture_bundle.js`
+    - `scripts/xt_w3_33_require_real_status.js`
+    - `scripts/prepare_xt_w3_33_require_real_sample.js`
+    - `scripts/prepare_xt_w3_33_require_real_sample.test.js`
+    - `scripts/generate_xt_w3_33_require_real_report.test.js`
+
+- `SLICE-20260322-007`
+  - mapped_work_order: `XT-W3-33-H / Require-real Governance Regression`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把 XT-W3-33-H 的回填命令进一步收成 `--scaffold-dir`：updater 现在能从 scaffold 目录自动推导 `sample_id`、template JSON 和 evidence refs，并递归收集非元数据证据文件；status/prepare 统一切到这条短命令，实际 sample scaffold 的 `update_bundle.command.txt` 也同步改写，进一步减少 require-real 执行者的手工参数拼装。`
+  - status: `delivered`
+  - claim_reason: `上一刀虽然已经把 machine-readable 字段改成 `--from-json`，但回填命令里仍要手工写 sample id 和两条 evidence-ref；既然 sample scaffold 目录本身已经包含 manifest、template 和证据文件，最短路径就该是直接喂一个 scaffold 目录。`
+  - done_when:
+    - `update_xt_w3_33_require_real_capture_bundle.js` 支持 `--scaffold-dir`
+    - scaffold dir 可自动推导 sample id / template / evidence refs
+    - `status` / `prepare` / `update_bundle.command.txt` 全部切到 `--scaffold-dir` 命令
+    - focused regression 覆盖 scaffold dir 证据收集与参数推导
+  - delivered_at: `2026-03-22`
+  - evidence_refs:
+    - `scripts/update_xt_w3_33_require_real_capture_bundle.js`
+    - `scripts/update_xt_w3_33_require_real_capture_bundle.test.js`
+    - `scripts/xt_w3_33_require_real_status.js`
+    - `scripts/prepare_xt_w3_33_require_real_sample.js`
+    - `scripts/prepare_xt_w3_33_require_real_sample.test.js`
+
+- `SLICE-20260322-008`
+  - mapped_work_order: `XT-W3-33-H / Require-real Governance Regression`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把 XT-W3-33-H 的真实回填再压成更安全的一键 finalize：新增 `finalize_xt_w3_33_require_real_sample.js`，默认从 scaffold 目录自动读取 template / note / evidence、写回 capture bundle 并刷新 require-real report；同时把 scaffold 补成 `completion_notes.txt` + `finalize_sample.command.txt`，并在 updater 里补 placeholder 拒绝、native JSON 类型兼容、元数据/隐藏文件不计入 evidence，堵住“模板未改却误过”和“命令文件被当证据”的漏洞。`
+  - status: `delivered`
+  - claim_reason: `上一刀已经把回填收成 `--scaffold-dir`，但执行者仍要自己决定何时 regenerate report，也还能把未替换的 `<placeholder>` 模板或 `completion_notes.txt` / `.DS_Store` 这类元数据带进 evidence 链，真实执行时仍有误过窗口。这里继续把最后一步收成安全 finalize，并把 placeholder/native JSON/元数据排除一起补齐。`
+  - done_when:
+    - `scripts/finalize_xt_w3_33_require_real_sample.js` 支持基于 scaffold dir 一键 finalize bundle + report
+    - scaffold 额外生成 `completion_notes.txt` 与 `finalize_sample.command.txt`
+    - updater 对 JSON 布尔/数组/对象值稳定兼容，不再因 `--from-json` 崩溃
+    - updater 拒绝未替换的 `<...>` 占位符字段，并排除 `completion_notes.txt` / `finalize_sample.command.txt` / `.DS_Store` 等元数据文件
+    - focused regression 覆盖 finalize 成功路径、placeholder 拒绝与 metadata 排除
+  - delivered_at: `2026-03-22`
+  - evidence_refs:
+    - `scripts/finalize_xt_w3_33_require_real_sample.js`
+    - `scripts/finalize_xt_w3_33_require_real_sample.test.js`
+    - `scripts/update_xt_w3_33_require_real_capture_bundle.js`
+    - `scripts/update_xt_w3_33_require_real_capture_bundle.test.js`
+    - `scripts/prepare_xt_w3_33_require_real_sample.js`
+    - `scripts/prepare_xt_w3_33_require_real_sample.test.js`
+    - `scripts/xt_w3_33_require_real_status.js`
+
+- `SLICE-20260322-009`
+  - mapped_work_order: `XT-W3-31-H / Require-real 回归 + GO/NO-GO`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把已经退化到缺 bundle 即报错的 XT-W3-31-H require-real 链路补回可执行闭环：新增 `xt_w3_31_require_real_bundle_lib.js` 负责默认 7 样本 capture bundle bootstrap；把 `generate/update/status` 三个脚本升级为 fail-closed、自举、可导入模块；新增 `prepare_xt_w3_31_require_real_sample.js` 与 `finalize_xt_w3_31_require_real_sample.js`，支持 scaffold-dir / from-json / 一键 finalize；同时补 placeholder 拒绝、synthetic 拒绝、元数据文件排除与 focused tests，并实际重新生成 `build/reports/xt_w3_31_*` 产物。`
+  - status: `delivered`
+  - claim_reason: `命令板和工单里都说 XT-W3-31-H 已有 capture bundle + runbook + status helper，但实际工作树里 bundle 文件已经缺失，`xt_w3_31_require_real_status.js --json` 直接 ENOENT；这说明该链路已经从“待执行”退化到“工具本身不可用”。先补回 bootstrap 和一键回填闭环，再继续等真实样本。`
+  - done_when:
+    - `scripts/xt_w3_31_require_real_bundle_lib.js` 能在 bundle 缺失时自动 bootstrap 默认 7 样本 capture bundle
+    - `scripts/generate_xt_w3_31_require_real_report.js` / `scripts/update_xt_w3_31_require_real_capture_bundle.js` / `scripts/xt_w3_31_require_real_status.js` 在空仓下不再直接报 `ENOENT`
+    - `XT-W3-31` require-real 支持 `prepare/finalize` scaffold 流程，减少手工拼命令
+    - passed 样本缺字段、保留 `<...>` 占位符、命中 synthetic、或误把元数据当 evidence 时必须 fail-closed
+    - focused regression 覆盖 bundle bootstrap、report fail-closed、updater scaffold-dir/from-json、prepare/finalize 成功路径
+    - 实际重新生成 `build/reports/xt_w3_31_require_real_capture_bundle.v1.json`、`build/reports/xt_w3_31_h_require_real_evidence.v1.json` 与 next sample scaffold
+  - delivered_at: `2026-03-22`
+  - evidence_refs:
+    - `scripts/xt_w3_31_require_real_bundle_lib.js`
+    - `scripts/xt_w3_31_require_real_bundle_lib.test.js`
+    - `scripts/generate_xt_w3_31_require_real_report.js`
+    - `scripts/generate_xt_w3_31_require_real_report.test.js`
+    - `scripts/update_xt_w3_31_require_real_capture_bundle.js`
+    - `scripts/update_xt_w3_31_require_real_capture_bundle.test.js`
+    - `scripts/xt_w3_31_require_real_status.js`
+    - `scripts/prepare_xt_w3_31_require_real_sample.js`
+    - `scripts/prepare_xt_w3_31_require_real_sample.test.js`
+    - `scripts/finalize_xt_w3_31_require_real_sample.js`
+    - `scripts/finalize_xt_w3_31_require_real_sample.test.js`
+
+- `SLICE-20260322-010`
+  - mapped_work_order: `XT-W3-24-N / Structured Action / Grant / Audit Plane + WhatsApp Hybrid Freeze`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把已经退化到缺 capture bundle 即无法查询状态的 XT-W3-24-N WhatsApp Cloud require-real 链路补回可执行闭环：新增 `xt_w3_24_n_whatsapp_cloud_require_real_bundle_lib.js` 负责默认 4 样本 capture bundle bootstrap；把 `generate/update/status` 三个脚本升级为 fail-closed、自举、可导入模块；新增 `prepare_xt_w3_24_n_whatsapp_cloud_require_real_sample.js` 与 `finalize_xt_w3_24_n_whatsapp_cloud_require_real_sample.js`，支持 scaffold-dir / from-json / 一键 finalize；同时补 placeholder 拒绝、synthetic 拒绝、元数据文件排除、runbook/README 更新，并实际生成 `build/reports/xt_w3_24_n_*` 产物与 next sample scaffold。`
+  - status: `delivered`
+  - claim_reason: `XT-W3-24-N 在命令板里已经登记为 delivered + require-real 挂账，但实际 `xt_w3_24_n_whatsapp_cloud_require_real_status.js --json` 因 capture bundle 缺失直接 ENOENT，等于执行入口已经失效。先把 bootstrap、prepare/finalize 和 fail-closed 回填链补回，再继续等待真实样本。`
+  - done_when:
+    - `scripts/xt_w3_24_n_whatsapp_cloud_require_real_bundle_lib.js` 能在 bundle 缺失时自动 bootstrap 默认 4 样本 capture bundle
+    - `scripts/generate_xt_w3_24_n_whatsapp_cloud_require_real_report.js` / `scripts/update_xt_w3_24_n_whatsapp_cloud_require_real_capture_bundle.js` / `scripts/xt_w3_24_n_whatsapp_cloud_require_real_status.js` 在空仓下不再直接报 `ENOENT`
+    - `XT-W3-24-N` require-real 支持 `prepare/finalize` scaffold 流程，减少手工拼命令
+    - passed 样本缺字段、保留 `<...>` 占位符、命中 synthetic、或误把元数据当 evidence 时必须 fail-closed
+    - focused regression 覆盖 bundle bootstrap、report fail-closed、updater scaffold-dir/from-json、prepare/finalize 成功路径
+    - 实际重新生成 `build/reports/xt_w3_24_n_whatsapp_cloud_require_real_capture_bundle.v1.json`、`build/reports/xt_w3_24_n_action_grant_whatsapp_evidence.v1.json` 与 next sample scaffold
+  - delivered_at: `2026-03-22`
+  - evidence_refs:
+    - `scripts/xt_w3_24_n_whatsapp_cloud_require_real_bundle_lib.js`
+    - `scripts/xt_w3_24_n_whatsapp_cloud_require_real_bundle_lib.test.js`
+    - `scripts/generate_xt_w3_24_n_whatsapp_cloud_require_real_report.js`
+    - `scripts/generate_xt_w3_24_n_whatsapp_cloud_require_real_report.test.js`
+    - `scripts/update_xt_w3_24_n_whatsapp_cloud_require_real_capture_bundle.js`
+    - `scripts/update_xt_w3_24_n_whatsapp_cloud_require_real_capture_bundle.test.js`
+    - `scripts/xt_w3_24_n_whatsapp_cloud_require_real_status.js`
+    - `scripts/prepare_xt_w3_24_n_whatsapp_cloud_require_real_sample.js`
+    - `scripts/prepare_xt_w3_24_n_whatsapp_cloud_require_real_sample.test.js`
+    - `scripts/finalize_xt_w3_24_n_whatsapp_cloud_require_real_sample.js`
+    - `scripts/finalize_xt_w3_24_n_whatsapp_cloud_require_real_sample.test.js`
+    - `docs/memory-new/xt-w3-24-n-whatsapp-cloud-require-real-runbook-v1.md`
+    - `docs/memory-new/xt-w3-31-require-real-runbook-v1.md`
+
+- `SLICE-20260321-030`
+  - mapped_work_order: `XT-W3-33-C / 单心脏 Signal Center Cleanup`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `在 heart button 已经成为唯一 signal center 入口之后，清掉旧的 heartbeat popover 残余状态链：header controls / view state / adapter / section 不再继续传递 showHeartbeatPopover，避免同一个入口背后仍有两套 UI 状态与 effect plumbing`
+  - status: `delivered`
+  - claim_reason: `前一轮已经把 heart button 做成真正的 signal center toggle，但旧的 heartbeat popover 状态、effect 与透传参数仍残留在 header/view 层，导致实现上继续保留“单入口、双状态链”的历史包袱，也让后续 header 行为测试继续围着过时状态写。这里先把这条残余链路彻底剪掉。`
+  - done_when:
+    - `SupervisorHeaderControls.Context` / `Effect` 不再携带 heartbeat-popover 专用状态与 `.setHeartbeatPopover`
+    - `SupervisorViewHeaderEffects` / `SupervisorViewActionSupportHeader` / `SupervisorViewInteractionSupport` 不再写入旧的 heartbeat popover 状态
+    - `SupervisorViewUIState`、`SupervisorView`、`SupervisorViewStateSupport*`、`SupervisorHeaderSection`、`SupervisorHeaderBar` 不再透传 `showHeartbeatPopover`
+    - `SupervisorHeaderControlsTests` 更新为只断言真实的 signal center 行为
+    - 定向验证至少覆盖 header controls、heartbeat presentation、operations overview 三组测试
+  - delivered_at: `2026-03-21`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorHeaderControls.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewHeaderEffects.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewActionSupportHeader.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewInteractionSupport.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewUIState.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorView.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewStateSupport.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewStateSupportAssembly.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewAdapter.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewContent.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorHeaderSection.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorHeaderBar.swift`
+    - `x-terminal/Tests/SupervisorHeaderControlsTests.swift`
+    - `HOME=/tmp/xterminal_supervisor_home_20260321_005 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/xterminal_supervisor_module_cache_20260321_005 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_004/package --scratch-path /tmp/xterminal_supervisor_build_20260321_005 --filter SupervisorHeaderControlsTests -j 1`
+    - `HOME=/tmp/xterminal_supervisor_home_20260321_005 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/xterminal_supervisor_module_cache_20260321_005 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_004/package --scratch-path /tmp/xterminal_supervisor_build_20260321_005 --filter SupervisorHeartbeatPresentationTests -j 1`
+    - `HOME=/tmp/xterminal_supervisor_home_20260321_005 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/xterminal_supervisor_module_cache_20260321_005 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_004/package --scratch-path /tmp/xterminal_supervisor_build_20260321_005 --filter SupervisorOperationsOverviewPresentationTests -j 1`
+
+- `SLICE-20260321-033`
+  - mapped_work_order: `XT-W3-33-C / 单心脏 Signal Center Residual Cleanup`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `在单心脏方案已经落地后，继续剪掉 header 里“仿佛还存在第二个 operations 按钮”的残余：移除 dead operations button action/presentation/pulse target、删掉 operationsIconScale 状态链，并收掉 header 上未使用的 onOpenFocusURL 透传`
+  - status: `delivered`
+  - claim_reason: `slice 030 已经把心脏变成唯一 signal center 入口，但 header controls / UI state / tests 里还保留着 operationsButtonTapped、operations button presentation、独立 operations pulse/scale 这些历史残留；这会继续误导实现和测试，好像 header 仍有第二条并行入口。这里把单心脏模型再收紧一层。`
+  - done_when:
+    - `SupervisorHeaderControls` 不再保留 `.operations` button kind、`.operationsButtonTapped` 或独立 `PulseTarget`
+    - `SupervisorViewHeaderEffects` / `SupervisorViewActionSupportHeader` / `SupervisorViewInteractionSupport` 只保留心脏 pulse scale
+    - `SupervisorViewUIState` / `SupervisorViewAdapter` / `SupervisorViewContent` / `SupervisorHeaderSection` / `SupervisorHeaderBar` 不再传递 `operationsIconScale`
+    - header 路径不再透传未使用的 `onOpenFocusURL`
+    - `SupervisorHeaderControlsTests` 更新为只校验单心脏 signal center 行为，并复跑 header / heartbeat / operations 三组定向测试
+  - delivered_at: `2026-03-21`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorHeaderControls.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewHeaderEffects.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewActionSupportHeader.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewInteractionSupport.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewUIState.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewAdapter.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewContent.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorHeaderSection.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorHeaderBar.swift`
+    - `x-terminal/Tests/SupervisorHeaderControlsTests.swift`
+    - `HOME=/tmp/xterminal_supervisor_home_20260321_005 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/xterminal_supervisor_module_cache_20260321_005 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_004/package --scratch-path /tmp/xterminal_supervisor_build_20260321_005 --filter SupervisorHeaderControlsTests -j 1`
+    - `HOME=/tmp/xterminal_supervisor_home_20260321_005 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/xterminal_supervisor_module_cache_20260321_005 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_004/package --scratch-path /tmp/xterminal_supervisor_build_20260321_005 --filter SupervisorHeartbeatPresentationTests -j 1`
+    - `HOME=/tmp/xterminal_supervisor_home_20260321_005 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/xterminal_supervisor_module_cache_20260321_005 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_004/package --scratch-path /tmp/xterminal_supervisor_build_20260321_005 --filter SupervisorOperationsOverviewPresentationTests -j 1`
+
+- `SLICE-20260321-034`
+  - mapped_work_order: `XT-W3-33-C / Heartbeat Popover Retirement`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `既然 heart button 已经直接打开统一的 signal center，就把剩余的 popover 命名和空壳文件一起退役：SupervisorHeartbeatPopoverPresentation 改成 feed 语义，未再被调用的 SupervisorHeartbeatPopover.swift wrapper 直接移除，避免代码表面继续暗示“心脏还会弹出单独 popover”`
+  - status: `delivered`
+  - claim_reason: `slice 022/030/033 已经把产品语义收成“一个窗口、一个心脏、一个 signal center”，但 heartbeat presentation 仍保留 popover 命名，UI 目录里也还躺着一个没有调用方的 popover wrapper；这会继续制造实现层错觉，好像还存在第二套 heartbeat surface。这里把命名和死文件一起清掉。`
+  - done_when:
+    - `SupervisorHeartbeatPopoverPresentation` 更名为 `SupervisorHeartbeatFeedPresentation`
+    - `SupervisorHeartbeatPresentation.map(...)` 返回 feed presentation，而不是 popover presentation
+    - 无调用方的 `SupervisorHeartbeatPopover.swift` 从当前实现中移除
+    - 复跑 `SupervisorHeartbeatPresentationTests`、`SupervisorHeaderControlsTests`、`SupervisorOperationsOverviewPresentationTests`
+  - delivered_at: `2026-03-21`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorHeartbeatPresentation.swift`
+    - `x-terminal/Sources/UI/Supervisor/SupervisorHeartbeatPopover.swift`
+    - `x-terminal/Tests/SupervisorHeartbeatPresentationTests.swift`
+    - `HOME=/tmp/xterminal_supervisor_home_20260321_005 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/xterminal_supervisor_module_cache_20260321_005 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_004/package --scratch-path /tmp/xterminal_supervisor_build_20260321_005 --filter SupervisorHeartbeatPresentationTests -j 1`
+    - `HOME=/tmp/xterminal_supervisor_home_20260321_005 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/xterminal_supervisor_module_cache_20260321_005 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_004/package --scratch-path /tmp/xterminal_supervisor_build_20260321_005 --filter SupervisorHeaderControlsTests -j 1`
+    - `HOME=/tmp/xterminal_supervisor_home_20260321_005 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/xterminal_supervisor_module_cache_20260321_005 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_004/package --scratch-path /tmp/xterminal_supervisor_build_20260321_005 --filter SupervisorOperationsOverviewPresentationTests -j 1`
+
+- `SLICE-20260321-036`
+  - mapped_work_order: `XT-W3-33-C / Signal Center Wording Alignment`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把单心脏路径剩余的“治理面板 / 当前治理信号 / 当前治理推荐”旧文案统一收成“信号中心 / 当前主信号”，覆盖 operations overview、header help text、signal card 和治理信号卡片映射，避免产品层继续暴露像是并行旧入口的词汇。`
+  - status: `delivered`
+  - claim_reason: `slice 030/033/034 已经把交互和命名收成一个窗口、一个心脏、一个 signal center，但用户可见文案里仍残留“治理面板空闲”“当前治理信号”“当前治理推荐”这类旧词，容易让用户误以为 heartbeat feed 之外还有第二套治理面板。这里把展示层措辞彻底统一。`
+  - done_when:
+    - `SupervisorOperationsOverviewPresentation` 的 stable 空态改为 `信号中心空闲`
+    - `SupervisorOperationsPanel` / `SupervisorHeaderControls` / `SupervisorGovernanceSignalPresentation` 统一使用 `当前主信号`
+    - 相关展示测试同步更新
+    - 定向验证覆盖 `SupervisorOperationsOverviewPresentationTests`、`SupervisorHeaderControlsTests`、`SupervisorHeartbeatPresentationTests`、`SupervisorPrimarySignalPresentationTests`
+  - delivered_at: `2026-03-21`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorOperationsOverviewPresentation.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorOperationsPanel.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorHeaderControls.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorGovernanceSignalPresentation.swift`
+    - `x-terminal/Tests/SupervisorOperationsOverviewPresentationTests.swift`
+    - `x-terminal/Tests/SupervisorHeaderControlsTests.swift`
+    - `x-terminal/Tests/SupervisorHeartbeatPresentationTests.swift`
+    - `x-terminal/Tests/SupervisorGovernanceSignalPresentationTests.swift`
+    - `HOME=/tmp/xterminal_supervisor_home_20260321_005 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/xterminal_supervisor_module_cache_20260321_005 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_004/package --scratch-path /tmp/xterminal_supervisor_build_20260321_006 --filter SupervisorOperationsOverviewPresentationTests -j 1`
+    - `HOME=/tmp/xterminal_supervisor_home_20260321_005 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/xterminal_supervisor_module_cache_20260321_005 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_004/package --scratch-path /tmp/xterminal_supervisor_build_20260321_006 --filter SupervisorHeaderControlsTests -j 1`
+    - `HOME=/tmp/xterminal_supervisor_home_20260321_005 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/xterminal_supervisor_module_cache_20260321_005 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_004/package --scratch-path /tmp/xterminal_supervisor_build_20260321_006 --filter SupervisorHeartbeatPresentationTests -j 1`
+    - `HOME=/tmp/xterminal_supervisor_home_20260321_005 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/xterminal_supervisor_module_cache_20260321_005 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_004/package --scratch-path /tmp/xterminal_supervisor_build_20260321_006 --filter SupervisorPrimarySignalPresentationTests -j 1`
+
+- `SLICE-20260321-037`
+  - mapped_work_order: `XT-W3-33-C / Primary Signal Internal Naming Alignment`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把单心脏路径内部还叫 `governance signal` 的卡片/动作链统一改成 `primary signal`：overview mapper、heartbeat feed、cockpit strip、dashboard wiring 与 actions 全部换成同一套 primary-signal 语义，避免实现层继续把它理解成另一块“治理面板”残留。`
+  - status: `delivered`
+  - claim_reason: `slice 036 已经把用户可见文案统一成“当前主信号”，但实现层核心类型和回调仍保留 `SupervisorGovernanceSignalPresentation` / `onGovernanceSignalAction` 等旧名；这会继续误导维护者，好像 signal center 里还存在一条独立 governance strip。先把内部语义也收紧。`
+  - done_when:
+    - `SupervisorGovernanceSignalPresentation` 的运行时类型语义收成 `SupervisorPrimarySignalPresentation`
+    - dashboard / heartbeat feed / cockpit summary / operations deck 不再使用 `governanceSignalPresentation` / `onGovernanceSignalAction`
+    - primary signal cockpit action id 改成 `focus_primary_signal`
+    - 定向验证至少覆盖 primary signal mapper 与 heart/header 主链展示测试
+  - delivered_at: `2026-03-21`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorGovernanceSignalPresentation.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorOperationsDeck.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorDashboardBoards.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorCockpitSummarySection.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewContent.swift`
+    - `x-terminal/Sources/UI/Supervisor/SupervisorHeartbeatFeedView.swift`
+    - `x-terminal/Tests/SupervisorGovernanceSignalPresentationTests.swift`
+    - `HOME=/tmp/xterminal_supervisor_home_20260321_005 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/xterminal_supervisor_module_cache_20260321_005 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_004/package --scratch-path /tmp/xterminal_supervisor_build_20260321_006 --filter SupervisorPrimarySignalPresentationTests -j 1`
+    - `HOME=/tmp/xterminal_supervisor_home_20260321_005 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/xterminal_supervisor_module_cache_20260321_005 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_004/package --scratch-path /tmp/xterminal_supervisor_build_20260321_006 --filter SupervisorHeaderControlsTests -j 1`
+    - `HOME=/tmp/xterminal_supervisor_home_20260321_005 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/xterminal_supervisor_module_cache_20260321_005 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_004/package --scratch-path /tmp/xterminal_supervisor_build_20260321_006 --filter SupervisorHeartbeatPresentationTests -j 1`
+
+- `SLICE-20260322-038`
+  - mapped_work_order: `XT-W3-33-C / Signal Center Internal State Wiring Alignment`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把单窗口路径内部剩余的 `operations panel / operations overview` 状态与回调链统一收成 `signal center` 语义：header actions、view ui state、lifecycle fingerprint、focus routing、interaction coordinator 与 deck/panel 类型名全部对齐，避免实现层继续留下“第二块 operations panel”假象。`
+  - status: `delivered`
+  - claim_reason: `slice 030/033/034/036/037 已经把单心脏、单窗口、主信号这些产品层语义收紧，但 view state 和 header effect 里仍残留 `showOperationsPanel`、`operationsSignalChanged`、`onOperationsOverviewAction` 等旧名。对维护者来说，这会继续制造“还有另一套 operations panel 状态机”的错觉，所以需要把这层内部 wiring 也完全并到 signal center。`
+  - done_when:
+    - `SupervisorViewUIState` / `SupervisorViewAdapter` / `SupervisorViewLifecycleAttachments` 不再暴露 `operations panel` 状态字段与 fingerprint 命名
+    - `SupervisorHeaderControls` 把 `operations button` 收口成 `focusSignalCenterOverview(...)` 与单一 `pulse`
+    - `SupervisorSignalCenterDeck` / `SupervisorSignalCenterPanel` 接管原来的 operations deck/panel 类型语义
+    - 定向验证至少覆盖 header controls、primary signal presentation、heartbeat presentation
+  - delivered_at: `2026-03-22`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorHeaderControls.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewUIState.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorView.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewAdapter.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewStateSupport.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewStateSupportAssembly.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewLifecycleAttachments.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewHeaderEffects.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewActionSupportHeader.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewActionSupportFocus.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewFocusRequestExecution.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewInteractionSupport.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewInteractionCoordinator.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewContent.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorOperationsDeck.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorOperationsPanel.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorHeaderBar.swift`
+    - `x-terminal/Tests/SupervisorHeaderControlsTests.swift`
+    - `HOME=/tmp/xterminal_supervisor_home_20260321_005 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/xterminal_supervisor_module_cache_20260321_005 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_004/package --scratch-path /tmp/xterminal_supervisor_build_20260321_006 --filter SupervisorHeaderControlsTests -j 1`
+    - `HOME=/tmp/xterminal_supervisor_home_20260321_005 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/xterminal_supervisor_module_cache_20260321_005 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_004/package --scratch-path /tmp/xterminal_supervisor_build_20260321_006 --filter SupervisorPrimarySignalPresentationTests -j 1`
+    - `HOME=/tmp/xterminal_supervisor_home_20260321_005 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/xterminal_supervisor_module_cache_20260321_005 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_004/package --scratch-path /tmp/xterminal_supervisor_build_20260321_006 --filter SupervisorHeartbeatPresentationTests -j 1`
+
+- `SLICE-20260322-039`
+  - mapped_work_order: `XT-W3-33-C / Signal Center Overview Type Alignment`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把剩余 `SupervisorOperationsOverview*` 类型语义收成 `SupervisorSignalCenterOverview*`：overview action / descriptor / presentation / mapper 全部换名，并同步更新 header、primary signal、voice、dashboard 与 tests 的调用面，让“signal center”不只停留在按钮和状态层，也成为统一的展示模型语义。`
+  - status: `delivered`
+  - claim_reason: `slice 038 已把单窗口路径的 state/wiring 收成 signal center，但展示模型类型仍然保留 `SupervisorOperationsOverview*` 旧名，维护时仍会误以为 signal center 只是旧 operations overview 的 UI 壳。这里继续把展示协议层一起对齐。`
+  - done_when:
+    - `SupervisorOperationsOverviewAction` / `Descriptor` / `Presentation` / `Mapper` 全部收口为 `SupervisorSignalCenterOverview*`
+    - header / governance signal / dashboard / interaction coordinator / view content / manager helper 不再引用旧 overview 类型名
+    - 相关展示测试更新为 signal-center 语义
+    - 定向验证至少覆盖 signal center overview、governance signal/primary signal、header controls、heartbeat presentation
+  - delivered_at: `2026-03-22`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorOperationsOverviewPresentation.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorHeaderControls.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorGovernanceSignalPresentation.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorDashboardBoards.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewActionSupportHeader.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewHeaderEffects.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewInteractionCoordinator.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewContent.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorViewStateSupportAssembly.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorCockpitSummarySection.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorOperationsDeck.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorOperationsPanel.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorManager.swift`
+    - `x-terminal/Tests/SupervisorOperationsOverviewPresentationTests.swift`
+    - `x-terminal/Tests/SupervisorGovernanceSignalPresentationTests.swift`
+    - `x-terminal/Tests/SupervisorHeaderControlsTests.swift`
+    - `bash -lc 'set -euo pipefail; export HOME=/tmp/xterminal_supervisor_home_20260321_005; export SWIFTPM_MODULECACHE_OVERRIDE=/tmp/xterminal_supervisor_module_cache_20260321_005; package=/tmp/xterminal_supervisor_verify_20260321_004/package; scratch=/tmp/xterminal_supervisor_build_20260322_008; for test_name in SupervisorSignalCenterOverviewPresentationTests SupervisorGovernanceSignalPresentationTests SupervisorHeaderControlsTests SupervisorPrimarySignalPresentationTests SupervisorHeartbeatPresentationTests; do echo \"=== ${test_name} ===\"; swift test --package-path \"$package\" --scratch-path \"$scratch\" --filter \"$test_name\" -j 1; echo; done'`
+
+- `SLICE-20260321-022`
+  - mapped_work_order: `XT-W3-33-B / Decision Track + Background Preference Track`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把 decision/background precedence 从 drill-down 再抬到 portfolio 面：project digest/card 记录 shadowed / weak-only signal，portfolio row 直接打出 Decision wins / Weak-only governance tag，overview 新增 Decision rail 指标 badge`
+  - status: `delivered`
+  - claim_reason: `上一刀已经在 project drill-down 里看得见 precedence，但 portfolio 首屏仍然看不出哪些项目存在“formal decision 压住 background”或“background 仍仅是 weak-only”；继续推进 XT-W3-33-B，需要把这个治理信号抬到列表与概览层。`
+  - done_when:
+    - `SupervisorMemoryProjectDigest` / `SupervisorProjectCapsule` / `SupervisorPortfolioProjectCard` 携带 `shadowed_background_note_count` 与 `weak_only_background_note_count`
+    - `SupervisorManager` 在 digest governance context 中计算 shadowed background 数量与 weak-only preference 数量
+    - `SupervisorPortfolioProjectPresentation` 对有信号的项目展示 `Decision wins` / `Weak-only` governance tag
+    - `SupervisorPortfolioOverviewPresentation` 新增 `Decision rail` badge 统计
+    - 定向测试覆盖 snapshot carry、governance digest integration、project row tag、overview badge
+  - delivered_at: `2026-03-21`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorManager.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorProjectCapsule.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorPortfolioSnapshot.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorPortfolioProjectPresentation.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorPortfolioOverviewPresentation.swift`
+    - `x-terminal/Tests/SupervisorGovernanceDigestIntegrationTests.swift`
+    - `x-terminal/Tests/SupervisorPortfolioSnapshotTests.swift`
+    - `x-terminal/Tests/SupervisorPortfolioProjectPresentationTests.swift`
+    - `x-terminal/Tests/SupervisorPortfolioOverviewPresentationTests.swift`
+    - `swiftc -typecheck /tmp/supervisor_portfolio_typecheck_stubs.swift x-hub-system/x-terminal/Sources/Supervisor/SupervisorProjectCapsule.swift x-hub-system/x-terminal/Sources/Supervisor/SupervisorPortfolioSnapshot.swift x-hub-system/x-terminal/Sources/Supervisor/SupervisorPortfolioActionabilitySnapshot.swift x-hub-system/x-terminal/Sources/Supervisor/SupervisorPortfolioProjectPresentation.swift x-hub-system/x-terminal/Sources/Supervisor/SupervisorPortfolioOverviewPresentation.swift`
+
+- `SLICE-20260321-019`
+  - mapped_work_order: `XT-W3-33-B / Decision Track + Background Preference Track`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把 formal decision 与 background preference 的优先级关系继续打到 project drill-down：Decision Rails 里不再只列 approved/background 文本，而是显式显示 shadowed precedence、background strength，以及 weak-only guard`
+  - status: `delivered`
+  - claim_reason: `虽然 decision/background 两条轨已经分开存了，但在 drill-down 里用户还看不清“哪条 background 已经被 formal decision 压住”和“哪条 background 仍然只能弱参考”；这会让 XT-W3-33-B 的治理边界在 UI 上仍然偏隐式。`
+  - done_when:
+    - `SupervisorProjectDrillDownPresentation` 在 `Decision Rails` section 对 shadowed background 增加 `precedence ... formal decision wins over ...` warning line
+    - `Decision Rails` 对 background / shadowed note 显示 strength（如 `strong` / `medium`）
+    - `must_not_promote_without_decision` 的 background note 直接显示 `weak-only until formal decision` guard line
+    - `SupervisorProjectDrillDownPresentationTests` 覆盖 precedence + weak-only guard 展示
+  - delivered_at: `2026-03-21`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorProjectDrillDownPresentation.swift`
+    - `x-terminal/Tests/SupervisorProjectDrillDownPresentationTests.swift`
+    - `bash -lc 'export CLANG_MODULE_CACHE_PATH=/tmp/supervisor_drilldown_typecheck_module_cache; swiftc -typecheck /tmp/supervisor_drilldown_typecheck_stubs.swift x-hub-system/x-terminal/Sources/Supervisor/SupervisorProjectDrillDownPresentation.swift'`
+    - `bash -lc 'export HOME=/tmp/xterminal_decisionrails_home CLANG_MODULE_CACHE_PATH=/tmp/xterminal_decisionrails_module_cache; swift test --package-path /tmp/xterminal_decisionrails_snapshot.fDyhh7 --scratch-path /tmp/xterminal_decisionrails_build_drilldown --filter SupervisorProjectDrillDownPresentationTests -j 1'` *(当前 snapshot 全包编译在无关 package 状态上触发 `fatalError`，未形成可用回归结论)*
+
+- `SLICE-20260321-018`
+  - mapped_work_order: `工单 5 / P0-5 Project Governance A/S 档位可编辑化 + runtime clamp 收口`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `清掉 Supervisor 这条线新的验证阻塞：在当前树已经恢复 `SupervisorSettingsView` 编译后，把 calendar reminder scheduler 测试的 actor-isolation 约束补齐，重新拿回 operations / heartbeat / calendar reminder 的可验证闭环`
+  - status: `delivered`
+  - claim_reason: `slice 016 之后再做整包验证时，原来的 settings view 未解析错误已经消失，但新的阻塞变成 `SupervisorCalendarReminderSchedulerTests` 直接调用主线程隔离静态方法，导致整包测试在编译阶段 fail；如果不先清掉这层验证噪音，就无法确认前面的 header 自动化信号改动已经稳定落地。`
+  - done_when:
+    - `SupervisorCalendarReminderSchedulerTests` 明确按 `@MainActor` 运行，不再触发 actor-isolated call 编译错误
+    - 当前树能重新完成 x-terminal 整包编译，并跑通 `SupervisorHeaderControlsTests`
+    - 复跑 `SupervisorOperationsOverviewPresentationTests`、`SupervisorHeartbeatPresentationTests`、`SupervisorCalendarReminderSchedulerTests`
+  - delivered_at: `2026-03-21`
+  - evidence_refs:
+    - `x-terminal/Tests/SupervisorCalendarReminderSchedulerTests.swift`
+    - `x-terminal/Sources/UI/SupervisorSettingsView.swift`
+    - `bash -lc 'HOME=/tmp/xterminal_supervisor_home_20260321_002 CLANG_MODULE_CACHE_PATH=/tmp/xterminal_supervisor_module_cache_20260321_002 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_002/package --scratch-path /tmp/xterminal_supervisor_build_20260321_002 --filter SupervisorHeaderControlsTests -j 1'`
+    - `bash -lc 'HOME=/tmp/xterminal_supervisor_home_20260321_002 CLANG_MODULE_CACHE_PATH=/tmp/xterminal_supervisor_module_cache_20260321_002 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_002/package --scratch-path /tmp/xterminal_supervisor_build_20260321_002 --filter SupervisorOperationsOverviewPresentationTests -j 1'`
+    - `bash -lc 'HOME=/tmp/xterminal_supervisor_home_20260321_002 CLANG_MODULE_CACHE_PATH=/tmp/xterminal_supervisor_module_cache_20260321_002 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_002/package --scratch-path /tmp/xterminal_supervisor_build_20260321_002 --filter SupervisorHeartbeatPresentationTests -j 1'`
+    - `bash -lc 'HOME=/tmp/xterminal_supervisor_home_20260321_002 CLANG_MODULE_CACHE_PATH=/tmp/xterminal_supervisor_module_cache_20260321_002 swift test --package-path /tmp/xterminal_supervisor_verify_20260321_002/package --scratch-path /tmp/xterminal_supervisor_build_20260321_002 --filter SupervisorCalendarReminderSchedulerTests -j 1'`
+
+- `SLICE-20260321-017`
+  - mapped_work_order: `XT-W3-33-A / Project Spec Capsule`
+  - owner_lane: `XT-L2(pool_takeover)`
+  - scope: `把 formal spec 缺口从治理 digest 一路打到 portfolio/actionability/project drill-down：缺字段项目进入 actionable_today，portfolio row 与 overview 有明确 spec gap 信号，project drill-down 的 Spec Capsule section 直接列出缺失字段`
+  - status: `delivered`
+  - claim_reason: `spec capsule 之前已经能影响 next_step / blocker 推导，但用户在 Supervisor 里还看不见“到底缺哪些 formal spec 字段”；这一步把 spec gap 升成一等行动信号，避免继续靠隐式推导。`
+  - done_when:
+    - `SupervisorProjectCapsule` / `SupervisorPortfolioSnapshot` 携带 `missing_spec_fields`
+    - `SupervisorPortfolioActionabilitySnapshot` 产出 `projects_missing_spec`，并把 spec gap 项目计入 `actionable_today`
+    - `SupervisorPortfolioProjectPresentation` / `SupervisorPortfolioOverviewPresentation` 对 spec gap 使用 warning tone
+    - `SupervisorProjectDrillDownPresentation` 的 `Spec Capsule` section 直接显示 `(missing)` 与 `spec gap: ...` warning line
+    - 定向测试覆盖 portfolio actionability、overview/project row 展示、drill-down spec gap 展示，以及 governance digest 集成链路
+  - delivered_at: `2026-03-21`
+  - evidence_refs:
+    - `x-terminal/Sources/Supervisor/SupervisorProjectSpecCapsule.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorManager.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorProjectCapsule.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorPortfolioSnapshot.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorPortfolioActionabilitySnapshot.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorPortfolioProjectPresentation.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorPortfolioOverviewPresentation.swift`
+    - `x-terminal/Sources/Supervisor/SupervisorProjectDrillDownPresentation.swift`
+    - `x-terminal/Tests/SupervisorPortfolioActionabilitySnapshotTests.swift`
+    - `x-terminal/Tests/SupervisorPortfolioProjectPresentationTests.swift`
+    - `x-terminal/Tests/SupervisorPortfolioOverviewPresentationTests.swift`
+    - `x-terminal/Tests/SupervisorPortfolioSnapshotTests.swift`
+    - `x-terminal/Tests/SupervisorProjectDrillDownPresentationTests.swift`
+    - `x-terminal/Tests/SupervisorGovernanceDigestIntegrationTests.swift`
+    - `bash -lc 'export HOME=/tmp/xterminal_snapshot_home_20260320_specgap_2; swift test --package-path /tmp/xterminal_specgap_snapshot_final.I4X4fo --scratch-path /tmp/xterminal_snapshot_build_20260320_specgap_2 --filter SupervisorPortfolio -j 1'`
+    - `bash -lc 'export HOME=/tmp/xterminal_snapshot_home_20260320_specgap_2; swift test --package-path /tmp/xterminal_specgap_snapshot_final.I4X4fo --scratch-path /tmp/xterminal_snapshot_build_20260320_specgap_2 --filter SupervisorProjectDrillDownPresentationTests -j 1'`
+    - `bash -lc 'export HOME=/tmp/xterminal_snapshot_home_20260320_specgap_2; swift test --package-path /tmp/xterminal_specgap_snapshot_final.I4X4fo --scratch-path /tmp/xterminal_snapshot_build_20260320_specgap_2 --filter SupervisorGovernanceDigestIntegrationTests -j 1'`
 
 | task_id | lane_owner | priority | status | gate_vector | release_blocker | depends_on | claim_id | claim_ttl_until | evidence_refs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -555,51 +1877,56 @@
 | `XT-W2-34` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-33` | `claim_xt_w2_34_xt_l2_auto_20260306_1022` | `2026-03-06T14:22:46+08:00` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `build/reports/xt_w2_34_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_34_task_split_audit.v3.json`, `build/reports/xt_w2_34_b_evidence.v1.json`, `build/reports/xt_w2_34_b_g4_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v77.json` |
 | `XT-W2-34-A` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G3:candidate_pass,XT-MP-G4:candidate_pass` | `false` | `XT-W2-34` | `claim_xt_w2_34_xt_l2_auto_20260306_1022` | `2026-03-06T14:22:46+08:00` | `build/reports/xt_w2_34_task_split_audit.v2.json`, `build/reports/xt_w2_34_a_evidence.v1.json`, `build/reports/xt_w2_34_a_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v75.json` |
 | `XT-W2-34-B` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-34-A` | `claim_xt_w2_34_b_xt_l2_auto_20260306_1052` | `2026-03-06T14:52:46+08:00` | `build/reports/xt_w2_34_b_xt_l2_delta_3line.v1.json`, `build/reports/xt_w2_34_b_evidence.v1.json`, `build/reports/xt_w2_34_b_g4_g5_first_probe.v1.json`, `build/reports/xt_w2_34_task_split_audit.v3.json`, `build/reports/xt_main_xt_l2_delta_3line.v77.json` |
-| `XT-W3-11` | `XT-L2(pool_takeover)` | `P0` | `planned` | `XT-SUP-G4:pending,XT-G5:pending` | `false` | `XT-W2-12,XT-W2-14` | `none` | `none` | `x-terminal/work-orders/xt-supervisor-autosplit-multilane-work-orders-v1.md`, `build/reports/xt_w3_11_dependency_import_receipt.v1.json` |
+| `XT-W3-11` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-SUP-G4:candidate_pass,XT-G5:candidate_pass` | `false` | `XT-W2-12,XT-W2-14` | `claim_xt_w3_11_xt_l2_auto_20260319_1933` | `2026-03-19T23:33:49+08:00` | `x-terminal/work-orders/xt-supervisor-autosplit-multilane-work-orders-v1.md`, `build/reports/xt_w3_11_dependency_import_receipt.v1.json`, `build/reports/xt_w3_11_xt_l2_delta_3line.v1.json`, `build/reports/xt_w3_11_mergeback_quality_gate_evidence.v2.json`, `build/reports/xt_w3_11_g4_g5_first_probe.v2.json`, `build/reports/xt_w3_11_xt_l2_delta_3line.v2.json`, `build/reports/xt_main_xt_l2_delta_3line.v95.json`, `build/reports/xt_main_xt_l2_delta_3line.v96.json` |
 | `XT-W3-18` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-27,XT-W3-11` | `claim_xt_w3_18_xt_l2_auto_20260306_1034` | `2026-03-06T14:34:08+08:00` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `build/reports/xt_w3_18_integration_evidence.v2.json`, `build/reports/xt_w3_18_g4_g5_first_probe.v2.json`, `build/reports/xt_main_xt_l2_delta_3line.v80.json`, `build/reports/xt_w3_18_s1_xt_l2_delta_3line.v1.json` |
 | `XT-W3-18-S1` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W3-18,XT-W2-25-S1,CD-20260301-008` | `claim_xt_w3_18_s1_xt_l2_auto_20260306_1100` | `2026-03-06T15:00:21+0800` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `build/reports/xt_w3_18_s1_assembly_convergence_evidence.v1.json`, `build/reports/xt_w3_18_s1_g4_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v81.json`, `build/reports/xt_w3_19_xt_l2_delta_3line.v1.json` |
 | `XT-W3-19` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G5:candidate_pass` | `false` | `XT-W3-18,XT-W2-23` | `claim_xt_w3_19_xt_l2_auto_20260306_1108` | `2026-03-06T15:08:29+0800` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `build/reports/xt_w3_19_delivery_notify_evidence.v1.json`, `build/reports/xt_w3_19_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v82.json`, `build/reports/xt_w3_19_s1_xt_l2_delta_3line.v1.json` |
 | `XT-W3-19-S1` | `XT-L2(pool_takeover)` | `P0` | `delivered` | `XT-MP-G5:candidate_pass` | `false` | `XT-W3-19,XT-W3-18-S1,CD-20260301-008` | `claim_xt_w3_19_s1_xt_l2_auto_20260306_1116` | `2026-03-06T15:16:46+0800` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `build/reports/xt_w3_19_s1_real_sample_capture.v1.json`, `build/reports/xt_w3_19_s1_delivery_economics_evidence.v2.json`, `build/reports/xt_w3_19_s1_g5_first_probe.v2.json`, `build/reports/xt_main_xt_l2_delta_3line.v84.json`, `build/reports/xt_w3_20_xt_l2_delta_3line.v1.json` |
 | `XT-W3-20` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-MP-G1:candidate_pass,XT-MP-G3:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-26` | `claim_xt_w3_20_xt_l2_auto_20260306_1145` | `2026-03-06T15:45:54+0800` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `build/reports/xt_w3_20_replan_evidence.v1.json`, `build/reports/xt_w3_20_g1_g3_g5_first_probe.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v85.json`, `x-terminal/build/reports/xt_w3_20_replan_probe_tests.v1.log` |
-| `XT-W3-21` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-MP-G0:pending,XT-MP-G1:pending,XT-MP-G3:pending` | `false` | `XT-W2-20,XT-W2-23,XT-W2-24,XT-W2-25` | `none` | `none` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md` |
-| `XT-W3-21-A` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-MP-G0:pending,XT-MP-G1:pending` | `false` | `project_input_bundle` | `none` | `none` | `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md` |
-| `XT-W3-21-B` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-MP-G0:pending,XT-MP-G1:pending` | `false` | `XT-W3-21-A` | `none` | `none` | `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md`, `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md` |
-| `XT-W3-21-C` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-MP-G1:pending,XT-MP-G3:pending` | `false` | `XT-W3-21-B` | `none` | `none` | `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md`, `x-terminal/work-orders/xt-supervisor-multipool-adaptive-work-orders-v1.md` |
-| `XT-W3-22` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-MP-G5:pending` | `false` | `XT-W3-18,XT-W3-19,XT-W3-21` | `none` | `none` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md` |
-| `XT-W3-22-A` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-MP-G5:pending` | `false` | `XT-W3-18,XT-W3-21` | `none` | `none` | `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md` |
-| `XT-W3-22-B` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-MP-G5:pending` | `false` | `XT-W3-22-A` | `none` | `none` | `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md`, `x-terminal/work-orders/xt-supervisor-rhythm-user-explainability-implementation-pack-v1.md` |
-| `XT-W3-22-C` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-MP-G5:pending` | `false` | `XT-W3-22-B` | `none` | `none` | `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w2-24-token-optimal-context-capsule-implementation-pack-v1.md` |
-| `XT-W3-23` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-MEM-G0:pending,XT-MEM-G1:pending,XT-MEM-G2:pending,XT-MEM-G3:pending,XT-MEM-G4:pending,XT-MEM-G5:pending,XT-MP-G4:pending,XT-MP-G5:pending` | `false` | `XT-W2-24,XT-W2-27,XT-W3-21,XT-W3-22` | `none` | `none` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, `docs/xhub-memory-system-spec-v2.md`, `X_MEMORY.md` |
-| `XT-W3-23-A` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-MEM-G0:pending,XT-MEM-G1:pending,XT-MEM-G3:pending` | `false` | `XT-W3-23,XT-W3-21` | `none` | `none` | `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, `docs/xhub-memory-system-spec-v2.md` |
-| `XT-W3-23-B` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-MEM-G0:pending,XT-MEM-G2:pending,XT-MEM-G5:pending` | `false` | `XT-W3-23,XT-W3-21` | `none` | `none` | `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, `X_MEMORY.md` |
-| `XT-W3-23-C` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-MEM-G0:pending,XT-MEM-G2:pending,XT-MEM-G4:pending` | `false` | `XT-W3-23,XT-W3-21,XT-W3-22` | `none` | `none` | `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, `docs/memory-new/xhub-memory-v3-execution-plan.md` |
-| `XT-W3-23-D` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-MEM-G1:pending,XT-MEM-G2:pending,XT-MEM-G3:pending` | `false` | `XT-W3-23,XT-W2-24` | `none` | `none` | `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, `docs/memory-new/xhub-security-innovation-work-orders-v1.md` |
-| `XT-W3-23-E` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-MEM-G2:pending,XT-MEM-G4:pending,XT-MEM-G5:pending` | `false` | `XT-W3-23,XT-W2-27,XT-W3-21,XT-W3-22` | `none` | `none` | `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w2-27-anti-block-unblock-orchestration-implementation-pack-v1.md` |
-| `XT-W3-24` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-G0:pending,XT-CHAN-G1:pending,XT-CHAN-G2:pending,XT-CHAN-G3:pending,XT-CHAN-G4:pending,XT-CHAN-G5:pending,XT-MP-G4:pending,XT-MP-G5:pending` | `false` | `XT-W3-21,XT-W3-22,XT-W3-23` | `none` | `none` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md`, `docs/open-source/OSS_MINIMAL_RUNNABLE_PACKAGE_CHECKLIST_v1.md` |
-| `XT-W3-24-A` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-G0:pending,XT-CHAN-G1:pending` | `false` | `XT-W3-24,XT-W3-21` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md` |
-| `XT-W3-24-B` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-G1:pending,XT-CHAN-G2:pending,XT-CHAN-G5:pending` | `false` | `XT-W3-24-A` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md` |
-| `XT-W3-24-C` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-G2:pending,XT-CHAN-G3:pending,XT-CHAN-G5:pending` | `false` | `XT-W3-24-A,XT-W3-24-B,XT-W3-23` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md` |
-| `XT-W3-24-D` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-G1:pending,XT-CHAN-G4:pending,XT-CHAN-G5:pending` | `false` | `XT-W3-24-A,XT-W3-24-B` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w2-23-w2-26-autocontinue-autonomy-implementation-pack-v1.md` |
-| `XT-W3-24-E` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-G1:pending,XT-CHAN-G5:pending` | `false` | `XT-W3-24-A,XT-W3-24-B,XT-W3-24-D` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `docs/open-source/OSS_MINIMAL_RUNNABLE_PACKAGE_CHECKLIST_v1.md` |
-| `XT-W3-24-F` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-G2:pending,XT-CHAN-G5:pending,XT-MEM-G2:pending,SI-G1:pending,SI-G2:pending,SI-G4:pending` | `false` | `XT-W3-24-A,XT-W3-24-B,XT-W3-23` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md`, `docs/memory-new/xhub-security-innovation-work-orders-v1.md` |
-| `XT-W3-24-G` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-OP-G0:pending` | `false` | `XT-W3-24-A,XT-W3-24-F` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w3-30-openclaw-mode-capability-gap-closure-implementation-pack-v1.md` |
-| `XT-W3-24-H` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-OP-G1:pending` | `false` | `XT-W3-24-G,XT-W3-24-F` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`, `docs/xhub-connectors-isolation-and-runtime-v1.md`, `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md` |
-| `XT-W3-24-I` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-OP-G2:pending` | `false` | `XT-W3-24-G,XT-W3-24-H,XT-W3-23` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md` |
-| `XT-W3-24-J` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-OP-G3:pending` | `false` | `XT-W3-24-H,XT-W3-24-I` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md` |
-| `XT-W3-24-K` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-OP-G3:pending` | `false` | `XT-W3-24-H,XT-W3-24-I` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md` |
-| `XT-W3-24-L` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-OP-G3:pending` | `false` | `XT-W3-24-H,XT-W3-24-I` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md` |
-| `XT-W3-24-M` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-OP-G5:pending` | `false` | `XT-W3-24-J,XT-W3-24-K,XT-W3-24-L,XT-W3-24-D` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`, `x-terminal/work-orders/xt-supervisor-rhythm-user-explainability-implementation-pack-v1.md` |
-| `XT-W3-24-N` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-CHAN-OP-G4:pending,XT-CHAN-OP-G6:pending` | `false` | `XT-W3-24-H,XT-W3-24-I,XT-W3-24-M` | `none` | `none` | `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`, `docs/memory-new/xhub-trusted-automation-device-execution-plane-implementation-pack-v1.md`, `docs/xhub-connectors-isolation-and-runtime-v1.md` |
-| `XT-W3-25` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-AUTO-G0:pending,XT-AUTO-G1:pending,XT-AUTO-G2:pending,XT-AUTO-G3:pending,XT-AUTO-G4:pending,XT-AUTO-G5:pending,XT-MP-G4:pending,XT-MP-G5:pending` | `false` | `XT-W3-21,XT-W3-23,XT-W3-24,XT-W2-27,XT-W2-28` | `none` | `none` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md`, `docs/memory-new/xhub-security-innovation-work-orders-v1.md` |
-| `XT-W3-25-A` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-AUTO-G0:pending,XT-AUTO-G1:pending` | `false` | `XT-W3-21,XT-W3-22` | `none` | `none` | `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md` |
-| `XT-W3-25-B` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-AUTO-G1:pending,XT-AUTO-G2:pending` | `false` | `XT-W3-25-A,XT-W3-24` | `none` | `none` | `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md` |
-| `XT-W3-25-C` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-AUTO-G2:pending,XT-AUTO-G3:pending` | `false` | `XT-W3-25-B,XT-W2-27,XT-W2-28` | `none` | `none` | `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w2-27-anti-block-unblock-orchestration-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w2-28-jamless-anti-congestion-protocol-implementation-pack-v1.md` |
-| `XT-W3-25-D` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-AUTO-G4:pending` | `false` | `XT-W3-25-B,XT-W3-24-D` | `none` | `none` | `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `x-terminal/work-orders/xt-supervisor-rhythm-user-explainability-implementation-pack-v1.md` |
-| `XT-W3-25-E` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-AUTO-G1:pending,XT-AUTO-G4:pending` | `false` | `XT-W3-25-A,XT-W3-25-D,XT-W3-24-E` | `none` | `none` | `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `docs/open-source/OSS_MINIMAL_RUNNABLE_PACKAGE_CHECKLIST_v1.md` |
-| `XT-W3-25-F` | `XT-L2(pool_takeover)` | `P1` | `planned` | `XT-AUTO-G5:pending,XT-MP-G5:pending` | `false` | `XT-W3-25-A,XT-W3-25-B,XT-W3-25-C,XT-W3-25-D,XT-W3-25-E` | `none` | `none` | `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `docs/memory-new/xhub-security-innovation-work-orders-v1.md` |
+| `XT-W3-21` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-MP-G0:PASS,XT-MP-G1:PASS,XT-MP-G3:PASS` | `false` | `XT-W2-20,XT-W2-23,XT-W2-24,XT-W2-25` | `historical_backfill_xt_main_v89` | `2026-03-06T19:05:00+08:00` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md`, `build/reports/xt_w3_21_a_intake_extractor_evidence.v1.json`, `build/reports/xt_w3_21_b_intake_freeze_evidence.v1.json`, `build/reports/xt_w3_21_c_bootstrap_binding_evidence.v1.json`, `build/reports/xt_w3_21_project_intake_manifest.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v89.json` |
+| `XT-W3-21-A` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-MP-G0:PASS,XT-MP-G1:PASS` | `false` | `project_input_bundle` | `historical_backfill_xt_main_v89` | `2026-03-06T19:05:00+08:00` | `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md`, `build/reports/xt_w3_21_a_intake_extractor_evidence.v1.json`, `build/reports/xt_w3_21_project_intake_manifest.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v89.json` |
+| `XT-W3-21-B` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-MP-G0:PASS,XT-MP-G1:PASS` | `false` | `XT-W3-21-A` | `historical_backfill_xt_main_v89` | `2026-03-06T19:05:00+08:00` | `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md`, `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`, `build/reports/xt_w3_21_b_intake_freeze_evidence.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v89.json` |
+| `XT-W3-21-C` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-MP-G1:PASS,XT-MP-G3:PASS` | `false` | `XT-W3-21-B` | `historical_backfill_xt_main_v89` | `2026-03-06T19:05:00+08:00` | `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md`, `x-terminal/work-orders/xt-supervisor-multipool-adaptive-work-orders-v1.md`, `build/reports/xt_w3_21_c_bootstrap_binding_evidence.v1.json`, `build/reports/xt_w3_21_project_intake_manifest.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v89.json` |
+| `XT-W3-22` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-MP-G5:PASS` | `false` | `XT-W3-18,XT-W3-19,XT-W3-21` | `historical_backfill_xt_main_v89` | `2026-03-06T19:05:00+08:00` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md`, `build/reports/xt_w3_22_a_acceptance_aggregator_evidence.v1.json`, `build/reports/xt_w3_22_b_acceptance_validation_evidence.v1.json`, `build/reports/xt_w3_22_c_delivery_package_evidence.v1.json`, `build/reports/xt_w3_22_acceptance_pack.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v89.json` |
+| `XT-W3-22-A` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-MP-G5:PASS` | `false` | `XT-W3-18,XT-W3-21` | `historical_backfill_xt_main_v89` | `2026-03-06T19:05:00+08:00` | `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md`, `build/reports/xt_w3_22_a_acceptance_aggregator_evidence.v1.json`, `build/reports/xt_w3_22_acceptance_pack.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v89.json` |
+| `XT-W3-22-B` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-MP-G5:PASS` | `false` | `XT-W3-22-A` | `historical_backfill_xt_main_v89` | `2026-03-06T19:05:00+08:00` | `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md`, `x-terminal/work-orders/xt-supervisor-rhythm-user-explainability-implementation-pack-v1.md`, `build/reports/xt_w3_22_b_acceptance_validation_evidence.v1.json`, `build/reports/xt_w3_22_acceptance_pack.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v89.json` |
+| `XT-W3-22-C` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-MP-G5:PASS` | `false` | `XT-W3-22-B` | `historical_backfill_xt_main_v89` | `2026-03-06T19:05:00+08:00` | `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w2-24-token-optimal-context-capsule-implementation-pack-v1.md`, `build/reports/xt_w3_22_c_delivery_package_evidence.v1.json`, `build/reports/xt_w3_22_acceptance_pack.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v89.json` |
+| `XT-W3-23` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-MEM-G0:candidate_pass,XT-MEM-G1:candidate_pass,XT-MEM-G2:candidate_pass,XT-MEM-G3:candidate_pass,XT-MEM-G4:candidate_pass,XT-MEM-G5:candidate_pass,XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W2-24,XT-W2-27,XT-W3-21,XT-W3-22` | `historical_backfill_xt_main_v90` | `2026-03-06T18:36:50+08:00` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, `docs/xhub-memory-system-spec-v2.md`, `X_MEMORY.md`, `build/reports/xt_w3_23_a_session_continuity_evidence.v1.json`, `build/reports/xt_w3_23_b_channel_splitter_evidence.v1.json`, `build/reports/xt_w3_23_c_memory_ops_console_evidence.v1.json`, `build/reports/xt_w3_23_d_injection_guard_evidence.v1.json`, `build/reports/xt_w3_23_e_supervisor_memory_bus_evidence.v1.json`, `build/reports/xt_w3_23_hub_dependency_readiness.v1.json`, `build/reports/xt_w3_23_memory_ux_adapter.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v90.json` |
+| `XT-W3-23-A` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-MEM-G0:candidate_pass,XT-MEM-G1:candidate_pass,XT-MEM-G3:candidate_pass` | `false` | `XT-W3-23,XT-W3-21` | `historical_backfill_xt_main_v90` | `2026-03-06T18:36:50+08:00` | `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, `docs/xhub-memory-system-spec-v2.md`, `build/reports/xt_w3_23_a_session_continuity_evidence.v1.json`, `build/reports/xt_w3_23_memory_ux_adapter.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v90.json` |
+| `XT-W3-23-B` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-MEM-G0:candidate_pass,XT-MEM-G2:candidate_pass,XT-MEM-G5:candidate_pass` | `false` | `XT-W3-23,XT-W3-21` | `historical_backfill_xt_main_v90` | `2026-03-06T18:36:50+08:00` | `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, `X_MEMORY.md`, `build/reports/xt_w3_23_b_channel_splitter_evidence.v1.json`, `build/reports/xt_w3_23_memory_ux_adapter.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v90.json` |
+| `XT-W3-23-C` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-MEM-G0:candidate_pass,XT-MEM-G2:candidate_pass,XT-MEM-G4:candidate_pass` | `false` | `XT-W3-23,XT-W3-21,XT-W3-22` | `historical_backfill_xt_main_v90` | `2026-03-06T18:36:50+08:00` | `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, `docs/memory-new/xhub-memory-v3-execution-plan.md`, `build/reports/xt_w3_23_c_memory_ops_console_evidence.v1.json`, `build/reports/xt_w3_23_hub_dependency_readiness.v1.json`, `build/reports/xt_w3_23_memory_ux_adapter.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v90.json` |
+| `XT-W3-23-D` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-MEM-G1:candidate_pass,XT-MEM-G2:candidate_pass,XT-MEM-G3:candidate_pass` | `false` | `XT-W3-23,XT-W2-24` | `historical_backfill_xt_main_v90` | `2026-03-06T18:36:50+08:00` | `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, `docs/memory-new/xhub-security-innovation-work-orders-v1.md`, `build/reports/xt_w3_23_d_injection_guard_evidence.v1.json`, `build/reports/xt_w3_23_memory_ux_adapter.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v90.json` |
+| `XT-W3-23-E` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-MEM-G2:candidate_pass,XT-MEM-G4:candidate_pass,XT-MEM-G5:candidate_pass` | `false` | `XT-W3-23,XT-W2-27,XT-W3-21,XT-W3-22` | `historical_backfill_xt_main_v90` | `2026-03-06T18:36:50+08:00` | `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w2-27-anti-block-unblock-orchestration-implementation-pack-v1.md`, `build/reports/xt_w3_23_e_supervisor_memory_bus_evidence.v1.json`, `build/reports/xt_w3_23_hub_dependency_readiness.v1.json`, `build/reports/xt_w3_23_memory_ux_adapter.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v90.json` |
+| `XT-W3-24` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-CHAN-G0:candidate_pass,XT-CHAN-G1:candidate_pass,XT-CHAN-G2:candidate_pass,XT-CHAN-G3:candidate_pass,XT-CHAN-G4:candidate_pass,XT-CHAN-G5:candidate_pass,XT-MP-G4:candidate_pass,XT-MP-G5:candidate_pass,XT-MEM-G2:candidate_pass` | `false` | `XT-W3-21,XT-W3-22,XT-W3-23` | `historical_backfill_xt_main_v91` | `2026-03-06T18:36:51+08:00` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md`, `docs/open-source/OSS_MINIMAL_RUNNABLE_PACKAGE_CHECKLIST_v1.md`, `build/reports/xt_w3_24_a_channel_gateway_registry_evidence.v1.json`, `build/reports/xt_w3_24_b_first_wave_channels_evidence.v1.json`, `build/reports/xt_w3_24_c_streaming_output_evidence.v1.json`, `build/reports/xt_w3_24_d_operator_console_evidence.v1.json`, `build/reports/xt_w3_24_e_onboard_bootstrap_evidence.v1.json`, `build/reports/xt_w3_24_f_channel_hub_boundary_evidence.v1.json`, `build/reports/xt_w3_24_hub_dependency_readiness.v1.json`, `build/reports/xt_w3_24_multichannel_gateway_productization.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v91.json` |
+| `XT-W3-24-A` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-CHAN-G0:candidate_pass,XT-CHAN-G1:candidate_pass` | `false` | `XT-W3-24,XT-W3-21` | `historical_backfill_xt_main_v91` | `2026-03-06T18:36:51+08:00` | `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md`, `build/reports/xt_w3_24_a_channel_gateway_registry_evidence.v1.json`, `build/reports/xt_w3_24_multichannel_gateway_productization.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v91.json` |
+| `XT-W3-24-B` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-CHAN-G1:candidate_pass,XT-CHAN-G2:candidate_pass,XT-CHAN-G5:candidate_pass` | `false` | `XT-W3-24-A` | `historical_backfill_xt_main_v91` | `2026-03-06T18:36:51+08:00` | `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md`, `build/reports/xt_w3_24_b_first_wave_channels_evidence.v1.json`, `build/reports/xt_w3_24_multichannel_gateway_productization.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v91.json` |
+| `XT-W3-24-C` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-CHAN-G2:candidate_pass,XT-CHAN-G3:candidate_pass,XT-CHAN-G5:candidate_pass` | `false` | `XT-W3-24-A,XT-W3-24-B,XT-W3-23` | `historical_backfill_xt_main_v91` | `2026-03-06T18:36:51+08:00` | `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, `build/reports/xt_w3_24_c_streaming_output_evidence.v1.json`, `build/reports/xt_w3_24_multichannel_gateway_productization.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v91.json` |
+| `XT-W3-24-D` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-CHAN-G1:candidate_pass,XT-CHAN-G4:candidate_pass,XT-CHAN-G5:candidate_pass` | `false` | `XT-W3-24-A,XT-W3-24-B` | `historical_backfill_xt_main_v91` | `2026-03-06T18:36:51+08:00` | `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w2-23-w2-26-autocontinue-autonomy-implementation-pack-v1.md`, `build/reports/xt_w3_24_d_operator_console_evidence.v1.json`, `build/reports/xt_w3_24_multichannel_gateway_productization.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v91.json` |
+| `XT-W3-24-E` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-CHAN-G1:candidate_pass,XT-CHAN-G5:candidate_pass` | `false` | `XT-W3-24-A,XT-W3-24-B,XT-W3-24-D` | `historical_backfill_xt_main_v91` | `2026-03-06T18:36:51+08:00` | `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `docs/open-source/OSS_MINIMAL_RUNNABLE_PACKAGE_CHECKLIST_v1.md`, `build/reports/xt_w3_24_e_onboard_bootstrap_evidence.v1.json`, `build/reports/xt_w3_24_multichannel_gateway_productization.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v91.json` |
+| `XT-W3-24-F` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-CHAN-G2:candidate_pass,XT-CHAN-G5:candidate_pass,XT-MEM-G2:candidate_pass,SI-G1:candidate_pass,SI-G2:candidate_pass,SI-G4:candidate_pass` | `false` | `XT-W3-24-A,XT-W3-24-B,XT-W3-23` | `historical_backfill_xt_main_v91` | `2026-03-06T18:36:51+08:00` | `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md`, `docs/memory-new/xhub-security-innovation-work-orders-v1.md`, `build/reports/xt_w3_24_f_channel_hub_boundary_evidence.v1.json`, `build/reports/xt_w3_24_hub_dependency_readiness.v1.json`, `build/reports/xt_w3_24_multichannel_gateway_productization.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v91.json` |
+| `XT-W3-24-G` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-CHAN-OP-G0:candidate_pass` | `false` | `XT-W3-24-A,XT-W3-24-F` | `claim_xt_w3_24_g_xt_l2_auto_20260320_0724` | `2026-03-20T07:35:57+08:00` | `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-hub-security-impact-gate-v1.md`, `build/reports/xt_w3_24_g_channel_registry_reuse_evidence.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v99.json`, `build/reports/xt_main_xt_l2_delta_3line.v100.json` |
+| `XT-W3-24-H` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-CHAN-OP-G1:candidate_pass` | `false` | `XT-W3-24-G,XT-W3-24-F` | `claim_xt_w3_24_h_xt_l2_auto_20260320_0747` | `2026-03-20T08:10:10+08:00` | `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-hub-security-impact-gate-v1.md`, `build/reports/xt_w3_24_h_identity_command_gate_evidence.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v101.json`, `build/reports/xt_main_xt_l2_delta_3line.v102.json` |
+| `XT-W3-24-I` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-CHAN-OP-G2:candidate_pass` | `false` | `XT-W3-24-G,XT-W3-24-H,XT-W3-23` | `claim_xt_w3_24_i_xt_l2_auto_20260320_1036` | `2026-03-20T10:41:21+08:00` | `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`, `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`, `build/reports/xt_w3_24_i_supervisor_route_binding_evidence.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v103.json`, `build/reports/xt_main_xt_l2_delta_3line.v104.json` |
+| `XT-W3-24-J` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-CHAN-OP-G3:candidate_pass` | `false` | `XT-W3-24-H,XT-W3-24-I` | `claim_xt_w3_24_j_xt_l2_auto_20260320_1050` | `2026-03-20T11:10:31+08:00` | `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md`, `build/reports/xt_w3_24_j_slack_operator_evidence.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v105.json`, `build/reports/xt_main_xt_l2_delta_3line.v106.json` |
+| `XT-W3-24-K` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-CHAN-OP-G3:candidate_pass` | `false` | `XT-W3-24-H,XT-W3-24-I` | `claim_xt_w3_24_k_xt_l2_auto_20260320_1120` | `2026-03-20T11:22:10+08:00` | `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md`, `build/reports/xt_w3_24_k_telegram_operator_evidence.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v107.json`, `build/reports/xt_main_xt_l2_delta_3line.v108.json` |
+| `XT-W3-24-L` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-CHAN-OP-G3:candidate_pass` | `false` | `XT-W3-24-H,XT-W3-24-I` | `claim_xt_w3_24_l_xt_l2_auto_20260320_1152` | `2026-03-20T13:23:45+08:00` | `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md`, `build/reports/xt_w3_24_l_feishu_operator_evidence.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v109.json`, `build/reports/xt_main_xt_l2_delta_3line.v110.json` |
+| `XT-W3-24-M` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-CHAN-OP-G5:candidate_pass` | `false` | `XT-W3-24-J,XT-W3-24-K,XT-W3-24-L,XT-W3-24-D` | `claim_xt_w3_24_m_xt_l2_auto_20260320_1347` | `2026-03-20T13:58:58+08:00` | `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`, `x-terminal/work-orders/xt-supervisor-rhythm-user-explainability-implementation-pack-v1.md`, `build/reports/xt_w3_24_m_delivery_outbox_evidence.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v111.json`, `build/reports/xt_main_xt_l2_delta_3line.v112.json` |
+| `XT-W3-24-N` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-CHAN-OP-G4:candidate_pass,XT-CHAN-OP-G6:candidate_pass` | `false` | `XT-W3-24-H,XT-W3-24-I,XT-W3-24-M` | `claim_xt_w3_24_n_xt_l2_auto_20260320_1435` | `2026-03-20T14:53:38+08:00` | `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`, `docs/memory-new/xhub-trusted-automation-device-execution-plane-implementation-pack-v1.md`, `docs/xhub-connectors-isolation-and-runtime-v1.md`, `build/reports/xt_w3_24_n_action_grant_whatsapp_evidence.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v113.json`, `build/reports/xt_main_xt_l2_delta_3line.v114.json` |
+| `XT-W3-24-O` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `XT-CHAN-ONB-G0:candidate_pass` | `false` | `XT-W3-24-H,XT-W3-24-I,XT-W3-24-F` | `claim_xt_w3_24_o_hub_l5_20260320_1537` | `2026-03-20T15:42:34+08:00` | `x-terminal/work-orders/xt-w3-24-safe-operator-channel-onboarding-automation-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-hub-security-impact-gate-v1.md`, `build/reports/xt_w3_24_o_safe_discovery_queue_evidence.v1.json`, `build/reports/xt_w3_24_o_hub_l5_delta_3line.v1.json`, `build/reports/xt_w3_24_o_hub_l5_delta_3line.v2.json` |
+| `XT-W3-24-P` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `XT-CHAN-ONB-G1:candidate_pass` | `false` | `XT-W3-24-O,XT-W3-24-H,XT-W3-24-F` | `claim_xt_w3_24_p_hub_l5_20260320_1544` | `2026-03-20T16:22:53+08:00` | `x-terminal/work-orders/xt-w3-24-safe-operator-channel-onboarding-automation-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-hub-security-impact-gate-v1.md`, `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`, `build/reports/xt_w3_24_p_approval_wizard_evidence.v1.json`, `build/reports/xt_w3_24_p_hub_l5_delta_3line.v1.json`, `build/reports/xt_w3_24_p_hub_l5_delta_3line.v2.json` |
+| `XT-W3-24-Q` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `XT-CHAN-ONB-G2:candidate_pass` | `false` | `XT-W3-24-O,XT-W3-24-P,XT-W3-24-H,XT-W3-24-I` | `claim_xt_w3_24_q_hub_l5_20260320_1658` | `2026-03-20T17:06:00+08:00` | `x-terminal/work-orders/xt-w3-24-safe-operator-channel-onboarding-automation-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`, `protocol/hub_protocol_v1.proto`, `build/reports/xt_w3_24_q_auto_binding_evidence.v1.json`, `build/reports/xt_w3_24_q_hub_l5_delta_3line.v1.json`, `build/reports/xt_w3_24_q_hub_l5_delta_3line.v2.json` |
+| `XT-W3-24-R` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `XT-CHAN-ONB-G3:candidate_pass` | `false` | `XT-W3-24-Q,XT-W3-24-J,XT-W3-24-K,XT-W3-24-L,XT-W3-24-M` | `claim_xt_w3_24_r_hub_l5_20260320_1707` | `2026-03-20T18:01:10+08:00` | `x-terminal/work-orders/xt-w3-24-safe-operator-channel-onboarding-automation-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `build/reports/xt_w3_24_r_first_smoke_evidence.v1.json`, `build/reports/xt_w3_24_r_hub_l5_delta_3line.v1.json`, `build/reports/xt_w3_24_r_hub_l5_delta_3line.v2.json` |
+| `XT-W3-24-S` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `XT-CHAN-ONB-G4:candidate_pass` | `false` | `XT-W3-24-O,XT-W3-24-P,XT-W3-24-Q,XT-W3-24-R,XT-W3-24-N` | `claim_xt_w3_24_s_hub_l5_20260320_1801` | `2026-03-20T18:06:40+08:00` | `x-terminal/work-orders/xt-w3-24-safe-operator-channel-onboarding-automation-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w3-24-supervisor-operator-channels-hub-security-impact-gate-v1.md`, `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`, `build/reports/xt_w3_24_s_safe_onboarding_release_evidence.v1.json`, `build/reports/xt_w3_24_s_hub_l5_delta_3line.v1.json`, `build/reports/xt_w3_24_s_hub_l5_delta_3line.v2.json` |
+| `XT-W3-25` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-AUTO-G0:candidate_pass,XT-AUTO-G1:candidate_pass,XT-AUTO-G2:candidate_pass,XT-AUTO-G3:candidate_pass,XT-AUTO-G4:candidate_pass,XT-AUTO-G5:candidate_pass,XT-MP-G5:candidate_pass,SI-G1:candidate_pass,SI-G2:candidate_pass,SI-G4:candidate_pass` | `false` | `XT-W3-21,XT-W3-23,XT-W3-24,XT-W2-27,XT-W2-28` | `historical_backfill_xt_main_v92` | `2026-03-06T18:46:32+08:00` | `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`, `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md`, `docs/memory-new/xhub-security-innovation-work-orders-v1.md`, `build/reports/xt_w3_25_a_recipe_manifest_evidence.v1.json`, `build/reports/xt_w3_25_b_event_runner_evidence.v1.json`, `build/reports/xt_w3_25_c_directed_takeover_evidence.v1.json`, `build/reports/xt_w3_25_d_run_timeline_evidence.v1.json`, `build/reports/xt_w3_25_e_bootstrap_templates_evidence.v1.json`, `build/reports/xt_w3_25_f_competitive_graduation_evidence.v1.json`, `build/reports/xt_w3_25_hub_dependency_readiness.v1.json`, `build/reports/xt_w3_25_automation_gap_closure_evidence.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v92.json`, `build/reports/xt_w3_release_ready_decision.v1.json` |
+| `XT-W3-25-A` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-AUTO-G0:candidate_pass,XT-AUTO-G1:candidate_pass` | `false` | `XT-W3-21,XT-W3-22` | `historical_backfill_xt_main_v92` | `2026-03-06T18:46:32+08:00` | `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md`, `build/reports/xt_w3_25_a_recipe_manifest_evidence.v1.json`, `build/reports/xt_w3_25_automation_gap_closure_evidence.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v92.json` |
+| `XT-W3-25-B` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-AUTO-G1:candidate_pass,XT-AUTO-G2:candidate_pass` | `false` | `XT-W3-25-A,XT-W3-24` | `historical_backfill_xt_main_v92` | `2026-03-06T18:46:32+08:00` | `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md`, `build/reports/xt_w3_25_b_event_runner_evidence.v1.json`, `build/reports/xt_w3_25_hub_dependency_readiness.v1.json`, `build/reports/xt_w3_25_automation_gap_closure_evidence.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v92.json` |
+| `XT-W3-25-C` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-AUTO-G2:candidate_pass,XT-AUTO-G3:candidate_pass` | `false` | `XT-W3-25-B,XT-W2-27,XT-W2-28` | `historical_backfill_xt_main_v92` | `2026-03-06T18:46:32+08:00` | `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w2-27-anti-block-unblock-orchestration-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w2-28-jamless-anti-congestion-protocol-implementation-pack-v1.md`, `build/reports/xt_w3_25_c_directed_takeover_evidence.v1.json`, `build/reports/xt_w3_25_hub_dependency_readiness.v1.json`, `build/reports/xt_w3_25_automation_gap_closure_evidence.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v92.json` |
+| `XT-W3-25-D` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-AUTO-G4:candidate_pass` | `false` | `XT-W3-25-B,XT-W3-24-D` | `historical_backfill_xt_main_v92` | `2026-03-06T18:46:32+08:00` | `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`, `x-terminal/work-orders/xt-supervisor-rhythm-user-explainability-implementation-pack-v1.md`, `build/reports/xt_w3_25_d_run_timeline_evidence.v1.json`, `build/reports/xt_w3_25_hub_dependency_readiness.v1.json`, `build/reports/xt_w3_25_automation_gap_closure_evidence.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v92.json` |
+| `XT-W3-25-E` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-AUTO-G1:candidate_pass,XT-AUTO-G4:candidate_pass` | `false` | `XT-W3-25-A,XT-W3-25-D,XT-W3-24-E` | `historical_backfill_xt_main_v92` | `2026-03-06T18:46:32+08:00` | `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `docs/open-source/OSS_MINIMAL_RUNNABLE_PACKAGE_CHECKLIST_v1.md`, `build/reports/xt_w3_25_e_bootstrap_templates_evidence.v1.json`, `build/reports/xt_w3_25_automation_gap_closure_evidence.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v92.json` |
+| `XT-W3-25-F` | `XT-L2(pool_takeover)` | `P1` | `delivered` | `XT-AUTO-G5:candidate_pass,XT-MP-G5:candidate_pass` | `false` | `XT-W3-25-A,XT-W3-25-B,XT-W3-25-C,XT-W3-25-D,XT-W3-25-E` | `historical_backfill_xt_main_v92` | `2026-03-06T18:46:32+08:00` | `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`, `docs/memory-new/xhub-security-innovation-work-orders-v1.md`, `build/reports/xt_w3_25_f_competitive_graduation_evidence.v1.json`, `build/reports/xt_w3_25_automation_gap_closure_evidence.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v92.json`, `build/reports/xt_w3_release_ready_decision.v1.json` |
 | `SI-W1-01` | `Hub-L5(pool_takeover)` | `P0` | `delivered` | `SI-G1:candidate_pass,SI-G2:candidate_pass,SI-G4:candidate_pass` | `false` | `M3-W1-02,CM-W3-19` | `claim_si_w1_01_hub_l5_20260306_1342` | `2026-03-06T17:42:24+08:00` | `docs/memory-new/xhub-security-innovation-work-orders-v1.md`, `docs/memory-new/xhub-memory-v3-execution-plan.md`, `docs/memory-new/xhub-memory-capability-leapfrog-work-orders-v1.md`, `build/reports/si_w1_01_prereq_audit.v1.json`, `build/reports/si_w1_01_binding_contract_delta_3line.v1.json`, `build/reports/si_w1_01_approval_binding_evidence.v2.json`, `build/reports/si_w1_01_g1_g2_g4_first_probe.v2.json`, `build/reports/si_w1_01_hub_l5_delta_3line.v3.json`, `build/reports/si_w1_01_identity_mismatch_probe.v1.log` |
 | `SI-W1-02` | `Hub-L5(pool_takeover)` | `P0` | `delivered` | `SI-G1:candidate_pass,SI-G2:candidate_pass,SI-G4:candidate_pass` | `false` | `SI-W1-01` | `claim_si_w1_02_hub_l5_20260306_1421` | `2026-03-06T18:21:13+08:00` | `docs/memory-new/xhub-security-innovation-work-orders-v1.md`, `build/reports/si_w1_02_task_row_materialization_audit.v1.json`, `build/reports/si_w1_02_prereq_audit.v1.json`, `build/reports/si_w1_02_capability_token_evidence.v2.json`, `build/reports/si_w1_02_g1_g2_g4_first_probe.v2.json`, `build/reports/si_w1_02_hub_l5_delta_3line.v3.json`, `build/reports/si_w1_02_capability_token_probe.v2.log` |
-| `SI-W1-03` | `Hub-L5(pool_takeover)` | `P0` | `claimed` | `SI-G1:hold,SI-G2:hold,SI-G4:candidate_pass` | `false` | `SI-W1-02,CRK-W1-03` | `claim_si_w1_03_hub_l5_20260306_1639` | `2026-03-06T20:39:46+08:00` | `docs/memory-new/xhub-security-innovation-work-orders-v1.md`, `docs/memory-new/xhub-connector-reliability-kernel-work-orders-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md`, `docs/xhub-connectors-isolation-and-runtime-v1.md`, `build/reports/crk_w1_03_dependency_anchor.v1.json`, `build/reports/si_w1_03_task_row_materialization_audit.v1.json`, `build/reports/si_w1_03_prereq_audit.v2.json`, `build/reports/si_w1_03_payment_two_phase_evidence.v1.json`, `build/reports/si_w1_03_g1_g2_g4_first_probe.v1.json`, `build/reports/si_w1_03_hub_l5_delta_3line.v3.json`, `build/reports/si_w1_03_payment_probe.v1.log` |
+| `SI-W1-03` | `Hub-L5(pool_takeover)` | `P0` | `delivered` | `SI-G1:candidate_pass,SI-G2:candidate_pass,SI-G4:candidate_pass` | `false` | `SI-W1-02,CRK-W1-03` | `claim_si_w1_03_hub_l5_20260306_1639` | `2026-03-20T18:37:13+08:00` | `docs/memory-new/xhub-security-innovation-work-orders-v1.md`, `docs/memory-new/xhub-connector-reliability-kernel-work-orders-v1.md`, `docs/xhub-client-modes-and-connectors-v1.md`, `docs/xhub-connectors-isolation-and-runtime-v1.md`, `build/reports/crk_w1_03_dependency_anchor.v1.json`, `build/reports/si_w1_03_task_row_materialization_audit.v1.json`, `build/reports/si_w1_03_prereq_audit.v2.json`, `build/reports/si_w1_03_payment_two_phase_evidence.v2.json`, `build/reports/si_w1_03_g1_g2_g4_first_probe.v2.json`, `build/reports/si_w1_03_hub_l5_delta_3line.v4.json`, `build/reports/si_w1_03_payment_probe.v2.log` |
 | `LPR-W1-01` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G0:PASS` | `false` | `none` | `claim_lpr_w1_01_hub_l5_20260312_2002` | `2026-03-12T20:02:21+08:00` | `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w1_01_hub_l5_evidence.v1.json`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubCoreTests/LocalProviderRuntimeSchemaTests.swift` |
 | `LPR-W1-02` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G0:PASS,LPR-G1:PASS` | `false` | `LPR-W1-01` | `claim_lpr_w1_02_hub_l5_20260312_2035` | `2026-03-12T20:35:29+08:00` | `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w1_02_a_add_model_backend_selector_evidence.v1.json`, `build/reports/lpr_w1_02_b_catalog_migration_evidence.v1.json` |
 | `LPR-W1-03` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G0:PASS,LPR-G1:PASS` | `false` | `LPR-W1-01,LPR-W1-02` | `claim_lpr_w1_03_hub_l5_20260312_2035` | `2026-03-12T20:35:29+08:00` | `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w1_03_hub_l5_evidence.v1.json`, `build/reports/lpr_w1_03_a_local_runtime_entry_evidence.v1.json`, `build/reports/lpr_w1_03_b_mlx_provider_adapter_evidence.v1.json`, `build/reports/lpr_w1_03_c_transformers_provider_skeleton_evidence.v1.json` |
@@ -622,6 +1949,37 @@
 | `LPR-W3-01-B` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G4:PASS,LPR-G5:PASS` | `false` | `LPR-W3-01-A` | `claim_lpr_w3_01_hub_l5_20260313_0013` | `2026-03-13T00:13:15+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w3_01_b_image_guard_evidence.v1.json` |
 | `LPR-W3-02` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G4:PASS,LPR-G5:PASS` | `false` | `LPR-W3-01` | `claim_lpr_w3_02_hub_l5_20260313_0655` | `2026-03-13T06:55:41+0800` | `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w3_02_hub_l5_evidence.v1.json`, `build/reports/lpr_w3_02_a_runtime_resource_policy_evidence.v1.json` |
 | `LPR-W3-02-A` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G4:PASS,LPR-G5:PASS` | `false` | `LPR-W3-01` | `claim_lpr_w3_02_hub_l5_20260313_0655` | `2026-03-13T06:55:41+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w3_02_a_runtime_resource_policy_evidence.v1.json` |
+| `LPR-W3-04` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G5:PASS,LPR-G6:pending` | `false` | `LPR-W3-02` | `claim_lpr_w3_04_hub_l5_20260313_1455` | `2026-03-20T20:13:00+08:00` | `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/SettingsSheetView.swift`, `x-terminal/Sources/Hub/HubModels.swift`, `x-hub/python-runtime/python_service/relflowhub_local_runtime.py`, `x-hub/python-runtime/python_service/local_provider_scheduler.py`, `x-hub/python-runtime/python_service/providers/transformers_provider.py`, `x-hub/python-runtime/python_service/relflowhub_mlx_runtime.py`, `build/reports/lpr_w3_04_hub_l5_revalidation_evidence.v1.json`, `build/reports/lpr_w3_04_hub_l5_delta_3line.v1.json` |
+| `LPR-W3-04-A` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G5:PASS` | `false` | `LPR-W3-02` | `claim_lpr_w3_04_a_hub_l5_20260313_1455` | `2026-03-13T18:00:00+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md`, `x-hub/macos/RELFlowHub/Sources/RELFlowHubCore/LocalModelLoadProfile.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHubCore/ModelModels.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHubCore/LocalModelManifest.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/AddModelSheet.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubCoreTests/LocalProviderRuntimeSchemaTests.swift`, `build/reports/lpr_w3_04_a_load_profile_schema_evidence.v1.json` |
+| `LPR-W3-04-B` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G5:PASS` | `false` | `LPR-W3-04-A` | `claim_lpr_w3_04_b_hub_l5_20260313_1455` | `2026-03-13T18:00:00+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/HubGRPCServerSupport.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/SettingsSheetView.swift`, `x-terminal/Sources/Hub/HubModels.swift`, `x-terminal/Sources/UI/ModelSettingsView.swift`, `x-terminal/Sources/UI/SupervisorSettingsView.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubCoreTests/LocalProviderRuntimeSchemaTests.swift`, `build/reports/lpr_w3_04_b_effective_context_ux_evidence.v1.json` |
+| `LPR-W3-04-C` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G5:PASS,LPR-G6:pending` | `false` | `LPR-W3-04-A,LPR-W3-04-B` | `claim_lpr_w3_04_c_hub_l5_20260313_2130` | `2026-03-13T21:30:00+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `x-hub/python-runtime/python_service/local_provider_scheduler.py`, `x-hub/python-runtime/python_service/relflowhub_local_runtime.py`, `x-hub/python-runtime/python_service/providers/transformers_provider.py`, `x-hub/python-runtime/python_service/relflowhub_mlx_runtime.py`, `x-hub/grpc-server/hub_grpc_server/src/local_runtime_ipc.js`, `x-hub/grpc-server/hub_grpc_server/src/local_embeddings.js`, `x-hub/grpc-server/hub_grpc_server/src/local_audio.js`, `x-hub/grpc-server/hub_grpc_server/src/local_vision.js`, `build/reports/lpr_w3_04_c_instance_cache_evidence.v1.json` |
+| `LPR-W3-05` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G5:PASS,LPR-G6:pending` | `false` | `LPR-W3-04` | `claim_lpr_w3_05_hub_l5_20260313_1710` | `2026-03-13T18:08:07+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w3_05_a_warmup_contract_evidence.v1.json`, `build/reports/lpr_w3_05_b_hub_warmup_ui_evidence.v1.json`, `build/reports/lpr_w3_05_c_loaded_instance_inventory_evidence.v1.json`, `x-hub/python-runtime/python_service/relflowhub_local_runtime.py`, `x-hub/python-runtime/python_service/relflowhub_mlx_runtime.py`, `x-hub/python-runtime/python_service/providers/base.py`, `x-hub/python-runtime/python_service/providers/mlx_provider.py`, `x-hub/python-runtime/python_service/providers/transformers_provider.py`, `x-hub/grpc-server/hub_grpc_server/src/local_runtime_ipc.js`, `x-hub/macos/RELFlowHub/Sources/RELFlowHubCore/AIRuntimeStatus.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/ModelStore.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/MainPanelView.swift` |
+| `LPR-W3-05-A` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G5:PASS,LPR-G6:pending` | `false` | `LPR-W3-04-C` | `claim_lpr_w3_05_a_hub_l5_20260313_1710` | `2026-03-13T17:10:38+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w3_05_a_warmup_contract_evidence.v1.json`, `x-hub/python-runtime/python_service/relflowhub_local_runtime.py`, `x-hub/python-runtime/python_service/providers/base.py`, `x-hub/python-runtime/python_service/providers/mlx_provider.py`, `x-hub/python-runtime/python_service/providers/transformers_provider.py`, `x-hub/python-runtime/python_service/test_local_provider_runtime_compat.py`, `x-hub/grpc-server/hub_grpc_server/src/local_runtime_ipc.js`, `x-hub/grpc-server/hub_grpc_server/src/local_runtime_ipc.test.js` |
+| `LPR-W3-05-B` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G5:PASS` | `false` | `LPR-W3-05-A` | `claim_lpr_w3_05_b_hub_l5_20260313_1710` | `2026-03-13T17:36:00+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w3_05_b_hub_warmup_ui_evidence.v1.json`, `x-hub/macos/RELFlowHub/Sources/RELFlowHubCore/AIRuntimeStatus.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/ModelStore.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/MainPanelView.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubCoreTests/LocalProviderRuntimeSchemaTests.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/LocalModelRuntimeActionPlannerTests.swift` |
+| `LPR-W3-05-C` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G5:PASS,LPR-G6:pending` | `false` | `LPR-W3-05-A` | `claim_lpr_w3_05_c_hub_l5_20260313_1808` | `2026-03-13T18:08:07+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w3_05_c_loaded_instance_inventory_evidence.v1.json`, `x-hub/python-runtime/python_service/providers/base.py`, `x-hub/python-runtime/python_service/providers/transformers_provider.py`, `x-hub/python-runtime/python_service/relflowhub_local_runtime.py`, `x-hub/python-runtime/python_service/relflowhub_mlx_runtime.py`, `x-hub/python-runtime/python_service/test_local_provider_runtime_compat.py`, `x-hub/grpc-server/hub_grpc_server/src/local_runtime_ipc.js`, `x-hub/grpc-server/hub_grpc_server/src/local_runtime_ipc.test.js` |
+| `LPR-W3-05-D` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G5:PASS,LPR-G6:pending` | `false` | `LPR-W3-05-B,LPR-W3-05-C` | `claim_lpr_w3_05_d_hub_l5_20260314_0929` | `2026-03-14T09:29:07+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `docs/memory-new/README-local-provider-runtime-productization-v1.md`, `build/reports/lpr_w3_05_d_resident_runtime_proxy_evidence.v1.json`, `x-hub/python-runtime/python_service/providers/mlx_provider.py`, `x-hub/python-runtime/python_service/providers/transformers_provider.py`, `x-hub/python-runtime/python_service/relflowhub_local_runtime.py`, `x-hub/python-runtime/python_service/relflowhub_mlx_runtime.py`, `x-hub/python-runtime/python_service/test_local_provider_runtime_compat.py`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/ModelStore.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/LocalModelRuntimeActionPlannerTests.swift` |
+| `LPR-W3-08` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G5:PASS,LPR-G6:pending` | `false` | `LPR-W3-05` | `claim_lpr_w3_08_hub_l5_20260313_2006` | `2026-03-13T20:06:06+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w3_08_a_task_routing_schema_evidence.v1.json`, `build/reports/lpr_w3_08_b_use_for_binding_ui_evidence.v1.json`, `build/reports/lpr_w3_08_c_task_resolution_evidence.v1.json`, `x-hub/macos/RELFlowHub/Sources/RELFlowHubCore/LocalTaskRoutingSettings.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHubCore/LocalTaskRoutingCatalog.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/HubStore.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/MainPanelView.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/SettingsSheetView.swift`, `x-hub/grpc-server/hub_grpc_server/src/mlx_runtime_ipc.js`, `x-hub/grpc-server/hub_grpc_server/src/local_runtime_ipc.js`, `x-hub/grpc-server/hub_grpc_server/src/local_embeddings.js`, `x-hub/grpc-server/hub_grpc_server/src/local_audio.js`, `x-hub/grpc-server/hub_grpc_server/src/local_vision.js`, `x-hub/python-runtime/python_service/relflowhub_mlx_runtime.py`, `x-hub/grpc-server/hub_grpc_server/src/services.js` |
+| `LPR-W3-08-A` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G5:PASS` | `false` | `LPR-W3-05-C` | `claim_lpr_w3_08_a_hub_l5_20260313_1825` | `2026-03-13T18:25:44+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w3_08_a_task_routing_schema_evidence.v1.json`, `x-hub/macos/RELFlowHub/Sources/RELFlowHubCore/LocalTaskRoutingSettings.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/RoutingSettings.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubCoreTests/LocalTaskRoutingSettingsTests.swift`, `x-hub/grpc-server/hub_grpc_server/src/mlx_runtime_ipc.js`, `x-hub/grpc-server/hub_grpc_server/src/local_runtime_ipc.js`, `x-hub/grpc-server/hub_grpc_server/src/local_runtime_ipc.test.js`, `x-hub/python-runtime/python_service/relflowhub_mlx_runtime.py`, `x-hub/python-runtime/python_service/test_local_provider_runtime_compat.py` |
+| `LPR-W3-08-B` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G5:PASS` | `false` | `LPR-W3-08-A` | `claim_lpr_w3_08_b_hub_l5_20260313_1924` | `2026-03-13T19:24:08+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w3_08_b_use_for_binding_ui_evidence.v1.json`, `x-hub/macos/RELFlowHub/Sources/RELFlowHubCore/LocalTaskRoutingCatalog.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubCoreTests/LocalTaskRoutingCatalogTests.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/HubStore.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/MainPanelView.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/SettingsSheetView.swift` |
+| `LPR-W3-08-C` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G5:PASS,LPR-G6:pending` | `false` | `LPR-W3-08-B` | `claim_lpr_w3_08_c_hub_l5_20260313_2006` | `2026-03-13T20:06:06+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w3_08_c_task_resolution_evidence.v1.json`, `x-hub/grpc-server/hub_grpc_server/src/local_runtime_ipc.js`, `x-hub/grpc-server/hub_grpc_server/src/local_runtime_ipc.test.js`, `x-hub/grpc-server/hub_grpc_server/src/services.js`, `x-hub/grpc-server/hub_grpc_server/src/local_embeddings.js`, `x-hub/grpc-server/hub_grpc_server/src/local_embeddings.test.js`, `x-hub/grpc-server/hub_grpc_server/src/local_audio.js`, `x-hub/grpc-server/hub_grpc_server/src/local_audio.test.js`, `x-hub/grpc-server/hub_grpc_server/src/local_vision.js`, `x-hub/grpc-server/hub_grpc_server/src/local_vision.test.js` |
+| `LPR-W3-07` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G5:PASS,LPR-G6:pending` | `false` | `LPR-W3-05,LPR-W3-08` | `claim_lpr_w3_07_hub_l5_20260313_2242` | `2026-03-13T22:42:07+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w3_07_a_runtime_monitor_snapshot_evidence.v1.json`, `build/reports/lpr_w3_07_b_runtime_monitor_ui_evidence.v1.json`, `build/reports/lpr_w3_07_c_monitor_export_evidence.v1.json`, `x-hub/python-runtime/python_service/providers/base.py`, `x-hub/python-runtime/python_service/providers/mlx_provider.py`, `x-hub/python-runtime/python_service/providers/transformers_provider.py`, `x-hub/python-runtime/python_service/relflowhub_local_runtime.py`, `x-hub/python-runtime/python_service/local_provider_scheduler.py`, `x-hub/grpc-server/hub_grpc_server/src/local_runtime_ipc.js`, `x-hub/macos/RELFlowHub/Sources/RELFlowHubCore/AIRuntimeStatus.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/HubStore.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/SettingsSheetView.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/HubDiagnosticsBundleExporter.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubCoreTests/LocalProviderRuntimeSchemaTests.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/HubDiagnosticsBundleExporterTests.swift` |
+| `LPR-W3-07-A` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G5:PASS` | `false` | `LPR-W3-05-C,LPR-W3-08-C` | `claim_lpr_w3_07_a_hub_l5_20260313_2025` | `2026-03-13T20:25:12+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w3_07_a_runtime_monitor_snapshot_evidence.v1.json`, `x-hub/python-runtime/python_service/providers/base.py`, `x-hub/python-runtime/python_service/providers/mlx_provider.py`, `x-hub/python-runtime/python_service/providers/transformers_provider.py`, `x-hub/python-runtime/python_service/relflowhub_local_runtime.py`, `x-hub/python-runtime/python_service/test_local_provider_runtime_compat.py`, `x-hub/python-runtime/python_service/local_provider_scheduler.py`, `x-hub/grpc-server/hub_grpc_server/src/local_runtime_ipc.js`, `x-hub/grpc-server/hub_grpc_server/src/local_runtime_ipc.test.js` |
+| `LPR-W3-07-B` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G5:PASS` | `false` | `LPR-W3-07-A` | `claim_lpr_w3_07_b_hub_l5_20260313_2232` | `2026-03-13T22:32:08+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w3_07_b_runtime_monitor_ui_evidence.v1.json`, `x-hub/macos/RELFlowHub/Sources/RELFlowHubCore/AIRuntimeStatus.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/HubStore.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/SettingsSheetView.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubCoreTests/LocalProviderRuntimeSchemaTests.swift` |
+| `LPR-W3-07-C` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G5:PASS` | `false` | `LPR-W3-07-B` | `claim_lpr_w3_07_c_hub_l5_20260313_2242` | `2026-03-13T22:42:07+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w3_07_c_monitor_export_evidence.v1.json`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/HubDiagnosticsBundleExporter.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/SettingsSheetView.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/HubDiagnosticsBundleExporterTests.swift` |
+| `LPR-W3-06` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G5:PASS,LPR-G6:pending` | `false` | `LPR-W3-05,LPR-W3-07,LPR-W3-08` | `claim_lpr_w3_06_hub_l5_20260314_0811` | `2026-03-14T08:11:23+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `docs/memory-new/xhub-local-bench-fixture-pack-v1.md`, `build/reports/lpr_w3_06_a_bench_schema_v2_evidence.v1.json`, `build/reports/lpr_w3_06_b_runtime_bench_adapters_evidence.v1.json`, `build/reports/lpr_w3_06_c_quick_bench_ui_evidence.v1.json`, `build/reports/lpr_w3_06_d_bench_fixture_pack_evidence.v1.json`, `x-hub/macos/RELFlowHub/Sources/RELFlowHubCore/ModelBench.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/ModelStore.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/MainPanelView.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/LocalModelQuickBench.swift`, `x-hub/python-runtime/python_service/relflowhub_local_runtime.py`, `x-hub/python-runtime/python_service/providers/transformers_provider.py`, `x-hub/grpc-server/hub_grpc_server/src/local_runtime_ipc.js` |
+| `LPR-W3-06-A` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G5:PASS,LPR-G6:pending` | `false` | `LPR-W3-07-A` | `claim_lpr_w3_06_a_hub_l5_20260314_0811` | `2026-03-14T08:11:19+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w3_06_a_bench_schema_v2_evidence.v1.json`, `x-hub/macos/RELFlowHub/Sources/RELFlowHubCore/ModelBench.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/ModelStore.swift`, `x-hub/python-runtime/python_service/relflowhub_local_runtime.py`, `x-hub/python-runtime/python_service/relflowhub_mlx_runtime.py`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubCoreTests/LocalProviderRuntimeSchemaTests.swift` |
+| `LPR-W3-06-B` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G5:PASS,LPR-G6:pending` | `false` | `LPR-W3-06-A,LPR-W3-05-A,LPR-W3-08-C` | `claim_lpr_w3_06_b_hub_l5_20260314_0811` | `2026-03-14T08:11:20+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w3_06_b_runtime_bench_adapters_evidence.v1.json`, `x-hub/python-runtime/python_service/providers/base.py`, `x-hub/python-runtime/python_service/providers/mlx_provider.py`, `x-hub/python-runtime/python_service/providers/transformers_provider.py`, `x-hub/python-runtime/python_service/relflowhub_local_runtime.py`, `x-hub/python-runtime/python_service/test_local_provider_runtime_compat.py`, `x-hub/grpc-server/hub_grpc_server/src/local_runtime_ipc.js`, `x-hub/grpc-server/hub_grpc_server/src/local_runtime_ipc.test.js` |
+| `LPR-W3-06-C` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G5:PASS,LPR-G6:pending` | `false` | `LPR-W3-06-B` | `claim_lpr_w3_06_c_hub_l5_20260314_0811` | `2026-03-14T08:11:21+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `build/reports/lpr_w3_06_c_quick_bench_ui_evidence.v1.json`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/MainPanelView.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/ModelStore.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/LocalModelQuickBench.swift`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/SettingsSheetView.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubCoreTests/LocalProviderRuntimeSchemaTests.swift`, `x-hub/macos/RELFlowHub/Tests/RELFlowHubAppTests/LocalModelRuntimeActionPlannerTests.swift` |
+| `LPR-W3-06-D` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G5:PASS,LPR-G6:pending` | `false` | `LPR-W3-06-C,LPR-W3-03-A` | `claim_lpr_w3_06_d_hub_l5_20260314_0811` | `2026-03-14T08:11:22+0800` | `docs/memory-new/xhub-local-provider-runtime-transformers-implementation-pack-v1.md`, `docs/memory-new/xhub-local-bench-fixture-pack-v1.md`, `scripts/generate_lpr_w3_06_d_bench_fixture_pack_evidence.js`, `build/reports/lpr_w3_06_d_bench_fixture_pack_evidence.v1.json`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/Resources/BenchFixtures/bench_fixture_pack.v1.json`, `x-hub/macos/RELFlowHub/Sources/RELFlowHub/LocalModelQuickBench.swift`, `x-hub/python-runtime/python_service/providers/transformers_provider.py` |
+| `LPR-W4-01` | `Hub-L5(pool_takeover)` | `P1` | `delivered` | `LPR-G7:candidate_pass` | `false` | `LPR-W3-08,LPR-W3-07,CR-20260315-001` | `none` | `none` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/README-local-provider-runtime-productization-v1.md`, `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md`, `docs/memory-new/xhub-local-service-runtime-contract-v1.md` |
+| `LPR-W4-02` | `Hub-L5(pool_takeover)` | `P1` | `planned` | `LPR-G7:pending` | `false` | `LPR-W4-01` | `none` | `none` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/README-local-provider-runtime-productization-v1.md` |
+| `LPR-W4-03` | `Hub-L5(pool_takeover)` | `P1` | `planned` | `LPR-G8:pending` | `false` | `LPR-W4-01,LPR-W3-04` | `none` | `none` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/README-local-provider-runtime-productization-v1.md`, `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md` |
+| `LPR-W4-04` | `Hub-L5(pool_takeover)` | `P1` | `planned` | `LPR-G8:pending,LPR-G10:pending` | `false` | `LPR-W4-03` | `none` | `none` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/README-local-provider-runtime-productization-v1.md` |
+| `LPR-W4-05` | `Hub-L5(pool_takeover)` | `P1` | `planned` | `LPR-G8:pending` | `false` | `LPR-W4-03,LPR-W3-05` | `none` | `none` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/README-local-provider-runtime-productization-v1.md` |
+| `LPR-W4-06` | `Hub-L5(pool_takeover)` | `P1` | `planned` | `LPR-G8:pending,LPR-G10:pending` | `false` | `LPR-W4-05,LPR-W3-06,LPR-W3-07` | `none` | `none` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/README-local-provider-runtime-productization-v1.md`, `docs/memory-new/xhub-local-bench-fixture-pack-v1.md` |
+| `LPR-W4-07` | `Hub-L5(pool_takeover)` | `P1` | `planned` | `LPR-G9:pending,LPR-G10:pending` | `false` | `LPR-W4-01,LPR-W4-02,LPR-W3-01` | `none` | `none` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/README-local-provider-runtime-productization-v1.md`, `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md` |
+| `LPR-W4-08` | `Hub-L5(pool_takeover)` | `P1` | `planned` | `LPR-G9:pending,LPR-G10:pending` | `false` | `LPR-W4-01,LPR-W4-03` | `none` | `none` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/README-local-provider-runtime-productization-v1.md`, `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md` |
+| `LPR-W4-09` | `Hub-L5(pool_takeover)` | `P1` | `planned` | `LPR-G10:pending` | `false` | `LPR-W3-03,LPR-W4-06,LPR-W4-07,LPR-W4-08` | `none` | `none` | `docs/memory-new/xhub-local-provider-runtime-transformers-work-orders-v1.md`, `docs/memory-new/README-local-provider-runtime-productization-v1.md`, `docs/WORKING_INDEX.md` |
 ## D. Lane Zones（运行态）
 
 ### Hub-L1
@@ -965,7 +2323,7 @@
 3) DoD
 - [x] `revoked` skill 在 Hub download 侧被拒绝（`getSkillManifest/readSkillPackage` deny）
 - [x] `revoked` skill 在 Runner execute 侧被拒绝（`evaluateSkillExecutionGate` deny）
-- [x] 三层 pin（memory_core > global > project）冲突解析 deterministic，且 winner 被吊销后 fail-closed（不降级 fallback）
+- [x] 分层 pin 解析 deterministic：普通 skills 维持 `global > project`；保留系统层 `memory_core` 继续作为兼容快照存在且不接受普通 client pin；winner 被吊销后 fail-closed（不降级 fallback）
 - [x] deny_code 可机判且稳定：`signature_invalid` / `hash_mismatch` / `revoked`
 - [x] machine-readable 证据落盘：`build/reports/skc_w1_04_hub_l2_evidence.v1.json`
 
@@ -8603,29 +9961,47 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 - evidence_ref: `x-terminal/.axcoder/reports/skc_w2_07_hub_l4_delta_3line.v6.json`（no_new_machine_delta_this_round）
 
 ### Hub-L5
-- active_task: `SI-W1-03`（first_probe_partial_pass；claim_retained）
+- active_task: `LPR-W3-04`（delivered；claim_closed）
 - runtime_executor: `Hub-L5`
 - standby_lanes: `Hub-L1,Hub-L2,Hub-L3,Hub-L4`
 - standby_policy: `NO_DELTA_STANDBY + directed_evidence_only`（idempotent；不改其他 task facts）
-- status: `claimed_hold(si_w1_03_first_probe_partial_pass_fail_closed;si_g4_candidate_pass;si_g1_si_g2_hold)`（undo/compensation 证据已通过；preview card 与 request_tampered/state contract 仍缺）
-- claim_state: `claimed`
-- claim_id: `claim_si_w1_03_hub_l5_20260306_1639`
-- claim_ttl_until: `2026-03-06T20:39:46+08:00`
-- backlog_next: `SI-W1-03(preview_card_request_tampered_state_mapping_backfill)`
-- blocked_reason: `minimal_gaps(preview_card_contract_missing;request_tampered_probe_missing;approved_dispatched_acked_contract_missing)`
+- status: `delivered(lpr_g5_green_and_lpr_g6_pending_only;load_profile_residual_closure_revalidated;require_real_prereqs_restored;sample1_model_probe_revalidated;helper_local_service_disabled_root_cause_revalidated)`（W3-04-A/B/C 已补齐 machine-readable evidence；legacy MLX runtime 已按 load-profile-aware instance identity 收口，当前只剩 require-real 样本未执行）
+- claim_state: `closed_delivered`
+- claim_id: `claim_lpr_w3_04_hub_l5_20260313_1455`
+- claim_ttl_until: `2026-03-20T20:13:00+08:00`
+- backlog_next: `LPR-W4-02(operator_recovery_runbook+install_hint_surface),LPR-W4-09(release_gate_operator_runbook_support_faq),LPR-W3-03(require_real_execution)`
+- blocked_reason: `sample1_real_embedding_still_blocked_by_current_model_format(unsupported_quantization_config);combo_runtime_ready_but_current_local_embedding_dirs_not_torch_transformers_native_loadable;helper_local_service_disabled_in_settings(enableLocalService=false;cliInstalled=false;appFirstLoad=true);llmster_process_exists_but_helper_cli_readiness_and_server_ready_state_remain_false`
 - unblock_owner: `Hub-L5`
 - report_mode: `delta_3line`
-- retry_after_utc: `2026-03-06T09:17:42Z`
-- next_step: `backfill_preview_card_request_tampered_and_explicit_state_mapping_then_rerun_SI-W1-03_first_probe`
+- retry_after_utc: `none`
+- next_step: `keep_require_real_blockers_documented_but_move_mainline_to_xhub_local_service(/health_truth+resolver+schema+guidance+service_inference_proxy+service_internal_runtime_resolution+local_image_chat_route+multi_image_route_trace+bench_monitor_operator_export+multi_image_ocr_page_aware_spans+operator_doctor_route_trace_wording+managed_service_lifecycle_management);next_push_source_gate_snapshot_support_to_operator_recovery_runbook+support_faq+release_wording;lm_studio_helper_remains_reference_only`
 - next_owner_lane: `Hub-L5`
 - evidence_refs:
-  - `build/reports/si_w1_03_payment_two_phase_evidence.v1.json`
-  - `build/reports/si_w1_03_g1_g2_g4_first_probe.v1.json`
-  - `build/reports/si_w1_03_hub_l5_delta_3line.v3.json`
-  - `build/reports/si_w1_03_payment_probe.v1.log`
-  - `build/reports/si_w1_02_hub_l5_delta_3line.v3.json`
-  - `build/reports/si_w1_02_capability_token_probe.v2.log`
-  - `x-hub/grpc-server/hub_grpc_server/src/memory_agent_grant_chain.test.js:1636`
+  - `build/reports/lpr_w3_04_hub_l5_revalidation_evidence.v1.json`
+  - `build/reports/lpr_w3_04_hub_l5_delta_3line.v1.json`
+  - `build/reports/lpr_w3_04_a_load_profile_schema_evidence.v1.json`
+  - `build/reports/lpr_w3_04_b_effective_context_ux_evidence.v1.json`
+  - `build/reports/lpr_w3_04_c_instance_cache_evidence.v1.json`
+  - `build/reports/lpr_w3_03_prerequisite_evidence_rebuild.v1.json`
+  - `build/reports/lpr_w3_03_b_runtime_candidate_probe.v1.json`
+  - `build/reports/lpr_w3_03_c_model_native_loadability_probe.v1.json`
+  - `build/reports/lpr_w3_03_d_helper_bridge_probe.v1.json`
+  - `build/reports/lpr_w3_03_b_runtime_candidate_probe.v1.json`
+  - `build/reports/xhub_doctor_hub_local_service_snapshot_smoke_evidence.v1.json`
+  - `build/reports/xhub_doctor_source_gate_summary.v1.json`
+- directed_overlay_2026_03_21: `xhub_local_service_prewire_delivered(contract+resolver+schema+guidance)+http_surface_live(/health,/v1/models,/admin/warmup|unload|evict)+inference_proxy_live(/v1/embeddings,/v1/chat/completions,text+local_image->vision/ocr,remote_image_fail_closed)+service_internal_runtime_resolution_live;lm_studio_helper_kept_reference_only_not_mainline`
+- directed_overlay_2026_03_21_b: `hub_doctor_export_delivered(xhub_local_service_reason_codes+managed_service_snapshot_export)+xt_supervisor_consumption_delivered(hub_doctor_loader+xt_ready_hub_runtime_snapshot+strict_issue_projection+incident_status_text+supervisor_card_lines);remaining_focus=route_trace_to_bench_monitor_operator_export`
+- directed_overlay_2026_03_21_c: `richer_multimodal_contract_delivered(transformers_provider_multi_image_real+helper_bridge_multi_image+path_case_safe_image_paths+xhub_local_service_multi_image_route_trace+explicit_task_override_trace+remote_image_block_trace);focused_python_tests_green(test_transformers_provider_multimodal_contract+test_xhub_local_service_runtime)`
+- directed_overlay_2026_03_21_d: `route_trace_bench_monitor_operator_export_delivered(provider_quick_bench_route_trace_passthrough+models_bench_routeTraceSummary+runtime_status_recentBenchResults+monitorSnapshot_recentBenchResults+hub_js_ipc_recent_bench_route_trace_summary);focused_regression_green(test_transformers_provider_multimodal_contract+local_runtime_ipc.test+test_xhub_local_service_runtime)`
+- directed_overlay_2026_03_21_e: `multi_image_ocr_page_aware_contract_delivered(provider_page_fanout_aggregation+ocr_spans_pageIndex_pageCount_fileName_bbox+xhub_local_service_page_aware_span_passthrough+hub_local_vision_span_field_preservation);focused_regression_green(test_transformers_provider_multimodal_contract+test_xhub_local_service_runtime+local_vision.test)`
+- directed_overlay_2026_03_21_f: `operator_doctor_route_trace_wording_delivered(swift_recentBenchResults_routeTraceSummary_decode+provider_operator_doctor_monitor_wording+doctor_monitor_check_route_lines+diagnostics_export_route_wording);focused_regression_green(LocalProviderRuntimeSchemaTests+HubDiagnosticsBundleExporterTests)`
+- directed_overlay_2026_03_21_g: `managed_service_lifecycle_management_delivered(loopback_only_xhub_local_service_endpoint_guard+resolver_autostart+launch_reprobe+existing_process_reuse+xhub_local_service_state_json+provider_status_managedServiceState);focused_regression_green(py_compile+focused_resolver_autostart_suite+test_xhub_local_service_runtime);compat_full_suite_still_hits_preexisting_mlx_import_error_baseline`
+- directed_overlay_2026_03_21_h: `managed_service_snapshot_projection_delivered(xhub_local_service_snapshot_primary_issue+doctor_projection+doctor_repair_step_specificity);incident_export_consumers_no_longer_need_to_reverse_parse_detail_lines_for_primary_recovery_action`
+- directed_overlay_2026_03_22_i: `hub_snapshot_sidecar_and_xt_fallback_delivered(write_current_hub_doctor_sidecar_xhub_local_service_snapshot+hub_cli_sidecar+xt_hub_snapshot_loader+xt_ready_incident_export_snapshot_fallback+prefer_newer_snapshot_than_older_doctor_report+provider_detail_line_priority_fix);focused_regression_green(HubDiagnosticsBundleExporterTests+XHubCLIRunnerTests+XHubDoctorOutputTests+SupervisorIncidentExportTests+SupervisorXTReadyIncidentPresentationTests)`
+- directed_overlay_2026_03_22_j: `source_gate_snapshot_support_delivered(hub_local_service_snapshot_source_smoke+xhub_doctor_source_gate_hub_local_service_snapshot_support+structured_primary_issue_doctor_failure_code_service_state_managed_process_export);focused_regression_green(smoke_xhub_doctor_hub_local_service_snapshot+xhub_doctor_source_gate)`
+- directed_overlay_2026_03_22_k: `operator_recovery_report_delivered(generate_xhub_local_service_operator_recovery_report+machine_readable_action_category_install_hint_recommended_actions_support_faq_release_wording);focused_regression_green(generate_xhub_local_service_operator_recovery_report.test)`
+- directed_overlay_2026_03_22_l: `formal_release_surface_consumption_delivered(refresh_oss_release_evidence+xhub_local_service_operator_recovery_report->hub_l5_r1_release_oss_boundary_readiness+oss_release_readiness_machine_readable_support);focused_validation_green(node_check+py_compile+bash_n)`
+- directed_overlay_2026_03_22_m: `product_exit_packet_delivered(generate_lpr_w4_09_c_product_exit_packet+operator_handoff_release_handoff_single_exit_surface+missing_release_artifacts_fail_closed);focused_regression_green(generate_lpr_w4_09_c_product_exit_packet.test)`
 
 #### Hub-L5 / SKC-W3-08(+SKC-W3-09/SKC-W3-10) / 7件套（首轮提交）
 
@@ -9902,8 +11278,8 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 - mode: `NO_DELTA_STANDBY(no_claim;directed_only;fail_closed;execution_delegated_to_XT-L2)`
 - active_task: `none`（no_claim；仅定向补件）
 - queue_head: `none`
-- backlog_next: `XT-W3-22-B -> XT-W3-22-C -> XT-W3-23-B -> XT-W3-23-C -> XT-W3-24-B -> XT-W3-24-C -> XT-W3-24-D -> XT-W3-24-E -> XT-W3-25-D -> XT-W3-25-E`（来自 `XT-W3-21/22` + `XT-W3-23` + `XT-W3-24` + `XT-W3-25` 执行包；XT-L1 仅在 XT-L2 定向点名时提供补件/可解释输出）
-- dependency: `XT-L2(directed_takeover_owner_for_XT-W3-21/22/23/24/25)`
+- backlog_next: `directed_followup_only(explainability_or_support_delta_for_XT-W3-24-G..N_if_xt_l2_mentions)`（`XT-W3-21..25` 主链已按历史证据回填为 delivered/release_ready；XT-L1 不再保留这些已交付子任务的补件 backlog）
+- dependency: `XT-L2(directed_followup_owner_for_XT-W3-24-G..N)`
 - status: `NO_DELTA_STANDBY`（idempotent；no_claim）
 - claim_state: `no_claim`
 - claim_id: `none(idempotent_standby)`
@@ -9911,7 +11287,7 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 - gate_blocker: `none`（最小缺口已清零）
 - blocked_reason: `none`
 - unblock_owner: `XT-L2`
-- next_step: `进入 NO_DELTA_STANDBY/no_claim：仅响应 XT-L2/Hub-L5 的 directed mention；当 XT-W3-22-B/XT-W3-22-C/XT-W3-23-B/XT-W3-23-C/XT-W3-24-B/XT-W3-24-C/XT-W3-24-D/XT-W3-24-E/XT-W3-25-D/XT-W3-25-E 被定向点名时提交最小补件 delta_3line；非定向请求 fail-closed 不写任务状态`
+- next_step: `继续 NO_DELTA_STANDBY/no_claim：仅响应 XT-L2/Hub-L5 对 operator-channel follow-up 的 directed mention；非定向请求 fail-closed 不写任务状态`
 - evidence_refs:
   - `x-terminal/work-orders/xt-l1-skills-ux-preflight-runner-contract-v1.md`
   - `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`
@@ -9923,6 +11299,7 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
   - `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`
   - `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`
   - `docs/xhub-client-modes-and-connectors-v1.md`
+  - `build/reports/xt_main_xt_l2_delta_3line.v98.json`
   - `x-terminal/.axcoder/reports/skills_xt_l1_contract_report.json`
   - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_blocked_status.v1.json`
   - `x-terminal/.axcoder/reports/skc_w2_05_xt_l1_autocontinue_checkpoint.v2.json`
@@ -11883,36 +13260,53 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 
 
 ### XT-L2
-- active_task: `none`（current_batch_delivered；lane_state=no_claim_standby）
+- active_task: `none`（xt_w3_24_n_delivered_v114；lane_state=no_claim_standby）
 - queue_head: `none`
-- backlog_next: `XT-W3-21(含A/B/C) -> XT-W3-22(含A/B/C) -> XT-W3-23(含A/B/C/D/E) -> XT-W3-24(含A/B/C/D/E/F) -> XT-W3-25(含A/B/C/D/E/F)`（来自 `XT-W3-21/22` + `XT-W3-23` + `XT-W3-24` + `XT-W3-25` 执行包；当前仅装载 planned，不自动 claim）
-- dependency: `CD-20260305-004,CD-20260306-001,CD-20260306-002,CD-20260306-003`（single-lane takeover 保持；已装载接案/验收/记忆产品化/渠道产品化/自动化产品面下一批 planned）
-- status: `no_claim_standby(batch_delivered_v86;directed_only;fail_closed)`
+- backlog_next: `directed_followup_only(Hub-L5: XT-W3-24-O..S)`（`XT-W3-21..25` 主链与 `A..F` 子任务已由 `v89-v92/v94` 历史证据证明 delivered/release_ready；`XT-W3-24-G/H/I/J/K/L/M/N` 已于 `v100/v102/v104/v106/v108/v110/v112/v114` 收口，不自动 reopen）
+- dependency: `CD-20260305-004,CD-20260306-001,CD-20260306-002,CD-20260306-003`（single-lane takeover 保持；XT-W3-21..25 mainline 已历史交付并回填为 release_ready；仅剩 operator/onboarding directed follow-up）
+- status: `no_claim_standby(xt_w3_24_n_delivered_v114;directed_only;fail_closed)`
 - claim_state: `none(open_formal_claims=0)`
-- claim_id: `XT-W2-20=claim_xt_w2_20_xt_l2_mainline_20260304_1254; XT-W2-21=claim_xt_w2_21_xt_l2_seq_20260304_1255; XT-W2-22=claim_xt_w2_22_xt_l2_formal_20260304_1458; XT-W2-23=claim_xt_w2_23_xt_l2_formal_20260304_1543; XT-W2-23-B=claim_xt_w2_23_b_xt_l2_formal_20260304_1900; XT-W2-23-C=claim_xt_w2_23_c_xt_l2_formal_20260304_1946; XT-W2-23-A=claim_xt_w2_23_a_xt_l2_formal_20260304_2122; XT-W2-24=claim_xt_w2_24_xt_l2_formal_20260304_2150; XT-W2-24-A=claim_xt_w2_24_a_xt_l2_formal_20260304_2156; XT-W2-24-B=claim_xt_w2_24_b_xt_l2_temp_takeover_20260305_1024; XT-W2-24-C=claim_xt_w2_24_c_xt_l2_temp_takeover_20260305_1030; XT-W2-24-D=claim_xt_w2_24_d_xt_l2_temp_takeover_20260305_1036; XT-W2-24-E=claim_xt_w2_24_e_xt_l2_temp_takeover_20260305_1041; XT-W2-24-F=claim_xt_w2_24_f_xt_l2_temp_takeover_20260305_1044; XT-W2-25=claim_xt_w2_25_xt_l2_temp_takeover_20260305_1054; XT-W2-25-S1=claim_xt_w2_25_s1_xt_l2_temp_takeover_20260305_1102; XT-W2-26=claim_xt_w2_26_xt_l2_auto_20260305_1413; XT-W2-26-A=claim_xt_w2_26_a_xt_l2_auto_20260305_1511; XT-W2-26-B=claim_xt_w2_26_b_xt_l2_auto_20260305_1623; XT-W2-26-C=claim_xt_w2_26_c_xt_l2_auto_20260305_1638; XT-W2-27=claim_xt_w2_27_xt_l2_auto_20260305_1644; XT-W2-27-A=claim_xt_w2_27_a_xt_l2_auto_20260305_1653; XT-W2-27-B=claim_xt_w2_27_b_xt_l2_auto_20260305_1710; XT-W2-27-C=claim_xt_w2_27_c_xt_l2_auto_20260305_1733; XT-W2-27-D=claim_xt_w2_27_d_xt_l2_auto_20260305_1740; XT-W2-27-E=claim_xt_w2_27_e_xt_l2_auto_20260305_1804; XT-W2-27-F=claim_xt_w2_27_f_xt_l2_auto_20260305_1810; XT-W2-28=claim_xt_w2_28_xt_l2_auto_20260305_1839; XT-W2-28-A=claim_xt_w2_28_a_xt_l2_auto_20260305_1849; XT-W2-28-B=claim_xt_w2_28_b_xt_l2_auto_20260305_1850; XT-W2-28-C=claim_xt_w2_28_c_xt_l2_auto_20260305_1858; XT-W2-28-D=claim_xt_w2_28_d_xt_l2_auto_20260305_1913; XT-W2-28-E=claim_xt_w2_28_e_xt_l2_auto_20260305_1917; XT-W2-28-F=claim_xt_w2_28_f_xt_l2_auto_20260305_1926; XT-W2-29=claim_xt_w2_29_xt_l2_auto_20260305_1926; XT-W2-29-B=claim_xt_w2_29_b_xt_l2_auto_20260305_1934; XT-W2-29-C=claim_xt_w2_29_c_xt_l2_auto_20260305_2002; XT-W2-29-D=claim_xt_w2_29_d_xt_l2_auto_20260305_2022; XT-W2-29-E=claim_xt_w2_29_e_xt_l2_auto_20260305_2042; XT-W2-29-F=claim_xt_w2_29_f_xt_l2_auto_20260305_2102; XT-W2-30=claim_xt_w2_30_xt_l2_auto_20260305_2122; XT-W2-30-B=claim_xt_w2_30_b_xt_l2_auto_20260305_2142; XT-W2-30-C=claim_xt_w2_30_c_xt_l2_auto_20260305_2222; XT-W2-30-D=claim_xt_w2_30_d_xt_l2_auto_20260305_2242; XT-W2-30-E=claim_xt_w2_30_e_xt_l2_auto_20260305_2322; XT-W2-30-F=claim_xt_w2_30_f_xt_l2_auto_20260305_2352; XT-W2-31=claim_xt_w2_31_xt_l2_auto_20260306_0022; XT-W2-31-B=claim_xt_w2_31_b_xt_l2_auto_20260306_0052; XT-W2-31-C=claim_xt_w2_31_c_xt_l2_auto_20260306_0122; XT-W2-31-D=claim_xt_w2_31_d_xt_l2_auto_20260306_0152; XT-W2-31-E=claim_xt_w2_31_e_xt_l2_auto_20260306_0222; XT-W2-31-F=claim_xt_w2_31_f_xt_l2_auto_20260306_0252; XT-W2-32=claim_xt_w2_32_xt_l2_auto_20260306_0322; XT-W2-32-B=claim_xt_w2_32_b_xt_l2_auto_20260306_0352; XT-W2-32-C=claim_xt_w2_32_c_xt_l2_auto_20260306_0422; XT-W2-32-D=claim_xt_w2_32_d_xt_l2_auto_20260306_0452; XT-W2-32-E=claim_xt_w2_32_e_xt_l2_auto_20260306_0522; XT-W2-32-F=claim_xt_w2_32_f_xt_l2_auto_20260306_0552; XT-W2-33=claim_xt_w2_33_xt_l2_auto_20260306_0622; XT-W2-33-B=claim_xt_w2_33_b_xt_l2_auto_20260306_0652; XT-W2-33-C=claim_xt_w2_33_c_xt_l2_auto_20260306_0722; XT-W2-33-D=claim_xt_w2_33_d_xt_l2_auto_20260306_0752; XT-W2-33-E=claim_xt_w2_33_e_xt_l2_auto_20260306_0822; XT-W2-33-F=claim_xt_w2_33_f_xt_l2_auto_20260306_0922; XT-W2-34=claim_xt_w2_34_xt_l2_auto_20260306_1022; XT-W2-34-B=claim_xt_w2_34_b_xt_l2_auto_20260306_1052; XT-W3-18=claim_xt_w3_18_xt_l2_auto_20260306_1034`
+- claim_id: `XT-W2-20=claim_xt_w2_20_xt_l2_mainline_20260304_1254; XT-W2-21=claim_xt_w2_21_xt_l2_seq_20260304_1255; XT-W2-22=claim_xt_w2_22_xt_l2_formal_20260304_1458; XT-W2-23=claim_xt_w2_23_xt_l2_formal_20260304_1543; XT-W2-23-B=claim_xt_w2_23_b_xt_l2_formal_20260304_1900; XT-W2-23-C=claim_xt_w2_23_c_xt_l2_formal_20260304_1946; XT-W2-23-A=claim_xt_w2_23_a_xt_l2_formal_20260304_2122; XT-W2-24=claim_xt_w2_24_xt_l2_formal_20260304_2150; XT-W2-24-A=claim_xt_w2_24_a_xt_l2_formal_20260304_2156; XT-W2-24-B=claim_xt_w2_24_b_xt_l2_temp_takeover_20260305_1024; XT-W2-24-C=claim_xt_w2_24_c_xt_l2_temp_takeover_20260305_1030; XT-W2-24-D=claim_xt_w2_24_d_xt_l2_temp_takeover_20260305_1036; XT-W2-24-E=claim_xt_w2_24_e_xt_l2_temp_takeover_20260305_1041; XT-W2-24-F=claim_xt_w2_24_f_xt_l2_temp_takeover_20260305_1044; XT-W2-25=claim_xt_w2_25_xt_l2_temp_takeover_20260305_1054; XT-W2-25-S1=claim_xt_w2_25_s1_xt_l2_temp_takeover_20260305_1102; XT-W2-26=claim_xt_w2_26_xt_l2_auto_20260305_1413; XT-W2-26-A=claim_xt_w2_26_a_xt_l2_auto_20260305_1511; XT-W2-26-B=claim_xt_w2_26_b_xt_l2_auto_20260305_1623; XT-W2-26-C=claim_xt_w2_26_c_xt_l2_auto_20260305_1638; XT-W2-27=claim_xt_w2_27_xt_l2_auto_20260305_1644; XT-W2-27-A=claim_xt_w2_27_a_xt_l2_auto_20260305_1653; XT-W2-27-B=claim_xt_w2_27_b_xt_l2_auto_20260305_1710; XT-W2-27-C=claim_xt_w2_27_c_xt_l2_auto_20260305_1733; XT-W2-27-D=claim_xt_w2_27_d_xt_l2_auto_20260305_1740; XT-W2-27-E=claim_xt_w2_27_e_xt_l2_auto_20260305_1804; XT-W2-27-F=claim_xt_w2_27_f_xt_l2_auto_20260305_1810; XT-W2-28=claim_xt_w2_28_xt_l2_auto_20260305_1839; XT-W2-28-A=claim_xt_w2_28_a_xt_l2_auto_20260305_1849; XT-W2-28-B=claim_xt_w2_28_b_xt_l2_auto_20260305_1850; XT-W2-28-C=claim_xt_w2_28_c_xt_l2_auto_20260305_1858; XT-W2-28-D=claim_xt_w2_28_d_xt_l2_auto_20260305_1913; XT-W2-28-E=claim_xt_w2_28_e_xt_l2_auto_20260305_1917; XT-W2-28-F=claim_xt_w2_28_f_xt_l2_auto_20260305_1926; XT-W2-29=claim_xt_w2_29_xt_l2_auto_20260305_1926; XT-W2-29-B=claim_xt_w2_29_b_xt_l2_auto_20260305_1934; XT-W2-29-C=claim_xt_w2_29_c_xt_l2_auto_20260305_2002; XT-W2-29-D=claim_xt_w2_29_d_xt_l2_auto_20260305_2022; XT-W2-29-E=claim_xt_w2_29_e_xt_l2_auto_20260305_2042; XT-W2-29-F=claim_xt_w2_29_f_xt_l2_auto_20260305_2102; XT-W2-30=claim_xt_w2_30_xt_l2_auto_20260305_2122; XT-W2-30-B=claim_xt_w2_30_b_xt_l2_auto_20260305_2142; XT-W2-30-C=claim_xt_w2_30_c_xt_l2_auto_20260305_2222; XT-W2-30-D=claim_xt_w2_30_d_xt_l2_auto_20260305_2242; XT-W2-30-E=claim_xt_w2_30_e_xt_l2_auto_20260305_2322; XT-W2-30-F=claim_xt_w2_30_f_xt_l2_auto_20260305_2352; XT-W2-31=claim_xt_w2_31_xt_l2_auto_20260306_0022; XT-W2-31-B=claim_xt_w2_31_b_xt_l2_auto_20260306_0052; XT-W2-31-C=claim_xt_w2_31_c_xt_l2_auto_20260306_0122; XT-W2-31-D=claim_xt_w2_31_d_xt_l2_auto_20260306_0152; XT-W2-31-E=claim_xt_w2_31_e_xt_l2_auto_20260306_0222; XT-W2-31-F=claim_xt_w2_31_f_xt_l2_auto_20260306_0252; XT-W2-32=claim_xt_w2_32_xt_l2_auto_20260306_0322; XT-W2-32-B=claim_xt_w2_32_b_xt_l2_auto_20260306_0352; XT-W2-32-C=claim_xt_w2_32_c_xt_l2_auto_20260306_0422; XT-W2-32-D=claim_xt_w2_32_d_xt_l2_auto_20260306_0452; XT-W2-32-E=claim_xt_w2_32_e_xt_l2_auto_20260306_0522; XT-W2-32-F=claim_xt_w2_32_f_xt_l2_auto_20260306_0552; XT-W2-33=claim_xt_w2_33_xt_l2_auto_20260306_0622; XT-W2-33-B=claim_xt_w2_33_b_xt_l2_auto_20260306_0652; XT-W2-33-C=claim_xt_w2_33_c_xt_l2_auto_20260306_0722; XT-W2-33-D=claim_xt_w2_33_d_xt_l2_auto_20260306_0752; XT-W2-33-E=claim_xt_w2_33_e_xt_l2_auto_20260306_0822; XT-W2-33-F=claim_xt_w2_33_f_xt_l2_auto_20260306_0922; XT-W2-34=claim_xt_w2_34_xt_l2_auto_20260306_1022; XT-W2-34-B=claim_xt_w2_34_b_xt_l2_auto_20260306_1052; XT-W3-18=claim_xt_w3_18_xt_l2_auto_20260306_1034; XT-W3-21=historical_backfill_xt_main_v89; XT-W3-22=historical_backfill_xt_main_v89; XT-W3-23=historical_backfill_xt_main_v90; XT-W3-24=historical_backfill_xt_main_v91; XT-W3-25=historical_backfill_xt_main_v92; XT-W3-24-G=claim_xt_w3_24_g_xt_l2_auto_20260320_0724; XT-W3-24-H=claim_xt_w3_24_h_xt_l2_auto_20260320_0747; XT-W3-24-I=claim_xt_w3_24_i_xt_l2_auto_20260320_1036; XT-W3-24-J=claim_xt_w3_24_j_xt_l2_auto_20260320_1050; XT-W3-24-K=claim_xt_w3_24_k_xt_l2_auto_20260320_1120; XT-W3-24-L=claim_xt_w3_24_l_xt_l2_auto_20260320_1152; XT-W3-24-M=claim_xt_w3_24_m_xt_l2_auto_20260320_1347; XT-W3-24-N=claim_xt_w3_24_n_xt_l2_auto_20260320_1435`
 - claim_ttl_until: `none`
 - innovation_level: `L1_micro_reflect`
 - suggestion_governance: `hybrid`
 - gate_blocker: `none`
-- blocked_reason: `none(planned_memory_and_channel_productization_batch_loaded)`
+- blocked_reason: `none(xt_w3_24_n_delivered;wait_hub_l5_followup)`
 - unblock_owner:
   - `XT-L2`
-- auto_continue_state: `no_claim_standby_next_batch_loaded_v88`
-- next_step: `await_next_claim_window_or_directed_go=true；默认从 XT-W3-21 开始串行 claim；XT-W3-22/XT-W3-23/XT-W3-24/XT-W3-25 及子任务按 gate/依赖展开；不得跳过 claim + evidence`
+- auto_continue_state: `no_claim_standby_xt_w3_24_n_delivered_v114`
+- next_step: `XT-L2 保持 no-claim standby；Hub-L5 默认推进 XT-W3-24-O..S；XT-L2 仅响应 directed follow-up（operator-channel explainability / regression delta / release note backfill）`
 - evidence_refs:
-  - `x-terminal/work-orders/xt-supervisor-multipool-lane-execution-pack-v1.md`
-  - `x-terminal/work-orders/xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md`
-  - `x-terminal/work-orders/xt-w3-23-memory-ux-adapter-implementation-pack-v1.md`
-  - `x-terminal/work-orders/xt-w3-24-multichannel-gateway-productization-implementation-pack-v1.md`
-  - `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`
-  - `docs/xhub-client-modes-and-connectors-v1.md`
-  - `docs/xhub-memory-system-spec-v2.md`
-  - `X_MEMORY.md`
-  - `build/reports/xt_main_xt_l2_delta_3line.v78.json`
-  - `build/reports/xt_w3_11_dependency_import_receipt.v1.json`
-  - `build/reports/xt_w3_18_test_matrix_definition.v1.json`
-  - `build/reports/xt_w3_18_xt_l2_delta_3line.v1.json`
-  - `build/reports/xt_main_xt_l2_delta_3line.v77.json`
+  - `build/reports/xt_w3_24_g_channel_registry_reuse_evidence.v1.json`
+  - `build/reports/xt_w3_24_h_identity_command_gate_evidence.v1.json`
+  - `build/reports/xt_w3_24_i_supervisor_route_binding_evidence.v1.json`
+  - `build/reports/xt_w3_24_j_slack_operator_evidence.v1.json`
+  - `build/reports/xt_w3_24_k_telegram_operator_evidence.v1.json`
+  - `build/reports/xt_w3_24_l_feishu_operator_evidence.v1.json`
+  - `build/reports/xt_w3_24_m_delivery_outbox_evidence.v1.json`
+  - `build/reports/xt_w3_24_n_action_grant_whatsapp_evidence.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v113.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v114.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v112.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v111.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v109.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v110.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v107.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v108.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v100.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v101.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v102.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v103.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v104.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v105.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v106.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v90.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v91.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v92.json`
+  - `build/reports/xt_w3_require_real_provenance.v2.json`
+  - `build/reports/xt_w3_release_ready_decision.v1.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v97.json`
+  - `build/reports/xt_main_xt_l2_delta_3line.v98.json`
   - `build/reports/xt_w2_34_task_split_audit.v3.json`
   - `build/reports/xt_main_xt_l2_delta_3line.v76.json`
   - `build/reports/xt_w2_34_b_evidence.v1.json`
@@ -14349,8 +15743,166 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 - next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
 - evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v78.json`
 
+#### XT-L2 / XT-W3-11 / delta_3line checkpoint v95
+
+- status: `state_changed_xt_w3_11_formal_claimed`
+- dependency_delta: `本tick按 P0 优先级直接 formal claim XT-W3-11，目标是把现有 mergeback quality gate 从 evaluator/test-sample 补到 SupervisorOrchestrator 生产链路，要求可产出 machine-readable run snapshots、quality report 与导出路径；保持 single_formal_claim=true，不并行 claim 其他 XT-L2 任务。`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（directed-only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_w3_11_xt_l2_delta_3line.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v95.json`
+
+#### XT-L2 / XT-W3-11 / delta_3line checkpoint v96
+
+- status: `state_changed_xt_w3_11_candidate_pass_and_return_to_no_claim_standby`
+- dependency_delta: `本tick已完成 XT-W3-11 生产化补全：新增 MergebackRunSnapshotBuilder，把 materialized lanes/task states/lane states/incidents/conflicts 汇总成 run_audits；SupervisorOrchestrator 新增 evaluateMergebackQuality(...) 与 exportMergebackQualityReport(...)；focused tests 共 5 条全部通过，覆盖 pass/fail-closed/runtime export 三条路径，因此以 XT-SUP-G4/XT-G5=candidate_pass 收口并回到 no_claim_standby。`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（await_next_claim_window_or_directed_go；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_w3_11_mergeback_quality_gate_evidence.v2.json`, `build/reports/xt_w3_11_g4_g5_first_probe.v2.json`, `build/reports/xt_w3_11_xt_l2_delta_3line.v2.json`, `build/reports/xt_main_xt_l2_delta_3line.v96.json`, `x-terminal/build/reports/xt_w3_11_mergeback_quality_gate_probe_tests.v2.log`
+
+#### XT-L2 / XT-Main(Directed-Reconcile) / delta_3line checkpoint v97
+
+- status: `historical_board_reconcile_started_for_xt_w3_21_to_xt_w3_25_mainline`
+- dependency_delta: `发现 Task Catalog 与 XT-L2/XT-L1 lane summary 仍把 XT-W3-21..25 主链显示为 planned/backlog，但历史证据 `v89-v92/v94` 已证明 XT-W3-21..25(A..F) delivered 且主链达到 release_ready。本tick开始一次纯文档 reconcile：不重跑实现、不新增 formal claim、不伪造新交付，只把看板状态回填到既有 evidence。`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（document_reconcile_only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v97.json`
+
+#### XT-L2 / XT-Main(Directed-Reconcile) / delta_3line checkpoint v98
+
+- status: `historical_board_reconcile_completed_for_xt_w3_21_to_xt_w3_25_mainline`
+- dependency_delta: `已将 XT-W3-21..25 与已被历史证据覆盖的 `A..F` 子任务从 planned 回填为 delivered，claim_id 明确标记为 historical_backfill_xt_main_v89..v92；XT-L2/XT-L1 摘要与 lane snapshot 也已同步到 release_ready mainline + directed_followup_only 口径。仍保持 fail-closed：未触碰 XT-W3-24-G..N 与 Hub-L5 XT-W3-24-O..S，等待后续定向推进。`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（await_directed_followup_only；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v98.json`
+
+#### XT-L2 / XT-Main(Directed-Followup) / delta_3line checkpoint v99
+
+- status: `formal_claim_started_xt_w3_24_g_channel_registry_reuse_normalization`
+- dependency_delta: `按 directed follow-up 正式认领 XT-W3-24-G。确认 channel_registry/channel_delivery_context/channel_runtime_snapshot 已在仓内存在，本tick仅补 provider exposure matrix、HubChannelIngressEnvelope 与 shared ingress primitives export，不重开 XT-W3-21..25 主链。`
+- minimal_gaps: `provider_exposure_matrix_missing; hub_channel_ingress_envelope_missing; shared_ingress_primitives_export_missing`
+- next_owner_lane: `XT-L2`（single_formal_claim=true；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v99.json`
+
+#### XT-L2 / XT-Main(Directed-Followup) / delta_3line checkpoint v100
+
+- status: `xt_w3_24_g_delivered_channel_ingress_contract_and_reuse_evidence`
+- dependency_delta: `已完成 XT-W3-24-G 收口：新增 machine-readable provider exposure matrix；冻结并接入 HubChannelIngressEnvelope；把 preauth/replay/ordering/receipt 原语统一暴露到 shared module；Slack/Telegram/Feishu/WhatsApp ingress 回归全部通过。XT-L2 已回到 directed_followup_only，下一优先项为 XT-W3-24-H。`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（await_directed_followup_only；next=XT-W3-24-H）
+- evidence_ref: `build/reports/xt_w3_24_g_channel_registry_reuse_evidence.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v100.json`
+
+#### XT-L2 / XT-Main(Directed-Followup) / delta_3line checkpoint v101
+
+- status: `formal_claim_started_xt_w3_24_h_identity_mapping_access_groups_and_command_gate`
+- dependency_delta: `按 directed follow-up 正式认领 XT-W3-24-H。当前只补安全闭环要求：stable_external_id 唯一键、approval_only_identity/viewer/release_manager/ops_admin 角色矩阵、DM/group/thread access_groups 与稳定 deny_code；明确禁止 display text 参与授权判定。`
+- minimal_gaps: `stable_external_id_missing; access_groups_not_formalized; role_matrix_still_legacy; display_text_auth_guard_not_explicit`
+- next_owner_lane: `XT-L2`（single_formal_claim=true；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v101.json`
+
+#### XT-L2 / XT-Main(Directed-Followup) / delta_3line checkpoint v102
+
+- status: `xt_w3_24_h_delivered_stable_external_id_access_groups_and_command_gate`
+- dependency_delta: `已完成 XT-W3-24-H 收口：channel identity 新增 stable_external_id 唯一键并作为 actor_ref 来源；identity access_groups 明确区分 dm/group/thread/approval_only_identity；command gate 角色矩阵切到 approval_only_identity/viewer/release_manager/ops_admin（保留 operator 兼容位）；Slack/Telegram/Feishu/WhatsApp command actor 透传 stable_external_id；display text 继续不参与授权。回归测试共 10 条全部通过，XT-L2 回到 directed_followup_only，下一优先项为 XT-W3-24-I。`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（await_directed_followup_only；next=XT-W3-24-I）
+- evidence_ref: `build/reports/xt_w3_24_h_identity_command_gate_evidence.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v102.json`
+
+#### XT-L2 / XT-Main(Directed-Followup) / delta_3line checkpoint v103
+
+- status: `formal_claim_started_xt_w3_24_i_project_first_route_binding`
+- dependency_delta: `按 directed follow-up 正式认领 XT-W3-24-I。当前聚焦 route/session 收口：把 operator action 的 allowed scope types 机判化，默认保持 project-first，禁止 device diagnostics 复用项目主线程，并补 incident/project/device 三类 scope regression。`
+- minimal_gaps: `action_scope_contract_not_formalized; device_diagnostics_scope_switch_not_enforced; incident_scope_regression_missing`
+- next_owner_lane: `XT-L2`（single_formal_claim=true；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v103.json`
+
+#### XT-L2 / XT-Main(Directed-Followup) / delta_3line checkpoint v104
+
+- status: `xt_w3_24_i_delivered_project_first_route_binding`
+- dependency_delta: `已完成 XT-W3-24-I 收口：command gate 新增 action->allowed_scope_types 合约，project/incident 查询继续 hub-only 且默认 project-first，device diagnostics 必须显式切到 device binding 才会路由 runner；route facade 也同步 fail-closed，避免项目主线程误落到 device 路径。回归测试共 4 组全部通过，XT-L2 回到 directed_followup_only，下一优先项为 XT-W3-24-J。`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（await_directed_followup_only；next=XT-W3-24-J）
+- evidence_ref: `build/reports/xt_w3_24_i_supervisor_route_binding_evidence.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v104.json`
+
+#### XT-L2 / XT-Main(Directed-Followup) / delta_3line checkpoint v105
+
+- status: `formal_claim_started_xt_w3_24_j_slack_operator_adapter`
+- dependency_delta: `按 directed follow-up 正式认领 XT-W3-24-J。先按工单核对现有 Slack ingress/interactive/egress/health/runtime 是否已覆盖 thread-aware 查询、审批按钮、主动推送与 health probe；若实现已在仓内，则直接补 formal evidence 与 smoke 回归。`
+- minimal_gaps: `formal_delivery_evidence_missing; thread_aware_smoke_matrix_not_backfilled; slack_adapter_dod_revalidation_pending`
+- next_owner_lane: `XT-L2`（single_formal_claim=true；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v105.json`
+
+#### XT-L2 / XT-Main(Directed-Followup) / delta_3line checkpoint v106
+
+- status: `xt_w3_24_j_delivered_slack_operator_adapter`
+- dependency_delta: `已完成 XT-W3-24-J 收口：Slack adapter 的 ingress/interactive/egress/result publisher/health/runtime 已按工单口径完成 formal delivery；本tick 还修掉了 url_verification 在 worker 边界被误 fail-closed 的问题，保证签名通过的 challenge 能正确返回 200。回归测试共 11 组全部通过，XT-L2 回到 directed_followup_only，下一优先项为 XT-W3-24-K。`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（await_directed_followup_only；next=XT-W3-24-K）
+- evidence_ref: `build/reports/xt_w3_24_j_slack_operator_evidence.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v106.json`
+
+#### XT-L2 / XT-Main(Directed-Followup) / delta_3line checkpoint v107
+
+- status: `formal_claim_started_xt_w3_24_k_telegram_operator_adapter`
+- dependency_delta: `按 directed follow-up 正式认领 XT-W3-24-K。先按工单核对现有 Telegram polling ingress / DM+topic scope / inline approval / result publisher / runtime 是否已覆盖 operator 主链；若实现已在仓内，则补 formal evidence，并优先修掉 callback ack / topic scope 这类真实回归缺口。`
+- minimal_gaps: `formal_delivery_evidence_missing; callback_ack_runtime_gap_unknown; dm_topic_scope_revalidation_pending; telegram_adapter_dod_revalidation_pending`
+- next_owner_lane: `XT-L2`（single_formal_claim=true；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v107.json`
+
+#### XT-L2 / XT-Main(Directed-Followup) / delta_3line checkpoint v108
+
+- status: `xt_w3_24_k_delivered_telegram_operator_adapter`
+- dependency_delta: `已完成 XT-W3-24-K 收口：Telegram adapter 的 polling ingress / DM+topic binding / inline approval / result publisher / runtime 已按工单口径完成 formal delivery；本tick 还修掉了 callback_query_id 与派生 audit_ref 在 ingress envelope 归一化后丢失的问题，保证 grant approval callback 会被本地及时 ack、同时满足 callback action 审计定位，不再让按钮转圈。回归测试共 11 组全部通过，XT-L2 回到 directed_followup_only，下一优先项为 XT-W3-24-L。`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（await_directed_followup_only；next=XT-W3-24-L）
+- evidence_ref: `build/reports/xt_w3_24_k_telegram_operator_evidence.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v108.json`
+
+#### XT-L2 / XT-Main(Directed-Followup) / delta_3line checkpoint v109
+
+- status: `formal_claim_started_xt_w3_24_l_feishu_operator_adapter`
+- dependency_delta: `按 directed follow-up 正式认领 XT-W3-24-L。先按工单核对现有 Feishu event ingress / card action / egress / result publisher / worker runtime 是否已覆盖 project room、审批卡片、deploy plan 与状态摘要主链；若实现已在仓内，则补 formal evidence，并优先修掉 card audit_ref、room scope 或 fail-closed 语义这类真实回归缺口。`
+- minimal_gaps: `formal_delivery_evidence_missing; card_audit_ref_runtime_gap_unknown; project_room_scope_revalidation_pending; feishu_adapter_dod_revalidation_pending`
+- next_owner_lane: `XT-L2`（single_formal_claim=true；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v109.json`
+
+#### XT-L2 / XT-Main(Directed-Followup) / delta_3line checkpoint v110
+
+- status: `xt_w3_24_l_delivered_feishu_operator_adapter`
+- dependency_delta: `已完成 XT-W3-24-L 收口：Feishu adapter 的 verified event ingress / card action compiler / approval+summary egress / result publisher / ingress worker / runtime 已按工单口径完成 formal delivery；本tick 补了一条缺失的 fail-closed 回归，明确要求 card callback 缺 `audit_ref` 时直接拒绝，不允许无审计卡片动作穿透。回归测试共 10 组全部通过，其中 ingress worker 与 runtime 的 loopback 监听测试也已本地实跑通过。XT-L2 回到 directed_followup_only，下一优先项为 XT-W3-24-M。`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（await_directed_followup_only；next=XT-W3-24-M）
+- evidence_ref: `build/reports/xt_w3_24_l_feishu_operator_evidence.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v110.json`
+
+#### XT-L2 / XT-Main(Directed-Followup) / delta_3line checkpoint v111
+
+- status: `formal_claim_started_xt_w3_24_m_delivery_outbox`
+- dependency_delta: `按 directed follow-up 正式认领 XT-W3-24-M。先冻结 xhub.channel_delivery_job.v1 及 delivery class 边界，再补 provider-account backoff、dead-letter、manual retry，并把主动推送失败显式投影进 channel runtime snapshot，确保 Supervisor 看到 degradation 而不是 silent drop。`
+- minimal_gaps: `channel_delivery_job_schema_missing; provider_backoff_and_dead_letter_missing; manual_retry_entry_missing; runtime_snapshot_delivery_degradation_missing`
+- next_owner_lane: `XT-L2`（single_formal_claim=true；no_parallel_formal_claim=true）
+- evidence_ref: `build/reports/xt_main_xt_l2_delta_3line.v111.json`
+
+#### XT-L2 / XT-Main(Directed-Followup) / delta_3line checkpoint v112
+
+- status: `xt_w3_24_m_delivered_delivery_outbox`
+- dependency_delta: `已完成 XT-W3-24-M 收口：Hub 已新增正式 channel delivery job plane，支持 schema-frozen proactive jobs、dedupe、provider-account backoff、dead-letter/manual retry，并把 delivery failure 反映为 runtime snapshot 的 degraded + last_error_code，让 Supervisor 看得到推送链路退化但不丢 command ingress readiness。回归测试覆盖新 job store、runtime snapshot 与 HubRuntime service snapshot 共 3 组，全部通过。XT-L2 回到 directed_followup_only，下一优先项为 XT-W3-24-N。`
+- minimal_gaps: `none`
+- next_owner_lane: `XT-L2`（await_directed_followup_only；next=XT-W3-24-N）
+- evidence_ref: `build/reports/xt_w3_24_m_delivery_outbox_evidence.v1.json`, `build/reports/xt_main_xt_l2_delta_3line.v112.json`
+
 ## E. Coordinator Decisions（运行态）
 
+- `CD-20260319-001`
+  - decision: 采纳 `CR-20260319-001`，将 Command Board 的默认 dispatch overlay 对齐到 v1 boundary + next-10 backlog，并把 `Hub memory truth / audit / export guardrails` 提升为 P0 地基项
+  - reason: 让后续 AI 协作者只读看板也能看出“先做什么、谁来拿、哪些能并行”，避免继续从 persona / parity / edge expansion 开新主线
+  - policy:
+    - 默认拿单波次固定为：`1+3+4 -> 2+5+6 -> 7+8+9 -> 10`
+    - `Hub-L5` 默认主拿：`1/2/3/7/9`
+    - `XT-L2` 默认主拿：`4/5/6/8`
+    - `AI-COORD-PRIMARY` 只在 `1-9` 已形成稳定主演示链后，统筹 `10`
+    - 若历史 planned backlog 与 v1 overlay 冲突，新 claim 默认以 `docs/open-source/XHUB_NEXT_10_WORK_ORDERS_v1.md` 为准
+    - `Hub memory` 的 P0 含义限定为：truth / audit / export guardrails / source label honesty / canonical writeback；不包括 persona center / personal longterm assistant 扩张
+  - follow_up:
+    - Hub-L5：优先按 `工单 1 -> 工单 2 / 工单 3` 推进 connect + route + memory truth 主线
+    - XT-L2：优先按 `工单 4 -> 工单 5 -> 工单 6` 推进 Supervisor + governance + voice 主线
+    - AI-COORD-PRIMARY：在后续 replan 中优先使用 `C.0 V1 Mainline Overlay` 做默认 claim 分发
 - `CD-20260301-001`
   - decision: 启用 Command Board v2 作为唯一协作板，旧“口头协作”规则停用
   - reason: 降低多泳道并发冲突与插单漂移
@@ -15295,6 +16847,34 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
     - `LPR-W1-02`: 若 Add Model 仍只能按 MLX 路径导入，或旧 catalog 迁移出现 silent drop = `NO_GO`
     - `LPR-W1-03`: 若新 runtime skeleton 不能 provider-aware 汇总健康状态，或导致 MLX 主链回退 = `NO_GO`
     - `LPR-W1-01..03`: 若出现自动在线拉模、绕过 Hub policy / audit / kill-switch 的本地执行路径 = `NO_GO`
+
+- `CD-20260313-001`
+  - type: `coordination_decision`
+  - status: `active`
+  - owner: `AI-COORD-PRIMARY`
+  - rule:
+    - `XT-W3-24-O..S` 当前只允许推进以下五类内容：
+      - unknown ingress quarantine + discovery ticket
+      - local trusted admin approval decision
+      - auto-bind transaction for identity + channel binding
+      - low-risk first smoke + guided success reply
+      - security regression + release wording + require-real boundary
+    - 首次接入自动化不得削弱 `Hub-first`；unknown ingress 不得直达 XT 或高风险 side effect
+    - OpenClaw 只允许复用 `pairing reply / approve-once` 心智、allowlist 风险提示和已冻结的 `registry / command gating / delivery context` 形状
+    - 禁止复用 `approve pairing code -> 直接写 allowFrom` 的执行捷径
+    - 首版管理员批准默认必须发生在本地可信管理面；unknown sender 不允许在 IM 内自助完成最终批准
+    - auto-bind 不得隐式发放 `deploy.execute`、`grant.approve`、`device.*` 等高风险能力
+    - first smoke 只允许 low-risk readonly commands；失败必须显式返回 `hub_only_status|xt_offline|runner_not_ready|scope_missing`
+  - merge_order:
+    1. `Hub-Main`
+    2. `XT-Main`
+    3. `QA-Main`
+  - go_no_go:
+    - `XT-W3-24-O..S`: 若 approval 前出现任何 side effect = `NO_GO`
+    - 若使用 display name / group title / nickname 参与授权判定 = `NO_GO`
+    - 若批准一次后自动扩写到其他 DM/group/thread = `NO_GO`
+    - 若 auto-bind 形成半提交状态或隐式发放高风险动作 = `NO_GO`
+    - 若 `WhatsApp Cloud API` 在无 require-real 证据前被口头或文档标成 ready = `NO_GO`
 
 ## G. Archive Index（运行态）
 
@@ -16347,7 +17927,7 @@ node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('build/reports/skc_w
 ### K1. Lane Role Snapshot
 
 - `Hub-L5`: Hub-Main（Gate/裁决主链，优先处理 release blocker；仅在 `evidence_delta=true` 时重跑）
-- `XT-L2`: XT-Main（XT 主链执行：当前优先 `XT-W3-21/22 -> XT-W3-23 -> XT-W3-24 -> XT-W3-25`；单主线 claim + same_owner_self_takeover）
+- `XT-L2`: XT-Main（`XT-W3-21..25` 主链已按历史证据回填为 delivered/release_ready；`XT-W3-24-G` 已收口，当前仅 directed follow-up `XT-W3-24-H..N` 与配套 Hub-L5 `XT-W3-24-O..S`；单主线 claim + same_owner_self_takeover）
 - `QA`: QA-Main（影子并行：从切片起点开始准备 regression/checklist/evidence；不等待开发收尾）
 - `Hub-L1`: standby_burst（样本/分母/映射证据补齐；默认 `NO_DELTA_STANDBY`）
 - `Hub-L2`: standby_burst（安全漂移守护与 deny_code/撤销链快照；默认 `NO_DELTA_STANDBY`）

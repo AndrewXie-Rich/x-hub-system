@@ -382,16 +382,11 @@ enum SupervisorReviewPolicyEngine {
     private static func mandatoryTriggers(
         for executionTier: AXProjectExecutionTier
     ) -> Set<SupervisorReviewTrigger> {
-        switch executionTier {
-        case .a0Observe, .a1Plan:
-            return [.preDoneSummary]
-        case .a2RepoAuto:
-            return [.blockerDetected, .preDoneSummary]
-        case .a3DeliverAuto:
-            return [.blockerDetected, .planDrift, .preDoneSummary]
-        case .a4OpenClaw:
-            return [.blockerDetected, .preHighRiskAction, .preDoneSummary]
-        }
+        Set(
+            executionTier.mandatoryReviewTriggers.map {
+                SupervisorReviewTrigger(rawValue: $0.rawValue) ?? .manualRequest
+            }
+        )
     }
 
     private static func reviewedRecently(

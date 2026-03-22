@@ -132,46 +132,160 @@ extension SupervisorSkillRegistrySnapshot {
 
     func memorySummary(maxItems: Int = 6, maxChars: Int = 1_000) -> String {
         let projectLabel = (projectName ?? projectId).trimmingCharacters(in: .whitespacesAndNewlines)
-        let variantPreviewLimit = 2
         var lines = ["project=\(projectLabel) id=\(projectId)"]
-        for (index, item) in items.prefix(max(1, maxItems)).enumerated() {
-            let grant = item.requiresGrant ? "grant=yes" : "grant=no"
-            let dispatchTool = item.governedDispatch?.tool.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let dispatchSegment = dispatchTool.isEmpty ? "" : " | dispatch=\(dispatchTool)"
-            let headline = "\(index + 1). \(item.skillId) | risk=\(item.riskLevel.rawValue) | \(grant) | scope=\(item.policyScope) | timeout_ms=\(item.timeoutMs) | retries=\(item.maxRetries) | side_effect=\(item.sideEffectClass)\(dispatchSegment)"
-            lines.append(headline)
-            if !item.capabilitiesRequired.isEmpty {
-                lines.append("   caps: \(item.capabilitiesRequired.joined(separator: ", "))")
+        for (index, item) in promptDiscoveryItems().prefix(max(1, maxItems)).enumerated() {
+            let block = promptDiscoverySummaryBlock(for: item, index: index + 1)
+            let candidate = (lines + block).joined(separator: "\n")
+            if candidate.count > maxChars {
+                break
             }
-            for variant in item.governedDispatchVariants.prefix(variantPreviewLimit) {
-                if let summary = variant.variantSummary() {
-                    lines.append("   variant: \(summary)")
-                }
+            lines.append(contentsOf: block)
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func promptDiscoveryItems() -> [SupervisorSkillRegistryItem] {
+        items.sorted { lhs, rhs in
+            let leftPriority = promptDiscoveryPriority(lhs)
+            let rightPriority = promptDiscoveryPriority(rhs)
+            if leftPriority != rightPriority {
+                return leftPriority < rightPriority
             }
-            let hiddenVariantCount = item.governedDispatchVariants.count - min(item.governedDispatchVariants.count, variantPreviewLimit)
-            if hiddenVariantCount > 0 {
-                lines.append("   variant_more: +\(hiddenVariantCount)")
-            }
-            if let payloadContract = item.governedDispatch?.payloadContractSummary() {
-                lines.append("   payload: \(payloadContract)")
-            }
-            if item.governedDispatchVariants.isEmpty {
-                for note in item.governedDispatchNotes.prefix(2) {
-                    let cleaned = note.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !cleaned.isEmpty else { continue }
-                    lines.append("   dispatch_note: \(cleaned)")
-                }
-            }
-            let description = item.description.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !description.isEmpty {
-                lines.append("   \(description)")
+            return lhs.skillId.localizedCaseInsensitiveCompare(rhs.skillId) == .orderedAscending
+        }
+    }
+
+    private func promptDiscoveryPriority(_ item: SupervisorSkillRegistryItem) -> Int {
+        switch AXSkillsLibrary.canonicalSupervisorSkillID(item.skillId).lowercased() {
+        case "guarded-automation":
+            return 0
+        case "supervisor-voice":
+            return 1
+        default:
+            break
+        }
+
+        switch item.policyScope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "project":
+            return 10
+        case "global":
+            return 11
+        case "memory_core":
+            return 12
+        case "xt_builtin":
+            return 13
+        default:
+            return 20
+        }
+    }
+
+    private func promptPreferredUse(_ item: SupervisorSkillRegistryItem) -> String? {
+        switch AXSkillsLibrary.canonicalSupervisorSkillID(item.skillId).lowercased() {
+        case "guarded-automation":
+            return "trusted_automation_readiness, governed_browser_actions"
+        case "supervisor-voice":
+            return "supervisor_playback_status, preview, speak, stop"
+        default:
+            return nil
+        }
+    }
+
+    private func promptDiscoverySummaryBlock(
+        for item: SupervisorSkillRegistryItem,
+        index: Int
+    ) -> [String] {
+        let grant = item.requiresGrant ? "grant=yes" : "grant=no"
+        let dispatchTool = item.governedDispatch?.tool.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let dispatchSegment = dispatchTool.isEmpty ? "" : " | dispatch=\(dispatchTool)"
+        let displayName = item.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var lines = [
+            "\(index). \(item.skillId) | risk=\(item.riskLevel.rawValue) | \(grant) | scope=\(item.policyScope)\(dispatchSegment)"
+        ]
+
+        if !displayName.isEmpty,
+           displayName.caseInsensitiveCompare(item.skillId) != .orderedSame {
+            lines.append("   display: \(displayName)")
+        }
+
+        if let preferredUse = promptPreferredUse(item) {
+            lines.append("   preferred_for: \(preferredUse)")
+        }
+
+        if let routingHint = promptRoutingHint(item) {
+            lines.append("   routing: \(routingHint)")
+        }
+
+        let capabilities = promptCapabilityPreview(item)
+        if !capabilities.isEmpty {
+            lines.append("   caps: \(capabilities.joined(separator: ", "))")
+        }
+
+        for variant in promptVariantPreview(item) {
+            if let summary = variant.variantSummary() {
+                lines.append("   variant: \(summary)")
             }
         }
 
-        let joined = lines.joined(separator: "\n")
-        guard joined.count > maxChars else { return joined }
-        let end = joined.index(joined.startIndex, offsetBy: maxChars)
-        return String(joined[..<end]) + "..."
+        if let payloadContract = promptPayloadPreview(item) {
+            lines.append("   payload: \(payloadContract)")
+        }
+
+        return lines
+    }
+
+    private func promptCapabilityPreview(_ item: SupervisorSkillRegistryItem) -> [String] {
+        let capabilityLimit: Int
+        switch AXSkillsLibrary.canonicalSupervisorSkillID(item.skillId).lowercased() {
+        case "guarded-automation", "agent-browser":
+            capabilityLimit = 3
+        default:
+            capabilityLimit = 2
+        }
+        return Array(item.capabilitiesRequired.prefix(capabilityLimit))
+    }
+
+    private func promptVariantPreview(_ item: SupervisorSkillRegistryItem) -> [SupervisorGovernedSkillDispatchVariant] {
+        let limit: Int
+        switch AXSkillsLibrary.canonicalSupervisorSkillID(item.skillId).lowercased() {
+        case "guarded-automation":
+            limit = 3
+        default:
+            limit = 1
+        }
+        return Array(item.governedDispatchVariants.prefix(limit))
+    }
+
+    private func promptPayloadPreview(_ item: SupervisorSkillRegistryItem) -> String? {
+        guard let dispatch = item.governedDispatch else { return nil }
+        switch AXSkillsLibrary.canonicalSupervisorSkillID(item.skillId).lowercased() {
+        case "supervisor-voice":
+            return nil
+        default:
+            break
+        }
+        return dispatch.payloadContractSummary(maxChars: 140)
+    }
+
+    private func promptRoutingHint(_ item: SupervisorSkillRegistryItem) -> String? {
+        switch SupervisorSkillRoutingCompatibilityHint.resolve(
+            skillId: item.skillId,
+            registryItems: items
+        ) {
+        case .alias(let raw, let canonical):
+            return "alias \(raw) -> \(canonical)"
+        case .preferredBuiltin(let builtin, let action):
+            if let action {
+                return "prefers_builtin=\(builtin) action=\(action)"
+            }
+            return "prefers_builtin=\(builtin)"
+        case .compatibleBuiltin(let builtin):
+            return "compatible_builtin=\(builtin)"
+        case .compatibleEntrypoints(let entries):
+            return "entrypoints=\(entries.joined(separator: ", "))"
+        case nil:
+            return nil
+        }
     }
 }
 

@@ -49,6 +49,10 @@ struct SupervisorSystemPromptBuilderTests {
         #expect(prompt.contains("Managed project count: 3"))
         #expect(prompt.contains("Preferred supervisor model id: openai/gpt-5.3-codex"))
         #expect(prompt.contains("Supervisor model route summary: openai/gpt-5.3-codex（已加载，名称：GPT 5.3 Codex）"))
+        #expect(prompt.contains("## Supervisor Operating Mode"))
+        #expect(prompt.contains("Configured work mode: guided_progress"))
+        #expect(prompt.contains("## Privacy Mode"))
+        #expect(prompt.contains("Configured privacy mode: balanced"))
         #expect(prompt.contains("## Conversation Style"))
         #expect(prompt.contains("Never invent runtime restrictions."))
         #expect(prompt.contains("For build requests such as making a game, app, tool, or feature"))
@@ -93,7 +97,14 @@ struct SupervisorSystemPromptBuilderTests {
         #expect(prompt.contains("For review or planning requests that do not clearly ask for immediate execution, do not emit action tags"))
         #expect(prompt.contains("If Memory Context contains skills_registry, only CALL_SKILL skill_ids that appear in that focused-project registry snapshot."))
         #expect(prompt.contains("Use each skills_registry item's risk, grant, caps, dispatch, variant, dispatch_note, and payload hints to shape CALL_SKILL payloads"))
+        #expect(prompt.contains("Treat `routing: prefers_builtin=...` and `routing: entrypoints=...` as skill-family metadata."))
+        #expect(prompt.contains("If the user explicitly names a registered wrapper or entrypoint skill_id, preserve that exact registered skill_id in CALL_SKILL"))
+        #expect(prompt.contains("If the user asks for a capability without naming a specific skill_id, and the relevant skills_registry family advertises `routing: prefers_builtin=...`, choose that preferred builtin"))
+        #expect(prompt.contains("Do not emit duplicate CALL_SKILL actions across sibling entrypoints in the same routed family for one intent."))
         #expect(prompt.contains("If a skills_registry item says grant=yes or has high/critical risk, expect an approval or awaiting-authorization transition"))
+        #expect(prompt.contains("If a skills_registry item says scope=xt_builtin, treat it as an XT native governed skill that is already available locally"))
+        #expect(prompt.contains("If the user does not name a different installed wrapper/entrypoint and skills_registry contains guarded-automation, prefer it for trusted automation readiness checks and governed browser actions"))
+        #expect(prompt.contains("If skills_registry contains supervisor-voice, prefer it for local Supervisor playback status / preview / speak / stop requests"))
         #expect(prompt.contains("If you emit UPSERT_PLAN for a focused project, match the effective_work_order_depth shown in Memory Context as a minimum detail floor"))
         #expect(prompt.contains("For strong or capable focused projects, execution_ready can stay concise"))
         #expect(prompt.contains("Constraint: CREATE_JOB / UPSERT_PLAN / CALL_SKILL / CANCEL_SKILL must use a single JSON object body."))
@@ -148,6 +159,225 @@ struct SupervisorSystemPromptBuilderTests {
         #expect(prompt.contains("First state that the current memory supply is insufficient for strategic correction"))
         #expect(prompt.contains("Until that gap is repaired, you may still help with immediate blocker, grant, and next-step handling"))
         #expect(prompt.contains("Current memory risks: Supervisor memory 供给没有达到 review floor | Focused strategic review 缺少可追溯证据"))
+    }
+
+    @Test
+    func fullModeIncludesPersonalAssistantContextWhenConfigured() {
+        let params = SupervisorSystemPromptParamsBuilder.build(
+            identity: .default(),
+            personalProfile: SupervisorPersonalProfile(
+                preferredName: "Andrew",
+                goalsSummary: "Keep X-Hub shipping while reducing personal admin drag.",
+                workStyle: "Prefer clear priorities, direct feedback, and a strong next-step recommendation.",
+                communicationPreferences: "Lead with the answer, then explain tradeoffs.",
+                dailyRhythm: "Mornings are best for deep work. Late afternoons are better for inbox and follow-up cleanup.",
+                reviewPreferences: "Morning brief should stay short. Weekly review should surface overdue follow-ups."
+            ),
+            personalPolicy: SupervisorPersonalPolicy(
+                relationshipMode: .chiefOfStaff,
+                briefingStyle: .proactive,
+                riskTolerance: .balanced,
+                interruptionTolerance: .high,
+                reminderAggressiveness: .assertive,
+                preferredMorningBriefTime: "08:30",
+                preferredEveningWrapUpTime: "18:30",
+                weeklyReviewDay: "Friday"
+            ),
+            preferredSupervisorModelId: "openai/gpt-5.3-codex",
+            supervisorModelRouteSummary: "route-summary",
+            memorySource: "memory_v1",
+            projectCount: 2,
+            userMessage: "帮我看下今天最重要的事",
+            memoryV1: "memory-line",
+            promptMode: .full,
+            extraSystemPrompt: nil,
+            now: Date(timeIntervalSince1970: 1_773_196_800),
+            timeZone: TimeZone(identifier: "Asia/Shanghai") ?? .current,
+            locale: Locale(identifier: "en_US_POSIX"),
+            hubConnected: true,
+            hubRemoteConnected: true
+        )
+
+        let prompt = SupervisorSystemPromptBuilder().build(params)
+
+        #expect(prompt.contains("## Personal Assistant Context"))
+        #expect(prompt.contains("Preferred user name: Andrew"))
+        #expect(prompt.contains("Long-term goals: Keep X-Hub shipping while reducing personal admin drag."))
+        #expect(prompt.contains("Work style: Prefer clear priorities, direct feedback, and a strong next-step recommendation."))
+        #expect(prompt.contains("Communication preferences: Lead with the answer, then explain tradeoffs."))
+        #expect(prompt.contains("Daily rhythm: Mornings are best for deep work. Late afternoons are better for inbox and follow-up cleanup."))
+        #expect(prompt.contains("Review preferences: Morning brief should stay short. Weekly review should surface overdue follow-ups."))
+        #expect(prompt.contains("Relationship mode: Chief of Staff."))
+        #expect(prompt.contains("Briefing style: Proactive."))
+        #expect(prompt.contains("Interruption tolerance: High."))
+        #expect(prompt.contains("Reminder aggressiveness: Assertive."))
+        #expect(prompt.contains("Preferred morning brief time: 08:30"))
+        #expect(prompt.contains("Preferred evening wrap-up time: 18:30"))
+        #expect(prompt.contains("Preferred weekly review day: Friday"))
+    }
+
+    @Test
+    func fullModeIncludesRetrievalHelperRuntimeHint() {
+        let params = SupervisorSystemPromptParamsBuilder.build(
+            preferredSupervisorModelId: "openai/gpt-5.3-codex",
+            supervisorModelRouteSummary: "route-summary",
+            memorySource: "memory_v1",
+            projectCount: 2,
+            userMessage: "帮我继续推进",
+            memoryV1: "memory-line",
+            promptMode: .full,
+            extraSystemPrompt: nil,
+            retrievalModelSummary: "mlx-community/qwen3-embedding-0.6b-4bit (loaded)",
+            now: Date(timeIntervalSince1970: 1_773_196_800),
+            timeZone: TimeZone(identifier: "Asia/Shanghai") ?? .current,
+            locale: Locale(identifier: "en_US_POSIX"),
+            hubConnected: true,
+            hubRemoteConnected: true
+        )
+
+        let prompt = SupervisorSystemPromptBuilder().build(params)
+
+        #expect(prompt.contains("Retrieval helper models: mlx-community/qwen3-embedding-0.6b-4bit (loaded)"))
+        #expect(prompt.contains("Embedding/retrieval helper models are reserved for retrieval and memory lookup."))
+    }
+
+    @Test
+    func fullModeIncludesStructuredPersonalMemoryContextWhenPresent() {
+        let params = SupervisorSystemPromptParamsBuilder.build(
+            identity: .default(),
+            personalMemorySummary: """
+- Structured personal memory items: 4
+- Key people: Alex, Taylor
+- Open commitments: Reply to Alex · due 2026-03-16 18:00
+- Overdue commitments: Reply to Alex · due 2026-03-16 18:00
+""",
+            preferredSupervisorModelId: "openai/gpt-5.3-codex",
+            supervisorModelRouteSummary: "route-summary",
+            memorySource: "memory_v1",
+            projectCount: 1,
+            userMessage: "今天我最容易漏掉什么？",
+            memoryV1: "memory-line",
+            promptMode: .full,
+            extraSystemPrompt: nil,
+            now: Date(timeIntervalSince1970: 1_773_196_800),
+            timeZone: TimeZone(identifier: "Asia/Shanghai") ?? .current,
+            locale: Locale(identifier: "en_US_POSIX"),
+            hubConnected: true,
+            hubRemoteConnected: true
+        )
+
+        let prompt = SupervisorSystemPromptBuilder().build(params)
+
+        #expect(prompt.contains("## Personal Memory Context"))
+        #expect(prompt.contains("Treat this as structured long-term memory for the user"))
+        #expect(prompt.contains("Key people: Alex, Taylor"))
+        #expect(prompt.contains("Overdue commitments: Reply to Alex"))
+    }
+
+    @Test
+    func fullModeIncludesPersonalFollowUpQueueWhenPresent() {
+        let params = SupervisorSystemPromptParamsBuilder.build(
+            identity: .default(),
+            personalFollowUpSummary: """
+- Follow-up queue: 3 open follow-ups | 1 overdue | 1 due soon | 2 people waiting
+- People waiting on the user: Alex, Taylor
+- Highest-priority follow-ups: Reply to Alex (overdue due 2026-03-16 18:00) | Send agenda to Taylor (due soon due 2026-03-16 20:00)
+- Reminder queue: Reply to Alex (overdue) | Send agenda to Taylor (due soon)
+""",
+            preferredSupervisorModelId: "openai/gpt-5.3-codex",
+            supervisorModelRouteSummary: "route-summary",
+            memorySource: "memory_v1",
+            projectCount: 1,
+            userMessage: "我今天最该先回谁？",
+            memoryV1: "memory-line",
+            promptMode: .full,
+            extraSystemPrompt: nil,
+            now: Date(timeIntervalSince1970: 1_773_196_800),
+            timeZone: TimeZone(identifier: "Asia/Shanghai") ?? .current,
+            locale: Locale(identifier: "en_US_POSIX"),
+            hubConnected: true,
+            hubRemoteConnected: true
+        )
+
+        let prompt = SupervisorSystemPromptBuilder().build(params)
+
+        #expect(prompt.contains("## Follow-Up Queue Context"))
+        #expect(prompt.contains("People waiting on the user: Alex, Taylor"))
+        #expect(prompt.contains("Reminder queue: Reply to Alex (overdue)"))
+    }
+
+    @Test
+    func fullModeIncludesPersonalReviewContextWhenPresent() {
+        let params = SupervisorSystemPromptParamsBuilder.build(
+            identity: .default(),
+            personalReviewSummary: """
+- Personal review schedule: morning 08:30 · evening 18:30 · weekly Friday 18:30
+- Due personal reviews: Morning Brief (overdue): Start the day with 1 overdue follow-up, 1 open commitment. Actions: Reply to Alex today | Protect the first focused block
+- Recent personal review notes: Weekly Review: Reset the coming week around 2 people waiting.
+""",
+            preferredSupervisorModelId: "openai/gpt-5.3-codex",
+            supervisorModelRouteSummary: "route-summary",
+            memorySource: "memory_v1",
+            projectCount: 1,
+            userMessage: "给我一个 morning brief",
+            memoryV1: "memory-line",
+            promptMode: .full,
+            extraSystemPrompt: nil,
+            now: Date(timeIntervalSince1970: 1_773_196_800),
+            timeZone: TimeZone(identifier: "Asia/Shanghai") ?? .current,
+            locale: Locale(identifier: "en_US_POSIX"),
+            hubConnected: true,
+            hubRemoteConnected: true
+        )
+
+        let prompt = SupervisorSystemPromptBuilder().build(params)
+
+        #expect(prompt.contains("## Personal Review Context"))
+        #expect(prompt.contains("Treat this as the user's current daily and weekly personal review loop state."))
+        #expect(prompt.contains("Personal review schedule: morning 08:30"))
+        #expect(prompt.contains("Due personal reviews: Morning Brief (overdue)"))
+        #expect(prompt.contains("Recent personal review notes: Weekly Review"))
+    }
+
+    @Test
+    func fullModeIncludesTurnRoutingHintWhenPresent() {
+        let params = SupervisorSystemPromptParamsBuilder.build(
+            identity: .default(),
+            turnRoutingDecision: SupervisorTurnRoutingDecision(
+                mode: .projectFirst,
+                focusedProjectId: "proj-liangliang",
+                focusedProjectName: "亮亮",
+                focusedPersonName: nil,
+                focusedCommitmentId: nil,
+                confidence: 0.97,
+                routingReasons: [
+                    "explicit_project_mention:亮亮",
+                    "project_planning_language"
+                ]
+            ),
+            preferredSupervisorModelId: "openai/gpt-5.3-codex",
+            supervisorModelRouteSummary: "route-summary",
+            memorySource: "memory_v1",
+            projectCount: 1,
+            userMessage: "亮亮下一步怎么推进",
+            memoryV1: "memory-line",
+            promptMode: .full,
+            extraSystemPrompt: nil,
+            now: Date(timeIntervalSince1970: 1_773_196_800),
+            timeZone: TimeZone(identifier: "Asia/Shanghai") ?? .current,
+            locale: Locale(identifier: "en_US_POSIX"),
+            hubConnected: true,
+            hubRemoteConnected: true
+        )
+
+        let prompt = SupervisorSystemPromptBuilder().build(params)
+
+        #expect(prompt.contains("## Turn Routing Hint"))
+        #expect(prompt.contains("Dominant turn mode: project_first"))
+        #expect(prompt.contains("Primary memory domain: project_memory"))
+        #expect(prompt.contains("Focused project: 亮亮"))
+        #expect(prompt.contains("Routing reasons: explicit_project_mention:亮亮 | project_planning_language"))
+        #expect(prompt.contains("Answer from project memory first."))
     }
 
     @Test
@@ -254,5 +484,97 @@ struct SupervisorSystemPromptBuilderTests {
         #expect(params.runtimeInfo.hubRoute == "local_hub")
         #expect(params.runtimeInfo.projectCount == 2)
         #expect(params.runtimeInfo.memorySource == "memory_v1")
+    }
+
+    @Test
+    func workModeSectionChangesExecutionContract() {
+        let conversationPrompt = SupervisorSystemPromptBuilder().build(
+            SupervisorSystemPromptParamsBuilder.build(
+                workMode: .conversationOnly,
+                preferredSupervisorModelId: "openai/gpt-5.3-codex",
+                supervisorModelRouteSummary: "route-summary",
+                memorySource: "memory_v1",
+                projectCount: 1,
+                userMessage: "继续推进",
+                memoryV1: "memory-line",
+                promptMode: .full,
+                extraSystemPrompt: nil,
+                now: Date(timeIntervalSince1970: 1_773_196_800),
+                timeZone: TimeZone(identifier: "Asia/Shanghai") ?? .current,
+                locale: Locale(identifier: "en_US_POSIX"),
+                hubConnected: true,
+                hubRemoteConnected: true
+            )
+        )
+        let guidedPrompt = SupervisorSystemPromptBuilder().build(
+            SupervisorSystemPromptParamsBuilder.build(
+                workMode: .guidedProgress,
+                preferredSupervisorModelId: "openai/gpt-5.3-codex",
+                supervisorModelRouteSummary: "route-summary",
+                memorySource: "memory_v1",
+                projectCount: 1,
+                userMessage: "继续推进",
+                memoryV1: "memory-line",
+                promptMode: .full,
+                extraSystemPrompt: nil,
+                now: Date(timeIntervalSince1970: 1_773_196_800),
+                timeZone: TimeZone(identifier: "Asia/Shanghai") ?? .current,
+                locale: Locale(identifier: "en_US_POSIX"),
+                hubConnected: true,
+                hubRemoteConnected: true
+            )
+        )
+        let automationPrompt = SupervisorSystemPromptBuilder().build(
+            SupervisorSystemPromptParamsBuilder.build(
+                workMode: .governedAutomation,
+                preferredSupervisorModelId: "openai/gpt-5.3-codex",
+                supervisorModelRouteSummary: "route-summary",
+                memorySource: "memory_v1",
+                projectCount: 1,
+                userMessage: "继续推进",
+                memoryV1: "memory-line",
+                promptMode: .full,
+                extraSystemPrompt: nil,
+                now: Date(timeIntervalSince1970: 1_773_196_800),
+                timeZone: TimeZone(identifier: "Asia/Shanghai") ?? .current,
+                locale: Locale(identifier: "en_US_POSIX"),
+                hubConnected: true,
+                hubRemoteConnected: true
+            )
+        )
+
+        #expect(conversationPrompt.contains("Configured work mode: conversation_only"))
+        #expect(conversationPrompt.contains("Only answer direct user requests."))
+        #expect(guidedPrompt.contains("Configured work mode: guided_progress"))
+        #expect(guidedPrompt.contains("Do not autonomously launch governed coder/skill/tool execution."))
+        #expect(automationPrompt.contains("Configured work mode: governed_automation"))
+        #expect(automationPrompt.contains("initiate governed coder/skill/tool execution"))
+    }
+
+    @Test
+    func tightenedPrivacyModeAddsSummaryFirstContract() {
+        let prompt = SupervisorSystemPromptBuilder().build(
+            SupervisorSystemPromptParamsBuilder.build(
+                privacyMode: .tightenedContext,
+                preferredSupervisorModelId: "openai/gpt-5.3-codex",
+                supervisorModelRouteSummary: "route-summary",
+                memorySource: "memory_v1",
+                projectCount: 1,
+                userMessage: "帮我接上次的进度",
+                memoryV1: "memory-line",
+                promptMode: .full,
+                extraSystemPrompt: nil,
+                now: Date(timeIntervalSince1970: 1_773_196_800),
+                timeZone: TimeZone(identifier: "Asia/Shanghai") ?? .current,
+                locale: Locale(identifier: "en_US_POSIX"),
+                hubConnected: true,
+                hubRemoteConnected: true
+            )
+        )
+
+        #expect(prompt.contains("Configured privacy mode: tightened_context"))
+        #expect(prompt.contains("prefer concise summaries over replaying verbatim recent dialogue"))
+        #expect(prompt.contains("Long-term memory, session handoff capsules, and project state reconstruction remain available"))
+        #expect(prompt.contains("Prefer concise summaries over verbatim replay of recent dialogue unless the exact wording is necessary"))
     }
 }

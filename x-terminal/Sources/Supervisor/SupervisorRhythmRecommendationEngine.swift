@@ -3,6 +3,7 @@ import Foundation
 enum SupervisorRhythmRecommendationType: String, Codable, Sendable {
     case steadyState = "steady_state"
     case decisionRequired = "decision_required"
+    case decisionRailCleanup = "decision_rail_cleanup"
     case unblockRequired = "unblock_required"
     case defineNextStep = "define_next_step"
     case keepMomentum = "keep_momentum"
@@ -115,6 +116,9 @@ enum SupervisorRhythmRecommendationEngine {
         case .archived:
             return .archiveState
         case .progressed:
+            if looksLikeDecisionRailCleanup(event.actionSummary + " " + event.whyItMatters + " " + event.nextAction) {
+                return .decisionRailCleanup
+            }
             let isSubstantive = substantiveChange(for: event, recommendedNextAction: recommendedNextAction)
             guard isSubstantive else { return .steadyState }
             if looksLikeMissingNextStep(recommendedNextAction) {
@@ -132,6 +136,9 @@ enum SupervisorRhythmRecommendationEngine {
         case .awaitingAuthorization, .blocked, .created, .completed, .archived:
             return true
         case .progressed:
+            if looksLikeDecisionRailCleanup(event.actionSummary + " " + event.whyItMatters + " " + event.nextAction) {
+                return true
+            }
             if event.severity == .interruptNow || event.severity == .authorizationRequired || event.severity == .briefCard {
                 return true
             }
@@ -154,6 +161,9 @@ enum SupervisorRhythmRecommendationEngine {
         case .created:
             return "first concrete triage step"
         case .progressed:
+            if looksLikeDecisionRailCleanup(event.actionSummary + " " + event.whyItMatters + " " + event.nextAction) {
+                return SupervisorDecisionRailMessaging.waitingOnText
+            }
             return substantiveChange(for: event, recommendedNextAction: resolvedNextAction(for: event))
                 ? "the recommended next action"
                 : "none"
@@ -165,6 +175,9 @@ enum SupervisorRhythmRecommendationEngine {
         if !eventNextAction.isEmpty, !looksLikeMissingNextStep(eventNextAction) {
             switch event.eventType {
             case .completed:
+                if looksLikeArchiveReviewAction(eventNextAction) {
+                    return eventNextAction
+                }
                 return "Review completion evidence, then archive or close out the project."
             case .archived:
                 return "Keep the project archived unless new scope is explicitly approved."
@@ -184,6 +197,13 @@ enum SupervisorRhythmRecommendationEngine {
         case .created:
             return "Review the new project and confirm one concrete next step."
         case .progressed:
+            if looksLikeDecisionRailCleanup(event.actionSummary + " " + event.whyItMatters + " " + event.nextAction) {
+                let eventNextAction = normalizedDisplayText(event.nextAction, fallback: "")
+                if !eventNextAction.isEmpty, !looksLikeMissingNextStep(eventNextAction) {
+                    return eventNextAction
+                }
+                return "Review the decision/background boundary and either formalize the preference or keep it explicitly non-binding."
+            }
             return "Wait for the next material change; do not interrupt on status churn."
         case .completed:
             return "Review completion evidence, then archive or close out the project."
@@ -227,6 +247,9 @@ enum SupervisorRhythmRecommendationEngine {
         case .archived:
             return "Archived work should stay quiet unless scope is explicitly reopened."
         case .progressed:
+            if looksLikeDecisionRailCleanup(event.actionSummary + " " + event.whyItMatters + " " + event.nextAction) {
+                return "Decision/background precedence drift should be cleaned up before weak preferences leak back into execution."
+            }
             return "Only recommendation-changing progress should interrupt the supervisor."
         }
     }
@@ -279,6 +302,41 @@ enum SupervisorRhythmRecommendationEngine {
             "确认",
             "拍板",
             "定案",
+        ]
+        return tokens.contains { lowered.contains($0) }
+    }
+
+    private static func looksLikeDecisionRailCleanup(_ text: String) -> Bool {
+        let lowered = text.lowercased()
+        let tokens = [
+            "decision rail",
+            "decision_rail",
+            "shadowed background",
+            "shadowed_background",
+            "weak-only",
+            "weak only",
+            "non-binding",
+            "background-only",
+            "precedence boundary",
+        ]
+        return tokens.contains { lowered.contains($0) }
+    }
+
+    private static func looksLikeArchiveReviewAction(_ text: String) -> Bool {
+        let lowered = text.lowercased()
+        let tokens = [
+            "archive",
+            "archived",
+            "close out",
+            "close-out",
+            "closeout",
+            "rollup",
+            "compaction",
+            "review completion evidence",
+            "收口",
+            "归档",
+            "结项",
+            "归档候选",
         ]
         return tokens.contains { lowered.contains($0) }
     }

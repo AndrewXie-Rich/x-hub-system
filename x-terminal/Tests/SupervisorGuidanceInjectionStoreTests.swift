@@ -150,6 +150,52 @@ struct SupervisorGuidanceInjectionStoreTests {
     }
 
     @Test
+    func latestPendingAckFallsBackToOlderActionableItemWhenNewestIsDeferredOrExpired() throws {
+        let root = try makeProjectRoot(named: "guidance-store-fallback")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        try SupervisorGuidanceInjectionStore.upsert(
+            makeGuidance(
+                injectionId: "guidance-older-pending",
+                injectedAtMs: 100,
+                ackRequired: true,
+                ackStatus: .pending,
+                expiresAtMs: 10_000
+            ),
+            for: ctx
+        )
+        try SupervisorGuidanceInjectionStore.upsert(
+            makeGuidance(
+                injectionId: "guidance-newer-expired",
+                injectedAtMs: 300,
+                ackRequired: true,
+                ackStatus: .pending,
+                expiresAtMs: 350
+            ),
+            for: ctx
+        )
+        try SupervisorGuidanceInjectionStore.upsert(
+            makeGuidance(
+                injectionId: "guidance-newest-deferred",
+                injectedAtMs: 500,
+                ackRequired: true,
+                ackStatus: .deferred,
+                expiresAtMs: 10_000,
+                retryAtMs: 9_000,
+                retryCount: 1,
+                maxRetryCount: 2
+            ),
+            for: ctx
+        )
+
+        let pending = SupervisorGuidanceInjectionStore.latestPendingAck(for: ctx, nowMs: 400)
+        #expect(pending?.injectionId == "guidance-older-pending")
+    }
+
+    @Test
     func expiredGuidanceIsNotReturnedAsActionablePendingAck() throws {
         let root = try makeProjectRoot(named: "guidance-store-expired")
         defer { try? FileManager.default.removeItem(at: root) }

@@ -198,6 +198,102 @@ summary=omega queue drift detected
         #expect(activity.triggerSummary == "omega queue drift detected")
         #expect(activity.resultSummary == "handled strategic reroute\nqueued next review")
     }
+
+    @Test
+    func officialSkillsChannelFailureQueuesGlobalEventLoopFollowUp() async {
+        let manager = SupervisorManager.makeForTesting(
+            enableSupervisorEventLoopAutoFollowUp: true
+        )
+        let recorder = Recorder()
+        let appModel = AppModel()
+
+        manager.setSupervisorEventLoopResponseOverrideForTesting { userMessage, triggerSource in
+            let status = supervisorEventLoopLineValue("channel_status", in: userMessage)
+            let transition = supervisorEventLoopLineValue("transition_kind", in: userMessage)
+            await recorder.append("\(triggerSource):\(status):\(transition)")
+            return "handled official channel \(status)"
+        }
+        manager.setAppModel(appModel)
+
+        var snapshot = AXSkillsDoctorSnapshot.empty
+        snapshot.officialChannelID = "official-stable"
+        snapshot.officialChannelStatus = "failed"
+        snapshot.officialChannelUpdatedAtMs = 500
+        snapshot.officialChannelSkillCount = 12
+        snapshot.officialChannelErrorCode = "index_missing"
+        snapshot.officialChannelMaintenanceEnabled = true
+        snapshot.officialChannelMaintenanceSourceKind = "env"
+        snapshot.officialChannelLastTransitionAtMs = 500
+        snapshot.officialChannelLastTransitionKind = "status_changed"
+        snapshot.officialChannelLastTransitionSummary = "healthy -> failed via env"
+        appModel.skillsCompatibilitySnapshot = snapshot
+
+        await manager.waitForSupervisorEventLoopForTesting()
+
+        let recordedCalls = await recorder.snapshot()
+        let officialCalls = recordedCalls.filter { $0.hasPrefix("official_skills_channel:") }
+        #expect(officialCalls == ["official_skills_channel:failed:status_changed"])
+        #expect(manager.supervisorOfficialSkillsChannelStatusLine == "official failed skills=12 auto=env err=index_missing")
+        #expect(manager.supervisorOfficialSkillsChannelTransitionLine == "status_changed: healthy -> failed via env")
+
+        guard let activity = manager.recentSupervisorEventLoopActivitiesForTesting()
+            .last(where: {
+                $0.triggerSource == "official_skills_channel" && $0.status == "completed"
+            }) else {
+            Issue.record("Expected a completed official skills channel event-loop activity.")
+            return
+        }
+
+        #expect(activity.projectName == "Official Skills Channel")
+        #expect(activity.triggerSummary.contains("blocker_detected"))
+        #expect(activity.triggerSummary.contains("failed"))
+        #expect(activity.resultSummary == "handled official channel failed")
+
+        let memory = await manager.buildSupervisorLocalMemoryV1ForTesting("检查官方技能通道")
+        #expect(memory.contains("official_skills_channel: status=official failed skills=12 auto=env err=index_missing"))
+        #expect(memory.contains("latest_transition=status_changed: healthy -> failed via env"))
+    }
+
+    @Test
+    func officialSkillsChannelHealthyRepairStaysPassiveButWritesIntoMemory() async {
+        let manager = SupervisorManager.makeForTesting(
+            enableSupervisorEventLoopAutoFollowUp: true
+        )
+        let recorder = Recorder()
+        let appModel = AppModel()
+
+        manager.setSupervisorEventLoopResponseOverrideForTesting { _, _ in
+            await recorder.append("called")
+            return "unexpected"
+        }
+        manager.setAppModel(appModel)
+
+        var snapshot = AXSkillsDoctorSnapshot.empty
+        snapshot.officialChannelID = "official-stable"
+        snapshot.officialChannelStatus = "healthy"
+        snapshot.officialChannelUpdatedAtMs = 900
+        snapshot.officialChannelSkillCount = 24
+        snapshot.officialChannelMaintenanceEnabled = true
+        snapshot.officialChannelMaintenanceSourceKind = "persisted"
+        snapshot.officialChannelLastTransitionAtMs = 900
+        snapshot.officialChannelLastTransitionKind = "current_snapshot_repaired"
+        snapshot.officialChannelLastTransitionSummary = "current snapshot restored via persisted"
+        appModel.skillsCompatibilitySnapshot = snapshot
+
+        await manager.waitForSupervisorEventLoopForTesting()
+
+        let passiveCalls = await recorder.snapshot()
+        #expect(passiveCalls.isEmpty)
+        #expect(manager.recentSupervisorEventLoopActivitiesForTesting().contains(where: {
+            $0.triggerSource == "official_skills_channel"
+        }) == false)
+        #expect(manager.supervisorOfficialSkillsChannelStatusLine == "official healthy skills=24 auto=persisted")
+        #expect(manager.supervisorOfficialSkillsChannelTransitionLine == "current_snapshot_repaired: current snapshot restored via persisted")
+
+        let memory = await manager.buildSupervisorLocalMemoryV1ForTesting("检查官方技能通道")
+        #expect(memory.contains("official_skills_channel: status=official healthy skills=24 auto=persisted"))
+        #expect(memory.contains("latest_transition=current_snapshot_repaired: current snapshot restored via persisted"))
+    }
 }
 
 private func supervisorEventLoopLineValue(

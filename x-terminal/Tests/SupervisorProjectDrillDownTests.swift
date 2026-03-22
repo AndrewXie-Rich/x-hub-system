@@ -317,4 +317,80 @@ struct SupervisorProjectDrillDownTests {
         #expect(denied.status == .deniedProjectInvisible)
         #expect(denied.denyReason == "project_not_visible_in_current_jurisdiction")
     }
+
+    @Test
+    func completedProjectDrillDownCarriesMemoryCompactionRollup() throws {
+        let now = Date(timeIntervalSince1970: 1_776_100_400).timeIntervalSince1970
+        let manager = SupervisorManager.makeForTesting()
+        let projectRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xt_w3_33_drilldown_compaction_\(UUID().uuidString)")
+        let project = AXProjectEntry(
+            projectId: "proj_archive_candidate",
+            rootPath: projectRoot.path,
+            displayName: "Archive Candidate Project",
+            lastOpenedAt: now,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: "completed",
+            currentStateSummary: "completed",
+            nextStepSummary: nil,
+            blockerSummary: nil,
+            lastSummaryAt: now,
+            lastEventAt: now
+        )
+
+        let ctx = AXProjectContext(root: projectRoot)
+        try ctx.ensureDirs()
+
+        var memory = AXMemory.new(projectName: project.displayName, projectRoot: projectRoot.path)
+        memory.goal = "Close the project without losing governed traceability."
+        try AXProjectStore.saveMemory(memory, for: ctx)
+
+        let oldTimestamp = now - (10 * 24 * 60 * 60)
+        AXRecentContextStore.appendUserMessage(
+            ctx: ctx,
+            text: "Old implementation chatter for finished project",
+            createdAt: oldTimestamp
+        )
+        AXRecentContextStore.appendAssistantMessage(
+            ctx: ctx,
+            text: "Detailed execution log that should archive cleanly",
+            createdAt: oldTimestamp + 10
+        )
+
+        try SupervisorDecisionTrackStore.upsert(
+            SupervisorDecisionTrackBuilder.build(
+                decisionId: "dec_archive_ui",
+                projectId: project.projectId,
+                category: .uiStyle,
+                status: .approved,
+                statement: "Keep the finished dashboard compact and action-first.",
+                source: "owner",
+                reversible: true,
+                approvalRequired: false,
+                approvedBy: "owner",
+                auditRef: "audit_archive_ui",
+                evidenceRefs: ["build/reports/xt_w3_33_g_memory_compaction_evidence.v1.json"],
+                createdAtMs: Int64((oldTimestamp * 1_000.0).rounded())
+            ),
+            for: ctx
+        )
+
+        let registry = SupervisorJurisdictionRegistry.ownerDefault(now: now)
+            .upserting(projectId: project.projectId, displayName: project.displayName, role: .owner, now: now)
+        _ = manager.applySupervisorJurisdictionRegistry(registry, persist: false, normalizeWithKnownProjects: false)
+
+        let snapshot = manager.buildSupervisorProjectDrillDown(
+            for: project,
+            requestedScope: .capsuleOnly
+        )
+
+        let rollup = try #require(snapshot.memoryCompactionRollup)
+        #expect(rollup.archiveCandidate)
+        #expect(rollup.keptDecisionIds == ["dec_archive_ui"])
+        #expect(Set(rollup.archivedNodeIds) == Set(["recent-0", "recent-1"]))
+        #expect(snapshot.refs.contains(AXRecentContextStore.jsonURL(for: ctx).path))
+        #expect(snapshot.refs.contains("audit_archive_ui"))
+        #expect(snapshot.refs.contains("build/reports/xt_w3_33_g_memory_compaction_evidence.v1.json"))
+    }
 }

@@ -125,4 +125,84 @@ struct SupervisorRhythmRecommendationTests {
         #expect(decision.channel == .briefCard)
         #expect(decision.systemMessage == nil)
     }
+
+    @Test
+    func decisionRailCleanupProgressUsesActionFirstBriefCardCadence() {
+        let now = Date(timeIntervalSince1970: 1_773_210_000).timeIntervalSince1970
+        let entry = AXProjectEntry(
+            projectId: "p-rail",
+            rootPath: "/tmp/p-rail",
+            displayName: "Decision Rail Project",
+            lastOpenedAt: now,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: "in_progress",
+            currentStateSummary: "Implementing locked stack",
+            nextStepSummary: "Continue current task",
+            blockerSummary: "(无)",
+            lastSummaryAt: now,
+            lastEventAt: now
+        )
+
+        let event = SupervisorPortfolioSnapshotBuilder.makeActionEvent(
+            from: entry,
+            kind: .updated,
+            shadowedBackgroundNoteCount: 2,
+            weakOnlyBackgroundNoteCount: 1,
+            now: now
+        )
+        let recommendation = SupervisorRhythmRecommendationEngine.recommendation(for: event)
+        let decision = SupervisorProjectNotificationPolicy.decide(for: event)
+
+        #expect(event.eventType == .progressed)
+        #expect(event.severity == .briefCard)
+        #expect(event.actionSummary == "Decision rail cleanup: 2 shadowed background notes + 1 weak-only preference")
+        #expect(recommendation.isSubstantiveChange)
+        #expect(recommendation.recommendationType == .decisionRailCleanup)
+        #expect(recommendation.waitingOn == "decision/background precedence cleanup")
+        #expect(recommendation.recommendedNextAction.contains("either formalize them or keep them explicitly non-binding"))
+        #expect(decision.channel == .briefCard)
+        #expect(decision.recommendation.recommendationType == .decisionRailCleanup)
+    }
+
+    @Test
+    func completedArchiveCandidateKeepsSpecificArchiveReviewNextAction() {
+        let now = Date(timeIntervalSince1970: 1_773_240_000).timeIntervalSince1970
+        let entry = AXProjectEntry(
+            projectId: "p-archive",
+            rootPath: "/tmp/p-archive",
+            displayName: "Archive Project",
+            lastOpenedAt: now,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: "completed",
+            currentStateSummary: "已完成",
+            nextStepSummary: "(暂无)",
+            blockerSummary: "(无)",
+            lastSummaryAt: now,
+            lastEventAt: now
+        )
+        let signal = SupervisorMemoryCompactionSignal(
+            rollupSummary: "rolled_up=2; archived=3; kept_decisions=1; archive_candidate=true",
+            rolledUpCount: 2,
+            archivedCount: 3,
+            keptDecisionCount: 1,
+            keptMilestoneCount: 0,
+            archiveCandidate: true
+        )
+
+        let event = SupervisorPortfolioSnapshotBuilder.makeActionEvent(
+            from: entry,
+            kind: .updated,
+            memoryCompactionSignal: signal,
+            now: now
+        )
+        let recommendation = SupervisorRhythmRecommendationEngine.recommendation(for: event)
+
+        #expect(event.actionTitle.contains("归档候选"))
+        #expect(event.nextAction.contains("确认归档"))
+        #expect(recommendation.recommendationType == .closeOut)
+        #expect(recommendation.recommendedNextAction == event.nextAction)
+        #expect(recommendation.isSubstantiveChange)
+    }
 }

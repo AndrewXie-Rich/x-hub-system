@@ -72,7 +72,7 @@ struct SupervisorConversationSessionIntegrationTests {
 
             try await waitUntil("assistant reply committed") {
                 manager.messages.contains { message in
-                    message.role == .assistant && message.content.contains("Automation Runtime 命令")
+                    message.role == .assistant && message.content.contains("自动化执行命令")
                 }
             }
 
@@ -80,7 +80,50 @@ struct SupervisorConversationSessionIntegrationTests {
             #expect(manager.conversationSessionSnapshot.reasonCode == "tts_spoken")
             #expect(manager.conversationSessionSnapshot.remainingTTLSeconds == 45)
             #expect(spoken.count == 1)
-            #expect(spoken.last?.contains("Automation Runtime 命令") == true)
+            #expect(spoken.last?.contains("自动化执行命令") == true)
+
+            now = now.addingTimeInterval(46)
+            controller.refresh()
+
+            #expect(manager.conversationSessionSnapshot.windowState == .hidden)
+            #expect(manager.conversationSessionSnapshot.reasonCode == "ttl_expired")
+        }
+    }
+
+    @Test
+    func typedQueryOpensConversationAndReplyKeepsItConversingWithoutSpeech() async throws {
+        try await Self.gate.run {
+            var now = Date(timeIntervalSince1970: 4_500)
+            var spoken: [String] = []
+            let controller = SupervisorConversationSessionController.makeForTesting(
+                nowProvider: { now }
+            )
+            let synthesizer = SupervisorSpeechSynthesizer(
+                deduper: SupervisorVoiceBriefDeduper(cooldown: 60),
+                speakSink: { spoken.append($0) }
+            )
+            let manager = SupervisorManager.makeForTesting(
+                supervisorSpeechSynthesizer: synthesizer,
+                conversationSessionController: controller
+            )
+
+            manager.sendMessage("/automation")
+
+            #expect(manager.conversationSessionSnapshot.windowState == .conversing)
+            #expect(manager.conversationSessionSnapshot.reasonCode == "user_turn")
+            #expect(manager.messages.last?.role == .user)
+            #expect(manager.messages.last?.content == "/automation")
+
+            try await waitUntil("typed assistant reply committed") {
+                manager.messages.contains { message in
+                    message.role == .assistant && message.content.contains("自动化执行命令")
+                }
+            }
+
+            #expect(manager.conversationSessionSnapshot.windowState == .conversing)
+            #expect(manager.conversationSessionSnapshot.reasonCode == "assistant_turn")
+            #expect(manager.conversationSessionSnapshot.remainingTTLSeconds == 45)
+            #expect(spoken.isEmpty)
 
             now = now.addingTimeInterval(46)
             controller.refresh()
@@ -246,7 +289,7 @@ struct SupervisorConversationSessionIntegrationTests {
             try await waitUntil("empty grant reply committed", timeoutMs: 5_000) {
                 manager.messages.contains(where: {
                     $0.role == .assistant &&
-                    $0.content.contains("当前没有待处理的 Hub grant")
+                    $0.content.contains("当前没有待处理的 Hub 授权")
                 })
             }
 
@@ -257,8 +300,91 @@ struct SupervisorConversationSessionIntegrationTests {
             }
 
             #expect(manager.conversationSessionSnapshot.windowState == .conversing)
-            #expect(spoken.contains(where: { $0.contains("当前没有待处理的 Hub grant") }))
+            #expect(spoken.contains(where: { $0.contains("当前没有待处理的 Hub 授权") }))
             #expect(transcriber.isRunning)
+        }
+    }
+
+    @Test
+    func wakePhraseRoutesSessionPersonaWhenAliasMatchesSlot() async throws {
+        try await Self.gate.run {
+            let now = Date(timeIntervalSince1970: 6_500)
+            let controller = SupervisorConversationSessionController.makeForTesting(
+                route: .funasrStreaming,
+                wakeMode: .wakePhrase,
+                nowProvider: { now }
+            )
+            let manager = SupervisorManager.makeForTesting(
+                conversationSessionController: controller
+            )
+            let appModel = AppModel()
+            var settings = appModel.settingsStore.settings
+            settings.voice.wakeMode = .wakePhrase
+            settings.voice.preferredRoute = .funasrStreaming
+            appModel.settingsStore.settings = settings
+            manager.setAppModel(appModel)
+
+            try await waitUntil("wake mode promoted to wake phrase") {
+                manager.conversationSessionSnapshot.wakeMode == .wakePhrase
+            }
+
+            manager.handleVoiceWakeEventForTesting(
+                phrase: "atlas",
+                route: .funasrStreaming,
+                timestamp: now.timeIntervalSince1970
+            )
+
+            #expect(manager.conversationSessionSnapshot.windowState == .conversing)
+            #expect(manager.conversationSessionSnapshot.openedBy == .wakePhrase)
+            #expect(manager.supervisorPersonaStatusLineForTesting().contains("Atlas"))
+            #expect(manager.supervisorPersonaStatusLineForTesting().contains("wake_phrase"))
+
+            let identityReply = manager.directSupervisorReplyIfApplicableForTesting("你是谁")
+            #expect(identityReply?.contains("Atlas Supervisor") == true)
+        }
+    }
+
+    @Test
+    func genericWakePhraseDoesNotOverrideCurrentPersona() async throws {
+        try await Self.gate.run {
+            let now = Date(timeIntervalSince1970: 6_700)
+            let controller = SupervisorConversationSessionController.makeForTesting(
+                route: .funasrStreaming,
+                wakeMode: .wakePhrase,
+                nowProvider: { now }
+            )
+            let manager = SupervisorManager.makeForTesting(
+                conversationSessionController: controller
+            )
+            let appModel = AppModel()
+            var settings = appModel.settingsStore.settings
+            var registry = settings.supervisorPersonaRegistry
+            registry = registry.setting(defaultPersonaID: "persona_slot_4")
+            registry = registry.setting(activePersonaID: "persona_slot_4")
+            settings = settings.setting(supervisorPersonaRegistry: registry)
+            settings.voice.wakeMode = .wakePhrase
+            settings.voice.preferredRoute = .funasrStreaming
+            appModel.settingsStore.settings = settings
+            manager.setAppModel(appModel)
+
+            try await waitUntil("wake mode promoted with sage default") {
+                manager.conversationSessionSnapshot.wakeMode == .wakePhrase &&
+                manager.supervisorPersonaStatusLineForTesting().contains("Sage")
+            }
+
+            manager.handleVoiceWakeEventForTesting(
+                phrase: "supervisor",
+                route: .funasrStreaming,
+                timestamp: now.timeIntervalSince1970
+            )
+
+            #expect(manager.conversationSessionSnapshot.windowState == .conversing)
+            #expect(manager.conversationSessionSnapshot.openedBy == .wakePhrase)
+            #expect(manager.supervisorPersonaStatusLineForTesting().contains("Sage"))
+            #expect(!manager.supervisorPersonaStatusLineForTesting().contains("wake_phrase"))
+
+            let identityReply = manager.directSupervisorReplyIfApplicableForTesting("你是谁")
+            #expect(identityReply?.contains("当前这个入口的身份是 Sage") == true)
         }
     }
 
@@ -379,20 +505,18 @@ struct SupervisorConversationSessionIntegrationTests {
 
             try await waitUntil("proactive grant alert emitted") {
                 spoken.contains(where: {
-                    $0.contains("待处理的 Hub grant") &&
+                    $0.contains("待处理的 Hub 授权") &&
                     $0.contains("Release Runtime") &&
-                    $0.contains("批准这个 grant")
+                    $0.contains("批准这笔授权")
                 }) &&
                 manager.messages.contains(where: {
                     $0.role == .assistant &&
-                    $0.content.contains("grant=grant-release-web")
+                    $0.content.contains("授权单号：grant-release-web")
                 })
             }
 
-            try await waitUntil("proactive grant alert resumed listening", timeoutMs: 6_000) {
-                voiceCoordinator.isRecording &&
-                voiceCoordinator.runtimeState.state == .listening &&
-                voiceCoordinator.runtimeState.reasonCode == "talk_loop_resumed"
+            try await waitUntil("proactive grant alert kept session active", timeoutMs: 20_000) {
+                manager.conversationSessionSnapshot.windowState == .conversing
             }
 
             voiceCoordinator.stopRecording()

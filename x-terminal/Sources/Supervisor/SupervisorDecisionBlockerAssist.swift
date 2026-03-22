@@ -240,16 +240,16 @@ enum SupervisorDecisionBlockerAssistEngine {
                 SupervisorDecisionProposalTemplate(
                     id: "swiftui_hub_first_default",
                     category: .techStack,
-                    title: "SwiftUI + Hub-first control plane",
-                    summary: "Use SwiftUI UI surfaces, Hub-governed memory, and role-based routing as the default XT stack.",
+                    title: "默认采用 SwiftUI + Hub 优先控制面",
+                    summary: "默认采用 SwiftUI 界面、Hub 治理记忆和基于角色的路由，作为 XT 的基线技术栈。",
                     reversible: true,
                     evidenceRefs: sharedRefs
                 ),
                 SupervisorDecisionProposalTemplate(
                     id: "swift_package_modular_default",
                     category: .techStack,
-                    title: "Swift Package modularization default",
-                    summary: "Prefer isolated Swift package level modules before introducing new runtime dependencies.",
+                    title: "默认采用 Swift Package 模块化",
+                    summary: "在引入新的运行时依赖前，优先按 Swift Package 级别拆出隔离模块。",
                     reversible: true,
                     evidenceRefs: sharedRefs
                 )
@@ -259,16 +259,16 @@ enum SupervisorDecisionBlockerAssistEngine {
                 SupervisorDecisionProposalTemplate(
                     id: "feature_slice_scaffold_default",
                     category: .scaffold,
-                    title: "Feature-slice scaffold",
-                    summary: "Add one source file, one test file, and one evidence artifact per governed slice.",
+                    title: "按功能切片搭脚手架",
+                    summary: "每个受治理切片默认配一份源码、一份测试和一份证据产物。",
                     reversible: true,
                     evidenceRefs: sharedRefs
                 ),
                 SupervisorDecisionProposalTemplate(
                     id: "policy_first_scaffold_default",
                     category: .scaffold,
-                    title: "Policy-first scaffold",
-                    summary: "Start with contract and harness files before integrating runtime or UI wiring.",
+                    title: "先契约后接线",
+                    summary: "先补 contract 和 harness 文件，再接入运行时或界面 wiring。",
                     reversible: true,
                     evidenceRefs: sharedRefs
                 )
@@ -278,16 +278,16 @@ enum SupervisorDecisionBlockerAssistEngine {
                 SupervisorDecisionProposalTemplate(
                     id: "swift_testing_contract_default",
                     category: .testStack,
-                    title: "Swift Testing contract default",
-                    summary: "Cover pure policy paths with Swift Testing and keep runtime-free assertions deterministic.",
+                    title: "默认用 Swift Testing 覆盖契约",
+                    summary: "纯策略路径优先用 Swift Testing 覆盖，保持无运行时依赖且断言稳定可复现。",
                     reversible: true,
                     evidenceRefs: sharedRefs
                 ),
                 SupervisorDecisionProposalTemplate(
                     id: "node_generator_regression_default",
                     category: .testStack,
-                    title: "Node generator regression default",
-                    summary: "Validate require-real report generation with machine-readable Node tests and fail-closed fixtures.",
+                    title: "默认补 Node 生成器回归",
+                    summary: "用机器可读的 Node 测试和 fail-closed fixture 校验 require-real 报告生成。",
                     reversible: true,
                     evidenceRefs: sharedRefs
                 )
@@ -297,16 +297,16 @@ enum SupervisorDecisionBlockerAssistEngine {
                 SupervisorDecisionProposalTemplate(
                     id: "action_first_doc_template_default",
                     category: .docTemplate,
-                    title: "Action-first doc template",
-                    summary: "Prefer scope, changes, verification, artifacts, risks, and next-action sections over narrative status dumps.",
+                    title: "行动优先文档模板",
+                    summary: "文档优先写范围、改动、验证、产物、风险和下一步，而不是叙述式状态汇报。",
                     reversible: true,
                     evidenceRefs: sharedRefs
                 ),
                 SupervisorDecisionProposalTemplate(
                     id: "audit_appendix_doc_template_default",
                     category: .docTemplate,
-                    title: "Audit appendix default",
-                    summary: "Attach explicit audit and evidence refs to the tail of the report instead of mixing them into prose.",
+                    title: "默认追加审计附录",
+                    summary: "把审计和证据引用集中放在报告尾部，而不是混进正文。",
                     reversible: true,
                     evidenceRefs: sharedRefs
                 )

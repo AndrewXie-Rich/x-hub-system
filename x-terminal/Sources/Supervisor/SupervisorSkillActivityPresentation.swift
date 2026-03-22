@@ -17,7 +17,10 @@ struct SupervisorSkillFullRecord: Identifiable, Equatable, Sendable {
     var evidenceFields: [ProjectSkillRecordField]
     var approvalHistory: [ProjectSkillRecordTimelineEntry]
     var timeline: [ProjectSkillRecordTimelineEntry]
+    var uiReviewAgentEvidenceFields: [ProjectSkillRecordField] = []
+    var uiReviewAgentEvidenceText: String? = nil
     var supervisorEvidenceJSON: String?
+    var guidanceContract: SupervisorGuidanceContractSummary? = nil
 
     var id: String { "\(projectName):\(requestID)" }
 }
@@ -26,23 +29,23 @@ enum SupervisorSkillActivityPresentation {
     static func title(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String {
         switch normalizedStatus(item.status) {
         case "completed":
-            return "Supervisor skill completed"
+            return "技能调用已完成"
         case "failed":
-            return "Supervisor skill failed"
+            return "技能调用失败"
         case "blocked":
-            return "Supervisor skill blocked"
+            return "技能调用受阻"
         case "awaiting_authorization":
             return item.requiredCapability.isEmpty
-                ? "Supervisor approval required"
-                : "Hub grant required · \(humanCapabilityLabel(item.requiredCapability))"
+                ? "等待本地审批"
+                : "等待 Hub 授权 · \(humanCapabilityLabel(item.requiredCapability))"
         case "running":
-            return "Supervisor skill running"
+            return "技能调用进行中"
         case "queued":
-            return "Supervisor skill queued"
+            return "技能调用排队中"
         case "canceled":
-            return "Supervisor skill canceled"
+            return "技能调用已取消"
         default:
-            return "Supervisor skill activity"
+            return "技能调用更新"
         }
     }
 
@@ -53,21 +56,21 @@ enum SupervisorSkillActivityPresentation {
     static func statusLabel(for rawStatus: String) -> String {
         switch normalizedStatus(rawStatus) {
         case "queued":
-            return "Queued"
+            return "排队中"
         case "running":
-            return "Running"
+            return "进行中"
         case "awaiting_authorization":
-            return "Awaiting Approval"
+            return "等待审批"
         case "completed":
-            return "Completed"
+            return "已完成"
         case "failed":
-            return "Failed"
+            return "失败"
         case "blocked":
-            return "Blocked"
+            return "受阻"
         case "canceled":
-            return "Canceled"
+            return "已取消"
         default:
-            return rawStatus.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Unknown" : rawStatus
+            return rawStatus.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未知" : rawStatus
         }
     }
 
@@ -99,9 +102,12 @@ enum SupervisorSkillActivityPresentation {
     static func actionButtonTitle(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String {
         switch normalizedStatus(item.status) {
         case "awaiting_authorization":
-            return item.requiredCapability.isEmpty ? "Open Approval" : "Open Grant"
+            return item.requiredCapability.isEmpty ? "打开审批" : "打开授权"
         default:
-            return "Open Project"
+            if actionURLGovernanceDestination(item.actionURL) == .uiReview {
+                return "打开 UI 审查"
+            }
+            return "打开项目"
         }
     }
 
@@ -112,7 +118,185 @@ enum SupervisorSkillActivityPresentation {
             compactWorkflowToken(label: "step", value: item.record.stepId)
         ].compactMap { $0 }
         guard !fields.isEmpty else { return nil }
-        return "workflow: " + fields.joined(separator: " · ")
+        return "工作流： " + fields.joined(separator: " · ")
+    }
+
+    static func routingLine(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String? {
+        routingLine(
+            requestedSkillId: item.requestedSkillId,
+            effectiveSkillId: item.skillId,
+            payload: item.record.payload,
+            routingReasonCode: item.record.routingReasonCode,
+            routingExplanation: item.record.routingExplanation
+        )
+    }
+
+    static func routingLine(
+        requestedSkillId: String?,
+        effectiveSkillId: String,
+        payload: [String: JSONValue] = [:],
+        routingReasonCode: String? = nil,
+        routingExplanation: String? = nil
+    ) -> String? {
+        guard let summary = routingSummary(
+            requestedSkillId: requestedSkillId,
+            effectiveSkillId: effectiveSkillId,
+            payload: payload,
+            routingReasonCode: routingReasonCode,
+            routingExplanation: routingExplanation
+        ) else {
+            return nil
+        }
+        return "路由： \(summary)"
+    }
+
+    static func routingSummary(
+        requestedSkillId: String?,
+        effectiveSkillId: String,
+        payload: [String: JSONValue] = [:],
+        routingReasonCode: String? = nil,
+        routingExplanation: String? = nil
+    ) -> String? {
+        skillRoutingSummary(
+            requestedSkillId: requestedSkillId,
+            effectiveSkillId: effectiveSkillId,
+            payload: payload,
+            routingReasonCode: routingReasonCode,
+            routingExplanation: routingExplanation
+        )
+    }
+
+    static func displaySkillSummary(
+        requestedSkillId: String?,
+        effectiveSkillId: String,
+        payload: [String: JSONValue] = [:],
+        routingReasonCode: String? = nil,
+        routingExplanation: String? = nil
+    ) -> String {
+        let effective = effectiveSkillId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !effective.isEmpty else { return "" }
+        return routingSummary(
+            requestedSkillId: requestedSkillId,
+            effectiveSkillId: effective,
+            payload: payload,
+            routingReasonCode: routingReasonCode,
+            routingExplanation: routingExplanation
+        ) ?? effective
+    }
+
+    static func displaySkillSummary(
+        for item: SupervisorManager.SupervisorRecentSkillActivity
+    ) -> String {
+        displaySkillSummary(
+            requestedSkillId: item.requestedSkillId,
+            effectiveSkillId: item.skillId,
+            payload: item.record.payload,
+            routingReasonCode: item.record.routingReasonCode,
+            routingExplanation: item.record.routingExplanation
+        )
+    }
+
+    static func routingNarrative(
+        requestedSkillId: String?,
+        effectiveSkillId: String,
+        payload: [String: JSONValue] = [:],
+        routingReasonCode: String? = nil,
+        routingExplanation: String? = nil
+    ) -> String? {
+        let effective = effectiveSkillId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !effective.isEmpty else { return nil }
+        guard let resolution = resolvedRoutingResolution(
+            requestedSkillId: requestedSkillId,
+            effectiveSkillId: effective,
+            payload: payload,
+            routingReasonCode: routingReasonCode,
+            routingExplanation: routingExplanation
+        ) else {
+            return nil
+        }
+
+        let requested = nonEmpty(requestedSkillId)
+        let reasonCode = nonEmpty(resolution.reasonCode)
+
+        switch reasonCode {
+        case "requested_alias_normalized":
+            guard let requested else { return nil }
+            return "系统先把 \(requested) 规范成 \(effective)"
+        case "preferred_builtin_selected":
+            if isBrowserEntrypoint(requested) {
+                return "浏览器入口会先收敛到受治理内建 \(effective) 再执行"
+            }
+            if isBrowserWrapper(requested) {
+                return "浏览器 wrapper 会优先切到受治理内建 \(effective) 再执行"
+            }
+            return "系统会优先切到受治理内建 \(effective) 再执行"
+        case "compatible_builtin_selected":
+            return "当前由兼容内建 \(effective) 承接这个技能请求"
+        case "requested_skill_routed":
+            guard let requested else { return nil }
+            return "系统已把 \(requested) 路由到 \(effective)"
+        default:
+            if let requested, requested.caseInsensitiveCompare(effective) != .orderedSame {
+                return "系统会把 \(requested) 交给 \(effective) 执行"
+            }
+            if nonEmpty(resolution.explanation) != nil {
+                return "系统已按当前兼容路由执行"
+            }
+            return nil
+        }
+    }
+
+    static func routingReasonText(_ rawReasonCode: String?) -> String? {
+        switch nonEmpty(rawReasonCode) {
+        case "requested_alias_normalized":
+            return "请求技能先归一到标准技能"
+        case "preferred_builtin_selected":
+            return "系统优先切到受治理内建"
+        case "compatible_builtin_selected":
+            return "系统改由兼容内建承接"
+        case "requested_skill_routed":
+            return "系统把请求路由到兼容技能"
+        default:
+            return nil
+        }
+    }
+
+    static func displayRequestMetadataFields(
+        _ fields: [ProjectSkillRecordField]
+    ) -> [ProjectSkillRecordField] {
+        let requestedSkillId = fields.first(where: { $0.label == "requested_skill_id" })?.value
+        let effectiveSkillId = fields.first(where: { $0.label == "skill_id" })?.value ?? ""
+        let routingReasonCode = fields.first(where: { $0.label == "routing_reason_code" })?.value
+        let routingExplanation = fields.first(where: { $0.label == "routing_explanation" })?.value
+        let routingNarrative = routingNarrative(
+            requestedSkillId: requestedSkillId,
+            effectiveSkillId: effectiveSkillId,
+            routingReasonCode: routingReasonCode,
+            routingExplanation: routingExplanation
+        )
+
+        return fields.map { field in
+            switch field.label {
+            case "requested_skill_id":
+                return ProjectSkillRecordField(label: "请求技能", value: field.value)
+            case "skill_id":
+                return ProjectSkillRecordField(label: "生效技能", value: field.value)
+            case "routing_resolution":
+                return ProjectSkillRecordField(label: "路由", value: field.value)
+            case "routing_reason_code":
+                return ProjectSkillRecordField(
+                    label: "路由判定",
+                    value: routingReasonText(field.value) ?? field.value
+                )
+            case "routing_explanation":
+                return ProjectSkillRecordField(
+                    label: "路由说明",
+                    value: routingNarrative ?? field.value
+                )
+            default:
+                return field
+            }
+        }
     }
 
     static func governanceLine(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String? {
@@ -135,20 +319,20 @@ enum SupervisorSkillActivityPresentation {
             parts.append("work_order=\(workOrderRef)")
         }
         guard !parts.isEmpty else { return nil }
-        return "governance: " + parts.joined(separator: " · ")
+        return "治理： " + parts.joined(separator: " · ")
     }
 
     static func followUpRhythmLine(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String? {
         guard let governance = item.governance else { return nil }
         guard let summary = nonEmpty(governance.followUpRhythmSummary) else { return nil }
-        return "follow-up: \(summary)"
+        return "跟进节奏： \(summary)"
     }
 
     static func pendingGuidanceLine(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String? {
         guard let governance = item.governance else { return nil }
         guard let ackStatus = governance.pendingGuidanceAckStatus else { return nil }
-        var parts = ["guidance: \(ackStatus.displayName)"]
-        parts.append(governance.pendingGuidanceRequired ? "required" : "optional")
+        var parts = ["指导： \(ackStatus.displayName)"]
+        parts.append(governance.pendingGuidanceRequired ? "必答" : "可选")
         if let latestDelivery = governance.latestGuidanceDeliveryMode?.displayName {
             parts.append(latestDelivery)
         }
@@ -159,10 +343,21 @@ enum SupervisorSkillActivityPresentation {
         return parts.joined(separator: " · ")
     }
 
+    static func guidanceContractLine(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String? {
+        guard let contract = item.governance?.guidanceContract else { return nil }
+        return SupervisorGuidanceContractLinePresentation.contractLine(for: contract)
+    }
+
+    static func guidanceNextSafeActionLine(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String? {
+        guard let contract = item.governance?.guidanceContract else { return nil }
+        return SupervisorGuidanceContractLinePresentation.nextSafeActionLine(for: contract)
+    }
+
     static func body(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String {
-        let skillLabel = item.skillId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "This supervisor skill"
-            : "Skill \(item.skillId)"
+        let displaySkill = displaySkillSummary(for: item)
+        let skillLabel = displaySkill.isEmpty
+            ? "这次技能调用"
+            : "技能 \(displaySkill)"
         let toolLabel = toolBadge(for: item)
         let target = item.toolSummary.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -170,13 +365,13 @@ enum SupervisorSkillActivityPresentation {
         case "queued":
             if !item.resultSummary.isEmpty { return item.resultSummary }
             return target.isEmpty
-                ? "\(skillLabel) is queued for \(toolLabel)."
-                : "\(skillLabel) is queued for \(toolLabel) on \(target)."
+                ? "\(skillLabel)已进入队列，等待执行\(toolLabel)。"
+                : "\(skillLabel)已进入队列，等待对 \(target) 执行\(toolLabel)。"
         case "running":
             if !item.resultSummary.isEmpty { return item.resultSummary }
             return target.isEmpty
-                ? "\(skillLabel) is running via \(toolLabel)."
-                : "\(skillLabel) is running via \(toolLabel) on \(target)."
+                ? "\(skillLabel)正在执行\(toolLabel)。"
+                : "\(skillLabel)正在对 \(target) 执行\(toolLabel)。"
         case "awaiting_authorization":
             return XTGuardrailMessagePresentation.awaitingApprovalBody(
                 toolLabel: toolLabel,
@@ -186,24 +381,48 @@ enum SupervisorSkillActivityPresentation {
             )
         case "completed":
             if !item.resultSummary.isEmpty { return item.resultSummary }
-            return "\(skillLabel) completed via \(toolLabel)."
+            return "\(skillLabel)已通过\(toolLabel)完成。"
         case "failed":
+            if !item.denyCode.isEmpty || !item.policySource.isEmpty {
+                return XTGuardrailMessagePresentation.blockedBody(
+                    tool: item.tool,
+                    toolLabel: toolLabel,
+                    denyCode: item.denyCode,
+                    policySource: item.policySource,
+                    policyReason: item.policyReason,
+                    requiredCapability: item.requiredCapability,
+                    fallbackSummary: item.resultSummary
+                )
+            }
             if !item.resultSummary.isEmpty { return item.resultSummary }
-            return "\(skillLabel) failed while running \(toolLabel)."
+            return "\(skillLabel)在执行\(toolLabel)时失败。"
         case "blocked":
             return XTGuardrailMessagePresentation.blockedBody(
                 tool: item.tool,
                 toolLabel: toolLabel,
                 denyCode: item.denyCode,
+                policySource: item.policySource,
+                policyReason: item.policyReason,
                 requiredCapability: item.requiredCapability,
                 fallbackSummary: item.resultSummary
             )
         case "canceled":
             if !item.resultSummary.isEmpty { return item.resultSummary }
-            return "\(skillLabel) was canceled."
+            return "\(skillLabel)已取消。"
         default:
+            if !item.denyCode.isEmpty || !item.policySource.isEmpty {
+                return XTGuardrailMessagePresentation.blockedBody(
+                    tool: item.tool,
+                    toolLabel: toolLabel,
+                    denyCode: item.denyCode,
+                    policySource: item.policySource,
+                    policyReason: item.policyReason,
+                    requiredCapability: item.requiredCapability,
+                    fallbackSummary: item.resultSummary
+                )
+            }
             if !item.resultSummary.isEmpty { return item.resultSummary }
-            return "\(skillLabel) activity updated."
+            return "\(skillLabel)已有更新。"
         }
     }
 
@@ -218,6 +437,16 @@ enum SupervisorSkillActivityPresentation {
         if !record.planId.isEmpty { lines.append("plan_id=\(record.planId)") }
         if !record.stepId.isEmpty { lines.append("step_id=\(record.stepId)") }
         if !record.skillId.isEmpty { lines.append("skill_id=\(record.skillId)") }
+        if !item.requestedSkillId.isEmpty { lines.append("requested_skill_id=\(item.requestedSkillId)") }
+        if let routingLine = routingLine(for: item) {
+            lines.append(routingLine)
+        }
+        if let routingReasonCode = nonEmpty(record.routingReasonCode) {
+            lines.append("routing_reason_code=\(routingReasonCode)")
+        }
+        if let routingExplanation = nonEmpty(record.routingExplanation) {
+            lines.append("routing_explanation=\(routingExplanation)")
+        }
         if !record.toolName.isEmpty { lines.append("tool_name=\(record.toolName)") }
         if !record.status.rawValue.isEmpty { lines.append("status=\(record.status.rawValue)") }
         if !record.currentOwner.isEmpty { lines.append("current_owner=\(record.currentOwner)") }
@@ -227,6 +456,28 @@ enum SupervisorSkillActivityPresentation {
         if !item.resultEvidenceRef.isEmpty { lines.append("result_evidence_ref=\(item.resultEvidenceRef)") }
         if !item.resultSummary.isEmpty { lines.append("result_summary=\(item.resultSummary)") }
         if !item.denyCode.isEmpty { lines.append("deny_code=\(item.denyCode)") }
+        if !item.policySource.isEmpty { lines.append("policy_source=\(item.policySource)") }
+        if !item.policyReason.isEmpty { lines.append("policy_reason=\(item.policyReason)") }
+        if let guidanceContract = item.governance?.guidanceContract {
+            lines.append("guidance_contract=\(guidanceContract.kind.rawValue)")
+            if !guidanceContract.primaryBlocker.isEmpty {
+                lines.append("primary_blocker=\(guidanceContract.primaryBlocker)")
+            }
+            if let uiReview = guidanceContract.uiReviewRepair {
+                if !uiReview.repairAction.isEmpty {
+                    lines.append("repair_action=\(uiReview.repairAction)")
+                }
+                if !uiReview.repairFocus.isEmpty {
+                    lines.append("repair_focus=\(uiReview.repairFocus)")
+                }
+            }
+            if guidanceContract.nextSafeActionText != "(none)" {
+                lines.append("next_safe_action=\(guidanceContract.nextSafeActionText)")
+            }
+            if let actions = nonEmpty(guidanceContract.recommendedActionsText) {
+                lines.append("recommended_actions=\(actions)")
+            }
+        }
         if let toolCall = item.toolCall,
            let data = try? JSONEncoder().encode(toolCall.args),
            let text = String(data: data, encoding: .utf8) {
@@ -259,9 +510,20 @@ enum SupervisorSkillActivityPresentation {
         })
         let evidence = SupervisorSkillResultEvidenceStore.load(requestId: requestID, for: ctx)
         let events = loadEvents(ctx: ctx, requestID: requestID)
-        let latestReview = SupervisorReviewNoteStore.latest(for: ctx)
+        let reviewSnapshot = SupervisorReviewNoteStore.load(for: ctx)
+        let latestReview = reviewSnapshot.notes.first
         let latestGuidance = SupervisorGuidanceInjectionStore.latest(for: ctx)
         let pendingGuidance = SupervisorGuidanceInjectionStore.latestPendingAck(for: ctx)
+        let activeGuidance = pendingGuidance ?? latestGuidance
+        let guidanceReviewNote = activeGuidance.flatMap { guidance in
+            reviewSnapshot.notes.first { $0.reviewId == guidance.reviewId }
+        } ?? latestReview
+        let guidanceContract = activeGuidance.flatMap { guidance in
+            SupervisorGuidanceContractResolver.resolve(
+                guidance: guidance,
+                reviewNote: guidanceReviewNote
+            )
+        }
         let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: ctx.root)
         let adaptationPolicy = AXProjectSupervisorAdaptationPolicy.default
         let strengthProfile = AXProjectAIStrengthAssessor.assess(
@@ -285,7 +547,17 @@ enum SupervisorSkillActivityPresentation {
             events.last?.status,
             evidence?.status
         ) ?? ""
-        let title = firstNonEmpty(record?.skillId, evidence?.skillId) ?? "Supervisor Skill Record"
+        let title = firstNonEmpty(
+            displaySkillSummary(
+                requestedSkillId: firstNonEmpty(record?.requestedSkillId, evidence?.requestedSkillId, events.last?.requestedSkillId),
+                effectiveSkillId: firstNonEmpty(record?.skillId, evidence?.skillId, events.last?.skillId) ?? "",
+                payload: record?.payload
+                    ?? evidence?.toolArgs
+                    ?? events.reversed().first(where: { !$0.toolArgs.isEmpty })?.toolArgs
+                    ?? [:]
+            ),
+            firstNonEmpty(record?.skillId, evidence?.skillId)
+        ) ?? "Supervisor Skill Record"
         let skillPayloadText: String? = {
             guard let record, !record.payload.isEmpty else { return nil }
             return AXProjectSkillActivityStore.prettyJSONString(for: record.payload)
@@ -302,7 +574,20 @@ enum SupervisorSkillActivityPresentation {
             ("job_id", firstNonEmpty(record?.jobId, evidence?.jobId, events.last?.jobId)),
             ("plan_id", firstNonEmpty(record?.planId, evidence?.planId, events.last?.planId)),
             ("step_id", firstNonEmpty(record?.stepId, evidence?.stepId, events.last?.stepId)),
+            ("requested_skill_id", firstNonEmpty(record?.requestedSkillId, evidence?.requestedSkillId, events.last?.requestedSkillId)),
             ("skill_id", firstNonEmpty(record?.skillId, evidence?.skillId, events.last?.skillId)),
+            (
+                "routing_resolution",
+                resolvedRoutingResolution(
+                    requestedSkillId: firstNonEmpty(record?.requestedSkillId, evidence?.requestedSkillId, events.last?.requestedSkillId),
+                    effectiveSkillId: firstNonEmpty(record?.skillId, evidence?.skillId, events.last?.skillId) ?? "",
+                    payload: record?.payload ?? [:],
+                    routingReasonCode: firstNonEmpty(record?.routingReasonCode, evidence?.routingReasonCode, events.last?.routingReasonCode),
+                    routingExplanation: firstNonEmpty(record?.routingExplanation, evidence?.routingExplanation, events.last?.routingExplanation)
+                )?.summary
+            ),
+            ("routing_reason_code", firstNonEmpty(record?.routingReasonCode, evidence?.routingReasonCode, events.last?.routingReasonCode)),
+            ("routing_explanation", firstNonEmpty(record?.routingExplanation, evidence?.routingExplanation, events.last?.routingExplanation)),
             ("tool_name", firstNonEmpty(record?.toolName, evidence?.toolName, events.last?.toolName)),
             ("latest_status", latestStatus),
             ("current_owner", record?.currentOwner),
@@ -315,6 +600,8 @@ enum SupervisorSkillActivityPresentation {
             ("grant_request_id", firstNonEmpty(record?.grantRequestId, events.last?.grantRequestId)),
             ("grant_id", firstNonEmpty(record?.grantId, events.last?.grantId)),
             ("deny_code", firstNonEmpty(record?.denyCode, evidence?.denyCode, events.last?.denyCode)),
+            ("policy_source", firstNonEmpty(record?.policySource, evidence?.policySource, events.last?.policySource)),
+            ("policy_reason", firstNonEmpty(record?.policyReason, evidence?.policyReason, events.last?.policyReason)),
             ("trigger_source", firstNonEmpty(evidence?.triggerSource, events.last?.triggerSource))
         ])
 
@@ -358,6 +645,25 @@ enum SupervisorSkillActivityPresentation {
             ("raw_output_ref", evidence?.rawOutputRef),
             ("audit_ref", firstNonEmpty(evidence?.auditRef, record?.auditRef, events.last?.auditRef))
         ])
+        let uiReviewAgentEvidence = resolvedUIReviewAgentEvidence(
+            ctx: ctx,
+            evidence: evidence,
+            events: events
+        )
+        let uiReviewAgentEvidenceFields = uiReviewAgentEvidence.map { snapshot in
+            recordFields([
+                ("ui_review_agent_evidence_ref", resolvedUIReviewAgentEvidenceRef(evidence: evidence, events: events)),
+                ("review_ref", snapshot.reviewRef),
+                ("bundle_ref", snapshot.bundleRef),
+                ("verdict", snapshot.verdict.rawValue),
+                ("confidence", snapshot.confidence.rawValue),
+                ("sufficient_evidence", snapshot.sufficientEvidence ? "true" : "false"),
+                ("objective_ready", snapshot.objectiveReady ? "true" : "false"),
+                ("issue_codes", compactIssueCodesText(snapshot.issueCodes)),
+                ("summary", snapshot.summary),
+                ("audit_ref", snapshot.auditRef)
+            ])
+        } ?? []
 
         let timeline = events.enumerated().map { index, event in
             timelineEntry(for: event, fallbackIndex: index)
@@ -384,13 +690,16 @@ enum SupervisorSkillActivityPresentation {
             evidenceFields: evidenceFields,
             approvalHistory: approvalHistory,
             timeline: timeline,
-            supervisorEvidenceJSON: evidence.map(encodedJSONText)
+            uiReviewAgentEvidenceFields: uiReviewAgentEvidenceFields,
+            uiReviewAgentEvidenceText: uiReviewAgentEvidence?.renderedText(),
+            supervisorEvidenceJSON: evidence.map(encodedJSONText),
+            guidanceContract: guidanceContract
         )
     }
 
     static func fullRecordText(_ record: SupervisorSkillFullRecord) -> String {
         var lines: [String] = [
-            "Supervisor Skill Full Record",
+            "Supervisor 技能完整记录",
             "project_name=\(record.projectName)",
             "request_id=\(record.requestID)"
         ]
@@ -399,41 +708,49 @@ enum SupervisorSkillActivityPresentation {
             lines.append("latest_status=\(record.latestStatus)")
         }
 
-        appendRecordSection("Request Metadata", fields: record.requestMetadata, into: &lines)
-        appendRecordSection("Approval Status", fields: record.approvalFields, into: &lines)
-        appendRecordSection("Governance Context", fields: record.governanceFields, into: &lines)
+        appendRecordSection("请求信息", fields: record.requestMetadata, into: &lines)
+        appendRecordSection("审批状态", fields: record.approvalFields, into: &lines)
+        appendRecordSection("治理上下文", fields: record.governanceFields, into: &lines)
 
         if let payload = nonEmpty(record.skillPayloadText) {
             lines.append("")
-            lines.append("== Skill Payload ==")
+            lines.append("== 技能载荷 ==")
             lines.append(payload)
         }
 
         if let toolArgs = nonEmpty(record.toolArgumentsText) {
             lines.append("")
-            lines.append("== Tool Arguments ==")
+            lines.append("== 工具参数 ==")
             lines.append(toolArgs)
         }
 
-        appendRecordSection("Result Summary", fields: record.resultFields, into: &lines)
+        appendRecordSection("执行结果", fields: record.resultFields, into: &lines)
 
         if let rawOutputPreview = nonEmpty(record.rawOutputPreview) {
             lines.append("")
-            lines.append("== Raw Output Preview ==")
+            lines.append("== 原始输出预览 ==")
             lines.append(rawOutputPreview)
         }
 
         if let rawOutput = nonEmpty(record.rawOutput) {
             lines.append("")
-            lines.append("== Raw Output Full ==")
+            lines.append("== 完整原始输出 ==")
             lines.append(rawOutput)
         }
 
-        appendRecordSection("Evidence Refs", fields: record.evidenceFields, into: &lines)
+        appendRecordSection("证据引用", fields: record.evidenceFields, into: &lines)
+
+        appendRecordSection("UI 审查代理证据", fields: record.uiReviewAgentEvidenceFields, into: &lines)
+
+        if let uiReviewAgentEvidenceText = nonEmpty(record.uiReviewAgentEvidenceText) {
+            lines.append("")
+            lines.append("== UI 审查代理证据详情 ==")
+            lines.append(uiReviewAgentEvidenceText)
+        }
 
         if !record.approvalHistory.isEmpty {
             lines.append("")
-            lines.append("== Approval History ==")
+            lines.append("== 审批记录 ==")
             for entry in record.approvalHistory {
                 lines.append(formattedTimelineEntry(entry))
             }
@@ -441,7 +758,7 @@ enum SupervisorSkillActivityPresentation {
 
         if !record.timeline.isEmpty {
             lines.append("")
-            lines.append("== Event Timeline ==")
+            lines.append("== 事件时间线 ==")
             for entry in record.timeline {
                 lines.append(formattedTimelineEntry(entry))
             }
@@ -449,13 +766,13 @@ enum SupervisorSkillActivityPresentation {
 
         if let evidence = nonEmpty(record.supervisorEvidenceJSON) {
             lines.append("")
-            lines.append("== Result Evidence ==")
+            lines.append("== 执行证据 ==")
             lines.append(evidence)
         }
 
         if !record.timeline.isEmpty {
             lines.append("")
-            lines.append("== Raw JSON Events ==")
+            lines.append("== 原始 JSON 事件 ==")
             for entry in record.timeline {
                 lines.append(entry.rawJSON)
             }
@@ -473,10 +790,15 @@ enum SupervisorSkillActivityPresentation {
         var planId: String
         var stepId: String
         var skillId: String
+        var requestedSkillId: String
+        var routingReasonCode: String
+        var routingExplanation: String
         var toolName: String
         var status: String
         var resultSummary: String
         var denyCode: String
+        var policySource: String
+        var policyReason: String
         var requiredCapability: String
         var grantRequestId: String
         var grantId: String
@@ -547,10 +869,15 @@ enum SupervisorSkillActivityPresentation {
             planId: stringValue(object["plan_id"]) ?? "",
             stepId: stringValue(object["step_id"]) ?? "",
             skillId: stringValue(object["skill_id"]) ?? "",
+            requestedSkillId: stringValue(object["requested_skill_id"]) ?? "",
+            routingReasonCode: stringValue(object["routing_reason_code"]) ?? "",
+            routingExplanation: stringValue(object["routing_explanation"]) ?? "",
             toolName: stringValue(object["tool_name"]) ?? "",
             status: stringValue(object["status"]) ?? "",
             resultSummary: stringValue(object["result_summary"]) ?? "",
             denyCode: stringValue(object["deny_code"]) ?? "",
+            policySource: stringValue(object["policy_source"]) ?? "",
+            policyReason: stringValue(object["policy_reason"]) ?? "",
             requiredCapability: stringValue(object["required_capability"]) ?? "",
             grantRequestId: stringValue(object["grant_request_id"]) ?? "",
             grantId: stringValue(object["grant_id"]) ?? "",
@@ -623,8 +950,35 @@ enum SupervisorSkillActivityPresentation {
         if !event.action.isEmpty {
             lines.append("action=\(event.action)")
         }
+        if !event.requestedSkillId.isEmpty {
+            lines.append("requested_skill_id=\(event.requestedSkillId)")
+        }
+        let routingPayload = (!event.routingReasonCode.isEmpty || !event.routingExplanation.isEmpty)
+            ? [String: JSONValue]()
+            : event.toolArgs
+        if let routing = skillRoutingSummary(
+            requestedSkillId: event.requestedSkillId,
+            effectiveSkillId: event.skillId,
+            payload: routingPayload,
+            routingReasonCode: event.routingReasonCode,
+            routingExplanation: event.routingExplanation
+        ) {
+            lines.append("routing=\(routing)")
+        }
+        if !event.routingReasonCode.isEmpty {
+            lines.append("routing_reason_code=\(event.routingReasonCode)")
+        }
+        if !event.routingExplanation.isEmpty {
+            lines.append("routing_explanation=\(event.routingExplanation)")
+        }
         if !event.denyCode.isEmpty {
             lines.append("deny_code=\(event.denyCode)")
+        }
+        if !event.policySource.isEmpty {
+            lines.append("policy_source=\(event.policySource)")
+        }
+        if !event.policyReason.isEmpty {
+            lines.append("policy_reason=\(event.policyReason)")
         }
         if !event.requiredCapability.isEmpty {
             lines.append("required_capability=\(event.requiredCapability)")
@@ -637,6 +991,12 @@ enum SupervisorSkillActivityPresentation {
         }
         if !event.resultEvidenceRef.isEmpty {
             lines.append("result_evidence_ref=\(event.resultEvidenceRef)")
+        }
+        if let uiReviewAgentEvidenceRef = firstNonEmpty(
+            stringValue(event.rawObject["ui_review_agent_evidence_ref"]),
+            stringValue(event.rawObject["browser_runtime_ui_review_agent_evidence_ref"])
+        ) {
+            lines.append("ui_review_agent_evidence_ref=\(uiReviewAgentEvidenceRef)")
         }
         if !event.triggerSource.isEmpty {
             lines.append("trigger_source=\(event.triggerSource)")
@@ -686,6 +1046,48 @@ enum SupervisorSkillActivityPresentation {
         }
     }
 
+    private static func skillRoutingSummary(
+        requestedSkillId: String?,
+        effectiveSkillId: String,
+        payload: [String: JSONValue],
+        routingReasonCode: String?,
+        routingExplanation: String?
+    ) -> String? {
+        resolvedRoutingResolution(
+            requestedSkillId: requestedSkillId,
+            effectiveSkillId: effectiveSkillId,
+            payload: payload,
+            routingReasonCode: routingReasonCode,
+            routingExplanation: routingExplanation
+        )?.summary
+    }
+
+    private static func resolvedRoutingResolution(
+        requestedSkillId: String?,
+        effectiveSkillId: String,
+        payload: [String: JSONValue],
+        routingReasonCode: String?,
+        routingExplanation: String?
+    ) -> SupervisorSkillRoutingResolution? {
+        let inferred = SupervisorSkillRoutingCompatibilityHint.routingResolution(
+            requestedSkillId: requestedSkillId,
+            effectiveSkillId: effectiveSkillId,
+            payload: payload
+        )
+        let resolvedReasonCode = nonEmpty(routingReasonCode) ?? inferred?.reasonCode
+        let resolvedExplanation = nonEmpty(routingExplanation) ?? inferred?.explanation
+        let resolvedSummary = inferred?.summary
+
+        if resolvedSummary == nil, resolvedReasonCode == nil, resolvedExplanation == nil {
+            return nil
+        }
+        return SupervisorSkillRoutingResolution(
+            summary: resolvedSummary,
+            reasonCode: resolvedReasonCode,
+            explanation: resolvedExplanation
+        )
+    }
+
     private static func preferredToolArgumentsText(
         evidenceToolArgs: [String: JSONValue]?,
         eventToolArgs: [String: JSONValue]?
@@ -697,6 +1099,94 @@ enum SupervisorSkillActivityPresentation {
             return AXProjectSkillActivityStore.prettyJSONString(for: eventToolArgs)
         }
         return nil
+    }
+
+    private static func compactIssueCodesText(_ issueCodes: [String]) -> String {
+        let cleaned = issueCodes
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return cleaned.isEmpty ? "(none)" : cleaned.joined(separator: ",")
+    }
+
+    private static func isBrowserEntrypoint(_ requestedSkillId: String?) -> Bool {
+        guard let requestedSkillId else { return false }
+        let normalized = requestedSkillId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch normalized {
+        case "browser.open", "browser_open",
+             "browser.navigate", "browser_navigate",
+             "browser.runtime.inspect", "browser_runtime.inspect":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func isBrowserWrapper(_ requestedSkillId: String?) -> Bool {
+        guard let requestedSkillId else { return false }
+        let normalized = requestedSkillId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch normalized {
+        case "agent-browser", "agent_browser", "agent.browser":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func resolvedUIReviewAgentEvidence(
+        ctx: AXProjectContext,
+        evidence: SupervisorSkillResultEvidence?,
+        events: [SupervisorSkillRawEvent]
+    ) -> XTUIReviewAgentEvidenceSnapshot? {
+        guard let ref = resolvedUIReviewAgentEvidenceRef(evidence: evidence, events: events),
+              let url = XTUIObservationStore.resolveLocalRef(ref, for: ctx),
+              let data = try? Data(contentsOf: url),
+              let snapshot = try? JSONDecoder().decode(XTUIReviewAgentEvidenceSnapshot.self, from: data) else {
+            return nil
+        }
+        return snapshot
+    }
+
+    private static func resolvedUIReviewAgentEvidenceRef(
+        evidence: SupervisorSkillResultEvidence?,
+        events: [SupervisorSkillRawEvent]
+    ) -> String? {
+        let candidates = [
+            uiReviewAgentEvidenceRef(fromOutputText: evidence?.rawOutput),
+            uiReviewAgentEvidenceRef(fromOutputText: evidence?.rawOutputPreview)
+        ] + events.reversed().compactMap { event in
+            uiReviewAgentEvidenceRef(fromJSONObject: event.rawObject)
+        }
+        for candidate in candidates {
+            if let candidate = nonEmpty(candidate) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    private static func uiReviewAgentEvidenceRef(
+        fromOutputText raw: String?
+    ) -> String? {
+        guard let raw = nonEmpty(raw),
+              let data = raw.data(using: .utf8),
+              let value = try? JSONDecoder().decode(JSONValue.self, from: data),
+              case .object(let object) = value else {
+            return nil
+        }
+        return uiReviewAgentEvidenceRef(fromJSONObject: object)
+    }
+
+    private static func uiReviewAgentEvidenceRef(
+        fromJSONObject object: [String: JSONValue]
+    ) -> String? {
+        let uiReview = jsonObjectValue(object["ui_review"])
+        let browserRuntime = jsonObjectValue(object["browser_runtime"])
+        return firstNonEmpty(
+            stringValue(object["ui_review_agent_evidence_ref"]),
+            stringValue(object["browser_runtime_ui_review_agent_evidence_ref"]),
+            stringValue(uiReview["agent_evidence_ref"]),
+            stringValue(browserRuntime["ui_review_agent_evidence_ref"])
+        )
     }
 
     private static func createdAtText(
@@ -739,54 +1229,56 @@ enum SupervisorSkillActivityPresentation {
     ) -> String {
         let resolvedTool = tool ?? ToolName(rawValue: raw)
         guard let resolvedTool else {
-            return raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "tool runtime" : raw
+            return raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "工具运行时" : raw
         }
 
         switch resolvedTool {
         case .read_file:
-            return "read file"
+            return "读取文件"
         case .write_file:
-            return "write file"
+            return "写入文件"
         case .delete_path:
-            return "delete path"
+            return "删除路径"
         case .move_path:
-            return "move path"
+            return "移动路径"
         case .run_command:
-            return "run command"
+            return "运行命令"
         case .process_start:
-            return "start process"
+            return "启动进程"
         case .process_status:
-            return "process status"
+            return "进程状态"
         case .process_logs:
-            return "process logs"
+            return "进程日志"
         case .process_stop:
-            return "stop process"
+            return "停止进程"
         case .git_commit:
-            return "git commit"
+            return "Git 提交"
         case .git_push:
-            return "git push"
+            return "Git 推送"
         case .pr_create:
-            return "create pull request"
+            return "创建 Pull Request"
         case .ci_read:
-            return "read ci"
+            return "读取 CI"
         case .ci_trigger:
-            return "trigger ci"
+            return "触发 CI"
         case .search:
-            return "search"
+            return "搜索"
         case .skills_search:
-            return "skills search"
+            return "搜索技能"
         case .summarize:
-            return "summarize"
+            return "总结内容"
+        case .supervisorVoicePlayback:
+            return "Supervisor 语音"
         case .web_fetch:
-            return "web fetch"
+            return "抓取网页"
         case .web_search:
-            return "web search"
+            return "网页搜索"
         case .browser_read:
-            return "browser read"
+            return "浏览器读取"
         case .deviceBrowserControl:
-            return "browser control"
+            return "浏览器控制"
         case .agentImportRecord:
-            return "agent import record"
+            return "导入代理记录"
         default:
             return resolvedTool.rawValue.replacingOccurrences(of: "_", with: " ")
         }
@@ -813,6 +1305,17 @@ enum SupervisorSkillActivityPresentation {
 
     private static func normalizedStatus(_ raw: String) -> String {
         raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func actionURLGovernanceDestination(
+        _ raw: String?
+    ) -> XTProjectGovernanceDestination? {
+        guard let raw = nonEmpty(raw),
+              let components = URLComponents(string: raw),
+              let destination = components.queryItems?.first(where: { $0.name == "governance_destination" })?.value else {
+            return nil
+        }
+        return XTProjectGovernanceDestination.parse(destination)
     }
 
     private static func firstNonEmpty(
@@ -865,5 +1368,12 @@ enum SupervisorSkillActivityPresentation {
             return [:]
         }
         return object
+    }
+
+    private static func issueCodesText(_ issueCodes: [String]) -> String {
+        let cleaned = issueCodes
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return cleaned.isEmpty ? "(none)" : cleaned.joined(separator: ",")
     }
 }

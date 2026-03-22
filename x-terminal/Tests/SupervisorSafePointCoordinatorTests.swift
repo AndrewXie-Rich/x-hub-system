@@ -173,6 +173,59 @@ struct SupervisorSafePointCoordinatorTests {
         #expect(pause?.injectionId == "guidance-next-tool-1")
     }
 
+    @Test
+    func immediateGuidanceIsVisibleBeforeBoundaryButPauseWaitsForToolResult() throws {
+        let root = try makeProjectRoot(named: "safe-point-immediate")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-immediate-1",
+                reviewId: "review-immediate-1",
+                projectId: "proj-immediate-1",
+                targetRole: .coder,
+                deliveryMode: .priorityInsert,
+                interventionMode: .stopImmediately,
+                safePointPolicy: .immediate,
+                guidanceText: "立刻提示，但等工具边界再暂停剩余批次。",
+                ackStatus: .pending,
+                ackRequired: true,
+                ackNote: "",
+                injectedAtMs: 200,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-immediate-1"
+            ),
+            for: ctx
+        )
+
+        let beforeBoundary = SupervisorSafePointExecutionState(
+            runStartedAtMs: 100,
+            flowStep: 1,
+            toolResultsCount: 0,
+            verifyRunIndex: 0,
+            finalizeOnly: false
+        )
+        let afterBoundary = SupervisorSafePointExecutionState(
+            runStartedAtMs: 100,
+            flowStep: 1,
+            toolResultsCount: 1,
+            verifyRunIndex: 0,
+            finalizeOnly: false
+        )
+
+        #expect(
+            SupervisorSafePointCoordinator.deliverablePendingGuidance(for: ctx, state: beforeBoundary)?.injectionId
+            == "guidance-immediate-1"
+        )
+        #expect(SupervisorSafePointCoordinator.shouldPauseToolBatchAfterBoundary(for: ctx, state: beforeBoundary) == nil)
+        #expect(
+            SupervisorSafePointCoordinator.shouldPauseToolBatchAfterBoundary(for: ctx, state: afterBoundary)?.injectionId
+            == "guidance-immediate-1"
+        )
+    }
+
     private func makeProjectRoot(named name: String) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(name)-\(UUID().uuidString)", isDirectory: true)

@@ -20,12 +20,17 @@ struct SupervisorSkillCallRecord: Identifiable, Equatable, Codable, Sendable {
     var planId: String
     var stepId: String
     var skillId: String
+    var requestedSkillId: String? = nil
+    var routingReasonCode: String? = nil
+    var routingExplanation: String? = nil
     var toolName: String
     var status: SupervisorSkillCallStatus
     var payload: [String: JSONValue]
     var currentOwner: String
     var resultSummary: String
     var denyCode: String
+    var policySource: String? = nil
+    var policyReason: String? = nil
     var resultEvidenceRef: String?
     var requiredCapability: String?
     var grantRequestId: String?
@@ -44,12 +49,17 @@ struct SupervisorSkillCallRecord: Identifiable, Equatable, Codable, Sendable {
         case planId = "plan_id"
         case stepId = "step_id"
         case skillId = "skill_id"
+        case requestedSkillId = "requested_skill_id"
+        case routingReasonCode = "routing_reason_code"
+        case routingExplanation = "routing_explanation"
         case toolName = "tool_name"
         case status
         case payload
         case currentOwner = "current_owner"
         case resultSummary = "result_summary"
         case denyCode = "deny_code"
+        case policySource = "policy_source"
+        case policyReason = "policy_reason"
         case resultEvidenceRef = "result_evidence_ref"
         case requiredCapability = "required_capability"
         case grantRequestId = "grant_request_id"
@@ -112,12 +122,6 @@ enum SupervisorProjectSkillCallStore {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(snapshot)
         let target = ctx.supervisorSkillCallsURL
-        let temp = target.deletingLastPathComponent()
-            .appendingPathComponent(".\(target.lastPathComponent).tmp-\(UUID().uuidString)")
-        try data.write(to: temp, options: .atomic)
-        if FileManager.default.fileExists(atPath: target.path) {
-            try? FileManager.default.removeItem(at: target)
-        }
-        try FileManager.default.moveItem(at: temp, to: target)
+        try SupervisorStoreWriteSupport.writeSnapshotData(data, to: target)
     }
 }

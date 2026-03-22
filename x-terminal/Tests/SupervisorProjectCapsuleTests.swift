@@ -90,4 +90,87 @@ struct SupervisorProjectCapsuleTests {
         #expect(capsule.currentAction == "排队中（等待 Hub 执行）")
         #expect(card.projectState == .idle)
     }
+
+    @Test
+    func capsuleCarriesDecisionAssistIntoPortfolioCard() {
+        let now = Date(timeIntervalSince1970: 1_773_910_000).timeIntervalSince1970
+        let assist = SupervisorDecisionBlockerAssistEngine.build(
+            context: SupervisorDecisionBlockerContext(
+                projectId: "p-proposal",
+                blockerId: "blk-test-stack",
+                category: .testStack,
+                reversible: true,
+                riskLevel: .low,
+                timeoutEscalationAfterMs: 900_000
+            ),
+            nowMs: 1_778_300_000_000
+        )
+        let digest = SupervisorManager.SupervisorMemoryProjectDigest(
+            projectId: "p-proposal",
+            displayName: "Proposal Project",
+            runtimeState: "阻塞中",
+            source: "local_project_memory+decision_blocker_assist",
+            goal: "Pick a governed default",
+            currentState: "默认建议待确认：swift_testing_contract_default（proposal_pending）",
+            nextStep: "审阅待定默认建议：swift_testing_contract_default，确认后再走 governed adoption",
+            blocker: "default_proposal_pending:test_stack=swift_testing_contract_default",
+            updatedAt: now - 60,
+            recentMessageCount: 2,
+            decisionAssist: assist
+        )
+
+        let capsule = SupervisorProjectCapsuleBuilder.build(from: digest, now: now)
+        let card = SupervisorProjectCapsuleBuilder.card(from: capsule, recentMessageCount: digest.recentMessageCount)
+
+        #expect(capsule.decisionAssist?.blockerCategory == .testStack)
+        #expect(capsule.decisionAssist?.recommendedOption == "swift_testing_contract_default")
+        #expect(card.decisionAssist?.governanceMode == .proposalWithTimeoutEscalation)
+        #expect(card.decisionAssist?.timeoutEscalationAfterMs == 900_000)
+    }
+
+    @Test
+    func capsuleCarriesMemoryCompactionSignalIntoPortfolioCard() {
+        let now = Date(timeIntervalSince1970: 1_776_100_800).timeIntervalSince1970
+        let rollup = SupervisorMemoryCompactionRollup(
+            schemaVersion: SupervisorMemoryCompactionRollup.schemaVersion,
+            projectId: "p-archive",
+            periodStartMs: 1_776_000_000_000,
+            periodEndMs: 1_776_100_000_000,
+            rollupSummary: "rolled_up=2; archived=3; kept_decisions=1; kept_milestones=1; traceable_refs=2; archive_candidate=true",
+            rolledUpNodeIds: ["current-0", "recommendation-0"],
+            archivedNodeIds: ["recent-0", "recent-1", "recent-2"],
+            keptDecisionIds: ["dec_archive"],
+            keptMilestoneIds: ["mvp"],
+            keptAuditRefs: ["audit_archive"],
+            keptReleaseGateRefs: ["build/reports/archive_gate.json"],
+            archivedRefs: ["audit_archive", "build/reports/archive_gate.json"],
+            archiveCandidate: true,
+            policyReasons: ["completed_project"],
+            decisionNodeLoss: 0,
+            updatedAtMs: 1_776_100_000_000
+        )
+        let digest = SupervisorManager.SupervisorMemoryProjectDigest(
+            projectId: "p-archive",
+            displayName: "Archive Project",
+            runtimeState: "completed",
+            source: "local_project_memory+memory_compaction_rollup",
+            goal: "Close the finished project cleanly",
+            currentState: "记忆收口：rolled_up=2; archived=3; kept_decisions=1",
+            nextStep: "审阅 archive rollup",
+            blocker: "(无)",
+            updatedAt: now - 120,
+            recentMessageCount: 0,
+            memoryCompactionRollup: rollup
+        )
+
+        let capsule = SupervisorProjectCapsuleBuilder.build(from: digest, now: now)
+        let card = SupervisorProjectCapsuleBuilder.card(from: capsule, recentMessageCount: digest.recentMessageCount)
+
+        #expect(capsule.memoryCompactionSignal?.archiveCandidate == true)
+        #expect(capsule.memoryCompactionSignal?.archivedCount == 3)
+        #expect(capsule.memoryCompactionSignal?.rolledUpCount == 2)
+        #expect(card.memoryCompactionSignal?.archiveCandidate == true)
+        #expect(card.memoryCompactionSignal?.keptDecisionCount == 1)
+        #expect(card.memoryCompactionSignal?.keptMilestoneCount == 1)
+    }
 }

@@ -15,11 +15,21 @@ struct SupervisorSystemPromptRuntimeInfo: Equatable {
     var projectCount: Int
     var preferredSupervisorModelId: String?
     var supervisorModelRouteSummary: String
+    var retrievalModelSummary: String?
     var memorySource: String
 }
 
 struct SupervisorSystemPromptParams: Equatable {
     var identity: SupervisorIdentityProfile
+    var personalProfile: SupervisorPersonalProfile = .default()
+    var personalPolicy: SupervisorPersonalPolicy = .default()
+    var workMode: XTSupervisorWorkMode = .defaultMode
+    var privacyMode: XTPrivacyMode = .defaultMode
+    var personalMemorySummary: String = ""
+    var personalFollowUpSummary: String = ""
+    var personalReviewSummary: String = ""
+    var turnRoutingDecision: SupervisorTurnRoutingDecision? = nil
+    var turnContextAssembly: SupervisorTurnContextAssemblyResult? = nil
     var runtimeInfo: SupervisorSystemPromptRuntimeInfo
     var userTimezone: String
     var userTime: String
@@ -33,6 +43,15 @@ struct SupervisorSystemPromptParams: Equatable {
 enum SupervisorSystemPromptParamsBuilder {
     static func build(
         identity: SupervisorIdentityProfile = .default(),
+        personalProfile: SupervisorPersonalProfile = .default(),
+        personalPolicy: SupervisorPersonalPolicy = .default(),
+        workMode: XTSupervisorWorkMode = .defaultMode,
+        privacyMode: XTPrivacyMode = .defaultMode,
+        personalMemorySummary: String = "",
+        personalFollowUpSummary: String = "",
+        personalReviewSummary: String = "",
+        turnRoutingDecision: SupervisorTurnRoutingDecision? = nil,
+        turnContextAssembly: SupervisorTurnContextAssemblyResult? = nil,
         preferredSupervisorModelId: String?,
         supervisorModelRouteSummary: String,
         memorySource: String,
@@ -42,6 +61,7 @@ enum SupervisorSystemPromptParamsBuilder {
         promptMode: SupervisorSystemPromptMode = .full,
         extraSystemPrompt: String? = nil,
         memoryReadiness: SupervisorMemoryAssemblyReadiness? = nil,
+        retrievalModelSummary: String? = nil,
         now: Date = Date(),
         timeZone: TimeZone = .current,
         locale: Locale = .current,
@@ -50,6 +70,15 @@ enum SupervisorSystemPromptParamsBuilder {
     ) -> SupervisorSystemPromptParams {
         SupervisorSystemPromptParams(
             identity: identity,
+            personalProfile: personalProfile.normalized(),
+            personalPolicy: personalPolicy.normalized(),
+            workMode: workMode,
+            privacyMode: privacyMode,
+            personalMemorySummary: personalMemorySummary.trimmingCharacters(in: .whitespacesAndNewlines),
+            personalFollowUpSummary: personalFollowUpSummary.trimmingCharacters(in: .whitespacesAndNewlines),
+            personalReviewSummary: personalReviewSummary.trimmingCharacters(in: .whitespacesAndNewlines),
+            turnRoutingDecision: turnRoutingDecision,
+            turnContextAssembly: turnContextAssembly,
             runtimeInfo: SupervisorSystemPromptRuntimeInfo(
                 appName: "X-Terminal",
                 host: ProcessInfo.processInfo.hostName,
@@ -59,6 +88,7 @@ enum SupervisorSystemPromptParamsBuilder {
                 projectCount: projectCount,
                 preferredSupervisorModelId: preferredSupervisorModelId,
                 supervisorModelRouteSummary: supervisorModelRouteSummary,
+                retrievalModelSummary: retrievalModelSummary,
                 memorySource: memorySource,
             ),
             userTimezone: timeZone.identifier,
