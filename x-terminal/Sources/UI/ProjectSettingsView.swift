@@ -74,10 +74,10 @@ struct ProjectSettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
-                    Text("Project Settings")
+                    Text("项目设置（Project Settings）")
                         .font(.headline)
                     Spacer()
-                    Button("Close") { dismiss() }
+                    Button("关闭") { dismiss() }
                 }
 
                 Text(ctx.displayName(registry: appModel.registry))
@@ -87,7 +87,7 @@ struct ProjectSettingsView: View {
                 Divider()
 
                 latestUIReviewSection
-                GroupBox("Per-Project Model Routing") {
+                GroupBox("项目级模型路由") {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("每个角色可选择不同模型；留空 = 使用全局 Settings。")
                             .font(.caption)
@@ -176,7 +176,7 @@ struct ProjectSettingsView: View {
     }
 
     private var latestUIReviewSection: some View {
-        GroupBox("Latest UI Review") {
+        GroupBox("最近一次 UI 审查") {
             ProjectUIReviewWorkspaceView(
                 ctx: ctx,
                 emptyTitle: "暂无浏览器 UI review",
@@ -303,7 +303,7 @@ struct ProjectSettingsView: View {
             resolved: resolved
         )
 
-        return GroupBox("Governance Templates") {
+        return GroupBox("治理模板") {
             VStack(alignment: .leading, spacing: 12) {
                 Text("这些模板只是 A-tier / S-tier / review cadence 的快捷映射。真正生效的执行权限、supervisor 介入、TTL、trusted automation 与 read roots，仍以下方治理设置和运行时收束为准。")
                     .font(.caption)
@@ -355,7 +355,7 @@ struct ProjectSettingsView: View {
                 }
 
                 if templatePreview.hasConfiguredEffectiveDrift {
-                    Text("模板输入和运行时投影当前不完全一致。真正放行动作仍继续受 runtime surface TTL、clamp、trusted automation、grant 和 kill-switch 共同约束。")
+                    Text("模板输入和运行时投影当前不完全一致。真正放行动作仍继续受执行面 TTL、收束规则、trusted automation、grant 和 kill-switch 共同约束。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -413,10 +413,10 @@ struct ProjectSettingsView: View {
         let preferHubMemory = appModel.projectConfig?.preferHubMemory ?? true
         let mode = XTProjectMemoryGovernance.modeLabel(appModel.projectConfig)
 
-        return GroupBox("Hub Memory Governance") {
+        return GroupBox("Hub 记忆治理") {
             VStack(alignment: .leading, spacing: 10) {
                 Toggle(
-                    "Prefer Hub memory for this project",
+                    "当前项目优先使用 Hub memory",
                     isOn: Binding(
                         get: { appModel.projectConfig?.preferHubMemory ?? true },
                         set: { appModel.setProjectHubMemoryPreference(enabled: $0) }
@@ -446,7 +446,7 @@ struct ProjectSettingsView: View {
     private var contextAssemblySection: some View {
         let config = governanceConfig
 
-        return GroupBox("Context Assembly") {
+        return GroupBox("上下文组装") {
             VStack(alignment: .leading, spacing: 12) {
                 Text("这里控制 project AI 最近能看到多少项目对话，以及项目背景带多完整。它不会改变执行权限、Supervisor 介入强度或 heartbeat。")
                     .font(.caption)
@@ -454,7 +454,7 @@ struct ProjectSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Text("Recent Project Dialogue")
+                    Text("最近项目对话")
                         .font(.system(.body, design: .monospaced))
                         .frame(width: 180, alignment: .leading)
 
@@ -481,7 +481,7 @@ struct ProjectSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Text("Project Context Depth")
+                    Text("项目背景深度")
                         .font(.system(.body, design: .monospaced))
                         .frame(width: 180, alignment: .leading)
 
@@ -509,12 +509,12 @@ struct ProjectSettingsView: View {
 
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 10)], alignment: .leading, spacing: 10) {
                     contextAssemblyMetric(
-                        title: "Dialogue Window",
+                        title: "对话窗口",
                         value: config.projectRecentDialogueProfile.shortLabel,
                         tone: .teal
                     )
                     contextAssemblyMetric(
-                        title: "Background Depth",
+                        title: "背景深度",
                         value: config.projectContextDepthProfile.displayName,
                         tone: .indigo
                     )
@@ -834,7 +834,7 @@ struct ProjectSettingsView: View {
         VStack(alignment: .leading, spacing: 12) {
             latestUIReviewSection
 
-            Text("这里是 project 的 UI review 专属工作区。Supervisor / project AI 都可以把这里当作“页面是否真的可执行”的当前真相入口。")
+            Text("这里是项目的 UI review 专属工作区。Supervisor / 项目 AI 都可以把这里当作“页面是否真的可执行”的当前真相入口。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -895,7 +895,7 @@ struct ProjectSettingsView: View {
     private var runtimeSurfaceSection: some View {
         GroupBox("Execution Surface Runtime") {
             VStack(alignment: .leading, spacing: 12) {
-                Text("A-tier / S-tier / Heartbeat & Review 已拆到各自独立页面。这里仅保留 runtime surface、TTL 与 Hub clamp 相关细项。")
+                Text("A-tier / S-tier / Heartbeat & Review 已拆到各自独立页面。这里仅保留执行面、TTL 与 Hub 收束相关细项。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -964,7 +964,7 @@ struct ProjectSettingsView: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
 
-                Text("执行档位会同步默认执行面，但真正放行动作仍继续受 TTL、clamp、设备执行绑定、权限宿主和 kill-switch 共同约束。")
+                Text("执行档位会同步默认执行面，但真正放行动作仍继续受 TTL、收束规则、设备执行绑定、权限宿主和 kill-switch 共同约束。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
 
@@ -981,7 +981,7 @@ struct ProjectSettingsView: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("这里保留 runtime surface、设备执行绑定、可读目录和本地自动审批细项。")
+                        Text("这里保留执行面、设备执行绑定、可读目录和本地自动审批细项。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Text("A-tier / S-tier / Heartbeat & Review 已拆到各自独立页面；点治理摘要卡即可进入对应编辑器。")
@@ -1029,7 +1029,7 @@ struct ProjectSettingsView: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("Last Runtime Assembly")
+                Text("最近一次运行时组装")
                     .font(.system(.body, design: .monospaced))
 
                 Text(presentation.userSourceBadge)
@@ -1058,25 +1058,25 @@ struct ProjectSettingsView: View {
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 10)], alignment: .leading, spacing: 10) {
                 contextAssemblyMetric(
-                    title: "Runtime Dialogue",
+                    title: "运行时对话",
                     value: presentation.userDialogueMetric,
                     tone: .mint
                 )
                 contextAssemblyMetric(
-                    title: "Runtime Depth",
+                    title: "运行时深度",
                     value: presentation.userDepthMetric,
                     tone: .blue
                 )
                 if let coverageMetric = presentation.userCoverageSummary {
                     contextAssemblyMetric(
-                        title: "Included",
+                        title: "纳入内容",
                         value: coverageMetric,
                         tone: .orange
                     )
                 }
                 if let boundaryMetric = presentation.userBoundarySummary {
                     contextAssemblyMetric(
-                        title: "Privacy",
+                        title: "隐私边界",
                         value: boundaryMetric,
                         tone: .pink
                     )
@@ -1108,10 +1108,10 @@ struct ProjectSettingsView: View {
         let maxDepth = appModel.projectConfig?.automationMaxAutoRetryDepth ?? 2
         let recipeRef = appModel.projectConfig?.activeAutomationRecipeRef.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-        return GroupBox("Automation Self-Iteration") {
+        return GroupBox("自动自迭代") {
             VStack(alignment: .leading, spacing: 10) {
                 Toggle(
-                    "Enable bounded self-iterate auto retry",
+                    "开启有边界的自迭代自动重试",
                     isOn: Binding(
                         get: { appModel.projectConfig?.automationSelfIterateEnabled ?? false },
                         set: { appModel.setProjectAutomationSelfIteration(enabled: $0) }
@@ -1126,7 +1126,7 @@ struct ProjectSettingsView: View {
                     ),
                     in: 1...8
                 ) {
-                    Text("Max Auto Retry Depth: \(maxDepth)")
+                    Text("最大自动重试深度：\(maxDepth)")
                 }
 
                 Text("current_mode: \(enabled ? "enabled" : "disabled") · active_recipe: \(recipeRef.isEmpty ? "(none)" : recipeRef)")
@@ -1427,7 +1427,7 @@ struct ProjectSettingsView: View {
                 clearGovernanceInlineMessage()
             }
         case .safe:
-            governanceInlineMessage = "已切到推荐治理模板（默认 A3 + S3）。project 会优先持续推进，但高风险动作仍继续受 grant 与 clamp 约束。"
+            governanceInlineMessage = "已切到推荐治理模板（默认 A3 + S3）。项目会优先持续推进，但高风险动作仍继续受 grant 与收束规则约束。"
             governanceInlineMessageIsError = false
         case .conservative:
             governanceInlineMessage = "已切到保守治理模板（默认 A1 + S2）。当前更偏向理解、规划与审阅，不主动放大执行面。"
@@ -1593,7 +1593,7 @@ struct ProjectSettingsView: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
 
-            Text("Configured")
+            Text("配置值")
                 .font(.caption2.monospaced())
                 .foregroundStyle(.secondary)
             Text(configuredTitle)
@@ -1605,7 +1605,7 @@ struct ProjectSettingsView: View {
 
             Divider()
 
-            Text("Effective")
+            Text("生效值")
                 .font(.caption2.monospaced())
                 .foregroundStyle(.secondary)
             Text(effectiveTitle)

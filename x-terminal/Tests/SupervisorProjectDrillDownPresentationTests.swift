@@ -437,12 +437,12 @@ struct SupervisorProjectDrillDownPresentationTests {
 
         let specSection = try #require(presentation.sections.first(where: { $0.id == "spec-capsule" }))
         #expect(specSection.lines.map(\.text) == [
-            "goal: Ship a governed supervisor workflow",
-            "mvp: (missing)",
-            "non-goals: (missing)",
-            "tech stack: (missing)",
-            "milestones: (missing)",
-            "spec gap: mvp_definition / non_goals / tech_stack / milestones"
+            "目标：Ship a governed supervisor workflow",
+            "MVP：（缺失）",
+            "非目标：（缺失）",
+            "技术栈：（缺失）",
+            "里程碑：（缺失）",
+            "规格缺口：MVP 定义 / 非目标 / 技术栈 / 里程碑"
         ])
         #expect(specSection.lines.map(\.tone) == [
             .primary,
@@ -523,11 +523,11 @@ struct SupervisorProjectDrillDownPresentationTests {
 
         let decisionSection = try #require(presentation.sections.first(where: { $0.id == "decision-rails" }))
         #expect(decisionSection.lines.map(\.text) == [
-            "approved tech_stack: Use SwiftUI + Hub canonical memory.",
-            "precedence tech_stack: formal decision wins over 1 background note",
-            "shadowed tech_stack [strong]: Prefer cross-platform web.",
-            "background ux_style [medium]: Prefer compact operational cards.",
-            "guard ux_style: weak-only until formal decision"
+            "已批准技术栈：Use SwiftUI + Hub canonical memory.",
+            "决策优先·技术栈：正式决策覆盖1 条背景偏好",
+            "被覆盖背景·技术栈 [强]：Prefer cross-platform web.",
+            "背景偏好·界面风格 [中]：Prefer compact operational cards.",
+            "保护规则·界面风格：在正式决策前仅作弱约束"
         ])
         #expect(decisionSection.lines.map(\.tone) == [
             .primary,

@@ -19,8 +19,8 @@ struct ProjectDetailGovernanceSummary: Equatable {
     init(presentation: ProjectGovernancePresentation) {
         var headerParts: [String] = [
             "\(presentation.effectiveExecutionLabel) / \(presentation.effectiveSupervisorLabel)",
-            "Review \(presentation.reviewPolicyMode.displayName)",
-            "Guidance \(presentation.guidanceSummary)"
+            "审查 \(presentation.reviewPolicyMode.displayName)",
+            "指导 \(presentation.guidanceSummary)"
         ]
         if let clamp = presentation.homeClampMessage {
             headerParts.append(clamp)
@@ -43,9 +43,9 @@ struct ProjectDetailGovernanceSummary: Equatable {
         supervisorTierSummary = supervisorParts.joined(separator: " ")
 
         capabilitySummary = presentation.capabilityLabels.isEmpty
-            ? "(none)"
+            ? "无"
             : presentation.capabilityLabels.joined(separator: ", ")
-        clampSummary = presentation.homeClampMessage ?? "无额外 clamp"
+        clampSummary = presentation.homeClampMessage ?? "无额外收束"
         sourceLabel = presentation.compatSourceLabel
         sourceDetail = presentation.compatSourceDetail
     }
@@ -433,11 +433,11 @@ struct ProjectDetailView: View {
                 )
             }
             governanceStateCard(
-                title: "Review 策略",
+                title: "审查策略",
                 value: governancePresentation.reviewPolicyMode.displayName,
                 summary: governancePresentation.reviewCadenceText,
                 destination: projectSettingsContext == nil ? nil : .heartbeatReview,
-                help: "打开 Heartbeat & Review 设置"
+                help: "打开心跳与审查设置"
             )
             InfoRow(
                 label: "执行档位",
@@ -452,16 +452,16 @@ struct ProjectDetailView: View {
                 help: "打开 Supervisor Tier 设置"
             )
             InfoRow(
-                label: "Review 策略",
+                label: "审查策略",
                 value: governancePresentation.reviewPolicyMode.displayName,
                 destination: projectSettingsContext == nil ? nil : .heartbeatReview,
-                help: "打开 Heartbeat & Review 设置"
+                help: "打开心跳与审查设置"
             )
             InfoRow(
-                label: "Review 节奏",
+                label: "审查节奏",
                 value: governancePresentation.reviewCadenceText,
                 destination: projectSettingsContext == nil ? nil : .heartbeatReview,
-                help: "打开 Heartbeat & Review 设置"
+                help: "打开心跳与审查设置"
             )
             if let followUpRhythmSummary = governancePresentation.followUpRhythmSummary,
                !followUpRhythmSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -469,11 +469,11 @@ struct ProjectDetailView: View {
                     label: "自动跟进",
                     value: followUpRhythmSummary,
                     destination: projectSettingsContext == nil ? nil : .heartbeatReview,
-                    help: "打开 Heartbeat & Review 设置"
+                    help: "打开心跳与审查设置"
                 )
             }
             InfoRow(
-                label: "Guidance 注入",
+                label: "指导注入",
                 value: "\(governancePresentation.guidanceSummary) · \(governancePresentation.guidanceAckSummary)",
                 destination: projectSettingsContext == nil ? nil : .overview,
                 help: "打开治理概览"
@@ -524,13 +524,13 @@ struct ProjectDetailView: View {
                 if let ctx = governanceActivityContext {
                     ProjectGovernanceActivityView(ctx: ctx)
                 } else {
-                    Text("这张卡片已经记录了 project 绑定，但当前无法解析到可用的 project context，所以这里只保留治理档位展示，不加载 review / guidance 时间线。")
+                    Text("这张卡片已经记录了项目绑定，但当前无法解析到可用的项目上下文，所以这里只保留治理档位展示，不加载审查 / 指导时间线。")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             } else {
-                Text("当前多项目卡片还没有绑定到真实 project root，所以这里只展示执行档位和 supervisor 档位，不展示 supervisor review / guidance 的实际时间线。")
+                Text("当前多项目卡片还没有绑定到真实项目根目录，所以这里只展示执行档位和 Supervisor 档位，不展示 Supervisor 审查 / 指导的实际时间线。")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -844,7 +844,7 @@ struct ProjectDetailView: View {
         case .supervisorTier:
             return "打开 Supervisor Tier 设置"
         case .heartbeatReview:
-            return "打开 Heartbeat & Review 设置"
+            return "打开心跳与审查设置"
         }
     }
 

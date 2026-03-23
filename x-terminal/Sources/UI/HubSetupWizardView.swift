@@ -323,7 +323,7 @@ enum UIFirstRunJourneyPlanner {
         } else {
             primaryStatus = StatusExplanation(
                 state: .inProgress,
-                headline: "Pair Hub 已完成，下一步是 Choose Model",
+                headline: "连接 Hub（Pair Hub）已完成，下一步是选择模型（Choose Model）",
                 whatHappened: "Hub 已接入，但当前还没把首个任务需要的模型角色冻结到位。",
                 whyItHappened: "首用路径要求先完成 Pair Hub，再选择模型，避免把模型缺失误判成 grant 问题。",
                 userAction: "先为 coder / supervisor 至少配置一个 Hub 模型，再继续 grant 与 smoke。",
@@ -376,14 +376,14 @@ enum UIFirstRunJourneyPlanner {
         let actions = [
             PrimaryActionRailAction(
                 id: "pair_hub",
-                title: "开始 Pair Hub",
+                title: "开始连接 Hub（Pair Hub）",
                 subtitle: "discover / bootstrap / connect 一次走通",
                 systemImage: "link.badge.plus",
                 style: .primary
             ),
             PrimaryActionRailAction(
                 id: "run_smoke",
-                title: "Run Reconnect Smoke",
+                title: "重连自检（Run Reconnect Smoke）",
                 subtitle: runSmokeSubtitle(runtime: state.runtime),
                 systemImage: "bolt.horizontal.circle",
                 style: .secondary
@@ -438,42 +438,42 @@ enum UIFirstRunJourneyPlanner {
         let steps = [
             UIFirstRunStep(
                 kind: .pairHub,
-                title: "Pair Hub",
+                title: "连接 Hub（Pair Hub）",
                 summary: "先把 discover / bootstrap / connect 路径打通。",
                 state: connected ? .ready : (state.linking ? .inProgress : .blockedWaitingUpstream),
                 repairEntry: .xtPairHub
             ),
             UIFirstRunStep(
                 kind: .chooseModel,
-                title: "Choose Model",
+                title: "选择模型（Choose Model）",
                 summary: "先为首个任务配置 Hub 模型，避免误判 grant。",
                 state: hasModel ? .ready : (connected ? .inProgress : .blockedWaitingUpstream),
                 repairEntry: .xtChooseModel
             ),
             UIFirstRunStep(
                 kind: .resolveGrant,
-                title: "Resolve Grant",
+                title: "处理授权（Resolve Grant）",
                 summary: "grant_required / permission_denied / fail-closed denyCode 都必须 3 步内定位到修复入口。",
                 state: resolveGrantState,
                 repairEntry: failureIssue == .permissionDenied ? .systemPermissions : .hubGrants
             ),
             UIFirstRunStep(
                 kind: .runSmoke,
-                title: "Run Smoke",
+                title: "运行自检（Run Smoke）",
                 summary: "通过 reconnect smoke 与 replay harness 确认 pair + model + grant 一起可用。",
                 state: runSmokeState,
                 repairEntry: .hubDiagnostics
             ),
             UIFirstRunStep(
                 kind: .verifyReadiness,
-                title: "Verify",
+                title: "核验就绪（Verify）",
                 summary: "显式检查当前 transport、模型数、tool route 与 session runtime 是否都 ready。",
                 state: verifyState,
                 repairEntry: .xtDiagnostics
             ),
             UIFirstRunStep(
                 kind: .startFirstTask,
-                title: "Start First Task",
+                title: "开始首个任务（Start First Task）",
                 summary: "只回到当前已验证主链的 Home / Supervisor 主入口。",
                 state: firstTaskState,
                 repairEntry: .homeSupervisor
@@ -586,7 +586,7 @@ struct HubSetupWizardView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Hub 首次连接向导")
                 .font(UIThemeTokens.sectionFont())
-            Text("把 Pair Hub → Choose Model → Resolve Grant → Smoke → Verify 收成一条首用主链，先把第一次可用跑通。")
+            Text("把连接 Hub（Pair Hub）→ 选择模型（Choose Model）→ 处理授权（Resolve Grant）→ 自检（Smoke）→ 核验（Verify）收成一条首用主链，先把第一次可用跑通。")
                 .font(UIThemeTokens.bodyFont())
                 .foregroundStyle(.secondary)
         }
@@ -596,7 +596,7 @@ struct HubSetupWizardView: View {
         GroupBox("首用主链") {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text("当前主链：Pair Hub → Choose Model → Resolve Grant → Smoke → Verify → Start First Task")
+                    Text("当前主链：连接 Hub（Pair Hub）→ 选择模型（Choose Model）→ 处理授权（Resolve Grant）→ 自检（Smoke）→ 核验（Verify）→ 开始首个任务")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()

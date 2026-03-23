@@ -686,15 +686,15 @@ private struct ProjectHomeRow: View {
                 tone: governanceStatusTone(governancePresentation)
             )
             row(
-                title: "Review 节奏",
+                title: "审查节奏",
                 value: governancePresentation.reviewCadenceText,
                 placeholder: "off",
                 action: { openGovernanceSettings(.heartbeatReview) },
-                help: "打开 Heartbeat & Review 设置"
+                help: "打开心跳与审查设置"
             )
             if let clampMessage = governancePresentation.homeClampMessage {
                 row(
-                    title: "Clamp / 收束",
+                    title: "收束 / 限制",
                     value: clampMessage,
                     placeholder: "无",
                     action: { openGovernanceSettings(.overview) },

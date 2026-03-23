@@ -21,8 +21,8 @@ struct ProjectDetailGovernanceSummaryTests {
 
         #expect(summary.headerSummary.contains("A3 Deliver Auto"))
         #expect(summary.headerSummary.contains("S3 Strategic Coach"))
-        #expect(summary.headerSummary.contains("Review Hybrid"))
-        #expect(summary.headerSummary.contains("Guidance"))
+        #expect(summary.headerSummary.contains("审查 Hybrid"))
+        #expect(summary.headerSummary.contains("指导"))
         #expect(summary.headerSummary.contains(presentation.homeStatusMessage))
     }
 

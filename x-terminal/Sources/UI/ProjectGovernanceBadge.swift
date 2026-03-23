@@ -152,7 +152,7 @@ struct ProjectGovernancePresentation {
     }
 
     var reviewCadenceText: String {
-        "heartbeat \(governanceDurationLabel(progressHeartbeatSeconds)) · pulse \(governanceDurationLabel(reviewPulseSeconds)) · brainstorm \(governanceDurationLabel(brainstormReviewSeconds))"
+        "心跳 \(governanceDurationLabel(progressHeartbeatSeconds)) · 脉冲 \(governanceDurationLabel(reviewPulseSeconds)) · 脑暴 \(governanceDurationLabel(brainstormReviewSeconds))"
     }
 
     var compatSourceLabel: String {
@@ -177,9 +177,9 @@ struct ProjectGovernancePresentation {
     var compatSourceDetail: String? {
         switch compatSource {
         case AXProjectGovernanceCompatSource.explicitDualDial.rawValue:
-            return "当前项目已明确保存 A-tier / S-tier / Review Policy，后续以这组治理设置为准。"
+            return "当前项目已明确保存 A-tier / S-tier / 审查策略，后续以这组治理设置为准。"
         case AXProjectGovernanceCompatSource.legacyAutonomyLevel.rawValue:
-            return "当前治理仍在兼容旧 project card 档位影子值。建议在项目设置里保存一次 A-tier / S-tier，让运行时不再依赖旧字段。"
+            return "当前治理仍在兼容旧项目卡片档位影子值。建议在项目设置里保存一次 A-tier / S-tier，让运行时不再依赖旧字段。"
         case AXProjectGovernanceCompatSource.legacyAutonomyMode.rawValue:
             return "当前治理仍由旧执行面预设映射而来。建议补一次显式 A-tier / S-tier 配置，避免后续继续走兼容桥。"
         case AXProjectGovernanceCompatSource.defaultConservative.rawValue:
@@ -331,11 +331,11 @@ struct ProjectGovernancePresentation {
     private static func guidanceSummary(_ mode: SupervisorGuidanceInterventionMode) -> String {
         switch mode {
         case .observeOnly:
-            return "仅观察，默认不注入 guidance"
+            return "仅观察，默认不注入指导"
         case .suggestNextSafePoint:
-            return "下一个 safe point 给建议"
+            return "下一个安全点给出建议"
         case .replanNextSafePoint:
-            return "下一个 safe point 要求重排"
+            return "下一个安全点要求重规划"
         case .stopImmediately:
             return "触发介入后立即停止"
         }
@@ -595,7 +595,7 @@ struct ProjectGovernanceInspector: View {
                 }
             }
 
-            governanceRow("Review 策略") {
+            governanceRow("审查策略") {
                 Text(presentation.reviewPolicyMode.displayName)
                 Text(presentation.reviewCadenceText)
                     .foregroundStyle(.secondary)
@@ -609,13 +609,13 @@ struct ProjectGovernanceInspector: View {
                 }
             }
 
-            governanceRow("Guidance 注入") {
+            governanceRow("指导注入") {
                 Text(presentation.guidanceSummary)
                 Text(presentation.guidanceAckSummary)
                     .foregroundStyle(.secondary)
             }
 
-            governanceRow("事件驱动 Review") {
+            governanceRow("事件驱动审查") {
                 Text(presentation.eventDrivenReviewEnabled ? "已开启" : "已关闭")
                 if !presentation.eventReviewTriggerLabels.isEmpty {
                     Text(presentation.eventReviewTriggerLabels.joined(separator: ", "))

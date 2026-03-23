@@ -314,7 +314,7 @@ enum SupervisorProjectDrillDownPresentationMapper {
             lines.append(
                 line(
                     id: "decision-\(decision.id)",
-                    text: "approved \(decision.category.rawValue): \(decision.statement)",
+                    text: "已批准\(localizedDecisionCategory(decision.category))：\(decision.statement)",
                     tone: .primary
                 )
             )
@@ -325,7 +325,7 @@ enum SupervisorProjectDrillDownPresentationMapper {
                 lines.append(
                     line(
                         id: "background-\(resolution.domain.rawValue)-preferred",
-                        text: "background \(resolution.domain.rawValue) [\(note.strength.rawValue)]: \(note.statement)",
+                        text: "背景偏好·\(localizedBackgroundDomain(resolution.domain)) [\(localizedBackgroundStrength(note.strength))]：\(note.statement)",
                         tone: .secondary
                     )
                 )
@@ -333,7 +333,7 @@ enum SupervisorProjectDrillDownPresentationMapper {
                     lines.append(
                         line(
                             id: "background-\(resolution.domain.rawValue)-guard",
-                            text: "guard \(resolution.domain.rawValue): weak-only until formal decision",
+                            text: "保护规则·\(localizedBackgroundDomain(resolution.domain))：在正式决策前仅作弱约束",
                             tone: .warning
                         )
                     )
@@ -343,14 +343,14 @@ enum SupervisorProjectDrillDownPresentationMapper {
                 lines.append(
                     line(
                         id: "background-\(resolution.domain.rawValue)-precedence",
-                        text: "precedence \(resolution.domain.rawValue): formal decision wins over \(backgroundNoteCountText(shadowedCount))",
+                        text: "决策优先·\(localizedBackgroundDomain(resolution.domain))：正式决策覆盖\(backgroundNoteCountText(shadowedCount))",
                         tone: .warning
                     )
                 )
                 lines.append(
                     line(
                         id: "background-\(resolution.domain.rawValue)-shadowed",
-                        text: "shadowed \(resolution.domain.rawValue) [\(note.strength.rawValue)]: \(note.statement)",
+                        text: "被覆盖背景·\(localizedBackgroundDomain(resolution.domain)) [\(localizedBackgroundStrength(note.strength))]：\(note.statement)",
                         tone: .secondary
                     )
                 )
@@ -509,29 +509,29 @@ enum SupervisorProjectDrillDownPresentationMapper {
         var lines = [
             line(
                 id: "spec-goal",
-                text: "goal: \(specScalar(spec.goal))",
+                text: "目标：\(specScalar(spec.goal))",
                 tone: scalarTone(spec.goal, primaryTone: .primary)
             ),
             line(
                 id: "spec-mvp",
-                text: "mvp: \(specScalar(spec.mvpDefinition))",
+                text: "MVP：\(specScalar(spec.mvpDefinition))",
                 tone: scalarTone(spec.mvpDefinition, primaryTone: .secondary)
             ),
             line(
                 id: "spec-non-goals",
-                text: "non-goals: \(listSummary(spec.nonGoals))",
+                text: "非目标：\(listSummary(spec.nonGoals))",
                 tone: spec.nonGoals.isEmpty ? .warning : .secondary,
                 lineLimit: 3
             ),
             line(
                 id: "spec-tech-stack",
-                text: "tech stack: \(listSummary(spec.approvedTechStack))",
+                text: "技术栈：\(listSummary(spec.approvedTechStack))",
                 tone: spec.approvedTechStack.isEmpty ? .warning : .secondary,
                 lineLimit: 3
             ),
             line(
                 id: "spec-milestones",
-                text: "milestones: \(milestoneSummary(spec.milestoneMap))",
+                text: "里程碑：\(milestoneSummary(spec.milestoneMap))",
                 tone: spec.milestoneMap.isEmpty ? .warning : .secondary,
                 lineLimit: 3
             )
@@ -541,7 +541,7 @@ enum SupervisorProjectDrillDownPresentationMapper {
             lines.append(
                 line(
                     id: "spec-gap",
-                    text: "spec gap: \(missingFields.map(\.summaryToken).joined(separator: " / "))",
+                    text: "规格缺口：\(missingFields.map(localizedSpecField).joined(separator: " / "))",
                     tone: .warning,
                     lineLimit: 3
                 )
@@ -775,7 +775,7 @@ enum SupervisorProjectDrillDownPresentationMapper {
         band: AXProjectAIStrengthBand?,
         confidence: Double?
     ) -> String {
-        guard let band else { return "(none)" }
+        guard let band else { return "无" }
         guard let confidence else { return band.displayName }
         let normalized = max(0, min(1, confidence))
         return "\(band.displayName) · conf=\(Int((normalized * 100).rounded()))%"
@@ -787,12 +787,12 @@ enum SupervisorProjectDrillDownPresentationMapper {
 
     private static func governanceScalar(_ value: String?) -> String {
         let trimmed = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "(none)" : trimmed
+        return trimmed.isEmpty ? "无" : trimmed
     }
 
     private static func specScalar(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "(missing)" : trimmed
+        return trimmed.isEmpty ? "（缺失）" : trimmed
     }
 
     private static func scalarTone(
@@ -806,7 +806,7 @@ enum SupervisorProjectDrillDownPresentationMapper {
         let normalized = values
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        guard !normalized.isEmpty else { return "(missing)" }
+        guard !normalized.isEmpty else { return "（缺失）" }
         return normalized.joined(separator: ", ")
     }
 
@@ -817,11 +817,11 @@ enum SupervisorProjectDrillDownPresentationMapper {
             .map(\.title)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        guard !titles.isEmpty else { return "(missing)" }
+        guard !titles.isEmpty else { return "（缺失）" }
 
         let visible = Array(titles.prefix(3))
         if titles.count > visible.count {
-            return visible.joined(separator: ", ") + " +\(titles.count - visible.count) more"
+            return visible.joined(separator: ", ") + " +\(titles.count - visible.count)项"
         }
         return visible.joined(separator: ", ")
     }
@@ -830,17 +830,71 @@ enum SupervisorProjectDrillDownPresentationMapper {
         let normalized = values
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        guard !normalized.isEmpty else { return "(none)" }
+        guard !normalized.isEmpty else { return "无" }
 
         let visible = Array(normalized.prefix(maxVisible))
         if normalized.count > visible.count {
-            return visible.joined(separator: ", ") + " +\(normalized.count - visible.count) more"
+            return visible.joined(separator: ", ") + " +\(normalized.count - visible.count)项"
         }
         return visible.joined(separator: ", ")
     }
 
     private static func backgroundNoteCountText(_ count: Int) -> String {
-        count == 1 ? "1 background note" : "\(count) background notes"
+        "\(count) 条背景偏好"
+    }
+
+    private static func localizedDecisionCategory(_ category: SupervisorDecisionCategory) -> String {
+        switch category {
+        case .techStack:
+            return "技术栈"
+        case .scopeFreeze:
+            return "范围冻结"
+        case .riskPosture:
+            return "风险策略"
+        case .approvalResult:
+            return "审批结果"
+        case .uiStyle:
+            return "界面风格"
+        default:
+            return category.rawValue.replacingOccurrences(of: "_", with: " ")
+        }
+    }
+
+    private static func localizedBackgroundDomain(_ domain: SupervisorBackgroundPreferenceDomain) -> String {
+        switch domain {
+        case .techStack:
+            return "技术栈"
+        case .uxStyle:
+            return "界面风格"
+        default:
+            return domain.rawValue.replacingOccurrences(of: "_", with: " ")
+        }
+    }
+
+    private static func localizedBackgroundStrength(_ strength: SupervisorBackgroundPreferenceStrength) -> String {
+        switch strength {
+        case .weak:
+            return "弱"
+        case .medium:
+            return "中"
+        case .strong:
+            return "强"
+        }
+    }
+
+    private static func localizedSpecField(_ field: SupervisorProjectSpecField) -> String {
+        switch field {
+        case .goal:
+            return "目标"
+        case .mvpDefinition:
+            return "MVP 定义"
+        case .nonGoals:
+            return "非目标"
+        case .approvedTechStack:
+            return "技术栈"
+        case .milestones:
+            return "里程碑"
+        }
     }
 
     private static func decisionAssistTimeoutText(_ timeoutMs: Int64) -> String {

@@ -60,14 +60,14 @@ struct TerminalChatView: View {
     private var pendingApprovalBar: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
-                Text("Pending approval: \(session.pendingToolCalls.count) tool call(s)")
+                Text("待批准：\(session.pendingToolCalls.count) 个工具调用")
                     .font(.system(.body, design: .monospaced))
                 Spacer(minLength: 0)
-                Button("Approve & Run") {
+                Button("批准并执行") {
                     session.approvePendingTools(router: appModel.llmRouter)
                 }
                 .disabled(!hubConnected)
-                Button("Reject") {
+                Button("拒绝") {
                     session.rejectPendingTools()
                 }
             }
@@ -98,16 +98,16 @@ struct TerminalChatView: View {
 
                 VoiceInputButton(text: $session.draft)
 
-                Toggle("Auto-run tools", isOn: $session.autoRunTools)
+                Toggle("自动执行工具", isOn: $session.autoRunTools)
                     .toggleStyle(.switch)
                     .disabled(!hubConnected)
 
                 Spacer(minLength: 0)
 
-                Button("Cancel") { session.cancel() }
+                Button("取消") { session.cancel() }
                     .disabled(!session.isSending)
 
-                Button(session.isSending ? "Sending…" : "Send") {
+                Button(session.isSending ? "发送中…" : "发送") {
                     session.send(ctx: ctx, memory: memory, config: config, router: appModel.llmRouter)
                 }
                 .disabled(!hubConnected || session.isSending || !session.pendingToolCalls.isEmpty)
@@ -138,7 +138,7 @@ struct TerminalChatView: View {
             }
 
             if !hubConnected {
-                Text("Hub not connected. Press Cmd+Opt+X to connect.")
+                Text("Hub 未连接。按 Cmd+Opt+X 发起连接。")
                     .foregroundStyle(.secondary)
                     .font(.system(.body, design: .monospaced))
             }
@@ -150,11 +150,11 @@ struct TerminalChatView: View {
     private var memoryRouteRail: some View {
         let preferHubMemory = XTProjectMemoryGovernance.prefersHubMemory(config)
         let mode = XTProjectMemoryGovernance.modeLabel(config)
-        let sourceLabel = preferHubMemory ? "Hub preferred" : "Local only"
+        let sourceLabel = preferHubMemory ? "优先 Hub" : "仅本地"
 
         return HStack(spacing: 8) {
             Label {
-                Text("Memory")
+                Text("记忆")
             } icon: {
                 Image(systemName: preferHubMemory ? "externaldrive.connected.to.line.below.fill" : "internaldrive")
             }
@@ -177,7 +177,7 @@ struct TerminalChatView: View {
 
             Spacer(minLength: 0)
 
-            Button(preferHubMemory ? "Use Local" : "Use Hub") {
+            Button(preferHubMemory ? "改用本地" : "改用 Hub") {
                 appModel.setProjectHubMemoryPreference(enabled: !preferHubMemory)
             }
             .buttonStyle(.bordered)
@@ -195,8 +195,8 @@ struct TerminalChatView: View {
         let snapshots = AXRoleExecutionSnapshots.latestSnapshots(for: ctx)
 
         return RoleExecutionStatusRail(
-            title: "Recent Actual Model Usage",
-            subtitle: "Current project roles",
+            title: "最近实际模型使用",
+            subtitle: "当前项目角色",
             roles: roles,
             snapshots: snapshots
         ) { role in
@@ -272,7 +272,7 @@ struct TerminalChatView: View {
                 )
             }
             if query.isEmpty || "auto".hasPrefix(query) {
-                out.insert(SlashSuggestion(title: "/model auto", subtitle: "clear project coder override", insertion: "/model auto"), at: 0)
+                out.insert(SlashSuggestion(title: "/model auto", subtitle: "清除项目 coder 覆盖", insertion: "/model auto"), at: 0)
             }
             if !query.isEmpty {
                 out = out.filter { $0.insertion.lowercased().contains(query) }
@@ -282,11 +282,11 @@ struct TerminalChatView: View {
 
         if lower == "/rolemodel" || lower.hasPrefix("/rolemodel ") {
             return [
-                SlashSuggestion(title: "/rolemodel coder <model_id>", subtitle: "set coder", insertion: "/rolemodel coder "),
-                SlashSuggestion(title: "/rolemodel coarse <model_id>", subtitle: "set coarse", insertion: "/rolemodel coarse "),
-                SlashSuggestion(title: "/rolemodel refine <model_id>", subtitle: "set refine", insertion: "/rolemodel refine "),
-                SlashSuggestion(title: "/rolemodel reviewer <model_id>", subtitle: "set reviewer", insertion: "/rolemodel reviewer "),
-                SlashSuggestion(title: "/rolemodel advisor <model_id>", subtitle: "set advisor", insertion: "/rolemodel advisor "),
+                SlashSuggestion(title: "/rolemodel coder <model_id>", subtitle: "设置 coder", insertion: "/rolemodel coder "),
+                SlashSuggestion(title: "/rolemodel coarse <model_id>", subtitle: "设置 coarse", insertion: "/rolemodel coarse "),
+                SlashSuggestion(title: "/rolemodel refine <model_id>", subtitle: "设置 refine", insertion: "/rolemodel refine "),
+                SlashSuggestion(title: "/rolemodel reviewer <model_id>", subtitle: "设置 reviewer", insertion: "/rolemodel reviewer "),
+                SlashSuggestion(title: "/rolemodel advisor <model_id>", subtitle: "设置 advisor", insertion: "/rolemodel advisor "),
             ]
         }
 

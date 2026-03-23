@@ -82,8 +82,26 @@ struct ProjectGovernancePresentationSummaryTests {
             compatSource: AXProjectGovernanceCompatSource.explicitDualDial.rawValue
         )
         #expect(explicit.compatSourceLabel == "A/S 档位显式配置")
-        #expect(explicit.compatSourceDetail?.contains("已明确保存 A-tier / S-tier / Review Policy") == true)
+        #expect(explicit.compatSourceDetail?.contains("已明确保存 A-tier / S-tier / 审查策略") == true)
         #expect(explicit.homeStatusMessage == explicit.statusSummary)
+    }
+
+    @Test
+    func reviewCadenceTextUsesLocalizedLabels() {
+        let presentation = ProjectGovernancePresentation(
+            executionTier: .a2RepoAuto,
+            supervisorInterventionTier: .s2PeriodicReview,
+            reviewPolicyMode: .hybrid,
+            progressHeartbeatSeconds: 900,
+            reviewPulseSeconds: 1800,
+            brainstormReviewSeconds: 2700,
+            eventDrivenReviewEnabled: true
+        )
+
+        #expect(presentation.reviewCadenceText.contains("心跳"))
+        #expect(presentation.reviewCadenceText.contains("脉冲"))
+        #expect(presentation.reviewCadenceText.contains("脑暴"))
+        #expect(presentation.guidanceSummary.contains("安全点"))
     }
 
     @Test

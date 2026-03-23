@@ -276,7 +276,7 @@ struct CreateProjectSheet: View {
             Text("Governance Composer")
                 .font(.headline)
 
-            Text("创建阶段也保持三根独立治理拨盘：Execution Tier 决定能做什么，Supervisor Tier 决定盯多深，Heartbeat & Review 决定多久看一次方向。")
+            Text("创建阶段也保持三根独立治理拨盘：Execution Tier 决定能做什么，Supervisor Tier 决定盯多深，Heartbeat & Review 决定多久做一次审查。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -316,7 +316,7 @@ struct CreateProjectSheet: View {
             .frame(width: 320, alignment: .leading)
 
             if let selectedBoundProject {
-                Text("当前会直接读取 \(selectedBoundProject.displayName) 的治理 activity。Heartbeat & Review 子页会显示真实的 review / guidance / schedule 时间线。")
+                Text("当前会直接读取 \(selectedBoundProject.displayName) 的治理活动。Heartbeat & Review 子页会显示真实的审查 / 指导 / 调度时间线。")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -326,7 +326,7 @@ struct CreateProjectSheet: View {
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                Text("未绑定时，这个多项目卡片只保存治理草稿；Heartbeat & Review 子页不会显示真实的 review / guidance 时间线。")
+                Text("未绑定时，这个多项目卡片只保存治理草稿；Heartbeat & Review 子页不会显示真实的审查 / 指导时间线。")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

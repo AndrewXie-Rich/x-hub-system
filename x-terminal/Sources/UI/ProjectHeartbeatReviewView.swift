@@ -31,28 +31,28 @@ struct ProjectHeartbeatReviewView: View {
         VStack(alignment: .leading, spacing: 14) {
             GroupBox("Heartbeat & Review") {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text("这里单独治理进度心跳、Supervisor review cadence、事件触发和 safe-point guidance。A-tier 决定哪些 review checkpoint 是硬性存在的，但 heartbeat / review 频率仍然独立配置；Recent Project Dialogue / Supervisor Recent Raw Context 不在这里调。")
+                    Text("这里单独治理进度心跳、Supervisor 审查节奏、事件触发和安全点指导。A-tier 决定哪些审查检查点必须存在，但心跳 / 审查频率仍然独立配置；Recent Project Dialogue / Supervisor Recent Raw Context 不在这里调整。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
                     LazyVGrid(columns: summaryColumns, alignment: .leading, spacing: 10) {
                         summaryMetric(
-                            title: "Configured Policy",
+                            title: "已配置策略",
                             value: configuredReviewPolicyMode.displayName,
                             tone: reviewPolicyTint(configuredReviewPolicyMode)
                         )
                         summaryMetric(
-                            title: "Effective Review",
+                            title: "当前生效",
                             value: resolvedGovernance.effectiveBundle.reviewPolicyMode.displayName,
                             tone: reviewPolicyTint(resolvedGovernance.effectiveBundle.reviewPolicyMode)
                         )
                         summaryMetric(
-                            title: "Coder Serving",
+                            title: "Coder 上下文",
                             value: resolvedGovernance.projectMemoryCeiling.rawValue,
                             tone: .blue
                         )
                         summaryMetric(
-                            title: "Review Serving",
+                            title: "审查上下文",
                             value: resolvedGovernance.supervisorReviewMemoryCeiling.rawValue,
                             tone: .indigo
                         )
@@ -65,8 +65,8 @@ struct ProjectHeartbeatReviewView: View {
                     }
 
                     configurationSection(
-                        title: "Progress Heartbeat",
-                        subtitle: "Heartbeat 只负责看进度，不做战略纠偏。它可以比 review 更频繁，也不要求 guidance ack。"
+                        title: "进度心跳",
+                        subtitle: "Heartbeat 只负责看进度，不做战略纠偏。它可以比审查更频繁，也不要求指导确认。"
                     ) {
                         Stepper(
                             value: minutesBinding(
@@ -80,22 +80,22 @@ struct ProjectHeartbeatReviewView: View {
                         }
 
                         schedulePair(
-                            leadingTitle: "Last Heartbeat",
+                            leadingTitle: "上次心跳",
                             leadingValue: activityPresentation.schedule.lastHeartbeatText,
-                            trailingTitle: "Next Heartbeat",
+                            trailingTitle: "下次心跳",
                             trailingValue: activityPresentation.schedule.nextHeartbeatText
                         )
 
                         triggerInfoRow(
                             trigger: .periodicHeartbeat,
-                            status: "Always derived from heartbeat cadence",
+                            status: "始终由心跳节奏派生",
                             note: AXProjectReviewTrigger.periodicHeartbeat.governanceSummary
                         )
                     }
 
                     configurationSection(
-                        title: "Supervisor Review",
-                        subtitle: "Pulse / Brainstorm / event-driven review 共同决定 Supervisor 多久看一次方向，以及哪些时机会插入建议。"
+                        title: "Supervisor 审查",
+                        subtitle: "脉冲 / 脑暴 / 事件驱动审查共同决定 Supervisor 多久看一次方向，以及哪些时机会插入建议。"
                     ) {
                         Stepper(
                             value: minutesBinding(
@@ -111,15 +111,15 @@ struct ProjectHeartbeatReviewView: View {
                         .disabled(!configuredReviewPolicyMode.supportsPulseCadence)
 
                         Text(configuredReviewPolicyMode.supportsPulseCadence
-                             ? "Pulse review 当前可用，适合轻量周期复盘。"
-                             : "当前策略不启用 pulse cadence；如需周期复盘，请切到 Periodic / Hybrid / Aggressive。")
+                             ? "脉冲审查当前可用，适合轻量周期复盘。"
+                             : "当前策略不启用脉冲节奏；如需周期复盘，请切到 Periodic / Hybrid / Aggressive。")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
 
                         schedulePair(
-                            leadingTitle: "Last Pulse",
+                            leadingTitle: "上次脉冲审查",
                             leadingValue: activityPresentation.schedule.lastPulseReviewText,
-                            trailingTitle: "Next Pulse",
+                            trailingTitle: "下次脉冲审查",
                             trailingValue: activityPresentation.schedule.nextPulseReviewText
                         )
 
@@ -137,20 +137,20 @@ struct ProjectHeartbeatReviewView: View {
                         .disabled(!configuredReviewPolicyMode.supportsBrainstormCadence)
 
                         Text(configuredReviewPolicyMode.supportsBrainstormCadence
-                             ? "Brainstorm review 会围绕 no-progress window 做更深的方向复盘。"
-                             : "当前策略不启用 brainstorm cadence；如需战略复盘，请切到 Hybrid / Aggressive。")
+                             ? "脑暴审查会围绕 no-progress window 做更深的方向复盘。"
+                             : "当前策略不启用脑暴节奏；如需战略复盘，请切到 Hybrid / Aggressive。")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
 
                         schedulePair(
-                            leadingTitle: "Last Brainstorm",
+                            leadingTitle: "上次脑暴审查",
                             leadingValue: activityPresentation.schedule.lastBrainstormReviewText,
-                            trailingTitle: "Next Brainstorm",
+                            trailingTitle: "下次脑暴审查",
                             trailingValue: activityPresentation.schedule.nextBrainstormReviewText
                         )
 
                         Toggle(
-                            "开启事件驱动 review",
+                            "开启事件驱动审查",
                             isOn: Binding(
                                 get: { eventDrivenReviewEnabled },
                                 set: { onSetEventDrivenReviewEnabled($0) }
@@ -161,28 +161,28 @@ struct ProjectHeartbeatReviewView: View {
 
                         Text(configuredReviewPolicyMode.supportsEventDrivenReview
                              ? (eventDrivenReviewEnabled
-                                ? "当前会监听 blocker / drift / high-risk 等事件；A-tier 强制 checkpoint 始终保留。"
-                                : "当前只保留 A-tier 强制 checkpoint；下面的可选事件会先保存，重新开启后生效。")
-                             : "Off 模式不会启用事件驱动 review，但 manual request / user override 仍可触发。")
+                                ? "当前会监听 blocker / drift / high-risk 等事件；A-tier 强制检查点始终保留。"
+                                : "当前只保留 A-tier 强制检查点；下面的可选事件会先保存，重新开启后生效。")
+                             : "Off 模式不会启用事件驱动审查，但 manual request / user override 仍可触发。")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
 
                         triggerGroup(
-                            title: "Locked By A-tier",
-                            subtitle: "这些 checkpoint 由当前 A-tier 决定，不能在这里关闭。",
+                            title: "A-tier 锁定",
+                            subtitle: "这些检查点由当前 A-tier 决定，不能在这里关闭。",
                             triggers: pagePresentation.mandatoryTriggers,
                             accent: executionTierTint(configuredExecutionTier)
                         ) { trigger in
                             triggerInfoRow(
                                 trigger: trigger,
-                                status: "Locked by \(configuredExecutionTier.shortToken)",
+                                status: "由 \(configuredExecutionTier.shortToken) 锁定",
                                 note: trigger.governanceSummary
                             )
                         }
 
                         triggerGroup(
-                            title: "Optional Event Triggers",
-                            subtitle: "这些事件是额外放开的 review 入口，只影响 event-driven review。",
+                            title: "可选事件触发",
+                            subtitle: "这些事件是额外放开的审查入口，只影响事件驱动审查。",
                             triggers: pagePresentation.optionalTriggers,
                             accent: .teal
                         ) { trigger in
@@ -202,8 +202,8 @@ struct ProjectHeartbeatReviewView: View {
                         }
 
                         triggerGroup(
-                            title: "Always On / Derived",
-                            subtitle: "这些 review 入口来自 cadence 或人工操作，不需要单独勾选。",
+                            title: "始终开启 / 派生",
+                            subtitle: "这些审查入口来自节奏或人工操作，不需要单独勾选。",
                             triggers: pagePresentation.derivedTriggers,
                             accent: .secondary
                         ) { trigger in
@@ -216,42 +216,42 @@ struct ProjectHeartbeatReviewView: View {
                     }
 
                     configurationSection(
-                        title: "Guidance & Safe Point",
-                        subtitle: "这里展示当前治理下，Supervisor 默认会怎样把 review 结论注入给 coder，包括 intervention、safe point、ack 和 work-order 深度。"
+                        title: "指导与安全点",
+                        subtitle: "这里展示当前治理下，Supervisor 默认会怎样把审查结论注入给 coder，包括干预方式、安全点、确认要求和工单深度。"
                     ) {
                         LazyVGrid(columns: summaryColumns, alignment: .leading, spacing: 10) {
                             summaryMetric(
-                                title: "Intervention",
-                                value: pagePresentation.baselineDecision.interventionMode.displayName,
+                                title: "干预方式",
+                                value: ProjectGovernanceActivityDisplay.displayValue(label: "intervention", value: pagePresentation.baselineDecision.interventionMode.displayName),
                                 tone: guidanceTint(pagePresentation.baselineDecision.interventionMode)
                             )
                             summaryMetric(
-                                title: "Safe Point",
-                                value: pagePresentation.baselineDecision.safePointPolicy.displayName,
+                                title: "安全点",
+                                value: ProjectGovernanceActivityDisplay.displayValue(label: "safe_point", value: pagePresentation.baselineDecision.safePointPolicy.displayName),
                                 tone: .teal
                             )
                             summaryMetric(
-                                title: "Ack",
-                                value: pagePresentation.baselineDecision.ackRequired ? "Required" : "Optional",
+                                title: "确认要求",
+                                value: pagePresentation.baselineDecision.ackRequired ? "需要确认" : "可选确认",
                                 tone: pagePresentation.baselineDecision.ackRequired ? .orange : .secondary
                             )
                             summaryMetric(
-                                title: "Work Order",
-                                value: resolvedGovernance.supervisorAdaptation.effectiveWorkOrderDepth.displayName,
+                                title: "工单深度",
+                                value: ProjectGovernanceActivityDisplay.displayValue(label: "work_order_depth", value: resolvedGovernance.supervisorAdaptation.effectiveWorkOrderDepth.displayName),
                                 tone: .indigo
                             )
                         }
 
-                        Text("Baseline sample：\(pagePresentation.baselineDecisionSummary)")
+                        Text("基线样例：\(localizedBaselineDecisionSummary())")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
 
-                        Text("Guidance 注入：\(governancePresentation.guidanceSummary) · \(governancePresentation.guidanceAckSummary)")
+                        Text("指导注入：\(governancePresentation.guidanceSummary) · \(governancePresentation.guidanceAckSummary)")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
 
-                        Text("Follow-up rhythm：\(activityPresentation.followUpRhythmSummary)")
+                        Text("跟进节奏：\(localizedFollowUpRhythmSummary())")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
 
@@ -630,6 +630,42 @@ struct ProjectHeartbeatReviewView: View {
         case .stopImmediately:
             return .red
         }
+    }
+
+    private func localizedBaselineDecisionSummary() -> String {
+        let reason = localizedBaselineReason(pagePresentation.baselineDecisionInput.reason)
+        let trigger = ProjectGovernanceActivityDisplay.displayValue(
+            label: "trigger",
+            value: pagePresentation.baselineDecisionInput.trigger.displayName
+        )
+        let level = ProjectGovernanceActivityDisplay.displayValue(
+            label: "level",
+            value: pagePresentation.baselineDecision.reviewLevel.displayName
+        )
+        let intervention = ProjectGovernanceActivityDisplay.displayValue(
+            label: "intervention",
+            value: pagePresentation.baselineDecision.interventionMode.displayName
+        )
+        return "\(reason) -> \(trigger) · \(level) · \(intervention)"
+    }
+
+    private func localizedBaselineReason(_ raw: String) -> String {
+        switch raw {
+        case "brainstorm cadence":
+            return "脑暴节奏"
+        case "pulse cadence":
+            return "脉冲节奏"
+        case "manual review":
+            return "手动审查"
+        default:
+            return raw
+        }
+    }
+
+    private func localizedFollowUpRhythmSummary() -> String {
+        let value = activityPresentation.followUpRhythmSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, value != "(none)" else { return "无" }
+        return ProjectGovernanceActivityDisplay.displayValue(label: "follow_up_rhythm", value: value)
     }
 }
 

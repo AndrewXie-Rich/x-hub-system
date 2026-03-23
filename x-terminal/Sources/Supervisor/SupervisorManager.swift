@@ -5739,7 +5739,18 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
     ) -> Bool {
         let projectName = allProjects().first(where: { $0.projectId == record.projectId })?.displayName
             ?? record.projectId
-        appendRecentEvent("项目 \(projectName) guidance ack：\(record.ackStatus.rawValue)")
+        let ackStatusText: String
+        switch record.ackStatus {
+        case .pending:
+            ackStatusText = "待确认"
+        case .accepted:
+            ackStatusText = "已接受"
+        case .deferred:
+            ackStatusText = "已暂缓"
+        case .rejected:
+            ackStatusText = "已拒绝"
+        }
+        appendRecentEvent("项目 \(projectName) 指导确认：\(ackStatusText)")
         Task { @MainActor in
             await refreshSupervisorMemorySnapshot(reason: "guidance_ack")
         }
@@ -10127,16 +10138,16 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
             let guidanceSummary = capped(guidance.guidanceText, maxChars: 60)
             switch status {
             case .accepted:
-                return "收到，我会按《\(project.displayName)》这条 guidance 继续推进：\(guidanceSummary)"
+                return "收到，我会按《\(project.displayName)》这条指导继续推进：\(guidanceSummary)"
             case .deferred:
-                return "收到，我先把《\(project.displayName)》这条 guidance 标成暂缓，后面再接回来：\(guidanceSummary)"
+                return "收到，我先把《\(project.displayName)》这条指导标成暂缓，后面再接回来：\(guidanceSummary)"
             case .rejected:
-                return "收到，我先把《\(project.displayName)》这条 guidance 标成拒绝，并重新评估方向：\(guidanceSummary)"
+                return "收到，我先把《\(project.displayName)》这条指导标成拒绝，并重新评估方向：\(guidanceSummary)"
             case .pending:
-                return "《\(project.displayName)》这条 guidance 仍保持待确认。"
+                return "《\(project.displayName)》这条指导仍保持待确认。"
             }
         } catch {
-            return "更新《\(project.displayName)》的 guidance ack 失败：\(String(describing: error))"
+            return "更新《\(project.displayName)》的指导确认失败：\(String(describing: error))"
         }
     }
 
