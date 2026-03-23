@@ -8,7 +8,9 @@ struct GlobalHomeView: View {
     @StateObject private var supervisorManager = SupervisorManager.shared
     @State private var decisionDrafts: [String: String] = [:]
     @State private var pendingGrantSnapshot: HubIPCClient.PendingGrantSnapshot?
+    @State private var supervisorCandidateReviewSnapshot: HubIPCClient.SupervisorCandidateReviewSnapshot?
     @State private var pendingGrantActionsInFlight: Set<String> = []
+    @State private var supervisorCandidateReviewActionsInFlight: Set<String> = []
 
     private var homePendingGrantCount: Int {
         guard let snapshot = pendingGrantSnapshot else { return 0 }
@@ -62,6 +64,7 @@ struct GlobalHomeView: View {
         .task {
             while !Task.isCancelled {
                 await refreshPendingGrants()
+                await refreshSupervisorCandidateReviews()
                 try? await Task.sleep(nanoseconds: 2_500_000_000)
             }
         }
@@ -376,8 +379,13 @@ struct GlobalHomeView: View {
                         project: entry.project,
                         session: entry.session,
                         decisionText: decisionBinding(entry.project.projectId),
+                        supervisorCandidateReviews: supervisorCandidateReviews(for: entry.project.projectId),
+                        supervisorCandidateReviewActionsInFlight: supervisorCandidateReviewActionsInFlight,
                         pendingGrants: pendingGrants(for: entry.project.projectId),
                         pendingGrantActionsInFlight: pendingGrantActionsInFlight,
+                        onStageSupervisorCandidateReview: { item in
+                            stageSupervisorCandidateReview(item, projectId: entry.project.projectId)
+                        },
                         onApprovePendingGrant: { grant in
                             approvePendingGrant(grant, projectId: entry.project.projectId)
                         },
@@ -484,10 +492,51 @@ struct GlobalHomeView: View {
             }
     }
 
+    private func supervisorCandidateReviews(for projectId: String) -> [HubIPCClient.SupervisorCandidateReviewItem] {
+        guard let snapshot = supervisorCandidateReviewSnapshot else { return [] }
+        let visibleStates: Set<String> = [
+            "pending_review",
+            "draft_staged",
+            "reviewed_pending_approval",
+            "approved_for_writeback",
+            "writeback_queued",
+        ]
+
+        return snapshot.items
+            .filter { item in
+                let normalizedProjectId = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+                let primaryProject = item.projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+                let relatedProjects = item.projectIds.map {
+                    $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                guard primaryProject == normalizedProjectId || relatedProjects.contains(normalizedProjectId) else {
+                    return false
+                }
+                let reviewState = item.reviewState.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                return visibleStates.contains(reviewState)
+            }
+            .sorted { lhs, rhs in
+                if lhs.latestEmittedAtMs != rhs.latestEmittedAtMs {
+                    return lhs.latestEmittedAtMs > rhs.latestEmittedAtMs
+                }
+                if lhs.candidateCount != rhs.candidateCount {
+                    return lhs.candidateCount > rhs.candidateCount
+                }
+                return lhs.requestId.localizedCaseInsensitiveCompare(rhs.requestId) == .orderedAscending
+            }
+    }
+
     private func refreshPendingGrants() async {
         let snapshot = await HubIPCClient.requestPendingGrantRequests(projectId: nil, limit: 260)
         await MainActor.run {
             pendingGrantSnapshot = snapshot
+        }
+    }
+
+    private func refreshSupervisorCandidateReviews() async {
+        let snapshot = await HubIPCClient.requestSupervisorCandidateReviewSnapshot(projectId: nil, limit: 260)
+        await MainActor.run {
+            supervisorCandidateReviewSnapshot = snapshot
         }
     }
 
@@ -520,6 +569,32 @@ struct GlobalHomeView: View {
                 }
             }
             await refreshPendingGrants()
+        }
+    }
+
+    private func stageSupervisorCandidateReview(
+        _ item: HubIPCClient.SupervisorCandidateReviewItem,
+        projectId: String
+    ) {
+        let requestId = item.requestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !requestId.isEmpty else { return }
+        guard !supervisorCandidateReviewActionsInFlight.contains(requestId) else { return }
+        supervisorCandidateReviewActionsInFlight.insert(requestId)
+
+        Task {
+            let result = await HubIPCClient.stageSupervisorCandidateReview(
+                candidateRequestId: requestId,
+                projectId: projectId
+            )
+            await MainActor.run {
+                supervisorCandidateReviewActionsInFlight.remove(requestId)
+                if !result.ok {
+                    let reason = (result.reasonCode ?? "supervisor_candidate_review_stage_failed")
+                        .replacingOccurrences(of: "_", with: " ")
+                    decisionDrafts[projectId] = "Supervisor candidate review stage 失败：\(reason)"
+                }
+            }
+            await refreshSupervisorCandidateReviews()
         }
     }
 
@@ -600,8 +675,11 @@ private struct ProjectHomeRow: View {
     let project: AXProjectEntry
     @ObservedObject var session: ChatSessionModel
     @Binding var decisionText: String
+    let supervisorCandidateReviews: [HubIPCClient.SupervisorCandidateReviewItem]
+    let supervisorCandidateReviewActionsInFlight: Set<String>
     let pendingGrants: [HubIPCClient.PendingGrantItem]
     let pendingGrantActionsInFlight: Set<String>
+    let onStageSupervisorCandidateReview: (HubIPCClient.SupervisorCandidateReviewItem) -> Void
     let onApprovePendingGrant: (HubIPCClient.PendingGrantItem) -> Void
     let onDenyPendingGrant: (HubIPCClient.PendingGrantItem) -> Void
     @EnvironmentObject private var appModel: AppModel
@@ -722,6 +800,62 @@ private struct ProjectHomeRow: View {
                 Text("待处理：\(pending.count) · 运行中：\(isRunning ? "是" : "否")")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            if !supervisorCandidateReviews.isEmpty {
+                Text("Supervisor candidate review：\(supervisorCandidateReviews.count)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ForEach(supervisorCandidateReviews, id: \.id) { item in
+                    let requestId = item.requestId.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let inFlight = supervisorCandidateReviewActionsInFlight.contains(requestId)
+                    let reviewState = item.reviewState.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(supervisorCandidateReviewTitle(item))
+                                .font(.subheadline)
+                            Text("状态：\(supervisorCandidateReviewStateText(item.reviewState)) · candidates=\(max(0, item.candidateCount))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                            if let scopeLine = supervisorCandidateReviewScopeLine(item) {
+                                Text(scopeLine)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                            Text("handoff：\(requestId) · \(grantTimingText(item.latestEmittedAtMs > 0 ? item.latestEmittedAtMs : item.createdAtMs))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                            if !item.pendingChangeId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                Text("draft：\(item.pendingChangeId) · status=\(item.pendingChangeStatus.isEmpty ? "unknown" : item.pendingChangeStatus)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                        Spacer(minLength: 8)
+                        if inFlight {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        if reviewState == "pending_review" {
+                            Button("转入审查") {
+                                onStageSupervisorCandidateReview(item)
+                            }
+                            .disabled(inFlight || !appModel.hubInteractive)
+                        } else {
+                            Text(supervisorCandidateReviewStateText(item.reviewState))
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 4)
+                                .background(Color.secondary.opacity(0.08))
+                                .clipShape(Capsule())
+                        }
+                    }
+                }
             }
 
             if !pendingGrants.isEmpty {
@@ -999,6 +1133,59 @@ private struct ProjectHomeRow: View {
             let keys = c.args.keys.sorted().joined(separator: ",")
             return "- \(c.tool.rawValue) id=\(c.id) args=\(keys)"
         }.joined(separator: "\n")
+    }
+
+    private func supervisorCandidateReviewTitle(
+        _ item: HubIPCClient.SupervisorCandidateReviewItem
+    ) -> String {
+        let summary = item.summaryLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !summary.isEmpty {
+            return summary
+        }
+        if !item.recordTypes.isEmpty {
+            return item.recordTypes.joined(separator: ", ")
+        }
+        return "Supervisor Candidate Review Handoff"
+    }
+
+    private func supervisorCandidateReviewScopeLine(
+        _ item: HubIPCClient.SupervisorCandidateReviewItem
+    ) -> String? {
+        var parts: [String] = []
+        if !item.scopes.isEmpty {
+            parts.append("scopes=\(item.scopes.joined(separator: ", "))")
+        }
+        if !item.recordTypes.isEmpty {
+            parts.append("types=\(item.recordTypes.joined(separator: ", "))")
+        }
+        if !item.projectIds.isEmpty, item.projectIds.count > 1 {
+            parts.append("projects=\(item.projectIds.joined(separator: ", "))")
+        }
+        let line = parts.joined(separator: " · ")
+        return line.isEmpty ? nil : line
+    }
+
+    private func supervisorCandidateReviewStateText(_ raw: String) -> String {
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "pending_review":
+            return "待转入审查"
+        case "draft_staged":
+            return "草稿已建立"
+        case "reviewed_pending_approval":
+            return "已审阅待批准"
+        case "approved_for_writeback":
+            return "已批准待写回"
+        case "writeback_queued":
+            return "已排队写回"
+        case "rejected":
+            return "已拒绝"
+        case "rolled_back":
+            return "已回滚"
+        default:
+            return raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "未知"
+                : raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
     }
 
     private func hubGrantTitle(_ grant: HubIPCClient.PendingGrantItem) -> String {
@@ -1468,8 +1655,8 @@ struct GlobalHomePresentation: Codable, Equatable {
         actions.append(
             PrimaryActionRailAction(
                 id: "model_status",
-                title: "模型状态",
-                subtitle: "freeze=\(freezeDecision) · replay=\(replayStatus) · batons=\(input.directedUnblockBatonCount)",
+                title: "Supervisor 控制中心",
+                subtitle: "统一查看 AI 模型、治理边界与 Hub 真实可用视图",
                 systemImage: "waveform.path.ecg",
                 style: .diagnostic
             )

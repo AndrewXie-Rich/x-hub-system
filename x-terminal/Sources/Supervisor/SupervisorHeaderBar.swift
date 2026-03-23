@@ -28,7 +28,14 @@ struct SupervisorHeaderBar: View {
     }
 
     private var modelLabel: String {
-        ExecutionRoutePresentation.activeModelLabel(
+        ExecutionRoutePresentation.configuredModelLabel(
+            configuredModelId: configuredModelId,
+            snapshot: snapshot
+        )
+    }
+
+    private var routeDetailBadge: ExecutionRouteBadgePresentation? {
+        ExecutionRoutePresentation.detailBadge(
             configuredModelId: configuredModelId,
             snapshot: snapshot
         )
@@ -48,13 +55,6 @@ struct SupervisorHeaderBar: View {
     private var supervisorSettingsButton: SupervisorHeaderButtonPresentation {
         SupervisorHeaderControls.presentation(
             for: .supervisorSettings,
-            context: context
-        )
-    }
-
-    private var modelSettingsButton: SupervisorHeaderButtonPresentation {
-        SupervisorHeaderControls.presentation(
-            for: .modelSettings,
             context: context
         )
     }
@@ -82,6 +82,17 @@ struct SupervisorHeaderBar: View {
                     .background(statusColor(for: headerStatus.tone).opacity(0.12))
                     .clipShape(Capsule())
                     .help(tooltip)
+                if let routeDetailBadge {
+                    Text(routeDetailBadge.text)
+                        .font(.caption)
+                        .foregroundStyle(routeDetailBadge.color)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(routeDetailBadge.color.opacity(0.12))
+                        .clipShape(Capsule())
+                        .lineLimit(1)
+                        .help(tooltip)
+                }
                 if let detailBadge = headerStatus.detailBadge {
                     Text(detailBadge.text)
                         .font(.caption)
@@ -167,14 +178,6 @@ struct SupervisorHeaderBar: View {
                     onAction(.supervisorSettingsTapped)
                 }
                 .help(supervisorSettingsButton.helpText)
-
-                iconButton(
-                    modelSettingsButton,
-                    fallbackIconName: "gearshape.fill"
-                ) {
-                    onAction(.modelSettingsTapped)
-                }
-                .help(modelSettingsButton.helpText)
 
                 Button(clearConversationButton.label ?? "清空") {
                     onAction(.clearConversationTapped)

@@ -65,6 +65,14 @@ struct GlobalHomeViewModelTests {
         #expect(ready.primaryStatus.state == .ready)
         #expect(ready.primaryStatus.headline.contains("Project watchlist"))
         #expect(ready.actions.first?.id == "resume_project")
+        #expect(
+            ready.actions.first(where: { $0.id == "model_status" })?.title
+                == "Supervisor 控制中心"
+        )
+        #expect(
+            ready.actions.first(where: { $0.id == "model_status" })?.subtitle
+                == "统一查看 AI 模型、治理边界与 Hub 真实可用视图"
+        )
         #expect(ready.releaseStatus.state == .releaseFrozen)
         #expect(ready.consumedFrozenFields.contains("xt.ui_release_scope_badge.v1.badge_text"))
     }

@@ -25,7 +25,7 @@ struct UIFirstRunJourneyTests {
         #expect(plan.steps[4].state == .blockedWaitingUpstream)
         #expect(plan.primaryStatus.state == .diagnosticRequired)
         #expect(plan.currentFailureIssue == .hubUnreachable)
-        #expect(plan.actions.map(\.id) == ["pair_hub", "run_smoke", "review_grants"])
+        #expect(plan.actions.map(\.id) == ["pair_hub", "run_smoke", "open_repair_entry"])
         #expect(plan.consumedFrozenFields.contains("xt.ui_surface_state_contract.v1"))
         #expect(plan.consumedFrozenFields.contains("xt.ui_release_scope_badge.v1"))
     }
@@ -76,7 +76,7 @@ struct UIFirstRunJourneyTests {
         #expect(plan.releaseStatus.state == .blockedWaitingUpstream)
         #expect(plan.releaseStatus.highlights.contains(where: { $0.contains("allowed_statement=") }))
         #expect(plan.actions.first(where: { $0.id == "run_smoke" })?.subtitle == "replay fail-closed；先看 denyCode / diagnostics")
-        #expect(plan.actions.first(where: { $0.id == "review_grants" })?.subtitle?.contains("resume baton") == true)
+        #expect(plan.actions.first(where: { $0.id == "open_repair_entry" })?.subtitle?.contains("resume baton") == true)
         #expect(plan.steps[2].state == .grantRequired)
         #expect(plan.steps[3].state == .diagnosticRequired)
         #expect(plan.steps[4].state == .diagnosticRequired)

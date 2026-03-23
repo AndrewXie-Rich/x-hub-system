@@ -11,7 +11,7 @@ enum XTSettingsCenterManifest {
     static let releaseScope = "XT-W3-23 -> XT-W3-24 -> XT-W3-25 mainline only"
     static let sections: [XTSettingsSectionDescriptor] = [
         XTSettingsSectionDescriptor(id: "pair_hub", title: "连接 Hub（Pair Hub）", summary: "配对、端口、公网地址和重连 smoke 都从这里开始。", repairEntry: "XT Settings → 连接 Hub（Pair Hub）"),
-        XTSettingsSectionDescriptor(id: "choose_model", title: "选择模型（Choose Model）", summary: "先为首个任务选好 Hub 模型，避免把模型缺失误判成授权问题。", repairEntry: "XT Settings → 选择模型（Choose Model）"),
+        XTSettingsSectionDescriptor(id: "choose_model", title: "AI 模型（Choose Model）", summary: "先为首个任务选好 Hub 模型，避免把模型缺失误判成授权问题。", repairEntry: "XT Settings → AI 模型（Choose Model）"),
         XTSettingsSectionDescriptor(id: "grant_permissions", title: "授权与权限（Grant & Permissions）", summary: "集中处理授权、系统权限和 Hub 不可达。", repairEntry: "XT Settings → 授权修复（Grant & Repair）"),
         XTSettingsSectionDescriptor(id: "security_runtime", title: "安全与运行时（Security & Runtime）", summary: "管理本地 HTTP 服务、工具执行路径和安全边界。", repairEntry: "XT Settings → 安全与运行时（Security & Runtime）"),
         XTSettingsSectionDescriptor(id: "diagnostics", title: "诊断（Diagnostics）", summary: "统一查看当前链路、运行时核对、日志与修复线索。", repairEntry: "XT Settings → 诊断（Diagnostics）")
@@ -140,12 +140,15 @@ enum XTSettingsSurfacePlanner {
     }
 
     static func quickActions(for state: XTSettingsSurfaceState) -> [PrimaryActionRailAction] {
-        [
+        let issue = issue(for: state)
+        return [
             PrimaryActionRailAction(
-                id: "pair_hub",
-                title: "连接 Hub（Pair Hub）",
-                subtitle: "从 One-Click Setup 开始首用路径",
-                systemImage: "link.badge.plus",
+                id: issue == .pairingRepairRequired ? "repair_pairing" : "pair_hub",
+                title: issue == .pairingRepairRequired ? "清理失效配对并重连" : "连接 Hub（Pair Hub）",
+                subtitle: issue == .pairingRepairRequired
+                    ? "删除本地失效 token / cert / cached profile 后重新 bootstrap + connect"
+                    : "从 One-Click Setup 开始首用路径",
+                systemImage: issue == .pairingRepairRequired ? "arrow.trianglehead.2.clockwise.rotate.90" : "link.badge.plus",
                 style: .primary
             ),
             PrimaryActionRailAction(
@@ -156,9 +159,9 @@ enum XTSettingsSurfacePlanner {
                 style: .secondary
             ),
             PrimaryActionRailAction(
-                id: "review_grants",
-                title: "查看授权（Review Grants）",
-                subtitle: reviewSubtitle(issue: issue(for: state), runtime: state.runtime),
+                id: "open_repair_entry",
+                title: issue == .pairingRepairRequired ? "打开配对修复入口" : "查看授权与排障",
+                subtitle: reviewSubtitle(issue: issue, runtime: state.runtime),
                 systemImage: "checkmark.shield",
                 style: .diagnostic
             )
@@ -172,7 +175,7 @@ enum XTSettingsSurfacePlanner {
         ] + state.runtime.diagnosticsLines)
     }
 
-    private static func issue(for state: XTSettingsSurfaceState) -> UITroubleshootIssue? {
+    fileprivate static func issue(for state: XTSettingsSurfaceState) -> UITroubleshootIssue? {
         UITroubleshootKnowledgeBase.issue(forFailureCode: state.failureCode) ?? state.runtime.primaryIssue
     }
 
@@ -180,7 +183,7 @@ enum XTSettingsSurfacePlanner {
         orderedUnique(highlights + runtime.statusHighlights + XTSettingsCenterManifest.consumedFrozenFields + runtime.consumedContracts.map({ "runtime_contract=\($0)" }))
     }
 
-    private static func runSmokeSubtitle(runtime: UIFailClosedRuntimeSnapshot) -> String {
+    fileprivate static func runSmokeSubtitle(runtime: UIFailClosedRuntimeSnapshot) -> String {
         if runtime.replayPass == true {
             return "replay regression PASS；验证 pair + model + grant 已连通"
         }
@@ -190,7 +193,10 @@ enum XTSettingsSurfacePlanner {
         return "验证 pair + model + grant 已连通"
     }
 
-    private static func reviewSubtitle(issue: UITroubleshootIssue?, runtime: UIFailClosedRuntimeSnapshot) -> String {
+    fileprivate static func reviewSubtitle(issue: UITroubleshootIssue?, runtime: UIFailClosedRuntimeSnapshot) -> String {
+        if issue == .pairingRepairRequired {
+            return "XT 清本地配对 -> Hub 删旧设备 -> 重新批准 -> reconnect smoke"
+        }
         if let issue {
             return "\(issue.rawValue) → \(runtime.nextRepairAction ?? "open_repair_entry")"
         }
@@ -503,7 +509,7 @@ struct SettingsView: View {
     private var grantAndRepairSection: some View {
         GroupBox("3) 授权与修复") {
             VStack(alignment: .leading, spacing: 10) {
-                TroubleshootPanel(title: "3 步内定位修复入口", issues: [.grantRequired, .permissionDenied, .hubUnreachable])
+                TroubleshootPanel(title: "3 步内定位修复入口", issues: [.pairingRepairRequired, .grantRequired, .permissionDenied, .hubUnreachable])
             }
             .padding(8)
         }
@@ -898,10 +904,38 @@ struct SettingsView: View {
         switch action.id {
         case "pair_hub":
             appModel.startHubOneClickSetup()
+        case "repair_pairing":
+            appModel.resetPairingStateAndOneClickSetup()
         case "run_smoke":
             appModel.startHubReconnectOnly()
-        case "review_grants":
-            appModel.resetPairingStateAndOneClickSetup()
+        case "open_repair_entry":
+            let issue = XTSettingsSurfacePlanner.issue(for: settingsState)
+            let targetSection: String
+            let title: String
+            let detail: String
+            switch issue {
+            case .grantRequired, .paidModelAccessBlocked:
+                targetSection = "grant_permissions"
+                title = "查看授权与额度修复入口"
+                detail = XTSettingsSurfacePlanner.reviewSubtitle(issue: issue, runtime: runtimeSnapshot)
+            case .permissionDenied:
+                targetSection = "grant_permissions"
+                title = "查看权限与 policy 修复入口"
+                detail = XTSettingsSurfacePlanner.reviewSubtitle(issue: issue, runtime: runtimeSnapshot)
+            case .pairingRepairRequired:
+                targetSection = "pair_hub"
+                title = "清理失效配对并重连"
+                detail = "先删除本地失效 pairing profile，再重新 bootstrap + connect；然后到 Hub Settings -> Pairing & Device Trust -> 设备列表（允许清单），筛“过期”并删除旧设备。"
+            case .hubUnreachable, .none:
+                targetSection = "diagnostics"
+                title = "查看连接与诊断入口"
+                detail = XTSettingsSurfacePlanner.reviewSubtitle(issue: issue, runtime: runtimeSnapshot)
+            }
+            appModel.requestSettingsFocus(
+                sectionId: targetSection,
+                title: title,
+                detail: detail
+            )
         default:
             break
         }

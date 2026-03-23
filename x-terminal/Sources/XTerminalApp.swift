@@ -28,11 +28,6 @@ struct XTerminalApp: App {
             SupervisorView()
                 .environmentObject(appModel)
         }
-        
-        Window("AI 模型设置", id: "model_settings") {
-            ModelSettingsView()
-                .environmentObject(appModel)
-        }
 
         Window("Hub Setup", id: "hub_setup") {
             HubSetupWizardView()

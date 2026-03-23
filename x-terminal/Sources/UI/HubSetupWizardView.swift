@@ -250,7 +250,21 @@ enum UIFirstRunJourneyPlanner {
         ].joined(separator: "; ")
 
         let primaryStatus: StatusExplanation
-        if !connected {
+        if failureIssue == .pairingRepairRequired {
+            primaryStatus = StatusExplanation(
+                state: .diagnosticRequired,
+                headline: "现有配对档案已失效，需要清理并重配",
+                whatHappened: "当前阻塞更像是旧 pairing profile、token 或 mTLS client certificate 已经过期或不再匹配，而不是单纯的 Hub 没开。",
+                whyItHappened: "如果继续用旧档案做 reconnect，只会反复得到 unauthenticated、certificate_required 或 pairing_health_failed 这类失败。",
+                userAction: "先执行“清除配对后重连”，再去 Hub Settings -> Pairing & Device Trust -> 设备列表（允许清单），筛“过期”并删除旧设备条目，然后重新批准。",
+                machineStatusRef: machineStatusRef,
+                hardLine: "stale pairing must be repaired before smoke resumes",
+                highlights: mergedHighlights([
+                    "primary_cta=repair_pairing",
+                    "diagnostic_entrypoint=pairing_health"
+                ], runtime: state.runtime)
+            )
+        } else if !connected {
             primaryStatus = StatusExplanation(
                 state: failureIssue == .hubUnreachable ? .diagnosticRequired : .blockedWaitingUpstream,
                 headline: "先 Pair Hub，再继续首用路径",
@@ -323,9 +337,9 @@ enum UIFirstRunJourneyPlanner {
         } else {
             primaryStatus = StatusExplanation(
                 state: .inProgress,
-                headline: "连接 Hub（Pair Hub）已完成，下一步是选择模型（Choose Model）",
+                headline: "连接 Hub（Pair Hub）已完成，下一步是配置 AI 模型（Choose Model）",
                 whatHappened: "Hub 已接入，但当前还没把首个任务需要的模型角色冻结到位。",
-                whyItHappened: "首用路径要求先完成 Pair Hub，再选择模型，避免把模型缺失误判成 grant 问题。",
+                whyItHappened: "首用路径要求先完成 Pair Hub，再到 AI 模型（Choose Model）完成配置，避免把模型缺失误判成 grant 问题。",
                 userAction: "先为 coder / supervisor 至少配置一个 Hub 模型，再继续 grant 与 smoke。",
                 machineStatusRef: machineStatusRef,
                 hardLine: "model selection must precede smoke when empty",
@@ -375,10 +389,12 @@ enum UIFirstRunJourneyPlanner {
 
         let actions = [
             PrimaryActionRailAction(
-                id: "pair_hub",
-                title: "开始连接 Hub（Pair Hub）",
-                subtitle: "discover / bootstrap / connect 一次走通",
-                systemImage: "link.badge.plus",
+                id: failureIssue == .pairingRepairRequired ? "repair_pairing" : "pair_hub",
+                title: failureIssue == .pairingRepairRequired ? "清理失效配对并重连" : "开始连接 Hub（Pair Hub）",
+                subtitle: failureIssue == .pairingRepairRequired
+                    ? "删除本地失效 token / cert / cached profile 后重新 bootstrap + connect"
+                    : "discover / bootstrap / connect 一次走通",
+                systemImage: failureIssue == .pairingRepairRequired ? "arrow.trianglehead.2.clockwise.rotate.90" : "link.badge.plus",
                 style: .primary
             ),
             PrimaryActionRailAction(
@@ -389,8 +405,8 @@ enum UIFirstRunJourneyPlanner {
                 style: .secondary
             ),
             PrimaryActionRailAction(
-                id: "review_grants",
-                title: "查看授权与排障",
+                id: "open_repair_entry",
+                title: failureIssue == .pairingRepairRequired ? "打开配对修复入口" : "查看授权与排障",
                 subtitle: reviewSubtitle(failureIssue: failureIssue, runtime: state.runtime),
                 systemImage: "checkmark.shield",
                 style: .diagnostic
@@ -445,7 +461,7 @@ enum UIFirstRunJourneyPlanner {
             ),
             UIFirstRunStep(
                 kind: .chooseModel,
-                title: "选择模型（Choose Model）",
+                title: "AI 模型（Choose Model）",
                 summary: "先为首个任务配置 Hub 模型，避免误判 grant。",
                 state: hasModel ? .ready : (connected ? .inProgress : .blockedWaitingUpstream),
                 repairEntry: .xtChooseModel
@@ -518,7 +534,7 @@ enum UIFirstRunJourneyPlanner {
         return ordered
     }
 
-    private static func runSmokeSubtitle(runtime: UIFailClosedRuntimeSnapshot) -> String {
+    fileprivate static func runSmokeSubtitle(runtime: UIFailClosedRuntimeSnapshot) -> String {
         if runtime.replayPass == true {
             return "replay regression PASS；验证 pair + model + grant 已连通"
         }
@@ -528,7 +544,10 @@ enum UIFirstRunJourneyPlanner {
         return "验证 pair + model + grant 已连通"
     }
 
-    private static func reviewSubtitle(failureIssue: UITroubleshootIssue?, runtime: UIFailClosedRuntimeSnapshot) -> String {
+    fileprivate static func reviewSubtitle(failureIssue: UITroubleshootIssue?, runtime: UIFailClosedRuntimeSnapshot) -> String {
+        if failureIssue == .pairingRepairRequired {
+            return "XT 清本地配对 -> Hub 删旧设备 -> 重新批准 -> reconnect smoke"
+        }
         if !runtime.nextDirectedAction.isEmpty {
             return "resume baton: \(runtime.nextDirectedAction)"
         }
@@ -586,7 +605,7 @@ struct HubSetupWizardView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Hub 首次连接向导")
                 .font(UIThemeTokens.sectionFont())
-            Text("把连接 Hub（Pair Hub）→ 选择模型（Choose Model）→ 处理授权（Resolve Grant）→ 自检（Smoke）→ 核验（Verify）收成一条首用主链，先把第一次可用跑通。")
+            Text("把连接 Hub（Pair Hub）→ AI 模型（Choose Model）→ 处理授权（Resolve Grant）→ 自检（Smoke）→ 核验（Verify）收成一条首用主链，先把第一次可用跑通。")
                 .font(UIThemeTokens.bodyFont())
                 .foregroundStyle(.secondary)
         }
@@ -596,7 +615,7 @@ struct HubSetupWizardView: View {
         GroupBox("首用主链") {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text("当前主链：连接 Hub（Pair Hub）→ 选择模型（Choose Model）→ 处理授权（Resolve Grant）→ 自检（Smoke）→ 核验（Verify）→ 开始首个任务")
+                    Text("当前主链：连接 Hub（Pair Hub）→ AI 模型（Choose Model）→ 处理授权（Resolve Grant）→ 自检（Smoke）→ 核验（Verify）→ 开始首个任务")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -938,7 +957,7 @@ struct HubSetupWizardView: View {
                         }
                     }
                 }
-                TroubleshootPanel(title: "高频问题 3 步修复", issues: [.grantRequired, .permissionDenied, .hubUnreachable])
+                TroubleshootPanel(title: "高频问题 3 步修复", issues: [.pairingRepairRequired, .grantRequired, .permissionDenied, .hubUnreachable])
             }
             .padding(8)
         }
@@ -1060,10 +1079,30 @@ struct HubSetupWizardView: View {
         switch action.id {
         case "pair_hub":
             appModel.startHubOneClickSetup()
+        case "repair_pairing":
+            appModel.resetPairingStateAndOneClickSetup()
         case "run_smoke":
             appModel.startHubReconnectOnly()
-        case "review_grants":
-            appModel.resetPairingStateAndOneClickSetup()
+        case "open_repair_entry":
+            let issue = journeyPlan.currentFailureIssue
+            let targetSection = issue == .pairingRepairRequired ? "pair_progress" : "troubleshoot"
+            let title: String
+            let detail: String
+            if issue == .pairingRepairRequired {
+                title = "清理失效配对并重连"
+                detail = "先删除本地失效 pairing profile，再重新 bootstrap + connect；然后到 Hub Settings -> Pairing & Device Trust -> 设备列表（允许清单），筛“过期”并删除旧设备。"
+            } else {
+                title = "查看当前排障入口"
+                detail = UIFirstRunJourneyPlanner.reviewSubtitle(
+                    failureIssue: issue,
+                    runtime: runtimeSnapshot
+                )
+            }
+            appModel.requestHubSetupFocus(
+                sectionId: targetSection,
+                title: title,
+                detail: detail
+            )
         default:
             break
         }

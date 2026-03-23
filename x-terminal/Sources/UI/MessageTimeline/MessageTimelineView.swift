@@ -1389,7 +1389,7 @@ struct RouteDiagnoseActionRail: View {
                     .disabled(repairActionBusy)
                 }
 
-                Button("模型设置") {
+                Button("Supervisor · AI 模型") {
                     recordRouteRepairLog(
                         actionId: "open_model_settings",
                         outcome: "opened"
@@ -1402,7 +1402,11 @@ struct RouteDiagnoseActionRail: View {
                         title: context.title,
                         detail: context.detail
                     )
-                    openWindow(id: "model_settings")
+                    SupervisorManager.shared.requestSupervisorWindow(
+                        sheet: .modelSettings,
+                        reason: "route_diagnose_model_settings",
+                        focusConversation: false
+                    )
                     presentRouteActionFeedback(for: .modelSettingsOpened)
                 }
                 .buttonStyle(.bordered)

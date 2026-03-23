@@ -145,7 +145,7 @@ enum SupervisorHeaderControls {
                 iconName: "slider.horizontal.3",
                 label: nil,
                 tone: .neutral,
-                helpText: "打开助手设置",
+                helpText: "打开 Supervisor Control Center（含 AI 模型）",
                 chrome: .plain
             )
         case .modelSettings:
@@ -153,7 +153,7 @@ enum SupervisorHeaderControls {
                 iconName: "gearshape.fill",
                 label: nil,
                 tone: .neutral,
-                helpText: "AI 模型设置",
+                helpText: "打开 Supervisor Control Center 的 AI 模型页签",
                 chrome: .plain
             )
         case .clearConversation:

@@ -53,18 +53,25 @@ struct UITroubleshootingPathTests {
         let workspaceRoot = xTerminalRoot.deletingLastPathComponent()
         let hubSettingsPath = workspaceRoot
             .appendingPathComponent("x-hub/macos/RELFlowHub/Sources/RELFlowHub/SettingsSheetView.swift")
+        let hubStringsPath = workspaceRoot
+            .appendingPathComponent("x-hub/macos/RELFlowHub/Sources/RELFlowHub/HubUIStrings.swift")
         let hubCardPath = workspaceRoot
             .appendingPathComponent("x-hub/macos/RELFlowHub/Sources/RELFlowHub/UI/HubSectionCard.swift")
 
         let hubSettingsSource = try String(contentsOf: hubSettingsPath, encoding: .utf8)
-        #expect(hubSettingsSource.contains("Section(\"设置总览\")"))
-        #expect(hubSettingsSource.contains("Section(\"首次上手路径\")"))
-        #expect(hubSettingsSource.contains("Section(\"三步排障\")"))
-        #expect(hubSettingsSource.contains("配对 Hub"))
-        #expect(hubSettingsSource.contains("模型与付费访问"))
-        #expect(hubSettingsSource.contains("授权与权限"))
-        #expect(hubSettingsSource.contains("安全边界"))
-        #expect(hubSettingsSource.contains("诊断与恢复"))
+        #expect(hubSettingsSource.contains("Section(HubUIStrings.Settings.Overview.sectionTitle)"))
+        #expect(hubSettingsSource.contains("Section(HubUIStrings.Settings.FirstRun.sectionTitle)"))
+        #expect(hubSettingsSource.contains("Section(HubUIStrings.Settings.Troubleshoot.sectionTitle)"))
+
+        let hubStringsSource = try String(contentsOf: hubStringsPath, encoding: .utf8)
+        #expect(hubStringsSource.contains("static let sectionTitle = \"设置总览\""))
+        #expect(hubStringsSource.contains("static let sectionTitle = \"首次上手路径\""))
+        #expect(hubStringsSource.contains("static let sectionTitle = \"三步排障\""))
+        #expect(hubStringsSource.contains("static let title = \"配对 Hub\""))
+        #expect(hubStringsSource.contains("static let title = \"模型与付费访问\""))
+        #expect(hubStringsSource.contains("static let title = \"授权与权限\""))
+        #expect(hubStringsSource.contains("static let title = \"安全边界\""))
+        #expect(hubStringsSource.contains("static let title = \"诊断与恢复\""))
         #expect(FileManager.default.fileExists(atPath: hubCardPath.path))
     }
 
@@ -86,9 +93,9 @@ struct UITroubleshootingPathTests {
 
         #expect(status.state == .grantRequired)
         #expect(status.machineStatusRef.contains("launch_deny=grant_required"))
-        #expect(actions.map(\.id) == ["pair_hub", "run_smoke", "review_grants"])
+        #expect(actions.map(\.id) == ["pair_hub", "run_smoke", "open_repair_entry"])
         #expect(actions.first(where: { $0.id == "run_smoke" })?.subtitle == "replay fail-closed；先看 denyCode / diagnostics")
-        #expect(actions.first(where: { $0.id == "review_grants" })?.subtitle?.contains("grant_required") == true)
+        #expect(actions.first(where: { $0.id == "open_repair_entry" })?.subtitle?.contains("grant_required") == true)
         #expect(diagnostics.contains(where: { $0.contains("allowed_public_statements=") }))
         #expect(diagnostics.contains(where: { $0.contains("resume_baton=continue_current_task_only") }))
         #expect(diagnostics.contains(where: { $0.contains("replay=") }))
