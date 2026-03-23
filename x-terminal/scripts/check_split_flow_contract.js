@@ -3,10 +3,12 @@
 const fs = require("fs");
 const path = require("path");
 
+const XT_ROOT = path.resolve(__dirname, "..");
+
 function parseArgs(argv) {
   const args = {
-    snapshotSource: path.resolve("Sources/Supervisor/SplitFlowSnapshotContract.swift"),
-    stateSource: path.resolve("Sources/Supervisor/TaskDecomposition/Task.swift"),
+    snapshotSource: path.join(XT_ROOT, "Sources/Supervisor/SplitFlowSnapshotContract.swift"),
+    stateSource: path.join(XT_ROOT, "Sources/Supervisor/TaskDecomposition/Task.swift"),
     outJson: null
   };
 

@@ -26,9 +26,28 @@ struct MemoryControlPlaneDocsSyncTests {
         let workingIndex = try read(
             root.appendingPathComponent("docs/WORKING_INDEX.md")
         )
+        let repoLayout = try read(
+            root.appendingPathComponent("docs/REPO_LAYOUT.md")
+        )
+        let scenarioMap = try read(
+            root.appendingPathComponent("docs/xhub-scenario-map-v1.md")
+        )
+        let whitepaperSubmodule = try read(
+            root.appendingPathComponent("docs/whitepaper-submodule.md")
+        )
+        let repoStructurePlan = try read(
+            root.appendingPathComponent("docs/xhub-repo-structure-and-oss-plan-v1.md")
+        )
+        let backupRestoreMigration = try read(
+            root.appendingPathComponent("docs/xhub-backup-restore-migration-v1.md")
+        )
+        let updateAndRelease = try read(
+            root.appendingPathComponent("docs/xhub-update-and-release-v1.md")
+        )
         let readme = try read(root.appendingPathComponent("README.md"))
         let readmeZh = try read(root.appendingPathComponent("README_zh.md"))
         let releaseGuide = try read(root.appendingPathComponent("RELEASE.md"))
+        let securityPolicy = try read(root.appendingPathComponent("SECURITY.md"))
         let agentUsers = try read(
             root.appendingPathComponent("docs/whitepapers/To Agent Users.md")
         )
@@ -81,6 +100,12 @@ struct MemoryControlPlaneDocsSyncTests {
         let skillsDiscovery = try read(
             root.appendingPathComponent("docs/xhub-skills-discovery-and-import-v1.md")
         )
+        let clientModes = try read(
+            root.appendingPathComponent("docs/xhub-client-modes-and-connectors-v1.md")
+        )
+        let efficiencyGovernance = try read(
+            root.appendingPathComponent("docs/xhub-agent-efficiency-and-safety-governance-v1.md")
+        )
         let skillsPlacement = try read(
             root.appendingPathComponent("docs/xhub-skills-placement-and-execution-boundary-v1.md")
         )
@@ -120,6 +145,12 @@ struct MemoryControlPlaneDocsSyncTests {
         let websiteSecurityZh = try read(
             root.appendingPathComponent("website/zh-CN/security.md")
         )
+        let websiteSkills = try read(
+            root.appendingPathComponent("website/skills.md")
+        )
+        let websiteSkillsZh = try read(
+            root.appendingPathComponent("website/zh-CN/skills.md")
+        )
         let websiteWhyNot = try read(
             root.appendingPathComponent("website/why-not-just-an-agent.md")
         )
@@ -140,122 +171,262 @@ struct MemoryControlPlaneDocsSyncTests {
         )
         let xMemory = try read(root.appendingPathComponent("X_MEMORY.md"))
 
-        #expect(runtimeArchitecture.contains("执行 Memory-Core jobs"))
-        #expect(runtimeArchitecture.contains("同一条 memory control plane"))
-        #expect(runtimeArchitecture.contains("不是“谁来直接写库”"))
-
-        #expect(routingContract.contains("memory maintenance executor"))
-        #expect(routingContract.contains("Writer + Gate 仍然是唯一落库者"))
-        #expect(routingContract.contains("同一个 memory control plane"))
-
-        #expect(recipeFreeze.contains("Asset / Executor / Data Truth Mapping"))
-        #expect(recipeFreeze.contains("`memory_model_preferences -> Scheduler -> Worker`"))
-        #expect(recipeFreeze.contains("Writer + Gate"))
-
-        #expect(executionPlan.contains("用户继续在 X-Hub 中通过 `memory_model_preferences` 选择哪个 AI 执行 memory jobs"))
-        #expect(executionPlan.contains("`Memory-Core` 继续只作为 governed rule asset / recipe asset"))
-        #expect(executionPlan.contains("`Scheduler -> Worker -> Writer + Gate`"))
-
-        #expect(workingIndex.contains("user chooses which AI executes memory jobs"))
-        #expect(workingIndex.contains("`Memory-Core` remains a governed rule asset"))
-        #expect(workingIndex.contains("`Writer + Gate`"))
-        #expect(workingIndex.contains("MemoryControlPlaneDocsSyncTests.swift"))
-
-        #expect(readme.contains("Hub-governed rule asset rather than an ordinary installable plugin"))
-        #expect(readme.contains("memory executor selection still remains a separate Hub-side control-plane decision"))
-        #expect(readme.contains("durable memory truth still terminates through `Writer + Gate`"))
-        #expect(readme.contains("the user still chooses which AI executes memory jobs in X-Hub"))
-        #expect(readmeZh.contains("Hub 受治理规则资产"))
-        #expect(readmeZh.contains("用户在 X-Hub 中选择哪个 AI 执行 memory jobs"))
-        #expect(readmeZh.contains("`Writer + Gate`"))
-        #expect(readmeZh.contains("执行 memory jobs 的 AI 仍由用户在 X-Hub 中选择"))
-        #expect(releaseGuide.contains("the user chooses which AI executes memory jobs in X-Hub"))
-        #expect(releaseGuide.contains("durable writes still terminate through `Writer + Gate`"))
-
-        #expect(agentUsers.contains("Hub-governed rule asset rather than a local plugin"))
-        #expect(agentUsers.contains("which AI executes memory jobs remains in X-Hub"))
-        #expect(agentUsers.contains("durable memory writes still terminate through `Writer + Gate`"))
-        #expect(whitepaperEn.contains("Hub-governed rule assets rather than a single execution AI"))
-        #expect(whitepaperEn.contains("runtime execution still follows `Scheduler -> Worker -> Writer + Gate`"))
-        #expect(whitepaperEn.contains("durable writes still terminate through `Writer + Gate`"))
-        #expect(whitepaperEn.contains("does not replace user choice over the memory executor"))
-        #expect(whitepaperZh.contains("X-Hub 内建的受治理规则资产"))
-        #expect(whitepaperZh.contains("运行时主链仍是 `Scheduler -> Worker -> Writer + Gate`"))
-        #expect(whitepaperZh.contains("最终 durable 落库仍只经 `Writer + Gate` 收口"))
-        #expect(whitepaperZh.contains("不替代用户对 memory executor 的选择"))
-
-        #expect(capabilityMatrix.contains("memory executor 选择仍属于 Hub control plane"))
-        #expect(capabilityMatrix.contains("XT 不成为 durable memory authority"))
-        #expect(capabilityMatrix.contains("`Memory-Core` 继续作为 governed rule asset"))
-        #expect(capabilityMatrix.contains("`Writer + Gate`"))
-        #expect(publicAdoptionRoadmap.contains("用户在 X-Hub 中选择哪个 AI 执行 memory jobs"))
-        #expect(publicAdoptionRoadmap.contains("`Writer + Gate`"))
-        #expect(v1ProductBoundary.contains("Hub 控制面下由用户选择的 memory executor"))
-        #expect(v1ProductBoundary.contains("durable 写入继续绑定到 `Writer + Gate`"))
-        #expect(next10WorkOrders.contains("公开和内部文案都不把 `Memory-Core` 误写成单体执行 AI"))
-        #expect(next10WorkOrders.contains("durable truth 的口径继续固定为 `Writer + Gate` 单写入口"))
-        #expect(contributorStartHere.contains("the user chooses which AI executes memory jobs in X-Hub"))
-        #expect(contributorStartHere.contains("`Memory-Core` stays a governed rule asset"))
-        #expect(contributorStartHere.contains("`Writer + Gate`"))
-        #expect(starterIssues.contains("do not redefine who chooses the memory executor"))
-        #expect(starterIssues.contains("outside `Writer + Gate`"))
-        #expect(publicPreviewScrubNotes.contains("the user chooses which AI executes memory jobs in X-Hub"))
-        #expect(publicPreviewScrubNotes.contains("`Memory-Core` stays a governed Hub-side rule asset"))
-        #expect(publicPreviewScrubNotes.contains("`Writer + Gate`"))
-        #expect(ossReleaseChecklist.contains("XT memory UX adapter backed by Hub truth-source, with user-selected memory executor and Writer + Gate durable-write boundary"))
-        #expect(ossReleaseChecklist.contains("the user chooses which AI executes memory jobs in X-Hub"))
-        #expect(ossReleaseChecklist.contains("durable writes still terminate through `Writer + Gate`"))
-        #expect(ossMinimalChecklist.contains("XT memory UX adapter backed by Hub truth-source, with user-selected memory executor and Writer + Gate durable-write boundary"))
-        #expect(ossMinimalChecklist.contains("用户在 X-Hub 中选择哪个 AI 执行 memory jobs"))
-        #expect(ossMinimalChecklist.contains("`Writer + Gate`"))
-        #expect(ossMinimalChecklistEn.contains("XT memory UX adapter backed by Hub truth-source, with user-selected memory executor and Writer + Gate durable-write boundary"))
-        #expect(ossMinimalChecklistEn.contains("the user chooses which AI executes memory jobs in X-Hub"))
-        #expect(ossMinimalChecklistEn.contains("durable writes still terminate through `Writer + Gate`"))
-        #expect(releaseNotesTemplate.contains("XT memory UX adapter backed by Hub truth-source, with user-selected memory executor and Writer + Gate durable-write boundary"))
-        #expect(releaseNotesTemplate.contains("the user chooses which AI executes memory jobs in X-Hub"))
-        #expect(releaseNotesTemplate.contains("durable writes still terminate through `Writer + Gate`"))
-        #expect(releaseNotesTemplateEn.contains("XT memory UX adapter backed by Hub truth-source, with user-selected memory executor and Writer + Gate durable-write boundary"))
-        #expect(releaseNotesTemplateEn.contains("the user chooses which AI executes memory jobs in X-Hub"))
-        #expect(releaseNotesTemplateEn.contains("durable writes still terminate through `Writer + Gate`"))
-
-        #expect(skillsDiscovery.contains("普通 skill 体系不替代 `memory_model_preferences -> Scheduler -> Worker -> Writer/Gate`"))
-        #expect(skillsPlacement.contains("普通 skill authority 不替代 memory control plane"))
-        #expect(skillsPlacement.contains("durable memory truth 仍只允许经 `Writer + Gate` 落库"))
-        #expect(skillsSigning.contains("不能替代 `memory_model_preferences -> Scheduler -> Worker -> Writer + Gate`"))
-        #expect(skillsSigning.contains("不获得直接 durable 写入权限"))
-        #expect(pdHooks.contains("hooks worker 应理解为 Scheduler/Worker 主链中的事件输入与 retrieval 支撑面"))
-        #expect(pdHooks.contains("只能沿 `Worker -> Writer + Gate` 进入 durable truth"))
-        #expect(remoteExportGate.contains("不重新定义 memory model chooser"))
-        #expect(remoteExportGate.contains("仍只允许经 `Writer + Gate` 落库"))
-        #expect(protocolDoc.contains("does not choose the memory executor"))
-        #expect(protocolDoc.contains("durable memory writes still terminate through `Writer + Gate`"))
-        #expect(websiteArchitecture.contains("the user chooses which AI executes memory jobs"))
-        #expect(websiteArchitecture.contains("durable memory truth still terminates through `Writer + Gate`"))
-        #expect(websiteArchitectureZh.contains("用户在 X-Hub 中选择"))
-        #expect(websiteArchitectureZh.contains("`Writer + Gate`"))
-        #expect(websiteHome.contains("the user still chooses which AI"))
-        #expect(websiteHome.contains("`Writer + Gate`"))
-        #expect(websiteHomeZh.contains("用户在 X-Hub 中选择"))
-        #expect(websiteHomeZh.contains("`Writer + Gate`"))
-        #expect(websiteChannels.contains("do not choose the memory executor"))
-        #expect(websiteChannels.contains("`Writer + Gate`"))
-        #expect(websiteChannelsZh.contains("不负责选择 memory executor"))
-        #expect(websiteChannelsZh.contains("`Writer + Gate`"))
-        #expect(websiteSecurity.contains("the user chooses which AI executes memory jobs"))
-        #expect(websiteSecurity.contains("durable writes still terminate through `Writer + Gate`"))
-        #expect(websiteSecurityZh.contains("用户选择哪个 AI 执行 memory jobs"))
-        #expect(websiteSecurityZh.contains("`Writer + Gate`"))
-        #expect(websiteWhyNot.contains("the user chooses which AI executes memory jobs"))
-        #expect(websiteWhyNot.contains("durable writes still terminate through `Writer + Gate`"))
-        #expect(websiteWhyNotZh.contains("用户选择哪个 AI 执行 memory jobs"))
-        #expect(websiteWhyNotZh.contains("`Writer + Gate`"))
-        #expect(websiteTrustDiagram.contains("Memory executor stays user-selected; Writer + Gate remains the durable sink."))
-        #expect(websiteTopologyDiagram.contains("Memory executor stays user-selected; Writer + Gate remains the durable sink."))
-        #expect(docsTrustDiagram.contains("Memory executor stays user-selected; Writer + Gate remains the durable sink."))
-        #expect(docsTopologyDiagram.contains("Memory executor stays user-selected; Writer + Gate remains the durable sink."))
-
-        #expect(xMemory.contains("用户在 X-Hub 中选择 AI 去执行 memory jobs"))
-        #expect(xMemory.contains("`Memory-Core` 本身是 governed recipe asset / 规则层"))
+        expectContains(runtimeArchitecture, [
+            "执行 Memory-Core jobs",
+            "同一条 memory control plane",
+            "不是“谁来直接写库”",
+        ])
+        expectContains(routingContract, [
+            "memory maintenance executor",
+            "Writer + Gate 仍然是唯一落库者",
+            "同一个 memory control plane",
+        ])
+        expectContains(recipeFreeze, [
+            "Asset / Executor / Data Truth Mapping",
+            "`memory_model_preferences -> Scheduler -> Worker`",
+            "Writer + Gate",
+        ])
+        expectContains(executionPlan, [
+            "用户继续在 X-Hub 中通过 `memory_model_preferences` 选择哪个 AI 执行 memory jobs",
+            "`Memory-Core` 继续只作为 governed rule asset / recipe asset",
+            "`Scheduler -> Worker -> Writer + Gate`",
+        ])
+        expectContains(workingIndex, [
+            "user chooses which AI executes memory jobs",
+            "`Memory-Core` remains a governed rule asset",
+            "`Writer + Gate`",
+            "MemoryControlPlaneDocsSyncTests.swift",
+        ])
+        expectContains(repoLayout, [
+            "the user chooses which AI executes memory jobs in X-Hub",
+            "`Memory-Core` stays on the governed rule layer",
+            "`Writer + Gate`",
+        ])
+        expectContains(scenarioMap, [
+            "XT memory UX adapter backed by Hub truth-source, with user-selected memory executor and Writer + Gate durable-write boundary",
+            "the user chooses which AI executes memory jobs in X-Hub",
+            "`Memory-Core` remains the governed Hub-side rule asset",
+            "`Writer + Gate`",
+        ])
+        expectContains(whitepaperSubmodule, [
+            "the user still chooses which AI executes memory jobs in X-Hub",
+            "`Memory-Core` remains the governed rule layer",
+            "durable writes still terminate through `Writer + Gate`",
+        ])
+        expectContains(repoStructurePlan, [
+            "用户在 X-Hub 中选择哪个 AI 执行 memory jobs",
+            "`Memory-Core` 继续作为 governed rule layer",
+            "`Writer + Gate`",
+        ])
+        expectContains(backupRestoreMigration, [
+            "`memory_model_preferences`",
+            "不得静默改写用户原先选定的 memory executor",
+            "`Memory-Core` 降格成普通 installable skill/runtime",
+            "`Writer + Gate`",
+        ])
+        expectContains(updateAndRelease, [
+            "`memory_model_preferences`",
+            "不得在未记录策略与审计的情况下静默切换 memory executor",
+            "`Memory-Core` 重新解释成单体执行 AI",
+            "`Writer + Gate`",
+        ])
+        expectContains(readme, [
+            "Hub-governed rule asset rather than an ordinary installable plugin",
+            "memory executor selection still remains a separate Hub-side control-plane decision",
+            "durable memory truth still terminates through `Writer + Gate`",
+            "the user still chooses which AI executes memory jobs in X-Hub",
+        ])
+        expectContains(readmeZh, [
+            "Hub 受治理规则资产",
+            "用户在 X-Hub 中选择哪个 AI 执行 memory jobs",
+            "`Writer + Gate`",
+            "执行 memory jobs 的 AI 仍由用户在 X-Hub 中选择",
+        ])
+        expectContains(securityPolicy, [
+            "the user chooses which AI executes memory jobs in X-Hub",
+            "`Memory-Core` remains the governed rule layer",
+            "`Writer + Gate`",
+        ])
+        expectContains(releaseGuide, [
+            "the user chooses which AI executes memory jobs in X-Hub",
+            "durable writes still terminate through `Writer + Gate`",
+        ])
+        expectContains(agentUsers, [
+            "Hub-governed rule asset rather than a local plugin",
+            "which AI executes memory jobs remains in X-Hub",
+            "durable memory writes still terminate through `Writer + Gate`",
+        ])
+        expectContains(whitepaperEn, [
+            "Hub-governed rule assets rather than a single execution AI",
+            "runtime execution still follows `Scheduler -> Worker -> Writer + Gate`",
+            "durable writes still terminate through `Writer + Gate`",
+            "does not replace user choice over the memory executor",
+        ])
+        expectContains(whitepaperZh, [
+            "X-Hub 内建的受治理规则资产",
+            "运行时主链仍是 `Scheduler -> Worker -> Writer + Gate`",
+            "最终 durable 落库仍只经 `Writer + Gate` 收口",
+            "不替代用户对 memory executor 的选择",
+        ])
+        expectContains(capabilityMatrix, [
+            "memory executor 选择仍属于 Hub control plane",
+            "XT 不成为 durable memory authority",
+            "`Memory-Core` 继续作为 governed rule asset",
+            "`Writer + Gate`",
+        ])
+        expectContains(publicAdoptionRoadmap, [
+            "用户在 X-Hub 中选择哪个 AI 执行 memory jobs",
+            "`Writer + Gate`",
+        ])
+        expectContains(v1ProductBoundary, [
+            "Hub 控制面下由用户选择的 memory executor",
+            "durable 写入继续绑定到 `Writer + Gate`",
+        ])
+        expectContains(next10WorkOrders, [
+            "公开和内部文案都不把 `Memory-Core` 误写成单体执行 AI",
+            "durable truth 的口径继续固定为 `Writer + Gate` 单写入口",
+        ])
+        expectContains(contributorStartHere, [
+            "the user chooses which AI executes memory jobs in X-Hub",
+            "`Memory-Core` stays a governed rule asset",
+            "`Writer + Gate`",
+        ])
+        expectContains(starterIssues, [
+            "do not redefine who chooses the memory executor",
+            "outside `Writer + Gate`",
+        ])
+        expectContains(publicPreviewScrubNotes, [
+            "the user chooses which AI executes memory jobs in X-Hub",
+            "`Memory-Core` stays a governed Hub-side rule asset",
+            "`Writer + Gate`",
+        ])
+        expectContains(ossReleaseChecklist, [
+            "XT memory UX adapter backed by Hub truth-source, with user-selected memory executor and Writer + Gate durable-write boundary",
+            "the user chooses which AI executes memory jobs in X-Hub",
+            "durable writes still terminate through `Writer + Gate`",
+        ])
+        expectContains(ossMinimalChecklist, [
+            "XT memory UX adapter backed by Hub truth-source, with user-selected memory executor and Writer + Gate durable-write boundary",
+            "用户在 X-Hub 中选择哪个 AI 执行 memory jobs",
+            "`Writer + Gate`",
+        ])
+        expectContains(ossMinimalChecklistEn, [
+            "XT memory UX adapter backed by Hub truth-source, with user-selected memory executor and Writer + Gate durable-write boundary",
+            "the user chooses which AI executes memory jobs in X-Hub",
+            "durable writes still terminate through `Writer + Gate`",
+        ])
+        expectContains(releaseNotesTemplate, [
+            "XT memory UX adapter backed by Hub truth-source, with user-selected memory executor and Writer + Gate durable-write boundary",
+            "the user chooses which AI executes memory jobs in X-Hub",
+            "durable writes still terminate through `Writer + Gate`",
+        ])
+        expectContains(releaseNotesTemplateEn, [
+            "XT memory UX adapter backed by Hub truth-source, with user-selected memory executor and Writer + Gate durable-write boundary",
+            "the user chooses which AI executes memory jobs in X-Hub",
+            "durable writes still terminate through `Writer + Gate`",
+        ])
+        expectContains(skillsDiscovery, [
+            "普通 skill 体系不替代 `memory_model_preferences -> Scheduler -> Worker -> Writer/Gate`",
+        ])
+        expectContains(clientModes, [
+            "client 是否允许消费 Hub memory surface",
+            "真正执行 memory jobs 的 AI 仍由用户在 X-Hub 中通过 `memory_model_preferences` 选择",
+            "`Memory-Core` 仍是 governed rule layer",
+            "`Writer + Gate`",
+        ])
+        expectContains(efficiencyGovernance, [
+            "当前冻结的 memory control plane 继续是",
+            "用户在 X-Hub 中选择哪个 AI 执行 memory jobs",
+            "`Scheduler -> Worker -> Writer + Gate`",
+            "`memory_write_mode` 只控制 memory promotion / writeback posture",
+            "durable writes 仍只经 `Writer + Gate`",
+        ])
+        expectContains(skillsPlacement, [
+            "普通 skill authority 不替代 memory control plane",
+            "durable memory truth 仍只允许经 `Writer + Gate` 落库",
+        ])
+        expectContains(skillsSigning, [
+            "不能替代 `memory_model_preferences -> Scheduler -> Worker -> Writer + Gate`",
+            "不获得直接 durable 写入权限",
+        ])
+        expectContains(pdHooks, [
+            "hooks worker 应理解为 Scheduler/Worker 主链中的事件输入与 retrieval 支撑面",
+            "只能沿 `Worker -> Writer + Gate` 进入 durable truth",
+        ])
+        expectContains(remoteExportGate, [
+            "不重新定义 memory model chooser",
+            "仍只允许经 `Writer + Gate` 落库",
+        ])
+        expectContains(protocolDoc, [
+            "does not choose the memory executor",
+            "durable memory writes still terminate through `Writer + Gate`",
+        ])
+        expectContains(websiteArchitecture, [
+            "the user chooses which AI executes memory jobs",
+            "durable memory truth still terminates through `Writer + Gate`",
+        ])
+        expectContains(websiteArchitectureZh, [
+            "用户在 X-Hub 中选择",
+            "`Writer + Gate`",
+        ])
+        expectContains(websiteHome, [
+            "the user still chooses which AI",
+            "`Writer + Gate`",
+        ])
+        expectContains(websiteHomeZh, [
+            "用户在 X-Hub 中选择",
+            "`Writer + Gate`",
+        ])
+        expectContains(websiteChannels, [
+            "do not choose the memory executor",
+            "`Writer + Gate`",
+        ])
+        expectContains(websiteChannelsZh, [
+            "不负责选择 memory executor",
+            "`Writer + Gate`",
+        ])
+        expectContains(websiteSecurity, [
+            "the user chooses which AI executes memory jobs",
+            "durable writes still terminate through `Writer + Gate`",
+        ])
+        expectContains(websiteSecurityZh, [
+            "用户选择哪个 AI 执行 memory jobs",
+            "`Writer + Gate`",
+        ])
+        expectContains(websiteSkills, [
+            "the user still chooses which AI executes memory jobs in X-Hub",
+            "`Memory-Core` remains the governed rule layer",
+            "`Writer + Gate`",
+        ])
+        expectContains(websiteSkillsZh, [
+            "执行 memory jobs 的 AI 仍由用户在 X-Hub 中选择",
+            "`Memory-Core` 仍是受治理规则层",
+            "`Writer + Gate`",
+        ])
+        expectContains(websiteWhyNot, [
+            "the user chooses which AI executes memory jobs",
+            "durable writes still terminate through `Writer + Gate`",
+        ])
+        expectContains(websiteWhyNotZh, [
+            "用户选择哪个 AI 执行 memory jobs",
+            "`Writer + Gate`",
+        ])
+        expectContains(websiteTrustDiagram, [
+            "Memory executor stays user-selected; Writer + Gate remains the durable sink.",
+        ])
+        expectContains(websiteTopologyDiagram, [
+            "Memory executor stays user-selected; Writer + Gate remains the durable sink.",
+        ])
+        expectContains(docsTrustDiagram, [
+            "Memory executor stays user-selected; Writer + Gate remains the durable sink.",
+        ])
+        expectContains(docsTopologyDiagram, [
+            "Memory executor stays user-selected; Writer + Gate remains the durable sink.",
+        ])
+        expectContains(xMemory, [
+            "用户在 X-Hub 中选择 AI 去执行 memory jobs",
+            "`Memory-Core` 本身是 governed recipe asset / 规则层",
+        ])
     }
 
     @Test
@@ -278,21 +449,32 @@ struct MemoryControlPlaneDocsSyncTests {
             )
         )
 
-        #expect(m2Pack.contains("M2 当前只是 retrieval / index / projection / repair / observability 的执行工单池"))
-        #expect(m2Pack.contains("不是第二个 memory control plane"))
-        #expect(m2Pack.contains("不能替用户重选 memory AI"))
+        expectContains(m2Pack, [
+            "M2 当前只是 retrieval / index / projection / repair / observability 的执行工单池",
+            "不是第二个 memory control plane",
+            "不能替用户重选 memory AI",
+        ])
+        expectContains(m3Pack, [
+            "M3 当前只是场景闭环 / grant chain / reliability / XT-Ready 的执行工单池",
+            "不新增第二套 memory model selector",
+            "不能把 local fallback、agent provider、tool runtime provider 误写成 memory AI chooser",
+        ])
+        expectContains(xtMemoryUxPack, [
+            "这份包只定义 XT 的 memory UX / selector / bus / injection surface",
+            "用户在 XT 里选择的是 `channel / scope / budget split / exposure policy`",
+            "不定义 memory maintenance control plane",
+        ])
+        expectContains(supervisorAssistantPack, [
+            "Personal Assistant 仍沿用同一 Memory Control Plane",
+            "`assistant_personal` 与 `project_code` 仍属于同一个 memory control plane",
+            "Supervisor persona / personal profile / review cadence 不能替代这条控制面",
+        ])
+    }
 
-        #expect(m3Pack.contains("M3 当前只是场景闭环 / grant chain / reliability / XT-Ready 的执行工单池"))
-        #expect(m3Pack.contains("不新增第二套 memory model selector"))
-        #expect(m3Pack.contains("不能把 local fallback、agent provider、tool runtime provider 误写成 memory AI chooser"))
-
-        #expect(xtMemoryUxPack.contains("这份包只定义 XT 的 memory UX / selector / bus / injection surface"))
-        #expect(xtMemoryUxPack.contains("用户在 XT 里选择的是 `channel / scope / budget split / exposure policy`"))
-        #expect(xtMemoryUxPack.contains("不定义 memory maintenance control plane"))
-
-        #expect(supervisorAssistantPack.contains("Personal Assistant 仍沿用同一 Memory Control Plane"))
-        #expect(supervisorAssistantPack.contains("`assistant_personal` 与 `project_code` 仍属于同一个 memory control plane"))
-        #expect(supervisorAssistantPack.contains("Supervisor persona / personal profile / review cadence 不能替代这条控制面"))
+    private func expectContains(_ document: String, _ needles: [String]) {
+        for needle in needles {
+            #expect(document.contains(needle))
+        }
     }
 
     private func repoRoot() -> URL {

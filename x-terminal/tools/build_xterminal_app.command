@@ -6,21 +6,47 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 XT_DIR="$ROOT_DIR/x-terminal"
 OUT_DIR="$ROOT_DIR/build"
 APP_DIR="$OUT_DIR/X-Terminal.app"
+BUILD_CONFIG="${XTERMINAL_SWIFT_BUILD_CONFIG:-release}"
+INSTALL_TARGET="${XTERMINAL_INSTALL_TARGET:-}"
+INSTALL_TARGET_EXPANDED="${INSTALL_TARGET/#\~/$HOME}"
+USE_BUILD_SNAPSHOT="${XTERMINAL_USE_BUILD_SNAPSHOT:-1}"
+BUILD_SRC_DIR="$XT_DIR"
 
-echo "[1/4] Building Swift package (release)..."
-mkdir -p "$XT_DIR/.sandbox_home" "$XT_DIR/.sandbox_tmp" "$XT_DIR/.scratch" "$XT_DIR/.clang-module-cache" "$XT_DIR/.swift-module-cache"
+if [ "$USE_BUILD_SNAPSHOT" = "1" ]; then
+  SNAPSHOT_DIR="${XTERMINAL_BUILD_SNAPSHOT_DIR:-$OUT_DIR/.xterminal-build-src}"
+  echo "[prep] Creating frozen source snapshot at: $SNAPSHOT_DIR"
+  rm -rf "$SNAPSHOT_DIR"
+  mkdir -p "$SNAPSHOT_DIR"
+  rsync -a --delete \
+    --exclude '.build' \
+    --exclude '.scratch' \
+    --exclude '.sandbox_home' \
+    --exclude '.sandbox_tmp' \
+    --exclude '.clang-module-cache' \
+    --exclude '.swift-module-cache' \
+    --exclude '.DS_Store' \
+    "$XT_DIR/" "$SNAPSHOT_DIR/"
+  BUILD_SRC_DIR="$SNAPSHOT_DIR"
+fi
+
+echo "[1/4] Building Swift package ($BUILD_CONFIG)..."
+mkdir -p "$BUILD_SRC_DIR/.sandbox_home" \
+  "$BUILD_SRC_DIR/.sandbox_tmp" \
+  "$BUILD_SRC_DIR/.scratch" \
+  "$BUILD_SRC_DIR/.clang-module-cache" \
+  "$BUILD_SRC_DIR/.swift-module-cache"
 
 COMMON_ARGS=(
-  -c release
+  -c "$BUILD_CONFIG"
   --disable-sandbox
-  --scratch-path "$XT_DIR/.scratch"
-  -Xcc -fmodules-cache-path="$XT_DIR/.clang-module-cache"
-  -Xswiftc -module-cache-path -Xswiftc "$XT_DIR/.swift-module-cache"
-  --package-path "$XT_DIR"
+  --scratch-path "$BUILD_SRC_DIR/.scratch"
+  -Xcc -fmodules-cache-path="$BUILD_SRC_DIR/.clang-module-cache"
+  -Xswiftc -module-cache-path -Xswiftc "$BUILD_SRC_DIR/.swift-module-cache"
+  --package-path "$BUILD_SRC_DIR"
 )
 
-env HOME="$XT_DIR/.sandbox_home" TMPDIR="$XT_DIR/.sandbox_tmp" swift build "${COMMON_ARGS[@]}"
-BIN_DIR="$(env HOME="$XT_DIR/.sandbox_home" TMPDIR="$XT_DIR/.sandbox_tmp" swift build "${COMMON_ARGS[@]}" --show-bin-path)"
+env HOME="$BUILD_SRC_DIR/.sandbox_home" TMPDIR="$BUILD_SRC_DIR/.sandbox_tmp" swift build "${COMMON_ARGS[@]}"
+BIN_DIR="$(env HOME="$BUILD_SRC_DIR/.sandbox_home" TMPDIR="$BUILD_SRC_DIR/.sandbox_tmp" swift build "${COMMON_ARGS[@]}" --show-bin-path)"
 BIN_PATH="$BIN_DIR/XTerminal"
 if [ -z "$BIN_PATH" ] || [ ! -f "$BIN_PATH" ]; then
   echo "Build output not found at: $BIN_PATH" >&2
@@ -34,7 +60,7 @@ mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp -f "$BIN_PATH" "$APP_DIR/Contents/MacOS/XTerminal"
 chmod +x "$APP_DIR/Contents/MacOS/XTerminal"
 
-cp -f "$XT_DIR/Info.plist" "$APP_DIR/Contents/Info.plist"
+cp -f "$BUILD_SRC_DIR/Info.plist" "$APP_DIR/Contents/Info.plist"
 
 PLIST_BUDDY="/usr/libexec/PlistBuddy"
 APP_VERSION="${XTERMINAL_APP_VERSION:-1.0}"
@@ -109,8 +135,7 @@ fi
 
 AXHUBCTL_SRC=""
 for candidate in \
-  "$ROOT_DIR/x-hub/grpc-server/hub_grpc_server/assets/axhubctl" \
-  "$HOME/Documents/AX/x-hub-system/x-hub/grpc-server/hub_grpc_server/assets/axhubctl"; do
+  "$ROOT_DIR/x-hub/grpc-server/hub_grpc_server/assets/axhubctl"; do
   if [ -f "$candidate" ]; then
     AXHUBCTL_SRC="$candidate"
     break
@@ -127,7 +152,7 @@ fi
 
 IDENTITY="${XTERMINAL_CODESIGN_IDENTITY:--}"
 ENABLE_APP_SANDBOX="${XTERMINAL_ENABLE_APP_SANDBOX:-0}"
-ENT="$XT_DIR/X-Terminal.entitlements"
+ENT="$BUILD_SRC_DIR/X-Terminal.entitlements"
 
 echo "[3/4] Codesigning app bundle..."
 if [ -f "$APP_DIR/Contents/Resources/relflowhub_node" ]; then
@@ -147,12 +172,24 @@ fi
 echo "[4/4] Verifying signature..."
 codesign --verify --deep --strict "$APP_DIR"
 
+if [ -n "$INSTALL_TARGET_EXPANDED" ]; then
+  INSTALL_PARENT="$(dirname "$INSTALL_TARGET_EXPANDED")"
+  echo "[4a/4] Installing app to: $INSTALL_TARGET_EXPANDED"
+  mkdir -p "$INSTALL_PARENT"
+  ditto "$APP_DIR" "$INSTALL_TARGET_EXPANDED"
+fi
+
 echo
 echo "Done."
 echo "App bundle: $APP_DIR"
+if [ -n "$INSTALL_TARGET_EXPANDED" ]; then
+  echo "Installed app: $INSTALL_TARGET_EXPANDED"
+fi
 if [ "$ENABLE_APP_SANDBOX" = "1" ]; then
   echo "Sandbox mode: enabled"
 else
   echo "Sandbox mode: disabled"
 fi
+echo "Run hint: for end-user testing, launch the app from ~/Applications or /Applications instead of a repo checkout under Documents."
+echo "Calendar note: X-Terminal now owns the optional Calendar permission and local Supervisor meeting reminders."
 echo "Copy this app to another Mac, then open it directly."
