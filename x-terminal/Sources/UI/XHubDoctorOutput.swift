@@ -1231,7 +1231,7 @@ private func xHubDoctorNextStepKind(
     }
 
     switch destination {
-    case .xtPairHub, .hubPairing:
+    case .xtPairHub, .hubPairing, .hubLAN:
         return .reviewPairing
     case .xtChooseModel, .hubModels:
         return .chooseModel
@@ -1258,7 +1258,7 @@ private func xHubDoctorStepOwner(
     }
 
     switch destination {
-    case .xtPairHub, .xtChooseModel, .xtDiagnostics, .hubPairing, .hubModels, .hubGrants, .hubSecurity, .hubDiagnostics, .systemPermissions, .homeSupervisor:
+    case .xtPairHub, .xtChooseModel, .xtDiagnostics, .hubPairing, .hubLAN, .hubModels, .hubGrants, .hubSecurity, .hubDiagnostics, .systemPermissions, .homeSupervisor:
         return .user
     }
 }

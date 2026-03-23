@@ -207,6 +207,34 @@ struct XTToolAuthorizationTests {
     }
 
     @Test
+    func deniedSummaryTextHumanizesGovernanceCapabilityBlocks() {
+        let decision = XTToolAuthorizationDecision(
+            disposition: .deny,
+            risk: .safe,
+            denyCode: "governance_capability_denied",
+            detail: "project governance blocks process_start under execution tier a0_observe",
+            policySource: "project_governance",
+            policyReason: "execution_tier_missing_managed_processes",
+            runtimePolicyDecision: nil,
+            runtimeEffectiveSurface: nil,
+            deviceGateDecision: nil
+        )
+        let call = ToolCall(
+            tool: .process_start,
+            args: ["command": .string("npm run dev")]
+        )
+
+        let summary = xtToolAuthorizationDeniedSummaryText(
+            call: call,
+            decision: decision
+        )
+
+        #expect(summary.contains("不允许受治理的后台进程"))
+        #expect(summary.contains("打开项目设置 -> 执行档位"))
+        #expect(summary.contains("A2 Repo Auto"))
+    }
+
+    @Test
     func deviceGatePrecedesProjectToolPolicyForUntrustedClipboardRead() async {
         let fixture = ToolExecutorProjectFixture(name: "tool-authorization-device-gate-precedence")
         defer { fixture.cleanup() }

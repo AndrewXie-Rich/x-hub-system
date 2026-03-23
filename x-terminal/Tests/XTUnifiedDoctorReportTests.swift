@@ -22,6 +22,7 @@ struct XTUnifiedDoctorReportTests {
         #expect(report.section(.pairingValidity)?.state == .ready)
         #expect(report.section(.modelRouteReadiness)?.state == .diagnosticRequired)
         #expect(report.section(.modelRouteReadiness)?.headline == "配对已通，但模型路由不可用")
+        #expect(report.section(.modelRouteReadiness)?.nextStep.contains("AI 模型（Choose Model）") == true)
         #expect(report.readyForFirstTask == false)
     }
 
@@ -67,6 +68,52 @@ struct XTUnifiedDoctorReportTests {
         #expect(section?.state == .diagnosticRequired)
         #expect(section?.summary.contains("bridge enable 请求也在链路恢复前失败了") == true)
         #expect(section?.detailLines.contains(where: { $0.contains("bridge_last_error=") }) == true)
+    }
+
+    @Test
+    func hubReachabilitySectionExplainsAmbiguousDiscoveryInsteadOfGenericUnreachable() {
+        let report = XTUnifiedDoctorBuilder.build(
+            input: makeDoctorInput(
+                localConnected: false,
+                remoteConnected: false,
+                configuredModelIDs: [],
+                models: [],
+                bridgeAlive: false,
+                bridgeEnabled: false,
+                failureCode: "bonjour_multiple_hubs_ambiguous",
+                sessionRuntime: nil,
+                skillsSnapshot: readySkillsSnapshot()
+            )
+        )
+
+        let section = report.section(.hubReachability)
+        #expect(section?.state == .diagnosticRequired)
+        #expect(section?.headline == "发现到多台 Hub，必须先固定目标")
+        #expect(section?.summary.contains("多台候选 Hub") == true)
+        #expect(section?.nextStep.contains("固定一台目标 Hub") == true)
+    }
+
+    @Test
+    func hubReachabilitySectionExplainsPortConflictInsteadOfGenericUnreachable() {
+        let report = XTUnifiedDoctorBuilder.build(
+            input: makeDoctorInput(
+                localConnected: false,
+                remoteConnected: false,
+                configuredModelIDs: [],
+                models: [],
+                bridgeAlive: false,
+                bridgeEnabled: false,
+                failureCode: "hub_port_conflict",
+                sessionRuntime: nil,
+                skillsSnapshot: readySkillsSnapshot()
+            )
+        )
+
+        let section = report.section(.hubReachability)
+        #expect(section?.state == .diagnosticRequired)
+        #expect(section?.headline == "Hub 端口冲突，必须先修复 LAN 端口")
+        #expect(section?.summary.contains("already in use") == true)
+        #expect(section?.nextStep.contains("切换到空闲端口") == true)
     }
 
     @Test
@@ -152,7 +199,10 @@ struct XTUnifiedDoctorReportTests {
             durableCandidateMirrorTarget: XTSupervisorDurableCandidateMirror.mirrorTarget,
             durableCandidateMirrorAttempted: true,
             durableCandidateMirrorErrorCode: "remote_route_not_preferred",
-            durableCandidateLocalStoreRole: XTSupervisorDurableCandidateMirror.localStoreRole
+            durableCandidateLocalStoreRole: XTSupervisorDurableCandidateMirror.localStoreRole,
+            localPersonalMemoryWriteIntent: SupervisorPersonalMemoryStoreWriteIntent.manualEditBufferCommit.rawValue,
+            localCrossLinkWriteIntent: SupervisorCrossLinkStoreWriteIntent.afterTurnCacheRefresh.rawValue,
+            localPersonalReviewWriteIntent: SupervisorPersonalReviewNoteStoreWriteIntent.derivedRefresh.rawValue
         )
 
         let report = XTUnifiedDoctorBuilder.build(
@@ -176,11 +226,20 @@ struct XTUnifiedDoctorReportTests {
                 && $0.contains("reason=remote_route_not_preferred")
                 && $0.contains("local_store_role=\(XTSupervisorDurableCandidateMirror.localStoreRole)")
         }) == true)
+        #expect(section?.detailLines.contains(where: {
+            $0.contains("xt_local_store_writes")
+                && $0.contains("personal_memory=\(SupervisorPersonalMemoryStoreWriteIntent.manualEditBufferCommit.rawValue)")
+                && $0.contains("cross_link=\(SupervisorCrossLinkStoreWriteIntent.afterTurnCacheRefresh.rawValue)")
+                && $0.contains("personal_review=\(SupervisorPersonalReviewNoteStoreWriteIntent.derivedRefresh.rawValue)")
+        }) == true)
         #expect(section?.durableCandidateMirrorProjection?.status == .localOnly)
         #expect(section?.durableCandidateMirrorProjection?.target == XTSupervisorDurableCandidateMirror.mirrorTarget)
         #expect(section?.durableCandidateMirrorProjection?.attempted == true)
         #expect(section?.durableCandidateMirrorProjection?.errorCode == "remote_route_not_preferred")
         #expect(section?.durableCandidateMirrorProjection?.localStoreRole == XTSupervisorDurableCandidateMirror.localStoreRole)
+        #expect(section?.localStoreWriteProjection?.personalMemoryIntent == SupervisorPersonalMemoryStoreWriteIntent.manualEditBufferCommit.rawValue)
+        #expect(section?.localStoreWriteProjection?.crossLinkIntent == SupervisorCrossLinkStoreWriteIntent.afterTurnCacheRefresh.rawValue)
+        #expect(section?.localStoreWriteProjection?.personalReviewIntent == SupervisorPersonalReviewNoteStoreWriteIntent.derivedRefresh.rawValue)
     }
 
     @Test
@@ -489,6 +548,10 @@ struct XTUnifiedDoctorReportTests {
         let section = report.section(.modelRouteReadiness)
         #expect(section?.state == .ready)
         #expect(section?.headline == "Model route is ready, but recent project routes degraded")
+        #expect(section?.nextStep.contains("/route diagnose") == true)
+        #expect(section?.nextStep.contains("自动改试上次稳定远端") == true)
+        #expect(section?.nextStep.contains("只有你想把模型固定下来时") == true)
+        #expect(section?.nextStep.contains("XT AI 模型") == true)
         #expect(section?.detailLines.contains("recent_route_failures_24h=1") == true)
         #expect(section?.detailLines.contains(where: { $0.contains("hub_downgraded_to_local") }) == true)
         #expect(section?.memoryRouteTruthProjection?.projectionSource == "xt_model_route_diagnostics_summary")
@@ -660,6 +723,46 @@ struct XTUnifiedDoctorReportTests {
     }
 
     @Test
+    func writesStructuredLocalStoreWriteProjectionIntoMachineReadableReport() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xt-unified-doctor-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let reportURL = XTUnifiedDoctorStore.defaultReportURL(workspaceRoot: tempRoot)
+        let model = sampleModel(id: "hub.model.coder")
+        let mirrorSnapshot = makeSupervisorMemoryAssemblySnapshot(
+            localPersonalMemoryWriteIntent: SupervisorPersonalMemoryStoreWriteIntent.manualEditBufferCommit.rawValue,
+            localCrossLinkWriteIntent: SupervisorCrossLinkStoreWriteIntent.afterTurnCacheRefresh.rawValue,
+            localPersonalReviewWriteIntent: SupervisorPersonalReviewNoteStoreWriteIntent.derivedRefresh.rawValue
+        )
+
+        let report = XTUnifiedDoctorBuilder.build(
+            input: makeDoctorInput(
+                localConnected: true,
+                remoteConnected: false,
+                configuredModelIDs: [model.id],
+                models: [model],
+                bridgeAlive: true,
+                bridgeEnabled: true,
+                sessionRuntime: nil,
+                skillsSnapshot: readySkillsSnapshot(),
+                reportPath: reportURL.path,
+                supervisorMemoryAssemblySnapshot: mirrorSnapshot
+            )
+        )
+        XTUnifiedDoctorStore.writeReport(report, to: reportURL)
+
+        let data = try Data(contentsOf: reportURL)
+        let decoded = try JSONDecoder().decode(XTUnifiedDoctorReport.self, from: data)
+        let projection = decoded.section(.sessionRuntimeReadiness)?.localStoreWriteProjection
+
+        #expect(projection?.personalMemoryIntent == SupervisorPersonalMemoryStoreWriteIntent.manualEditBufferCommit.rawValue)
+        #expect(projection?.crossLinkIntent == SupervisorCrossLinkStoreWriteIntent.afterTurnCacheRefresh.rawValue)
+        #expect(projection?.personalReviewIntent == SupervisorPersonalReviewNoteStoreWriteIntent.derivedRefresh.rawValue)
+    }
+
+    @Test
     func voicePlaybackSectionSurfacesHubVoicePackFallbackDetails() {
         let model = sampleModel(id: "hub.model.coder")
         var preferences = VoiceRuntimePreferences.default()
@@ -763,6 +866,8 @@ private func makeDoctorInput(
     bridgeAlive: Bool,
     bridgeEnabled: Bool,
     bridgeLastError: String = "",
+    failureCode: String = "",
+    linking: Bool = false,
     sessionRuntime: AXSessionRuntimeSnapshot?,
     sessionID: String? = nil,
     skillsSnapshot: AXSkillsDoctorSnapshot,
@@ -779,13 +884,13 @@ private func makeDoctorInput(
         localConnected: localConnected,
         remoteConnected: remoteConnected,
         remoteRoute: .none,
-        linking: false,
+        linking: linking,
         pairingPort: 50052,
         grpcPort: 50051,
         internetHost: localConnected ? "10.0.0.8" : "hub.example.test",
         configuredModelIDs: configuredModelIDs,
         totalModelRoles: AXRole.allCases.count,
-        failureCode: "",
+        failureCode: failureCode,
         runtime: .empty,
         runtimeStatus: AIRuntimeStatus(
             pid: 42,
@@ -820,7 +925,10 @@ private func makeSupervisorMemoryAssemblySnapshot(
     durableCandidateMirrorTarget: String? = nil,
     durableCandidateMirrorAttempted: Bool = false,
     durableCandidateMirrorErrorCode: String? = nil,
-    durableCandidateLocalStoreRole: String = XTSupervisorDurableCandidateMirror.localStoreRole
+    durableCandidateLocalStoreRole: String = XTSupervisorDurableCandidateMirror.localStoreRole,
+    localPersonalMemoryWriteIntent: String? = nil,
+    localCrossLinkWriteIntent: String? = nil,
+    localPersonalReviewWriteIntent: String? = nil
 ) -> SupervisorMemoryAssemblySnapshot {
     SupervisorMemoryAssemblySnapshot(
         source: "xt_unified_doctor_test",
@@ -852,7 +960,10 @@ private func makeSupervisorMemoryAssemblySnapshot(
         durableCandidateMirrorTarget: durableCandidateMirrorTarget,
         durableCandidateMirrorAttempted: durableCandidateMirrorAttempted,
         durableCandidateMirrorErrorCode: durableCandidateMirrorErrorCode,
-        durableCandidateLocalStoreRole: durableCandidateLocalStoreRole
+        durableCandidateLocalStoreRole: durableCandidateLocalStoreRole,
+        localPersonalMemoryWriteIntent: localPersonalMemoryWriteIntent,
+        localCrossLinkWriteIntent: localCrossLinkWriteIntent,
+        localPersonalReviewWriteIntent: localPersonalReviewWriteIntent
     )
 }
 

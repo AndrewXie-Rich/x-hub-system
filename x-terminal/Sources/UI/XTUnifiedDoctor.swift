@@ -587,6 +587,40 @@ enum XTUnifiedDoctorBuilder {
             )
         }
 
+        if failureIssue == .multipleHubsAmbiguous {
+            return XTUnifiedDoctorSection(
+                kind: .hubReachability,
+                state: .diagnosticRequired,
+                headline: "发现到多台 Hub，必须先固定目标",
+                summary: "当前不是单纯的 Hub 不可达，而是 Bonjour / LAN 扫描同时发现了多台候选 Hub；在明确绑定目标前，doctor 不能假装下一步已经清楚。",
+                nextStep: "先在 XT Pair Hub 里固定一台目标 Hub，或手填 Internet Host / 端口；必要时到目标 Hub 的 LAN (gRPC) 页面停掉另一台 Hub 的广播后再重试。",
+                repairEntry: .xtPairHub,
+                detailLines: [
+                    "transport=\(route.transportMode)",
+                    "route=\(route.routeLabel)",
+                    "runtime_alive=\(runtimeAlive)",
+                    normalizedFailureCode.isEmpty ? "failure_code=multiple_hubs_ambiguous" : "failure_code=\(normalizedFailureCode)"
+                ]
+            )
+        }
+
+        if failureIssue == .hubPortConflict {
+            return XTUnifiedDoctorSection(
+                kind: .hubReachability,
+                state: .diagnosticRequired,
+                headline: "Hub 端口冲突，必须先修复 LAN 端口",
+                summary: "当前阻塞更像是目标 Hub 的 gRPC / pairing 端口已被占用；只要端口仍是 already in use / eaddrinuse，doctor 就不能把连接链路当成可恢复。",
+                nextStep: "先到 Hub Settings -> LAN (gRPC) 或 Diagnostics & Recovery 切换到空闲端口，或释放占用进程；再把新端口同步回 XT 后重跑 reconnect smoke。",
+                repairEntry: .xtPairHub,
+                detailLines: [
+                    "transport=\(route.transportMode)",
+                    "route=\(route.routeLabel)",
+                    "runtime_alive=\(runtimeAlive)",
+                    normalizedFailureCode.isEmpty ? "failure_code=hub_port_conflict" : "failure_code=\(normalizedFailureCode)"
+                ]
+            )
+        }
+
         if failureIssue == .pairingRepairRequired {
             return XTUnifiedDoctorSection(
                 kind: .hubReachability,
@@ -727,7 +761,7 @@ enum XTUnifiedDoctorBuilder {
                 state: .blockedWaitingUpstream,
                 headline: "模型路由正在等待可用的 Hub 链路",
                 summary: "在 Hub 可达性真正进入 interactive 之前，XT 无法确认哪些模型实际可用。",
-                nextStep: "先完成 Pair Hub，再回到 Choose Model。",
+                nextStep: "先完成 Pair Hub，再回到 AI 模型（Choose Model）。",
                 repairEntry: .xtChooseModel,
                 detailLines: details
             )
@@ -739,7 +773,7 @@ enum XTUnifiedDoctorBuilder {
                 state: .diagnosticRequired,
                 headline: "配对已通，但模型路由不可用",
                 summary: "Hub 已可达，但 XT 还看不到任何可用模型。这个问题需要和配对失败、授权失败区分开。",
-                nextStep: "打开 Choose Model 或 REL Flow Hub -> Models & Paid Access，确认至少有一个激活模型，再重新执行 Verify。",
+                nextStep: "打开 AI 模型（Choose Model）或 REL Flow Hub -> Models & Paid Access，确认至少有一个激活模型，再重新执行 Verify。",
                 repairEntry: .xtChooseModel,
                 detailLines: details
             )
@@ -751,7 +785,7 @@ enum XTUnifiedDoctorBuilder {
                 state: .inProgress,
                 headline: "Hub 模型可见，但 XT 的角色分配还是空的",
                 summary: "模型路由已经存在，但 X-Terminal 还没有把任何角色绑定到具体的 Hub 模型上。",
-                nextStep: "至少先在 Choose Model 里给 coder 和 supervisor 分配模型。",
+                nextStep: "至少先在 AI 模型（Choose Model）里给 coder 和 supervisor 分配模型。",
                 repairEntry: .xtChooseModel,
                 detailLines: details
             )
@@ -763,7 +797,7 @@ enum XTUnifiedDoctorBuilder {
                 state: .diagnosticRequired,
                 headline: "XT 的角色分配指向了当前未暴露的模型",
                 summary: "虽然配对成功，但至少有一个已分配的模型 ID 不在当前的 Hub 模型清单里。",
-                nextStep: "去 Choose Model 替换过期模型 ID，或者回到 Hub 重新启用这些模型。",
+                nextStep: "去 AI 模型（Choose Model）替换过期模型 ID，或者回到 Hub 重新启用这些模型。",
                 repairEntry: .xtChooseModel,
                 detailLines: details
             )
@@ -800,7 +834,7 @@ enum XTUnifiedDoctorBuilder {
 
         section.headline = "Model route is ready, but recent project routes degraded"
         section.summary = "XT 当前能看到可分配模型，但最近仍有项目请求在执行时降到本地或远端失败；这通常不是“完全没连上 Hub”，而是具体项目选中的远端没有稳定命中。"
-        section.nextStep = "打开受影响项目后运行 `/route diagnose`；如果诊断里已经提示 XT 会自动改试上次稳定远端，就直接继续。只有你想把模型固定下来时，再到 Choose Model 手动切。"
+        section.nextStep = "打开受影响项目后运行 `/route diagnose`；如果诊断里已经提示 XT 会自动改试上次稳定远端，就直接继续。只有你想把模型固定下来时，再到 XT AI 模型手动切。"
         return section
     }
 

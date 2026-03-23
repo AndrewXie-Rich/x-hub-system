@@ -143,7 +143,7 @@ struct XTModelCatalogTests {
               "state": "available",
               "model_path": "/models/glm",
               "model_format": "hf_transformers",
-              "default_load_profile": {
+              "default_load_config": {
                 "context_length": 4096,
                 "ttl": 900,
                 "parallel": 2,
@@ -196,5 +196,31 @@ struct XTModelCatalogTests {
         #expect(model.resourceProfile.preferredDevice == "mps")
         #expect(model.processorRequirements.processorRequired)
         #expect(model.capabilitySummaryLine?.contains("图像理解") == true)
+    }
+
+    @Test
+    func hubModelStillDecodesLegacyDefaultLoadProfileAlias() throws {
+        let json = """
+        {
+          "models": [
+            {
+              "id": "legacy-local",
+              "name": "Legacy Local",
+              "backend": "transformers",
+              "context_length": 2048,
+              "default_load_profile": {
+                "context_length": 3072,
+                "ttl": 600
+              }
+            }
+          ],
+          "updatedAt": 1
+        }
+        """
+        let snapshot = try JSONDecoder().decode(ModelStateSnapshot.self, from: Data(json.utf8))
+        let model = try #require(snapshot.models.first)
+
+        #expect(model.defaultLoadProfile?.contextLength == 3072)
+        #expect(model.defaultLoadProfile?.ttl == 600)
     }
 }

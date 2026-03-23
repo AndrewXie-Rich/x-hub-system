@@ -223,6 +223,8 @@ enum ExecutionRoutePresentation {
         switch mode {
         case "remote_model":
             executionPath = "remote_model"
+        case "hub_downgraded_to_local":
+            executionPath = "hub_downgraded_to_local"
         case "local_fallback_after_remote_error":
             executionPath = "local_fallback_after_remote_error"
         case "local_preflight", "local_direct_reply", "local_direct_action":
@@ -235,7 +237,7 @@ enum ExecutionRoutePresentation {
         switch executionPath {
         case "remote_model":
             runtimeProvider = "Hub (Remote)"
-        case "local_fallback_after_remote_error", "local_runtime":
+        case "hub_downgraded_to_local", "local_fallback_after_remote_error", "local_runtime":
             runtimeProvider = "Hub (Local)"
         default:
             runtimeProvider = ""

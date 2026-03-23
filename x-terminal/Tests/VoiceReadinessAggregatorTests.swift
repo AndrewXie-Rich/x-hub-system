@@ -39,6 +39,21 @@ struct VoiceReadinessAggregatorTests {
     }
 
     @Test
+    func modelRouteDiagnosticUsesAIModeledChooseModelNaming() {
+        let snapshot = VoiceReadinessAggregator.build(
+            input: makeVoiceReadinessInput(
+                localConnected: true,
+                remoteConnected: false,
+                configuredModelIDs: [],
+                models: []
+            )
+        )
+
+        #expect(snapshot.check(.modelRouteReadiness)?.state == .diagnosticRequired)
+        #expect(snapshot.check(.modelRouteReadiness)?.nextStep.contains("AI 模型（Choose Model）") == true)
+    }
+
+    @Test
     func bridgeDiagnosticCarriesLastEnableDeliveryFailure() {
         let model = voiceReadinessModel(id: "hub.model.coder")
         let snapshot = VoiceReadinessAggregator.build(

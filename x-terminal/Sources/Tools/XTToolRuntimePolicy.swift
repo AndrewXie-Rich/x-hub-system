@@ -223,6 +223,11 @@ func xtToolRuntimePolicyDeniedSummary(
         "effective_execution_tier": .string(governance.effectiveBundle.executionTier.rawValue),
         "supervisor_intervention_tier": .string(governance.configuredBundle.supervisorInterventionTier.rawValue),
         "effective_supervisor_intervention_tier": .string(governance.effectiveBundle.supervisorInterventionTier.rawValue),
+        "review_policy_mode": .string(governance.effectiveBundle.reviewPolicyMode.rawValue),
+        "progress_heartbeat_sec": .number(Double(governance.effectiveBundle.schedule.progressHeartbeatSeconds)),
+        "review_pulse_sec": .number(Double(governance.effectiveBundle.schedule.reviewPulseSeconds)),
+        "brainstorm_review_sec": .number(Double(governance.effectiveBundle.schedule.brainstormReviewSeconds)),
+        "governance_compat_source": .string(governance.compatSource.rawValue),
         "governance_allowed_capabilities": .array(governance.capabilityBundle.allowedCapabilityLabels.map(JSONValue.string)),
     ]
 }

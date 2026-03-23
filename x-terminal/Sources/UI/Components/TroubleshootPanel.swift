@@ -5,6 +5,8 @@ enum UITroubleshootIssue: String, CaseIterable, Codable, Sendable {
     case permissionDenied = "permission_denied"
     case paidModelAccessBlocked = "paid_model_access_blocked"
     case pairingRepairRequired = "pairing_repair_required"
+    case multipleHubsAmbiguous = "multiple_hubs_ambiguous"
+    case hubPortConflict = "hub_port_conflict"
     case hubUnreachable = "hub_unreachable"
 
     var title: String {
@@ -17,6 +19,10 @@ enum UITroubleshootIssue: String, CaseIterable, Codable, Sendable {
             return "Paid model access blocked"
         case .pairingRepairRequired:
             return "Pairing repair required"
+        case .multipleHubsAmbiguous:
+            return "Multiple hubs found"
+        case .hubPortConflict:
+            return "Hub port conflict"
         case .hubUnreachable:
             return "Hub unreachable"
         }
@@ -32,6 +38,10 @@ enum UITroubleshootIssue: String, CaseIterable, Codable, Sendable {
             return "当设备级付费模型策略、白名单或预算把请求挡住时，诊断入口必须直接指向设备信任、模型与预算，而不是退回无上下文 permission denied。"
         case .pairingRepairRequired:
             return "当本地配对档案过期、token 失效或 mTLS 证书不再匹配时，系统必须明确要求清理失效配对并重配，而不是继续用旧档案反复 reconnect。"
+        case .multipleHubsAmbiguous:
+            return "当局域网里同时发现多台 Hub 时，必须先固定目标 Hub，再继续 bootstrap / connect；不能继续靠 auto-discovery 猜。"
+        case .hubPortConflict:
+            return "当 Hub 的 gRPC / pairing 端口被占用时，必须直接把用户带到改端口或释放占用的修复入口，而不是继续显示笼统的 connect failed。"
         case .hubUnreachable:
             return "Hub 不可达时，优先检查配对参数、Hub 诊断状态，再回到首用向导重试。"
         }
@@ -42,6 +52,7 @@ enum UITroubleshootDestination: String, Codable, Sendable {
     case xtPairHub = "xt_pair_hub"
     case xtChooseModel = "xt_choose_model"
     case xtDiagnostics = "xt_diagnostics"
+    case hubLAN = "hub_lan_grpc"
     case hubPairing = "hub_pairing_device_trust"
     case hubModels = "hub_models_paid_access"
     case hubGrants = "hub_grants_permissions"
@@ -58,6 +69,8 @@ enum UITroubleshootDestination: String, Codable, Sendable {
             return "XT Settings → AI 模型"
         case .xtDiagnostics:
             return "XT Settings → Diagnostics"
+        case .hubLAN:
+            return "Hub Settings → LAN (gRPC)"
         case .hubPairing:
             return "Hub Settings → Pairing & Device Trust"
         case .hubModels:
@@ -92,6 +105,13 @@ struct UITroubleshootGuide: Identifiable, Codable, Equatable, Sendable {
     var id: String { issue.rawValue }
     var title: String { issue.title }
     var maxFixSteps: Int { steps.count }
+}
+
+struct UITroubleshootActionDescriptor: Equatable, Sendable {
+    let id: String
+    let title: String
+    let subtitle: String
+    let systemImage: String
 }
 
 enum UITroubleshootKnowledgeBase {
@@ -141,6 +161,26 @@ enum UITroubleshootKnowledgeBase {
                     UITroubleshootStep(index: 3, instruction: "重配完成后重新执行 one-click setup / reconnect smoke，确认 unauthenticated / certificate_required 不再出现。", destination: .hubDiagnostics)
                 ]
             )
+        case .multipleHubsAmbiguous:
+            return UITroubleshootGuide(
+                issue: issue,
+                summary: issue.summary,
+                steps: [
+                    UITroubleshootStep(index: 1, instruction: "先到 XT Pair Hub 明确选择要连接的那台 Hub；如果目标 Hub 已知，也可以直接手填 Internet Host / pairing port / gRPC port，停止让自动发现继续猜。", destination: .xtPairHub),
+                    UITroubleshootStep(index: 2, instruction: "再到目标 Hub 的 LAN (gRPC) 页面核对它实际广播的 Internet Host 与端口；若同网段还有另一台 Hub，先停掉它的 LAN 广播或改成手动指定。", destination: .hubLAN),
+                    UITroubleshootStep(index: 3, instruction: "固定目标 Hub 后重新执行 reconnect smoke，确认 bonjour_multiple_hubs_ambiguous / lan_multiple_hubs_ambiguous 不再出现。", destination: .xtDiagnostics)
+                ]
+            )
+        case .hubPortConflict:
+            return UITroubleshootGuide(
+                issue: issue,
+                summary: issue.summary,
+                steps: [
+                    UITroubleshootStep(index: 1, instruction: "先回 XT Pair Hub 记录当前 pairing port / gRPC port，避免继续拿旧端口反复重连。", destination: .xtPairHub),
+                    UITroubleshootStep(index: 2, instruction: "到 Hub Settings -> LAN (gRPC) 或 Diagnostics & Recovery 把 Hub 切到空闲端口，或释放已经占用该端口的进程，直到 already in use / eaddrinuse 消失。", destination: .hubLAN),
+                    UITroubleshootStep(index: 3, instruction: "把新端口同步回 XT 后重新执行 reconnect smoke，确认 pairing + gRPC 都恢复。", destination: .xtDiagnostics)
+                ]
+            )
         case .hubUnreachable:
             return UITroubleshootGuide(
                 issue: issue,
@@ -156,28 +196,118 @@ enum UITroubleshootKnowledgeBase {
 
     static func issue(forFailureCode rawCode: String) -> UITroubleshootIssue? {
         let code = rawCode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !code.isEmpty else { return nil }
-        if code.contains("device_paid_model_disabled") || code.contains("device_paid_model_not_allowed") || code.contains("device_daily_token_budget_exceeded") || code.contains("device_single_request_token_exceeded") || code.contains("legacy_grant_flow_required") {
+        let normalized = code
+            .replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+        guard !normalized.isEmpty else { return nil }
+        if normalized.contains("bonjour_multiple_hubs_ambiguous")
+            || normalized.contains("lan_multiple_hubs_ambiguous")
+            || normalized.contains("multiple_hubs_ambiguous") {
+            return .multipleHubsAmbiguous
+        }
+        if normalized.contains("hub_port_conflict")
+            || normalized.contains("grpc_port_in_use")
+            || normalized.contains("pairing_port_in_use")
+            || normalized.contains("port_in_use")
+            || normalized.contains("eaddrinuse")
+            || normalized.contains("address_already_in_use") {
+            return .hubPortConflict
+        }
+        if normalized.contains("device_paid_model_disabled") || normalized.contains("device_paid_model_not_allowed") || normalized.contains("device_daily_token_budget_exceeded") || normalized.contains("device_single_request_token_exceeded") || normalized.contains("legacy_grant_flow_required") {
             return .paidModelAccessBlocked
         }
-        if code.contains("unauthenticated")
-            || code.contains("mtls_client_certificate_required")
-            || code.contains("pairing_health_failed")
-            || code.contains("bootstrap_refresh_failed")
-            || code.contains("discover_failed_using_cached_profile")
-            || code.contains("missing_pairing_secret") {
+        if normalized.contains("unauthenticated")
+            || normalized.contains("mtls_client_certificate_required")
+            || normalized.contains("pairing_health_failed")
+            || normalized.contains("bootstrap_refresh_failed")
+            || normalized.contains("discover_failed_using_cached_profile")
+            || normalized.contains("missing_pairing_secret")
+            || normalized.contains("pairing_token_expired")
+            || normalized.contains("pairing_token_invalid")
+            || normalized.contains("pairing_secret_expired")
+            || normalized.contains("bootstrap_token_expired")
+            || normalized.contains("bootstrap_token_invalid")
+            || normalized.contains("client_certificate_expired") {
             return .pairingRepairRequired
         }
-        if code.contains("grant_required") || code.contains("grant_pending") {
+        if normalized.contains("grant_required") || normalized.contains("grant_pending") {
             return .grantRequired
         }
-        if code.contains("permission_denied") || code.contains("forbidden") || code.contains("denied_by_policy") {
+        if normalized.contains("permission_denied") || normalized.contains("forbidden") || normalized.contains("denied_by_policy") {
             return .permissionDenied
         }
-        if code.contains("hub_unreachable") || code.contains("connection_refused") || code.contains("discovery_failed") {
+        if normalized.contains("hub_unreachable") || normalized.contains("connection_refused") || normalized.contains("discovery_failed") {
             return .hubUnreachable
         }
         return nil
+    }
+
+    static func primaryAction(for issue: UITroubleshootIssue?, defaultPairSubtitle: String) -> UITroubleshootActionDescriptor {
+        switch issue {
+        case .pairingRepairRequired:
+            return UITroubleshootActionDescriptor(
+                id: "repair_pairing",
+                title: "清理失效配对并重连",
+                subtitle: "删除本地失效 token / cert / cached profile 后重新 bootstrap + connect",
+                systemImage: "arrow.trianglehead.2.clockwise.rotate.90"
+            )
+        case .multipleHubsAmbiguous:
+            return UITroubleshootActionDescriptor(
+                id: "resolve_hub_ambiguity",
+                title: "固定目标 Hub 后继续连接",
+                subtitle: "在 Pair Hub 里明确选择一台 Hub，或手填 Internet Host / 端口后重连",
+                systemImage: "pin.circle"
+            )
+        case .hubPortConflict:
+            return UITroubleshootActionDescriptor(
+                id: "repair_hub_port_conflict",
+                title: "修复 Hub 端口冲突",
+                subtitle: "先切换到空闲 gRPC / pairing 端口，或释放占用后再重连",
+                systemImage: "exclamationmark.triangle"
+            )
+        default:
+            return UITroubleshootActionDescriptor(
+                id: "pair_hub",
+                title: "连接 Hub（Pair Hub）",
+                subtitle: defaultPairSubtitle,
+                systemImage: "link.badge.plus"
+            )
+        }
+    }
+
+    static func repairEntryTitle(for issue: UITroubleshootIssue?) -> String {
+        switch issue {
+        case .pairingRepairRequired:
+            return "打开配对修复入口"
+        case .multipleHubsAmbiguous:
+            return "打开 Hub 选择入口"
+        case .hubPortConflict:
+            return "打开端口冲突修复入口"
+        default:
+            return "查看授权与排障"
+        }
+    }
+
+    static func repairEntryDetail(for issue: UITroubleshootIssue?, runtime: UIFailClosedRuntimeSnapshot) -> String {
+        switch issue {
+        case .pairingRepairRequired:
+            return "XT 清本地配对 -> Hub 删旧设备 -> 重新批准 -> reconnect smoke"
+        case .multipleHubsAmbiguous:
+            return "XT 固定目标 Hub / 手填 Internet Host -> Hub 核对 LAN 广播与端口 -> reconnect smoke"
+        case .hubPortConflict:
+            return "Hub 换到空闲端口或释放占用 -> XT 同步新 pairing / gRPC 端口 -> reconnect smoke"
+        default:
+            if !runtime.nextDirectedAction.isEmpty {
+                return "resume baton: \(runtime.nextDirectedAction)"
+            }
+            if let issue {
+                return "\(issue.rawValue) → \(runtime.nextRepairAction ?? "open_repair_entry")"
+            }
+            if let denyCode = runtime.launchDenyCodes.first(where: { !$0.isEmpty }) {
+                return "fail_closed=\(denyCode)"
+            }
+            return "grant_required / permission_denied / hub_unreachable 统一从这里解释"
+        }
     }
 }
 
@@ -243,6 +373,10 @@ struct TroubleshootPanel: View {
             return "lock.desktopcomputer"
         case .pairingRepairRequired:
             return "arrow.trianglehead.2.clockwise.rotate.90"
+        case .multipleHubsAmbiguous:
+            return "pin.circle"
+        case .hubPortConflict:
+            return "exclamationmark.triangle"
         case .hubUnreachable:
             return "bolt.horizontal.circle"
         }

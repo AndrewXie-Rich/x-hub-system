@@ -24744,6 +24744,12 @@ Coder 下一步建议：
                 title: title,
                 detail: detailText
             )?.absoluteString
+        case .hubLAN:
+            return XTDeepLinkURLBuilder.hubSetupURL(
+                sectionId: "pair_progress",
+                title: title,
+                detail: detailText
+            )?.absoluteString
         case .hubModels:
             return XTDeepLinkURLBuilder.hubSetupURL(
                 sectionId: "choose_model",

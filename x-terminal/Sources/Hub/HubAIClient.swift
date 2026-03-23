@@ -871,6 +871,27 @@ actor HubAIClient {
         return try? jsonDecoder.decode(AIRuntimeStatus.self, from: data)
     }
 
+    static func resolveRouteDecisionModelsSnapshot(
+        mode: HubTransportMode,
+        hasRemoteProfile: Bool,
+        remoteSnapshot: ModelStateSnapshot?,
+        localSnapshot: ModelStateSnapshot
+    ) -> ModelStateSnapshot {
+        let decision = HubRouteStateMachine.resolve(mode: mode, hasRemoteProfile: hasRemoteProfile)
+        switch decision.mode {
+        case .grpc:
+            guard hasRemoteProfile else { return .empty() }
+            return remoteSnapshot ?? .empty()
+        case .fileIPC:
+            return localSnapshot
+        case .auto:
+            if hasRemoteProfile {
+                return remoteSnapshot ?? .empty()
+            }
+            return localSnapshot
+        }
+    }
+
     func loadModelsState(transportOverride: HubTransportMode? = nil) async -> ModelStateSnapshot {
         let mode = transportOverride ?? Self.transportMode()
         let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
@@ -894,6 +915,19 @@ actor HubAIClient {
             }
             return local
         }
+    }
+
+    func loadRouteDecisionModelsState(transportOverride: HubTransportMode? = nil) async -> ModelStateSnapshot {
+        let mode = transportOverride ?? Self.transportMode()
+        let hasRemote = await HubPairingCoordinator.shared.hasHubEnv(stateDir: nil)
+        let localSnapshot = loadLocalModelsState()
+        let remoteSnapshot = hasRemote ? await loadRemoteModelsThrottled() : nil
+        return Self.resolveRouteDecisionModelsSnapshot(
+            mode: mode,
+            hasRemoteProfile: hasRemote,
+            remoteSnapshot: remoteSnapshot,
+            localSnapshot: localSnapshot
+        )
     }
 
     func enqueueGenerate(

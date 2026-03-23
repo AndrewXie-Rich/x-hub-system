@@ -64,7 +64,7 @@ struct HubPairingCoordinatorTests {
     @Test
     func remoteGenerateSuccessPreservesExecutionMetadata() {
         let json = """
-        {"ok":true,"text":"hello","model_id":"qwen3-17b-mlx-bf16","requested_model_id":"gpt-5.4","actual_model_id":"qwen3-17b-mlx-bf16","runtime_provider":"Hub (Local)","execution_path":"hub_downgraded_to_local","fallback_reason_code":"downgrade_to_local","reason":"eos"}
+        {"ok":true,"text":"hello","model_id":"qwen3-17b-mlx-bf16","requested_model_id":"gpt-5.4","actual_model_id":"qwen3-17b-mlx-bf16","runtime_provider":"Hub (Local)","execution_path":"hub_downgraded_to_local","fallback_reason_code":"downgrade_to_local","audit_ref":"audit-route-1","deny_code":"credential_finding","reason":"eos"}
         """
 
         let result = HubPairingCoordinator.remoteGenerateResultForTesting(
@@ -78,6 +78,8 @@ struct HubPairingCoordinatorTests {
         #expect(result?.runtimeProvider == "Hub (Local)")
         #expect(result?.executionPath == "hub_downgraded_to_local")
         #expect(result?.fallbackReasonCode == "downgrade_to_local")
+        #expect(result?.auditRef == "audit-route-1")
+        #expect(result?.denyCode == "credential_finding")
     }
 
     @Test

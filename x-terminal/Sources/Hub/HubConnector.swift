@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 struct HubStatus: Codable, Equatable {
     var pid: Int32?
@@ -14,7 +15,10 @@ struct HubStatus: Codable, Equatable {
     var modelsUpdatedAt: Double?
 
     func isAlive(ttl: Double = 3.0) -> Bool {
-        (Date().timeIntervalSince1970 - updatedAt) < ttl
+        guard (Date().timeIntervalSince1970 - updatedAt) < ttl else { return false }
+        guard let pid, pid > 1 else { return true }
+        if Darwin.kill(pid_t(pid), 0) == 0 { return true }
+        return errno == EPERM
     }
 }
 

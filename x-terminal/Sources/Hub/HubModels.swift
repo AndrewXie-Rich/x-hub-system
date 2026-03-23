@@ -823,6 +823,7 @@ struct HubModel: Codable, Identifiable, Equatable {
         case tokensPerSec = "tokens_per_sec"
         case modelPath = "model_path"
         case modelFormat = "model_format"
+        case defaultLoadConfig = "default_load_config"
         case defaultLoadProfile = "default_load_profile"
         case taskKinds = "task_kinds"
         case inputModalities = "input_modalities"
@@ -834,9 +835,14 @@ struct HubModel: Codable, Identifiable, Equatable {
         case processorRequirements = "processor_requirements"
     }
 
+    enum AliasCodingKeys: String, CodingKey {
+        case defaultLoadConfig
+    }
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let s = try decoder.container(keyedBy: SnakeCodingKeys.self)
+        let a = try decoder.container(keyedBy: AliasCodingKeys.self)
 
         id = (try? c.decode(String.self, forKey: .id)) ?? ""
         name = (try? c.decode(String.self, forKey: .name)) ?? id
@@ -845,7 +851,9 @@ struct HubModel: Codable, Identifiable, Equatable {
         let legacyContextLength = (try? c.decode(Int.self, forKey: .contextLength))
             ?? (try? s.decode(Int.self, forKey: .contextLength))
             ?? 8192
-        let decodedDefaultLoadProfile = (try? c.decodeIfPresent(HubLocalModelLoadProfile.self, forKey: .defaultLoadProfile))
+        let decodedDefaultLoadProfile = (try? a.decodeIfPresent(HubLocalModelLoadProfile.self, forKey: .defaultLoadConfig))
+            ?? (try? c.decodeIfPresent(HubLocalModelLoadProfile.self, forKey: .defaultLoadProfile))
+            ?? (try? s.decodeIfPresent(HubLocalModelLoadProfile.self, forKey: .defaultLoadConfig))
             ?? (try? s.decodeIfPresent(HubLocalModelLoadProfile.self, forKey: .defaultLoadProfile))
         let decodedMaxContextLength = (try? c.decodeIfPresent(Int.self, forKey: .maxContextLength))
             ?? (try? s.decodeIfPresent(Int.self, forKey: .maxContextLength))

@@ -15359,6 +15359,11 @@ main().catch((err) => {
         if text.contains("14 unavailable") || text.contains("14_unavailable") {
             return "grpc_unavailable"
         }
+        if text.contains("eaddrinuse")
+            || text.contains("address already in use")
+            || (text.contains("already in use") && text.contains("port")) {
+            return "hub_port_conflict"
+        }
         if text.contains("no connection established") {
             return "grpc_unavailable"
         }

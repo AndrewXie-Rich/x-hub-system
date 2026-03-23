@@ -25,7 +25,7 @@ enum SupervisorConversationRepairActionPlanner {
             )
         case .xtChooseModel:
             return SupervisorConversationRepairActionPlan(
-                buttonTitle: "打开 Choose Model",
+                buttonTitle: "打开 XT AI 模型",
                 action: .openXTSettings(sectionId: "choose_model")
             )
         case .xtDiagnostics:
@@ -38,9 +38,14 @@ enum SupervisorConversationRepairActionPlanner {
                 buttonTitle: "打开 Pair Progress",
                 action: .openHubSetup(sectionId: "pair_progress")
             )
+        case .hubLAN:
+            return SupervisorConversationRepairActionPlan(
+                buttonTitle: "打开 Hub LAN (gRPC)",
+                action: .openHubSetup(sectionId: "pair_progress")
+            )
         case .hubModels:
             return SupervisorConversationRepairActionPlan(
-                buttonTitle: "打开 Hub Choose Model",
+                buttonTitle: "打开 Hub 模型与付费访问",
                 action: .openHubSetup(sectionId: "choose_model")
             )
         case .hubGrants, .hubSecurity, .hubDiagnostics:

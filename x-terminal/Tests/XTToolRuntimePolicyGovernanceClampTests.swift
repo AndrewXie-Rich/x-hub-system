@@ -38,6 +38,10 @@ struct XTToolRuntimePolicyGovernanceClampTests {
         #expect(decision.policyReason == "execution_tier_missing_device_tools")
         #expect(jsonString(summary["execution_tier"]) == AXProjectExecutionTier.a4OpenClaw.rawValue)
         #expect(jsonString(summary["effective_execution_tier"]) == AXProjectExecutionTier.a0Observe.rawValue)
+        #expect(jsonString(summary["review_policy_mode"]) == AXProjectReviewPolicyMode.milestoneOnly.rawValue)
+        #expect(jsonNumber(summary["progress_heartbeat_sec"]) == 1800)
+        #expect(jsonNumber(summary["review_pulse_sec"]) == 0)
+        #expect(jsonString(summary["governance_compat_source"]) == AXProjectGovernanceCompatSource.explicitDualDial.rawValue)
     }
 
     @Test
@@ -86,6 +90,8 @@ struct XTToolRuntimePolicyGovernanceClampTests {
         #expect(jsonString(summary["effective_execution_tier"]) == AXProjectExecutionTier.a4OpenClaw.rawValue)
         #expect(jsonString(summary["runtime_surface_effective"]) == AXProjectRuntimeSurfaceMode.guided.rawValue)
         #expect(jsonString(summary["autonomy_effective_mode"]) == AXProjectRuntimeSurfaceMode.guided.rawValue)
+        #expect(jsonString(summary["review_policy_mode"]) == AXProjectReviewPolicyMode.hybrid.rawValue)
+        #expect(jsonString(summary["governance_compat_source"]) == AXProjectGovernanceCompatSource.explicitDualDial.rawValue)
     }
 
     @Test

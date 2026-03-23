@@ -88,6 +88,184 @@ struct HubAIClientModelResolutionTests {
     }
 
     @Test
+    func routeDecisionSnapshotInAutoModeUsesRemoteTruthWhenRemoteProfileExists() {
+        let resolved = HubAIClient.resolveRouteDecisionModelsSnapshot(
+            mode: .auto,
+            hasRemoteProfile: true,
+            remoteSnapshot: nil,
+            localSnapshot: ModelStateSnapshot(
+                models: [
+                    HubModel(
+                        id: "qwen3-14b-mlx",
+                        name: "Qwen 14B",
+                        backend: "mlx",
+                        quant: "bf16",
+                        contextLength: 32_768,
+                        paramsB: 14,
+                        roles: nil,
+                        state: .loaded,
+                        memoryBytes: nil,
+                        tokensPerSec: nil,
+                        modelPath: "/models/qwen3",
+                        note: nil
+                    ),
+                ],
+                updatedAt: 1_776_200_350
+            )
+        )
+
+        #expect(resolved.models.isEmpty)
+    }
+
+    @Test
+    func routeDecisionSnapshotInAutoModeFallsBackToLocalOnlyWithoutRemoteProfile() {
+        let localSnapshot = ModelStateSnapshot(
+            models: [
+                HubModel(
+                    id: "qwen3-14b-mlx",
+                    name: "Qwen 14B",
+                    backend: "mlx",
+                    quant: "bf16",
+                    contextLength: 32_768,
+                    paramsB: 14,
+                    roles: nil,
+                    state: .loaded,
+                    memoryBytes: nil,
+                    tokensPerSec: nil,
+                    modelPath: "/models/qwen3",
+                    note: nil
+                ),
+            ],
+            updatedAt: 1_776_200_360
+        )
+
+        let resolved = HubAIClient.resolveRouteDecisionModelsSnapshot(
+            mode: .auto,
+            hasRemoteProfile: false,
+            remoteSnapshot: ModelStateSnapshot(
+                models: [
+                    HubModel(
+                        id: "openai/gpt-5.4",
+                        name: "GPT 5.4",
+                        backend: "openai",
+                        quant: "n/a",
+                        contextLength: 200_000,
+                        paramsB: 0,
+                        roles: nil,
+                        state: .loaded,
+                        memoryBytes: nil,
+                        tokensPerSec: nil,
+                        modelPath: nil,
+                        note: nil
+                    ),
+                ],
+                updatedAt: 1_776_200_361
+            ),
+            localSnapshot: localSnapshot
+        )
+
+        #expect(resolved == localSnapshot)
+    }
+
+    @Test
+    func routeDecisionSnapshotInGrpcModeFailsClosedWithoutRemoteProfile() {
+        let resolved = HubAIClient.resolveRouteDecisionModelsSnapshot(
+            mode: .grpc,
+            hasRemoteProfile: false,
+            remoteSnapshot: ModelStateSnapshot(
+                models: [
+                    HubModel(
+                        id: "openai/gpt-5.4",
+                        name: "GPT 5.4",
+                        backend: "openai",
+                        quant: "n/a",
+                        contextLength: 200_000,
+                        paramsB: 0,
+                        roles: nil,
+                        state: .loaded,
+                        memoryBytes: nil,
+                        tokensPerSec: nil,
+                        modelPath: nil,
+                        note: nil
+                    ),
+                ],
+                updatedAt: 1_776_200_362
+            ),
+            localSnapshot: ModelStateSnapshot(
+                models: [
+                    HubModel(
+                        id: "qwen3-14b-mlx",
+                        name: "Qwen 14B",
+                        backend: "mlx",
+                        quant: "bf16",
+                        contextLength: 32_768,
+                        paramsB: 14,
+                        roles: nil,
+                        state: .loaded,
+                        memoryBytes: nil,
+                        tokensPerSec: nil,
+                        modelPath: "/models/qwen3",
+                        note: nil
+                    ),
+                ],
+                updatedAt: 1_776_200_363
+            )
+        )
+
+        #expect(resolved.models.isEmpty)
+    }
+
+    @Test
+    func routeDecisionSnapshotInFileModeAlwaysUsesLocalInventory() {
+        let localSnapshot = ModelStateSnapshot(
+            models: [
+                HubModel(
+                    id: "qwen3-14b-mlx",
+                    name: "Qwen 14B",
+                    backend: "mlx",
+                    quant: "bf16",
+                    contextLength: 32_768,
+                    paramsB: 14,
+                    roles: nil,
+                    state: .loaded,
+                    memoryBytes: nil,
+                    tokensPerSec: nil,
+                    modelPath: "/models/qwen3",
+                    note: nil
+                ),
+            ],
+            updatedAt: 1_776_200_370
+        )
+
+        let resolved = HubAIClient.resolveRouteDecisionModelsSnapshot(
+            mode: .fileIPC,
+            hasRemoteProfile: true,
+            remoteSnapshot: ModelStateSnapshot(
+                models: [
+                    HubModel(
+                        id: "openai/gpt-5.4",
+                        name: "GPT 5.4",
+                        backend: "openai",
+                        quant: "n/a",
+                        contextLength: 200_000,
+                        paramsB: 0,
+                        roles: nil,
+                        state: .loaded,
+                        memoryBytes: nil,
+                        tokensPerSec: nil,
+                        modelPath: nil,
+                        note: nil
+                    ),
+                ],
+                updatedAt: 1_776_200_371
+            ),
+            localSnapshot: localSnapshot
+        )
+
+        #expect(resolved == localSnapshot)
+    }
+
+    @Test
     func projectAutoRouteGetsRemoteBackupModelWhenFamilyFallbackIsLoaded() {
         let snapshot = ModelStateSnapshot(
             models: [

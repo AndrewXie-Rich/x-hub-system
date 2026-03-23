@@ -459,7 +459,7 @@ enum VoiceReadinessAggregator {
                 reasonCode: "hub_route_not_interactive",
                 headline: "模型路由正在等待可用的 Hub 链路",
                 summary: "在 Hub 可达性真正进入 interactive 之前，XT 无法确认哪些模型实际可用。",
-                nextStep: "先完成 Pair Hub，再回到 Choose Model。",
+                nextStep: "先完成 Pair Hub，再回到 AI 模型（Choose Model）。",
                 repairEntry: .xtChooseModel,
                 detailLines: details
             )
@@ -472,7 +472,7 @@ enum VoiceReadinessAggregator {
                 reasonCode: "model_inventory_empty",
                 headline: "配对已通，但模型路由不可用",
                 summary: "Hub 已可达，但 XT 还看不到任何可用模型。这个问题需要和配对失败、授权失败区分开。",
-                nextStep: "打开 Choose Model 或 REL Flow Hub -> Models & Paid Access，确认至少有一个激活模型，再重新执行 Verify。",
+                nextStep: "打开 AI 模型（Choose Model）或 REL Flow Hub -> Models & Paid Access，确认至少有一个激活模型，再重新执行 Verify。",
                 repairEntry: .xtChooseModel,
                 detailLines: details
             )
@@ -485,7 +485,7 @@ enum VoiceReadinessAggregator {
                 reasonCode: "xt_role_assignment_empty",
                 headline: "Hub 模型可见，但 XT 的角色分配还是空的",
                 summary: "模型路由已经存在，但 X-Terminal 还没有把任何角色绑定到具体的 Hub 模型上。",
-                nextStep: "至少先在 Choose Model 里给 coder 和 supervisor 分配模型。",
+                nextStep: "至少先在 AI 模型（Choose Model）里给 coder 和 supervisor 分配模型。",
                 repairEntry: .xtChooseModel,
                 detailLines: details
             )
@@ -498,7 +498,7 @@ enum VoiceReadinessAggregator {
                 reasonCode: "assigned_model_missing_from_inventory",
                 headline: "XT 的角色分配指向了当前未暴露的模型",
                 summary: "虽然配对成功，但至少有一个已分配的模型 ID 不在当前的 Hub 模型清单里。",
-                nextStep: "去 Choose Model 替换过期模型 ID，或者回到 Hub 重新启用这些模型。",
+                nextStep: "去 AI 模型（Choose Model）替换过期模型 ID，或者回到 Hub 重新启用这些模型。",
                 repairEntry: .xtChooseModel,
                 detailLines: details
             )
