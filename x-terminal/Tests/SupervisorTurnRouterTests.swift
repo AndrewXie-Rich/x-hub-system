@@ -170,7 +170,7 @@ struct SupervisorTurnRouterTests {
             updatedAtMs: 1,
             auditRef: "audit-relationship-alex"
         )
-        store.upsert(alex)
+        store.upsert(alex, intent: .testSeed)
 
         let manager = SupervisorManager.makeForTesting(
             supervisorPersonalMemoryStore: store
@@ -241,7 +241,8 @@ struct SupervisorTurnRouterTests {
                 createdAtMs: 1,
                 updatedAtMs: 1,
                 auditRef: "audit-relationship-alex"
-            )
+            ),
+            intent: .testSeed
         )
         let manager = SupervisorManager.makeForTesting(
             supervisorPersonalMemoryStore: store

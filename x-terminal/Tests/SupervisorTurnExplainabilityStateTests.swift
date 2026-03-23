@@ -24,7 +24,8 @@ struct SupervisorTurnExplainabilityStateTests {
                 createdAtMs: 1,
                 updatedAtMs: 1,
                 auditRef: "audit-relationship-alex"
-            )
+            ),
+            intent: .testSeed
         )
 
         let manager = SupervisorManager.makeForTesting(

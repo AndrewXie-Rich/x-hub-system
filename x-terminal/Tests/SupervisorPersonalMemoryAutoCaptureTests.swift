@@ -115,7 +115,8 @@ struct SupervisorPersonalMemoryAutoCaptureTests {
                 isStandaloneStatement: true
             ).preferredUserNameRecord(
                 now: Date(timeIntervalSince1970: 1_773_196_800)
-            )
+            ),
+            intent: .testSeed
         )
 
         let manager = SupervisorManager.makeForTesting(
