@@ -5194,6 +5194,115 @@ struct SupervisorCommandGuardTests {
     }
 
     @Test
+    func skillCallbackFailureFollowUpRunsWhenProjectOutsideJurisdictionView() async throws {
+        actor ToolExecutionGate {
+            private var open = false
+
+            func waitUntilOpen() async {
+                while !open {
+                    await Task.yield()
+                }
+            }
+
+            func release() {
+                open = true
+            }
+        }
+
+        let manager = SupervisorManager.makeForTesting(enableSupervisorEventLoopAutoFollowUp: true)
+        let fixture = SupervisorSkillRegistryFixture()
+        defer { fixture.cleanup() }
+
+        let root = try makeProjectRoot(named: "supervisor-skill-callback-hidden-failure-review")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "我的世界还原项目")
+        try fixture.writeHubSkillsStore(projectID: project.projectId)
+        HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+
+        let gate = ToolExecutionGate()
+        manager.setSupervisorToolExecutorOverrideForTesting { call, _ in
+            #expect(call.tool == .project_snapshot)
+            await gate.waitUntilOpen()
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: "snapshot export failed after jurisdiction refresh"
+            )
+        }
+        manager.setSupervisorEventLoopResponseOverrideForTesting { userMessage, triggerSource in
+            #expect(triggerSource == "skill_callback")
+            #expect(userMessage.contains("trigger=skill_callback"))
+            #expect(userMessage.contains("project_ref=\(project.displayName)"))
+            #expect(userMessage.contains("status=failed"))
+            #expect(userMessage.contains("review_trigger=blocker_detected"))
+            #expect(userMessage.contains("review_level_hint=r2_strategic"))
+            #expect(userMessage.contains("review_run_kind=event_driven"))
+            #expect(userMessage.contains("attention_steps:"))
+            #expect(userMessage.contains("step-001"))
+            #expect(!userMessage.contains(root.lastPathComponent))
+            return #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"处理隐藏项目 skill callback","priority":"high","source":"skill_callback","current_owner":"supervisor"}[/CREATE_JOB]"#
+        }
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"导出 hidden project snapshot","priority":"high"}[/CREATE_JOB]"#,
+            userMessage: "请创建任务"
+        )
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [UPSERT_PLAN]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","plan_id":"plan-project-snapshot-hidden-failure-review-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"读取 hidden project snapshot","kind":"call_skill","status":"pending","skill_id":"project.snapshot"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划"
+        )
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [CALL_SKILL]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","step_id":"step-001","skill_id":"project.snapshot","payload":{}}[/CALL_SKILL]
+            """#,
+            userMessage: "请执行 project snapshot 技能"
+        )
+
+        for _ in 0..<12 {
+            await Task.yield()
+        }
+
+        let now = Date(timeIntervalSince1970: 1_773_384_300).timeIntervalSince1970
+        let jurisdiction = SupervisorJurisdictionRegistry.ownerDefault(now: now)
+            .upserting(projectId: project.projectId, displayName: project.displayName, role: .triageOnly, now: now)
+        _ = manager.applySupervisorJurisdictionRegistry(jurisdiction, persist: false, normalizeWithKnownProjects: false)
+
+        await gate.release()
+        await manager.waitForSupervisorSkillDispatchForTesting()
+        await manager.waitForSupervisorEventLoopForTesting()
+
+        let jobs = SupervisorProjectJobStore.load(for: ctx).jobs
+        let followUp = try #require(jobs.first(where: { $0.goal == "处理隐藏项目 skill callback" }))
+        #expect(followUp.source == .skillCallback)
+        #expect(followUp.currentOwner == "supervisor")
+
+        let reviewSnapshot = SupervisorReviewNoteStore.load(for: ctx)
+        let review = try #require(reviewSnapshot.notes.first)
+        #expect(review.trigger == .blockerDetected)
+        #expect(review.reviewLevel == .r2Strategic)
+        #expect(review.targetRole == .supervisor)
+        #expect(review.deliveryMode == .contextAppend)
+        #expect(!review.ackRequired)
+
+        let guidanceSnapshot = SupervisorGuidanceInjectionStore.load(for: ctx)
+        #expect(guidanceSnapshot.items.isEmpty)
+    }
+
+    @Test
     func skillCallbackWithUIReviewConcernRoutesToUIReviewAndSignalsSafeNextAction() async throws {
         let manager = SupervisorManager.makeForTesting(enableSupervisorEventLoopAutoFollowUp: true)
         let fixture = SupervisorSkillRegistryFixture()
@@ -5396,6 +5505,185 @@ struct SupervisorCommandGuardTests {
     }
 
     @Test
+    func skillCallbackWithUIReviewConcernRunsWhenProjectOutsideJurisdictionView() async throws {
+        actor ToolExecutionGate {
+            private var entered = false
+            private var open = false
+
+            func enterAndWait() async {
+                entered = true
+                while !open {
+                    await Task.yield()
+                }
+            }
+
+            func waitUntilEntered() async {
+                while !entered {
+                    await Task.yield()
+                }
+            }
+
+            func release() {
+                open = true
+            }
+        }
+
+        let manager = SupervisorManager.makeForTesting(enableSupervisorEventLoopAutoFollowUp: true)
+        let fixture = SupervisorSkillRegistryFixture()
+        defer { fixture.cleanup() }
+
+        let root = try makeProjectRoot(named: "supervisor-ui-review-hidden-project")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "我的世界还原项目")
+        try fixture.writeHubSkillsStore(projectID: project.projectId)
+        HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config = config
+            .settingTrustedAutomationBinding(
+                mode: .trustedAutomation,
+                deviceId: "device_xt_001",
+                deviceToolGroups: ["device.browser.control"],
+                workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: root)
+            )
+            .settingRuntimeSurfacePolicy(
+                mode: .trustedOpenClawMode,
+                updatedAt: freshTrustedRuntimeSurfaceUpdatedAt()
+            )
+            .settingGovernedAutoApproveLocalToolCalls(enabled: true)
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        AXTrustedAutomationPermissionOwnerReadiness.installCurrentProviderForTesting {
+            makeSupervisorTrustedAutomationPermissionReadiness()
+        }
+        defer { AXTrustedAutomationPermissionOwnerReadiness.resetCurrentProviderForTesting() }
+
+        let uiReviewSnapshot = XTUIReviewAgentEvidenceSnapshot(
+            schemaVersion: XTUIReviewAgentEvidenceSnapshot.currentSchemaVersion,
+            reviewID: "review-ui-hidden-1",
+            projectID: project.projectId,
+            bundleID: "bundle-ui-hidden-1",
+            auditRef: "audit-ui-hidden-1",
+            reviewRef: "local://.xterminal/ui_review/reviews/review-ui-hidden-1.json",
+            bundleRef: "local://.xterminal/ui_observation/bundles/bundle-ui-hidden-1.json",
+            updatedAtMs: 3_200,
+            verdict: .attentionNeeded,
+            confidence: .medium,
+            sufficientEvidence: true,
+            objectiveReady: false,
+            issueCodes: ["critical_action_not_visible"],
+            summary: "Primary CTA is missing after the hidden-project jurisdiction refresh.",
+            artifactRefs: ["screenshot_ref=local://.xterminal/ui_observation/artifacts/bundle-ui-hidden-1/full.png"],
+            artifactPaths: ["/tmp/bundle-ui-hidden-1/full.png"],
+            checks: ["critical_action=fail :: Expected CTA is missing from the current page."],
+            trend: ["status=regressed"],
+            comparison: ["added_issues=critical_action_not_visible"],
+            recentHistory: ["review_id=review-ui-hidden-0 verdict=ready"]
+        )
+        try XTUIReviewAgentEvidenceStore.write(uiReviewSnapshot, for: ctx)
+        let uiReviewEvidenceRef = XTUIReviewAgentEvidenceStore.reviewRef(reviewID: uiReviewSnapshot.reviewID)
+
+        let gate = ToolExecutionGate()
+        manager.setSupervisorToolExecutorOverrideForTesting { call, _ in
+            #expect(call.tool == .deviceBrowserControl)
+            #expect(call.args["action"]?.stringValue == "snapshot")
+            await gate.enterAndWait()
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: true,
+                output: """
+                {"ok":true,"ui_review_agent_evidence_ref":"\(uiReviewEvidenceRef)","ui_review_summary":"Critical CTA missing","ui_review_issue_codes":["critical_action_not_visible"]}
+                """
+            )
+        }
+        manager.setSupervisorEventLoopResponseOverrideForTesting { userMessage, triggerSource in
+            #expect(triggerSource == "skill_callback")
+            #expect(userMessage.contains("project_ref=\(project.displayName)"))
+            #expect(userMessage.contains("ui_review_agent_evidence_ref=\(uiReviewEvidenceRef)"))
+            #expect(userMessage.contains("ui_review_verdict=attention_needed"))
+            #expect(userMessage.contains("ui_review_issue_codes=critical_action_not_visible"))
+            #expect(userMessage.contains("ui_review_repair_action=repair_primary_cta_visibility"))
+            #expect(userMessage.contains("next_safe_action=open_ui_review"))
+            #expect(!userMessage.contains(root.lastPathComponent))
+            return ""
+        }
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"检查 hidden browser runtime 当前状态","priority":"high"}[/CREATE_JOB]"#,
+            userMessage: "请创建任务"
+        )
+
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [UPSERT_PLAN]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","plan_id":"plan-ui-review-hidden-project-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"检查 hidden browser runtime 当前状态","kind":"call_skill","status":"pending","skill_id":"browser.runtime.inspect"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划"
+        )
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [CALL_SKILL]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","step_id":"step-001","skill_id":"browser.runtime.inspect","payload":{"url":"https://example.com/dashboard"}}[/CALL_SKILL]
+            """#,
+            userMessage: "请执行 browser.runtime.inspect 技能"
+        )
+
+        await gate.waitUntilEntered()
+
+        let now = Date(timeIntervalSince1970: 1_773_500_100).timeIntervalSince1970
+        let jurisdiction = SupervisorJurisdictionRegistry.ownerDefault(now: now)
+            .upserting(projectId: project.projectId, displayName: project.displayName, role: .triageOnly, now: now)
+        _ = manager.applySupervisorJurisdictionRegistry(jurisdiction, persist: false, normalizeWithKnownProjects: false)
+
+        await gate.release()
+        await manager.waitForSupervisorSkillDispatchForTesting()
+        await manager.waitForSupervisorEventLoopForTesting()
+
+        manager.refreshRecentSupervisorSkillActivitiesNow()
+        let activity = try #require(manager.recentSupervisorSkillActivities.first(where: { $0.projectId == project.projectId }))
+        let activityURL = try #require(activity.actionURL)
+        let activityRoute = try #require(URL(string: activityURL).flatMap(XTDeepLinkParser.parse))
+        #expect(
+            activityRoute == .project(
+                XTDeepLinkProjectRoute(
+                    projectId: project.projectId,
+                    pane: .chat,
+                    openTarget: nil,
+                    focusTarget: nil,
+                    requestId: nil,
+                    grantRequestId: nil,
+                    grantCapability: nil,
+                    grantReason: nil,
+                    resumeRequested: false,
+                    governanceDestination: .uiReview
+                )
+            )
+        )
+
+        let eventLoopActivity = try #require(manager.recentSupervisorEventLoopActivities.first)
+        #expect(eventLoopActivity.triggerSummary.contains("Repair primary CTA visibility before continuing browser automation."))
+        #expect(eventLoopActivity.policySummary.contains("repair=repair_primary_cta_visibility@critical_action"))
+
+        let guidance = try #require(SupervisorGuidanceInjectionStore.latest(for: ctx))
+        #expect(guidance.targetRole == .projectChat)
+        #expect(guidance.deliveryMode == .stopSignal)
+        #expect(guidance.interventionMode == .stopImmediately)
+        #expect(guidance.safePointPolicy == .immediate)
+        #expect(guidance.ackRequired)
+        #expect(guidance.guidanceText.contains("ui_review_ref=\(uiReviewEvidenceRef)"))
+        #expect(guidance.guidanceText.contains("next_safe_action=open_ui_review"))
+    }
+
+    @Test
     func skillCallbackTerminalCompletionUsesPreDoneReviewTrigger() async throws {
         let manager = SupervisorManager.makeForTesting(enableSupervisorEventLoopAutoFollowUp: true)
         let fixture = SupervisorSkillRegistryFixture()
@@ -5461,6 +5749,121 @@ struct SupervisorCommandGuardTests {
         let jobs = SupervisorProjectJobStore.load(for: ctx).jobs
         let followUp = try #require(jobs.first(where: { $0.goal == "处理 pre-done review 后的下一步" }))
         #expect(followUp.source == .skillCallback)
+
+        let reviewSnapshot = SupervisorReviewNoteStore.load(for: ctx)
+        let review = try #require(reviewSnapshot.notes.first)
+        #expect(review.trigger == .preDoneSummary)
+        #expect(review.reviewLevel == .r3Rescue)
+        #expect(review.targetRole == .coder)
+        #expect(review.deliveryMode == .contextAppend)
+
+        let guidanceSnapshot = SupervisorGuidanceInjectionStore.load(for: ctx)
+        let guidance = try #require(guidanceSnapshot.items.first)
+        #expect(guidance.targetRole == .coder)
+        #expect(guidance.deliveryMode == .contextAppend)
+    }
+
+    @Test
+    func skillCallbackTerminalCompletionRunsWhenProjectOutsideJurisdictionView() async throws {
+        actor ToolExecutionGate {
+            private var entered = false
+            private var open = false
+
+            func enterAndWait() async {
+                entered = true
+                while !open {
+                    await Task.yield()
+                }
+            }
+
+            func waitUntilEntered() async {
+                while !entered {
+                    await Task.yield()
+                }
+            }
+
+            func release() {
+                open = true
+            }
+        }
+
+        let manager = SupervisorManager.makeForTesting(enableSupervisorEventLoopAutoFollowUp: true)
+        let fixture = SupervisorSkillRegistryFixture()
+        defer { fixture.cleanup() }
+
+        let root = try makeProjectRoot(named: "supervisor-skill-callback-hidden-pre-done-review")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "我的世界还原项目")
+        try fixture.writeHubSkillsStore(projectID: project.projectId)
+        HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+
+        let gate = ToolExecutionGate()
+        manager.setSupervisorToolExecutorOverrideForTesting { call, _ in
+            #expect(call.tool == .project_snapshot)
+            await gate.enterAndWait()
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: true,
+                output: "snapshot export completed after hidden-jurisdiction refresh"
+            )
+        }
+        manager.setSupervisorEventLoopResponseOverrideForTesting { userMessage, triggerSource in
+            #expect(triggerSource == "skill_callback")
+            #expect(userMessage.contains("project_ref=\(project.displayName)"))
+            #expect(userMessage.contains("status=completed"))
+            #expect(userMessage.contains("review_trigger=pre_done_summary"))
+            #expect(userMessage.contains("review_level_hint=r3_rescue"))
+            #expect(userMessage.contains("review_run_kind=event_driven"))
+            #expect(userMessage.contains("active_plan_status=completed"))
+            #expect(userMessage.contains("next_pending_steps:"))
+            #expect(!userMessage.contains(root.lastPathComponent))
+            return #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"处理隐藏项目 pre-done review","priority":"high","source":"skill_callback","current_owner":"supervisor"}[/CREATE_JOB]"#
+        }
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"导出 hidden 最终 project snapshot","priority":"high"}[/CREATE_JOB]"#,
+            userMessage: "请创建任务"
+        )
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [UPSERT_PLAN]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","plan_id":"plan-project-snapshot-hidden-pre-done-review-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"导出 hidden 最终 project snapshot","kind":"call_skill","status":"pending","skill_id":"project.snapshot"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划"
+        )
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [CALL_SKILL]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","step_id":"step-001","skill_id":"project.snapshot","payload":{}}[/CALL_SKILL]
+            """#,
+            userMessage: "请执行 project snapshot 技能"
+        )
+
+        await gate.waitUntilEntered()
+
+        let now = Date(timeIntervalSince1970: 1_773_500_200).timeIntervalSince1970
+        let jurisdiction = SupervisorJurisdictionRegistry.ownerDefault(now: now)
+            .upserting(projectId: project.projectId, displayName: project.displayName, role: .triageOnly, now: now)
+        _ = manager.applySupervisorJurisdictionRegistry(jurisdiction, persist: false, normalizeWithKnownProjects: false)
+
+        await gate.release()
+        await manager.waitForSupervisorSkillDispatchForTesting()
+        await manager.waitForSupervisorEventLoopForTesting()
+
+        let jobs = SupervisorProjectJobStore.load(for: ctx).jobs
+        let followUp = try #require(jobs.first(where: { $0.goal == "处理隐藏项目 pre-done review" }))
+        #expect(followUp.source == .skillCallback)
+        #expect(followUp.currentOwner == "supervisor")
 
         let reviewSnapshot = SupervisorReviewNoteStore.load(for: ctx)
         let review = try #require(reviewSnapshot.notes.first)

@@ -315,6 +315,7 @@ enum SupervisorSkillActivityPresentation {
 
     static func governanceLine(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String? {
         guard let governance = item.governance else { return nil }
+        let hasGovernanceTruth = governanceTruthLine(for: item) != nil
         var parts: [String] = []
         if let verdict = governance.latestReviewVerdict?.displayName {
             parts.append(verdict)
@@ -322,10 +323,10 @@ enum SupervisorSkillActivityPresentation {
         if let level = governance.latestReviewLevel?.displayName {
             parts.append(level)
         }
-        if let tier = governance.effectiveSupervisorTier?.displayName {
+        if !hasGovernanceTruth, let tier = governance.effectiveSupervisorTier?.displayName {
             parts.append(tier)
         }
-        if let depth = governance.effectiveWorkOrderDepth?.displayName {
+        if !hasGovernanceTruth, let depth = governance.effectiveWorkOrderDepth?.displayName {
             parts.append(depth)
         }
         let workOrderRef = nonEmpty(governance.workOrderRef)
@@ -334,6 +335,66 @@ enum SupervisorSkillActivityPresentation {
         }
         guard !parts.isEmpty else { return nil }
         return "治理： " + parts.joined(separator: " · ")
+    }
+
+    static func governanceTruthLine(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String? {
+        guard let governance = item.governance else { return nil }
+        return XTGovernanceTruthPresentation.truthLine(
+            configuredExecutionTier: governance.configuredExecutionTier?.rawValue,
+            effectiveExecutionTier: governance.effectiveExecutionTier?.rawValue,
+            configuredSupervisorTier: governance.configuredSupervisorTier?.rawValue,
+            effectiveSupervisorTier: governance.effectiveSupervisorTier?.rawValue,
+            reviewPolicyMode: governance.reviewPolicyMode?.rawValue,
+            progressHeartbeatSeconds: governance.progressHeartbeatSeconds,
+            reviewPulseSeconds: governance.reviewPulseSeconds,
+            brainstormReviewSeconds: governance.brainstormReviewSeconds,
+            compatSource: governance.compatSource?.rawValue
+        )
+    }
+
+    static func blockedSummaryLine(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String? {
+        guard let summary = blockedSummaryText(for: item) else { return nil }
+        return "阻塞说明： \(summary)"
+    }
+
+    static func blockedSummaryText(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String? {
+        let toolLabel = toolBadge(for: item)
+        let target = item.toolSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        switch normalizedStatus(item.status) {
+        case "awaiting_authorization":
+            return XTGuardrailMessagePresentation.awaitingApprovalMessage(
+                toolLabel: toolLabel,
+                target: target,
+                requiredCapability: item.requiredCapability,
+                denyCode: item.denyCode
+            ).summary
+        case "blocked":
+            return XTGuardrailMessagePresentation.blockedSummary(
+                tool: item.tool,
+                toolLabel: toolLabel,
+                denyCode: item.denyCode,
+                policySource: item.policySource,
+                policyReason: item.policyReason,
+                requiredCapability: item.requiredCapability,
+                fallbackSummary: item.resultSummary
+            ) ?? nonEmpty(item.resultSummary)
+        case "failed":
+            if !item.denyCode.isEmpty || !item.policySource.isEmpty || !item.policyReason.isEmpty {
+                return XTGuardrailMessagePresentation.blockedSummary(
+                    tool: item.tool,
+                    toolLabel: toolLabel,
+                    denyCode: item.denyCode,
+                    policySource: item.policySource,
+                    policyReason: item.policyReason,
+                    requiredCapability: item.requiredCapability,
+                    fallbackSummary: item.resultSummary
+                ) ?? nonEmpty(item.resultSummary)
+            }
+            return nil
+        default:
+            return nil
+        }
     }
 
     static func followUpRhythmLine(for item: SupervisorManager.SupervisorRecentSkillActivity) -> String? {
@@ -472,6 +533,12 @@ enum SupervisorSkillActivityPresentation {
         if !item.denyCode.isEmpty { lines.append("deny_code=\(item.denyCode)") }
         if !item.policySource.isEmpty { lines.append("policy_source=\(item.policySource)") }
         if !item.policyReason.isEmpty { lines.append("policy_reason=\(item.policyReason)") }
+        if let blockedSummary = blockedSummaryText(for: item) {
+            lines.append("blocked_summary=\(blockedSummary)")
+        }
+        if let governanceTruth = governanceTruthLine(for: item) {
+            lines.append("governance_truth=\(governanceTruth)")
+        }
         if let guidanceContract = item.governance?.guidanceContract {
             lines.append("guidance_contract=\(guidanceContract.kind.rawValue)")
             if !guidanceContract.primaryBlocker.isEmpty {

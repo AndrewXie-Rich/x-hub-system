@@ -3,14 +3,18 @@ import Testing
 @testable import XTerminal
 
 actor SupervisorDurableCandidatePayloadRecorder {
-    private var payload: HubRemoteSupervisorConversationPayload?
+    private var payloads: [HubRemoteSupervisorConversationPayload] = []
 
     func record(_ payload: HubRemoteSupervisorConversationPayload) {
-        self.payload = payload
+        payloads.append(payload)
     }
 
     func snapshot() -> HubRemoteSupervisorConversationPayload? {
-        payload
+        payloads.last
+    }
+
+    func callCount() -> Int {
+        payloads.count
     }
 }
 
@@ -90,6 +94,98 @@ struct SupervisorHubCandidateMirrorTests {
         #expect(!result.attempted)
     }
 
+    @Test
+    func mirrorFailsClosedLocallyForReadOnlyParticipationWithoutTransportCall() async {
+        let recorder = SupervisorDurableCandidatePayloadRecorder()
+        XTSupervisorDurableCandidateMirror.installTransportOverrideForTesting { payload in
+            await recorder.record(payload)
+            return HubRemoteMutationResult(ok: true, reasonCode: nil, logLines: [])
+        }
+        defer { XTSupervisorDurableCandidateMirror.resetTransportOverrideForTesting() }
+
+        let result = await XTSupervisorDurableCandidateMirror.mirror(
+            classification: makeMirrorClassification(
+                candidate: makeCandidate(sessionParticipationClass: "read_only")
+            ),
+            createdAt: 2
+        )
+
+        #expect(result.status == .localOnly)
+        #expect(result.attempted)
+        #expect(result.errorCode == "supervisor_candidate_session_participation_denied")
+        #expect(await recorder.callCount() == 0)
+        #expect(await recorder.snapshot() == nil)
+    }
+
+    @Test
+    func mirrorFailsClosedLocallyForIgnoreParticipationWithoutTransportCall() async {
+        let recorder = SupervisorDurableCandidatePayloadRecorder()
+        XTSupervisorDurableCandidateMirror.installTransportOverrideForTesting { payload in
+            await recorder.record(payload)
+            return HubRemoteMutationResult(ok: true, reasonCode: nil, logLines: [])
+        }
+        defer { XTSupervisorDurableCandidateMirror.resetTransportOverrideForTesting() }
+
+        let result = await XTSupervisorDurableCandidateMirror.mirror(
+            classification: makeMirrorClassification(
+                candidate: makeCandidate(sessionParticipationClass: "ignore")
+            ),
+            createdAt: 3
+        )
+
+        #expect(result.status == .localOnly)
+        #expect(result.attempted)
+        #expect(result.errorCode == "supervisor_candidate_session_participation_denied")
+        #expect(await recorder.callCount() == 0)
+        #expect(await recorder.snapshot() == nil)
+    }
+
+    @Test
+    func mirrorFailsClosedLocallyForInvalidParticipationWithoutTransportCall() async {
+        let recorder = SupervisorDurableCandidatePayloadRecorder()
+        XTSupervisorDurableCandidateMirror.installTransportOverrideForTesting { payload in
+            await recorder.record(payload)
+            return HubRemoteMutationResult(ok: true, reasonCode: nil, logLines: [])
+        }
+        defer { XTSupervisorDurableCandidateMirror.resetTransportOverrideForTesting() }
+
+        let result = await XTSupervisorDurableCandidateMirror.mirror(
+            classification: makeMirrorClassification(
+                candidate: makeCandidate(sessionParticipationClass: "foreground_only")
+            ),
+            createdAt: 4
+        )
+
+        #expect(result.status == .localOnly)
+        #expect(result.attempted)
+        #expect(result.errorCode == "supervisor_candidate_session_participation_invalid")
+        #expect(await recorder.callCount() == 0)
+        #expect(await recorder.snapshot() == nil)
+    }
+
+    @Test
+    func mirrorFailsClosedLocallyForScopeMismatchWithoutTransportCall() async {
+        let recorder = SupervisorDurableCandidatePayloadRecorder()
+        XTSupervisorDurableCandidateMirror.installTransportOverrideForTesting { payload in
+            await recorder.record(payload)
+            return HubRemoteMutationResult(ok: true, reasonCode: nil, logLines: [])
+        }
+        defer { XTSupervisorDurableCandidateMirror.resetTransportOverrideForTesting() }
+
+        let result = await XTSupervisorDurableCandidateMirror.mirror(
+            classification: makeMirrorClassification(
+                candidate: makeCandidate(writePermissionScope: SupervisorAfterTurnWritebackScope.userScope.rawValue)
+            ),
+            createdAt: 5
+        )
+
+        #expect(result.status == .localOnly)
+        #expect(result.attempted)
+        #expect(result.errorCode == "supervisor_candidate_scope_mismatch")
+        #expect(await recorder.callCount() == 0)
+        #expect(await recorder.snapshot() == nil)
+    }
+
     private func makeProject(id: String, name: String) -> AXProjectEntry {
         AXProjectEntry(
             projectId: id,
@@ -104,6 +200,35 @@ struct SupervisorHubCandidateMirrorTests {
             blockerSummary: nil,
             lastSummaryAt: nil,
             lastEventAt: nil
+        )
+    }
+
+    private func makeMirrorClassification(
+        candidate: SupervisorAfterTurnWritebackCandidate
+    ) -> SupervisorAfterTurnWritebackClassification {
+        SupervisorAfterTurnWritebackClassification(
+            turnMode: .projectFirst,
+            candidates: [candidate],
+            summaryLine: candidate.scope.rawValue
+        )
+    }
+
+    private func makeCandidate(
+        scope: SupervisorAfterTurnWritebackScope = .projectScope,
+        sessionParticipationClass: String = "scoped_write",
+        writePermissionScope: String? = nil
+    ) -> SupervisorAfterTurnWritebackCandidate {
+        SupervisorAfterTurnWritebackCandidate(
+            scope: scope,
+            recordType: "project_blocker",
+            confidence: 0.92,
+            whyPromoted: "focused project fact with durable planning/blocker significance",
+            sourceRef: "user_message",
+            auditRef: "supervisor_writeback:\(scope.rawValue):project_blocker:proj-liangliang:1",
+            sessionParticipationClass: sessionParticipationClass,
+            writePermissionScope: writePermissionScope ?? scope.rawValue,
+            idempotencyKey: "sha256:test-\(scope.rawValue)-\(sessionParticipationClass)",
+            payloadSummary: "project_id=proj-liangliang;record_type=project_blocker"
         )
     }
 }

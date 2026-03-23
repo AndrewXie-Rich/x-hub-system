@@ -45,6 +45,9 @@ struct SupervisorEventLoopFeedPresentationTests {
         #expect(row.statusTone == .info)
         #expect(row.triggerText == "触发：grant approved")
         #expect(row.resultText == "结果：follow-up queued")
+        #expect(row.blockedSummaryText == nil)
+        #expect(row.governanceTruthText == nil)
+        #expect(row.policyReasonText == nil)
         #expect(row.policyText == "needs acknowledgement")
         #expect(row.contractText == nil)
         #expect(row.nextSafeActionText == nil)
@@ -98,5 +101,33 @@ struct SupervisorEventLoopFeedPresentationTests {
 
         #expect(row.contractText == "合同： UI 审查修复 · repair_action=expose_primary_cta · repair_focus=landing_hero_actions")
         #expect(row.nextSafeActionText == "安全下一步： open_ui_review")
+    }
+
+    @Test
+    func rowSurfacesBlockedSummaryGovernanceTruthAndPolicyReason() {
+        let activity = SupervisorManager.SupervisorEventLoopActivity(
+            id: "evt-governance-1",
+            createdAt: 100,
+            updatedAt: 940,
+            triggerSource: "heartbeat",
+            status: "queued",
+            reasonCode: "blocker_detected",
+            dedupeKey: "heartbeat:project-alpha:blocker_detected",
+            projectId: "project-alpha",
+            projectName: "Project Alpha",
+            triggerSummary: "governance follow-up queued",
+            resultSummary: "",
+            policySummary: "review=Blocker Detected · next=open_ui_review",
+            blockedSummary: "Primary CTA is still missing from the landing screen.",
+            policyReason: "ui review blocker detected",
+            governanceTruth: "治理真相：当前生效 A3/S3 · 审查 Hybrid · 节奏 心跳 5m / 脉冲 10m / 脑暴 30m。"
+        )
+
+        let row = SupervisorEventLoopFeedPresentation.row(activity, now: 1_000)
+
+        #expect(row.blockedSummaryText == "阻塞说明： Primary CTA is still missing from the landing screen.")
+        #expect(row.governanceTruthText?.contains("当前生效 A3/S3") == true)
+        #expect(row.policyReasonText == "策略原因： ui review blocker detected")
+        #expect(row.policyText == "review=Blocker Detected · next=open_ui_review")
     }
 }

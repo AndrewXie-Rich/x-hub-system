@@ -493,6 +493,20 @@ private struct SupervisorRecentSkillActivityCardView: View {
                     .lineLimit(2)
             }
 
+            if let blockedSummaryLine = SupervisorSkillActivityPresentation.blockedSummaryLine(for: item) {
+                Text(blockedSummaryLine)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+            }
+
+            if let governanceTruthLine = SupervisorSkillActivityPresentation.governanceTruthLine(for: item) {
+                Text(governanceTruthLine)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
             if let governanceLine = SupervisorSkillActivityPresentation.governanceLine(for: item) {
                 Text(governanceLine)
                     .font(.caption2)
@@ -610,6 +624,8 @@ private struct SupervisorRecentSkillActivityCardView: View {
             item.denyCode,
             item.policySource,
             item.policyReason,
+            SupervisorSkillActivityPresentation.blockedSummaryLine(for: item) ?? "",
+            SupervisorSkillActivityPresentation.governanceTruthLine(for: item) ?? "",
             item.grantRequestId,
             item.grantId,
             item.resultEvidenceRef,
@@ -683,6 +699,27 @@ private struct SupervisorEventLoopActivityRowView: View {
 
             if let resultText = item.resultText {
                 Text(resultText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            if let blockedSummaryText = item.blockedSummaryText {
+                Text(blockedSummaryText)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+            }
+
+            if let governanceTruthText = item.governanceTruthText {
+                Text(governanceTruthText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            if let policyReasonText = item.policyReasonText {
+                Text(policyReasonText)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -769,20 +806,23 @@ private struct SupervisorEventLoopActivityRowView: View {
     }
 
     private var observedSignature: String {
-        [
-            item.triggerLabel,
-            item.projectLabel,
-            item.statusLabel,
-            item.triggerText ?? "",
-            item.resultText ?? "",
-            item.policyText ?? "",
-            item.contractText ?? "",
-            item.nextSafeActionText ?? "",
-            item.reasonText,
-            item.dedupeKeyText,
-            item.ageText,
-            item.actionDescriptors.map { "\($0.label):\($0.isEnabled)" }.joined(separator: ",")
-        ].joined(separator: "|")
+        var parts: [String] = []
+        parts.append(item.triggerLabel)
+        parts.append(item.projectLabel)
+        parts.append(item.statusLabel)
+        parts.append(item.triggerText ?? "")
+        parts.append(item.resultText ?? "")
+        parts.append(item.policyText ?? "")
+        parts.append(item.contractText ?? "")
+        parts.append(item.nextSafeActionText ?? "")
+        parts.append(item.reasonText)
+        parts.append(item.dedupeKeyText)
+        parts.append(item.ageText)
+        parts.append(item.actionDescriptors.map { "\($0.label):\($0.isEnabled)" }.joined(separator: ","))
+        parts.append(item.blockedSummaryText ?? "")
+        parts.append(item.governanceTruthText ?? "")
+        parts.append(item.policyReasonText ?? "")
+        return parts.joined(separator: "|")
     }
 }
 

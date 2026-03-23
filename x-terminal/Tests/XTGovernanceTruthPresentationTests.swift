@@ -56,4 +56,27 @@ struct XTGovernanceTruthPresentationTests {
 
         #expect(line == "治理真相：当前生效 A2/S2 · 审查 Hybrid · 节奏 心跳 15m / 脉冲 30m / 脑暴 off · 来源 兼容旧执行面预设。")
     }
+
+    @Test
+    func truthLineReadsCanonicalSnapshotFromToolResultSummaryObject() throws {
+        let line = try #require(
+            XTGovernanceTruthPresentation.truthLine(
+                from: [
+                    "governance": .object([
+                        "configured_execution_tier": .string(AXProjectExecutionTier.a1Plan.rawValue),
+                        "effective_execution_tier": .string(AXProjectExecutionTier.a2RepoAuto.rawValue),
+                        "configured_supervisor_tier": .string(AXProjectSupervisorInterventionTier.s1MilestoneReview.rawValue),
+                        "effective_supervisor_tier": .string(AXProjectSupervisorInterventionTier.s2PeriodicReview.rawValue),
+                        "review_policy_mode": .string(AXProjectReviewPolicyMode.periodic.rawValue),
+                        "progress_heartbeat_sec": .number(900),
+                        "review_pulse_sec": .number(1800),
+                        "brainstorm_review_sec": .number(0),
+                        "compat_source": .string(AXProjectGovernanceCompatSource.explicitDualDial.rawValue)
+                    ])
+                ]
+            )
+        )
+
+        #expect(line == "治理真相：预设 A1/S1 · 当前生效 A2/S2 · 审查 Periodic · 节奏 心跳 15m / 脉冲 30m / 脑暴 off。")
+    }
 }

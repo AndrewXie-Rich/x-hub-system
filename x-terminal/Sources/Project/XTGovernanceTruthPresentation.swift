@@ -1,6 +1,114 @@
 import Foundation
 
 enum XTGovernanceTruthPresentation {
+    static func snapshotFields(
+        from rawObject: [String: JSONValue]
+    ) -> [String: JSONValue] {
+        let governanceObject = jsonObjectValue(rawObject["governance"])
+        var snapshot: [String: JSONValue] = [:]
+
+        setSnapshotField(
+            &snapshot,
+            key: "execution_tier",
+            value: preferredJSONValue(
+                rawObject["execution_tier"],
+                governanceObject["configured_execution_tier"]
+            )
+        )
+        setSnapshotField(
+            &snapshot,
+            key: "effective_execution_tier",
+            value: preferredJSONValue(
+                rawObject["effective_execution_tier"],
+                governanceObject["effective_execution_tier"]
+            )
+        )
+        setSnapshotField(
+            &snapshot,
+            key: "supervisor_intervention_tier",
+            value: preferredJSONValue(
+                rawObject["supervisor_intervention_tier"],
+                governanceObject["configured_supervisor_tier"]
+            )
+        )
+        setSnapshotField(
+            &snapshot,
+            key: "effective_supervisor_intervention_tier",
+            value: preferredJSONValue(
+                rawObject["effective_supervisor_intervention_tier"],
+                governanceObject["effective_supervisor_tier"]
+            )
+        )
+        setSnapshotField(
+            &snapshot,
+            key: "review_policy_mode",
+            value: preferredJSONValue(
+                rawObject["review_policy_mode"],
+                governanceObject["review_policy_mode"]
+            )
+        )
+        setSnapshotField(
+            &snapshot,
+            key: "progress_heartbeat_sec",
+            value: preferredJSONValue(
+                rawObject["progress_heartbeat_sec"],
+                governanceObject["progress_heartbeat_sec"]
+            )
+        )
+        setSnapshotField(
+            &snapshot,
+            key: "review_pulse_sec",
+            value: preferredJSONValue(
+                rawObject["review_pulse_sec"],
+                governanceObject["review_pulse_sec"]
+            )
+        )
+        setSnapshotField(
+            &snapshot,
+            key: "brainstorm_review_sec",
+            value: preferredJSONValue(
+                rawObject["brainstorm_review_sec"],
+                governanceObject["brainstorm_review_sec"]
+            )
+        )
+        setSnapshotField(
+            &snapshot,
+            key: "governance_compat_source",
+            value: preferredJSONValue(
+                rawObject["governance_compat_source"],
+                rawObject["compat_source"],
+                governanceObject["compat_source"]
+            )
+        )
+
+        return snapshot
+    }
+
+    static func truthLine(
+        from rawObject: [String: JSONValue]
+    ) -> String? {
+        guard let summary = effectiveTierSummary(from: rawObject) else { return nil }
+        return "治理真相：\(summary)。"
+    }
+
+    static func effectiveTierSummary(
+        from rawObject: [String: JSONValue]
+    ) -> String? {
+        let snapshot = snapshotFields(from: rawObject)
+        guard !snapshot.isEmpty else { return nil }
+        return effectiveTierSummary(
+            configuredExecutionTier: stringValue(snapshot["execution_tier"]),
+            effectiveExecutionTier: stringValue(snapshot["effective_execution_tier"]),
+            configuredSupervisorTier: stringValue(snapshot["supervisor_intervention_tier"]),
+            effectiveSupervisorTier: stringValue(snapshot["effective_supervisor_intervention_tier"]),
+            reviewPolicyMode: stringValue(snapshot["review_policy_mode"]),
+            progressHeartbeatSeconds: intValue(snapshot["progress_heartbeat_sec"]),
+            reviewPulseSeconds: intValue(snapshot["review_pulse_sec"]),
+            brainstormReviewSeconds: intValue(snapshot["brainstorm_review_sec"]),
+            compatSource: stringValue(snapshot["governance_compat_source"])
+        )
+    }
+
     static func effectiveTierSummary(
         configuredExecutionTier: String? = nil,
         effectiveExecutionTier: String?,
@@ -162,5 +270,59 @@ enum XTGovernanceTruthPresentation {
             return "\(seconds / 3600)h"
         }
         return "\(max(1, seconds / 60))m"
+    }
+
+    private static func preferredJSONValue(
+        _ candidates: JSONValue?...
+    ) -> JSONValue? {
+        candidates
+            .compactMap { $0 }
+            .first(where: isMeaningful)
+    }
+
+    private static func setSnapshotField(
+        _ snapshot: inout [String: JSONValue],
+        key: String,
+        value: JSONValue?
+    ) {
+        guard let value else { return }
+        snapshot[key] = value
+    }
+
+    private static func isMeaningful(_ value: JSONValue?) -> Bool {
+        switch value {
+        case .string(let raw)?:
+            return !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .number?, .bool?, .array?, .object?:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func stringValue(_ value: JSONValue?) -> String? {
+        guard let trimmed = value?
+            .stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
+    }
+
+    private static func intValue(_ value: JSONValue?) -> Int? {
+        switch value {
+        case .number(let number):
+            return Int(number)
+        case .string(let raw):
+            return Int(raw.trimmingCharacters(in: .whitespacesAndNewlines))
+        default:
+            return nil
+        }
+    }
+
+    private static func jsonObjectValue(_ value: JSONValue?) -> [String: JSONValue] {
+        guard case .object(let object)? = value else { return [:] }
+        return object
     }
 }

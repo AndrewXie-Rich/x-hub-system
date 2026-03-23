@@ -16,6 +16,12 @@ struct SupervisorDurableCandidateMirrorResult: Equatable, Sendable {
 }
 
 enum XTSupervisorDurableCandidateMirror {
+    private static let allowedSessionParticipationClasses: Set<String> = [
+        "ignore",
+        "read_only",
+        "scoped_write"
+    ]
+
     private struct CandidateEnvelope: Encodable, Sendable {
         var scope: String
         var recordType: String
@@ -97,6 +103,9 @@ enum XTSupervisorDurableCandidateMirror {
                 attempted: false,
                 errorCode: nil
             )
+        }
+        if let failClosedResult = localPreflightFailureResult(for: candidates) {
+            return failClosedResult
         }
         guard let payload = payload(
             classification: classification,
@@ -216,6 +225,37 @@ enum XTSupervisorDurableCandidateMirror {
         )
     }
 
+    private static func localPreflightFailureResult(
+        for candidates: [SupervisorAfterTurnWritebackCandidate]
+    ) -> SupervisorDurableCandidateMirrorResult? {
+        for candidate in candidates {
+            let sessionParticipationClass = normalizedScalar(candidate.sessionParticipationClass).lowercased()
+            if !allowedSessionParticipationClasses.contains(sessionParticipationClass) {
+                return localFailClosedResult(errorCode: "supervisor_candidate_session_participation_invalid")
+            }
+            if sessionParticipationClass != "scoped_write" {
+                return localFailClosedResult(errorCode: "supervisor_candidate_session_participation_denied")
+            }
+
+            let writePermissionScope = normalizedScalar(candidate.writePermissionScope)
+            if writePermissionScope != candidate.scope.rawValue {
+                return localFailClosedResult(errorCode: "supervisor_candidate_scope_mismatch")
+            }
+        }
+        return nil
+    }
+
+    private static func localFailClosedResult(
+        errorCode: String
+    ) -> SupervisorDurableCandidateMirrorResult {
+        SupervisorDurableCandidateMirrorResult(
+            status: .localOnly,
+            target: mirrorTarget,
+            attempted: true,
+            errorCode: errorCode
+        )
+    }
+
     private static func stableDigest(_ value: String) -> String {
         var hash = UInt64(14_695_981_039_346_656_037)
         for byte in value.utf8 {
@@ -234,5 +274,9 @@ enum XTSupervisorDurableCandidateMirror {
             ordered.append(trimmed)
         }
         return ordered
+    }
+
+    private static func normalizedScalar(_ raw: String) -> String {
+        raw.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

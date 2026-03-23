@@ -16,6 +16,9 @@ struct SupervisorEventLoopRowPresentation: Equatable, Identifiable {
     var statusTone: SupervisorEventLoopTone
     var triggerText: String?
     var resultText: String?
+    var blockedSummaryText: String?
+    var governanceTruthText: String?
+    var policyReasonText: String?
     var policyText: String?
     var contractText: String?
     var nextSafeActionText: String?
@@ -75,6 +78,9 @@ enum SupervisorEventLoopFeedPresentation {
             statusTone: statusTone(item.status),
             triggerText: nonEmpty(item.triggerSummary).map { "触发：\($0)" },
             resultText: nonEmpty(item.resultSummary).map { "结果：\($0)" },
+            blockedSummaryText: nonEmpty(item.blockedSummary).map { "阻塞说明： \($0)" },
+            governanceTruthText: nonEmpty(item.governanceTruth),
+            policyReasonText: nonEmpty(item.policyReason).map { "策略原因： \($0)" },
             policyText: nonEmpty(item.policySummary),
             contractText: contract.map(SupervisorGuidanceContractLinePresentation.contractLine),
             nextSafeActionText: contract.map(SupervisorGuidanceContractLinePresentation.nextSafeActionLine),

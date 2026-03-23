@@ -492,6 +492,82 @@ struct SupervisorAuditDrillDownPresentationTests {
     }
 
     @Test
+    func recentSkillActivityExecutionAndGovernanceSurfaceBlockedSummaryAndTruth() throws {
+        let item = SupervisorManager.SupervisorRecentSkillActivity(
+            projectId: "project-alpha",
+            projectName: "Project Alpha",
+            record: SupervisorSkillCallRecord(
+                schemaVersion: SupervisorSkillCallRecord.currentSchemaVersion,
+                requestId: "req-governance-truth-1",
+                projectId: "project-alpha",
+                jobId: "job-7",
+                planId: "plan-7",
+                stepId: "step-7",
+                skillId: "agent-browser",
+                toolName: ToolName.deviceBrowserControl.rawValue,
+                status: .blocked,
+                payload: [:],
+                currentOwner: "supervisor",
+                resultSummary: "browser automation blocked by governance",
+                denyCode: "governance_capability_denied",
+                policySource: "project_governance",
+                policyReason: "execution_tier_missing_browser_runtime",
+                resultEvidenceRef: "evidence-governance-truth-1",
+                requiredCapability: nil,
+                grantRequestId: nil,
+                grantId: nil,
+                createdAtMs: 1_000,
+                updatedAtMs: 2_000,
+                auditRef: "audit-governance-truth-1"
+            ),
+            tool: .deviceBrowserControl,
+            toolCall: nil,
+            toolSummary: "open login page",
+            actionURL: nil,
+            governance: nil
+        )
+        let fullRecord = SupervisorSkillFullRecord(
+            requestID: "req-governance-truth-1",
+            projectName: "Project Alpha",
+            title: "Supervisor skill blocked",
+            latestStatus: "blocked",
+            latestStatusLabel: "Blocked",
+            requestMetadata: [],
+            approvalFields: [
+                ProjectSkillRecordField(label: "blocked_summary", value: "当前项目执行档位不允许浏览器自动化。"),
+                ProjectSkillRecordField(label: "policy_reason", value: "execution_tier_missing_browser_runtime")
+            ],
+            governanceFields: [
+                ProjectSkillRecordField(label: "governance_truth", value: "当前生效 A1/S2 · 审查 Periodic · 节奏 心跳 15m / 脉冲 30m / 脑暴 off")
+            ],
+            skillPayloadText: nil,
+            toolArgumentsText: nil,
+            resultFields: [],
+            rawOutputPreview: nil,
+            rawOutput: nil,
+            evidenceFields: [],
+            approvalHistory: [],
+            timeline: [],
+            supervisorEvidenceJSON: nil
+        )
+
+        let presentation = SupervisorAuditDrillDownPresentation.recentSkillActivity(
+            item,
+            fullRecord: fullRecord
+        )
+
+        let executionSection = try #require(presentation.sections.first(where: { $0.title == "执行" }))
+        #expect(executionSection.fields.contains(where: {
+            $0.label == "阻塞说明" && $0.value == "当前项目执行档位不允许浏览器自动化。"
+        }))
+
+        let governanceSection = try #require(presentation.sections.first(where: { $0.title == "治理" }))
+        #expect(governanceSection.fields.contains(where: {
+            $0.label == "治理真相" && $0.value.contains("当前生效 A1/S2")
+        }))
+    }
+
+    @Test
     func recentSkillActivityDrillDownSurfacesCompactUIReviewEvidenceSection() {
         let item = SupervisorManager.SupervisorRecentSkillActivity(
             projectId: "project-alpha",
@@ -728,6 +804,98 @@ struct SupervisorAuditDrillDownPresentationTests {
     }
 
     @Test
+    func eventLoopResultSectionIncludesBlockedSummaryAndGovernanceTruthFromFullRecord() throws {
+        let activity = SupervisorManager.SupervisorEventLoopActivity(
+            id: "evt-governance-1",
+            createdAt: 10,
+            updatedAt: 20,
+            triggerSource: "skill_callback",
+            status: "queued",
+            reasonCode: "blocked_follow_up",
+            dedupeKey: "skill_callback:req-governance-evt-1:blocked",
+            projectId: "project-alpha",
+            projectName: "Project Alpha",
+            triggerSummary: "skill callback blocked",
+            resultSummary: "follow up required",
+            policySummary: "policy=retry_once"
+        )
+        let relatedSkill = SupervisorManager.SupervisorRecentSkillActivity(
+            projectId: "project-alpha",
+            projectName: "Project Alpha",
+            record: SupervisorSkillCallRecord(
+                schemaVersion: SupervisorSkillCallRecord.currentSchemaVersion,
+                requestId: "req-governance-evt-1",
+                projectId: "project-alpha",
+                jobId: "job-9",
+                planId: "plan-9",
+                stepId: "step-9",
+                skillId: "agent-browser",
+                toolName: ToolName.deviceBrowserControl.rawValue,
+                status: .blocked,
+                payload: [:],
+                currentOwner: "supervisor",
+                resultSummary: "browser automation blocked by governance",
+                denyCode: "governance_capability_denied",
+                policySource: "project_governance",
+                policyReason: "execution_tier_missing_browser_runtime",
+                resultEvidenceRef: "evidence-evt-governance-1",
+                requiredCapability: nil,
+                grantRequestId: nil,
+                grantId: nil,
+                createdAtMs: 1_000,
+                updatedAtMs: 2_000,
+                auditRef: "audit-evt-governance-1"
+            ),
+            tool: .deviceBrowserControl,
+            toolCall: nil,
+            toolSummary: "open login page",
+            actionURL: nil,
+            governance: nil
+        )
+        let fullRecord = SupervisorSkillFullRecord(
+            requestID: "req-governance-evt-1",
+            projectName: "Project Alpha",
+            title: "Supervisor skill blocked",
+            latestStatus: "blocked",
+            latestStatusLabel: "Blocked",
+            requestMetadata: [],
+            approvalFields: [
+                ProjectSkillRecordField(label: "blocked_summary", value: "当前项目执行档位不允许浏览器自动化。"),
+                ProjectSkillRecordField(label: "policy_reason", value: "execution_tier_missing_browser_runtime")
+            ],
+            governanceFields: [
+                ProjectSkillRecordField(label: "governance_truth", value: "当前生效 A1/S2 · 审查 Periodic。")
+            ],
+            skillPayloadText: nil,
+            toolArgumentsText: nil,
+            resultFields: [],
+            rawOutputPreview: nil,
+            rawOutput: nil,
+            evidenceFields: [],
+            approvalHistory: [],
+            timeline: [],
+            supervisorEvidenceJSON: nil
+        )
+
+        let presentation = SupervisorAuditDrillDownPresentation.eventLoopActivity(
+            activity,
+            relatedSkillActivity: relatedSkill,
+            fullRecord: fullRecord
+        )
+
+        let resultSection = try #require(presentation.sections.first(where: { $0.title == "结果" }))
+        #expect(resultSection.fields.contains(where: {
+            $0.label == "阻塞说明" && $0.value == "当前项目执行档位不允许浏览器自动化。"
+        }))
+        #expect(resultSection.fields.contains(where: {
+            $0.label == "治理真相" && $0.value == "当前生效 A1/S2 · 审查 Periodic。"
+        }))
+        #expect(resultSection.fields.contains(where: {
+            $0.label == "策略原因" && $0.value == "execution_tier_missing_browser_runtime"
+        }))
+    }
+
+    @Test
     func fullRecordFallbackUnsafeUIReviewExposesOpenUIReviewAction() {
         let record = SupervisorSkillFullRecord(
             requestID: "req-fallback-ui-review-1",
@@ -769,5 +937,50 @@ struct SupervisorAuditDrillDownPresentationTests {
         #expect(presentation.actionLabel == "打开 UI 审查")
         #expect(presentation.actionURL?.contains("project_id=project-gamma") == true)
         #expect(presentation.actionURL?.contains("governance_destination=ui_review") == true)
+    }
+
+    @Test
+    func fullRecordFallbackIncludesGovernanceTruthAndBlockedSummaryWhenPresent() throws {
+        let record = SupervisorSkillFullRecord(
+            requestID: "req-fallback-governance-1",
+            projectName: "Project Gamma",
+            title: "Supervisor skill blocked",
+            latestStatus: "blocked",
+            latestStatusLabel: "Blocked",
+            requestMetadata: [],
+            approvalFields: [
+                ProjectSkillRecordField(label: "blocked_summary", value: "当前项目执行档位不允许浏览器自动化。"),
+                ProjectSkillRecordField(label: "policy_reason", value: "execution_tier_missing_browser_runtime")
+            ],
+            governanceFields: [
+                ProjectSkillRecordField(label: "governance_truth", value: "当前生效 A1/S2 · 审查 Periodic。")
+            ],
+            skillPayloadText: nil,
+            toolArgumentsText: nil,
+            resultFields: [],
+            rawOutputPreview: nil,
+            rawOutput: nil,
+            evidenceFields: [],
+            approvalHistory: [],
+            timeline: [],
+            supervisorEvidenceJSON: nil
+        )
+
+        let presentation = SupervisorAuditDrillDownPresentation.fullRecordFallback(
+            projectId: "project-gamma",
+            projectName: "Project Gamma",
+            record: record
+        )
+
+        let governanceSection = try #require(presentation.sections.first(where: { $0.title == "治理" }))
+        #expect(governanceSection.fields.contains(where: {
+            $0.label == "治理真相" && $0.value == "当前生效 A1/S2 · 审查 Periodic。"
+        }))
+        #expect(governanceSection.fields.contains(where: {
+            $0.label == "阻塞说明" && $0.value == "当前项目执行档位不允许浏览器自动化。"
+        }))
+        #expect(governanceSection.fields.contains(where: {
+            $0.label == "策略原因" && $0.value == "execution_tier_missing_browser_runtime"
+        }))
     }
 }

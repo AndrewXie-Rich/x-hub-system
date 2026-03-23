@@ -235,9 +235,32 @@ enum ProjectSkillActivityPresentation {
             .reversed()
             .compactMap { nonEmpty($0.item.policySource) }
             .first
+        let latestDenyCode = firstNonEmpty(
+            latest?.denyCode,
+            evidence?.denyCode,
+            supervisorCall?.denyCode
+        )
         let latestPolicyReason = events
             .reversed()
             .compactMap { nonEmpty($0.item.policyReason) }
+            .first
+        let latestResultSummary = firstNonEmpty(
+            evidence?.resultSummary,
+            latest?.resultSummary,
+            supervisorCall?.resultSummary
+        )
+        let approvalBlockedSummary = XTGuardrailMessagePresentation.blockedSummary(
+            tool: toolName.flatMap(ToolName.init(rawValue:)),
+            toolLabel: displayToolName(toolName ?? ""),
+            denyCode: latestDenyCode ?? "",
+            policySource: latestPolicySource ?? "",
+            policyReason: latestPolicyReason ?? "",
+            fallbackSummary: latestResultSummary ?? "",
+            fallbackDetail: latest?.detail ?? ""
+        )
+        let approvalGovernanceTruth = events
+            .reversed()
+            .compactMap { XTGovernanceTruthPresentation.effectiveTierSummary(from: $0.rawObject) }
             .first
         let toolArgsText = preferredToolArgumentsText(
             latestToolArgs: latest?.toolArgs ?? [:],
@@ -265,9 +288,11 @@ enum ProjectSkillActivityPresentation {
 
         let approvalFields = recordFields([
             ("authorization_disposition", latest?.authorizationDisposition),
-            ("deny_code", firstNonEmpty(latest?.denyCode, evidence?.denyCode, supervisorCall?.denyCode)),
+            ("deny_code", latestDenyCode),
             ("policy_source", latestPolicySource),
             ("policy_reason", latestPolicyReason),
+            ("blocked_summary", approvalBlockedSummary),
+            ("governance_truth", approvalGovernanceTruth),
             ("required_capability", supervisorCall?.requiredCapability),
             ("grant_request_id", supervisorCall?.grantRequestId),
             ("grant_id", supervisorCall?.grantId)
@@ -275,7 +300,7 @@ enum ProjectSkillActivityPresentation {
 
         let resultFields = recordFields([
             ("result_status", firstNonEmpty(evidence?.status, latest?.status, supervisorCall?.status.rawValue)),
-            ("result_summary", firstNonEmpty(evidence?.resultSummary, latest?.resultSummary, supervisorCall?.resultSummary)),
+            ("result_summary", latestResultSummary),
             ("detail", latest?.detail),
             ("raw_output_chars", evidence.flatMap { $0.rawOutputChars > 0 ? String($0.rawOutputChars) : nil })
         ])
@@ -748,6 +773,10 @@ enum ProjectSkillActivityPresentation {
             return "策略来源"
         case "policy_reason":
             return "策略说明"
+        case "blocked_summary":
+            return "阻塞说明"
+        case "governance_truth":
+            return "治理真相"
         case "required_capability":
             return "所需能力"
         case "grant_request_id":

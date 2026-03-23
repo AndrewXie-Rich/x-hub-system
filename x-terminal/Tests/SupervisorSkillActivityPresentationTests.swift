@@ -164,7 +164,15 @@ struct SupervisorSkillActivityPresentationTests {
                 latestReviewId: "review-9",
                 latestReviewVerdict: .betterPathFound,
                 latestReviewLevel: .r2Strategic,
+                configuredExecutionTier: .a2RepoAuto,
+                effectiveExecutionTier: .a3DeliverAuto,
+                configuredSupervisorTier: .s2PeriodicReview,
                 effectiveSupervisorTier: .s3StrategicCoach,
+                reviewPolicyMode: .hybrid,
+                progressHeartbeatSeconds: 300,
+                reviewPulseSeconds: 600,
+                brainstormReviewSeconds: 1_800,
+                compatSource: .explicitDualDial,
                 effectiveWorkOrderDepth: .executionReady,
                 followUpRhythmSummary: "cadence=active · blocker cooldown≈180s",
                 workOrderRef: "wo-9",
@@ -208,17 +216,25 @@ struct SupervisorSkillActivityPresentationTests {
         )
 
         let workflowLine = SupervisorSkillActivityPresentation.workflowLine(for: item)
+        let blockedSummaryLine = SupervisorSkillActivityPresentation.blockedSummaryLine(for: approvalItem)
+        let governanceTruthLine = SupervisorSkillActivityPresentation.governanceTruthLine(for: item)
         let governanceLine = SupervisorSkillActivityPresentation.governanceLine(for: item)
         let followUpLine = SupervisorSkillActivityPresentation.followUpRhythmLine(for: item)
         let guidanceLine = SupervisorSkillActivityPresentation.pendingGuidanceLine(for: item)
+        let diagnostics = SupervisorSkillActivityPresentation.diagnostics(for: item)
 
         #expect(workflowLine?.contains("job=job-7") == true)
         #expect(workflowLine?.contains("plan=plan-9") == true)
-        #expect(governanceLine?.contains("S3 Strategic Coach") == true)
+        #expect(blockedSummaryLine?.contains("Hub 授权") == true)
+        #expect(governanceTruthLine?.contains("A3/S3") == true)
+        #expect(governanceTruthLine?.contains("审查 Hybrid") == true)
+        #expect(governanceTruthLine?.contains("心跳 5m") == true)
+        #expect(governanceLine?.contains("Better Path Found") == true)
         #expect(governanceLine?.contains("work_order=wo-9") == true)
         #expect(followUpLine?.contains("blocker cooldown≈180s") == true)
         #expect(guidanceLine?.contains("Pending") == true)
         #expect(guidanceLine?.contains("必答") == true)
+        #expect(diagnostics.contains("governance_truth=治理真相：预设 A2/S2 · 当前生效 A3/S3"))
         #expect(SupervisorSkillActivityPresentation.actionButtonTitle(for: item) == "打开项目")
         #expect(SupervisorSkillActivityPresentation.actionButtonTitle(for: approvalItem) == "打开授权")
     }
@@ -288,14 +304,17 @@ struct SupervisorSkillActivityPresentationTests {
 
         let contractLine = SupervisorSkillActivityPresentation.guidanceContractLine(for: item)
         let nextSafeActionLine = SupervisorSkillActivityPresentation.guidanceNextSafeActionLine(for: item)
+        let blockedSummaryLine = SupervisorSkillActivityPresentation.blockedSummaryLine(for: item)
         let diagnostics = SupervisorSkillActivityPresentation.diagnostics(for: item)
 
         #expect(contractLine == "合同： 授权处理 · blocker=Hub grant pending")
+        #expect(blockedSummaryLine?.contains("Hub 授权") == true)
         #expect(nextSafeActionLine?.contains("安全下一步： open_hub_grants") == true)
         #expect(nextSafeActionLine?.contains("Approve the pending hub grant") == true)
         #expect(diagnostics.contains("guidance_contract=grant_resolution"))
         #expect(diagnostics.contains("primary_blocker=Hub grant pending"))
         #expect(diagnostics.contains("next_safe_action=open_hub_grants"))
+        #expect(diagnostics.contains("blocked_summary="))
     }
 
     @Test

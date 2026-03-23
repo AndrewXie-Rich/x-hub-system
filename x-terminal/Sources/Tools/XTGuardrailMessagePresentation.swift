@@ -168,20 +168,7 @@ enum XTGuardrailMessagePresentation {
 
         if normalized(denyCode) == "governance_capability_denied"
             || normalized(policySource) == "project_governance" {
-            if let truthLine = XTGovernanceTruthPresentation.truthLine(
-                configuredExecutionTier: string(summary["execution_tier"]),
-                effectiveExecutionTier: string(summary["effective_execution_tier"]),
-                configuredSupervisorTier: string(summary["supervisor_intervention_tier"])
-                    ?? string(summary["configured_supervisor_tier"]),
-                effectiveSupervisorTier: string(summary["effective_supervisor_intervention_tier"])
-                    ?? string(summary["effective_supervisor_tier"]),
-                reviewPolicyMode: string(summary["review_policy_mode"]),
-                progressHeartbeatSeconds: int(summary["progress_heartbeat_sec"]),
-                reviewPulseSeconds: int(summary["review_pulse_sec"]),
-                brainstormReviewSeconds: int(summary["brainstorm_review_sec"]),
-                compatSource: string(summary["governance_compat_source"])
-                    ?? string(summary["compat_source"])
-            ) {
+            if let truthLine = XTGovernanceTruthPresentation.truthLine(from: summary) {
                 return "\(truthLine) \(body)"
             }
         }

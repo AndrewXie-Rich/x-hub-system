@@ -297,6 +297,22 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
             requestedSkillId: item.requestedSkillId,
             effectiveSkillId: item.skillId
         )
+        let blockedSummary = firstMeaningfulScalar([
+            fullRecordFieldValue("blocked_summary", in: fullRecord?.approvalFields ?? []),
+            XTGuardrailMessagePresentation.blockedSummary(
+                tool: item.tool,
+                toolLabel: displayToolName(item.toolName, tool: item.tool),
+                denyCode: item.denyCode,
+                policySource: item.policySource,
+                policyReason: item.policyReason,
+                fallbackSummary: item.resultSummary,
+                fallbackDetail: ""
+            ) ?? ""
+        ])
+        let governanceTruth = firstMeaningfulScalar([
+            fullRecordFieldValue("governance_truth", in: fullRecord?.governanceFields ?? []),
+            fullRecordFieldValue("governance_truth", in: fullRecord?.approvalFields ?? [])
+        ])
         let routingNarrative = SupervisorSkillActivityPresentation.routingNarrative(
             requestedSkillId: item.requestedSkillId,
             effectiveSkillId: item.skillId,
@@ -355,12 +371,13 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
                         ("拒绝码", normalizedScalar(item.denyCode)),
                         ("策略来源", normalizedScalar(item.policySource)),
                         ("策略原因", normalizedScalar(item.policyReason)),
+                        ("阻塞说明", blockedSummary),
                         ("证据引用", normalizedScalar(item.resultEvidenceRef))
                     ]
                 ),
                 compactSection(
                     title: "治理",
-                    fields: governanceFields
+                    fields: [("治理真相", governanceTruth)] + governanceFields
                 ),
                 uiReviewEvidenceSection(fullRecord)
             ].compactMap { $0 },
@@ -379,6 +396,12 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
     ) -> SupervisorAuditDrillDownPresentation {
         let requestSummary = record.requestMetadata.first?.value ?? ""
         let resultSummary = record.resultFields.first?.value ?? ""
+        let governanceTruth = firstMeaningfulScalar([
+            fullRecordFieldValue("governance_truth", in: record.governanceFields),
+            fullRecordFieldValue("governance_truth", in: record.approvalFields)
+        ])
+        let blockedSummary = fullRecordFieldValue("blocked_summary", in: record.approvalFields)
+        let policyReason = fullRecordFieldValue("policy_reason", in: record.approvalFields)
         let preferredAction = preferredUIReviewAction(
             projectId: projectId,
             fallbackAction: nil,
@@ -408,6 +431,14 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
                         ("项目 ID", normalizedScalar(projectId)),
                         ("请求", normalizedScalar(record.requestID)),
                         ("状态", normalizedScalar(record.latestStatus))
+                    ]
+                ),
+                compactSection(
+                    title: "治理",
+                    fields: [
+                        ("治理真相", governanceTruth),
+                        ("阻塞说明", blockedSummary),
+                        ("策略原因", policyReason)
                     ]
                 )
             ].compactMap { $0 },
@@ -461,6 +492,28 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
             .filter { !$0.isEmpty }
             .joined(separator: " · ")
         } ?? ""
+        let blockedSummary = firstMeaningfulScalar([
+            fullRecordFieldValue("blocked_summary", in: fullRecord?.approvalFields ?? []),
+            relatedSkillActivity.flatMap {
+                XTGuardrailMessagePresentation.blockedSummary(
+                    tool: $0.tool,
+                    toolLabel: displayToolName($0.toolName, tool: $0.tool),
+                    denyCode: $0.denyCode,
+                    policySource: $0.policySource,
+                    policyReason: $0.policyReason,
+                    fallbackSummary: $0.resultSummary,
+                    fallbackDetail: ""
+                )
+            } ?? ""
+        ])
+        let governanceTruth = firstMeaningfulScalar([
+            fullRecordFieldValue("governance_truth", in: fullRecord?.governanceFields ?? []),
+            fullRecordFieldValue("governance_truth", in: fullRecord?.approvalFields ?? [])
+        ])
+        let policyReason = firstMeaningfulScalar([
+            fullRecordFieldValue("policy_reason", in: fullRecord?.approvalFields ?? []),
+            relatedSkillActivity?.policyReason ?? ""
+        ])
 
         return SupervisorAuditDrillDownPresentation(
             id: "event-loop:\(activity.id)",
@@ -497,7 +550,10 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
                         ("触发摘要", normalizedScalar(activity.triggerSummary)),
                         ("结果摘要", normalizedScalar(activity.resultSummary)),
                         ("策略", normalizedScalar(activity.policySummary)),
-                        ("关联技能", relatedSkillLabel)
+                        ("关联技能", relatedSkillLabel),
+                        ("阻塞说明", blockedSummary),
+                        ("治理真相", governanceTruth),
+                        ("策略原因", policyReason)
                     ]
                 ),
                 uiReviewEvidenceSection(fullRecord)
@@ -521,6 +577,15 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
         }
         guard !filtered.isEmpty else { return nil }
         return Section(title: title, fields: filtered)
+    }
+
+    private static func fullRecordFieldValue(
+        _ label: String,
+        in fields: [ProjectSkillRecordField]
+    ) -> String {
+        fields.first(where: {
+            $0.label.caseInsensitiveCompare(label) == .orderedSame
+        })?.value ?? ""
     }
 
     private static func skillIdentityFields(

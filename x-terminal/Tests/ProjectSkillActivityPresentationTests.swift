@@ -185,7 +185,7 @@ struct ProjectSkillActivityPresentationTests {
         try ctx.ensureDirs()
 
         let raw = """
-        {"type":"project_skill_call","created_at":1.0,"status":"awaiting_approval","request_id":"skill-6","skill_id":"agent-browser","tool_name":"device.browser.control","tool_args":{"action":"open_url","url":"https://example.com"},"authorization_disposition":"ask","policy_source":"project_governance","policy_reason":"execution_tier_missing_browser_runtime"}
+        {"type":"project_skill_call","created_at":1.0,"status":"awaiting_approval","request_id":"skill-6","skill_id":"agent-browser","tool_name":"device.browser.control","tool_args":{"action":"open_url","url":"https://example.com"},"authorization_disposition":"ask","policy_source":"project_governance","policy_reason":"execution_tier_missing_browser_runtime","execution_tier":"\(AXProjectExecutionTier.a1Plan.rawValue)","effective_execution_tier":"\(AXProjectExecutionTier.a1Plan.rawValue)","supervisor_intervention_tier":"\(AXProjectSupervisorInterventionTier.s2PeriodicReview.rawValue)","effective_supervisor_intervention_tier":"\(AXProjectSupervisorInterventionTier.s2PeriodicReview.rawValue)","review_policy_mode":"\(AXProjectReviewPolicyMode.periodic.rawValue)","progress_heartbeat_sec":900,"review_pulse_sec":1800,"brainstorm_review_sec":0,"governance_compat_source":"\(AXProjectGovernanceCompatSource.explicitDualDial.rawValue)"}
         {"type":"project_skill_call","created_at":2.0,"status":"completed","request_id":"skill-6","skill_id":"agent-browser","tool_name":"device.browser.control","tool_args":{"action":"open_url","url":"https://example.com"},"result_summary":"Navigation completed"}
         """
         let data = try #require(raw.data(using: .utf8))
@@ -243,6 +243,8 @@ struct ProjectSkillActivityPresentationTests {
         #expect(record.requestMetadata.contains(where: { $0.label == "project_id" && $0.value == "project-alpha" }))
         #expect(record.approvalFields.contains(where: { $0.label == "policy_source" && $0.value == "project_governance" }))
         #expect(record.approvalFields.contains(where: { $0.label == "policy_reason" && $0.value == "execution_tier_missing_browser_runtime" }))
+        #expect(record.approvalFields.contains(where: { $0.label == "blocked_summary" && $0.value.contains("不允许浏览器自动化") }))
+        #expect(record.approvalFields.contains(where: { $0.label == "governance_truth" && $0.value.contains("当前生效 A1/S2") }))
         #expect(record.approvalFields.contains(where: { $0.label == "grant_request_id" && $0.value == "grant-123" }))
         #expect(record.toolArgumentsText?.contains("\"url\"") == true)
         #expect(record.resultFields.contains(where: { $0.label == "result_summary" && $0.value == "Navigation completed" }))
@@ -280,7 +282,9 @@ struct ProjectSkillActivityPresentationTests {
                 ProjectSkillRecordField(label: "tool_name", value: "device.browser.control")
             ],
             approvalFields: [
-                ProjectSkillRecordField(label: "policy_reason", value: "execution_tier_missing_browser_runtime")
+                ProjectSkillRecordField(label: "policy_reason", value: "execution_tier_missing_browser_runtime"),
+                ProjectSkillRecordField(label: "blocked_summary", value: "当前项目执行档位不允许浏览器自动化。"),
+                ProjectSkillRecordField(label: "governance_truth", value: "当前生效 A1/S2 · 审查 Periodic。")
             ],
             toolArgumentsText: """
             {
@@ -326,6 +330,8 @@ struct ProjectSkillActivityPresentationTests {
         #expect(text.contains("技能 ID：agent-browser"))
         #expect(text.contains("工具：device.browser.control"))
         #expect(text.contains("策略说明：execution_tier_missing_browser_runtime"))
+        #expect(text.contains("阻塞说明：当前项目执行档位不允许浏览器自动化。"))
+        #expect(text.contains("治理真相：当前生效 A1/S2 · 审查 Periodic。"))
         #expect(text.contains("状态：待审批"))
         #expect(text.contains("处理来源：manual_retry"))
         #expect(text.contains("== 原始 JSON 事件 =="))

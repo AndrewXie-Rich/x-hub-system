@@ -17,6 +17,7 @@ final class SupervisorManager: ObservableObject {
         case localDirectAction = "local_direct_action"
         case hubBriefProjection = "hub_brief_projection"
         case remoteModel = "remote_model"
+        case hubDowngradedToLocal = "hub_downgraded_to_local"
         case localFallbackAfterRemoteError = "local_fallback_after_remote_error"
     }
 
@@ -47,6 +48,9 @@ final class SupervisorManager: ObservableObject {
         var triggerSummary: String
         var resultSummary: String
         var policySummary: String
+        var blockedSummary: String = ""
+        var policyReason: String = ""
+        var governanceTruth: String = ""
     }
 
     struct HeartbeatFeedEntry: Identifiable, Equatable {
@@ -477,6 +481,9 @@ final class SupervisorManager: ObservableObject {
         var projectName: String
         var triggerSummary: String
         var policySummary: String
+        var blockedSummary: String
+        var policyReason: String
+        var governanceTruth: String
     }
 
     private struct SupervisorWorkflowMemorySlice {
@@ -3599,25 +3606,55 @@ final class SupervisorManager: ObservableObject {
 
             var response = ""
             var actualModelId: String?
+            var requestedModelId: String?
+            var executionPath: String?
+            var fallbackReasonCode: String?
             for try await ev in await hubClient.streamResponse(reqId: rid, timeoutSec: 300.0) {
                 if ev.type == "delta", let t = ev.text {
                     response += t
                 }
-                let modelId = ev.model_id?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let modelId = (ev.actualModelIdFromMetadata ?? ev.model_id)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 if !modelId.isEmpty {
                     actualModelId = modelId
                 }
+                let requested = ev.requestedModelIdFromMetadata?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if !requested.isEmpty {
+                    requestedModelId = requested
+                }
+                let path = ev.executionPathFromMetadata?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if !path.isEmpty {
+                    executionPath = path
+                }
+                let fallback = (ev.fallbackReasonCodeFromMetadata ?? ev.denyCodeFromMetadata)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if !fallback.isEmpty {
+                    fallbackReasonCode = fallback
+                }
             }
+            let resolvedRequestedModelId = requestedModelId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                ? requestedModelId
+                : preferredModel
+            let normalizedExecutionPath = executionPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let normalizedFallbackReasonCode = fallbackReasonCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let resolvedExecutionMode: SupervisorReplyExecutionMode =
+                normalizedExecutionPath == SupervisorReplyExecutionMode.hubDowngradedToLocal.rawValue
+                ? .hubDowngradedToLocal
+                : .remoteModel
 
             if let strictFailure = strictSupervisorRemoteModelMismatchResponse(
                 preferredModelId: preferredModel,
                 actualModelId: actualModelId
             ) {
                 recordSupervisorReplyExecution(
-                    mode: .remoteModel,
+                    mode: resolvedExecutionMode,
                     actualModelId: actualModelId,
-                    requestedModelId: preferredModel,
-                    failureReasonCode: nil
+                    requestedModelId: resolvedRequestedModelId,
+                    failureReasonCode: normalizedExecutionPath == SupervisorReplyExecutionMode.hubDowngradedToLocal.rawValue
+                        ? (normalizedFallbackReasonCode.isEmpty ? "downgrade_to_local" : normalizedFallbackReasonCode)
+                        : nil
                 )
                 return strictFailure
             }
@@ -3652,10 +3689,19 @@ final class SupervisorManager: ObservableObject {
                 )
                 return finalizedResponse.text
             }
+            if resolvedExecutionMode == .hubDowngradedToLocal {
+                recordSupervisorReplyExecution(
+                    mode: .hubDowngradedToLocal,
+                    actualModelId: actualModelId,
+                    requestedModelId: resolvedRequestedModelId,
+                    failureReasonCode: normalizedFallbackReasonCode.isEmpty ? "downgrade_to_local" : normalizedFallbackReasonCode
+                )
+                return finalizedResponse.text
+            }
             recordSupervisorReplyExecution(
                 mode: .remoteModel,
                 actualModelId: actualModelId,
-                requestedModelId: preferredModel,
+                requestedModelId: resolvedRequestedModelId,
                 failureReasonCode: nil
             )
             return finalizedResponse.text
@@ -3758,7 +3804,10 @@ final class SupervisorManager: ObservableObject {
                     projectName: metadata.projectName,
                     triggerSummary: metadata.summary,
                     resultSummary: "",
-                    policySummary: metadata.policySummary
+                    policySummary: metadata.policySummary,
+                    blockedSummary: metadata.blockedSummary,
+                    policyReason: metadata.policyReason,
+                    governanceTruth: metadata.governanceTruth
                 )
             )
             return
@@ -3793,7 +3842,10 @@ final class SupervisorManager: ObservableObject {
             projectId: metadata.projectId,
             projectName: metadata.projectName,
             triggerSummary: metadata.summary,
-            policySummary: metadata.policySummary
+            policySummary: metadata.policySummary,
+            blockedSummary: metadata.blockedSummary,
+            policyReason: metadata.policyReason,
+            governanceTruth: metadata.governanceTruth
         )
         appendSupervisorEventLoopActivity(
             SupervisorEventLoopActivity(
@@ -3808,7 +3860,10 @@ final class SupervisorManager: ObservableObject {
                 projectName: metadata.projectName,
                 triggerSummary: metadata.summary,
                 resultSummary: "",
-                policySummary: metadata.policySummary
+                policySummary: metadata.policySummary,
+                blockedSummary: metadata.blockedSummary,
+                policyReason: metadata.policyReason,
+                governanceTruth: metadata.governanceTruth
             )
         )
         if isProcessing || supervisorEventLoopTask != nil {
@@ -3824,7 +3879,15 @@ final class SupervisorManager: ObservableObject {
         userMessage: String,
         triggerSource: SupervisorCommandTriggerSource,
         dedupeKey: String
-    ) -> (projectId: String, projectName: String, summary: String, policySummary: String) {
+    ) -> (
+        projectId: String,
+        projectName: String,
+        summary: String,
+        policySummary: String,
+        blockedSummary: String,
+        policyReason: String,
+        governanceTruth: String
+    ) {
         let projectId = supervisorEventLoopLineValue("project_id", in: userMessage)
             .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
         let projectName = [
@@ -3880,7 +3943,10 @@ final class SupervisorManager: ObservableObject {
             supervisorEventLoopPolicySummary(
                 userMessage: userMessage,
                 projectId: projectId
-            )
+            ),
+            supervisorEventLoopBlockedSummary(userMessage: userMessage),
+            supervisorEventLoopPolicyReason(userMessage: userMessage),
+            supervisorEventLoopGovernanceTruth(userMessage: userMessage, projectId: projectId)
         )
     }
 
@@ -3982,6 +4048,78 @@ final class SupervisorManager: ObservableObject {
         )
     }
 
+    private func supervisorEventLoopBlockedSummary(
+        userMessage: String
+    ) -> String {
+        let summary = [
+            supervisorEventLoopLineValue("blocked_summary", in: userMessage),
+            supervisorEventLoopLineValue("ui_review_repair_summary", in: userMessage),
+            supervisorEventLoopLineValue("ui_review_summary", in: userMessage),
+            supervisorEventLoopLineValue("summary", in: userMessage)
+        ]
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .first { !$0.isEmpty } ?? ""
+        return capped(summary, maxChars: 220)
+    }
+
+    private func supervisorEventLoopPolicyReason(
+        userMessage: String
+    ) -> String {
+        capped(
+            supervisorEventLoopLineValue("policy_reason", in: userMessage)
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            maxChars: 220
+        )
+    }
+
+    private func supervisorEventLoopGovernanceTruth(
+        userMessage: String,
+        projectId: String
+    ) -> String {
+        let resolvedGovernance = resolvedSupervisorEventLoopGovernance(projectId: projectId)
+        let schedule = resolvedGovernance?.effectiveBundle.schedule
+
+        return XTGovernanceTruthPresentation.truthLine(
+            configuredExecutionTier: supervisorEventLoopFirstNonEmptyValue(
+                supervisorEventLoopLineValue("execution_tier", in: userMessage),
+                resolvedGovernance?.configuredBundle.executionTier.rawValue
+            ),
+            effectiveExecutionTier: supervisorEventLoopFirstNonEmptyValue(
+                supervisorEventLoopLineValue("effective_execution_tier", in: userMessage),
+                resolvedGovernance?.effectiveBundle.executionTier.rawValue
+            ),
+            configuredSupervisorTier: supervisorEventLoopFirstNonEmptyValue(
+                supervisorEventLoopLineValue("supervisor_intervention_tier", in: userMessage),
+                resolvedGovernance?.configuredBundle.supervisorInterventionTier.rawValue
+            ),
+            effectiveSupervisorTier: supervisorEventLoopFirstNonEmptyValue(
+                supervisorEventLoopLineValue("effective_supervisor_intervention_tier", in: userMessage),
+                supervisorEventLoopLineValue("effective_supervisor_tier", in: userMessage),
+                resolvedGovernance?.effectiveBundle.supervisorInterventionTier.rawValue
+            ),
+            reviewPolicyMode: supervisorEventLoopFirstNonEmptyValue(
+                supervisorEventLoopLineValue("review_policy_mode", in: userMessage),
+                resolvedGovernance?.effectiveBundle.reviewPolicyMode.rawValue
+            ),
+            progressHeartbeatSeconds: supervisorEventLoopLineIntValue(
+                "progress_heartbeat_sec",
+                in: userMessage
+            ) ?? schedule?.progressHeartbeatSeconds,
+            reviewPulseSeconds: supervisorEventLoopLineIntValue(
+                "review_pulse_sec",
+                in: userMessage
+            ) ?? schedule?.reviewPulseSeconds,
+            brainstormReviewSeconds: supervisorEventLoopLineIntValue(
+                "brainstorm_review_sec",
+                in: userMessage
+            ) ?? schedule?.brainstormReviewSeconds,
+            compatSource: supervisorEventLoopFirstNonEmptyValue(
+                supervisorEventLoopLineValue("governance_compat_source", in: userMessage),
+                resolvedGovernance?.compatSource.rawValue
+            )
+        ) ?? ""
+    }
+
     private func resolvedSupervisorEventLoopGovernance(
         projectId: String
     ) -> AXProjectResolvedGovernanceState? {
@@ -4022,6 +4160,28 @@ final class SupervisorManager: ObservableObject {
         guard !normalized.isEmpty else { return "" }
         guard let value = parser(normalized) else { return normalized }
         return display(value)
+    }
+
+    private func supervisorEventLoopLineIntValue(
+        _ key: String,
+        in message: String
+    ) -> Int? {
+        let value = supervisorEventLoopLineValue(key, in: message)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+        return Int(value)
+    }
+
+    private func supervisorEventLoopFirstNonEmptyValue(
+        _ values: String?...
+    ) -> String? {
+        for value in values {
+            let trimmed = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return trimmed
+            }
+        }
+        return nil
     }
 
     private func supervisorEventLoopActivityDetail(
@@ -5733,8 +5893,16 @@ final class SupervisorManager: ObservableObject {
         }
 
         let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
-        let project = project
-            ?? knownProjects().first(where: { $0.projectId == projectId })
+        let normalizedRootPath = AXProjectRegistryStore.normalizedRootPath(ctx.root)
+        let project = knownProjects().first(where: { candidate in
+            if candidate.projectId == projectId {
+                return true
+            }
+            let rootPath = candidate.rootPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !rootPath.isEmpty else { return false }
+            return AXProjectRegistryStore.normalizedRootPath(URL(fileURLWithPath: rootPath)) == normalizedRootPath
+        })
+            ?? project
             ?? automationProjectEntry(for: ctx)
         let normalizedDetail = capped(
             executionDetail
@@ -22983,7 +23151,15 @@ Coder 下一步建议：
             var latestReviewId: String = ""
             var latestReviewVerdict: SupervisorReviewVerdict? = nil
             var latestReviewLevel: SupervisorReviewLevel? = nil
+            var configuredExecutionTier: AXProjectExecutionTier? = nil
+            var effectiveExecutionTier: AXProjectExecutionTier? = nil
+            var configuredSupervisorTier: AXProjectSupervisorInterventionTier? = nil
             var effectiveSupervisorTier: AXProjectSupervisorInterventionTier? = nil
+            var reviewPolicyMode: AXProjectReviewPolicyMode? = nil
+            var progressHeartbeatSeconds: Int? = nil
+            var reviewPulseSeconds: Int? = nil
+            var brainstormReviewSeconds: Int? = nil
+            var compatSource: AXProjectGovernanceCompatSource? = nil
             var effectiveWorkOrderDepth: AXProjectSupervisorWorkOrderDepth? = nil
             var followUpRhythmSummary: String = ""
             var workOrderRef: String = ""
@@ -24006,9 +24182,18 @@ Coder 下一步建议：
             latestReviewId: latestReviewId,
             latestReviewVerdict: latestReview?.verdict,
             latestReviewLevel: latestReview?.reviewLevel,
+            configuredExecutionTier: resolvedGovernance?.configuredBundle.executionTier,
+            effectiveExecutionTier: resolvedGovernance?.effectiveBundle.executionTier,
+            configuredSupervisorTier: resolvedGovernance?.configuredBundle.supervisorInterventionTier,
             effectiveSupervisorTier: latestReview?.effectiveSupervisorTier
                 ?? pendingAckGuidance?.effectiveSupervisorTier
-                ?? latestGuidance?.effectiveSupervisorTier,
+                ?? latestGuidance?.effectiveSupervisorTier
+                ?? resolvedGovernance?.effectiveBundle.supervisorInterventionTier,
+            reviewPolicyMode: resolvedGovernance?.effectiveBundle.reviewPolicyMode,
+            progressHeartbeatSeconds: resolvedGovernance?.effectiveBundle.schedule.progressHeartbeatSeconds,
+            reviewPulseSeconds: resolvedGovernance?.effectiveBundle.schedule.reviewPulseSeconds,
+            brainstormReviewSeconds: resolvedGovernance?.effectiveBundle.schedule.brainstormReviewSeconds,
+            compatSource: resolvedGovernance?.compatSource,
             effectiveWorkOrderDepth: latestReview?.effectiveWorkOrderDepth
                 ?? pendingAckGuidance?.effectiveWorkOrderDepth
                 ?? latestGuidance?.effectiveWorkOrderDepth,
@@ -25971,6 +26156,12 @@ Coder 下一步建议：
             lastSupervisorActualModelId = trimmedActual
             lastSupervisorRequestedModelId = trimmedRequested
             lastSupervisorRemoteFailureReasonCode = ""
+        case .hubDowngradedToLocal:
+            lastSupervisorActualModelId = trimmedActual
+            lastSupervisorRequestedModelId = trimmedRequested
+            lastSupervisorRemoteFailureReasonCode = normalizedFailure.isEmpty
+                ? "downgrade_to_local"
+                : normalizedFailure
         case .idle:
             lastSupervisorActualModelId = ""
             lastSupervisorRequestedModelId = ""
@@ -26003,6 +26194,23 @@ Coder 下一步建议：
                 return "最近一次远端调用已经发生，但运行层没有回传明确的 model_id。"
             }
             return "最近一次 Supervisor 远端调用实际返回的 model_id 是：\(actualModelId)"
+        case .hubDowngradedToLocal:
+            if actualModelId.isEmpty {
+                if !requestedModelId.isEmpty, !failureReason.isEmpty {
+                    return "最近一次 Supervisor 远端尝试首选 \(requestedModelId)，但 Hub 在执行阶段因 \(failureReason) 把请求降到了本地执行；没有拿到可确认的实际 model_id。"
+                }
+                if !requestedModelId.isEmpty {
+                    return "最近一次 Supervisor 远端尝试首选 \(requestedModelId)，但 Hub 在执行阶段把请求降到了本地执行；没有拿到可确认的实际 model_id。"
+                }
+                return "最近一次 Supervisor 远端调用没有直接命中远端模型，而是被 Hub 在执行阶段降到了本地执行。"
+            }
+            if !requestedModelId.isEmpty, !failureReason.isEmpty {
+                return "最近一次 Supervisor 远端尝试首选 \(requestedModelId)，但 Hub 在执行阶段因 \(failureReason) 把请求降到了本地模型 \(actualModelId)。"
+            }
+            if !requestedModelId.isEmpty {
+                return "最近一次 Supervisor 远端尝试首选 \(requestedModelId)，但 Hub 在执行阶段把请求降到了本地模型 \(actualModelId)。"
+            }
+            return "最近一次 Supervisor 远端调用没有直接命中远端模型，而是被 Hub 在执行阶段降到了本地模型 \(actualModelId)。"
         case .localPreflight:
             return "最近一次回复属于本地预检路径，没有远端模型调用。"
         case .localDirectReply:
@@ -26049,6 +26257,14 @@ Coder 下一步建议：
                 return "已触发过远端调用，但运行层没有回传明确 model_id，属于已调用未精确核验。"
             }
             return "已验证。最近一次可确认的远端实际 model_id 是 \(actualModelId)。"
+        case .hubDowngradedToLocal:
+            if !requestedModelId.isEmpty, !failureReason.isEmpty {
+                return "未验证成功。最近一次 Supervisor 远端尝试首选 \(requestedModelId)，但 Hub 在执行阶段因 \(failureReason) 把请求降到了本地。"
+            }
+            if actualModelId.isEmpty {
+                return "未验证成功。最近一次 Supervisor 远端调用没有真正命中远端模型，而是被 Hub 在执行阶段降到了本地。"
+            }
+            return "未验证成功。最近一次 Supervisor 远端调用没有真正命中远端模型，而是被 Hub 在执行阶段降到了本地模型 \(actualModelId)。"
         case .localFallbackAfterRemoteError:
             if !requestedModelId.isEmpty, !failureReason.isEmpty {
                 return "未验证成功。最近一次 Supervisor 远端尝试首选 \(requestedModelId)，但因 \(failureReason) 失败并由本地兜底接管。"
@@ -26104,6 +26320,8 @@ Coder 下一步建议：
             return ""
         case "model_not_found", "remote_model_not_found":
             return "model_not_found"
+        case "downgrade_to_local":
+            return "downgrade_to_local"
         case "response_timeout":
             return "response_timeout"
         case "grpc_route_unavailable":
@@ -26356,6 +26574,9 @@ XT 当前 transport 是 grpc-only，这不属于 XT 本地 auto fallback；更�
         case .fileIPC:
             return "XT 当前 transport 是 fileIPC，所以 Supervisor 这轮本来就不会强制走远端。先切 `/hub route auto` 或 `/hub route grpc` 再验证。"
         case .grpc:
+            if mode == .hubDowngradedToLocal {
+                return "XT 当前已经是 grpc-only；最近这一轮不是 XT 本地 auto fallback，而是 Hub 在执行阶段把远端请求降到了本地。直接去 Hub 审计查 `ai.generate.downgraded_to_local` / `remote_export_blocked`。"
+            }
             if let mismatchSummary, !mismatchSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 return mismatchSummary
             }
@@ -26367,6 +26588,12 @@ XT 当前 transport 是 grpc-only，这不属于 XT 本地 auto fallback；更�
             }
             return "从 XT 这层看，Supervisor 没有被本地锁住；如果后续还是没命中 GPT，更可能是 Hub 侧策略或远端配置问题。"
         case .auto:
+            if mode == .hubDowngradedToLocal {
+                if !failureReason.isEmpty {
+                    return "最近一次 Supervisor 没有真正命中远端，而是被 Hub 在执行阶段降到了本地；当前 reason=\(failureReason)。如果你要 fail-closed 验证，请切 `/hub route grpc`。"
+                }
+                return "最近一次 Supervisor 没有真正命中远端，而是被 Hub 在执行阶段降到了本地。如果你要 fail-closed 验证，请切 `/hub route grpc`。"
+            }
             if mode == .localFallbackAfterRemoteError {
                 if !failureReason.isEmpty {
                     return "最近一次 Supervisor 远端失败后走了本地兜底，当前 reason=\(failureReason)。在 auto 模式下，这既可能是 XT auto fallback，也可能是 Hub 自己降级；想 fail-closed 验证请切 `/hub route grpc`。"

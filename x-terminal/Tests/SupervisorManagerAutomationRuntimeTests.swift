@@ -602,6 +602,68 @@ struct SupervisorManagerAutomationRuntimeTests {
     }
 
     @Test
+    @MainActor
+    func heartbeatAutoProgressKickstartsHiddenPausedReadyProject() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
+        let project = AXProjectEntry(
+            projectId: AXProjectRegistryStore.projectId(forRoot: root),
+            rootPath: root.path,
+            displayName: "Hidden Heartbeat Kickstart",
+            lastOpenedAt: 1_773_201_520,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: "paused",
+            currentStateSummary: "暂停中",
+            nextStepSummary: "启动自动项目快照",
+            blockerSummary: nil,
+            lastSummaryAt: 1_773_201_020,
+            lastEventAt: 1_773_201_020
+        )
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        manager.setAppModel(appModel)
+
+        let now = Date(timeIntervalSince1970: 1_773_201_530).timeIntervalSince1970
+        let jurisdiction = SupervisorJurisdictionRegistry.ownerDefault(now: now)
+            .upserting(projectId: project.projectId, displayName: project.displayName, role: .triageOnly, now: now)
+        _ = manager.applySupervisorJurisdictionRegistry(
+            jurisdiction,
+            persist: false,
+            normalizeWithKnownProjects: false
+        )
+
+        let actions = manager.runHeartbeatAutoProgressForTesting(
+            now: Date(timeIntervalSince1970: 1_773_201_600)
+        )
+        #expect(actions.count == 1)
+        #expect(actions[0].contains("主动启动"))
+        #expect(actions[0].contains("Hidden Heartbeat Kickstart"))
+
+        try await waitUntil("hidden heartbeat kickstart launch ref persisted") {
+            let config = try? AXProjectStore.loadOrCreateConfig(for: ctx)
+            let runID = config?.lastAutomationLaunchRef.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return !runID.isEmpty
+        }
+    }
+
+    @Test
     func heartbeatAutoProgressRecoversBlockedAutomationRun() throws {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
@@ -614,7 +676,8 @@ struct SupervisorManagerAutomationRuntimeTests {
 
         let ctx = AXProjectContext(root: root)
         _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
-        let project = makeProjectEntry(root: root)
+        var project = makeProjectEntry(root: root)
+        project.displayName = "我的世界还原项目"
         let appModel = AppModel()
         appModel.registry = AXProjectRegistry(
             version: AXProjectRegistry.currentVersion,
@@ -662,7 +725,8 @@ struct SupervisorManagerAutomationRuntimeTests {
 
         let ctx = AXProjectContext(root: root)
         _ = try AXProjectStore.upsertAutomationRecipe(makeLiveIngressRecipe(), activate: true, for: ctx)
-        let project = makeProjectEntry(root: root)
+        var project = makeProjectEntry(root: root)
+        project.displayName = "我的世界还原项目"
         let appModel = AppModel()
         appModel.registry = AXProjectRegistry(
             version: AXProjectRegistry.currentVersion,
@@ -687,7 +751,7 @@ struct SupervisorManagerAutomationRuntimeTests {
             )
         )
 
-        #expect(first.decision == .run)
+        #expect(first.decision == SupervisorManager.SupervisorAutomationExternalTriggerDecision.run)
         #expect(first.reasonCode == "trigger_route_allowed")
         #expect(manager.automationCurrentCheckpoint?.state == .queued)
         let firstRunId = try #require(first.runId)
@@ -846,7 +910,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         let firstWindowAt = Date(timeIntervalSince1970: 1_773_201_000)
         let firstResults = manager.serviceAutomationScheduleTriggers(now: firstWindowAt)
         #expect(firstResults.count == 1)
-        #expect(firstResults.first?.decision == .run)
+        #expect(firstResults.first?.decision == SupervisorManager.SupervisorAutomationExternalTriggerDecision.run)
         #expect(firstResults.first?.triggerId == "schedule/nightly")
         let firstRunId = try #require(firstResults.first?.runId)
 
@@ -867,7 +931,7 @@ struct SupervisorManagerAutomationRuntimeTests {
             now: Date(timeIntervalSince1970: 1_773_201_000 + 24 * 60 * 60 + 5)
         )
         #expect(nextWindowResults.count == 1)
-        #expect(nextWindowResults.first?.decision == .run)
+        #expect(nextWindowResults.first?.decision == SupervisorManager.SupervisorAutomationExternalTriggerDecision.run)
         let nextRunId = try #require(nextWindowResults.first?.runId)
         #expect(nextRunId != firstRunId)
     }
@@ -957,7 +1021,7 @@ struct SupervisorManagerAutomationRuntimeTests {
         #expect(firstPass.count == 2)
         #expect(firstPass.first?.decision == .failClosed)
         #expect(firstPass.first?.reasonCode == "hub_ingress_source_unsupported")
-        #expect(firstPass.last?.decision == .run)
+        #expect(firstPass.last?.decision == SupervisorManager.SupervisorAutomationExternalTriggerDecision.run)
         #expect(firstPass.last?.triggerId == "webhook/github_pr")
         let runId = try #require(firstPass.last?.runId)
         #expect(manager.automationCurrentCheckpoint?.state == .queued)
@@ -2346,6 +2410,131 @@ struct SupervisorManagerAutomationRuntimeTests {
     }
 
     @Test
+    func automationSafePointHoldAfterExecutionRunsSupervisorFollowUpOutsideJurisdictionView() async throws {
+        let manager = SupervisorManager.makeForTesting(enableSupervisorEventLoopAutoFollowUp: true)
+        manager.resetAutomationRuntimeState()
+        actor FollowUpFlag {
+            private var hit = false
+            func mark() { hit = true }
+            func value() -> Bool { hit }
+        }
+        let followUpFlag = FollowUpFlag()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+        let friendlyName = "我的世界还原项目"
+        let project = AXProjectEntry(
+            projectId: projectId,
+            rootPath: root.path,
+            displayName: friendlyName,
+            lastOpenedAt: 1_773_200_900,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: nil,
+            currentStateSummary: nil,
+            nextStepSummary: nil,
+            blockerSummary: nil,
+            lastSummaryAt: nil,
+            lastEventAt: nil
+        )
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: nil,
+            projects: [project]
+        )
+        appModel.selectedProjectId = projectId
+        manager.setAppModel(appModel)
+
+        manager.setSupervisorEventLoopResponseOverrideForTesting { userMessage, triggerSource in
+            await followUpFlag.mark()
+            #expect(triggerSource == "automation_safe_point")
+            #expect(userMessage.contains("project_ref=\(friendlyName)"))
+            #expect(userMessage.contains("requested_state=delivered"))
+            #expect(userMessage.contains("injection_id=guidance-auto-safe-point-hidden-1"))
+            #expect(!userMessage.contains(root.lastPathComponent))
+            return """
+            1. 先检查 hidden automation 产物是否满足交付要求。
+            2. 如果 safe point guidance 仍要求停住，就决定是继续复核还是重新规划。
+            3. 输出给 coder 的下一步。
+            """
+        }
+
+        let prepared = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: 1_773_200_900))
+        )
+        let running = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .running,
+            runID: prepared.launchRef,
+            auditRef: "audit-xt-auto-running-before-hidden-post-safe-point",
+            now: Date(timeIntervalSince1970: 1_773_200_901),
+            emitSystemMessage: false
+        )
+        #expect(running.state == .running)
+
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-auto-safe-point-hidden-1",
+                reviewId: "review-auto-safe-point-hidden-1",
+                projectId: project.projectId,
+                targetRole: .coder,
+                deliveryMode: .priorityInsert,
+                interventionMode: .suggestNextSafePoint,
+                safePointPolicy: .checkpointBoundary,
+                guidanceText: "hidden 项目也要在交付前给 supervisor 一次 review 窗口。",
+                ackStatus: .pending,
+                ackRequired: true,
+                ackNote: "",
+                injectedAtMs: 1_773_200_900_500,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-guidance-auto-safe-point-hidden-1"
+            ),
+            for: ctx
+        )
+
+        let jurisdictionNow = Date(timeIntervalSince1970: 1_773_200_901).timeIntervalSince1970
+        let jurisdiction = SupervisorJurisdictionRegistry.ownerDefault(now: jurisdictionNow)
+            .upserting(projectId: projectId, displayName: friendlyName, role: .triageOnly, now: jurisdictionNow)
+        _ = manager.applySupervisorJurisdictionRegistry(jurisdiction, persist: false, normalizeWithKnownProjects: false)
+
+        let finalCheckpoint = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .delivered,
+            runID: prepared.launchRef,
+            auditRef: "audit-xt-auto-hidden-post-safe-point-delivered",
+            now: Date(timeIntervalSince1970: 1_773_200_902),
+            emitSystemMessage: false
+        )
+        #expect(finalCheckpoint.state == .blocked)
+        await manager.waitForSupervisorEventLoopForTesting()
+
+        #expect(await followUpFlag.value())
+
+        let rows = try rawLogEntries(for: ctx)
+        #expect(rows.contains {
+            ($0["type"] as? String) == "automation_safe_point_hold" &&
+            ($0["run_id"] as? String) == prepared.launchRef &&
+            ($0["requested_state"] as? String) == XTAutomationRunState.delivered.rawValue &&
+            ($0["injection_id"] as? String) == "guidance-auto-safe-point-hidden-1"
+        })
+        #expect(manager.messages.contains {
+            $0.role == .assistant && $0.content.contains("先检查 hidden automation 产物是否满足交付要求")
+        })
+    }
+
+    @Test
     func automationStartCommandPublishesVerifyAndDiffStatusForMutationRun() async throws {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
@@ -3060,11 +3249,11 @@ struct SupervisorManagerAutomationRuntimeTests {
         return root
     }
 
-    private func makeProjectEntry(root: URL) -> AXProjectEntry {
+    private func makeProjectEntry(root: URL, displayName: String? = nil) -> AXProjectEntry {
         AXProjectEntry(
             projectId: AXProjectRegistryStore.projectId(forRoot: root),
             rootPath: root.path,
-            displayName: root.lastPathComponent,
+            displayName: displayName ?? root.lastPathComponent,
             lastOpenedAt: 1_773_200_200,
             manualOrderIndex: nil,
             pinned: false,
