@@ -601,6 +601,56 @@ struct HubRemotePendingGrantRequestsResult: Sendable {
     }
 }
 
+struct HubRemoteSupervisorCandidateReviewQueueItem: Sendable {
+    var schemaVersion: String
+    var reviewId: String
+    var requestId: String
+    var evidenceRef: String
+    var reviewState: String
+    var durablePromotionState: String
+    var promotionBoundary: String
+    var deviceId: String
+    var userId: String
+    var appId: String
+    var threadId: String
+    var threadKey: String
+    var projectId: String
+    var projectIds: [String]
+    var scopes: [String]
+    var recordTypes: [String]
+    var auditRefs: [String]
+    var idempotencyKeys: [String]
+    var candidateCount: Int
+    var summaryLine: String
+    var mirrorTarget: String
+    var localStoreRole: String
+    var carrierKind: String
+    var carrierSchemaVersion: String
+    var pendingChangeId: String
+    var pendingChangeStatus: String
+    var editSessionId: String
+    var docId: String
+    var writebackRef: String
+    var stageCreatedAtMs: Double
+    var stageUpdatedAtMs: Double
+    var latestEmittedAtMs: Double
+    var createdAtMs: Double
+    var updatedAtMs: Double
+}
+
+struct HubRemoteSupervisorCandidateReviewQueueResult: Sendable {
+    var ok: Bool
+    var source: String
+    var updatedAtMs: Double
+    var items: [HubRemoteSupervisorCandidateReviewQueueItem]
+    var reasonCode: String?
+    var logLines: [String]
+
+    var logText: String {
+        logLines.joined(separator: "\n")
+    }
+}
+
 struct HubRemoteConnectorIngressReceipt: Sendable {
     var receiptId: String
     var requestId: String
@@ -677,6 +727,78 @@ struct HubRemotePendingGrantActionResult: Sendable {
     var grantRequestId: String?
     var grantId: String?
     var expiresAtMs: Double?
+    var reasonCode: String?
+    var logLines: [String]
+
+    var logText: String {
+        logLines.joined(separator: "\n")
+    }
+}
+
+struct HubRemoteSupervisorCandidateReviewStageResult: Sendable {
+    var ok: Bool
+    var staged: Bool
+    var idempotent: Bool
+    var source: String
+    var reviewState: String
+    var durablePromotionState: String
+    var promotionBoundary: String
+    var candidateRequestId: String?
+    var evidenceRef: String?
+    var editSessionId: String?
+    var pendingChangeId: String?
+    var docId: String?
+    var baseVersion: String?
+    var workingVersion: String?
+    var sessionRevision: Int64
+    var status: String?
+    var markdown: String?
+    var createdAtMs: Double
+    var updatedAtMs: Double
+    var expiresAtMs: Double
+    var reasonCode: String?
+    var logLines: [String]
+
+    var logText: String {
+        logLines.joined(separator: "\n")
+    }
+}
+
+struct HubRemoteLongtermMarkdownReviewResult: Sendable {
+    var ok: Bool
+    var source: String
+    var pendingChangeId: String?
+    var editSessionId: String?
+    var docId: String?
+    var status: String?
+    var reviewDecision: String?
+    var policyDecision: String?
+    var findingsJSON: String?
+    var redactedCount: Int
+    var reviewedAtMs: Double
+    var approvedAtMs: Double
+    var markdown: String?
+    var autoRejected: Bool
+    var reasonCode: String?
+    var logLines: [String]
+
+    var logText: String {
+        logLines.joined(separator: "\n")
+    }
+}
+
+struct HubRemoteLongtermMarkdownWritebackResult: Sendable {
+    var ok: Bool
+    var source: String
+    var pendingChangeId: String?
+    var status: String?
+    var candidateId: String?
+    var queueStatus: String?
+    var writtenAtMs: Double
+    var docId: String?
+    var sourceVersion: String?
+    var changeLogId: String?
+    var evidenceRef: String?
     var reasonCode: String?
     var logLines: [String]
 
@@ -4916,6 +5038,158 @@ actor HubPairingCoordinator {
         )
     }
 
+    func fetchRemoteSupervisorCandidateReviewQueue(
+        options rawOptions: HubRemoteConnectOptions,
+        projectId: String?,
+        limit: Int
+    ) -> HubRemoteSupervisorCandidateReviewQueueResult {
+        let opts = sanitize(rawOptions)
+        var logs: [String] = []
+
+        let stateDir = opts.stateDir ?? defaultStateDir()
+        let hubEnv = stateDir.appendingPathComponent("hub.env")
+        let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
+        let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
+        let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
+
+        guard FileManager.default.fileExists(atPath: hubEnv.path) else {
+            return HubRemoteSupervisorCandidateReviewQueueResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                updatedAtMs: 0,
+                items: [],
+                reasonCode: "hub_env_missing",
+                logLines: ["missing hub env: \(hubEnv.path)"]
+            )
+        }
+        guard FileManager.default.fileExists(atPath: clientKitSrc.path) else {
+            return HubRemoteSupervisorCandidateReviewQueueResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                updatedAtMs: 0,
+                items: [],
+                reasonCode: "client_kit_missing",
+                logLines: ["missing client kit src: \(clientKitSrc.path)"]
+            )
+        }
+
+        let exported = readEnvExports(from: hubEnv)
+        let merged = mergedAxhubEnv(options: opts, extra: exported)
+        let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged)
+        guard let nodeBin else {
+            return HubRemoteSupervisorCandidateReviewQueueResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                updatedAtMs: 0,
+                items: [],
+                reasonCode: "node_missing",
+                logLines: ["missing node runtime for remote supervisor candidate review queue"]
+            )
+        }
+
+        var scriptEnv = merged
+        scriptEnv["XTERMINAL_SUPERVISOR_CANDIDATE_REVIEW_PROJECT_ID"] = projectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        scriptEnv["XTERMINAL_SUPERVISOR_CANDIDATE_REVIEW_LIMIT"] = String(max(1, min(500, limit)))
+
+        let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
+        func runScript() -> StepOutput {
+            do {
+                let script = self.remoteSupervisorCandidateReviewQueueScriptSource()
+                let result = try ProcessCapture.run(
+                    nodeBin,
+                    ["--input-type=module", "-"],
+                    cwd: clientKitHub,
+                    stdin: script.data(using: .utf8),
+                    timeoutSec: 12.0,
+                    env: scriptEnv
+                )
+                return StepOutput(exitCode: result.exitCode, output: result.combined, command: command)
+            } catch {
+                return StepOutput(exitCode: 127, output: String(describing: error), command: command)
+            }
+        }
+
+        var step = runScript()
+        appendStepLogs(into: &logs, step: step)
+        if step.exitCode != 0, shouldRetryAfterClientKitInstall(step.output) {
+            let install = runAxhubctl(args: ["install-client"], options: opts, env: [:], timeoutSec: 120.0)
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                step = runScript()
+                appendStepLogs(into: &logs, step: step)
+            }
+        }
+
+        guard let jsonLine = extractTrailingJSONObjectLine(step.output),
+              let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteSupervisorCandidateReviewQueueScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(from: step.output, fallback: "remote_supervisor_candidate_review_queue_failed")
+            return HubRemoteSupervisorCandidateReviewQueueResult(
+                ok: false,
+                source: "hub_runtime_grpc",
+                updatedAtMs: 0,
+                items: [],
+                reasonCode: fallback,
+                logLines: logs
+            )
+        }
+
+        let reason = nonEmpty(decoded.errorCode)
+            ?? nonEmpty(decoded.reason)
+            ?? nonEmpty(decoded.errorMessage)
+            ?? ((decoded.ok ?? false) ? nil : "remote_supervisor_candidate_review_queue_failed")
+
+        let items: [HubRemoteSupervisorCandidateReviewQueueItem] = (decoded.items ?? []).compactMap { row in
+            let requestId = row.requestId.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !requestId.isEmpty else { return nil }
+            return HubRemoteSupervisorCandidateReviewQueueItem(
+                schemaVersion: row.schemaVersion.trimmingCharacters(in: .whitespacesAndNewlines),
+                reviewId: row.reviewId.trimmingCharacters(in: .whitespacesAndNewlines),
+                requestId: requestId,
+                evidenceRef: row.evidenceRef.trimmingCharacters(in: .whitespacesAndNewlines),
+                reviewState: row.reviewState.trimmingCharacters(in: .whitespacesAndNewlines),
+                durablePromotionState: row.durablePromotionState.trimmingCharacters(in: .whitespacesAndNewlines),
+                promotionBoundary: row.promotionBoundary.trimmingCharacters(in: .whitespacesAndNewlines),
+                deviceId: row.deviceId.trimmingCharacters(in: .whitespacesAndNewlines),
+                userId: row.userId.trimmingCharacters(in: .whitespacesAndNewlines),
+                appId: row.appId.trimmingCharacters(in: .whitespacesAndNewlines),
+                threadId: row.threadId.trimmingCharacters(in: .whitespacesAndNewlines),
+                threadKey: row.threadKey.trimmingCharacters(in: .whitespacesAndNewlines),
+                projectId: row.projectId.trimmingCharacters(in: .whitespacesAndNewlines),
+                projectIds: row.projectIds.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty },
+                scopes: row.scopes.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty },
+                recordTypes: row.recordTypes.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty },
+                auditRefs: row.auditRefs.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty },
+                idempotencyKeys: row.idempotencyKeys.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty },
+                candidateCount: max(0, row.candidateCount ?? 0),
+                summaryLine: row.summaryLine.trimmingCharacters(in: .whitespacesAndNewlines),
+                mirrorTarget: row.mirrorTarget.trimmingCharacters(in: .whitespacesAndNewlines),
+                localStoreRole: row.localStoreRole.trimmingCharacters(in: .whitespacesAndNewlines),
+                carrierKind: row.carrierKind.trimmingCharacters(in: .whitespacesAndNewlines),
+                carrierSchemaVersion: row.carrierSchemaVersion.trimmingCharacters(in: .whitespacesAndNewlines),
+                pendingChangeId: row.pendingChangeId.trimmingCharacters(in: .whitespacesAndNewlines),
+                pendingChangeStatus: row.pendingChangeStatus.trimmingCharacters(in: .whitespacesAndNewlines),
+                editSessionId: row.editSessionId.trimmingCharacters(in: .whitespacesAndNewlines),
+                docId: row.docId.trimmingCharacters(in: .whitespacesAndNewlines),
+                writebackRef: row.writebackRef.trimmingCharacters(in: .whitespacesAndNewlines),
+                stageCreatedAtMs: max(0, row.stageCreatedAtMs ?? 0),
+                stageUpdatedAtMs: max(0, row.stageUpdatedAtMs ?? 0),
+                latestEmittedAtMs: max(0, row.latestEmittedAtMs ?? 0),
+                createdAtMs: max(0, row.createdAtMs ?? 0),
+                updatedAtMs: max(0, row.updatedAtMs ?? 0)
+            )
+        }
+
+        return HubRemoteSupervisorCandidateReviewQueueResult(
+            ok: decoded.ok ?? false,
+            source: nonEmpty(decoded.source) ?? "hub_runtime_grpc",
+            updatedAtMs: max(0, decoded.updatedAtMs ?? 0),
+            items: items,
+            reasonCode: reason?.replacingOccurrences(of: " ", with: "_"),
+            logLines: logs
+        )
+    }
+
     func fetchRemoteConnectorIngressReceipts(
         options rawOptions: HubRemoteConnectOptions,
         projectId: String?,
@@ -5226,6 +5500,231 @@ actor HubPairingCoordinator {
             tokenCap: nil,
             note: nil,
             reason: reason
+        )
+    }
+
+    func stageRemoteSupervisorCandidateReview(
+        options rawOptions: HubRemoteConnectOptions,
+        candidateRequestId: String,
+        projectId: String?
+    ) -> HubRemoteSupervisorCandidateReviewStageResult {
+        let normalizedCandidateRequestId = candidateRequestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedCandidateRequestId.isEmpty else {
+            return HubRemoteSupervisorCandidateReviewStageResult(
+                ok: false,
+                staged: false,
+                idempotent: false,
+                source: "hub_memory_v1_grpc",
+                reviewState: "",
+                durablePromotionState: "",
+                promotionBoundary: "",
+                candidateRequestId: nil,
+                evidenceRef: nil,
+                editSessionId: nil,
+                pendingChangeId: nil,
+                docId: nil,
+                baseVersion: nil,
+                workingVersion: nil,
+                sessionRevision: 0,
+                status: nil,
+                markdown: nil,
+                createdAtMs: 0,
+                updatedAtMs: 0,
+                expiresAtMs: 0,
+                reasonCode: "candidate_request_id_empty",
+                logLines: ["stage supervisor candidate review missing candidate_request_id"]
+            )
+        }
+
+        let opts = sanitize(rawOptions)
+        var logs: [String] = []
+
+        let stateDir = opts.stateDir ?? defaultStateDir()
+        let hubEnv = stateDir.appendingPathComponent("hub.env")
+        let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
+        let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
+        let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
+
+        guard FileManager.default.fileExists(atPath: hubEnv.path) else {
+            return HubRemoteSupervisorCandidateReviewStageResult(
+                ok: false,
+                staged: false,
+                idempotent: false,
+                source: "hub_memory_v1_grpc",
+                reviewState: "",
+                durablePromotionState: "",
+                promotionBoundary: "",
+                candidateRequestId: normalizedCandidateRequestId,
+                evidenceRef: nil,
+                editSessionId: nil,
+                pendingChangeId: nil,
+                docId: nil,
+                baseVersion: nil,
+                workingVersion: nil,
+                sessionRevision: 0,
+                status: nil,
+                markdown: nil,
+                createdAtMs: 0,
+                updatedAtMs: 0,
+                expiresAtMs: 0,
+                reasonCode: "hub_env_missing",
+                logLines: ["missing hub env: \(hubEnv.path)"]
+            )
+        }
+        guard FileManager.default.fileExists(atPath: clientKitSrc.path) else {
+            return HubRemoteSupervisorCandidateReviewStageResult(
+                ok: false,
+                staged: false,
+                idempotent: false,
+                source: "hub_memory_v1_grpc",
+                reviewState: "",
+                durablePromotionState: "",
+                promotionBoundary: "",
+                candidateRequestId: normalizedCandidateRequestId,
+                evidenceRef: nil,
+                editSessionId: nil,
+                pendingChangeId: nil,
+                docId: nil,
+                baseVersion: nil,
+                workingVersion: nil,
+                sessionRevision: 0,
+                status: nil,
+                markdown: nil,
+                createdAtMs: 0,
+                updatedAtMs: 0,
+                expiresAtMs: 0,
+                reasonCode: "client_kit_missing",
+                logLines: ["missing client kit src: \(clientKitSrc.path)"]
+            )
+        }
+
+        let exported = readEnvExports(from: hubEnv)
+        let merged = mergedAxhubEnv(options: opts, extra: exported)
+        let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged)
+        guard let nodeBin else {
+            return HubRemoteSupervisorCandidateReviewStageResult(
+                ok: false,
+                staged: false,
+                idempotent: false,
+                source: "hub_memory_v1_grpc",
+                reviewState: "",
+                durablePromotionState: "",
+                promotionBoundary: "",
+                candidateRequestId: normalizedCandidateRequestId,
+                evidenceRef: nil,
+                editSessionId: nil,
+                pendingChangeId: nil,
+                docId: nil,
+                baseVersion: nil,
+                workingVersion: nil,
+                sessionRevision: 0,
+                status: nil,
+                markdown: nil,
+                createdAtMs: 0,
+                updatedAtMs: 0,
+                expiresAtMs: 0,
+                reasonCode: "node_missing",
+                logLines: ["missing node runtime for remote supervisor candidate review stage"]
+            )
+        }
+
+        var scriptEnv = merged
+        scriptEnv["XTERMINAL_SUPERVISOR_CANDIDATE_REVIEW_REQUEST_ID"] = normalizedCandidateRequestId
+        scriptEnv["XTERMINAL_SUPERVISOR_CANDIDATE_REVIEW_PROJECT_ID"] = projectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if let projectId, !projectId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            scriptEnv["HUB_PROJECT_ID"] = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
+        func runScript() -> StepOutput {
+            do {
+                let script = self.remoteSupervisorCandidateReviewStageScriptSource()
+                let result = try ProcessCapture.run(
+                    nodeBin,
+                    ["--input-type=module", "-"],
+                    cwd: clientKitHub,
+                    stdin: script.data(using: .utf8),
+                    timeoutSec: 12.0,
+                    env: scriptEnv
+                )
+                return StepOutput(exitCode: result.exitCode, output: result.combined, command: command)
+            } catch {
+                return StepOutput(exitCode: 127, output: String(describing: error), command: command)
+            }
+        }
+
+        var step = runScript()
+        appendStepLogs(into: &logs, step: step)
+        if step.exitCode != 0, shouldRetryAfterClientKitInstall(step.output) {
+            let install = runAxhubctl(args: ["install-client"], options: opts, env: [:], timeoutSec: 120.0)
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                step = runScript()
+                appendStepLogs(into: &logs, step: step)
+            }
+        }
+
+        guard let jsonLine = extractTrailingJSONObjectLine(step.output),
+              let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteSupervisorCandidateReviewStageScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(from: step.output, fallback: "remote_supervisor_candidate_review_stage_failed")
+            return HubRemoteSupervisorCandidateReviewStageResult(
+                ok: false,
+                staged: false,
+                idempotent: false,
+                source: "hub_memory_v1_grpc",
+                reviewState: "",
+                durablePromotionState: "",
+                promotionBoundary: "",
+                candidateRequestId: normalizedCandidateRequestId,
+                evidenceRef: nil,
+                editSessionId: nil,
+                pendingChangeId: nil,
+                docId: nil,
+                baseVersion: nil,
+                workingVersion: nil,
+                sessionRevision: 0,
+                status: nil,
+                markdown: nil,
+                createdAtMs: 0,
+                updatedAtMs: 0,
+                expiresAtMs: 0,
+                reasonCode: fallback,
+                logLines: logs
+            )
+        }
+
+        let staged = decoded.staged ?? false
+        let idempotent = decoded.idempotent ?? false
+        let ok = decoded.ok ?? (staged || idempotent)
+        let reasonCode = nonEmpty(decoded.errorCode)
+            ?? nonEmpty(decoded.reason)
+            ?? nonEmpty(decoded.errorMessage)
+            ?? (ok ? nil : "remote_supervisor_candidate_review_stage_failed")
+
+        return HubRemoteSupervisorCandidateReviewStageResult(
+            ok: ok,
+            staged: staged,
+            idempotent: idempotent,
+            source: nonEmpty(decoded.source) ?? "hub_memory_v1_grpc",
+            reviewState: nonEmpty(decoded.reviewState) ?? "",
+            durablePromotionState: nonEmpty(decoded.durablePromotionState) ?? "",
+            promotionBoundary: nonEmpty(decoded.promotionBoundary) ?? "",
+            candidateRequestId: nonEmpty(decoded.candidateRequestId) ?? normalizedCandidateRequestId,
+            evidenceRef: nonEmpty(decoded.evidenceRef),
+            editSessionId: nonEmpty(decoded.editSessionId),
+            pendingChangeId: nonEmpty(decoded.pendingChangeId),
+            docId: nonEmpty(decoded.docId),
+            baseVersion: nonEmpty(decoded.baseVersion),
+            workingVersion: nonEmpty(decoded.workingVersion),
+            sessionRevision: Int64(decoded.sessionRevision ?? 0),
+            status: nonEmpty(decoded.status),
+            markdown: decoded.markdown,
+            createdAtMs: max(0, decoded.createdAtMs ?? 0),
+            updatedAtMs: max(0, decoded.updatedAtMs ?? 0),
+            expiresAtMs: max(0, decoded.expiresAtMs ?? 0),
+            reasonCode: reasonCode?.replacingOccurrences(of: " ", with: "_"),
+            logLines: logs
         )
     }
 
@@ -6761,6 +7260,156 @@ actor HubPairingCoordinator {
         )
     }
 
+    nonisolated static func remoteSupervisorCandidateReviewQueueResultForTesting(
+        jsonLine: String
+    ) -> HubRemoteSupervisorCandidateReviewQueueResult? {
+        guard let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteSupervisorCandidateReviewQueueScriptResult.self, from: data),
+              decoded.ok == true else {
+            return nil
+        }
+
+        let items = (decoded.items ?? []).compactMap { row -> HubRemoteSupervisorCandidateReviewQueueItem? in
+            let requestId = row.requestId.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !requestId.isEmpty else { return nil }
+            return HubRemoteSupervisorCandidateReviewQueueItem(
+                schemaVersion: row.schemaVersion.trimmingCharacters(in: .whitespacesAndNewlines),
+                reviewId: row.reviewId.trimmingCharacters(in: .whitespacesAndNewlines),
+                requestId: requestId,
+                evidenceRef: row.evidenceRef.trimmingCharacters(in: .whitespacesAndNewlines),
+                reviewState: row.reviewState.trimmingCharacters(in: .whitespacesAndNewlines),
+                durablePromotionState: row.durablePromotionState.trimmingCharacters(in: .whitespacesAndNewlines),
+                promotionBoundary: row.promotionBoundary.trimmingCharacters(in: .whitespacesAndNewlines),
+                deviceId: row.deviceId.trimmingCharacters(in: .whitespacesAndNewlines),
+                userId: row.userId.trimmingCharacters(in: .whitespacesAndNewlines),
+                appId: row.appId.trimmingCharacters(in: .whitespacesAndNewlines),
+                threadId: row.threadId.trimmingCharacters(in: .whitespacesAndNewlines),
+                threadKey: row.threadKey.trimmingCharacters(in: .whitespacesAndNewlines),
+                projectId: row.projectId.trimmingCharacters(in: .whitespacesAndNewlines),
+                projectIds: row.projectIds.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty },
+                scopes: row.scopes.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty },
+                recordTypes: row.recordTypes.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty },
+                auditRefs: row.auditRefs.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty },
+                idempotencyKeys: row.idempotencyKeys.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty },
+                candidateCount: max(0, row.candidateCount ?? 0),
+                summaryLine: row.summaryLine.trimmingCharacters(in: .whitespacesAndNewlines),
+                mirrorTarget: row.mirrorTarget.trimmingCharacters(in: .whitespacesAndNewlines),
+                localStoreRole: row.localStoreRole.trimmingCharacters(in: .whitespacesAndNewlines),
+                carrierKind: row.carrierKind.trimmingCharacters(in: .whitespacesAndNewlines),
+                carrierSchemaVersion: row.carrierSchemaVersion.trimmingCharacters(in: .whitespacesAndNewlines),
+                pendingChangeId: row.pendingChangeId.trimmingCharacters(in: .whitespacesAndNewlines),
+                pendingChangeStatus: row.pendingChangeStatus.trimmingCharacters(in: .whitespacesAndNewlines),
+                editSessionId: row.editSessionId.trimmingCharacters(in: .whitespacesAndNewlines),
+                docId: row.docId.trimmingCharacters(in: .whitespacesAndNewlines),
+                writebackRef: row.writebackRef.trimmingCharacters(in: .whitespacesAndNewlines),
+                stageCreatedAtMs: max(0, row.stageCreatedAtMs ?? 0),
+                stageUpdatedAtMs: max(0, row.stageUpdatedAtMs ?? 0),
+                latestEmittedAtMs: max(0, row.latestEmittedAtMs ?? 0),
+                createdAtMs: max(0, row.createdAtMs ?? 0),
+                updatedAtMs: max(0, row.updatedAtMs ?? 0)
+            )
+        }
+
+        return HubRemoteSupervisorCandidateReviewQueueResult(
+            ok: true,
+            source: (decoded.source ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+            updatedAtMs: max(0, decoded.updatedAtMs ?? 0),
+            items: items,
+            reasonCode: nil,
+            logLines: []
+        )
+    }
+
+    nonisolated static func remoteSupervisorCandidateReviewStageResultForTesting(
+        jsonLine: String
+    ) -> HubRemoteSupervisorCandidateReviewStageResult? {
+        guard let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteSupervisorCandidateReviewStageScriptResult.self, from: data),
+              decoded.ok == true else {
+            return nil
+        }
+
+        return HubRemoteSupervisorCandidateReviewStageResult(
+            ok: true,
+            staged: decoded.staged ?? false,
+            idempotent: decoded.idempotent ?? false,
+            source: (decoded.source ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+            reviewState: (decoded.reviewState ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+            durablePromotionState: (decoded.durablePromotionState ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+            promotionBoundary: (decoded.promotionBoundary ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+            candidateRequestId: decoded.candidateRequestId?.trimmingCharacters(in: .whitespacesAndNewlines),
+            evidenceRef: decoded.evidenceRef?.trimmingCharacters(in: .whitespacesAndNewlines),
+            editSessionId: decoded.editSessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
+            pendingChangeId: decoded.pendingChangeId?.trimmingCharacters(in: .whitespacesAndNewlines),
+            docId: decoded.docId?.trimmingCharacters(in: .whitespacesAndNewlines),
+            baseVersion: decoded.baseVersion?.trimmingCharacters(in: .whitespacesAndNewlines),
+            workingVersion: decoded.workingVersion?.trimmingCharacters(in: .whitespacesAndNewlines),
+            sessionRevision: Int64(decoded.sessionRevision ?? 0),
+            status: decoded.status?.trimmingCharacters(in: .whitespacesAndNewlines),
+            markdown: decoded.markdown,
+            createdAtMs: max(0, decoded.createdAtMs ?? 0),
+            updatedAtMs: max(0, decoded.updatedAtMs ?? 0),
+            expiresAtMs: max(0, decoded.expiresAtMs ?? 0),
+            reasonCode: nil,
+            logLines: []
+        )
+    }
+
+    nonisolated static func remoteLongtermMarkdownReviewResultForTesting(
+        jsonLine: String
+    ) -> HubRemoteLongtermMarkdownReviewResult? {
+        guard let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteLongtermMarkdownReviewScriptResult.self, from: data),
+              decoded.ok == true else {
+            return nil
+        }
+
+        return HubRemoteLongtermMarkdownReviewResult(
+            ok: true,
+            source: (decoded.source ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+            pendingChangeId: decoded.pendingChangeId?.trimmingCharacters(in: .whitespacesAndNewlines),
+            editSessionId: decoded.editSessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
+            docId: decoded.docId?.trimmingCharacters(in: .whitespacesAndNewlines),
+            status: decoded.status?.trimmingCharacters(in: .whitespacesAndNewlines),
+            reviewDecision: decoded.reviewDecision?.trimmingCharacters(in: .whitespacesAndNewlines),
+            policyDecision: decoded.policyDecision?.trimmingCharacters(in: .whitespacesAndNewlines),
+            findingsJSON: decoded.findingsJSON?.trimmingCharacters(in: .whitespacesAndNewlines),
+            redactedCount: max(0, decoded.redactedCount ?? 0),
+            reviewedAtMs: max(0, decoded.reviewedAtMs ?? 0),
+            approvedAtMs: max(0, decoded.approvedAtMs ?? 0),
+            markdown: decoded.markdown,
+            autoRejected: decoded.autoRejected ?? false,
+            reasonCode: nil,
+            logLines: []
+        )
+    }
+
+    nonisolated static func remoteLongtermMarkdownWritebackResultForTesting(
+        jsonLine: String
+    ) -> HubRemoteLongtermMarkdownWritebackResult? {
+        guard let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteLongtermMarkdownWritebackScriptResult.self, from: data),
+              decoded.ok == true else {
+            return nil
+        }
+
+        return HubRemoteLongtermMarkdownWritebackResult(
+            ok: true,
+            source: (decoded.source ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+            pendingChangeId: decoded.pendingChangeId?.trimmingCharacters(in: .whitespacesAndNewlines),
+            status: decoded.status?.trimmingCharacters(in: .whitespacesAndNewlines),
+            candidateId: decoded.candidateId?.trimmingCharacters(in: .whitespacesAndNewlines),
+            queueStatus: decoded.queueStatus?.trimmingCharacters(in: .whitespacesAndNewlines),
+            writtenAtMs: max(0, decoded.writtenAtMs ?? 0),
+            docId: decoded.docId?.trimmingCharacters(in: .whitespacesAndNewlines),
+            sourceVersion: decoded.sourceVersion?.trimmingCharacters(in: .whitespacesAndNewlines),
+            changeLogId: decoded.changeLogId?.trimmingCharacters(in: .whitespacesAndNewlines),
+            evidenceRef: decoded.evidenceRef?.trimmingCharacters(in: .whitespacesAndNewlines),
+            reasonCode: nil,
+            logLines: []
+        )
+    }
+
     nonisolated static func normalizedRemoteReasonCodeForTesting(
         _ rawReason: String?,
         stepOutput: String = "",
@@ -7316,6 +7965,100 @@ actor HubPairingCoordinator {
         }
     }
 
+    private struct RemoteSupervisorCandidateReviewQueueItemRow: Codable {
+        var schemaVersion: String
+        var reviewId: String
+        var requestId: String
+        var evidenceRef: String
+        var reviewState: String
+        var durablePromotionState: String
+        var promotionBoundary: String
+        var deviceId: String
+        var userId: String
+        var appId: String
+        var threadId: String
+        var threadKey: String
+        var projectId: String
+        var projectIds: [String]
+        var scopes: [String]
+        var recordTypes: [String]
+        var auditRefs: [String]
+        var idempotencyKeys: [String]
+        var candidateCount: Int?
+        var summaryLine: String
+        var mirrorTarget: String
+        var localStoreRole: String
+        var carrierKind: String
+        var carrierSchemaVersion: String
+        var pendingChangeId: String
+        var pendingChangeStatus: String
+        var editSessionId: String
+        var docId: String
+        var writebackRef: String
+        var stageCreatedAtMs: Double?
+        var stageUpdatedAtMs: Double?
+        var latestEmittedAtMs: Double?
+        var createdAtMs: Double?
+        var updatedAtMs: Double?
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+            case reviewId = "review_id"
+            case requestId = "request_id"
+            case evidenceRef = "evidence_ref"
+            case reviewState = "review_state"
+            case durablePromotionState = "durable_promotion_state"
+            case promotionBoundary = "promotion_boundary"
+            case deviceId = "device_id"
+            case userId = "user_id"
+            case appId = "app_id"
+            case threadId = "thread_id"
+            case threadKey = "thread_key"
+            case projectId = "project_id"
+            case projectIds = "project_ids"
+            case scopes
+            case recordTypes = "record_types"
+            case auditRefs = "audit_refs"
+            case idempotencyKeys = "idempotency_keys"
+            case candidateCount = "candidate_count"
+            case summaryLine = "summary_line"
+            case mirrorTarget = "mirror_target"
+            case localStoreRole = "local_store_role"
+            case carrierKind = "carrier_kind"
+            case carrierSchemaVersion = "carrier_schema_version"
+            case pendingChangeId = "pending_change_id"
+            case pendingChangeStatus = "pending_change_status"
+            case editSessionId = "edit_session_id"
+            case docId = "doc_id"
+            case writebackRef = "writeback_ref"
+            case stageCreatedAtMs = "stage_created_at_ms"
+            case stageUpdatedAtMs = "stage_updated_at_ms"
+            case latestEmittedAtMs = "latest_emitted_at_ms"
+            case createdAtMs = "created_at_ms"
+            case updatedAtMs = "updated_at_ms"
+        }
+    }
+
+    private struct RemoteSupervisorCandidateReviewQueueScriptResult: Codable {
+        var ok: Bool?
+        var source: String?
+        var updatedAtMs: Double?
+        var items: [RemoteSupervisorCandidateReviewQueueItemRow]?
+        var reason: String?
+        var errorCode: String?
+        var errorMessage: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case updatedAtMs = "updated_at_ms"
+            case items
+            case reason
+            case errorCode = "error_code"
+            case errorMessage = "error_message"
+        }
+    }
+
     private struct RemoteSupervisorBriefProjectionRow: Codable {
         var schemaVersion: String
         var projectionId: String
@@ -7584,6 +8327,132 @@ actor HubPairingCoordinator {
             case grantRequestId = "grant_request_id"
             case grantId = "grant_id"
             case expiresAtMs = "expires_at_ms"
+            case reason
+            case errorCode = "error_code"
+            case errorMessage = "error_message"
+        }
+    }
+
+    private struct RemoteSupervisorCandidateReviewStageScriptResult: Codable {
+        var ok: Bool?
+        var source: String?
+        var staged: Bool?
+        var idempotent: Bool?
+        var reviewState: String?
+        var durablePromotionState: String?
+        var promotionBoundary: String?
+        var candidateRequestId: String?
+        var evidenceRef: String?
+        var editSessionId: String?
+        var pendingChangeId: String?
+        var docId: String?
+        var baseVersion: String?
+        var workingVersion: String?
+        var sessionRevision: Double?
+        var status: String?
+        var markdown: String?
+        var createdAtMs: Double?
+        var updatedAtMs: Double?
+        var expiresAtMs: Double?
+        var reason: String?
+        var errorCode: String?
+        var errorMessage: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case staged
+            case idempotent
+            case reviewState = "review_state"
+            case durablePromotionState = "durable_promotion_state"
+            case promotionBoundary = "promotion_boundary"
+            case candidateRequestId = "candidate_request_id"
+            case evidenceRef = "evidence_ref"
+            case editSessionId = "edit_session_id"
+            case pendingChangeId = "pending_change_id"
+            case docId = "doc_id"
+            case baseVersion = "base_version"
+            case workingVersion = "working_version"
+            case sessionRevision = "session_revision"
+            case status
+            case markdown
+            case createdAtMs = "created_at_ms"
+            case updatedAtMs = "updated_at_ms"
+            case expiresAtMs = "expires_at_ms"
+            case reason
+            case errorCode = "error_code"
+            case errorMessage = "error_message"
+        }
+    }
+
+    private struct RemoteLongtermMarkdownReviewScriptResult: Codable {
+        var ok: Bool?
+        var source: String?
+        var pendingChangeId: String?
+        var editSessionId: String?
+        var docId: String?
+        var status: String?
+        var reviewDecision: String?
+        var policyDecision: String?
+        var findingsJSON: String?
+        var redactedCount: Int?
+        var reviewedAtMs: Double?
+        var approvedAtMs: Double?
+        var markdown: String?
+        var autoRejected: Bool?
+        var reason: String?
+        var errorCode: String?
+        var errorMessage: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case pendingChangeId = "pending_change_id"
+            case editSessionId = "edit_session_id"
+            case docId = "doc_id"
+            case status
+            case reviewDecision = "review_decision"
+            case policyDecision = "policy_decision"
+            case findingsJSON = "findings_json"
+            case redactedCount = "redacted_count"
+            case reviewedAtMs = "reviewed_at_ms"
+            case approvedAtMs = "approved_at_ms"
+            case markdown
+            case autoRejected = "auto_rejected"
+            case reason
+            case errorCode = "error_code"
+            case errorMessage = "error_message"
+        }
+    }
+
+    private struct RemoteLongtermMarkdownWritebackScriptResult: Codable {
+        var ok: Bool?
+        var source: String?
+        var pendingChangeId: String?
+        var status: String?
+        var candidateId: String?
+        var queueStatus: String?
+        var writtenAtMs: Double?
+        var docId: String?
+        var sourceVersion: String?
+        var changeLogId: String?
+        var evidenceRef: String?
+        var reason: String?
+        var errorCode: String?
+        var errorMessage: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case source
+            case pendingChangeId = "pending_change_id"
+            case status
+            case candidateId = "candidate_id"
+            case queueStatus = "queue_status"
+            case writtenAtMs = "written_at_ms"
+            case docId = "doc_id"
+            case sourceVersion = "source_version"
+            case changeLogId = "change_log_id"
+            case evidenceRef = "evidence_ref"
             case reason
             case errorCode = "error_code"
             case errorMessage = "error_message"
@@ -11561,6 +12430,202 @@ main().catch((err) => {
 """#
     }
 
+    private func remoteSupervisorCandidateReviewQueueScriptSource() -> String {
+        #"""
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
+
+const safe = (v) => String(v ?? '').trim();
+const out = (obj) => {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+};
+
+function reqClientFromEnv() {
+  return {
+    device_id: safe(process.env.HUB_DEVICE_ID || 'terminal_device'),
+    user_id: safe(process.env.HUB_USER_ID || ''),
+    app_id: safe(process.env.HUB_APP_ID || 'x_terminal'),
+    project_id: safe(process.env.HUB_PROJECT_ID || ''),
+    session_id: safe(process.env.HUB_SESSION_ID || ''),
+  };
+}
+
+function metadataFromEnv() {
+  const tok = safe(process.env.HUB_CLIENT_TOKEN || '');
+  const md = new grpc.Metadata();
+  if (tok) md.set('authorization', `Bearer ${tok}`);
+  return md;
+}
+
+async function resolveProtoPath() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'proto_path.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.resolveHubProtoPath === 'function') {
+        const p = safe(mod.resolveHubProtoPath(process.env));
+        if (p) return p;
+      }
+    } catch {}
+  }
+
+  const candidates = [
+    path.resolve(process.cwd(), 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', '..', 'protocol', 'hub_protocol_v1.proto'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+function loadProto(protoPath) {
+  const packageDef = protoLoader.loadSync(protoPath, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+  });
+  const loaded = grpc.loadPackageDefinition(packageDef);
+  return loaded?.ax?.hub?.v1;
+}
+
+async function makeClientCreds() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'client_credentials.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.makeClientCredentials === 'function') {
+        const built = mod.makeClientCredentials(process.env);
+        if (built?.creds) {
+          return { creds: built.creds, options: built.options || {} };
+        }
+      }
+    } catch {}
+  }
+  return { creds: grpc.credentials.createInsecure(), options: {} };
+}
+
+function asInt(v, fallback = 0) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.floor(n));
+}
+
+function asMs(v, fallback = 0) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.floor(n));
+}
+
+function asList(v) {
+  return Array.isArray(v) ? v.map((item) => safe(item)).filter(Boolean) : [];
+}
+
+async function main() {
+  const projectId = safe(process.env.XTERMINAL_SUPERVISOR_CANDIDATE_REVIEW_PROJECT_ID || '');
+  const limitRaw = Number.parseInt(safe(process.env.XTERMINAL_SUPERVISOR_CANDIDATE_REVIEW_LIMIT || '200'), 10);
+  const limit = Math.max(1, Math.min(500, Number.isFinite(limitRaw) ? limitRaw : 200));
+
+  const protoPath = await resolveProtoPath();
+  const proto = loadProto(protoPath);
+  if (!proto?.HubRuntime) throw new Error('hub_runtime_missing');
+
+  const host = safe(process.env.HUB_HOST || '127.0.0.1');
+  const port = Number.parseInt(safe(process.env.HUB_PORT || '50051'), 10) || 50051;
+  const addr = `${host}:${port}`;
+  const client = reqClientFromEnv();
+  const md = metadataFromEnv();
+  const { creds, options } = await makeClientCreds();
+  const runtimeClient = new proto.HubRuntime(addr, creds, options);
+
+  const resp = await new Promise((resolve, reject) => {
+    runtimeClient.GetSupervisorCandidateReviewQueue(
+      {
+        client,
+        project_id: projectId,
+        limit,
+      },
+      md,
+      (err, out) => {
+        if (err) reject(err);
+        else resolve(out || {});
+      }
+    );
+  });
+
+  const items = Array.isArray(resp?.items)
+    ? resp.items.map((it) => ({
+        schema_version: safe(it?.schema_version || ''),
+        review_id: safe(it?.review_id || ''),
+        request_id: safe(it?.request_id || ''),
+        evidence_ref: safe(it?.evidence_ref || ''),
+        review_state: safe(it?.review_state || ''),
+        durable_promotion_state: safe(it?.durable_promotion_state || ''),
+        promotion_boundary: safe(it?.promotion_boundary || ''),
+        device_id: safe(it?.device_id || ''),
+        user_id: safe(it?.user_id || ''),
+        app_id: safe(it?.app_id || ''),
+        thread_id: safe(it?.thread_id || ''),
+        thread_key: safe(it?.thread_key || ''),
+        project_id: safe(it?.project_id || ''),
+        project_ids: asList(it?.project_ids),
+        scopes: asList(it?.scopes),
+        record_types: asList(it?.record_types),
+        audit_refs: asList(it?.audit_refs),
+        idempotency_keys: asList(it?.idempotency_keys),
+        candidate_count: asInt(it?.candidate_count || 0),
+        summary_line: safe(it?.summary_line || ''),
+        mirror_target: safe(it?.mirror_target || ''),
+        local_store_role: safe(it?.local_store_role || ''),
+        carrier_kind: safe(it?.carrier_kind || ''),
+        carrier_schema_version: safe(it?.carrier_schema_version || ''),
+        pending_change_id: safe(it?.pending_change_id || ''),
+        pending_change_status: safe(it?.pending_change_status || ''),
+        edit_session_id: safe(it?.edit_session_id || ''),
+        doc_id: safe(it?.doc_id || ''),
+        writeback_ref: safe(it?.writeback_ref || ''),
+        stage_created_at_ms: asMs(it?.stage_created_at_ms || 0),
+        stage_updated_at_ms: asMs(it?.stage_updated_at_ms || 0),
+        latest_emitted_at_ms: asMs(it?.latest_emitted_at_ms || 0),
+        created_at_ms: asMs(it?.created_at_ms || 0),
+        updated_at_ms: asMs(it?.updated_at_ms || 0),
+      })).filter((it) => it.request_id)
+    : [];
+
+  out({
+    ok: true,
+    source: 'hub_runtime_grpc',
+    updated_at_ms: asMs(resp?.updated_at_ms || 0),
+    items,
+  });
+}
+
+main().catch((err) => {
+  const msg = safe(err?.message || err);
+  const lower = msg.toLowerCase();
+  const code = lower.includes('unimplemented') ? 'hub_runtime_unimplemented' : (msg || 'remote_supervisor_candidate_review_queue_failed');
+  out({
+    ok: false,
+    source: 'hub_runtime_grpc',
+    updated_at_ms: 0,
+    items: [],
+    reason: code,
+    error_code: code,
+    error_message: msg || code,
+  });
+  process.exit(1);
+});
+"""#
+    }
+
     private func remoteConnectorIngressReceiptsScriptSource() -> String {
         #"""
 import fs from 'node:fs';
@@ -12092,6 +13157,193 @@ main().catch((err) => {
   out({
     ok: false,
     decision: 'failed',
+    reason: code,
+    error_code: code,
+    error_message: msg || code,
+  });
+  process.exit(1);
+});
+"""#
+    }
+
+    private func remoteSupervisorCandidateReviewStageScriptSource() -> String {
+        #"""
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
+
+const safe = (v) => String(v ?? '').trim();
+const out = (obj) => {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+};
+
+function reqClientFromEnv(projectOverride = '') {
+  const projectId = safe(projectOverride || process.env.HUB_PROJECT_ID || '');
+  return {
+    device_id: safe(process.env.HUB_DEVICE_ID || 'terminal_device'),
+    user_id: safe(process.env.HUB_USER_ID || ''),
+    app_id: safe(process.env.HUB_APP_ID || 'x_terminal'),
+    project_id: projectId,
+    session_id: safe(process.env.HUB_SESSION_ID || ''),
+  };
+}
+
+function metadataFromEnv() {
+  const tok = safe(process.env.HUB_CLIENT_TOKEN || '');
+  const md = new grpc.Metadata();
+  if (tok) md.set('authorization', `Bearer ${tok}`);
+  return md;
+}
+
+async function resolveProtoPath() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'proto_path.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.resolveHubProtoPath === 'function') {
+        const p = safe(mod.resolveHubProtoPath(process.env));
+        if (p) return p;
+      }
+    } catch {}
+  }
+
+  const candidates = [
+    path.resolve(process.cwd(), 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', '..', 'protocol', 'hub_protocol_v1.proto'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+function loadProto(protoPath) {
+  const packageDef = protoLoader.loadSync(protoPath, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+  });
+  const loaded = grpc.loadPackageDefinition(packageDef);
+  return loaded?.ax?.hub?.v1;
+}
+
+async function makeClientCreds() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'client_credentials.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.makeClientCredentials === 'function') {
+        const built = mod.makeClientCredentials(process.env);
+        if (built?.creds) {
+          return { creds: built.creds, options: built.options || {} };
+        }
+      }
+    } catch {}
+  }
+  return { creds: grpc.credentials.createInsecure(), options: {} };
+}
+
+function asInt(v, fallback = 0) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.floor(n));
+}
+
+function asMs(v, fallback = 0) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.floor(n));
+}
+
+async function main() {
+  const candidateRequestId = safe(process.env.XTERMINAL_SUPERVISOR_CANDIDATE_REVIEW_REQUEST_ID || '');
+  if (!candidateRequestId) throw new Error('candidate_request_id_empty');
+
+  const projectId = safe(process.env.XTERMINAL_SUPERVISOR_CANDIDATE_REVIEW_PROJECT_ID || '');
+  const protoPath = await resolveProtoPath();
+  const proto = loadProto(protoPath);
+  if (!proto?.HubMemory) throw new Error('hub_memory_missing');
+
+  const host = safe(process.env.HUB_HOST || '127.0.0.1');
+  const port = Number.parseInt(safe(process.env.HUB_PORT || '50051'), 10) || 50051;
+  const addr = `${host}:${port}`;
+  const client = reqClientFromEnv(projectId);
+  const md = metadataFromEnv();
+  const { creds, options } = await makeClientCreds();
+  const memoryClient = new proto.HubMemory(addr, creds, options);
+
+  const resp = await new Promise((resolve, reject) => {
+    memoryClient.StageSupervisorCandidateReview(
+      {
+        client,
+        candidate_request_id: candidateRequestId,
+      },
+      md,
+      (err, out) => {
+        if (err) reject(err);
+        else resolve(out || {});
+      }
+    );
+  });
+
+  out({
+    ok: true,
+    source: 'hub_memory_v1_grpc',
+    staged: !!resp?.staged,
+    idempotent: !!resp?.idempotent,
+    review_state: safe(resp?.review_state || ''),
+    durable_promotion_state: safe(resp?.durable_promotion_state || ''),
+    promotion_boundary: safe(resp?.promotion_boundary || ''),
+    candidate_request_id: safe(resp?.candidate_request_id || candidateRequestId),
+    evidence_ref: safe(resp?.evidence_ref || ''),
+    edit_session_id: safe(resp?.edit_session_id || ''),
+    pending_change_id: safe(resp?.pending_change_id || ''),
+    doc_id: safe(resp?.doc_id || ''),
+    base_version: safe(resp?.base_version || ''),
+    working_version: safe(resp?.working_version || ''),
+    session_revision: asInt(resp?.session_revision || 0),
+    status: safe(resp?.status || ''),
+    markdown: typeof resp?.markdown === 'string' ? resp.markdown : '',
+    created_at_ms: asMs(resp?.created_at_ms || 0),
+    updated_at_ms: asMs(resp?.updated_at_ms || 0),
+    expires_at_ms: asMs(resp?.expires_at_ms || 0),
+  });
+}
+
+main().catch((err) => {
+  const msg = safe(err?.message || err);
+  const lower = msg.toLowerCase();
+  const code = lower.includes('unimplemented')
+    ? 'hub_memory_unimplemented'
+    : (msg || 'remote_supervisor_candidate_review_stage_failed');
+  out({
+    ok: false,
+    source: 'hub_memory_v1_grpc',
+    staged: false,
+    idempotent: false,
+    review_state: '',
+    durable_promotion_state: '',
+    promotion_boundary: '',
+    candidate_request_id: '',
+    evidence_ref: '',
+    edit_session_id: '',
+    pending_change_id: '',
+    doc_id: '',
+    base_version: '',
+    working_version: '',
+    session_revision: 0,
+    status: '',
+    markdown: '',
+    created_at_ms: 0,
+    updated_at_ms: 0,
+    expires_at_ms: 0,
     reason: code,
     error_code: code,
     error_message: msg || code,

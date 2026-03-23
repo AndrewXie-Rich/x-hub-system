@@ -595,6 +595,12 @@ final class SupervisorManager: ObservableObject {
         var spokenOutcome: SupervisorSpeechSynthesizer.Outcome
     }
 
+    private struct SupervisorBriefProjectionUnavailablePresentation {
+        var text: String
+        var script: [String]
+        var dedupeKey: String
+    }
+
     private struct SupervisorVoicePendingGrantReply {
         var text: String
         var spokenOutcome: SupervisorSpeechSynthesizer.Outcome
@@ -3216,6 +3222,30 @@ final class SupervisorManager: ObservableObject {
         return trimmedFallback.isEmpty ? projectId : trimmedFallback
     }
 
+    private func resolvedSupervisorProjectEntry(projectId: String) -> AXProjectEntry? {
+        let normalizedProjectId = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedProjectId.isEmpty else { return nil }
+
+        let visibleProjects = allProjects()
+        if let matched = visibleProjects.first(where: {
+            $0.projectId.compare(normalizedProjectId, options: .caseInsensitive) == .orderedSame
+        }) {
+            return matched
+        }
+
+        let known = knownProjects()
+        if let matched = known.first(where: {
+            $0.projectId.compare(normalizedProjectId, options: .caseInsensitive) == .orderedSame
+        }) {
+            return matched
+        }
+
+        if case .matched(let matched) = resolveProjectReference(normalizedProjectId, in: known) {
+            return matched
+        }
+        return nil
+    }
+
     private func deduplicatedSupervisorPersonalMemoryRecords(
         _ records: [SupervisorPersonalMemoryRecord]
     ) -> [SupervisorPersonalMemoryRecord] {
@@ -3942,7 +3972,7 @@ final class SupervisorManager: ObservableObject {
     ) -> AXProjectResolvedGovernanceState? {
         let normalizedProjectId = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedProjectId.isEmpty else { return nil }
-        guard let project = allProjects().first(where: { $0.projectId == normalizedProjectId }),
+        guard let project = resolvedSupervisorProjectEntry(projectId: normalizedProjectId),
               let ctx = projectContext(from: project) else {
             return nil
         }
@@ -5737,8 +5767,8 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
     private func handleSupervisorGuidanceAckEvent(
         _ record: SupervisorGuidanceInjectionRecord
     ) -> Bool {
-        let projectName = allProjects().first(where: { $0.projectId == record.projectId })?.displayName
-            ?? record.projectId
+        let project = resolvedSupervisorProjectEntry(projectId: record.projectId)
+        let projectName = project?.displayName ?? record.projectId
         let ackStatusText: String
         switch record.ackStatus {
         case .pending:
@@ -5758,7 +5788,7 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
         guard record.ackStatus == .deferred || record.ackStatus == .rejected else {
             return false
         }
-        guard let project = allProjects().first(where: { $0.projectId == record.projectId }) else {
+        guard let project else {
             return false
         }
 
@@ -7169,14 +7199,14 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
         }()
 
         if !primaryRef.isEmpty {
-            let primaryResolution = resolveProjectReference(primaryRef)
+            let primaryResolution = resolveProjectReference(primaryRef, in: projects)
             if case .matched = primaryResolution {
                 return (primaryRef, primaryResolution, false)
             }
             if let fallbackRef,
                !fallbackRef.isEmpty,
                fallbackRef.compare(primaryRef, options: .caseInsensitive) != .orderedSame {
-                let fallbackResolution = resolveProjectReference(fallbackRef)
+                let fallbackResolution = resolveProjectReference(fallbackRef, in: projects)
                 if case .matched = fallbackResolution {
                     return (fallbackRef, fallbackResolution, false)
                 }
@@ -7185,7 +7215,7 @@ guidance: \(guidanceSummary.isEmpty ? "(none)" : guidanceSummary)
         }
 
         if let fallbackRef, !fallbackRef.isEmpty {
-            return (fallbackRef, resolveProjectReference(fallbackRef), false)
+            return (fallbackRef, resolveProjectReference(fallbackRef, in: projects), false)
         }
 
         return ("", nil, true)
@@ -21806,6 +21836,9 @@ why=\(event.whyItMatters)
     }
 
     private func shouldMirrorNotificationToHub(actionURL: String?) -> Bool {
+        if HubAIClient.transportMode() == .fileIPC {
+            return true
+        }
         let raw = actionURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !raw.isEmpty, let url = URL(string: raw) else {
             return true
@@ -22919,6 +22952,7 @@ Coder 下一步建议：
         var installHint: String = ""
         var recommendedAction: String = ""
         var supportFAQSummary: String = ""
+        var loadConfigSummaryLine: String = ""
         var repairDestinationRef: String = ""
         var generatedAtMs: Int64 = 0
 
@@ -22926,6 +22960,14 @@ Coder 下一步建议：
             guard overallState == XHubDoctorOverallState.blocked.rawValue else { return nil }
             let trimmedCode = failureCode.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmedCode.isEmpty ? "hub_blocked" : trimmedCode
+        }
+
+        func renderableDetailLines(limit: Int = 2) -> [String] {
+            let trimmedLoadConfig = loadConfigSummaryLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalized = detailLines
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty && (trimmedLoadConfig.isEmpty || $0 != trimmedLoadConfig) }
+            return Array(normalized.prefix(max(0, limit)))
         }
     }
 
@@ -24507,10 +24549,14 @@ Coder 下一步建议：
             rank += 1
         }
 
+        let routeMemorySnapshot = heartbeatRouteMemorySnapshot()
         for project in orderedProjects {
             if lines.count >= maxCount { break }
             if includedProjectIds.contains(project.projectId) { continue }
-            guard let routeNotice = AXProjectModelRouteMemoryStore.heartbeatNotice(for: project) else { continue }
+            guard let routeNotice = AXProjectModelRouteMemoryStore.heartbeatNotice(
+                for: project,
+                snapshot: routeMemorySnapshot
+            ) else { continue }
             lines.append("\(rank). \(routeNotice)")
             includedProjectIds.insert(project.projectId)
             rank += 1
@@ -24649,6 +24695,14 @@ Coder 下一步建议：
             clauses.append("最近一次失败停在 \(latestFailureAction)")
         }
         return clauses.joined(separator: "；") + "。建议先看 /route diagnose。"
+    }
+
+    private func heartbeatRouteMemorySnapshot() -> ModelStateSnapshot? {
+        guard let snapshot = appModel?.modelsState,
+              !snapshot.models.isEmpty else {
+            return nil
+        }
+        return snapshot
     }
 
     private func projectContext(from project: AXProjectEntry) -> AXProjectContext? {
@@ -25021,6 +25075,10 @@ Coder 下一步建议：
 
     func recentSupervisorEventLoopActivitiesForTesting() -> [SupervisorEventLoopActivity] {
         recentSupervisorEventLoopActivities
+    }
+
+    func recentEventsForTesting() -> [String] {
+        recentEvents
     }
 
     func completePendingHubGrantActionForTesting(
@@ -26962,6 +27020,7 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
     ) -> XTHubRuntimeDiagnosisSnapshot? {
         let report = XHubDoctorOutputStore.loadHubReport(baseDir: baseDir)
         let localServiceSnapshot = XHubDoctorOutputStore.loadHubLocalServiceSnapshot(baseDir: baseDir)
+        let localRuntimeMonitorSnapshot = XHubDoctorOutputStore.loadHubLocalRuntimeMonitorSnapshot(baseDir: baseDir)
         let recoveryGuidance = XHubDoctorOutputStore.loadHubLocalServiceRecoveryGuidance(baseDir: baseDir)
 
         let reportDiagnosis = report.flatMap { xtReadyHubRuntimeDiagnosisSnapshot(from: $0) }
@@ -26975,7 +27034,11 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
         } else {
             baseDiagnosis = reportDiagnosis ?? snapshotDiagnosis
         }
-        return xtReadyMergedHubRuntimeDiagnosis(baseDiagnosis, guidance: guidanceDiagnosis)
+        let diagnosis = xtReadyMergedHubRuntimeDiagnosis(baseDiagnosis, guidance: guidanceDiagnosis)
+        return xtReadyMergeHubRuntimeMonitorDetails(
+            diagnosis,
+            monitor: localRuntimeMonitorSnapshot
+        )
     }
 
     private static func xtReadyHubRuntimeDiagnosisSnapshot(
@@ -27164,6 +27227,35 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
         }
         merged.generatedAtMs = max(merged.generatedAtMs, guidance.generatedAtMs)
         return merged
+    }
+
+    private static func xtReadyMergeHubRuntimeMonitorDetails(
+        _ diagnosis: XTHubRuntimeDiagnosisSnapshot?,
+        monitor: XHubLocalRuntimeMonitorSnapshotReport?
+    ) -> XTHubRuntimeDiagnosisSnapshot? {
+        guard var diagnosis else { return nil }
+        guard let monitor else { return diagnosis }
+
+        let monitorLines = monitor.preferredDetailLines(limit: 2)
+        let monitorLoadConfigLine = monitor.preferredLoadConfigLine()?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if diagnosis.loadConfigSummaryLine.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !monitorLoadConfigLine.isEmpty {
+            diagnosis.loadConfigSummaryLine = monitorLoadConfigLine
+        }
+        guard !monitorLines.isEmpty else {
+            diagnosis.generatedAtMs = max(diagnosis.generatedAtMs, monitor.generatedAtMs)
+            return diagnosis
+        }
+
+        var mergedLines = diagnosis.detailLines
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        for line in monitorLines where !mergedLines.contains(line) {
+            mergedLines.append(line)
+        }
+        diagnosis.detailLines = Array(mergedLines.prefix(4))
+        diagnosis.generatedAtMs = max(diagnosis.generatedAtMs, monitor.generatedAtMs)
+        return diagnosis
     }
 
     private static func xtReadyHubRuntimePrimaryCheck(
@@ -28029,7 +28121,8 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
             requestId: activity.requestId,
             projectRef: activity.projectId,
             approve: true,
-            commandName: "APPROVE_SUPERVISOR_SKILL_ACTIVITY"
+            commandName: "APPROVE_SUPERVISOR_SKILL_ACTIVITY",
+            lookupTriggerSource: .approvalResolution
         )
     }
 
@@ -28038,7 +28131,8 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
             requestId: activity.requestId,
             projectRef: activity.projectId,
             approve: false,
-            commandName: "DENY_SUPERVISOR_SKILL_ACTIVITY"
+            commandName: "DENY_SUPERVISOR_SKILL_ACTIVITY",
+            lookupTriggerSource: .approvalResolution
         )
     }
 
@@ -28050,7 +28144,8 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
         switch locateSupervisorSkillCall(
             requestId: requestId,
             projectRef: activity.projectId,
-            commandName: "RETRY_SUPERVISOR_SKILL"
+            commandName: "RETRY_SUPERVISOR_SKILL",
+            triggerSource: .skillCallback
         ) {
         case .failure(let failure):
             addSystemMessage(failure.message)
@@ -28099,7 +28194,8 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
             requestId: approval.requestId,
             projectRef: approval.projectId,
             approve: approve,
-            commandName: approve ? "APPROVE_SUPERVISOR_SKILL" : "DENY_SUPERVISOR_SKILL"
+            commandName: approve ? "APPROVE_SUPERVISOR_SKILL" : "DENY_SUPERVISOR_SKILL",
+            lookupTriggerSource: .approvalResolution
         )
     }
 
@@ -28107,7 +28203,8 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
         requestId: String,
         projectRef: String,
         approve: Bool,
-        commandName: String
+        commandName: String,
+        lookupTriggerSource: SupervisorCommandTriggerSource = .userTurn
     ) {
         let normalizedRequestId = requestId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedRequestId.isEmpty else { return }
@@ -28116,7 +28213,8 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
         switch locateSupervisorSkillCall(
             requestId: normalizedRequestId,
             projectRef: projectRef,
-            commandName: commandName
+            commandName: commandName,
+            triggerSource: lookupTriggerSource
         ) {
         case .failure(let failure):
             addSystemMessage(failure.message)
@@ -30811,8 +30909,8 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
         guard shouldUseSupervisorBriefProjectionForStatusQuery(text) else { return nil }
         let projects = allProjects()
         guard let focus = focusedSupervisorProjectSelection(projects: projects, userMessage: text) else {
-            return localSupervisorBriefReply(
-                projectName: "当前工作台",
+            return supervisorBriefProjectionUnavailableReply(
+                presentation: supervisorBriefProjectionBindingRequiredPresentation(projects: projects),
                 fromVoice: fromVoice
             )
         }
@@ -30833,7 +30931,15 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
             }
         let result = await fetcher(request)
         guard result.ok, let projection = result.projection else {
-            return localSupervisorBriefReply(focus: focus, fromVoice: fromVoice)
+            let localSignal = heartbeatGovernanceVoicePresentation()
+            return supervisorBriefProjectionUnavailableReply(
+                presentation: supervisorBriefProjectionUnavailablePresentation(
+                    projectName: focus.project.displayName,
+                    reasonCode: result.reasonCode,
+                    localSignal: localSignal
+                ),
+                fromVoice: fromVoice
+            )
         }
 
         let replyText = renderSupervisorBriefProjectionVoiceReply(
@@ -30865,6 +30971,157 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
             text: replyText,
             spokenOutcome: spokenOutcome
         )
+    }
+
+    private func supervisorBriefProjectionUnavailableReply(
+        presentation: SupervisorBriefProjectionUnavailablePresentation,
+        fromVoice: Bool
+    ) -> SupervisorBriefProjectionVoiceReply {
+        let spokenOutcome: SupervisorSpeechSynthesizer.Outcome
+        if !fromVoice {
+            spokenOutcome = .suppressed("not_voice_triggered")
+        } else if presentation.script.isEmpty {
+            spokenOutcome = speakSupervisorVoiceReply(presentation.text)
+        } else {
+            let job = SupervisorVoiceTTSJob(
+                trigger: .userQueryReply,
+                priority: .normal,
+                script: presentation.script,
+                dedupeKey: presentation.dedupeKey
+            )
+            spokenOutcome = dispatchSupervisorVoiceJob(
+                job,
+                preferences: currentVoicePreferences(),
+                source: "brief_projection_unavailable_reply",
+                suppressRapidSameSourceRepeat: false,
+                cancelPendingHeartbeat: true
+            )
+        }
+        return SupervisorBriefProjectionVoiceReply(
+            text: presentation.text,
+            spokenOutcome: spokenOutcome
+        )
+    }
+
+    private func supervisorBriefProjectionBindingRequiredPresentation(
+        projects: [AXProjectEntry]
+    ) -> SupervisorBriefProjectionUnavailablePresentation {
+        let header = "⚠️ Hub Brief 需要项目绑定"
+        var lines = [
+            header,
+            "Hub 统一投影现在按项目生成；我需要你先选中项目，或者直接说项目名后再问一次状态。",
+            "按当前 fail-closed 规则，我先不在 XT 本地即兴拼接 Supervisor brief。"
+        ]
+        let examples = projects
+            .prefix(2)
+            .map { "“\($0.displayName) 现在状态怎么样”" }
+        if !examples.isEmpty {
+            lines.append("你可以直接说：\(examples.joined(separator: " / "))。")
+        }
+        return SupervisorBriefProjectionUnavailablePresentation(
+            text: lines.joined(separator: "\n"),
+            script: [
+                "要给你正式的 Hub 简报，我还需要先绑定项目。",
+                examples.isEmpty
+                    ? "你先选中项目，或者直接说项目名后再问一次状态。"
+                    : "你先选中项目，或者直接说项目名，比如 \(examples[0])。"
+            ],
+            dedupeKey: "voice-query:hub-brief-binding-required:\(projects.count)"
+        )
+    }
+
+    private func supervisorBriefProjectionUnavailablePresentation(
+        projectName: String,
+        reasonCode: String?,
+        localSignal: SupervisorGovernanceSignalVoicePresentation?
+    ) -> SupervisorBriefProjectionUnavailablePresentation {
+        let displayProjectName = projectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "当前项目"
+            : projectName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let failureSummary = supervisorBriefProjectionFailureSummary(reasonCode)
+        let repairAction = supervisorBriefProjectionFailureRepairAction(reasonCode)
+        let normalizedReason = HubRouteStateMachine.normalizedReasonToken(reasonCode) ?? "hub_brief_unavailable"
+        let header = "⚠️ Hub Brief 暂不可用 · \(displayProjectName)"
+
+        var lines = [
+            header,
+            "这次没有拿到 Hub 统一投影：\(failureSummary)。",
+            "按当前 fail-closed 规则，我先不在 XT 本地即兴拼接 Supervisor brief。"
+        ]
+
+        if let localSignal,
+           !localSignal.headlineText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.append("XT 本地信号：\(localSignal.headlineText)。")
+            let action = localSignal.actionText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !action.isEmpty {
+                lines.append("你现在可以先：\(action)。")
+            } else {
+                lines.append(repairAction)
+            }
+        } else {
+            lines.append(repairAction)
+        }
+
+        var script = [
+            "Hub 简报当前不可用。\(failureSummary)。",
+            repairAction
+        ]
+        if let localSignal,
+           !localSignal.headlineText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let action = localSignal.actionText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            script = [
+                "Hub 简报当前不可用。\(failureSummary)。",
+                !action.isEmpty
+                    ? "XT 本地信号提示你先：\(action)。"
+                    : repairAction
+            ]
+        }
+
+        return SupervisorBriefProjectionUnavailablePresentation(
+            text: lines.joined(separator: "\n"),
+            script: script,
+            dedupeKey: "voice-query:hub-brief-unavailable:\(displayProjectName):\(normalizedReason)"
+        )
+    }
+
+    private func supervisorBriefProjectionFailureSummary(_ reasonCode: String?) -> String {
+        switch HubRouteStateMachine.normalizedReasonToken(reasonCode) {
+        case "hub_env_missing":
+            return "当前 Hub 配对或运行时档案不可用"
+        case "supervisor_brief_projection_file_ipc_not_supported":
+            return "当前仍在本地 file route，Hub brief 投影还没接上"
+        case "client_kit_missing":
+            return "Hub client kit 还没准备好"
+        case "node_missing":
+            return "Hub brief bridge 缺少 Node 运行时"
+        case "grpc_route_unavailable",
+             "grpc_unavailable",
+             "remote_supervisor_brief_projection_failed",
+             "supervisor_brief_projection_failed",
+             "projection_unavailable":
+            return "Hub 没有返回这次统一简报"
+        default:
+            if let token = HubRouteStateMachine.normalizedReasonToken(reasonCode) {
+                if token.contains("timeout") || token.contains("connect") || token.contains("unavailable") {
+                    return "Hub 路由当前不可达"
+                }
+                return "Hub brief 投影失败（\(token)）"
+            }
+            return "Hub 没有返回这次统一简报"
+        }
+    }
+
+    private func supervisorBriefProjectionFailureRepairAction(_ reasonCode: String?) -> String {
+        switch HubRouteStateMachine.normalizedReasonToken(reasonCode) {
+        case "hub_env_missing":
+            return "先修复 Hub 配对或运行 doctor / repair，再重新问一次状态。"
+        case "supervisor_brief_projection_file_ipc_not_supported":
+            return "先切回可用的 Hub pairing route，再重新问一次状态。"
+        case "client_kit_missing", "node_missing":
+            return "先修复 Hub 本地 runtime / bridge，再重新问一次状态。"
+        default:
+            return "先打开 Hub Diagnostics & Recovery 检查路由，再重新问一次状态。"
+        }
     }
 
     private func localSupervisorBriefReply(
@@ -31733,8 +31990,12 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
         let orderedProjects = projects.sorted { p1, p2 in
             calculatePriority(p1) > calculatePriority(p2)
         }
+        let routeMemorySnapshot = heartbeatRouteMemorySnapshot()
         for project in orderedProjects {
-            if AXProjectModelRouteMemoryStore.heartbeatNotice(for: project) != nil {
+            if AXProjectModelRouteMemoryStore.heartbeatNotice(
+                for: project,
+                snapshot: routeMemorySnapshot
+            ) != nil {
                 return project.projectId
             }
         }
@@ -35657,8 +35918,13 @@ skipped：\(skippedText)
                hubRuntime.overallState != XHubDoctorOverallState.ready.rawValue {
                 lines.append("hub_runtime_issue：\(hubRuntime.headline)")
             }
-            if !hubRuntime.detailLines.isEmpty {
-                lines.append("hub_runtime_detail：\(hubRuntime.detailLines.prefix(2).joined(separator: " || "))")
+            let loadConfigSummary = hubRuntime.loadConfigSummaryLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !loadConfigSummary.isEmpty {
+                lines.append("hub_runtime_load_config：\(loadConfigSummary)")
+            }
+            let renderableDetailLines = hubRuntime.renderableDetailLines(limit: 2)
+            if !renderableDetailLines.isEmpty {
+                lines.append("hub_runtime_detail：\(renderableDetailLines.joined(separator: " || "))")
             }
             if !hubRuntime.nextStep.isEmpty,
                hubRuntime.overallState != XHubDoctorOverallState.ready.rawValue {
@@ -35740,8 +36006,13 @@ skipped：\(skippedText)
                hubRuntime.overallState != XHubDoctorOverallState.ready.rawValue {
                 lines.append("hub_runtime_issue：\(hubRuntime.headline)")
             }
-            if !hubRuntime.detailLines.isEmpty {
-                lines.append("hub_runtime_detail：\(hubRuntime.detailLines.prefix(2).joined(separator: " || "))")
+            let loadConfigSummary = hubRuntime.loadConfigSummaryLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !loadConfigSummary.isEmpty {
+                lines.append("hub_runtime_load_config：\(loadConfigSummary)")
+            }
+            let renderableDetailLines = hubRuntime.renderableDetailLines(limit: 2)
+            if !renderableDetailLines.isEmpty {
+                lines.append("hub_runtime_detail：\(renderableDetailLines.joined(separator: " || "))")
             }
             if !hubRuntime.nextStep.isEmpty,
                hubRuntime.overallState != XHubDoctorOverallState.ready.rawValue {

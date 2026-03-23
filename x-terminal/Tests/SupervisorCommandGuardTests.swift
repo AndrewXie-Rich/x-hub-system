@@ -1799,6 +1799,104 @@ struct SupervisorCommandGuardTests {
     }
 
     @Test
+    func approveSupervisorSkillActivityWorksWhenProjectOutsideJurisdictionView() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        let fixture = SupervisorSkillRegistryFixture()
+        defer { fixture.cleanup() }
+
+        let root = try makeProjectRoot(named: "supervisor-approve-activity-hidden-project")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "我的世界还原项目")
+        try fixture.writeHubSkillsStore(projectID: project.projectId)
+        HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+
+        manager.setSupervisorToolExecutorOverrideForTesting { call, _ in
+            #expect(call.tool == .deviceBrowserControl)
+            #expect(call.args["action"]?.stringValue == "open_url")
+            #expect(call.args["url"]?.stringValue == "https://example.com")
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: true,
+                output: "browser smoke completed from recent activity"
+            )
+        }
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"运行 hidden browser smoke","priority":"high"}[/CREATE_JOB]"#,
+            userMessage: "请创建任务"
+        )
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config = config
+            .settingTrustedAutomationBinding(
+                mode: .trustedAutomation,
+                deviceId: "device_xt_001",
+                deviceToolGroups: ["device.browser.control"],
+                workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: root)
+            )
+            .settingRuntimeSurfacePolicy(
+                mode: .trustedOpenClawMode,
+                updatedAt: freshTrustedRuntimeSurfaceUpdatedAt()
+            )
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        AXTrustedAutomationPermissionOwnerReadiness.installCurrentProviderForTesting {
+            makeSupervisorTrustedAutomationPermissionReadiness()
+        }
+        defer { AXTrustedAutomationPermissionOwnerReadiness.resetCurrentProviderForTesting() }
+
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [UPSERT_PLAN]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","plan_id":"plan-browser-smoke-approve-activity-hidden-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"运行 browser runtime smoke","kind":"call_skill","status":"pending","skill_id":"browser.runtime.smoke"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划"
+        )
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [CALL_SKILL]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","step_id":"step-001","skill_id":"browser.runtime.smoke","payload":{"url":"https://example.com"}}[/CALL_SKILL]
+            """#,
+            userMessage: "请执行 browser smoke 技能"
+        )
+
+        let original = try #require(SupervisorProjectSkillCallStore.load(for: ctx).calls.first)
+        manager.refreshRecentSupervisorSkillActivitiesNow()
+        let activity = try #require(manager.recentSupervisorSkillActivities.first(where: { $0.requestId == original.requestId }))
+
+        let now = Date(timeIntervalSince1970: 1_773_383_900).timeIntervalSince1970
+        let jurisdiction = SupervisorJurisdictionRegistry.ownerDefault(now: now)
+            .upserting(projectId: project.projectId, displayName: project.displayName, role: .triageOnly, now: now)
+        _ = manager.applySupervisorJurisdictionRegistry(jurisdiction, persist: false, normalizeWithKnownProjects: false)
+
+        manager.approveSupervisorSkillActivity(activity)
+        await manager.waitForSupervisorSkillDispatchForTesting()
+
+        #expect(manager.messages.contains(where: {
+            $0.content.contains("已批准项目 \(project.displayName) 的技能调用：browser.runtime.smoke") &&
+                !$0.content.contains(root.lastPathComponent)
+        }))
+
+        let call = try #require(SupervisorProjectSkillCallStore.load(for: ctx).calls.first)
+        #expect(call.status == .completed)
+        #expect(call.resultSummary.contains("browser smoke completed from recent activity"))
+
+        let plan = try #require(SupervisorProjectPlanStore.load(for: ctx).plans.first)
+        #expect(plan.steps[0].status == .completed)
+        #expect(plan.status == .completed)
+        #expect(SupervisorProjectJobStore.load(for: ctx).jobs.first?.status == .completed)
+    }
+
+    @Test
     func governedAutoApprovalLetsSupervisorExecuteHighRiskLocalSkillWithoutPendingApproval() async throws {
         let manager = SupervisorManager.makeForTesting()
         let fixture = SupervisorSkillRegistryFixture()
@@ -2632,6 +2730,102 @@ struct SupervisorCommandGuardTests {
         #expect(latest.requestId != original.requestId)
         #expect(latest.status == .blocked)
         #expect(latest.denyCode == "skill_mapping_missing")
+    }
+
+    @Test
+    func retrySupervisorSkillActivityWorksWhenProjectOutsideJurisdictionView() async throws {
+        actor ExecutionCapture {
+            private var attempt = 0
+
+            func run(_ call: ToolCall) -> ToolResult {
+                attempt += 1
+                if attempt == 1 {
+                    return ToolResult(
+                        id: call.id,
+                        tool: call.tool,
+                        ok: false,
+                        output: "skills search failed"
+                    )
+                }
+                return ToolResult(
+                    id: call.id,
+                    tool: call.tool,
+                    ok: true,
+                    output: "skills search retry completed"
+                )
+            }
+        }
+
+        let manager = SupervisorManager.makeForTesting()
+        let fixture = SupervisorSkillRegistryFixture()
+        defer { fixture.cleanup() }
+
+        let root = try makeProjectRoot(named: "supervisor-find-skills-retry-hidden-project")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "我的世界还原项目")
+        try fixture.writeHubSkillsStore(projectID: project.projectId)
+        HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+
+        let capture = ExecutionCapture()
+        manager.setSupervisorToolExecutorOverrideForTesting { call, _ in
+            #expect(call.tool == .skills_search)
+            return await capture.run(call)
+        }
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"重试隐藏项目 skill","priority":"normal"}[/CREATE_JOB]"#,
+            userMessage: "请创建任务"
+        )
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [UPSERT_PLAN]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","plan_id":"plan-find-skills-retry-hidden-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"搜索 skill","kind":"call_skill","status":"pending","skill_id":"find-skills"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划"
+        )
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [CALL_SKILL]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","step_id":"step-001","skill_id":"find-skills","payload":{"query":"browser","source_filter":"builtin:catalog"}}[/CALL_SKILL]
+            """#,
+            userMessage: "请执行 find-skills 技能"
+        )
+        await manager.waitForSupervisorSkillDispatchForTesting()
+
+        let original = try #require(SupervisorProjectSkillCallStore.load(for: ctx).calls.first)
+        #expect(original.status == .failed)
+
+        manager.refreshRecentSupervisorSkillActivitiesNow()
+        let activity = try #require(manager.recentSupervisorSkillActivities.first(where: { $0.requestId == original.requestId }))
+
+        let now = Date(timeIntervalSince1970: 1_773_384_000).timeIntervalSince1970
+        let jurisdiction = SupervisorJurisdictionRegistry.ownerDefault(now: now)
+            .upserting(projectId: project.projectId, displayName: project.displayName, role: .triageOnly, now: now)
+        _ = manager.applySupervisorJurisdictionRegistry(jurisdiction, persist: false, normalizeWithKnownProjects: false)
+
+        manager.retrySupervisorSkillActivity(activity)
+
+        #expect(manager.messages.contains(where: {
+            $0.content.contains("已为项目 \(project.displayName) 重新排队技能调用：find-skills") &&
+                !$0.content.contains(root.lastPathComponent)
+        }))
+
+        await manager.waitForSupervisorSkillDispatchForTesting()
+
+        let calls = SupervisorProjectSkillCallStore.load(for: ctx).calls
+        let latest = try #require(calls.max(by: { $0.createdAtMs < $1.createdAtMs }))
+        #expect(latest.requestId != original.requestId)
+        #expect(latest.status == .completed)
+        #expect(latest.resultSummary.contains("skills search retry completed"))
     }
 
     @Test
@@ -5205,6 +5399,144 @@ struct SupervisorCommandGuardTests {
     }
 
     @Test
+    func approvalResolutionAutoFollowUpRunsWhenProjectOutsideJurisdictionView() async throws {
+        let manager = SupervisorManager.makeForTesting(enableSupervisorEventLoopAutoFollowUp: true)
+        let fixture = SupervisorSkillRegistryFixture()
+        defer { fixture.cleanup() }
+
+        let root = try makeProjectRoot(named: "supervisor-approval-resolution-hidden-project")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "我的世界还原项目")
+        try fixture.writeHubSkillsStore(projectID: project.projectId)
+        HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+
+        manager.setSupervisorEventLoopResponseOverrideForTesting { userMessage, triggerSource in
+            #expect(triggerSource == "approval_resolution")
+            #expect(userMessage.contains("trigger=approval_resolution"))
+            #expect(userMessage.contains("project_ref=\(project.displayName)"))
+            #expect(userMessage.contains("reason_code=local_approval_denied"))
+            #expect(!userMessage.contains(root.lastPathComponent))
+            return #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"hidden approval resolution follow-up","priority":"high","source":"approval_resolution","current_owner":"supervisor"}[/CREATE_JOB]"#
+        }
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"运行 browser smoke","priority":"high"}[/CREATE_JOB]"#,
+            userMessage: "请创建任务"
+        )
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [UPSERT_PLAN]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","plan_id":"plan-browser-smoke-approval-hidden-event-loop-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"运行 browser runtime smoke","kind":"call_skill","status":"pending","skill_id":"browser.runtime.smoke"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划"
+        )
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [CALL_SKILL]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","step_id":"step-001","skill_id":"browser.runtime.smoke","payload":{"url":"https://example.com"}}[/CALL_SKILL]
+            """#,
+            userMessage: "请执行 browser smoke 技能"
+        )
+
+        let now = Date(timeIntervalSince1970: 1_773_384_000).timeIntervalSince1970
+        let jurisdiction = SupervisorJurisdictionRegistry.ownerDefault(now: now)
+            .upserting(projectId: project.projectId, displayName: project.displayName, role: .triageOnly, now: now)
+        _ = manager.applySupervisorJurisdictionRegistry(jurisdiction, persist: false, normalizeWithKnownProjects: false)
+
+        let approval = try #require(manager.pendingSupervisorSkillApprovals.first)
+        manager.denyPendingSupervisorSkillApproval(approval)
+        await manager.waitForSupervisorEventLoopForTesting()
+
+        let jobs = SupervisorProjectJobStore.load(for: ctx).jobs
+        #expect(jobs.count == 2)
+        let followUp = try #require(jobs.first(where: { $0.goal == "hidden approval resolution follow-up" }))
+        #expect(followUp.source == .approvalResolution)
+        #expect(followUp.priority == .high)
+    }
+
+    @Test
+    func denySupervisorSkillActivityRunsApprovalResolutionFollowUpWhenProjectOutsideJurisdictionView() async throws {
+        let manager = SupervisorManager.makeForTesting(enableSupervisorEventLoopAutoFollowUp: true)
+        let fixture = SupervisorSkillRegistryFixture()
+        defer { fixture.cleanup() }
+
+        let root = try makeProjectRoot(named: "supervisor-deny-activity-hidden-project")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "我的世界还原项目")
+        try fixture.writeHubSkillsStore(projectID: project.projectId)
+        HubPaths.setPinnedBaseDirOverride(fixture.hubBaseDir)
+        defer { HubPaths.clearPinnedBaseDirOverride() }
+
+        manager.setSupervisorEventLoopResponseOverrideForTesting { userMessage, triggerSource in
+            #expect(triggerSource == "approval_resolution")
+            #expect(userMessage.contains("trigger=approval_resolution"))
+            #expect(userMessage.contains("project_ref=\(project.displayName)"))
+            #expect(userMessage.contains("reason_code=local_approval_denied"))
+            #expect(!userMessage.contains(root.lastPathComponent))
+            return #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"hidden recent activity deny follow-up","priority":"high","source":"approval_resolution","current_owner":"supervisor"}[/CREATE_JOB]"#
+        }
+
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"我的世界还原项目","goal":"运行 browser smoke","priority":"high"}[/CREATE_JOB]"#,
+            userMessage: "请创建任务"
+        )
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [UPSERT_PLAN]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","plan_id":"plan-browser-smoke-deny-activity-hidden-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"运行 browser runtime smoke","kind":"call_skill","status":"pending","skill_id":"browser.runtime.smoke"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划"
+        )
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [CALL_SKILL]{"project_ref":"我的世界还原项目","job_id":"\#(job.jobId)","step_id":"step-001","skill_id":"browser.runtime.smoke","payload":{"url":"https://example.com"}}[/CALL_SKILL]
+            """#,
+            userMessage: "请执行 browser smoke 技能"
+        )
+
+        let original = try #require(SupervisorProjectSkillCallStore.load(for: ctx).calls.first)
+        manager.refreshRecentSupervisorSkillActivitiesNow()
+        let activity = try #require(manager.recentSupervisorSkillActivities.first(where: { $0.requestId == original.requestId }))
+
+        let now = Date(timeIntervalSince1970: 1_773_384_100).timeIntervalSince1970
+        let jurisdiction = SupervisorJurisdictionRegistry.ownerDefault(now: now)
+            .upserting(projectId: project.projectId, displayName: project.displayName, role: .triageOnly, now: now)
+        _ = manager.applySupervisorJurisdictionRegistry(jurisdiction, persist: false, normalizeWithKnownProjects: false)
+
+        manager.denySupervisorSkillActivity(activity)
+        await manager.waitForSupervisorEventLoopForTesting()
+
+        #expect(manager.messages.contains(where: {
+            $0.content.contains("已拒绝项目 \(project.displayName) 的技能调用：browser.runtime.smoke") &&
+                !$0.content.contains(root.lastPathComponent)
+        }))
+
+        let jobs = SupervisorProjectJobStore.load(for: ctx).jobs
+        #expect(jobs.count == 2)
+        let followUp = try #require(jobs.first(where: { $0.goal == "hidden recent activity deny follow-up" }))
+        #expect(followUp.source == .approvalResolution)
+        #expect(followUp.priority == .high)
+    }
+
+    @Test
     func guidanceAckRejectedAutoFollowUpRunsSupervisorTurn() async throws {
         let manager = SupervisorManager.makeForTesting(enableSupervisorEventLoopAutoFollowUp: true)
         let root = try makeProjectRoot(named: "supervisor-guidance-ack-event-loop")
@@ -5272,6 +5604,74 @@ struct SupervisorCommandGuardTests {
             ($0["goal"] as? String) == "处理 guidance ack follow-up"
         }))
         #expect(rawJob["trigger_source"] as? String == "guidance_ack")
+    }
+
+    @Test
+    func guidanceAckRejectedAutoFollowUpRunsWhenProjectOutsideJurisdictionView() async throws {
+        let manager = SupervisorManager.makeForTesting(enableSupervisorEventLoopAutoFollowUp: true)
+        let root = try makeProjectRoot(named: "supervisor-guidance-ack-hidden-project")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(root: root, displayName: "亮亮")
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+
+        manager.setSupervisorEventLoopResponseOverrideForTesting { userMessage, triggerSource in
+            #expect(triggerSource == "guidance_ack")
+            #expect(userMessage.contains("trigger=guidance_ack"))
+            #expect(userMessage.contains("project_ref=\(project.displayName)"))
+            #expect(userMessage.contains("ack_status=rejected"))
+            #expect(!userMessage.contains(root.lastPathComponent))
+            return #"[CREATE_JOB]{"project_ref":"亮亮","goal":"hidden guidance ack follow-up","priority":"high","current_owner":"supervisor"}[/CREATE_JOB]"#
+        }
+
+        _ = manager.processSupervisorResponseForTesting(
+            #"[CREATE_JOB]{"project_ref":"亮亮","goal":"推进 review guidance 闭环","priority":"normal"}[/CREATE_JOB]"#,
+            userMessage: "请创建任务"
+        )
+
+        let ctx = try #require(appModel.projectContext(for: project.projectId))
+        let job = try #require(SupervisorProjectJobStore.load(for: ctx).jobs.first)
+        _ = manager.processSupervisorResponseForTesting(
+            #"""
+            [UPSERT_PLAN]{"project_ref":"亮亮","job_id":"\#(job.jobId)","plan_id":"plan-guidance-ack-hidden-loop-v1","current_owner":"supervisor","steps":[{"step_id":"step-001","title":"消化 supervisor guidance","kind":"write_memory","status":"running"},{"step_id":"step-002","title":"按 guidance 调整计划","kind":"write_memory","status":"pending"}]}[/UPSERT_PLAN]
+            """#,
+            userMessage: "请更新计划"
+        )
+
+        let now = Date(timeIntervalSince1970: 1_773_385_500).timeIntervalSince1970
+        let jurisdiction = SupervisorJurisdictionRegistry.ownerDefault(now: now)
+            .upserting(projectId: project.projectId, displayName: project.displayName, role: .triageOnly, now: now)
+        _ = manager.applySupervisorJurisdictionRegistry(jurisdiction, persist: false, normalizeWithKnownProjects: false)
+
+        let rejected = SupervisorGuidanceInjectionBuilder.build(
+            injectionId: "guidance-ack-rejected-hidden-loop-1",
+            reviewId: "review-ack-rejected-hidden-loop-1",
+            projectId: project.projectId,
+            targetRole: .coder,
+            deliveryMode: .replanRequest,
+            interventionMode: .replanNextSafePoint,
+            safePointPolicy: .nextStepBoundary,
+            guidanceText: "改成更稳的 replan 路线。",
+            ackStatus: .rejected,
+            ackRequired: true,
+            ackNote: "Conflicts with the approved migration boundary.",
+            injectedAtMs: 1_773_385_500_000,
+            ackUpdatedAtMs: 1_773_385_500_100,
+            auditRef: "audit-guidance-ack-rejected-hidden-loop-1"
+        )
+        try SupervisorGuidanceInjectionStore.upsert(rejected, for: ctx)
+
+        manager.handleEvent(.supervisorGuidanceAck(rejected))
+        await manager.waitForSupervisorEventLoopForTesting()
+
+        let jobs = SupervisorProjectJobStore.load(for: ctx).jobs
+        #expect(jobs.count == 2)
+        let followUp = try #require(jobs.first(where: { $0.goal == "hidden guidance ack follow-up" }))
+        #expect(followUp.priority == .high)
+        #expect(manager.recentEventsForTesting().contains { $0.contains("项目 \(project.displayName) 指导确认：已拒绝") })
     }
 
     @Test

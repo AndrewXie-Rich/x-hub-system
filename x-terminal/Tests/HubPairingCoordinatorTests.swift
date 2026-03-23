@@ -79,4 +79,39 @@ struct HubPairingCoordinatorTests {
         #expect(result?.executionPath == "hub_downgraded_to_local")
         #expect(result?.fallbackReasonCode == "downgrade_to_local")
     }
+
+    @Test
+    func remoteSupervisorCandidateReviewQueueResultParsesRequestLevelSnapshot() {
+        let json = """
+        {"ok":true,"source":"hub_runtime_grpc","updated_at_ms":1773420090000,"items":[{"schema_version":"xhub.supervisor_candidate_review_item.v1","review_id":"sup_cand_review:device:x_terminal:req-1","request_id":"req-1","evidence_ref":"candidate_carrier_request:req-1","review_state":"pending_review","durable_promotion_state":"not_promoted","promotion_boundary":"candidate_carrier_only","device_id":"device-a","user_id":"user-a","app_id":"x_terminal","thread_id":"thread-1","thread_key":"shadow-thread","project_id":"project-a","project_ids":["project-a"],"scopes":["project_scope"],"record_types":["project_blocker"],"audit_refs":["audit-1"],"idempotency_keys":["sha256:req-1"],"candidate_count":2,"summary_line":"project_scope","mirror_target":"hub_candidate_carrier_shadow_thread","local_store_role":"cache|fallback|edit_buffer","carrier_kind":"supervisor_after_turn_durable_candidate_shadow_write","carrier_schema_version":"xt.supervisor.durable_candidate_mirror.v1","pending_change_id":"","pending_change_status":"","edit_session_id":"","doc_id":"","writeback_ref":"","stage_created_at_ms":0,"stage_updated_at_ms":0,"latest_emitted_at_ms":1773420080000,"created_at_ms":1773420079000,"updated_at_ms":1773420081000}]}
+        """
+
+        let result = HubPairingCoordinator.remoteSupervisorCandidateReviewQueueResultForTesting(jsonLine: json)
+
+        #expect(result?.ok == true)
+        #expect(result?.updatedAtMs == 1_773_420_090_000)
+        #expect(result?.items.count == 1)
+        #expect(result?.items.first?.requestId == "req-1")
+        #expect(result?.items.first?.reviewState == "pending_review")
+        #expect(result?.items.first?.candidateCount == 2)
+        #expect(result?.items.first?.projectIds == ["project-a"])
+    }
+
+    @Test
+    func remoteSupervisorCandidateReviewStageResultParsesDraftMetadata() {
+        let json = """
+        {"ok":true,"source":"hub_memory_v1_grpc","staged":true,"idempotent":false,"review_state":"draft_staged","durable_promotion_state":"not_promoted","promotion_boundary":"longterm_markdown_pending_change","candidate_request_id":"req-1","evidence_ref":"candidate_carrier_request:req-1","edit_session_id":"edit-1","pending_change_id":"chg-1","doc_id":"longterm:project-a","base_version":"v1","working_version":"v2","session_revision":3,"status":"draft","markdown":"# Supervisor Candidate Review Handoff","created_at_ms":1773420082000,"updated_at_ms":1773420083000,"expires_at_ms":1773423683000}
+        """
+
+        let result = HubPairingCoordinator.remoteSupervisorCandidateReviewStageResultForTesting(jsonLine: json)
+
+        #expect(result?.ok == true)
+        #expect(result?.staged == true)
+        #expect(result?.idempotent == false)
+        #expect(result?.reviewState == "draft_staged")
+        #expect(result?.promotionBoundary == "longterm_markdown_pending_change")
+        #expect(result?.pendingChangeId == "chg-1")
+        #expect(result?.sessionRevision == 3)
+        #expect(result?.status == "draft")
+    }
 }

@@ -1859,6 +1859,88 @@ enum HubIPCClient {
         var items: [PendingGrantItem]
     }
 
+    struct SupervisorCandidateReviewItem: Codable, Equatable, Identifiable {
+        var schemaVersion: String
+        var reviewId: String
+        var requestId: String
+        var evidenceRef: String
+        var reviewState: String
+        var durablePromotionState: String
+        var promotionBoundary: String
+        var deviceId: String
+        var userId: String
+        var appId: String
+        var threadId: String
+        var threadKey: String
+        var projectId: String
+        var projectIds: [String]
+        var scopes: [String]
+        var recordTypes: [String]
+        var auditRefs: [String]
+        var idempotencyKeys: [String]
+        var candidateCount: Int
+        var summaryLine: String
+        var mirrorTarget: String
+        var localStoreRole: String
+        var carrierKind: String
+        var carrierSchemaVersion: String
+        var pendingChangeId: String
+        var pendingChangeStatus: String
+        var editSessionId: String
+        var docId: String
+        var writebackRef: String
+        var stageCreatedAtMs: Double
+        var stageUpdatedAtMs: Double
+        var latestEmittedAtMs: Double
+        var createdAtMs: Double
+        var updatedAtMs: Double
+
+        var id: String { reviewId.isEmpty ? requestId : reviewId }
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+            case reviewId = "review_id"
+            case requestId = "request_id"
+            case evidenceRef = "evidence_ref"
+            case reviewState = "review_state"
+            case durablePromotionState = "durable_promotion_state"
+            case promotionBoundary = "promotion_boundary"
+            case deviceId = "device_id"
+            case userId = "user_id"
+            case appId = "app_id"
+            case threadId = "thread_id"
+            case threadKey = "thread_key"
+            case projectId = "project_id"
+            case projectIds = "project_ids"
+            case scopes
+            case recordTypes = "record_types"
+            case auditRefs = "audit_refs"
+            case idempotencyKeys = "idempotency_keys"
+            case candidateCount = "candidate_count"
+            case summaryLine = "summary_line"
+            case mirrorTarget = "mirror_target"
+            case localStoreRole = "local_store_role"
+            case carrierKind = "carrier_kind"
+            case carrierSchemaVersion = "carrier_schema_version"
+            case pendingChangeId = "pending_change_id"
+            case pendingChangeStatus = "pending_change_status"
+            case editSessionId = "edit_session_id"
+            case docId = "doc_id"
+            case writebackRef = "writeback_ref"
+            case stageCreatedAtMs = "stage_created_at_ms"
+            case stageUpdatedAtMs = "stage_updated_at_ms"
+            case latestEmittedAtMs = "latest_emitted_at_ms"
+            case createdAtMs = "created_at_ms"
+            case updatedAtMs = "updated_at_ms"
+        }
+    }
+
+    struct SupervisorCandidateReviewSnapshot: Codable, Equatable {
+        var source: String
+        var updatedAtMs: Double
+        var items: [SupervisorCandidateReviewItem]
+    }
+
     struct ConnectorIngressReceipt: Codable, Equatable, Identifiable {
         var receiptId: String
         var requestId: String
@@ -2060,6 +2142,30 @@ enum HubIPCClient {
         var grantRequestId: String?
         var grantId: String?
         var expiresAtMs: Double?
+        var reasonCode: String?
+    }
+
+    struct SupervisorCandidateReviewStageResult {
+        var ok: Bool
+        var staged: Bool
+        var idempotent: Bool
+        var source: String
+        var reviewState: String
+        var durablePromotionState: String
+        var promotionBoundary: String
+        var candidateRequestId: String?
+        var evidenceRef: String?
+        var editSessionId: String?
+        var pendingChangeId: String?
+        var docId: String?
+        var baseVersion: String?
+        var workingVersion: String?
+        var sessionRevision: Int64
+        var status: String?
+        var markdown: String?
+        var createdAtMs: Double
+        var updatedAtMs: Double
+        var expiresAtMs: Double
         var reasonCode: String?
     }
 
@@ -4791,6 +4897,79 @@ enum HubIPCClient {
         )
     }
 
+    static func requestSupervisorCandidateReviewSnapshot(
+        projectId: String? = nil,
+        limit: Int = 200
+    ) async -> SupervisorCandidateReviewSnapshot? {
+        let routeDecision = await currentRouteDecision()
+        let boundedLimit = max(1, min(500, limit))
+        let normalizedProjectId = normalized(projectId)
+
+        if routeDecision.preferRemote {
+            let remote = await HubPairingCoordinator.shared.fetchRemoteSupervisorCandidateReviewQueue(
+                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                projectId: normalizedProjectId,
+                limit: boundedLimit
+            )
+            if remote.ok {
+                return SupervisorCandidateReviewSnapshot(
+                    source: remote.source.trimmingCharacters(in: .whitespacesAndNewlines),
+                    updatedAtMs: max(0, remote.updatedAtMs),
+                    items: remote.items.map { row in
+                        SupervisorCandidateReviewItem(
+                            schemaVersion: row.schemaVersion,
+                            reviewId: row.reviewId,
+                            requestId: row.requestId,
+                            evidenceRef: row.evidenceRef,
+                            reviewState: row.reviewState,
+                            durablePromotionState: row.durablePromotionState,
+                            promotionBoundary: row.promotionBoundary,
+                            deviceId: row.deviceId,
+                            userId: row.userId,
+                            appId: row.appId,
+                            threadId: row.threadId,
+                            threadKey: row.threadKey,
+                            projectId: row.projectId,
+                            projectIds: row.projectIds,
+                            scopes: row.scopes,
+                            recordTypes: row.recordTypes,
+                            auditRefs: row.auditRefs,
+                            idempotencyKeys: row.idempotencyKeys,
+                            candidateCount: max(0, row.candidateCount),
+                            summaryLine: row.summaryLine,
+                            mirrorTarget: row.mirrorTarget,
+                            localStoreRole: row.localStoreRole,
+                            carrierKind: row.carrierKind,
+                            carrierSchemaVersion: row.carrierSchemaVersion,
+                            pendingChangeId: row.pendingChangeId,
+                            pendingChangeStatus: row.pendingChangeStatus,
+                            editSessionId: row.editSessionId,
+                            docId: row.docId,
+                            writebackRef: row.writebackRef,
+                            stageCreatedAtMs: max(0, row.stageCreatedAtMs),
+                            stageUpdatedAtMs: max(0, row.stageUpdatedAtMs),
+                            latestEmittedAtMs: max(0, row.latestEmittedAtMs),
+                            createdAtMs: max(0, row.createdAtMs),
+                            updatedAtMs: max(0, row.updatedAtMs)
+                        )
+                    }
+                )
+            }
+            if !routeDecision.allowFileFallback {
+                return nil
+            }
+        }
+
+        if routeDecision.requiresRemote {
+            return nil
+        }
+
+        return readLocalSupervisorCandidateReviewSnapshot(
+            projectId: normalizedProjectId,
+            limit: boundedLimit
+        )
+    }
+
     static func requestSupervisorSkillRegistrySnapshot(
         projectId: String?,
         projectName: String?
@@ -5910,6 +6089,105 @@ enum HubIPCClient {
             grantRequestId: normalizedGrantId,
             grantId: nil,
             expiresAtMs: nil,
+            reasonCode: fallbackReason
+        )
+    }
+
+    static func stageSupervisorCandidateReview(
+        candidateRequestId: String,
+        projectId: String? = nil
+    ) async -> SupervisorCandidateReviewStageResult {
+        let normalizedCandidateRequestId = normalized(candidateRequestId)
+        guard let normalizedCandidateRequestId else {
+            return SupervisorCandidateReviewStageResult(
+                ok: false,
+                staged: false,
+                idempotent: false,
+                source: "hub_memory_v1_grpc",
+                reviewState: "",
+                durablePromotionState: "",
+                promotionBoundary: "",
+                candidateRequestId: nil,
+                evidenceRef: nil,
+                editSessionId: nil,
+                pendingChangeId: nil,
+                docId: nil,
+                baseVersion: nil,
+                workingVersion: nil,
+                sessionRevision: 0,
+                status: nil,
+                markdown: nil,
+                createdAtMs: 0,
+                updatedAtMs: 0,
+                expiresAtMs: 0,
+                reasonCode: "candidate_request_id_empty"
+            )
+        }
+
+        let routeDecision = await currentRouteDecision()
+        let normalizedProjectId = normalized(projectId)
+
+        if routeDecision.preferRemote {
+            let remote = await HubPairingCoordinator.shared.stageRemoteSupervisorCandidateReview(
+                options: HubAIClient.remoteConnectOptionsFromDefaults(stateDir: nil),
+                candidateRequestId: normalizedCandidateRequestId,
+                projectId: normalizedProjectId
+            )
+            return SupervisorCandidateReviewStageResult(
+                ok: remote.ok,
+                staged: remote.staged,
+                idempotent: remote.idempotent,
+                source: remote.source,
+                reviewState: remote.reviewState,
+                durablePromotionState: remote.durablePromotionState,
+                promotionBoundary: remote.promotionBoundary,
+                candidateRequestId: remote.candidateRequestId ?? normalizedCandidateRequestId,
+                evidenceRef: remote.evidenceRef,
+                editSessionId: remote.editSessionId,
+                pendingChangeId: remote.pendingChangeId,
+                docId: remote.docId,
+                baseVersion: remote.baseVersion,
+                workingVersion: remote.workingVersion,
+                sessionRevision: remote.sessionRevision,
+                status: remote.status,
+                markdown: remote.markdown,
+                createdAtMs: max(0, remote.createdAtMs),
+                updatedAtMs: max(0, remote.updatedAtMs),
+                expiresAtMs: max(0, remote.expiresAtMs),
+                reasonCode: normalizedReasonCode(
+                    remote.reasonCode,
+                    fallback: remote.ok ? nil : "supervisor_candidate_review_stage_failed"
+                )
+            )
+        }
+
+        let fallbackReason = routeDecision.requiresRemote
+            ? normalizedReasonCode(
+                routeDecision.remoteUnavailableReasonCode,
+                fallback: "hub_env_missing"
+            )
+            : "supervisor_candidate_review_stage_file_ipc_not_supported"
+        return SupervisorCandidateReviewStageResult(
+            ok: false,
+            staged: false,
+            idempotent: false,
+            source: routeDecision.requiresRemote ? "hub_memory_v1_grpc" : "file_ipc",
+            reviewState: "",
+            durablePromotionState: "",
+            promotionBoundary: "",
+            candidateRequestId: normalizedCandidateRequestId,
+            evidenceRef: nil,
+            editSessionId: nil,
+            pendingChangeId: nil,
+            docId: nil,
+            baseVersion: nil,
+            workingVersion: nil,
+            sessionRevision: 0,
+            status: nil,
+            markdown: nil,
+            createdAtMs: 0,
+            updatedAtMs: 0,
+            expiresAtMs: 0,
             reasonCode: fallbackReason
         )
     }
@@ -7838,6 +8116,173 @@ compression_policy: \(compressionPolicy)
 
         return PendingGrantSnapshot(
             source: "hub_pending_grants_file",
+            updatedAtMs: max(0, decoded.updatedAtMs ?? 0),
+            items: Array(mapped.prefix(boundedLimit))
+        )
+    }
+
+    private struct LocalSupervisorCandidateReviewItem: Codable {
+        var schemaVersion: String?
+        var reviewId: String?
+        var requestId: String?
+        var evidenceRef: String?
+        var reviewState: String?
+        var durablePromotionState: String?
+        var promotionBoundary: String?
+        var deviceId: String?
+        var userId: String?
+        var appId: String?
+        var threadId: String?
+        var threadKey: String?
+        var projectId: String?
+        var projectIds: [String]?
+        var scopes: [String]?
+        var recordTypes: [String]?
+        var auditRefs: [String]?
+        var idempotencyKeys: [String]?
+        var candidateCount: Int?
+        var summaryLine: String?
+        var mirrorTarget: String?
+        var localStoreRole: String?
+        var carrierKind: String?
+        var carrierSchemaVersion: String?
+        var pendingChangeId: String?
+        var pendingChangeStatus: String?
+        var editSessionId: String?
+        var docId: String?
+        var writebackRef: String?
+        var stageCreatedAtMs: Double?
+        var stageUpdatedAtMs: Double?
+        var latestEmittedAtMs: Double?
+        var createdAtMs: Double?
+        var updatedAtMs: Double?
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+            case reviewId = "review_id"
+            case requestId = "request_id"
+            case evidenceRef = "evidence_ref"
+            case reviewState = "review_state"
+            case durablePromotionState = "durable_promotion_state"
+            case promotionBoundary = "promotion_boundary"
+            case deviceId = "device_id"
+            case userId = "user_id"
+            case appId = "app_id"
+            case threadId = "thread_id"
+            case threadKey = "thread_key"
+            case projectId = "project_id"
+            case projectIds = "project_ids"
+            case scopes
+            case recordTypes = "record_types"
+            case auditRefs = "audit_refs"
+            case idempotencyKeys = "idempotency_keys"
+            case candidateCount = "candidate_count"
+            case summaryLine = "summary_line"
+            case mirrorTarget = "mirror_target"
+            case localStoreRole = "local_store_role"
+            case carrierKind = "carrier_kind"
+            case carrierSchemaVersion = "carrier_schema_version"
+            case pendingChangeId = "pending_change_id"
+            case pendingChangeStatus = "pending_change_status"
+            case editSessionId = "edit_session_id"
+            case docId = "doc_id"
+            case writebackRef = "writeback_ref"
+            case stageCreatedAtMs = "stage_created_at_ms"
+            case stageUpdatedAtMs = "stage_updated_at_ms"
+            case latestEmittedAtMs = "latest_emitted_at_ms"
+            case createdAtMs = "created_at_ms"
+            case updatedAtMs = "updated_at_ms"
+        }
+    }
+
+    private struct LocalSupervisorCandidateReviewSnapshotFile: Codable {
+        var schemaVersion: String?
+        var updatedAtMs: Double?
+        var items: [LocalSupervisorCandidateReviewItem]?
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+            case updatedAtMs = "updated_at_ms"
+            case items
+        }
+    }
+
+    private static func readLocalSupervisorCandidateReviewSnapshot(
+        projectId: String?,
+        limit: Int
+    ) -> SupervisorCandidateReviewSnapshot? {
+        let url = HubPaths.baseDir().appendingPathComponent("supervisor_candidate_review_status.json")
+        guard let data = try? Data(contentsOf: url),
+              let decoded = try? JSONDecoder().decode(LocalSupervisorCandidateReviewSnapshotFile.self, from: data) else {
+            return nil
+        }
+
+        let normalizedProjectId = normalized(projectId)
+        let boundedLimit = max(1, min(500, limit))
+
+        let mapped = (decoded.items ?? []).compactMap { row -> SupervisorCandidateReviewItem? in
+            let requestId = row.requestId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !requestId.isEmpty else { return nil }
+
+            let project = row.projectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let projectIDs = (row.projectIds ?? [])
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            if let normalizedProjectId, !normalizedProjectId.isEmpty,
+               project != normalizedProjectId,
+               !projectIDs.contains(normalizedProjectId) {
+                return nil
+            }
+
+            return SupervisorCandidateReviewItem(
+                schemaVersion: row.schemaVersion?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                reviewId: row.reviewId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                requestId: requestId,
+                evidenceRef: row.evidenceRef?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                reviewState: row.reviewState?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                durablePromotionState: row.durablePromotionState?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                promotionBoundary: row.promotionBoundary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                deviceId: row.deviceId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                userId: row.userId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                appId: row.appId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                threadId: row.threadId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                threadKey: row.threadKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                projectId: project,
+                projectIds: projectIDs,
+                scopes: (row.scopes ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty },
+                recordTypes: (row.recordTypes ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty },
+                auditRefs: (row.auditRefs ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty },
+                idempotencyKeys: (row.idempotencyKeys ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty },
+                candidateCount: max(0, row.candidateCount ?? 0),
+                summaryLine: row.summaryLine?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                mirrorTarget: row.mirrorTarget?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                localStoreRole: row.localStoreRole?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                carrierKind: row.carrierKind?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                carrierSchemaVersion: row.carrierSchemaVersion?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                pendingChangeId: row.pendingChangeId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                pendingChangeStatus: row.pendingChangeStatus?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                editSessionId: row.editSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                docId: row.docId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                writebackRef: row.writebackRef?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                stageCreatedAtMs: max(0, row.stageCreatedAtMs ?? 0),
+                stageUpdatedAtMs: max(0, row.stageUpdatedAtMs ?? 0),
+                latestEmittedAtMs: max(0, row.latestEmittedAtMs ?? 0),
+                createdAtMs: max(0, row.createdAtMs ?? 0),
+                updatedAtMs: max(0, row.updatedAtMs ?? 0)
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.latestEmittedAtMs != rhs.latestEmittedAtMs {
+                return lhs.latestEmittedAtMs > rhs.latestEmittedAtMs
+            }
+            if lhs.candidateCount != rhs.candidateCount {
+                return lhs.candidateCount > rhs.candidateCount
+            }
+            return lhs.requestId.localizedCaseInsensitiveCompare(rhs.requestId) == .orderedAscending
+        }
+
+        return SupervisorCandidateReviewSnapshot(
+            source: "hub_supervisor_candidate_review_file",
             updatedAtMs: max(0, decoded.updatedAtMs ?? 0),
             items: Array(mapped.prefix(boundedLimit))
         )
