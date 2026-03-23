@@ -5674,6 +5674,7 @@ final class SupervisorManager: ObservableObject {
     private func handleAutomationSafePointHoldIfNeeded(
         runID: String,
         requestedState: XTAutomationRunState,
+        project: AXProjectEntry? = nil,
         ctx: AXProjectContext,
         emitSystemMessage: Bool,
         executionDetail: String
@@ -5687,7 +5688,9 @@ final class SupervisorManager: ObservableObject {
         }
 
         let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
-        let project = allProjects().first(where: { $0.projectId == projectId }) ?? automationProjectEntry(for: ctx)
+        let project = project
+            ?? allProjects().first(where: { $0.projectId == projectId })
+            ?? automationProjectEntry(for: ctx)
         let normalizedDetail = capped(
             executionDetail
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -34513,6 +34516,7 @@ audit=\(result.auditRef)
         prepared: XTAutomationPreparedRun,
         report: XTAutomationRunExecutionReport,
         finalCheckpoint: XTAutomationRunCheckpoint,
+        project: AXProjectEntry? = nil,
         ctx: AXProjectContext,
         emitSystemMessage: Bool
     ) {
@@ -34532,7 +34536,7 @@ audit=\(result.auditRef)
             return
         }
 
-        let project = automationProjectEntry(for: ctx)
+        let project = project ?? automationProjectEntry(for: ctx)
         guard let materialization = buildAutomationRetryPackage(
             for: project,
             ctx: ctx,
@@ -36448,7 +36452,8 @@ extension SupervisorManager {
         ctx: AXProjectContext,
         emitSystemMessage: Bool
     ) throws {
-        let projectDisplayName = projectDisplayName(for: ctx)
+        let project = automationProjectEntry(for: ctx)
+        let projectDisplayName = project.displayName
         guard prepared.currentCheckpoint.state == .queued else { return }
 
         let config = try AXProjectStore.loadOrCreateConfig(for: ctx)
@@ -36476,6 +36481,7 @@ extension SupervisorManager {
             await self.executeAutomationActionGraph(
                 prepared: prepared,
                 recipe: recipe,
+                project: project,
                 ctx: ctx,
                 emitSystemMessage: emitSystemMessage
             )
@@ -36485,10 +36491,11 @@ extension SupervisorManager {
     private func executeAutomationActionGraph(
         prepared: XTAutomationPreparedRun,
         recipe: AXAutomationRecipeRuntimeBinding,
+        project: AXProjectEntry,
         ctx: AXProjectContext,
         emitSystemMessage: Bool
     ) async {
-        let projectDisplayName = projectDisplayName(for: ctx)
+        let projectDisplayName = project.displayName
         defer { automationExecutionTask = nil }
         let startAuditRef = "audit-xt-auto-action-graph-start-\(Int(Date().timeIntervalSince1970))"
 
@@ -36509,6 +36516,7 @@ extension SupervisorManager {
             if handleAutomationSafePointHoldIfNeeded(
                 runID: prepared.launchRef,
                 requestedState: .running,
+                project: project,
                 ctx: ctx,
                 emitSystemMessage: emitSystemMessage,
                 executionDetail: "before executing action graph"
@@ -36543,6 +36551,7 @@ extension SupervisorManager {
             let heldAtSafePoint = handleAutomationSafePointHoldIfNeeded(
                 runID: prepared.launchRef,
                 requestedState: report.finalState,
+                project: project,
                 ctx: ctx,
                 emitSystemMessage: emitSystemMessage,
                 executionDetail: report.detail
@@ -36552,7 +36561,7 @@ extension SupervisorManager {
                 if emitSystemMessage {
                     addSystemMessage(
                         renderAutomationExecutionSummary(
-                            project: automationProjectEntry(for: ctx),
+                            project: project,
                             report: report
                         )
                     )
@@ -36561,6 +36570,7 @@ extension SupervisorManager {
                     prepared: prepared,
                     report: report,
                     finalCheckpoint: finalCheckpoint,
+                    project: project,
                     ctx: ctx,
                     emitSystemMessage: emitSystemMessage
                 )
@@ -36608,7 +36618,8 @@ extension SupervisorManager {
         now: Date = Date(),
         emitSystemMessage: Bool = false
     ) throws -> XTAutomationRunCheckpoint {
-        let projectDisplayName = projectDisplayName(for: ctx)
+        let project = automationProjectEntry(for: ctx)
+        let projectDisplayName = project.displayName
         let resolvedRunID = try resolvedAutomationRunID(runID)
         let checkpoint = try automationRunCoordinator.advanceRun(
             resolvedRunID,
@@ -36627,6 +36638,7 @@ extension SupervisorManager {
         if handleAutomationSafePointHoldIfNeeded(
             runID: checkpoint.runID,
             requestedState: nextState,
+            project: project,
             ctx: ctx,
             emitSystemMessage: emitSystemMessage,
             executionDetail: checkpoint.lastTransition
@@ -36668,7 +36680,7 @@ extension SupervisorManager {
         now: Date = Date(),
         emitSystemMessage: Bool = false
     ) throws -> XTAutomationRestartRecoveryDecision {
-        let projectDisplayName = projectDisplayName(for: ctx)
+        let projectDisplayName = automationProjectEntry(for: ctx).displayName
         let resolvedRunID = try resolvedAutomationRunID(runID)
         automationExecutionTask?.cancel()
         automationExecutionTask = nil
@@ -36725,8 +36737,9 @@ extension SupervisorManager {
         auditRef: String,
         emitSystemMessage: Bool = false
     ) throws -> XTAutomationRestartRecoveryDecision? {
-        try recoverLatestAutomationRun(
-            for: automationProjectEntry(for: ctx),
+        let project = automationProjectEntry(for: ctx)
+        return try recoverLatestAutomationRun(
+            for: project,
             ctx: ctx,
             checkpointAgeSeconds: checkpointAgeSeconds,
             auditRef: auditRef,
@@ -36742,7 +36755,7 @@ extension SupervisorManager {
         auditRef: String,
         emitSystemMessage: Bool
     ) throws -> XTAutomationRestartRecoveryDecision? {
-        let projectDisplayName = projectDisplayName(for: ctx)
+        let projectDisplayName = project.displayName
         let decision = try automationRunCoordinator.recoverLatestRun(
             for: ctx,
             checkpointAgeSeconds: checkpointAgeSeconds,

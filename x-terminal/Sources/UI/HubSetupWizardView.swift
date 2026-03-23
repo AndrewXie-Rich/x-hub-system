@@ -529,11 +529,11 @@ enum UIFirstRunJourneyPlanner {
     }
 
     private static func reviewSubtitle(failureIssue: UITroubleshootIssue?, runtime: UIFailClosedRuntimeSnapshot) -> String {
-        if let failureIssue {
-            return "\(failureIssue.rawValue) → \(runtime.nextRepairAction ?? "open_repair_entry")"
-        }
         if !runtime.nextDirectedAction.isEmpty {
             return "resume baton: \(runtime.nextDirectedAction)"
+        }
+        if let failureIssue {
+            return "\(failureIssue.rawValue) → \(runtime.nextRepairAction ?? "open_repair_entry")"
         }
         if let denyCode = runtime.launchDenyCodes.first(where: { !$0.isEmpty }) {
             return "fail_closed=\(denyCode)"

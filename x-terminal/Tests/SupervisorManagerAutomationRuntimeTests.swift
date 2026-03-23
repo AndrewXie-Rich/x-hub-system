@@ -352,6 +352,90 @@ struct SupervisorManagerAutomationRuntimeTests {
     }
 
     @Test
+    func automationExecutionSummaryKeepsCapturedFriendlyProjectDisplayNameWhenRegistryChangesMidRun() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+        let friendlyName = "外出采购项目"
+        let project = AXProjectEntry(
+            projectId: projectId,
+            rootPath: root.path,
+            displayName: friendlyName,
+            lastOpenedAt: 1_773_200_195,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: nil,
+            currentStateSummary: nil,
+            nextStepSummary: nil,
+            blockerSummary: nil,
+            lastSummaryAt: nil,
+            lastEventAt: nil
+        )
+
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: 1_773_200_195,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: projectId,
+            projects: [project]
+        )
+        appModel.selectedProjectId = projectId
+        manager.setAppModel(appModel)
+        manager.clearMessages()
+
+        manager.installAutomationRunExecutorForTesting(
+            XTAutomationRunExecutor { call, rootURL in
+                try await Task.sleep(nanoseconds: 250_000_000)
+                return ToolResult(id: call.id, tool: call.tool, ok: true, output: "root=\(rootURL.path); tool=\(call.tool.rawValue)")
+            }
+        )
+
+        _ = try manager.startAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: 1_773_200_196)),
+            emitSystemMessage: true
+        )
+
+        try await waitUntil("automation running before registry drift") {
+            manager.automationCurrentCheckpoint?.state == .running
+        }
+
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: 1_773_200_197,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: nil,
+            projects: []
+        )
+        appModel.selectedProjectId = nil
+
+        try await waitUntil("friendly project execution summary after registry drift", timeoutMs: 10_000) {
+            manager.messages.contains(where: {
+                $0.role == .system && $0.content.contains("⚙️ automation 自动执行完成")
+            })
+        }
+
+        #expect(manager.messages.contains(where: {
+            $0.role == .system &&
+                $0.content.contains("⚙️ automation 自动执行完成") &&
+                $0.content.contains("项目: \(friendlyName)") &&
+                !$0.content.contains("项目: \(root.lastPathComponent)")
+        }))
+    }
+
+    @Test
     func managerProjectEntryWrappersResolveContextAndPrepareRun() throws {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
