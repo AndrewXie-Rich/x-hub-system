@@ -59,12 +59,31 @@ struct HubModelRoutingSelectionState {
 }
 
 struct HubModelPickerRecommendationState: Equatable {
+    let kind: HubModelPickerRecommendationKind
     let modelId: String
     let message: String
 
     static func resolved(
+        explicitRecommendation: HubModelPickerRecommendationState?,
+        selectedModelId: String?,
+        models: [HubModel]
+    ) -> HubModelPickerRecommendationState? {
+        if let explicitRecommendation {
+            return explicitRecommendation
+        }
+        return resolved(
+            explicitModelId: nil,
+            explicitMessage: nil,
+            explicitKind: .switchRecommended,
+            selectedModelId: selectedModelId,
+            models: models
+        )
+    }
+
+    static func resolved(
         explicitModelId: String?,
         explicitMessage: String?,
+        explicitKind: HubModelPickerRecommendationKind = .switchRecommended,
         selectedModelId: String?,
         models: [HubModel]
     ) -> HubModelPickerRecommendationState? {
@@ -73,6 +92,7 @@ struct HubModelPickerRecommendationState: Equatable {
         if let normalizedExplicitModelId,
            let normalizedExplicitMessage {
             return HubModelPickerRecommendationState(
+                kind: explicitKind,
                 modelId: normalizedExplicitModelId,
                 message: normalizedExplicitMessage
             )
@@ -91,27 +111,44 @@ struct HubModelPickerRecommendationState: Equatable {
 
         if let blocked = assessment.nonInteractiveExactMatch {
             return HubModelPickerRecommendationState(
+                kind: .switchRecommended,
                 modelId: fallbackModelId,
-                message: "`\(blocked.id)` 是检索专用模型，Supervisor 会按需调用它做 retrieval；当前对话先切到 `\(fallbackModelId)` 更稳。"
+                message: "`\(blocked.id)` 是检索专用模型，Supervisor 会按需调用它做 retrieval；如果你要立刻继续，可改用 `\(fallbackModelId)`。"
             )
         }
 
         if let exact = assessment.exactMatch {
             return HubModelPickerRecommendationState(
+                kind: .switchRecommended,
                 modelId: fallbackModelId,
-                message: "`\(exact.id)` 当前是 \(HubModelSelectionAdvisor.stateLabel(exact.state))；如果你现在就要继续，先切到已加载的 `\(fallbackModelId)` 更稳。"
+                message: "`\(exact.id)` 当前是 \(HubModelSelectionAdvisor.stateLabel(exact.state))；如果你要立刻继续，可改用已加载的 `\(fallbackModelId)`。"
             )
         }
 
         return HubModelPickerRecommendationState(
+            kind: .switchRecommended,
             modelId: fallbackModelId,
-            message: "`\(selectedModelId)` 当前不在可直接执行的 inventory 里；先切到已加载的 `\(fallbackModelId)`，可以避免这轮直接掉到本地。"
+            message: "`\(selectedModelId)` 当前不在可直接执行的 inventory 里；如果你要立刻继续，可改用已加载的 `\(fallbackModelId)`，避免这轮直接掉到本地。"
         )
     }
 
     private static func normalizedText(_ raw: String?) -> String? {
         let trimmed = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+enum HubModelPickerRecommendationKind: Equatable {
+    case switchRecommended
+    case continueWithoutSwitch
+
+    init(_ projectKind: AXProjectModelSelectionRecommendationKind) {
+        switch projectKind {
+        case .switchRecommended:
+            self = .switchRecommended
+        case .continueWithoutSwitch:
+            self = .continueWithoutSwitch
+        }
     }
 }
 
@@ -185,8 +222,7 @@ struct HubModelPickerPopover: View {
     let inheritedModelPresentation: ModelInfo?
     let models: [HubModel]
     var focusContext: XTSectionFocusContext? = nil
-    var recommendedModelId: String? = nil
-    var recommendationMessage: String? = nil
+    var recommendation: HubModelPickerRecommendationState? = nil
     var showContextDetails: Bool = true
     var automaticTitle: String = "使用全局设置"
     var automaticSelectedBadge: String = "当前生效"
@@ -199,8 +235,7 @@ struct HubModelPickerPopover: View {
 
     private var effectiveRecommendation: HubModelPickerRecommendationState? {
         HubModelPickerRecommendationState.resolved(
-            explicitModelId: recommendedModelId,
-            explicitMessage: recommendationMessage,
+            explicitRecommendation: recommendation,
             selectedModelId: selectedModelId,
             models: models
         )
@@ -267,19 +302,27 @@ struct HubModelPickerPopover: View {
     private var recommendationCard: some View {
         if let recommendedModelId = normalizedRecommendedModelId,
            recommendedModelId != selectedModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           let recommendation = effectiveRecommendation,
            let message = effectiveRecommendation?.message.trimmingCharacters(in: .whitespacesAndNewlines),
            !message.isEmpty {
             let presentation = models.first(where: {
                 $0.id.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare(recommendedModelId) == .orderedSame
             })?.capabilityPresentationModel ?? XTModelCatalog.modelInfo(for: recommendedModelId)
             let displayTitle = presentation.displayName
+            let passive = recommendation.kind == .continueWithoutSwitch
+            let title = passive ? "继续可不切换" : "推荐切换"
+            let subtitle = passive ? "XT 已会先自动改试这个 remembered remote" : "可直接避免这轮继续撞当前配置"
+            let buttonTitle = passive ? "固定成 \(recommendedModelId)" : "改用 \(recommendedModelId)"
+            let accent = passive ? Color.accentColor : Color.orange
+            let fill = passive ? Color.accentColor.opacity(0.08) : Color.orange.opacity(0.08)
+            let stroke = passive ? Color.accentColor.opacity(0.22) : Color.orange.opacity(0.22)
 
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
-                    Text("推荐切换")
+                    Text(title)
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.orange)
-                    Text("可直接避免这轮继续撞当前配置")
+                        .foregroundStyle(accent)
+                    Text(subtitle)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -296,21 +339,29 @@ struct HubModelPickerPopover: View {
                     ModelCapabilityStrip(model: presentation, limit: 4, compact: true)
                 }
 
-                Button("改用 \(recommendedModelId)") {
-                    onSelect(recommendedModelId)
+                if passive {
+                    Button(buttonTitle) {
+                        onSelect(recommendedModelId)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                } else {
+                    Button(buttonTitle) {
+                        onSelect(recommendedModelId)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 10)
-                    .fill(Color.orange.opacity(0.08))
+                    .fill(fill)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
-                    .stroke(Color.orange.opacity(0.22), lineWidth: 1)
+                    .stroke(stroke, lineWidth: 1)
             )
         }
     }
@@ -447,12 +498,12 @@ struct HubModelPickerPopover: View {
                     }
 
                     if showContextDetails {
-                        Text("Hub 默认上下文：\(model.hubDefaultContextLength) tokens")
+                        Text(model.defaultLoadConfigDisplayLine)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
 
-                        if model.isLocalModel {
-                            Text("本地上限：\(model.hubMaxContextLength) tokens")
+                        if let localLoadConfigLimitLine = model.localLoadConfigLimitLine {
+                            Text(localLoadConfigLimitLine)
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }

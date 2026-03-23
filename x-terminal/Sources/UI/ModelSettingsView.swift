@@ -64,7 +64,7 @@ struct ModelSettingsView: View {
                 .font(.body)
                 .foregroundStyle(.secondary)
 
-            Text("本页展示的是 Hub catalog 的模型信息。若某个 paired Terminal 需要独立的本地 context length，请到 Hub 的 Pairing / Edit Device 里设置每设备 local model override。")
+            Text("本页展示的是 Hub 当前返回给 XT 的真实可用模型视图，不是 XT 本地猜测。若某个 paired Terminal 需要独立的本地加载配置覆盖，例如 `ctx / ttl / par / id`，请到 Hub 的 Pairing / Edit Device 里设置每设备 local model override。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -320,12 +320,12 @@ struct ModelSettingsView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     
-                    Text("Hub 默认上下文：\(model.hubDefaultContextLength) tokens")
+                    Text(model.defaultLoadConfigDisplayLine)
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    if model.isLocalModel {
-                        Text("本地上限：\(model.hubMaxContextLength) tokens")
+                    if let localLoadConfigLimitLine = model.localLoadConfigLimitLine {
+                        Text(localLoadConfigLimitLine)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

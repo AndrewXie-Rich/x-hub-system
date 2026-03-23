@@ -104,6 +104,38 @@ enum XTGuardrailMessagePresentation {
         return "这个动作被治理策略拦下了。"
     }
 
+    static func blockedSummary(
+        tool: ToolName? = nil,
+        toolLabel: String,
+        denyCode: String,
+        policySource: String = "",
+        policyReason: String = "",
+        requiredCapability: String = "",
+        fallbackSummary: String = "",
+        fallbackDetail: String = ""
+    ) -> String? {
+        let cleanedDenyCode = normalized(denyCode)
+        let cleanedPolicySource = normalized(policySource)
+        let cleanedPolicyReason = normalized(policyReason)
+        let cleanedCapability = normalized(requiredCapability)
+        guard !cleanedDenyCode.isEmpty
+            || !cleanedPolicySource.isEmpty
+            || !cleanedPolicyReason.isEmpty
+            || !cleanedCapability.isEmpty else {
+            return nil
+        }
+        return blockedBody(
+            tool: tool,
+            toolLabel: toolLabel,
+            denyCode: denyCode,
+            policySource: policySource,
+            policyReason: policyReason,
+            requiredCapability: requiredCapability,
+            fallbackSummary: fallbackSummary,
+            fallbackDetail: fallbackDetail
+        )
+    }
+
     static func toolResultBody(
         tool: ToolName,
         summary: [String: JSONValue],
@@ -123,7 +155,7 @@ enum XTGuardrailMessagePresentation {
         guard !denyCode.isEmpty || !policySource.isEmpty else { return nil }
 
         let toolLabel = toolLabel(for: tool)
-        return blockedBody(
+        let body = blockedBody(
             tool: tool,
             toolLabel: toolLabel,
             denyCode: denyCode,
@@ -133,6 +165,28 @@ enum XTGuardrailMessagePresentation {
             fallbackSummary: "",
             fallbackDetail: detail
         )
+
+        if normalized(denyCode) == "governance_capability_denied"
+            || normalized(policySource) == "project_governance" {
+            if let truthLine = XTGovernanceTruthPresentation.truthLine(
+                configuredExecutionTier: string(summary["execution_tier"]),
+                effectiveExecutionTier: string(summary["effective_execution_tier"]),
+                configuredSupervisorTier: string(summary["supervisor_intervention_tier"])
+                    ?? string(summary["configured_supervisor_tier"]),
+                effectiveSupervisorTier: string(summary["effective_supervisor_intervention_tier"])
+                    ?? string(summary["effective_supervisor_tier"]),
+                reviewPolicyMode: string(summary["review_policy_mode"]),
+                progressHeartbeatSeconds: int(summary["progress_heartbeat_sec"]),
+                reviewPulseSeconds: int(summary["review_pulse_sec"]),
+                brainstormReviewSeconds: int(summary["brainstorm_review_sec"]),
+                compatSource: string(summary["governance_compat_source"])
+                    ?? string(summary["compat_source"])
+            ) {
+                return "\(truthLine) \(body)"
+            }
+        }
+
+        return body
     }
 
     static func repairHint(
@@ -710,5 +764,17 @@ enum XTGuardrailMessagePresentation {
         guard case .string(let text)? = value else { return nil }
         let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return cleaned.isEmpty ? nil : cleaned
+    }
+
+    private static func int(_ value: JSONValue?) -> Int? {
+        switch value {
+        case .number(let number):
+            return Int(number.rounded())
+        case .string(let text):
+            let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return Int(cleaned)
+        default:
+            return nil
+        }
     }
 }

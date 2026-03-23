@@ -9,11 +9,11 @@ enum AXProjectRuntimeSurfaceMode: String, Codable, Equatable, CaseIterable {
     var displayName: String {
         switch self {
         case .manual:
-            return "Manual"
+            return "最保守执行面"
         case .guided:
-            return "Guided"
+            return "浏览器受控执行面"
         case .trustedOpenClawMode:
-            return "Trusted Agent Surface"
+            return "完整执行面"
         }
     }
 }
@@ -27,13 +27,13 @@ enum AXProjectRuntimeSurfaceHubOverrideMode: String, Codable, Equatable, CaseIte
     var displayName: String {
         switch self {
         case .none:
-            return "None"
+            return "无"
         case .clampGuided:
-            return "Clamp Guided"
+            return "浏览器受控收束"
         case .clampManual:
-            return "Clamp Manual"
+            return "最保守收束"
         case .killSwitch:
-            return "Kill Switch"
+            return "紧急回收"
         }
     }
 }

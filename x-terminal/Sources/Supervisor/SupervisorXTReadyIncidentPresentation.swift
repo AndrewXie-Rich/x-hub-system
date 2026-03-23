@@ -18,6 +18,7 @@ struct SupervisorXTReadyIncidentPresentation: Equatable {
     var strictIssueLine: SupervisorXTReadyIncidentLinePresentation
     var hubRuntimeLine: SupervisorXTReadyIncidentLinePresentation?
     var hubRuntimeIssueLine: SupervisorXTReadyIncidentLinePresentation?
+    var hubRuntimeLoadConfigLine: SupervisorXTReadyIncidentLinePresentation?
     var hubRuntimeDetailLine: SupervisorXTReadyIncidentLinePresentation?
     var hubRuntimeNextLine: SupervisorXTReadyIncidentLinePresentation?
     var hubRuntimeInstallHintLine: SupervisorXTReadyIncidentLinePresentation?
@@ -55,8 +56,9 @@ enum SupervisorXTReadyIncidentPresentationMapper {
             .joined(separator: " || ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedReportPath = snapshot.reportPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        let hubRuntimeDetailText = hubRuntimeDiagnosis?.detailLines
-            .prefix(2)
+        let hubRuntimeLoadConfigText = hubRuntimeDiagnosis?.loadConfigSummaryLine
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let hubRuntimeDetailText = hubRuntimeDiagnosis?.renderableDetailLines(limit: 2)
             .joined(separator: " || ")
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let hubRuntimeText = hubRuntimeDiagnosis.map { diagnosis in
@@ -109,6 +111,14 @@ enum SupervisorXTReadyIncidentPresentationMapper {
                     lineLimit: 2
                 )
             }(),
+            hubRuntimeLoadConfigLine: hubRuntimeLoadConfigText.isEmpty
+                ? nil
+                : SupervisorXTReadyIncidentLinePresentation(
+                    text: "Hub 运行时加载配置：\(hubRuntimeLoadConfigText)",
+                    tone: hubRuntimeTone == .danger ? .warning : .accent,
+                    isSelectable: true,
+                    lineLimit: 3
+                ),
             hubRuntimeDetailLine: hubRuntimeDetailText.isEmpty
                 ? nil
                 : SupervisorXTReadyIncidentLinePresentation(

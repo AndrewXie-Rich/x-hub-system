@@ -651,6 +651,8 @@ actor HubAIClient {
         var runtimeProvider: String
         var executionPath: String
         var fallbackReasonCode: String?
+        var auditRef: String?
+        var denyCode: String?
         var remoteRetryAttempted: Bool
         var remoteRetryFromModelId: String?
         var remoteRetryToModelId: String?
@@ -1026,6 +1028,8 @@ actor HubAIClient {
             runtimeProvider: "Hub (Local)",
             executionPath: "local_runtime",
             fallbackReasonCode: nil,
+            auditRef: nil,
+            denyCode: nil,
             remoteRetryAttempted: false,
             remoteRetryFromModelId: nil,
             remoteRetryToModelId: nil,
@@ -1073,6 +1077,8 @@ actor HubAIClient {
             runtimeProvider: "Hub (Remote)",
             executionPath: "remote_model",
             fallbackReasonCode: nil,
+            auditRef: nil,
+            denyCode: nil,
             remoteRetryAttempted: false,
             remoteRetryFromModelId: nil,
             remoteRetryToModelId: nil,
@@ -1158,6 +1164,8 @@ actor HubAIClient {
         runtimeProvider: String,
         executionPath: String,
         fallbackReasonCode: String,
+        auditRef: String? = nil,
+        denyCode: String? = nil,
         remoteRetryAttempted: Bool = false,
         remoteRetryFromModelId: String? = nil,
         remoteRetryToModelId: String? = nil,
@@ -1178,6 +1186,14 @@ actor HubAIClient {
         }
         if !fallbackReasonCode.isEmpty {
             raw["fallback_reason_code"] = .string(fallbackReasonCode)
+        }
+        if let auditRef = auditRef?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !auditRef.isEmpty {
+            raw["audit_ref"] = .string(auditRef)
+        }
+        if let denyCode = denyCode?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !denyCode.isEmpty {
+            raw["deny_code"] = .string(denyCode)
         }
         if remoteRetryAttempted {
             raw["remote_retry_attempted"] = .bool(true)
@@ -1204,6 +1220,8 @@ actor HubAIClient {
         runtimeProvider: String,
         executionPath: String,
         fallbackReasonCode: String,
+        auditRef: String? = nil,
+        denyCode: String? = nil,
         remoteRetryAttempted: Bool = false,
         remoteRetryFromModelId: String? = nil,
         remoteRetryToModelId: String? = nil,
@@ -1216,6 +1234,8 @@ actor HubAIClient {
             runtimeProvider: runtimeProvider,
             executionPath: executionPath,
             fallbackReasonCode: fallbackReasonCode,
+            auditRef: auditRef,
+            denyCode: denyCode,
             remoteRetryAttempted: remoteRetryAttempted,
             remoteRetryFromModelId: remoteRetryFromModelId,
             remoteRetryToModelId: remoteRetryToModelId,
@@ -1287,6 +1307,8 @@ actor HubAIClient {
                                     runtimeProvider: runtimeProvider,
                                     executionPath: executionPath,
                                     fallbackReasonCode: fallbackReasonCode,
+                                    auditRef: context?.auditRef,
+                                    denyCode: context?.denyCode,
                                     remoteRetryAttempted: context?.remoteRetryAttempted == true,
                                     remoteRetryFromModelId: context?.remoteRetryFromModelId,
                                     remoteRetryToModelId: context?.remoteRetryToModelId,
@@ -1393,6 +1415,8 @@ actor HubAIClient {
                         runtimeProvider: runtimeProvider,
                         executionPath: executionPath,
                         fallbackReasonCode: fallbackReasonCode,
+                        auditRef: report.auditRef,
+                        denyCode: report.denyCode,
                         remoteRetryAttempted: resolution.retryMetadata.attempted,
                         remoteRetryFromModelId: resolution.retryMetadata.fromModelId,
                         remoteRetryToModelId: resolution.retryMetadata.toModelId,
@@ -1445,6 +1469,8 @@ actor HubAIClient {
                             if fallbackContext != nil {
                                 fallbackContext?.fallbackReasonCode = reason
                                 fallbackContext?.executionPath = "local_fallback_after_remote_error"
+                                fallbackContext?.auditRef = report.auditRef
+                                fallbackContext?.denyCode = report.denyCode ?? reason
                                 fallbackContext?.remoteRetryAttempted = resolution.retryMetadata.attempted
                                 fallbackContext?.remoteRetryFromModelId = resolution.retryMetadata.fromModelId
                                 fallbackContext?.remoteRetryToModelId = resolution.retryMetadata.toModelId
@@ -1801,6 +1827,8 @@ actor HubAIClient {
                         runtimeProvider: ev.runtimeProviderFromMetadata,
                         executionPath: ev.executionPathFromMetadata,
                         fallbackReasonCode: ev.fallbackReasonCodeFromMetadata,
+                        auditRef: ev.auditRefFromMetadata,
+                        denyCode: ev.denyCodeFromMetadata,
                         remoteRetryAttempted: ev.remoteRetryAttemptedFromMetadata,
                         remoteRetryFromModelId: ev.remoteRetryFromModelIdFromMetadata,
                         remoteRetryToModelId: ev.remoteRetryToModelIdFromMetadata,

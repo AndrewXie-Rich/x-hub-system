@@ -176,6 +176,74 @@ struct AXProjectModelRouteMemoryTests {
     }
 
     @Test
+    func heartbeatNoticeExplainsRememberedRemoteWillBeTriedWhenItHasRecovered() throws {
+        let root = try makeProjectRoot(named: "route-memory-heartbeat-remembered")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        appendUsage(
+            createdAt: 100,
+            requestedModelId: "openai/gpt-4.1",
+            actualModelId: "openai/gpt-4.1",
+            executionPath: "remote_model",
+            fallbackReasonCode: "",
+            for: ctx
+        )
+        appendUsage(
+            createdAt: 200,
+            requestedModelId: "openai/gpt-5.4",
+            actualModelId: "qwen3-14b-mlx",
+            executionPath: "local_fallback_after_remote_error",
+            fallbackReasonCode: "model_not_found",
+            for: ctx
+        )
+        appendUsage(
+            createdAt: 300,
+            requestedModelId: "openai/gpt-5.4",
+            actualModelId: "qwen3-14b-mlx",
+            executionPath: "local_fallback_after_remote_error",
+            fallbackReasonCode: "model_not_found",
+            for: ctx
+        )
+
+        let entry = AXProjectEntry(
+            projectId: AXProjectRegistryStore.projectId(forRoot: root),
+            rootPath: root.path,
+            displayName: "Remembered Remote Project",
+            lastOpenedAt: 300,
+            manualOrderIndex: 0,
+            pinned: false,
+            statusDigest: "runtime=stable",
+            currentStateSummary: "运行中",
+            nextStepSummary: "继续当前任务",
+            blockerSummary: nil,
+            lastSummaryAt: 300,
+            lastEventAt: 300
+        )
+
+        let notice = try #require(
+            AXProjectModelRouteMemoryStore.heartbeatNotice(
+                for: entry,
+                snapshot: ModelStateSnapshot(
+                    models: [
+                        makeModel(id: "openai/gpt-5.4", state: .available),
+                        makeModel(id: "openai/gpt-4.1", state: .loaded),
+                        makeModel(id: "qwen3-14b-mlx", state: .loaded, backend: "mlx", modelPath: "/models/qwen3")
+                    ],
+                    updatedAt: 400
+                )
+            )
+        )
+        #expect(notice.contains("当前配置的 `openai/gpt-5.4` 还不能直接执行"))
+        #expect(notice.contains("上次稳定的远端 `openai/gpt-4.1`"))
+        #expect(notice.contains("避免继续直接掉到本地"))
+        #expect(notice.contains("不用手动切模型"))
+        #expect(notice.contains("/route diagnose"))
+    }
+
+    @Test
     func configuredLoadedModelStillWinsOverRememberedRemoteModel() throws {
         let root = try makeProjectRoot(named: "route-memory-keeps-loaded-config")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -323,6 +391,76 @@ struct AXProjectModelRouteMemoryTests {
         #expect(!decision.forceLocalExecution)
         #expect(decision.preferredModelId == "openai/gpt-5.4")
         #expect(decision.preferredLocalModelId == nil)
+    }
+
+    @Test
+    func heartbeatNoticeDisappearsWhenConfiguredRemoteModelHasRecovered() throws {
+        let root = try makeProjectRoot(named: "route-memory-heartbeat-unlocks-after-remote-recovery")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        let now = Date().timeIntervalSince1970
+        appendUsage(
+            createdAt: now - 60,
+            requestedModelId: "openai/gpt-5.4",
+            actualModelId: "qwen3-14b-mlx",
+            executionPath: "local_fallback_after_remote_error",
+            fallbackReasonCode: "model_not_found",
+            for: ctx
+        )
+        appendUsage(
+            createdAt: now - 40,
+            requestedModelId: "openai/gpt-5.4",
+            actualModelId: "qwen3-14b-mlx",
+            executionPath: "local_fallback_after_remote_error",
+            fallbackReasonCode: "model_not_found",
+            for: ctx
+        )
+        appendUsage(
+            createdAt: now - 20,
+            requestedModelId: "openai/gpt-5.4",
+            actualModelId: "qwen3-14b-mlx",
+            executionPath: "local_fallback_after_remote_error",
+            fallbackReasonCode: "model_not_found",
+            for: ctx
+        )
+
+        let entry = AXProjectEntry(
+            projectId: AXProjectRegistryStore.projectId(forRoot: root),
+            rootPath: root.path,
+            displayName: "Recovered Remote Project",
+            lastOpenedAt: now,
+            manualOrderIndex: 0,
+            pinned: false,
+            statusDigest: "runtime=stable",
+            currentStateSummary: "运行中",
+            nextStepSummary: "继续当前任务",
+            blockerSummary: nil,
+            lastSummaryAt: now,
+            lastEventAt: now
+        )
+
+        let notice = AXProjectModelRouteMemoryStore.heartbeatNotice(
+            for: entry,
+            snapshot: ModelStateSnapshot(
+                models: [
+                    makeModel(id: "openai/gpt-5.4", state: .loaded),
+                    makeModel(id: "qwen3-14b-mlx", state: .loaded, backend: "mlx", modelPath: "/models/qwen3")
+                ],
+                updatedAt: now
+            ),
+            localSnapshot: ModelStateSnapshot(
+                models: [
+                    makeModel(id: "qwen3-14b-mlx", state: .loaded, backend: "mlx", modelPath: "/models/qwen3")
+                ],
+                updatedAt: now
+            ),
+            now: now
+        )
+
+        #expect(notice == nil)
     }
 
     @Test
@@ -491,6 +629,7 @@ struct AXProjectModelRouteMemoryTests {
         #expect(warning.contains("openai/gpt-5.4"))
         #expect(guidance.recommendedModelId == "openai/gpt-4.1")
         #expect(guidance.recommendationText?.contains("openai/gpt-4.1") == true)
+        #expect(guidance.recommendationKind == .switchRecommended)
     }
 
     @Test
@@ -538,7 +677,8 @@ struct AXProjectModelRouteMemoryTests {
         #expect(warning.contains("上次稳定的远端 `openai/gpt-4.1`"))
         #expect(warning.contains("避免直接掉到本地"))
         #expect(guidance.recommendedModelId == "openai/gpt-4.1")
-        #expect(guidance.recommendationText?.contains("直接切到它最稳") == true)
+        #expect(guidance.recommendationText?.contains("不用手动切模型") == true)
+        #expect(guidance.recommendationKind == .continueWithoutSwitch)
     }
 
     private func appendUsage(

@@ -11,6 +11,12 @@ struct AXProjectContextAssemblyPresentation: Codable, Equatable, Sendable {
     var projectLabel: String?
     var sourceBadge: String
     var statusLine: String
+    var recentDialogueSource: String? = nil
+    var recentDialogueSourceLabel: String? = nil
+    var recentDialogueSourceClass: String? = nil
+    var memorySource: String? = nil
+    var memorySourceLabel: String? = nil
+    var memorySourceClass: String? = nil
     var dialogueMetric: String
     var depthMetric: String
     var dialogueLine: String
@@ -70,6 +76,7 @@ struct AXProjectContextAssemblyPresentation: Codable, Equatable, Sendable {
         let floorSatisfied = bool(values["recent_project_dialogue_floor_satisfied"])
         let lowSignalDropped = int(values["recent_project_dialogue_low_signal_dropped"])
         let recentSource = trimmed(values["recent_project_dialogue_source"]) ?? "unknown"
+        let recentSourceLabel = XTMemorySourceTruthPresentation.label(recentSource)
         let depthProfile = AXProjectContextDepthProfile(rawValue: values["project_context_depth"] ?? "")
         let servingProfile = XTMemoryServingProfile.parse(values["effective_project_serving_profile"])
         let workflowPresent = bool(values["workflow_present"])
@@ -77,6 +84,7 @@ struct AXProjectContextAssemblyPresentation: Codable, Equatable, Sendable {
         let guidancePresent = bool(values["review_guidance_present"])
         let crossLinks = int(values["cross_link_hints_selected"])
         let memorySource = trimmed(values["project_memory_v1_source"]) ?? "unknown"
+        let memorySourceLabel = XTMemorySourceTruthPresentation.label(memorySource)
         let boundaryReason = trimmed(values["personal_memory_excluded_reason"])
 
         let dialogueMetric = [
@@ -87,7 +95,8 @@ struct AXProjectContextAssemblyPresentation: Codable, Equatable, Sendable {
 
         let depthMetric = [
             depthProfile?.displayName ?? fallbackDepthProfile(values["project_context_depth"]),
-            servingProfile?.rawValue ?? trimmed(values["effective_project_serving_profile"]) ?? "unknown"
+            servingProfile?.rawValue ?? trimmed(values["effective_project_serving_profile"]) ?? "unknown",
+            memorySourceLabel
         ]
         .joined(separator: " · ")
 
@@ -95,7 +104,7 @@ struct AXProjectContextAssemblyPresentation: Codable, Equatable, Sendable {
             "Recent Project Dialogue：\(recentProfile.map { "\($0.displayName) · \($0.shortLabel)" } ?? fallbackDialogueProfile(values["recent_project_dialogue_profile"]))",
             "本轮选中 \(selectedPairs) pairs",
             "floor \(floorPairs) \(floorSatisfied ? "已满足" : "未满足")",
-            "source \(recentSource)",
+            "source \(recentSourceLabel)",
             "low-signal drop \(lowSignalDropped)"
         ]
         .joined(separator: " · ")
@@ -103,7 +112,7 @@ struct AXProjectContextAssemblyPresentation: Codable, Equatable, Sendable {
         let depthLine = [
             "Project Context Depth：\(depthProfile?.displayName ?? fallbackDepthProfile(values["project_context_depth"]))",
             "serving \(servingProfile?.rawValue ?? trimmed(values["effective_project_serving_profile"]) ?? "unknown")",
-            "memory \(memorySource)"
+            "memory \(memorySourceLabel)"
         ]
         .joined(separator: " · ")
 
@@ -125,6 +134,12 @@ struct AXProjectContextAssemblyPresentation: Codable, Equatable, Sendable {
             projectLabel: projectLabel,
             sourceBadge: "Latest Usage",
             statusLine: "最近一次 coder context assembly 已被捕获，Doctor 现在显示的是 runtime 实际喂给 project AI 的背景，而不只是静态配置。",
+            recentDialogueSource: recentSource,
+            recentDialogueSourceLabel: recentSourceLabel,
+            recentDialogueSourceClass: XTMemorySourceTruthPresentation.sourceClass(recentSource),
+            memorySource: memorySource,
+            memorySourceLabel: memorySourceLabel,
+            memorySourceClass: XTMemorySourceTruthPresentation.sourceClass(memorySource),
             dialogueMetric: dialogueMetric,
             depthMetric: depthMetric,
             dialogueLine: dialogueLine,

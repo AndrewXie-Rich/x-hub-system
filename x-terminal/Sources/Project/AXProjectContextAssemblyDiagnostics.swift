@@ -40,6 +40,8 @@ struct AXProjectContextAssemblyDiagnosticEvent: Codable, Equatable, Identifiable
         if includeProject {
             lines.append("project_context_project=\(projectDisplayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? projectId : projectDisplayName)")
         }
+        let normalizedMemorySource = memoryV1Source.isEmpty ? "unknown" : memoryV1Source
+        let normalizedRecentDialogueSource = recentProjectDialogueSource.isEmpty ? "unknown" : recentProjectDialogueSource
         lines.append("project_context_diagnostics_source=latest_coder_usage")
         if !role.isEmpty {
             lines.append("project_context_last_role=\(role)")
@@ -47,12 +49,16 @@ struct AXProjectContextAssemblyDiagnosticEvent: Codable, Equatable, Identifiable
         if !stage.isEmpty {
             lines.append("project_context_last_stage=\(stage)")
         }
-        lines.append("project_memory_v1_source=\(memoryV1Source.isEmpty ? "unknown" : memoryV1Source)")
+        lines.append("project_memory_v1_source=\(normalizedMemorySource)")
+        lines.append("project_memory_v1_source_label=\(XTMemorySourceTruthPresentation.label(normalizedMemorySource))")
+        lines.append("project_memory_v1_source_class=\(XTMemorySourceTruthPresentation.sourceClass(normalizedMemorySource))")
         lines.append("recent_project_dialogue_profile=\(recentProjectDialogueProfile)")
         lines.append("recent_project_dialogue_selected_pairs=\(recentProjectDialogueSelectedPairs)")
         lines.append("recent_project_dialogue_floor_pairs=\(recentProjectDialogueFloorPairs)")
         lines.append("recent_project_dialogue_floor_satisfied=\(recentProjectDialogueFloorSatisfied)")
-        lines.append("recent_project_dialogue_source=\(recentProjectDialogueSource.isEmpty ? "unknown" : recentProjectDialogueSource)")
+        lines.append("recent_project_dialogue_source=\(normalizedRecentDialogueSource)")
+        lines.append("recent_project_dialogue_source_label=\(XTMemorySourceTruthPresentation.label(normalizedRecentDialogueSource))")
+        lines.append("recent_project_dialogue_source_class=\(XTMemorySourceTruthPresentation.sourceClass(normalizedRecentDialogueSource))")
         lines.append("recent_project_dialogue_low_signal_dropped=\(recentProjectDialogueLowSignalDropped)")
         lines.append("project_context_depth=\(projectContextDepth)")
         lines.append("effective_project_serving_profile=\(effectiveProjectServingProfile)")

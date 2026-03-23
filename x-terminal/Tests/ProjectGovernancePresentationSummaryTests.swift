@@ -105,6 +105,23 @@ struct ProjectGovernancePresentationSummaryTests {
     }
 
     @Test
+    func effectiveTruthLineIncludesCadenceAndFallbackCompatSource() throws {
+        let presentation = ProjectGovernancePresentation(
+            executionTier: .a2RepoAuto,
+            supervisorInterventionTier: .s2PeriodicReview,
+            reviewPolicyMode: .hybrid,
+            progressHeartbeatSeconds: 900,
+            reviewPulseSeconds: 1800,
+            brainstormReviewSeconds: 0,
+            eventDrivenReviewEnabled: true,
+            compatSource: AXProjectGovernanceCompatSource.legacyAutonomyMode.rawValue
+        )
+
+        let line = try #require(presentation.effectiveTruthLine)
+        #expect(line == "治理真相：当前生效 A2/S2 · 审查 Hybrid · 节奏 心跳 15m / 脉冲 30m / 脑暴 off · 来源 兼容旧执行面预设。")
+    }
+
+    @Test
     func homeClampMessageSuppressesNoopClampButKeepsActionableClamp() {
         let draft = ProjectGovernancePresentation(
             executionTier: .a2RepoAuto,
@@ -146,7 +163,7 @@ struct ProjectGovernancePresentationSummaryTests {
         )
         let actionable = ProjectGovernancePresentation(resolved: resolved)
 
-        #expect(actionable.homeClampMessage?.contains("trusted automation readiness") == true)
+        #expect(actionable.homeClampMessage?.contains("受治理自动化就绪检查") == true)
     }
 
     @Test
@@ -203,7 +220,7 @@ struct ProjectGovernancePresentationSummaryTests {
         )
         let clampOnly = ProjectGovernancePresentation(resolved: resolved)
         #expect(clampOnly.compactCalloutTone == .info)
-        #expect(clampOnly.compactCalloutMessage?.contains("trusted automation readiness") == true)
+        #expect(clampOnly.compactCalloutMessage?.contains("受治理自动化就绪检查") == true)
     }
 
     @Test

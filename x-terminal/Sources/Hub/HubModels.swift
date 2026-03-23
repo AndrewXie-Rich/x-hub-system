@@ -21,12 +21,45 @@ enum HubModelState: String, Codable {
     case sleeping
 }
 
+struct HubLocalModelVisionLoadProfile: Codable, Equatable {
+    var imageMaxDimension: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case imageMaxDimension
+    }
+
+    enum SnakeCodingKeys: String, CodingKey {
+        case imageMaxDimension = "image_max_dimension"
+    }
+
+    init(imageMaxDimension: Int? = nil) {
+        guard let imageMaxDimension, imageMaxDimension > 0 else {
+            self.imageMaxDimension = nil
+            return
+        }
+        self.imageMaxDimension = min(16_384, max(32, imageMaxDimension))
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let s = try decoder.container(keyedBy: SnakeCodingKeys.self)
+        self.init(
+            imageMaxDimension: (try? c.decodeIfPresent(Int.self, forKey: .imageMaxDimension))
+                ?? (try? s.decodeIfPresent(Int.self, forKey: .imageMaxDimension))
+        )
+    }
+}
+
 struct HubLocalModelLoadProfile: Codable, Equatable {
     var contextLength: Int
     var gpuOffloadRatio: Double?
     var ropeFrequencyBase: Double?
     var ropeFrequencyScale: Double?
     var evalBatchSize: Int?
+    var ttl: Int?
+    var parallel: Int?
+    var identifier: String?
+    var vision: HubLocalModelVisionLoadProfile?
 
     enum CodingKeys: String, CodingKey {
         case contextLength
@@ -34,6 +67,10 @@ struct HubLocalModelLoadProfile: Codable, Equatable {
         case ropeFrequencyBase
         case ropeFrequencyScale
         case evalBatchSize
+        case ttl
+        case parallel
+        case identifier
+        case vision
     }
 
     enum SnakeCodingKeys: String, CodingKey {
@@ -42,6 +79,15 @@ struct HubLocalModelLoadProfile: Codable, Equatable {
         case ropeFrequencyBase = "rope_frequency_base"
         case ropeFrequencyScale = "rope_frequency_scale"
         case evalBatchSize = "eval_batch_size"
+        case ttl
+        case parallel
+        case identifier
+        case vision
+    }
+
+    enum FlatVisionCodingKeys: String, CodingKey {
+        case visionImageMaxDimension = "vision_image_max_dimension"
+        case visionImageMaxDimensionCamel = "visionImageMaxDimension"
     }
 
     init(
@@ -49,32 +95,69 @@ struct HubLocalModelLoadProfile: Codable, Equatable {
         gpuOffloadRatio: Double? = nil,
         ropeFrequencyBase: Double? = nil,
         ropeFrequencyScale: Double? = nil,
-        evalBatchSize: Int? = nil
+        evalBatchSize: Int? = nil,
+        ttl: Int? = nil,
+        parallel: Int? = nil,
+        identifier: String? = nil,
+        vision: HubLocalModelVisionLoadProfile? = nil
     ) {
         self.contextLength = max(512, contextLength)
-        self.gpuOffloadRatio = gpuOffloadRatio
-        self.ropeFrequencyBase = ropeFrequencyBase
-        self.ropeFrequencyScale = ropeFrequencyScale
-        self.evalBatchSize = evalBatchSize
+        self.gpuOffloadRatio = HubLocalModelLoadProfile.normalizedRatio(gpuOffloadRatio)
+        self.ropeFrequencyBase = HubLocalModelLoadProfile.normalizedPositive(ropeFrequencyBase)
+        self.ropeFrequencyScale = HubLocalModelLoadProfile.normalizedPositive(ropeFrequencyScale)
+        self.evalBatchSize = HubLocalModelLoadProfile.normalizedPositiveInt(evalBatchSize)
+        self.ttl = HubLocalModelLoadProfile.normalizedPositiveInt(ttl)
+        self.parallel = HubLocalModelLoadProfile.normalizedPositiveInt(parallel)
+        self.identifier = HubLocalModelLoadProfile.normalizedIdentifier(identifier)
+        self.vision = vision?.imageMaxDimension == nil ? nil : vision
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let s = try decoder.container(keyedBy: SnakeCodingKeys.self)
+        let v = try decoder.container(keyedBy: FlatVisionCodingKeys.self)
         contextLength = max(
             512,
             (try? c.decode(Int.self, forKey: .contextLength))
                 ?? (try? s.decode(Int.self, forKey: .contextLength))
                 ?? 8192
         )
-        gpuOffloadRatio = (try? c.decodeIfPresent(Double.self, forKey: .gpuOffloadRatio))
-            ?? (try? s.decodeIfPresent(Double.self, forKey: .gpuOffloadRatio))
-        ropeFrequencyBase = (try? c.decodeIfPresent(Double.self, forKey: .ropeFrequencyBase))
-            ?? (try? s.decodeIfPresent(Double.self, forKey: .ropeFrequencyBase))
-        ropeFrequencyScale = (try? c.decodeIfPresent(Double.self, forKey: .ropeFrequencyScale))
-            ?? (try? s.decodeIfPresent(Double.self, forKey: .ropeFrequencyScale))
-        evalBatchSize = (try? c.decodeIfPresent(Int.self, forKey: .evalBatchSize))
-            ?? (try? s.decodeIfPresent(Int.self, forKey: .evalBatchSize))
+        gpuOffloadRatio = HubLocalModelLoadProfile.normalizedRatio(
+            (try? c.decodeIfPresent(Double.self, forKey: .gpuOffloadRatio))
+                ?? (try? s.decodeIfPresent(Double.self, forKey: .gpuOffloadRatio))
+        )
+        ropeFrequencyBase = HubLocalModelLoadProfile.normalizedPositive(
+            (try? c.decodeIfPresent(Double.self, forKey: .ropeFrequencyBase))
+                ?? (try? s.decodeIfPresent(Double.self, forKey: .ropeFrequencyBase))
+        )
+        ropeFrequencyScale = HubLocalModelLoadProfile.normalizedPositive(
+            (try? c.decodeIfPresent(Double.self, forKey: .ropeFrequencyScale))
+                ?? (try? s.decodeIfPresent(Double.self, forKey: .ropeFrequencyScale))
+        )
+        evalBatchSize = HubLocalModelLoadProfile.normalizedPositiveInt(
+            (try? c.decodeIfPresent(Int.self, forKey: .evalBatchSize))
+                ?? (try? s.decodeIfPresent(Int.self, forKey: .evalBatchSize))
+        )
+        ttl = HubLocalModelLoadProfile.normalizedPositiveInt(
+            (try? c.decodeIfPresent(Int.self, forKey: .ttl))
+                ?? (try? s.decodeIfPresent(Int.self, forKey: .ttl))
+        )
+        parallel = HubLocalModelLoadProfile.normalizedPositiveInt(
+            (try? c.decodeIfPresent(Int.self, forKey: .parallel))
+                ?? (try? s.decodeIfPresent(Int.self, forKey: .parallel))
+        )
+        identifier = HubLocalModelLoadProfile.normalizedIdentifier(
+            (try? c.decodeIfPresent(String.self, forKey: .identifier))
+                ?? (try? s.decodeIfPresent(String.self, forKey: .identifier))
+        )
+        vision = (try? c.decodeIfPresent(HubLocalModelVisionLoadProfile.self, forKey: .vision))
+            ?? (try? s.decodeIfPresent(HubLocalModelVisionLoadProfile.self, forKey: .vision))
+            ?? {
+                let imageMaxDimension = (try? v.decodeIfPresent(Int.self, forKey: .visionImageMaxDimension))
+                    ?? (try? v.decodeIfPresent(Int.self, forKey: .visionImageMaxDimensionCamel))
+                guard imageMaxDimension != nil else { return nil }
+                return HubLocalModelVisionLoadProfile(imageMaxDimension: imageMaxDimension)
+            }()
     }
 
     func normalized(maxContextLength: Int?) -> HubLocalModelLoadProfile {
@@ -84,8 +167,54 @@ struct HubLocalModelLoadProfile: Codable, Equatable {
             gpuOffloadRatio: gpuOffloadRatio,
             ropeFrequencyBase: ropeFrequencyBase,
             ropeFrequencyScale: ropeFrequencyScale,
-            evalBatchSize: evalBatchSize
+            evalBatchSize: evalBatchSize,
+            ttl: ttl,
+            parallel: parallel,
+            identifier: identifier,
+            vision: vision
         )
+    }
+
+    private static func normalizedRatio(_ value: Double?) -> Double? {
+        guard let value, value.isFinite else { return nil }
+        return min(1.0, max(0.0, value))
+    }
+
+    private static func normalizedPositive(_ value: Double?) -> Double? {
+        guard let value, value.isFinite, value > 0 else { return nil }
+        return value
+    }
+
+    private static func normalizedPositiveInt(_ value: Int?) -> Int? {
+        guard let value, value > 0 else { return nil }
+        return value
+    }
+
+    private static func normalizedIdentifier(_ value: String?) -> String? {
+        let token = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return token.isEmpty ? nil : token
+    }
+}
+
+extension HubLocalModelLoadProfile {
+    var xtSummaryLine: String {
+        var parts = ["ctx \(contextLength)"]
+        if let ttl {
+            parts.append("ttl \(ttl)s")
+        }
+        if let parallel {
+            parts.append("par \(parallel)")
+        }
+        if let identifier {
+            let trimmedIdentifier = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedIdentifier.isEmpty {
+                parts.append("id \(trimmedIdentifier)")
+            }
+        }
+        if let imageMaxDimension = vision?.imageMaxDimension {
+            parts.append("vision \(imageMaxDimension)px")
+        }
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -808,6 +937,23 @@ extension HubModel {
         max(maxContextLength ?? hubDefaultContextLength, hubDefaultContextLength)
     }
 
+    var defaultLoadConfigSummaryLine: String? {
+        defaultLoadProfile?.normalized(maxContextLength: hubMaxContextLength).xtSummaryLine
+    }
+
+    var defaultLoadConfigDisplayLine: String {
+        let summary = defaultLoadConfigSummaryLine?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !summary.isEmpty {
+            return "默认加载配置：\(summary)"
+        }
+        return "默认加载配置：ctx \(hubDefaultContextLength)"
+    }
+
+    var localLoadConfigLimitLine: String? {
+        guard isLocalModel else { return nil }
+        return "本地加载上限：ctx \(hubMaxContextLength)"
+    }
+
     var isLocalModel: Bool {
         modelPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     }
@@ -1063,6 +1209,17 @@ struct HubAIResponseEvent: Codable {
             ?? metadataString("failure_reason_code")
     }
 
+    var auditRefFromMetadata: String? {
+        metadataString("audit_ref")
+            ?? metadataString("auditRef")
+    }
+
+    var denyCodeFromMetadata: String? {
+        metadataString("deny_code")
+            ?? metadataString("denyCode")
+            ?? fallbackReasonCodeFromMetadata
+    }
+
     var remoteRetryAttemptedFromMetadata: Bool? {
         metadataBool("remote_retry_attempted")
     }
@@ -1112,6 +1269,8 @@ struct HubAIUsage: Equatable {
     var runtimeProvider: String?
     var executionPath: String?
     var fallbackReasonCode: String?
+    var auditRef: String?
+    var denyCode: String?
     var remoteRetryAttempted: Bool?
     var remoteRetryFromModelId: String?
     var remoteRetryToModelId: String?

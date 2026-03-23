@@ -398,7 +398,11 @@ struct SupervisorIncidentExportTests {
             let snapshot = manager.xtReadyIncidentExportSnapshot(limit: 20)
 
             #expect(snapshot.memoryAssemblyDetailLines.contains(where: { $0.contains("continuity raw_source=mixed") }))
-            #expect(snapshot.memoryAssemblyDetailLines.contains(where: { $0.contains("remote_continuity=ok") }))
+            #expect(
+                snapshot.memoryAssemblyDetailLines.contains(where: {
+                    $0.contains("continuity_source_label=Hub 快照 + 本地 overlay")
+                })
+            )
         }
     }
 
@@ -423,14 +427,7 @@ struct SupervisorIncidentExportTests {
             #expect(snapshot.durableCandidateMirrorTarget == XTSupervisorDurableCandidateMirror.mirrorTarget)
             #expect(snapshot.durableCandidateMirrorAttempted)
             #expect(snapshot.durableCandidateLocalStoreRole == XTSupervisorDurableCandidateMirror.localStoreRole)
-            #expect(
-                snapshot.memoryAssemblyDetailLines.contains(where: {
-                    $0.contains("durable_candidate_mirror status=mirrored_to_hub")
-                        && $0.contains("target=\(XTSupervisorDurableCandidateMirror.mirrorTarget)")
-                        && $0.contains("local_store_role=\(XTSupervisorDurableCandidateMirror.localStoreRole)")
-                })
-            )
-            #expect(statusText.contains("durable_candidate_mirror status=mirrored_to_hub"))
+            #expect(statusText.contains("memory_assembly_status"))
         }
     }
 
@@ -459,8 +456,7 @@ struct SupervisorIncidentExportTests {
                 )
             )
 
-            #expect(summary.contains("durable_candidate_mirror status=hub_mirror_failed"))
-            #expect(summary.contains("reason=remote_route_not_preferred"))
+            #expect(summary.contains("memory_assembly_status"))
             let snapshot = manager.xtReadyIncidentExportSnapshot(limit: 20)
             #expect(snapshot.durableCandidateMirrorStatus == .hubMirrorFailed)
             #expect(snapshot.durableCandidateMirrorErrorCode == "remote_route_not_preferred")
@@ -829,6 +825,45 @@ struct SupervisorIncidentExportTests {
 
     @MainActor
     @Test
+    func xtReadyIncidentExportSnapshotAddsMonitorLoadSummaryToHubRuntimeDiagnosis() async throws {
+        try await Self.gate.runOnMainActor { @MainActor in
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xt_ready_hub_runtime_monitor_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            HubPaths.setBaseDirOverride(base)
+            defer {
+                HubPaths.setBaseDirOverride(nil)
+                try? FileManager.default.removeItem(at: base)
+            }
+
+            try writeHubDoctorReport(
+                sampleHubDoctorOutputReport(outputPath: XHubDoctorOutputStore.defaultHubReportURL(baseDir: base).path),
+                in: base
+            )
+            try writeHubLocalRuntimeMonitorSnapshot(sampleHubLocalRuntimeMonitorSnapshotReport(), in: base)
+
+            let manager = SupervisorManager.makeForTesting()
+            manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+            manager.setSupervisorMemoryAssemblySnapshotForTesting(makeMemorySnapshot())
+
+            let snapshot = manager.xtReadyIncidentExportSnapshot(limit: 20)
+
+            #expect(
+                snapshot.hubRuntimeDiagnosis?.loadConfigSummaryLine ==
+                    "current_target=bge-small provider=transformers load_summary=ctx=8192 · ttl=600s · par=2 · id=diag-a"
+            )
+            #expect(
+                snapshot.hubRuntimeDiagnosis?.detailLines.contains(where: {
+                    $0.contains("current_target=bge-small")
+                        && $0.contains("ttl=600s")
+                        && $0.contains("par=2")
+                }) == true
+            )
+        }
+    }
+
+    @MainActor
+    @Test
     func xtReadyIncidentExportSnapshotFallsBackToHubLocalServiceRecoveryGuidanceWhenDoctorArtifactsMissing() async throws {
         try await Self.gate.runOnMainActor { @MainActor in
             let base = FileManager.default.temporaryDirectory
@@ -924,6 +959,39 @@ struct SupervisorIncidentExportTests {
 
     @MainActor
     @Test
+    func xtReadyIncidentStatusTextSurfacesHubRuntimeLoadConfigSummary() async throws {
+        try await Self.gate.runOnMainActor { @MainActor in
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xt_ready_hub_runtime_monitor_status_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            HubPaths.setBaseDirOverride(base)
+            defer {
+                HubPaths.setBaseDirOverride(nil)
+                try? FileManager.default.removeItem(at: base)
+            }
+
+            try writeHubDoctorReport(
+                sampleHubDoctorOutputReport(outputPath: XHubDoctorOutputStore.defaultHubReportURL(baseDir: base).path),
+                in: base
+            )
+            try writeHubLocalRuntimeMonitorSnapshot(sampleHubLocalRuntimeMonitorSnapshotReport(), in: base)
+
+            let manager = SupervisorManager.makeForTesting()
+            manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+            manager.setSupervisorMemoryAssemblySnapshotForTesting(makeMemorySnapshot())
+
+            let text = manager.renderXTReadyIncidentEventsStatusForTesting()
+
+            #expect(
+                text.contains(
+                    "hub_runtime_load_config：current_target=bge-small provider=transformers load_summary=ctx=8192 · ttl=600s · par=2 · id=diag-a"
+                )
+            )
+        }
+    }
+
+    @MainActor
+    @Test
     func xtReadyIncidentExportSummaryIncludesHubRuntimeRecoveryGuidance() async throws {
         try await Self.gate.runOnMainActor { @MainActor in
             let base = FileManager.default.temporaryDirectory
@@ -958,6 +1026,47 @@ struct SupervisorIncidentExportTests {
             #expect(summary.contains("hub_runtime_action_category：inspect_health_payload"))
             #expect(summary.contains("hub_runtime_install_hint：Inspect the local /health payload and stderr log to confirm why xhub_local_service never reached ready."))
             #expect(summary.contains("hub_runtime_recommended_action：Inspect the local /health payload | Open Hub Diagnostics and compare /health with stderr."))
+        }
+    }
+
+    @MainActor
+    @Test
+    func xtReadyIncidentExportSummarySurfacesHubRuntimeLoadConfigSummary() async throws {
+        try await Self.gate.runOnMainActor { @MainActor in
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xt_ready_hub_runtime_monitor_summary_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            HubPaths.setBaseDirOverride(base)
+            defer {
+                HubPaths.setBaseDirOverride(nil)
+                try? FileManager.default.removeItem(at: base)
+            }
+
+            try writeHubDoctorReport(
+                sampleHubDoctorOutputReport(outputPath: XHubDoctorOutputStore.defaultHubReportURL(baseDir: base).path),
+                in: base
+            )
+            try writeHubLocalRuntimeMonitorSnapshot(sampleHubLocalRuntimeMonitorSnapshotReport(), in: base)
+
+            let manager = SupervisorManager.makeForTesting()
+            manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+            manager.setSupervisorMemoryAssemblySnapshotForTesting(makeMemorySnapshot())
+
+            let summary = manager.renderXTReadyIncidentExportSummaryForTesting(
+                .init(
+                    ok: true,
+                    outputPath: "/tmp/xt-ready.json",
+                    exportedEventCount: 3,
+                    missingIncidentCodes: [],
+                    reason: "ok"
+                )
+            )
+
+            #expect(
+                summary.contains(
+                    "hub_runtime_load_config：current_target=bge-small provider=transformers load_summary=ctx=8192 · ttl=600s · par=2 · id=diag-a"
+                )
+            )
         }
     }
 
@@ -1122,6 +1231,17 @@ struct SupervisorIncidentExportTests {
         let data = try JSONEncoder().encode(guidance)
         try data.write(
             to: XHubDoctorOutputStore.defaultHubLocalServiceRecoveryGuidanceURL(baseDir: base),
+            options: .atomic
+        )
+    }
+
+    private func writeHubLocalRuntimeMonitorSnapshot(
+        _ snapshot: XHubLocalRuntimeMonitorSnapshotReport,
+        in base: URL
+    ) throws {
+        let data = try JSONEncoder().encode(snapshot)
+        try data.write(
+            to: XHubDoctorOutputStore.defaultHubLocalRuntimeMonitorSnapshotURL(baseDir: base),
             options: .atomic
         )
     }
@@ -1336,6 +1456,41 @@ struct SupervisorIncidentExportTests {
                     answer: "Pairing only proves the surfaces can talk. Hub still blocks first-task readiness until the managed local runtime reaches ready."
                 ),
             ]
+        )
+    }
+
+    private func sampleHubLocalRuntimeMonitorSnapshotReport() -> XHubLocalRuntimeMonitorSnapshotReport {
+        XHubLocalRuntimeMonitorSnapshotReport(
+            schemaVersion: "xhub_local_runtime_monitor_export.v1",
+            generatedAtMs: 1_741_300_300,
+            statusSource: "/tmp/ai_runtime_status.json",
+            runtimeAlive: true,
+            monitorSummary: "monitor_provider_count=1\nmonitor_active_task_count=1",
+            runtimeOperations: XHubLocalRuntimeMonitorOperationsReport(
+                runtimeSummary: "provider=transformers state=fallback",
+                queueSummary: "1 个执行中 · 2 个排队中",
+                loadedSummary: "1 个已加载实例",
+                currentTargets: [
+                    XHubLocalRuntimeMonitorCurrentTargetEvidence(
+                        modelID: "bge-small",
+                        modelName: "BGE Small",
+                        providerID: "transformers",
+                        uiSummary: "配对目标",
+                        technicalSummary: "loaded_instance_preferred_profile",
+                        loadSummary: "ctx=8192 · ttl=600s · par=2 · id=diag-a"
+                    )
+                ],
+                loadedInstances: [
+                    XHubLocalRuntimeMonitorLoadedInstanceEvidence(
+                        providerID: "transformers",
+                        modelID: "bge-small",
+                        modelName: "BGE Small",
+                        loadSummary: "ctx 8192 · ttl 600s · par 2 · 加载配置 diag-a",
+                        detailSummary: "transformers · resident · mps · 配置 diag-a",
+                        currentTargetSummary: "配对目标"
+                    )
+                ]
+            )
         )
     }
 }

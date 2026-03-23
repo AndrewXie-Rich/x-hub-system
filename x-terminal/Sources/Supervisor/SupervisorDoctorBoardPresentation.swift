@@ -403,23 +403,6 @@ enum SupervisorDoctorBoardPresentationMapper {
     }
 
     private static func memorySourceLabel(_ raw: String) -> String {
-        switch raw.trimmingCharacters(in: .whitespacesAndNewlines) {
-        case "", "(none)":
-            return "暂无"
-        case "hub":
-            return "Hub"
-        case "hub_memory":
-            return "Hub 记忆"
-        case "local":
-            return "本地"
-        case "local_fallback":
-            return "本地回退"
-        case "mixed":
-            return "混合上下文"
-        case "xt_cache":
-            return "本地对话缓存"
-        default:
-            return raw.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "_", with: " ")
-        }
+        XTMemorySourceTruthPresentation.label(raw)
     }
 }

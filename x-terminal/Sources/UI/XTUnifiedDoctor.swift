@@ -112,6 +112,47 @@ struct XTUnifiedDoctorDurableCandidateMirrorProjection: Codable, Equatable, Send
     }
 }
 
+struct XTUnifiedDoctorLocalStoreWriteProjection: Codable, Equatable, Sendable {
+    var personalMemoryIntent: String?
+    var crossLinkIntent: String?
+    var personalReviewIntent: String?
+
+    var detailLine: String {
+        let parts = [
+            "xt_local_store_writes",
+            personalMemoryIntent.map { "personal_memory=\($0)" },
+            crossLinkIntent.map { "cross_link=\($0)" },
+            personalReviewIntent.map { "personal_review=\($0)" }
+        ].compactMap { $0 }
+        return parts.joined(separator: " ")
+    }
+
+    var hasAnyIntent: Bool {
+        personalMemoryIntent != nil
+            || crossLinkIntent != nil
+            || personalReviewIntent != nil
+    }
+
+    static func from(detailLines: [String]) -> XTUnifiedDoctorLocalStoreWriteProjection? {
+        guard let line = detailLines.first(where: { $0.hasPrefix("xt_local_store_writes ") }) else {
+            return nil
+        }
+        let rawFields = line.dropFirst("xt_local_store_writes ".count)
+        var fields: [String: String] = [:]
+        for token in rawFields.split(separator: " ") {
+            let parts = token.split(separator: "=", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            fields[String(parts[0])] = String(parts[1])
+        }
+        let projection = XTUnifiedDoctorLocalStoreWriteProjection(
+            personalMemoryIntent: normalizedOptionalDoctorField(fields["personal_memory"]),
+            crossLinkIntent: normalizedOptionalDoctorField(fields["cross_link"]),
+            personalReviewIntent: normalizedOptionalDoctorField(fields["personal_review"])
+        )
+        return projection.hasAnyIntent ? projection : nil
+    }
+}
+
 struct XTUnifiedDoctorSection: Identifiable, Codable, Equatable, Sendable {
     var kind: XTUnifiedDoctorSectionKind
     var state: XTUISurfaceState
@@ -123,6 +164,7 @@ struct XTUnifiedDoctorSection: Identifiable, Codable, Equatable, Sendable {
     var projectContextPresentation: AXProjectContextAssemblyPresentation? = nil
     var memoryRouteTruthProjection: AXModelRouteTruthProjection? = nil
     var durableCandidateMirrorProjection: XTUnifiedDoctorDurableCandidateMirrorProjection? = nil
+    var localStoreWriteProjection: XTUnifiedDoctorLocalStoreWriteProjection? = nil
 
     var id: String { kind.rawValue }
 }
@@ -197,7 +239,8 @@ struct XTUnifiedDoctorReportContract: Codable, Equatable {
         structuredProjectionFields: [
             "projectContextPresentation",
             "memoryRouteTruthProjection",
-            "durableCandidateMirrorProjection"
+            "durableCandidateMirrorProjection",
+            "localStoreWriteProjection"
         ],
         auditRef: "audit-xt-unified-doctor-contract-v1"
     )
@@ -490,6 +533,9 @@ enum XTUnifiedDoctorBuilder {
         route: XTUnifiedDoctorRouteSnapshot,
         input: XTUnifiedDoctorInput
     ) -> XTUnifiedDoctorSection {
+        let normalizedFailureCode = failureCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let failureIssue = UITroubleshootKnowledgeBase.issue(forFailureCode: normalizedFailureCode)
+
         if input.localConnected {
             return XTUnifiedDoctorSection(
                 kind: .hubReachability,
@@ -537,6 +583,23 @@ enum XTUnifiedDoctorBuilder {
                     "route=\(route.routeLabel)",
                     "runtime_alive=\(runtimeAlive)",
                     failureCode.isEmpty ? "failure_code=none" : "failure_code=\(failureCode)"
+                ]
+            )
+        }
+
+        if failureIssue == .pairingRepairRequired {
+            return XTUnifiedDoctorSection(
+                kind: .hubReachability,
+                state: .diagnosticRequired,
+                headline: "现有配对档案已失效，需要清理并重配",
+                summary: "当前不是单纯的 Hub 不可达，更像是本地缓存的 token、client cert 或旧 pairing profile 已经失效；继续拿旧档案 reconnect 只会反复失败。",
+                nextStep: "先在 XT Pair Hub 执行“清除配对后重连”，再到 Hub Pairing & Device Trust 清理旧设备条目并重新批准。",
+                repairEntry: .xtPairHub,
+                detailLines: [
+                    "transport=\(route.transportMode)",
+                    "route=\(route.routeLabel)",
+                    "runtime_alive=\(runtimeAlive)",
+                    normalizedFailureCode.isEmpty ? "failure_code=pairing_repair_required" : "failure_code=\(normalizedFailureCode)"
                 ]
             )
         }
@@ -737,7 +800,7 @@ enum XTUnifiedDoctorBuilder {
 
         section.headline = "Model route is ready, but recent project routes degraded"
         section.summary = "XT 当前能看到可分配模型，但最近仍有项目请求在执行时降到本地或远端失败；这通常不是“完全没连上 Hub”，而是具体项目选中的远端没有稳定命中。"
-        section.nextStep = "打开受影响项目后运行 `/route diagnose`，或在 Choose Model 里把它切到已加载的推荐远端。"
+        section.nextStep = "打开受影响项目后运行 `/route diagnose`；如果诊断里已经提示 XT 会自动改试上次稳定远端，就直接继续。只有你想把模型固定下来时，再到 Choose Model 手动切。"
         return section
     }
 
@@ -913,13 +976,21 @@ enum XTUnifiedDoctorBuilder {
             section.projectContextPresentation = diagnostics.presentation
             detailLines += diagnostics.detailLines
         }
+        if let memoryAssemblySnapshot {
+            detailLines += memoryAssemblySnapshot.continuityDrillDownLines
+        }
         if let mirrorProjection = durableCandidateMirrorProjection(from: memoryAssemblySnapshot) {
             section.durableCandidateMirrorProjection = mirrorProjection
             detailLines.append(mirrorProjection.detailLine)
         }
+        if let localStoreWriteProjection = localStoreWriteProjection(from: memoryAssemblySnapshot) {
+            section.localStoreWriteProjection = localStoreWriteProjection
+            detailLines.append(localStoreWriteProjection.detailLine)
+        }
         guard detailLines != base.detailLines
                 || section.projectContextPresentation != nil
-                || section.durableCandidateMirrorProjection != nil else {
+                || section.durableCandidateMirrorProjection != nil
+                || section.localStoreWriteProjection != nil else {
             return base
         }
         section.detailLines = orderedUnique(detailLines)
@@ -947,6 +1018,18 @@ enum XTUnifiedDoctorBuilder {
                 fallback: XTSupervisorDurableCandidateMirror.localStoreRole
             )
         )
+    }
+
+    private static func localStoreWriteProjection(
+        from snapshot: SupervisorMemoryAssemblySnapshot?
+    ) -> XTUnifiedDoctorLocalStoreWriteProjection? {
+        guard let snapshot else { return nil }
+        let projection = XTUnifiedDoctorLocalStoreWriteProjection(
+            personalMemoryIntent: normalizedOptionalDoctorField(snapshot.localPersonalMemoryWriteIntent),
+            crossLinkIntent: normalizedOptionalDoctorField(snapshot.localCrossLinkWriteIntent),
+            personalReviewIntent: normalizedOptionalDoctorField(snapshot.localPersonalReviewWriteIntent)
+        )
+        return projection.hasAnyIntent ? projection : nil
     }
 
     private static func buildCalendarReminderSection(
@@ -1628,12 +1711,38 @@ struct XTUnifiedDoctorSummaryView: View {
 private struct XTUnifiedDoctorSectionCard: View {
     let section: XTUnifiedDoctorSection
 
+    private var routeTruthProjection: AXModelRouteTruthProjection? {
+        guard section.kind == .modelRouteReadiness else { return nil }
+        if let projection = section.memoryRouteTruthProjection {
+            return projection
+        }
+        return AXModelRouteTruthProjection(doctorDetailLines: section.detailLines)
+    }
+
+    private var routeTruthSummary: XTDoctorProjectionSummary? {
+        guard let routeTruthProjection else { return nil }
+        return XTDoctorRouteTruthPresentation.summary(projection: routeTruthProjection)
+    }
+
     private var projectContextPresentation: AXProjectContextAssemblyPresentation? {
         guard section.kind == .sessionRuntimeReadiness else { return nil }
         if let presentation = section.projectContextPresentation {
             return presentation
         }
         return AXProjectContextAssemblyPresentation.from(detailLines: section.detailLines)
+    }
+
+    private var durableCandidateMirrorProjection: XTUnifiedDoctorDurableCandidateMirrorProjection? {
+        guard section.kind == .sessionRuntimeReadiness else { return nil }
+        if let projection = section.durableCandidateMirrorProjection {
+            return projection
+        }
+        return XTUnifiedDoctorDurableCandidateMirrorProjection.from(detailLines: section.detailLines)
+    }
+
+    private var durableCandidateMirrorSummary: XTDoctorProjectionSummary? {
+        guard let durableCandidateMirrorProjection else { return nil }
+        return XTDoctorDurableCandidateMirrorPresentation.summary(projection: durableCandidateMirrorProjection)
     }
 
     var body: some View {
@@ -1659,8 +1768,16 @@ private struct XTUnifiedDoctorSectionCard: View {
                 .font(UIThemeTokens.monoFont())
                 .foregroundStyle(.secondary)
 
+            if let routeTruthSummary {
+                XTDoctorProjectionSummaryView(summary: routeTruthSummary)
+            }
+
             if let projectContextPresentation {
                 XTDoctorProjectContextSummaryView(presentation: projectContextPresentation)
+            }
+
+            if let durableCandidateMirrorSummary {
+                XTDoctorProjectionSummaryView(summary: durableCandidateMirrorSummary)
             }
 
             if !section.detailLines.isEmpty {
@@ -1682,6 +1799,29 @@ private struct XTUnifiedDoctorSectionCard: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(UIThemeTokens.subtleBorder, lineWidth: 1)
         )
+    }
+}
+
+private struct XTDoctorProjectionSummaryView: View {
+    let summary: XTDoctorProjectionSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(summary.title)
+                .font(.caption.weight(.semibold))
+
+            ForEach(summary.lines, id: \.self) { line in
+                Text(line)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 

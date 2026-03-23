@@ -44,6 +44,7 @@ struct XHubDoctorOutputTests {
         #expect(bundle.checks[2].status == .warn)
         #expect(bundle.checks[2].projectContextSummary == nil)
         #expect(bundle.checks[2].durableCandidateMirrorSnapshot == nil)
+        #expect(bundle.checks[2].localStoreWriteSnapshot == nil)
         #expect(bundle.nextSteps.count == 2)
         #expect(bundle.nextSteps[0].kind == .chooseModel)
         #expect(bundle.nextSteps[0].owner == .user)
@@ -302,6 +303,58 @@ struct XHubDoctorOutputTests {
     }
 
     @Test
+    func projectsLocalStoreWriteSnapshotFromStructuredSessionReadinessProjection() {
+        var xtReport = sampleXTUnifiedDoctorReport(sourceReportPath: "/tmp/xt_unified_doctor_report.json")
+        xtReport.sections[2] = XTUnifiedDoctorSection(
+            kind: .sessionRuntimeReadiness,
+            state: .ready,
+            headline: "Session runtime is ready",
+            summary: "Session runtime is healthy and carries XT local-store provenance.",
+            nextStep: "Continue into the first task.",
+            repairEntry: .xtDiagnostics,
+            detailLines: [
+                "runtime_state=ready"
+            ],
+            localStoreWriteProjection: XTUnifiedDoctorLocalStoreWriteProjection(
+                personalMemoryIntent: SupervisorPersonalMemoryStoreWriteIntent.manualEditBufferCommit.rawValue,
+                crossLinkIntent: SupervisorCrossLinkStoreWriteIntent.afterTurnCacheRefresh.rawValue,
+                personalReviewIntent: SupervisorPersonalReviewNoteStoreWriteIntent.derivedRefresh.rawValue
+            )
+        )
+
+        let bundle = XHubDoctorOutputReport.xtReadinessBundle(from: xtReport)
+        let check = bundle.checks.first { $0.checkID == XTUnifiedDoctorSectionKind.sessionRuntimeReadiness.rawValue }
+
+        #expect(check?.localStoreWriteSnapshot?.personalMemoryIntent == SupervisorPersonalMemoryStoreWriteIntent.manualEditBufferCommit.rawValue)
+        #expect(check?.localStoreWriteSnapshot?.crossLinkIntent == SupervisorCrossLinkStoreWriteIntent.afterTurnCacheRefresh.rawValue)
+        #expect(check?.localStoreWriteSnapshot?.personalReviewIntent == SupervisorPersonalReviewNoteStoreWriteIntent.derivedRefresh.rawValue)
+    }
+
+    @Test
+    func fallsBackToLocalStoreWriteDetailLineWhenStructuredProjectionIsMissing() {
+        var xtReport = sampleXTUnifiedDoctorReport(sourceReportPath: "/tmp/xt_unified_doctor_report.json")
+        xtReport.sections[2] = XTUnifiedDoctorSection(
+            kind: .sessionRuntimeReadiness,
+            state: .ready,
+            headline: "Session runtime is ready",
+            summary: "Session runtime is healthy and only has migration detail lines for XT local-store provenance.",
+            nextStep: "Continue into the first task.",
+            repairEntry: .xtDiagnostics,
+            detailLines: [
+                "runtime_state=ready",
+                "xt_local_store_writes personal_memory=\(SupervisorPersonalMemoryStoreWriteIntent.manualEditBufferCommit.rawValue) cross_link=\(SupervisorCrossLinkStoreWriteIntent.afterTurnCacheRefresh.rawValue) personal_review=\(SupervisorPersonalReviewNoteStoreWriteIntent.derivedRefresh.rawValue)"
+            ]
+        )
+
+        let bundle = XHubDoctorOutputReport.xtReadinessBundle(from: xtReport)
+        let check = bundle.checks.first { $0.checkID == XTUnifiedDoctorSectionKind.sessionRuntimeReadiness.rawValue }
+
+        #expect(check?.localStoreWriteSnapshot?.personalMemoryIntent == SupervisorPersonalMemoryStoreWriteIntent.manualEditBufferCommit.rawValue)
+        #expect(check?.localStoreWriteSnapshot?.crossLinkIntent == SupervisorCrossLinkStoreWriteIntent.afterTurnCacheRefresh.rawValue)
+        #expect(check?.localStoreWriteSnapshot?.personalReviewIntent == SupervisorPersonalReviewNoteStoreWriteIntent.derivedRefresh.rawValue)
+    }
+
+    @Test
     func projectsMemoryRouteTruthSnapshotFromModelRouteDiagnostics() {
         var xtReport = sampleXTUnifiedDoctorReport(sourceReportPath: "/tmp/xt_unified_doctor_report.json")
         xtReport.sections[1] = XTUnifiedDoctorSection(
@@ -524,6 +577,34 @@ struct XHubDoctorOutputTests {
         #expect(decoded?.installHint.contains("/health") == true)
         #expect(decoded?.topRecommendedActionSummary.contains("Inspect the local /health payload") == true)
     }
+
+    @Test
+    func loadsHubLocalRuntimeMonitorSnapshotFromHubBaseDir() throws {
+        let tempBase = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xhub-hub-local-runtime-monitor-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempBase, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempBase) }
+
+        let snapshotURL = XHubDoctorOutputStore.defaultHubLocalRuntimeMonitorSnapshotURL(baseDir: tempBase)
+        let data = try JSONEncoder().encode(sampleHubLocalRuntimeMonitorSnapshotReport())
+        try data.write(to: snapshotURL, options: .atomic)
+
+        let decoded = XHubDoctorOutputStore.loadHubLocalRuntimeMonitorSnapshot(baseDir: tempBase)
+
+        #expect(decoded?.schemaVersion == "xhub_local_runtime_monitor_export.v1")
+        #expect(decoded?.runtimeOperations?.loadedSummary == "1 个已加载实例")
+        #expect(
+            decoded?.preferredLoadConfigLine() ==
+                "current_target=bge-small provider=transformers load_summary=ctx=8192 · ttl=600s · par=2 · id=diag-a"
+        )
+        #expect(
+            decoded?.preferredDetailLines().contains(where: {
+                $0.contains("current_target=bge-small")
+                    && $0.contains("ttl=600s")
+                    && $0.contains("par=2")
+            }) == true
+        )
+    }
 }
 
 private final class XHubDoctorOutputWriteCapture: @unchecked Sendable {
@@ -742,5 +823,40 @@ private func sampleHubLocalServiceRecoveryGuidanceReport() -> XHubLocalServiceRe
                 answer: "Pairing only proves the surfaces can talk. Hub still blocks first-task readiness until the managed local runtime reaches ready."
             ),
         ]
+    )
+}
+
+private func sampleHubLocalRuntimeMonitorSnapshotReport() -> XHubLocalRuntimeMonitorSnapshotReport {
+    XHubLocalRuntimeMonitorSnapshotReport(
+        schemaVersion: "xhub_local_runtime_monitor_export.v1",
+        generatedAtMs: 1_741_300_300,
+        statusSource: "/tmp/ai_runtime_status.json",
+        runtimeAlive: true,
+        monitorSummary: "monitor_provider_count=1\nmonitor_active_task_count=1",
+        runtimeOperations: XHubLocalRuntimeMonitorOperationsReport(
+            runtimeSummary: "provider=transformers state=fallback",
+            queueSummary: "1 个执行中 · 2 个排队中",
+            loadedSummary: "1 个已加载实例",
+            currentTargets: [
+                XHubLocalRuntimeMonitorCurrentTargetEvidence(
+                    modelID: "bge-small",
+                    modelName: "BGE Small",
+                    providerID: "transformers",
+                    uiSummary: "配对目标",
+                    technicalSummary: "loaded_instance_preferred_profile",
+                    loadSummary: "ctx=8192 · ttl=600s · par=2 · id=diag-a"
+                )
+            ],
+            loadedInstances: [
+                XHubLocalRuntimeMonitorLoadedInstanceEvidence(
+                    providerID: "transformers",
+                    modelID: "bge-small",
+                    modelName: "BGE Small",
+                    loadSummary: "ctx 8192 · ttl 600s · par 2 · 加载配置 diag-a",
+                    detailSummary: "transformers · resident · mps · 配置 diag-a",
+                    currentTargetSummary: "配对目标"
+                )
+            ]
+        )
     )
 }

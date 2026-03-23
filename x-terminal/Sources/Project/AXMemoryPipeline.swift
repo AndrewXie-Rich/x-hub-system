@@ -246,6 +246,8 @@ Merge rules:
                     runtimeProvider: u.runtimeProvider,
                     executionPath: u.executionPath,
                     fallbackReasonCode: u.fallbackReasonCode,
+                    auditRef: u.auditRef,
+                    denyCode: u.denyCode,
                     remoteRetryAttempted: u.remoteRetryAttempted,
                     remoteRetryFromModelId: u.remoteRetryFromModelId,
                     remoteRetryToModelId: u.remoteRetryToModelId,
@@ -285,6 +287,12 @@ Merge rules:
         }
         if let reason = coarseUsage?.fallbackReasonCode, !reason.isEmpty {
             coarseUsageEntry["fallback_reason_code"] = reason
+        }
+        if let auditRef = coarseUsage?.auditRef, !auditRef.isEmpty {
+            coarseUsageEntry["audit_ref"] = auditRef
+        }
+        if let denyCode = coarseUsage?.denyCode, !denyCode.isEmpty {
+            coarseUsageEntry["deny_code"] = denyCode
         }
         if coarseUsage?.remoteRetryAttempted == true {
             coarseUsageEntry["remote_retry_attempted"] = true
@@ -461,6 +469,8 @@ Merge rules:
                     runtimeProvider: u.runtimeProvider,
                     executionPath: u.executionPath,
                     fallbackReasonCode: u.fallbackReasonCode,
+                    auditRef: u.auditRef,
+                    denyCode: u.denyCode,
                     remoteRetryAttempted: u.remoteRetryAttempted,
                     remoteRetryFromModelId: u.remoteRetryFromModelId,
                     remoteRetryToModelId: u.remoteRetryToModelId,
@@ -499,6 +509,12 @@ Merge rules:
         }
         if let reason = refineUsage?.fallbackReasonCode, !reason.isEmpty {
             refineUsageEntry["fallback_reason_code"] = reason
+        }
+        if let auditRef = refineUsage?.auditRef, !auditRef.isEmpty {
+            refineUsageEntry["audit_ref"] = auditRef
+        }
+        if let denyCode = refineUsage?.denyCode, !denyCode.isEmpty {
+            refineUsageEntry["deny_code"] = denyCode
         }
         if refineUsage?.remoteRetryAttempted == true {
             refineUsageEntry["remote_retry_attempted"] = true

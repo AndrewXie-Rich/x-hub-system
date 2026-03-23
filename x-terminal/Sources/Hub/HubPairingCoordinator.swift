@@ -231,6 +231,8 @@ struct HubRemoteGenerateResult: Sendable {
     var runtimeProvider: String? = nil
     var executionPath: String? = nil
     var fallbackReasonCode: String? = nil
+    var auditRef: String? = nil
+    var denyCode: String? = nil
     var promptTokens: Int? = nil
     var completionTokens: Int? = nil
     var reasonCode: String?
@@ -330,6 +332,11 @@ struct HubRemoteNotificationPayload: Sendable {
 
 struct HubRemoteMutationResult: Sendable {
     var ok: Bool
+    var source: String = "hub_runtime_grpc"
+    var auditRefs: [String] = []
+    var evidenceRefs: [String] = []
+    var writebackRefs: [String] = []
+    var updatedAtMs: Int64? = nil
     var reasonCode: String?
     var logLines: [String]
 
@@ -1912,25 +1919,41 @@ actor HubPairingCoordinator {
             )
         }
 
+        func cleaned(_ value: String?) -> String? {
+            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? nil : trimmed
+        }
+
+        func failedGenerateResult(
+            decoded: RemoteGenerateScriptResult?,
+            reason: String
+        ) -> HubRemoteGenerateResult {
+            HubRemoteGenerateResult(
+                ok: false,
+                text: "",
+                modelId: cleaned(decoded?.modelId) ?? cleaned(modelId),
+                requestedModelId: cleaned(decoded?.requestedModelId) ?? cleaned(modelId),
+                actualModelId: cleaned(decoded?.actualModelId) ?? cleaned(decoded?.modelId) ?? cleaned(modelId),
+                runtimeProvider: cleaned(decoded?.runtimeProvider),
+                executionPath: cleaned(decoded?.executionPath),
+                fallbackReasonCode: cleaned(decoded?.fallbackReasonCode) ?? cleaned(decoded?.denyCode),
+                auditRef: cleaned(decoded?.auditRef),
+                denyCode: cleaned(decoded?.denyCode),
+                reasonCode: reason,
+                logLines: logs
+            )
+        }
+
         func finalizeGenerateStep(_ step: StepOutput) -> HubRemoteGenerateResult {
             guard let decoded = decodeGenerateStep(step) else {
                 let reason = inferFailureCode(from: step.output, fallback: "remote_chat_failed")
-                return HubRemoteGenerateResult(
-                    ok: false,
-                    text: "",
-                    modelId: nil,
-                    reasonCode: reason,
-                    logLines: logs
-                )
+                return failedGenerateResult(decoded: nil, reason: reason)
             }
 
             guard decoded.ok == true else {
-                return HubRemoteGenerateResult(
-                    ok: false,
-                    text: "",
-                    modelId: nil,
-                    reasonCode: normalizedFailureReason(from: decoded, step: step, fallback: "remote_chat_failed"),
-                    logLines: logs
+                return failedGenerateResult(
+                    decoded: decoded,
+                    reason: normalizedFailureReason(from: decoded, step: step, fallback: "remote_chat_failed")
                 )
             }
 
@@ -1939,11 +1962,9 @@ actor HubPairingCoordinator {
                 fallbackModelId: modelId,
                 logLines: logs
             ) else {
-                return HubRemoteGenerateResult(
-                    ok: false,
-                    text: "",
-                    reasonCode: normalizedFailureReason(from: decoded, step: step, fallback: "remote_chat_empty_output"),
-                    logLines: logs
+                return failedGenerateResult(
+                    decoded: decoded,
+                    reason: normalizedFailureReason(from: decoded, step: step, fallback: "remote_chat_empty_output")
                 )
             }
 
@@ -1952,12 +1973,7 @@ actor HubPairingCoordinator {
 
         guard let decoded = decodeGenerateStep(step) else {
             let reason = inferFailureCode(from: step.output, fallback: "remote_chat_failed")
-            return HubRemoteGenerateResult(
-                ok: false,
-                text: "",
-                reasonCode: reason,
-                logLines: logs
-            )
+            return failedGenerateResult(decoded: nil, reason: reason)
         }
 
         if decoded.ok != true {
@@ -1982,36 +1998,16 @@ actor HubPairingCoordinator {
                         appendStepLogs(into: &logs, step: step)
                         return finalizeGenerateStep(step)
                     case .queued:
-                        return HubRemoteGenerateResult(
-                            ok: false,
-                            text: "",
-                            reasonCode: "grant_pending",
-                            logLines: logs
-                        )
+                        return failedGenerateResult(decoded: decoded, reason: "grant_pending")
                     case .denied:
-                        return HubRemoteGenerateResult(
-                            ok: false,
-                            text: "",
-                            reasonCode: grant.reasonCode ?? "grant_denied",
-                            logLines: logs
-                        )
+                        return failedGenerateResult(decoded: decoded, reason: grant.reasonCode ?? "grant_denied")
                     case .failed, .approved:
-                        return HubRemoteGenerateResult(
-                            ok: false,
-                            text: "",
-                            reasonCode: grant.reasonCode ?? reason,
-                            logLines: logs
-                        )
+                        return failedGenerateResult(decoded: decoded, reason: grant.reasonCode ?? reason)
                     }
                 }
             }
 
-            return HubRemoteGenerateResult(
-                ok: false,
-                text: "",
-                reasonCode: reason,
-                logLines: logs
-            )
+            return failedGenerateResult(decoded: decoded, reason: reason)
         }
 
         guard let success = Self.successfulRemoteGenerateResult(
@@ -2019,11 +2015,9 @@ actor HubPairingCoordinator {
             fallbackModelId: modelId,
             logLines: logs
         ) else {
-            return HubRemoteGenerateResult(
-                ok: false,
-                text: "",
-                reasonCode: normalizedFailureReason(from: decoded, step: step, fallback: "remote_chat_empty_output"),
-                logLines: logs
+            return failedGenerateResult(
+                decoded: decoded,
+                reason: normalizedFailureReason(from: decoded, step: step, fallback: "remote_chat_empty_output")
             )
         }
 
@@ -2849,6 +2843,8 @@ actor HubPairingCoordinator {
         var scriptEnv = merged
         scriptEnv["XTERMINAL_PROJECT_MEMORY_PROJECT_ID"] = projectId
         scriptEnv["XTERMINAL_PROJECT_MEMORY_ITEMS_B64"] = itemsData.base64EncodedString()
+        scriptEnv["XTERMINAL_PROJECT_MEMORY_REQUEST_ID"] = "project_canonical_memory_\(UUID().uuidString.lowercased())"
+        scriptEnv["XTERMINAL_PROJECT_MEMORY_AUDIT_REF"] = "audit-memory-canonical-upsert-\(projectId)-\(Int(Date().timeIntervalSince1970 * 1000.0))"
 
         let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
         func runScript() -> StepOutput {
@@ -2890,9 +2886,17 @@ actor HubPairingCoordinator {
             ?? nonEmpty(decoded.reason)
             ?? nonEmpty(decoded.errorMessage)
             ?? ((decoded.ok ?? false) ? nil : "remote_project_canonical_memory_upsert_failed")
+        let auditRefs = orderedUniqueNonEmptyStrings([decoded.auditRef] + (decoded.auditRefs ?? []))
+        let evidenceRefs = orderedUniqueNonEmptyStrings([decoded.evidenceRef] + (decoded.evidenceRefs ?? []))
+        let writebackRefs = orderedUniqueNonEmptyStrings([decoded.writebackRef] + (decoded.writebackRefs ?? []))
 
         return HubRemoteMutationResult(
             ok: decoded.ok ?? false,
+            source: nonEmpty(decoded.source) ?? "hub_memory_v1_grpc",
+            auditRefs: auditRefs,
+            evidenceRefs: evidenceRefs,
+            writebackRefs: writebackRefs,
+            updatedAtMs: decoded.updatedAtMs,
             reasonCode: reason?.replacingOccurrences(of: " ", with: "_"),
             logLines: logs
         )
@@ -2941,6 +2945,8 @@ actor HubPairingCoordinator {
 
         var scriptEnv = merged
         scriptEnv["XTERMINAL_DEVICE_MEMORY_ITEMS_B64"] = itemsData.base64EncodedString()
+        scriptEnv["XTERMINAL_DEVICE_MEMORY_REQUEST_ID"] = "device_canonical_memory_\(UUID().uuidString.lowercased())"
+        scriptEnv["XTERMINAL_DEVICE_MEMORY_AUDIT_REF"] = "audit-memory-canonical-upsert-device-\(Int(Date().timeIntervalSince1970 * 1000.0))"
 
         let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
         func runScript() -> StepOutput {
@@ -2982,9 +2988,17 @@ actor HubPairingCoordinator {
             ?? nonEmpty(decoded.reason)
             ?? nonEmpty(decoded.errorMessage)
             ?? ((decoded.ok ?? false) ? nil : "remote_device_canonical_memory_upsert_failed")
+        let auditRefs = orderedUniqueNonEmptyStrings([decoded.auditRef] + (decoded.auditRefs ?? []))
+        let evidenceRefs = orderedUniqueNonEmptyStrings([decoded.evidenceRef] + (decoded.evidenceRefs ?? []))
+        let writebackRefs = orderedUniqueNonEmptyStrings([decoded.writebackRef] + (decoded.writebackRefs ?? []))
 
         return HubRemoteMutationResult(
             ok: decoded.ok ?? false,
+            source: nonEmpty(decoded.source) ?? "hub_memory_v1_grpc",
+            auditRefs: auditRefs,
+            evidenceRefs: evidenceRefs,
+            writebackRefs: writebackRefs,
+            updatedAtMs: decoded.updatedAtMs,
             reasonCode: reason?.replacingOccurrences(of: " ", with: "_"),
             logLines: logs
         )
@@ -7192,6 +7206,8 @@ actor HubPairingCoordinator {
         var runtimeProvider: String?
         var executionPath: String?
         var fallbackReasonCode: String?
+        var auditRef: String?
+        var denyCode: String?
         var reason: String?
         var errorCode: String?
         var errorMessage: String?
@@ -7208,6 +7224,8 @@ actor HubPairingCoordinator {
             case runtimeProvider = "runtime_provider"
             case executionPath = "execution_path"
             case fallbackReasonCode = "fallback_reason_code"
+            case auditRef = "audit_ref"
+            case denyCode = "deny_code"
             case reason
             case errorCode = "error_code"
             case errorMessage = "error_message"
@@ -7237,6 +7255,8 @@ actor HubPairingCoordinator {
             runtimeProvider: cleaned(decoded.runtimeProvider),
             executionPath: cleaned(decoded.executionPath),
             fallbackReasonCode: cleaned(decoded.fallbackReasonCode),
+            auditRef: cleaned(decoded.auditRef),
+            denyCode: cleaned(decoded.denyCode),
             promptTokens: decoded.promptTokens,
             completionTokens: decoded.completionTokens,
             reasonCode: nil,
@@ -7486,15 +7506,31 @@ actor HubPairingCoordinator {
 
     private struct RemoteMutationScriptResult: Codable {
         var ok: Bool?
+        var source: String?
         var reason: String?
         var errorCode: String?
         var errorMessage: String?
+        var auditRef: String?
+        var evidenceRef: String?
+        var writebackRef: String?
+        var auditRefs: [String]?
+        var evidenceRefs: [String]?
+        var writebackRefs: [String]?
+        var updatedAtMs: Int64?
 
         enum CodingKeys: String, CodingKey {
             case ok
+            case source
             case reason
             case errorCode = "error_code"
             case errorMessage = "error_message"
+            case auditRef = "audit_ref"
+            case evidenceRef = "evidence_ref"
+            case writebackRef = "writeback_ref"
+            case auditRefs = "audit_refs"
+            case evidenceRefs = "evidence_refs"
+            case writebackRefs = "writeback_refs"
+            case updatedAtMs = "updated_at_ms"
         }
     }
 
@@ -9183,10 +9219,24 @@ async function main() {
   if (errPayload) {
     const code = safe(errPayload.code || '');
     const message = safe(errPayload.message || '');
+    const routeError = streamResult?.error || {};
+    const denyCode = safe(routeError.deny_code || errPayload.deny_code || code || '');
+    const auditRef = safe(routeError.audit_ref || errPayload.audit_ref || '');
+    const runtimeProvider = safe(routeError.runtime_provider || '');
+    const executionPath = safe(routeError.execution_path || 'remote_error');
+    const fallbackReasonCode = safe(routeError.fallback_reason_code || denyCode || code || '');
+    const actualModelId = safe(routeError.model_id || streamResult?.model_id || modelId);
     out({
       ok: false,
       text: '',
-      model_id: streamResult?.model_id || modelId,
+      model_id: actualModelId || modelId,
+      requested_model_id: modelId,
+      actual_model_id: actualModelId || modelId,
+      runtime_provider: runtimeProvider,
+      execution_path: executionPath,
+      fallback_reason_code: fallbackReasonCode,
+      audit_ref: auditRef,
+      deny_code: denyCode,
       reason: code || message || 'remote_chat_failed',
       error_code: code || message || 'remote_chat_failed',
       error_message: message || code || 'remote_chat_failed',
@@ -9197,10 +9247,23 @@ async function main() {
   const done = streamResult?.done || null;
   if (done && done.ok === false) {
     const reason = safe(done.reason || 'remote_chat_failed') || 'remote_chat_failed';
+    const denyCode = safe(done.deny_code || reason || '');
+    const auditRef = safe(done.audit_ref || '');
+    const runtimeProvider = safe(done.runtime_provider || '');
+    const executionPath = safe(done.execution_path || 'remote_error');
+    const fallbackReasonCode = safe(done.fallback_reason_code || denyCode || reason || '');
+    const actualModelId = safe(done.actual_model_id || streamResult?.model_id || modelId);
     out({
       ok: false,
       text: '',
-      model_id: streamResult?.model_id || modelId,
+      model_id: actualModelId || modelId,
+      requested_model_id: modelId,
+      actual_model_id: actualModelId || modelId,
+      runtime_provider: runtimeProvider,
+      execution_path: executionPath,
+      fallback_reason_code: fallbackReasonCode,
+      audit_ref: auditRef,
+      deny_code: denyCode,
       reason,
       error_code: reason,
       error_message: reason,
@@ -9212,18 +9275,25 @@ async function main() {
   const promptTokens = Number(usage.prompt_tokens || 0) || 0;
   const completionTokens = Number(usage.completion_tokens || 0) || 0;
   const totalTokens = Number(usage.total_tokens || 0) || (promptTokens + completionTokens);
-  const actualModelId = safe(streamResult?.model_id || modelId);
+  const actualModelId = safe(done?.actual_model_id || streamResult?.model_id || modelId);
   const execution = buildExecutionDescriptor(models, modelId, actualModelId);
+  const runtimeProvider = safe(done?.runtime_provider || execution.runtime_provider);
+  const executionPath = safe(done?.execution_path || execution.execution_path);
+  const fallbackReasonCode = safe(done?.fallback_reason_code || execution.fallback_reason_code || '');
+  const auditRef = safe(done?.audit_ref || '');
+  const denyCode = safe(done?.deny_code || '');
 
   out({
     ok: done ? done.ok !== false : true,
     text: asText(streamResult?.assistantText || ''),
     model_id: actualModelId || modelId,
     requested_model_id: execution.requested_model_id,
-    actual_model_id: execution.actual_model_id,
-    runtime_provider: execution.runtime_provider,
-    execution_path: execution.execution_path,
-    fallback_reason_code: execution.fallback_reason_code,
+    actual_model_id: actualModelId || execution.actual_model_id,
+    runtime_provider: runtimeProvider,
+    execution_path: executionPath,
+    fallback_reason_code: fallbackReasonCode,
+    audit_ref: auditRef,
+    deny_code: denyCode,
     reason: safe(done?.reason || 'eos') || 'eos',
     prompt_tokens: promptTokens,
     completion_tokens: completionTokens,
@@ -9789,6 +9859,8 @@ async function upsert(memoryClient, md, client, key, value) {
         key,
         value,
         pinned: false,
+        request_id: safe(process.env.XTERMINAL_PROJECT_MEMORY_REQUEST_ID || ''),
+        audit_ref: safe(process.env.XTERMINAL_PROJECT_MEMORY_AUDIT_REF || ''),
       },
       md,
       (err, out) => {
@@ -11665,6 +11737,8 @@ async function upsert(memoryClient, md, client, key, value) {
 async function main() {
   const projectId = safe(process.env.XTERMINAL_PROJECT_MEMORY_PROJECT_ID || process.env.HUB_PROJECT_ID || '');
   if (!projectId) throw new Error('project_id_empty');
+  const requestId = safe(process.env.XTERMINAL_PROJECT_MEMORY_REQUEST_ID || `project_canonical_memory_${Date.now()}`);
+  const batchAuditRef = safe(process.env.XTERMINAL_PROJECT_MEMORY_AUDIT_REF || `audit-memory-canonical-upsert-${requestId}`);
 
   const encoded = safe(process.env.XTERMINAL_PROJECT_MEMORY_ITEMS_B64 || '');
   if (!encoded) throw new Error('project_memory_items_missing');
@@ -11693,21 +11767,44 @@ async function main() {
   const { creds, options } = await makeClientCreds();
   const memoryClient = new proto.HubMemory(addr, creds, options);
   const md = metadataFromEnv();
+  const auditRefs = [];
+  const evidenceRefs = [];
+  const writebackRefs = [];
+  let updatedAtMs = 0;
 
   for (const row of items) {
     const key = safe(row?.key || '');
     const value = safe(row?.value || '');
     if (!key || !value) continue;
-    await upsert(memoryClient, md, client, key, value);
+    const response = await upsert(memoryClient, md, client, key, value);
+    const auditRef = safe(response?.audit_ref || batchAuditRef);
+    const evidenceRef = safe(response?.evidence_ref || '');
+    const writebackRef = safe(response?.writeback_ref || '');
+    const itemUpdatedAtMs = Number(response?.item?.updated_at_ms || 0);
+    if (auditRef) auditRefs.push(auditRef);
+    if (evidenceRef) evidenceRefs.push(evidenceRef);
+    if (writebackRef) writebackRefs.push(writebackRef);
+    if (Number.isFinite(itemUpdatedAtMs) && itemUpdatedAtMs > updatedAtMs) {
+      updatedAtMs = itemUpdatedAtMs;
+    }
   }
 
-  out({ ok: true });
+  out({
+    ok: true,
+    source: 'hub_memory_v1_grpc',
+    audit_ref: batchAuditRef,
+    audit_refs: Array.from(new Set(auditRefs)),
+    evidence_refs: Array.from(new Set(evidenceRefs)),
+    writeback_refs: Array.from(new Set(writebackRefs)),
+    updated_at_ms: updatedAtMs,
+  });
 }
 
 main().catch((err) => {
   const msg = safe(err?.message || err);
   out({
     ok: false,
+    source: 'hub_memory_v1_grpc',
     error_code: msg || 'remote_project_canonical_memory_upsert_failed',
     error_message: msg || 'remote_project_canonical_memory_upsert_failed',
   });
@@ -11806,6 +11903,8 @@ async function upsert(memoryClient, md, client, key, value) {
         key,
         value,
         pinned: false,
+        request_id: safe(process.env.XTERMINAL_DEVICE_MEMORY_REQUEST_ID || ''),
+        audit_ref: safe(process.env.XTERMINAL_DEVICE_MEMORY_AUDIT_REF || ''),
       },
       md,
       (err, out) => {
@@ -11817,6 +11916,8 @@ async function upsert(memoryClient, md, client, key, value) {
 }
 
 async function main() {
+  const requestId = safe(process.env.XTERMINAL_DEVICE_MEMORY_REQUEST_ID || `device_canonical_memory_${Date.now()}`);
+  const batchAuditRef = safe(process.env.XTERMINAL_DEVICE_MEMORY_AUDIT_REF || `audit-memory-canonical-upsert-${requestId}`);
   const encoded = safe(process.env.XTERMINAL_DEVICE_MEMORY_ITEMS_B64 || '');
   if (!encoded) throw new Error('device_canonical_memory_items_missing');
 
@@ -11842,21 +11943,44 @@ async function main() {
   const memoryClient = new proto.HubMemory(addr, creds, options);
   const md = metadataFromEnv();
   const client = reqClientFromEnv();
+  const auditRefs = [];
+  const evidenceRefs = [];
+  const writebackRefs = [];
+  let updatedAtMs = 0;
 
   for (const row of items) {
     const key = safe(row?.key || '');
     const value = safe(row?.value || '');
     if (!key || !value) continue;
-    await upsert(memoryClient, md, client, key, value);
+    const response = await upsert(memoryClient, md, client, key, value);
+    const auditRef = safe(response?.audit_ref || batchAuditRef);
+    const evidenceRef = safe(response?.evidence_ref || '');
+    const writebackRef = safe(response?.writeback_ref || '');
+    const itemUpdatedAtMs = Number(response?.item?.updated_at_ms || 0);
+    if (auditRef) auditRefs.push(auditRef);
+    if (evidenceRef) evidenceRefs.push(evidenceRef);
+    if (writebackRef) writebackRefs.push(writebackRef);
+    if (Number.isFinite(itemUpdatedAtMs) && itemUpdatedAtMs > updatedAtMs) {
+      updatedAtMs = itemUpdatedAtMs;
+    }
   }
 
-  out({ ok: true });
+  out({
+    ok: true,
+    source: 'hub_memory_v1_grpc',
+    audit_ref: batchAuditRef,
+    audit_refs: Array.from(new Set(auditRefs)),
+    evidence_refs: Array.from(new Set(evidenceRefs)),
+    writeback_refs: Array.from(new Set(writebackRefs)),
+    updated_at_ms: updatedAtMs,
+  });
 }
 
 main().catch((err) => {
   const msg = safe(err?.message || err);
   out({
     ok: false,
+    source: 'hub_memory_v1_grpc',
     error_code: msg || 'remote_device_canonical_memory_upsert_failed',
     error_message: msg || 'remote_device_canonical_memory_upsert_failed',
   });
@@ -16349,6 +16473,18 @@ main().catch((err) => {
         guard let text else { return nil }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func orderedUniqueNonEmptyStrings(_ values: [String?]) -> [String] {
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for value in values {
+            guard let normalized = nonEmpty(value) else { continue }
+            let dedupeKey = normalized.lowercased()
+            guard seen.insert(dedupeKey).inserted else { continue }
+            ordered.append(normalized)
+        }
+        return ordered
     }
 
     private func normalizePort(_ raw: String?) -> Int? {

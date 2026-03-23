@@ -163,12 +163,14 @@ struct SupervisorXTReadyIncidentPresentationTests {
                 headline: "Hub-managed local service is unreachable",
                 detailLines: [
                     "managed_service_ready_count=0",
+                    "current_target=bge-small provider=transformers load_summary=ctx=8192 · ttl=600s · par=2 · id=diag-a",
                     "provider=local-chat service_state=unreachable ready=0 runtime_reason=xhub_local_service_unreachable endpoint=http://127.0.0.1:50171 execution_mode=xhub_local_service loaded_instances=0 queued=2"
                 ],
                 nextStep: "Start xhub_local_service or fix the configured endpoint, then refresh diagnostics.",
                 actionCategory: "inspect_health_payload",
                 installHint: "Inspect the local /health payload and stderr log to confirm why xhub_local_service never reached ready.",
-                recommendedAction: "Inspect the local /health payload | Open Hub Diagnostics and compare /health with stderr."
+                recommendedAction: "Inspect the local /health payload | Open Hub Diagnostics and compare /health with stderr.",
+                loadConfigSummaryLine: "current_target=bge-small provider=transformers load_summary=ctx=8192 · ttl=600s · par=2 · id=diag-a"
             ),
             status: "strict_risk:hub_runtime:xhub_local_service_unreachable",
             reportPath: "/tmp/xt-ready.json"
@@ -180,6 +182,11 @@ struct SupervisorXTReadyIncidentPresentationTests {
         #expect(presentation.hubRuntimeLine?.text == "Hub 运行时：阻塞 · xhub_local_service_unreachable")
         #expect(presentation.hubRuntimeLine?.tone == .danger)
         #expect(presentation.hubRuntimeIssueLine?.text == "Hub 运行时问题：Hub-managed local service is unreachable")
+        #expect(
+            presentation.hubRuntimeLoadConfigLine?.text ==
+                "Hub 运行时加载配置：current_target=bge-small provider=transformers load_summary=ctx=8192 · ttl=600s · par=2 · id=diag-a"
+        )
+        #expect(presentation.hubRuntimeLoadConfigLine?.isSelectable == true)
         #expect(
             presentation.hubRuntimeDetailLine?.text ==
                 "Hub 运行时详情：managed_service_ready_count=0 || provider=local-chat service_state=unreachable ready=0 runtime_reason=xhub_local_service_unreachable endpoint=http://127.0.0.1:50171 execution_mode=xhub_local_service loaded_instances=0 queued=2"

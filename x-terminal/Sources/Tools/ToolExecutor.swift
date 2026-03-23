@@ -1652,6 +1652,8 @@ content_type=\(res.contentType)
         )
 
         let memorySource = response?.source ?? (localMemory == nil ? "unavailable" : "local_overlay_only")
+        let memorySourceLabel = XTMemorySourceTruthPresentation.label(memorySource)
+        let memorySourceClass = XTMemorySourceTruthPresentation.sourceClass(memorySource)
         var summary: [String: JSONValue] = [
             "tool": .string(ToolName.memory_snapshot.rawValue),
             "ok": .bool(true),
@@ -1660,6 +1662,8 @@ content_type=\(res.contentType)
             "analysis_profile": .string("self_improvement"),
             "focus": .string(focus),
             "source": .string(memorySource),
+            "source_label": .string(memorySourceLabel),
+            "source_class": .string(memorySourceClass),
             "resolved_mode": response?.resolvedMode.map(JSONValue.string) ?? .null,
             "resolved_profile": response?.resolvedProfile.map(JSONValue.string) ?? .null,
             "longterm_mode": response?.longtermMode.map(JSONValue.string) ?? .null,
@@ -1692,7 +1696,7 @@ content_type=\(res.contentType)
         if !focus.isEmpty {
             lines.append("focus: \(focus)")
         }
-        var memoryLine = "memory: \(memorySource)"
+        var memoryLine = "memory: \(memorySourceLabel)"
         if let freshness = response?.freshness?.trimmingCharacters(in: .whitespacesAndNewlines),
            !freshness.isEmpty {
             memoryLine += " (freshness=\(freshness))"

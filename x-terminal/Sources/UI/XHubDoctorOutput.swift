@@ -93,6 +93,7 @@ struct XHubDoctorOutputCheckResult: Identifiable, Codable, Equatable, Sendable {
     var projectContextSummary: XHubDoctorOutputProjectContextSummary?
     var memoryRouteTruthSnapshot: XHubDoctorOutputMemoryRouteTruthSnapshot?
     var durableCandidateMirrorSnapshot: XHubDoctorOutputDurableCandidateMirrorSnapshot?
+    var localStoreWriteSnapshot: XHubDoctorOutputLocalStoreWriteSnapshot?
     var observedAtMs: Int64
 
     var id: String { checkID }
@@ -111,7 +112,8 @@ struct XHubDoctorOutputCheckResult: Identifiable, Codable, Equatable, Sendable {
         projectContextSummary: XHubDoctorOutputProjectContextSummary? = nil,
         observedAtMs: Int64,
         memoryRouteTruthSnapshot: XHubDoctorOutputMemoryRouteTruthSnapshot? = nil,
-        durableCandidateMirrorSnapshot: XHubDoctorOutputDurableCandidateMirrorSnapshot? = nil
+        durableCandidateMirrorSnapshot: XHubDoctorOutputDurableCandidateMirrorSnapshot? = nil,
+        localStoreWriteSnapshot: XHubDoctorOutputLocalStoreWriteSnapshot? = nil
     ) {
         self.checkID = checkID
         self.checkKind = checkKind
@@ -126,6 +128,7 @@ struct XHubDoctorOutputCheckResult: Identifiable, Codable, Equatable, Sendable {
         self.projectContextSummary = projectContextSummary
         self.memoryRouteTruthSnapshot = memoryRouteTruthSnapshot
         self.durableCandidateMirrorSnapshot = durableCandidateMirrorSnapshot
+        self.localStoreWriteSnapshot = localStoreWriteSnapshot
         self.observedAtMs = observedAtMs
     }
 
@@ -143,6 +146,7 @@ struct XHubDoctorOutputCheckResult: Identifiable, Codable, Equatable, Sendable {
         case projectContextSummary = "project_context_summary"
         case memoryRouteTruthSnapshot = "memory_route_truth_snapshot"
         case durableCandidateMirrorSnapshot = "durable_candidate_mirror_snapshot"
+        case localStoreWriteSnapshot = "local_store_write_snapshot"
         case observedAtMs = "observed_at_ms"
     }
 }
@@ -160,6 +164,18 @@ struct XHubDoctorOutputDurableCandidateMirrorSnapshot: Codable, Equatable, Senda
         case attempted
         case errorCode = "error_code"
         case localStoreRole = "local_store_role"
+    }
+}
+
+struct XHubDoctorOutputLocalStoreWriteSnapshot: Codable, Equatable, Sendable {
+    var personalMemoryIntent: String?
+    var crossLinkIntent: String?
+    var personalReviewIntent: String?
+
+    enum CodingKeys: String, CodingKey {
+        case personalMemoryIntent = "personal_memory_intent"
+        case crossLinkIntent = "cross_link_intent"
+        case personalReviewIntent = "personal_review_intent"
     }
 }
 
@@ -531,9 +547,79 @@ struct XHubLocalServiceRecoveryGuidanceReport: Codable, Equatable, Sendable {
     }
 }
 
+struct XHubLocalRuntimeMonitorCurrentTargetEvidence: Codable, Equatable, Sendable {
+    var modelID: String
+    var modelName: String
+    var providerID: String
+    var uiSummary: String
+    var technicalSummary: String
+    var loadSummary: String
+
+    enum CodingKeys: String, CodingKey {
+        case modelID = "model_id"
+        case modelName = "model_name"
+        case providerID = "provider_id"
+        case uiSummary = "ui_summary"
+        case technicalSummary = "technical_summary"
+        case loadSummary = "load_summary"
+    }
+}
+
+struct XHubLocalRuntimeMonitorLoadedInstanceEvidence: Codable, Equatable, Sendable {
+    var providerID: String
+    var modelID: String
+    var modelName: String
+    var loadSummary: String
+    var detailSummary: String
+    var currentTargetSummary: String
+
+    enum CodingKeys: String, CodingKey {
+        case providerID = "provider_id"
+        case modelID = "model_id"
+        case modelName = "model_name"
+        case loadSummary = "load_summary"
+        case detailSummary = "detail_summary"
+        case currentTargetSummary = "current_target_summary"
+    }
+}
+
+struct XHubLocalRuntimeMonitorOperationsReport: Codable, Equatable, Sendable {
+    var runtimeSummary: String
+    var queueSummary: String
+    var loadedSummary: String
+    var currentTargets: [XHubLocalRuntimeMonitorCurrentTargetEvidence]
+    var loadedInstances: [XHubLocalRuntimeMonitorLoadedInstanceEvidence]
+
+    enum CodingKeys: String, CodingKey {
+        case runtimeSummary = "runtime_summary"
+        case queueSummary = "queue_summary"
+        case loadedSummary = "loaded_summary"
+        case currentTargets = "current_targets"
+        case loadedInstances = "loaded_instances"
+    }
+}
+
+struct XHubLocalRuntimeMonitorSnapshotReport: Codable, Equatable, Sendable {
+    var schemaVersion: String
+    var generatedAtMs: Int64
+    var statusSource: String
+    var runtimeAlive: Bool
+    var monitorSummary: String
+    var runtimeOperations: XHubLocalRuntimeMonitorOperationsReport?
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case generatedAtMs = "generated_at_ms"
+        case statusSource = "status_source"
+        case runtimeAlive = "runtime_alive"
+        case monitorSummary = "monitor_summary"
+        case runtimeOperations = "runtime_operations"
+    }
+}
+
 struct XHubDoctorOutputReport: Codable, Equatable, Sendable {
     static let currentSchemaVersion = "xhub.doctor_output.v1"
-    static let currentContractVersion = "2026-03-22"
+    static let currentContractVersion = "2026-03-23"
 
     var schemaVersion: String
     var contractVersion: String
@@ -611,6 +697,7 @@ struct XHubDoctorOutputReport: Codable, Equatable, Sendable {
 enum XHubDoctorOutputStore {
     private static let hubReportFileName = "xhub_doctor_output_hub.json"
     private static let hubLocalServiceSnapshotFileName = "xhub_local_service_snapshot.redacted.json"
+    private static let hubLocalRuntimeMonitorSnapshotFileName = "local_runtime_monitor_snapshot.redacted.json"
     private static let hubLocalServiceRecoveryGuidanceFileName =
         "xhub_local_service_recovery_guidance.redacted.json"
 
@@ -627,6 +714,10 @@ enum XHubDoctorOutputStore {
 
     static func defaultHubLocalServiceSnapshotURL(baseDir: URL = HubPaths.baseDir()) -> URL {
         baseDir.appendingPathComponent(hubLocalServiceSnapshotFileName)
+    }
+
+    static func defaultHubLocalRuntimeMonitorSnapshotURL(baseDir: URL = HubPaths.baseDir()) -> URL {
+        baseDir.appendingPathComponent(hubLocalRuntimeMonitorSnapshotFileName)
     }
 
     static func defaultHubLocalServiceRecoveryGuidanceURL(baseDir: URL = HubPaths.baseDir()) -> URL {
@@ -646,6 +737,14 @@ enum XHubDoctorOutputStore {
         let url = defaultHubLocalServiceSnapshotURL(baseDir: baseDir)
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(XHubLocalServiceSnapshotReport.self, from: data)
+    }
+
+    static func loadHubLocalRuntimeMonitorSnapshot(
+        baseDir: URL = HubPaths.baseDir()
+    ) -> XHubLocalRuntimeMonitorSnapshotReport? {
+        let url = defaultHubLocalRuntimeMonitorSnapshotURL(baseDir: baseDir)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(XHubLocalRuntimeMonitorSnapshotReport.self, from: data)
     }
 
     static func loadHubLocalServiceRecoveryGuidance(
@@ -769,6 +868,49 @@ extension XHubLocalServiceRecoveryGuidanceReport {
     }
 }
 
+extension XHubLocalRuntimeMonitorSnapshotReport {
+    func preferredLoadConfigLine() -> String? {
+        if let target = runtimeOperations?.currentTargets.first {
+            let loadSummary = target.loadSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !loadSummary.isEmpty else { return nil }
+            let provider = target.providerID.trimmingCharacters(in: .whitespacesAndNewlines)
+            return "current_target=\(target.modelID) provider=\(provider.isEmpty ? "unknown" : provider) load_summary=\(loadSummary)"
+        }
+        if let instance = runtimeOperations?.loadedInstances.first {
+            let loadSummary = instance.loadSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !loadSummary.isEmpty else { return nil }
+            let provider = instance.providerID.trimmingCharacters(in: .whitespacesAndNewlines)
+            return "loaded_instance=\(instance.modelID) provider=\(provider.isEmpty ? "unknown" : provider) load_summary=\(loadSummary)"
+        }
+        return nil
+    }
+
+    func preferredDetailLines(limit: Int = 2) -> [String] {
+        var lines: [String] = []
+        let trimmedLoadedSummary = runtimeOperations?.loadedSummary.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmedLoadedSummary.isEmpty {
+            lines.append("runtime_loaded_summary=\(trimmedLoadedSummary)")
+        }
+        if let loadConfigLine = preferredLoadConfigLine() {
+            lines.append(loadConfigLine)
+        }
+
+        if lines.isEmpty {
+            let fallback = monitorSummary
+                .components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            lines.append(contentsOf: fallback.prefix(max(0, limit)))
+        }
+
+        var unique: [String] = []
+        for line in lines where !unique.contains(line) {
+            unique.append(line)
+        }
+        return Array(unique.prefix(max(0, limit)))
+    }
+}
+
 private extension XHubDoctorOutputSummary {
     init(headline: String, checks: [XHubDoctorOutputCheckResult]) {
         self.init(
@@ -798,7 +940,8 @@ private extension XHubDoctorOutputCheckResult {
             projectContextSummary: XHubDoctorOutputProjectContextSummary(section: section),
             observedAtMs: observedAtMs,
             memoryRouteTruthSnapshot: XHubDoctorOutputMemoryRouteTruthSnapshot(section: section),
-            durableCandidateMirrorSnapshot: XHubDoctorOutputDurableCandidateMirrorSnapshot(section: section)
+            durableCandidateMirrorSnapshot: XHubDoctorOutputDurableCandidateMirrorSnapshot(section: section),
+            localStoreWriteSnapshot: XHubDoctorOutputLocalStoreWriteSnapshot(section: section)
         )
     }
 }
@@ -889,6 +1032,32 @@ private extension XHubDoctorOutputDurableCandidateMirrorSnapshot {
             attempted: projection.attempted,
             errorCode: projection.errorCode,
             localStoreRole: projection.localStoreRole
+        )
+    }
+}
+
+private extension XHubDoctorOutputLocalStoreWriteSnapshot {
+    init?(section: XTUnifiedDoctorSection) {
+        guard section.kind == .sessionRuntimeReadiness else {
+            return nil
+        }
+        if let projection = section.localStoreWriteProjection {
+            self.init(projection)
+            return
+        }
+        guard let projection = XTUnifiedDoctorLocalStoreWriteProjection.from(
+            detailLines: section.detailLines
+        ) else {
+            return nil
+        }
+        self.init(projection)
+    }
+
+    init(_ projection: XTUnifiedDoctorLocalStoreWriteProjection) {
+        self.init(
+            personalMemoryIntent: projection.personalMemoryIntent,
+            crossLinkIntent: projection.crossLinkIntent,
+            personalReviewIntent: projection.personalReviewIntent
         )
     }
 }

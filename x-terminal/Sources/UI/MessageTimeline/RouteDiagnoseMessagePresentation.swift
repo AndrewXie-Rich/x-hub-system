@@ -58,6 +58,7 @@ enum RouteDiagnoseMessagePresentation {
 
         let message = normalizedModelId(guidance.recommendationText) ?? guidance.warningText
         return HubModelPickerRecommendationState(
+            kind: HubModelPickerRecommendationKind(guidance.recommendationKind),
             modelId: recommendedModelId,
             message: message
         )
@@ -67,7 +68,12 @@ enum RouteDiagnoseMessagePresentation {
         for recommendation: HubModelPickerRecommendationState,
         models: [HubModel]
     ) -> String {
-        "改用 \(displayLabel(for: recommendation.modelId, models: models))"
+        switch recommendation.kind {
+        case .continueWithoutSwitch:
+            return "固定成 \(displayLabel(for: recommendation.modelId, models: models))"
+        case .switchRecommended:
+            return "改用 \(displayLabel(for: recommendation.modelId, models: models))"
+        }
     }
 
     static func repairAction(
@@ -104,7 +110,7 @@ enum RouteDiagnoseMessagePresentation {
         case .reconnectHubAndDiagnose:
             return inProgress ? "重连中..." : "重连并重诊断"
         case .openChooseModel:
-            return "检查已加载远端"
+            return "检查 XT AI 模型"
         case .openHubRecovery:
             return "检查 Hub Recovery"
         case .openHubConnectionLog:
@@ -119,7 +125,7 @@ enum RouteDiagnoseMessagePresentation {
         case .reconnectHubAndDiagnose:
             return "这更像是远端链路或 runtime 状态异常。先重连，再自动重跑一次当前项目的路由诊断。"
         case .openChooseModel:
-            return "这更像是目标远端模型没加载，或当前配置还不在可直接执行的列表里。先到 Choose Model 检查已加载远端。"
+            return "这更像是目标远端模型没加载，或当前配置还不在可直接执行的列表里。先到 XT AI 模型看当前真实可执行模型；只有你想固定当前配置时，再手动切。"
         case .openHubRecovery:
             return "这更像是 Hub 的 remote export gate、配额或恢复链路拦住了 paid 路由。先到 Hub Recovery 看失败码和修复提示。"
         case .openHubConnectionLog:
@@ -134,11 +140,22 @@ enum RouteDiagnoseMessagePresentation {
     ) -> XTSectionFocusContext? {
         switch action {
         case .openChooseModel:
+            let fallback: String
+            if let recommendation {
+                switch recommendation.kind {
+                case .continueWithoutSwitch:
+                    fallback = "优先确认目标远端是否已经 loaded；如果你只是继续推进，不用手动切模型，XT 会先自动改试上次稳定远端。只有想把它固定成当前配置时，再手动切。"
+                case .switchRecommended:
+                    fallback = "优先确认目标远端是否已经 loaded；如果你现在就要继续，也可以直接固定推荐模型，避免这轮再掉本地。"
+                }
+            } else {
+                fallback = "优先确认目标远端是否已经 loaded；这里只展示当前真实可执行模型，只有要固定当前配置时，再手动切。"
+            }
             return XTSectionFocusContext(
-                title: "路由诊断：检查已加载远端",
+                title: "路由诊断：检查 XT AI 模型",
                 detail: focusDetail(
                     latestEvent: latestEvent,
-                    fallback: "优先确认目标远端是否已经 loaded；如果只是想先继续，改到一个已加载远端更稳。"
+                    fallback: fallback
                 )
             )
         case .openHubRecovery:
@@ -178,10 +195,10 @@ enum RouteDiagnoseMessagePresentation {
         latestEvent: AXModelRouteDiagnosticEvent?
     ) -> XTSectionFocusContext {
         XTSectionFocusContext(
-            title: "路由诊断：检查 coder 模型设置",
+            title: "路由诊断：检查 AI 模型页签",
             detail: focusDetail(
                 latestEvent: latestEvent,
-                fallback: "如果你想固定当前项目的 coder 默认模型，可在这里直接切换。"
+                fallback: "如果你想固定当前项目的 coder 默认模型，可在这里直接切换；这里拿到的是 Hub 当前真实可用视图。"
             )
         )
     }
@@ -280,8 +297,8 @@ enum RouteDiagnoseMessagePresentation {
         switch action {
         case .openChooseModel:
             return XTSettingsChangeNotice(
-                title: "已打开 Choose Model",
-                detail: "先确认目标远端是否已经 loaded；如果只是想继续推进，先切到一个已加载候选最稳。"
+                title: "已打开 XT AI 模型",
+                detail: "先确认目标远端是否已经 loaded；这里展示的是当前真实可执行模型，如果你只是继续推进，不一定需要立刻手动切模型。"
             )
         case .openHubRecovery:
             return XTSettingsChangeNotice(
@@ -300,8 +317,8 @@ enum RouteDiagnoseMessagePresentation {
 
     static func modelSettingsOpenedNotice() -> XTSettingsChangeNotice {
         XTSettingsChangeNotice(
-            title: "已打开 coder 模型设置",
-            detail: "先确认当前项目 override 和全局默认是不是一致；如果目标模型没 loaded，运行时仍可能回退到本地。"
+            title: "已打开 Supervisor Control Center · AI 模型",
+            detail: "先确认当前项目 override 和全局默认是不是一致；这里展示的是 Hub 当前真实可用模型视图，如果目标模型没 loaded，运行时仍可能回退到本地。"
         )
     }
 
@@ -372,20 +389,10 @@ enum RouteDiagnoseMessagePresentation {
         latestEvent: AXModelRouteDiagnosticEvent?,
         fallback: String
     ) -> String {
-        guard let latestEvent else { return fallback }
-
-        var parts: [String] = []
-        if let requested = normalizedModelId(latestEvent.requestedModelId) {
-            parts.append("requested=\(requested)")
-        }
-        if let actual = normalizedModelId(latestEvent.actualModelId) {
-            parts.append("actual=\(actual)")
-        }
-        if let reason = normalizedModelId(latestEvent.fallbackReasonCode) {
-            parts.append("reason=\(reason)")
-        }
-        let summary = parts.joined(separator: "；")
-        return summary.isEmpty ? fallback : "\(summary)。\(fallback)"
+        XTRouteTruthPresentation.focusDetail(
+            latestEvent: latestEvent,
+            fallback: fallback
+        )
     }
 
     private static func shouldOfferConnectivityRepair(

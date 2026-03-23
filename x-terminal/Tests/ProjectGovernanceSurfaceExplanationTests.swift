@@ -38,7 +38,7 @@ struct ProjectGovernanceSurfaceExplanationTests {
         )
 
         #expect(ui.policyReason == AXProjectGovernanceClampKind.clampGuided.rawValue)
-        #expect(ui.summary.contains("Hub clamp_guided"))
+        #expect(ui.summary.contains("Hub 已把执行面收回到浏览器受控状态"))
         #expect(guardrail.summary.contains("guided runtime surface"))
     }
 
@@ -47,8 +47,8 @@ struct ProjectGovernanceSurfaceExplanationTests {
         let manual = xtProjectRuntimeSurfaceExplanation(mode: .manual, style: .uiChinese)
         let guided = xtProjectRuntimeSurfaceExplanation(mode: .guided, style: .guardrailEnglish)
 
-        #expect(manual.contains("runtime surface"))
-        #expect(!manual.contains("Manual 是最保守执行面"))
+        #expect(manual.contains("最保守执行面"))
+        #expect(!manual.contains("runtime surface"))
         #expect(guided.contains("guided runtime surface"))
         #expect(!guided.contains("guided mode"))
     }

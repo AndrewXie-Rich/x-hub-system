@@ -43,6 +43,25 @@ struct SupervisorMemoryAssemblySnapshot: Equatable, Codable, Sendable {
     var durableCandidateMirrorAttempted: Bool = false
     var durableCandidateMirrorErrorCode: String? = nil
     var durableCandidateLocalStoreRole: String = XTSupervisorDurableCandidateMirror.localStoreRole
+    var localPersonalMemoryWriteIntent: String? = nil
+    var localCrossLinkWriteIntent: String? = nil
+    var localPersonalReviewWriteIntent: String? = nil
+
+    var sourceLabel: String {
+        XTMemorySourceTruthPresentation.label(source)
+    }
+
+    var sourceClass: String {
+        XTMemorySourceTruthPresentation.sourceClass(source)
+    }
+
+    var rawWindowSourceLabel: String {
+        XTMemorySourceTruthPresentation.label(rawWindowSource)
+    }
+
+    var rawWindowSourceClass: String {
+        XTMemorySourceTruthPresentation.sourceClass(rawWindowSource)
+    }
 
     var statusLine: String {
         var parts = [
@@ -108,6 +127,9 @@ struct SupervisorMemoryAssemblySnapshot: Equatable, Codable, Sendable {
             }
             parts.append(mirror)
         }
+        if let localStoreWriteLine {
+            parts.append(localStoreWriteLine)
+        }
         return parts.joined(separator: " · ")
     }
 
@@ -132,6 +154,11 @@ struct SupervisorMemoryAssemblySnapshot: Equatable, Codable, Sendable {
             summary += " truncated_after_floor=true"
         }
         lines.append(summary)
+        lines.append("continuity_source_label=\(rawWindowSourceLabel)")
+        lines.append("continuity_source_class=\(rawWindowSourceClass)")
+        lines.append("memory_source=\(source)")
+        lines.append("memory_source_label=\(sourceLabel)")
+        lines.append("memory_source_class=\(sourceClass)")
         lines.append(contentsOf: continuityTraceLines.prefix(3))
         if !lowSignalDropSampleLines.isEmpty {
             lines.append("low_signal_samples: \(lowSignalDropSampleLines.prefix(3).joined(separator: " | "))")
@@ -149,6 +176,19 @@ struct SupervisorMemoryAssemblySnapshot: Equatable, Codable, Sendable {
             }
             lines.append(mirrorLine)
         }
+        if let localStoreWriteLine {
+            lines.append(localStoreWriteLine)
+        }
         return lines
+    }
+
+    private var localStoreWriteLine: String? {
+        let parts = [
+            localPersonalMemoryWriteIntent.map { "personal_memory=\($0)" },
+            localCrossLinkWriteIntent.map { "cross_link=\($0)" },
+            localPersonalReviewWriteIntent.map { "personal_review=\($0)" }
+        ].compactMap { $0 }
+        guard !parts.isEmpty else { return nil }
+        return "xt_local_store_writes " + parts.joined(separator: " ")
     }
 }

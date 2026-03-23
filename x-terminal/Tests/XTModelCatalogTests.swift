@@ -144,7 +144,13 @@ struct XTModelCatalogTests {
               "model_path": "/models/glm",
               "model_format": "hf_transformers",
               "default_load_profile": {
-                "context_length": 4096
+                "context_length": 4096,
+                "ttl": 900,
+                "parallel": 2,
+                "identifier": "vision-a",
+                "vision": {
+                  "image_max_dimension": 3072
+                }
               },
               "task_kinds": ["vision_understand", "ocr"],
               "input_modalities": ["image"],
@@ -176,6 +182,13 @@ struct XTModelCatalogTests {
         #expect(model.modelFormat == "hf_transformers")
         #expect(model.hubDefaultContextLength == 4096)
         #expect(model.hubMaxContextLength == 65536)
+        #expect(model.defaultLoadProfile?.ttl == 900)
+        #expect(model.defaultLoadProfile?.parallel == 2)
+        #expect(model.defaultLoadProfile?.identifier == "vision-a")
+        #expect(model.defaultLoadProfile?.vision?.imageMaxDimension == 3072)
+        #expect(model.defaultLoadConfigSummaryLine == "ctx 4096 · ttl 900s · par 2 · id vision-a · vision 3072px")
+        #expect(model.defaultLoadConfigDisplayLine == "默认加载配置：ctx 4096 · ttl 900s · par 2 · id vision-a · vision 3072px")
+        #expect(model.localLoadConfigLimitLine == "本地加载上限：ctx 65536")
         #expect(model.taskKinds == ["vision_understand", "ocr"])
         #expect(model.inputModalities == ["image"])
         #expect(model.outputModalities == ["text", "spans"])

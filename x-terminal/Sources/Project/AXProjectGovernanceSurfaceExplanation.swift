@@ -33,11 +33,11 @@ func xtProjectRuntimeSurfaceExplanation(
     case .uiChinese:
         switch mode {
         case .manual:
-            return "当前生效的是最保守 runtime surface：device tools、browser runtime、connector actions 和 extensions 全部关闭。"
+            return "当前生效的是最保守执行面：设备工具、浏览器运行时、连接器动作和扩展全部关闭。"
         case .guided:
-            return "当前生效的是 Guided runtime surface：只保留 browser runtime；device tools、connector side effect 和 extensions 继续被拦下。"
+            return "当前生效的是浏览器受控执行面：只保留浏览器运行时；设备工具、连接器副作用和扩展继续被拦下。"
         case .trustedOpenClawMode:
-            return "当前生效的是 Full runtime surface：会按当前 capability、binding 与 grant 条件放行，但仍继续受 trusted automation、tool policy、Hub memory、runtime surface TTL 和 kill-switch 共同约束。"
+            return "当前生效的是完整执行面：会按当前能力包、绑定和授权条件放行，但仍继续受受治理自动化、工具策略、Hub 记忆、执行面 TTL 和紧急回收共同约束。"
         }
     case .guardrailEnglish:
         switch mode {
@@ -178,35 +178,36 @@ private func xtChineseProjectGovernanceClampExplanation(
     kind: AXProjectGovernanceClampKind,
     sourceLabel: String?
 ) -> AXProjectGovernanceClampExplanation {
-    let sourcePrefix = sourceLabel ?? ""
+    let trimmedSourceLabel = sourceLabel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let sourcePrefix = trimmedSourceLabel.isEmpty ? "" : "\(trimmedSourceLabel) "
     switch kind {
     case .killSwitch:
         return AXProjectGovernanceClampExplanation(
             kind: kind,
             policyReason: kind.rawValue,
-            summary: "\(sourcePrefix)kill-switch 已生效：当前 runtime surface 已被压到最保守状态，device/browser/connector/extension 四类执行面全部被系统拦下。",
+            summary: "\(sourcePrefix)kill-switch 紧急回收已生效：当前执行面已被压到最保守状态，设备、浏览器、连接器和扩展四类执行面全部被系统拦下。",
             nextStep: "清除 kill-switch 后再重试高风险动作。"
         )
     case .ttlExpired:
         return AXProjectGovernanceClampExplanation(
             kind: kind,
             policyReason: kind.rawValue,
-            summary: "当前 runtime surface TTL 已过期，项目执行面已自动回收到最保守 surface；如需继续放开，需要重新显式授权。",
-            nextStep: "重新刷新自治窗口或重新授权后再继续。"
+            summary: "当前执行面 TTL 已过期，项目执行面已自动回收到最保守状态；如需继续放开，需要重新显式授权。",
+            nextStep: "刷新执行窗口或重新授权后再继续。"
         )
     case .clampManual:
         return AXProjectGovernanceClampExplanation(
             kind: kind,
             policyReason: kind.rawValue,
-            summary: "当前 \(sourcePrefix)clamp_manual 已把 runtime surface 压回最保守 surface。项目里的治理档位仍会保留，但实际执行面不会放行。",
-            nextStep: "清除 clamp_manual 后再重试相关动作。"
+            summary: "\(sourcePrefix)已把执行面压回最保守状态。项目里的治理档位仍会保留，但实际动作不会放行。",
+            nextStep: "解除这条收束后再重试相关动作。"
         )
     case .clampGuided:
         return AXProjectGovernanceClampExplanation(
             kind: kind,
             policyReason: kind.rawValue,
-            summary: "当前 \(sourcePrefix)clamp_guided 已把 runtime surface 压回 Guided surface，只保留 browser runtime 这条受控执行面。",
-            nextStep: "恢复 Full runtime surface 或清除 clamp_guided 后再重试更高风险动作。"
+            summary: "\(sourcePrefix)已把执行面收回到浏览器受控状态，只保留浏览器这条受控执行面。",
+            nextStep: "恢复完整执行面或解除这条收束后，再重试更高风险动作。"
         )
     }
 }

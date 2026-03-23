@@ -28,6 +28,8 @@ struct LLMUsage: Codable, Equatable {
     var runtimeProvider: String?
     var executionPath: String?
     var fallbackReasonCode: String?
+    var auditRef: String?
+    var denyCode: String?
     var remoteRetryAttempted: Bool?
     var remoteRetryFromModelId: String?
     var remoteRetryToModelId: String?
@@ -41,6 +43,8 @@ struct LLMUsage: Codable, Equatable {
         runtimeProvider: String? = nil,
         executionPath: String? = nil,
         fallbackReasonCode: String? = nil,
+        auditRef: String? = nil,
+        denyCode: String? = nil,
         remoteRetryAttempted: Bool? = nil,
         remoteRetryFromModelId: String? = nil,
         remoteRetryToModelId: String? = nil,
@@ -53,6 +57,8 @@ struct LLMUsage: Codable, Equatable {
         self.runtimeProvider = runtimeProvider
         self.executionPath = executionPath
         self.fallbackReasonCode = fallbackReasonCode
+        self.auditRef = auditRef
+        self.denyCode = denyCode
         self.remoteRetryAttempted = remoteRetryAttempted
         self.remoteRetryFromModelId = remoteRetryFromModelId
         self.remoteRetryToModelId = remoteRetryToModelId

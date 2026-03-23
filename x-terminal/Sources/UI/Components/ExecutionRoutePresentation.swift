@@ -1,5 +1,10 @@
 import SwiftUI
 
+struct ExecutionRouteBadgePresentation {
+    var text: String
+    var color: Color
+}
+
 enum ExecutionRoutePresentation {
     static func shortModelLabel(_ raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -17,19 +22,51 @@ enum ExecutionRoutePresentation {
         return String(trimmed[..<end]) + "..."
     }
 
+    static func shortReasonLabel(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "unknown" }
+        if trimmed.count <= 28 {
+            return trimmed
+        }
+        let end = trimmed.index(trimmed.startIndex, offsetBy: 28)
+        return String(trimmed[..<end]) + "..."
+    }
+
+    static func shortAuditLabel(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "unknown" }
+        if trimmed.count <= 24 {
+            return trimmed
+        }
+        let end = trimmed.index(trimmed.startIndex, offsetBy: 24)
+        return String(trimmed[..<end]) + "..."
+    }
+
     static func normalizedModelIdentity(_ raw: String) -> String {
         raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
-    static func activeModelLabel(
+    static func modelIdentitiesMatch(_ lhs: String, _ rhs: String) -> Bool {
+        let left = normalizedModelIdentity(lhs)
+        let right = normalizedModelIdentity(rhs)
+        guard !left.isEmpty, !right.isEmpty else { return false }
+        if left == right {
+            return true
+        }
+
+        let leftQualified = left.contains("/")
+        let rightQualified = right.contains("/")
+        guard !leftQualified || !rightQualified else { return false }
+
+        let leftBase = left.split(separator: "/").last.map(String.init) ?? left
+        let rightBase = right.split(separator: "/").last.map(String.init) ?? right
+        return !leftBase.isEmpty && leftBase == rightBase
+    }
+
+    static func configuredModelLabel(
         configuredModelId: String,
         snapshot: AXRoleExecutionSnapshot
     ) -> String {
-        let actual = snapshot.actualModelId.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !actual.isEmpty {
-            return shortModelLabel(actual)
-        }
-
         let configured = configuredModelId.trimmingCharacters(in: .whitespacesAndNewlines)
         if !configured.isEmpty {
             return shortModelLabel(configured)
@@ -40,7 +77,96 @@ enum ExecutionRoutePresentation {
             return shortModelLabel(requested)
         }
 
+        let actual = snapshot.actualModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !actual.isEmpty {
+            return shortModelLabel(actual)
+        }
+
         return "auto"
+    }
+
+    static func activeModelLabel(
+        configuredModelId: String,
+        snapshot: AXRoleExecutionSnapshot
+    ) -> String {
+        configuredModelLabel(
+            configuredModelId: configuredModelId,
+            snapshot: snapshot
+        )
+    }
+
+    static func actualModelLabel(snapshot: AXRoleExecutionSnapshot) -> String? {
+        let actual = snapshot.actualModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !actual.isEmpty else { return nil }
+        return shortModelLabel(actual)
+    }
+
+    static func detailBadge(
+        configuredModelId: String,
+        snapshot: AXRoleExecutionSnapshot
+    ) -> ExecutionRouteBadgePresentation? {
+        let configured = configuredModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let requested = snapshot.requestedModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let target = !configured.isEmpty ? configured : requested
+        let actual = snapshot.actualModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let reason = snapshot.fallbackReasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasMismatch = !target.isEmpty && !actual.isEmpty && !modelIdentitiesMatch(target, actual)
+
+        switch snapshot.executionPath {
+        case "hub_downgraded_to_local", "local_fallback_after_remote_error", "local_runtime":
+            if !actual.isEmpty {
+                return ExecutionRouteBadgePresentation(
+                    text: "Actual \(shortModelLabel(actual))",
+                    color: statusColor(snapshot: snapshot)
+                )
+            }
+            if !reason.isEmpty {
+                return ExecutionRouteBadgePresentation(
+                    text: "Reason \(shortReasonLabel(reason))",
+                    color: statusColor(snapshot: snapshot)
+                )
+            }
+        case "remote_model", "direct_provider":
+            if hasMismatch {
+                return ExecutionRouteBadgePresentation(
+                    text: "Actual \(shortModelLabel(actual))",
+                    color: .orange
+                )
+            }
+        case "remote_error":
+            if !reason.isEmpty {
+                return ExecutionRouteBadgePresentation(
+                    text: "Reason \(shortReasonLabel(reason))",
+                    color: .red
+                )
+            }
+        default:
+            if hasMismatch {
+                return ExecutionRouteBadgePresentation(
+                    text: "Actual \(shortModelLabel(actual))",
+                    color: .orange
+                )
+            }
+        }
+
+        return nil
+    }
+
+    static func evidenceBadge(snapshot: AXRoleExecutionSnapshot) -> ExecutionRouteBadgePresentation? {
+        let denyCode = snapshot.denyCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !denyCode.isEmpty {
+            return ExecutionRouteBadgePresentation(
+                text: "Deny \(shortReasonLabel(denyCode))",
+                color: snapshot.executionPath == "remote_error" ? .red : .orange
+            )
+        }
+
+        let auditRef = snapshot.auditRef.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !auditRef.isEmpty else { return nil }
+        return ExecutionRouteBadgePresentation(
+            text: "Audit \(shortAuditLabel(auditRef))",
+            color: .secondary
+        )
     }
 
     static func statusText(snapshot: AXRoleExecutionSnapshot) -> String {
@@ -81,27 +207,13 @@ enum ExecutionRoutePresentation {
         configuredModelId: String,
         snapshot: AXRoleExecutionSnapshot
     ) -> String {
-        var lines: [String] = []
-        let configured = configuredModelId.trimmingCharacters(in: .whitespacesAndNewlines)
-        lines.append("configured=\(configured.isEmpty ? "auto" : configured)")
-        if !snapshot.requestedModelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            lines.append("requested=\(snapshot.requestedModelId)")
-        }
-        if !snapshot.actualModelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            lines.append("actual=\(snapshot.actualModelId)")
-        }
-        if !snapshot.runtimeProvider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            lines.append("provider=\(snapshot.runtimeProvider)")
-        }
-        if !snapshot.executionPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           snapshot.executionPath != "no_record" {
-            lines.append("path=\(snapshot.executionPath)")
-        }
-        if !snapshot.fallbackReasonCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            lines.append("reason=\(snapshot.fallbackReasonCode)")
-        }
-        lines.append("transport=\(HubAIClient.transportMode().rawValue)")
-        return lines.joined(separator: "\n")
+        XTRouteTruthPresentation.evidence(
+            configuredModelId: configuredModelId,
+            snapshot: snapshot,
+            transportMode: HubAIClient.transportMode().rawValue
+        )
+        .lines
+        .joined(separator: "\n")
     }
 
     @MainActor

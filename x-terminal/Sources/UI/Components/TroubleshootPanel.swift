@@ -4,6 +4,7 @@ enum UITroubleshootIssue: String, CaseIterable, Codable, Sendable {
     case grantRequired = "grant_required"
     case permissionDenied = "permission_denied"
     case paidModelAccessBlocked = "paid_model_access_blocked"
+    case pairingRepairRequired = "pairing_repair_required"
     case hubUnreachable = "hub_unreachable"
 
     var title: String {
@@ -14,6 +15,8 @@ enum UITroubleshootIssue: String, CaseIterable, Codable, Sendable {
             return "Permission denied"
         case .paidModelAccessBlocked:
             return "Paid model access blocked"
+        case .pairingRepairRequired:
+            return "Pairing repair required"
         case .hubUnreachable:
             return "Hub unreachable"
         }
@@ -27,6 +30,8 @@ enum UITroubleshootIssue: String, CaseIterable, Codable, Sendable {
             return "设备能力、系统权限或 Hub 安全边界拒绝时，不再只显示原始报错，而是直接指到对应修复面。"
         case .paidModelAccessBlocked:
             return "当设备级付费模型策略、白名单或预算把请求挡住时，诊断入口必须直接指向设备信任、模型与预算，而不是退回无上下文 permission denied。"
+        case .pairingRepairRequired:
+            return "当本地配对档案过期、token 失效或 mTLS 证书不再匹配时，系统必须明确要求清理失效配对并重配，而不是继续用旧档案反复 reconnect。"
         case .hubUnreachable:
             return "Hub 不可达时，优先检查配对参数、Hub 诊断状态，再回到首用向导重试。"
         }
@@ -50,7 +55,7 @@ enum UITroubleshootDestination: String, Codable, Sendable {
         case .xtPairHub:
             return "XT Settings → Pair Hub"
         case .xtChooseModel:
-            return "XT Settings → Choose Model"
+            return "XT Settings → AI 模型"
         case .xtDiagnostics:
             return "XT Settings → Diagnostics"
         case .hubPairing:
@@ -126,6 +131,16 @@ enum UITroubleshootKnowledgeBase {
                     UITroubleshootStep(index: 3, instruction: "再到 Hub Models & Paid Access 查看 daily / single-request budget；修复后回 XT Diagnostics 重试。", destination: .hubModels)
                 ]
             )
+        case .pairingRepairRequired:
+            return UITroubleshootGuide(
+                issue: issue,
+                summary: issue.summary,
+                steps: [
+                    UITroubleshootStep(index: 1, instruction: "先回 XT Pair Hub 执行“清除配对后重连”，把本地失效 token / client cert / cached profile 一次清干净。", destination: .xtPairHub),
+                    UITroubleshootStep(index: 2, instruction: "再到 Hub Settings -> Pairing & Device Trust -> 设备列表（允许清单），优先筛“过期”并删除旧设备条目，然后重新批准当前设备。", destination: .hubPairing),
+                    UITroubleshootStep(index: 3, instruction: "重配完成后重新执行 one-click setup / reconnect smoke，确认 unauthenticated / certificate_required 不再出现。", destination: .hubDiagnostics)
+                ]
+            )
         case .hubUnreachable:
             return UITroubleshootGuide(
                 issue: issue,
@@ -144,6 +159,14 @@ enum UITroubleshootKnowledgeBase {
         guard !code.isEmpty else { return nil }
         if code.contains("device_paid_model_disabled") || code.contains("device_paid_model_not_allowed") || code.contains("device_daily_token_budget_exceeded") || code.contains("device_single_request_token_exceeded") || code.contains("legacy_grant_flow_required") {
             return .paidModelAccessBlocked
+        }
+        if code.contains("unauthenticated")
+            || code.contains("mtls_client_certificate_required")
+            || code.contains("pairing_health_failed")
+            || code.contains("bootstrap_refresh_failed")
+            || code.contains("discover_failed_using_cached_profile")
+            || code.contains("missing_pairing_secret") {
+            return .pairingRepairRequired
         }
         if code.contains("grant_required") || code.contains("grant_pending") {
             return .grantRequired
@@ -218,6 +241,8 @@ struct TroubleshootPanel: View {
             return "hand.raised"
         case .paidModelAccessBlocked:
             return "lock.desktopcomputer"
+        case .pairingRepairRequired:
+            return "arrow.trianglehead.2.clockwise.rotate.90"
         case .hubUnreachable:
             return "bolt.horizontal.circle"
         }

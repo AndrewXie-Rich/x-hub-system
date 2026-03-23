@@ -155,6 +155,20 @@ struct ProjectGovernancePresentation {
         "心跳 \(governanceDurationLabel(progressHeartbeatSeconds)) · 脉冲 \(governanceDurationLabel(reviewPulseSeconds)) · 脑暴 \(governanceDurationLabel(brainstormReviewSeconds))"
     }
 
+    var effectiveTruthLine: String? {
+        XTGovernanceTruthPresentation.truthLine(
+            configuredExecutionTier: executionTier.rawValue,
+            effectiveExecutionTier: (effectiveExecutionTier ?? executionTier).rawValue,
+            configuredSupervisorTier: supervisorInterventionTier.rawValue,
+            effectiveSupervisorTier: (effectiveSupervisorInterventionTier ?? supervisorInterventionTier).rawValue,
+            reviewPolicyMode: reviewPolicyMode.rawValue,
+            progressHeartbeatSeconds: progressHeartbeatSeconds,
+            reviewPulseSeconds: reviewPulseSeconds,
+            brainstormReviewSeconds: brainstormReviewSeconds,
+            compatSource: compatSource
+        )
+    }
+
     var compatSourceLabel: String {
         switch compatSource {
         case AXProjectGovernanceCompatSource.explicitDualDial.rawValue:
@@ -224,7 +238,7 @@ struct ProjectGovernancePresentation {
         let normalized = clampSummary.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { return nil }
         switch normalized {
-        case "当前没有额外收束；但仍继续受 Hub 授权、执行面 TTL、readiness 与 kill-switch 约束。":
+        case "当前没有额外收束；但仍继续受 Hub 授权、执行面 TTL、就绪状态与紧急回收约束。":
             return nil
         case "当前未连接运行时收束；这里只展示配置意图。":
             return nil
@@ -323,9 +337,9 @@ struct ProjectGovernancePresentation {
         }
         if resolved.configuredBundle.executionTier == .a4OpenClaw
             && (!resolved.trustedAutomationStatus.trustedAutomationReady || !resolved.trustedAutomationStatus.permissionOwnerReady) {
-            return "A4 Agent 已配置，但 device/browser 仍受 trusted automation readiness 和 permission owner gate 约束。"
+            return "A4 Agent 已配置，但设备 / 浏览器执行仍受受治理自动化就绪检查和权限宿主门禁约束。"
         }
-        return "当前没有额外收束；但仍继续受 Hub 授权、执行面 TTL、readiness 与 kill-switch 约束。"
+        return "当前没有额外收束；但仍继续受 Hub 授权、执行面 TTL、就绪状态与紧急回收约束。"
     }
 
     private static func guidanceSummary(_ mode: SupervisorGuidanceInterventionMode) -> String {
@@ -368,6 +382,13 @@ struct ProjectGovernanceCompactSummaryView: View {
                 onReviewCadenceTap: onReviewCadenceTap,
                 onStatusTap: onStatusTap
             )
+
+            if let effectiveTruthLine = presentation.effectiveTruthLine {
+                Text(effectiveTruthLine)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
 
             if showCallout, let callout = presentation.compactCalloutMessage {
                 if let onCalloutTap {
@@ -544,6 +565,13 @@ struct ProjectGovernanceInspector: View {
                     messages: presentation.warningMessages,
                     color: .orange
                 )
+            }
+
+            if let effectiveTruthLine = presentation.effectiveTruthLine {
+                governanceRow("治理真相") {
+                    Text(effectiveTruthLine)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             governanceRow("执行档位") {

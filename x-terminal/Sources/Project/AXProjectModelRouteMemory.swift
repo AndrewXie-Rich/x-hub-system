@@ -29,6 +29,12 @@ struct AXProjectModelSelectionGuidance: Equatable {
     var warningText: String
     var recommendedModelId: String?
     var recommendationText: String?
+    var recommendationKind: AXProjectModelSelectionRecommendationKind = .switchRecommended
+}
+
+enum AXProjectModelSelectionRecommendationKind: Equatable {
+    case switchRecommended
+    case continueWithoutSwitch
 }
 
 enum AXProjectModelRouteMemoryStore {
@@ -213,27 +219,73 @@ enum AXProjectModelRouteMemoryStore {
     }
 
     static func heartbeatNotice(
-        for project: AXProjectEntry
+        for project: AXProjectEntry,
+        role: AXRole = .coder,
+        snapshot: ModelStateSnapshot? = nil,
+        localSnapshot: ModelStateSnapshot? = nil,
+        now: Double = Date().timeIntervalSince1970
     ) -> String? {
         let rawRoot = project.rootPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !rawRoot.isEmpty else { return nil }
         let ctx = AXProjectContext(root: URL(fileURLWithPath: rawRoot, isDirectory: true))
-        guard let routeMemory = load(for: ctx, role: .coder),
+        guard let routeMemory = load(for: ctx, role: role),
               routeMemory.shouldSuggestLocalModeNotice else { return nil }
 
-        let requested = routeMemory.lastRequestedModelId.trimmingCharacters(in: .whitespacesAndNewlines)
-        let localModel = routeMemory.lastActualModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedSnapshot = snapshot ?? loadHeartbeatModelsSnapshot()
+        let configuredModelId = heartbeatConfiguredModelId(
+            ctx: ctx,
+            role: role,
+            routeMemory: routeMemory,
+            snapshot: resolvedSnapshot
+        )
+        let rememberedRemoteModelId = heartbeatRememberedRemoteModelId(
+            routeMemory: routeMemory,
+            snapshot: resolvedSnapshot
+        )
+        let configuredAssessment = resolvedSnapshot.flatMap {
+            HubModelSelectionAdvisor.assess(
+                requestedId: configuredModelId,
+                snapshot: $0
+            )
+        }
+        let rememberedAssessment = resolvedSnapshot.flatMap {
+            HubModelSelectionAdvisor.assess(
+                requestedId: rememberedRemoteModelId,
+                snapshot: $0
+            )
+        }
+
+        if configuredAssessment?.isExactMatchLoaded == true {
+            return nil
+        }
+
+        let requested = configuredModelId.isEmpty
+            ? routeMemory.lastRequestedModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+            : configuredModelId
+        let remembered = rememberedRemoteModelId.trimmingCharacters(in: .whitespacesAndNewlines)
         let reason = routeMemory.lastFailureReasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
         let requestText = requested.isEmpty ? "远端模型" : requested
         let reasonText = reason.isEmpty ? "" : "（原因：\(reason)）"
-        let localText = localModel.isEmpty ? "本地模型" : "`\(localModel)`"
         let actionHint = heartbeatActionHint(
             project: project,
             ctx: ctx,
             routeMemory: routeMemory,
             requestText: requestText
         )
-        if shouldForceLocalExecution(routeMemory: routeMemory, now: Date().timeIntervalSince1970) {
+
+        if rememberedAssessment?.isExactMatchLoaded == true,
+           modelIDsDiffer(remembered, requestText),
+           !remembered.isEmpty {
+            return "模型路由：\(project.displayName) 当前配置的 `\(requestText)` 还不能直接执行；XT 现在会先试这个项目上次稳定的远端 `\(remembered)`，避免继续直接掉到本地。\(heartbeatRememberedRemoteActionHint(project: project, requestText: requestText, rememberedText: remembered))"
+        }
+
+        if shouldForceLocalExecution(routeMemory: routeMemory, now: now) {
+            let localModel = heartbeatPreferredLocalModelLabel(
+                routeMemory: routeMemory,
+                snapshot: resolvedSnapshot,
+                localSnapshot: localSnapshot
+            )
+            let localText = localModel.isEmpty || localModel == "本地模型" ? "本地模型" : "`\(localModel)`"
             return "模型路由：\(project.displayName) 已切到本地模式；`\(requestText)` 最近连续 \(routeMemory.consecutiveRemoteFallbackCount) 次未稳定命中\(reasonText)，当前先锁定 \(localText) 执行。建议检查 Hub 配置后再恢复远端。\(actionHint)"
         }
         return "模型路由：\(project.displayName) 最近已连续 \(routeMemory.consecutiveRemoteFallbackCount) 次切到本地；`\(requestText)` 未稳定命中\(reasonText)，建议检查 Hub 配置后再重试。\(actionHint)"
@@ -294,7 +346,7 @@ enum AXProjectModelRouteMemoryStore {
                       modelIDsDiffer(suggestedRemote, requestedText) else {
                     return nil
                 }
-                return "如果你现在就要继续，可先切到已加载的远端 `\(suggestedRemote)`，避免先锁本地；等 `\(requestedText)` 在 Hub 恢复后再切回来。"
+                return "如果你现在就要继续，可改用当前已加载的可执行模型 `\(suggestedRemote)`，避免先锁本地；等 `\(requestedText)` 在 Hub 恢复后再切回来。"
             }()
             return AXProjectModelSelectionGuidance(
                 warningText: "这个项目最近连续 \(routeMemory.consecutiveRemoteFallbackCount) 次没有稳定命中 `\(requestedText)`\(reasonText)，XT 现在会先锁到本地 `\(localModel)`。如果你要恢复远端，先去 Hub -> Models 确认 `\(requestedText)` 已加载，再重试。",
@@ -312,7 +364,8 @@ enum AXProjectModelRouteMemoryStore {
             return AXProjectModelSelectionGuidance(
                 warningText: "当前配置的 `\(configured)` 还不能直接执行；XT 下次会先试这个项目上次稳定的远端 `\(remembered)`，避免直接掉到本地。",
                 recommendedModelId: remembered,
-                recommendationText: "这个项目上次稳定跑通的是 `\(remembered)`。如果你想立刻恢复远端，直接切到它最稳。"
+                recommendationText: "这个项目上次稳定跑通的是 `\(remembered)`。如果你现在只是继续工作，不用手动切模型；XT 下次会先试它。只有你想把它固定成当前配置时，再手动切。",
+                recommendationKind: .continueWithoutSwitch
             )
         }
 
@@ -425,6 +478,71 @@ enum AXProjectModelRouteMemoryStore {
 
     private static func firstNonEmptyString(_ values: String...) -> String {
         values.first { !$0.isEmpty } ?? ""
+    }
+
+    private static func loadHeartbeatModelsSnapshot() -> ModelStateSnapshot? {
+        let url = HubPaths.modelsStateURL()
+        guard let data = try? Data(contentsOf: url),
+              let decoded = try? JSONDecoder().decode(ModelStateSnapshot.self, from: data) else {
+            return nil
+        }
+        return decoded
+    }
+
+    private static func heartbeatConfiguredModelId(
+        ctx: AXProjectContext,
+        role: AXRole,
+        routeMemory: AXProjectModelRouteMemory,
+        snapshot: ModelStateSnapshot?
+    ) -> String {
+        let configuredFromProject = loadConfigIfPresent(for: ctx)?
+            .modelOverride(for: role)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let fallbackRequested = routeMemory.lastRequestedModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let candidate = configuredFromProject.isEmpty ? fallbackRequested : configuredFromProject
+        guard !candidate.isEmpty, let snapshot else { return candidate }
+        return HubAIClient.normalizeConfiguredModelID(
+            candidate,
+            availableModels: snapshot.models
+        ) ?? candidate
+    }
+
+    private static func heartbeatRememberedRemoteModelId(
+        routeMemory: AXProjectModelRouteMemory,
+        snapshot: ModelStateSnapshot?
+    ) -> String {
+        let remembered = routeMemory.lastHealthyRemoteModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !remembered.isEmpty, let snapshot else { return remembered }
+        return HubAIClient.normalizeConfiguredModelID(
+            remembered,
+            availableModels: snapshot.models
+        ) ?? remembered
+    }
+
+    private static func heartbeatPreferredLocalModelLabel(
+        routeMemory: AXProjectModelRouteMemory,
+        snapshot: ModelStateSnapshot?,
+        localSnapshot: ModelStateSnapshot?
+    ) -> String {
+        guard let snapshot else {
+            let localModel = routeMemory.lastActualModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+            return localModel.isEmpty ? "本地模型" : localModel
+        }
+        return resolvedPreferredLocalModelLabel(
+            routeMemory: routeMemory,
+            snapshot: snapshot,
+            localSnapshot: localSnapshot ?? snapshot
+        )
+    }
+
+    private static func loadConfigIfPresent(for ctx: AXProjectContext) -> AXProjectConfig? {
+        guard FileManager.default.fileExists(atPath: ctx.configURL.path),
+              let data = try? Data(contentsOf: ctx.configURL),
+              var config = try? JSONDecoder().decode(AXProjectConfig.self, from: data) else {
+            return nil
+        }
+        config.schemaVersion = AXProjectConfig.currentSchemaVersion
+        return config
     }
 
     private static func resolveLocalLock(
@@ -566,13 +684,13 @@ enum AXProjectModelRouteMemoryStore {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedRequest = requestText.trimmingCharacters(in: .whitespacesAndNewlines)
         let requestedModel = trimmedRequest.isEmpty ? "当前远端模型" : trimmedRequest
-        let routeDiagnoseStep = "下一步：可直接点这条心跳提醒进入 `\(project.displayName)` 的路由诊断；如果你是手动排查，就进入项目后运行 `/route diagnose`。"
+        let routeDiagnoseStep = heartbeatRouteDiagnoseStep(project: project)
 
         switch normalizedReason {
         case "downgrade_to_local", "remote_export_blocked":
             return "\(routeDiagnoseStep) 如果仍看到 `\(normalizedReason)`，再去 `XT Settings -> Diagnostics` 看最近 route event，并到 `Hub -> Models` / Hub 审计确认 `\(requestedModel)`。"
         case "model_not_found", "remote_model_not_found":
-            return "\(routeDiagnoseStep) 再到 `Hub -> Models` 确认 `\(requestedModel)` 已加载；如果只是想先继续，可临时切到已加载的推荐远端。"
+            return "\(routeDiagnoseStep) 再到 `Hub -> Models` 确认 `\(requestedModel)` 已加载；如果只是想先继续，先看这轮是否已提示会自动改试上次稳定远端。只有要强制验证指定模型时，再手动切。"
         case "response_timeout", "grpc_route_unavailable", "runtime_not_running", "request_write_failed":
             return "\(routeDiagnoseStep) 再去 `XT Settings -> Diagnostics` 看最近 route event，并检查 Hub 连接与 runtime 状态。"
         default:
@@ -585,6 +703,20 @@ enum AXProjectModelRouteMemoryStore {
                 return "\(routeDiagnoseStep) 如果仍复现，再去 `XT Settings -> Diagnostics` 看最近 route event。"
             }
         }
+    }
+
+    private static func heartbeatRememberedRemoteActionHint(
+        project: AXProjectEntry,
+        requestText: String,
+        rememberedText: String
+    ) -> String {
+        "\(heartbeatRouteDiagnoseStep(project: project)) 如果你现在只是想继续，不用手动切模型；XT 会先试 `\(rememberedText)`。等 `\(requestText)` 在 Hub 恢复后，再考虑切回。"
+    }
+
+    private static func heartbeatRouteDiagnoseStep(
+        project: AXProjectEntry
+    ) -> String {
+        "下一步：可直接点这条心跳提醒进入 `\(project.displayName)` 的路由诊断；如果你是手动排查，就进入项目后运行 `/route diagnose`。"
     }
 
     private static func normalizedFailureReasonCode(_ raw: String?) -> String {

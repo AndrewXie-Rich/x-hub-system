@@ -34,7 +34,7 @@ enum AXProjectGovernanceTemplate: String, CaseIterable, Sendable, Identifiable {
         case .conservative:
             return "默认映射 A1 + S2，以理解、规划和审阅为主。"
         case .safe:
-            return "默认映射 A3 + S3，推荐默认档，project 内持续推进。"
+            return "默认映射 A3 + S3，推荐默认档，在项目内持续推进。"
         case .agent:
             return "默认映射 A4 Agent + S3，允许更大执行面，但仍受治理约束。"
         case .custom:
@@ -72,7 +72,7 @@ enum AXProjectSupervisorScope: String, Sendable {
         case .focusedProject:
             return "当前项目"
         case .portfolio:
-            return "Portfolio"
+            return "全部项目"
         case .deviceGoverned:
             return "设备治理视角"
         }
@@ -682,21 +682,21 @@ private func xtConfiguredDeviceAuthorityDetail(
     switch posture {
     case .off:
         if authority.deviceAuthorityConfigured {
-            return "当前预设默认关闭设备级能力；Governance Details 里保留的绑定不会被本档直接放行。"
+            return "当前预设默认关闭设备级能力；治理详情里保留的绑定不会被本档直接放行。"
         }
         return "当前主档默认不触达设备级执行面。"
     case .projectBound:
         if authority.deviceAuthorityConfigured {
             let device = trustedAutomationStatus.boundDeviceID.isEmpty ? authority.pairedDeviceId : trustedAutomationStatus.boundDeviceID
-            return "默认把设备能力收束在当前 project 边界内。\(device.isEmpty ? "" : "当前已绑定 \(device)。")"
-        }
-        return "默认只允许当前 project 在受治理前提下使用设备能力；仍需在 Governance Details 完成 trusted automation 绑定。"
+        return "默认把设备能力收束在当前项目边界内。\(device.isEmpty ? "" : "当前已绑定 \(device)。")"
+    }
+        return "默认只允许当前项目在受治理前提下使用设备能力；仍需在治理详情里完成受治理自动化绑定。"
     case .deviceGoverned:
         if authority.deviceAuthorityConfigured {
             let device = trustedAutomationStatus.boundDeviceID.isEmpty ? authority.pairedDeviceId : trustedAutomationStatus.boundDeviceID
-            return "当前档位允许完整执行面，但仍继续受 Hub 授权、kill-switch、审计链和可读目录白名单约束。\(device.isEmpty ? "" : "当前已绑定 \(device)。")"
+            return "当前档位允许完整执行面，但仍继续受 Hub 授权、紧急回收、审计链和可读目录白名单约束。\(device.isEmpty ? "" : "当前已绑定 \(device)。")"
         }
-        return "当前档位允许完整执行面；真正生效仍需要 trusted automation 绑定与权限就绪。"
+        return "当前档位允许完整执行面；真正生效仍需要受治理自动化绑定与权限就绪。"
     }
 }
 
@@ -708,20 +708,20 @@ private func xtEffectiveDeviceAuthorityDetail(
     switch posture {
     case .off:
         if resolved.effectiveRuntimeSurface.killSwitchEngaged {
-            return "Hub kill-switch 已生效，设备面当前 fail-closed。"
+            return "Hub 紧急回收已生效，设备面当前已 fail-closed。"
         }
         if resolved.effectiveRuntimeSurface.expired {
-            return "runtime surface TTL 已过期，设备面已自动回收。"
+            return "执行面 TTL 已过期，设备面已自动回收。"
         }
         if resolved.effectiveRuntimeSurface.effectiveMode != .trustedOpenClawMode {
-            return "当前 effective surface 不是 full surface，设备面保持关闭。"
+            return "当前生效执行面还不是完整执行面，设备面保持关闭。"
         }
         if !resolved.trustedAutomationStatus.trustedAutomationReady {
-            return "trusted automation / permission owner 未就绪，设备面尚未生效。"
+            return "受治理自动化 / 权限宿主未就绪，设备面尚未生效。"
         }
         return "当前设备面未放行。"
     case .projectBound:
-        return "设备能力当前只在本 project 范围内受治理放行。"
+        return "设备能力当前只在当前项目范围内受治理放行。"
     case .deviceGoverned:
         let device = resolved.trustedAutomationStatus.boundDeviceID
         if device.isEmpty {
@@ -737,17 +737,17 @@ private func xtSupervisorScopeDetail(
     effective: Bool
 ) -> String {
     switch scope {
-    case .focusedProject:
-        return effective && !hubMemoryEnabled
-            ? "当前更偏向本地 continuity 和当前 project 摘要，不主动放大全局检索范围。"
-            : "默认只围绕当前 project 和记忆摘要做判断。"
-    case .portfolio:
-        return "默认可看全部 project 的概要状态，并对当前 project 做深钻。"
-    case .deviceGoverned:
-        return hubMemoryEnabled
-            ? "默认可在受治理前提下读取 portfolio、grants、incidents 和已批准 roots。"
-            : "当前目标是设备治理视角，但 Hub memory 关闭会收窄上下文来源。"
-    }
+        case .focusedProject:
+            return effective && !hubMemoryEnabled
+                ? "当前更偏向本地连续上下文和当前项目摘要，不主动放大全局检索范围。"
+                : "默认只围绕当前项目和记忆摘要做判断。"
+        case .portfolio:
+            return "默认可看全部项目的概要状态，并对当前项目做深钻。"
+        case .deviceGoverned:
+            return hubMemoryEnabled
+                ? "默认可在受治理前提下读取全局项目、授权、事故和已批准根目录。"
+                : "当前目标是设备治理视角，但 Hub 记忆关闭会收窄上下文来源。"
+        }
 }
 
 private func xtGrantDetail(
@@ -765,8 +765,8 @@ private func xtGrantDetail(
             : "默认让低风险官方能力自动通过，高风险继续走人工 / Hub 门禁。"
     case .envelopeAuto:
         return effective
-            ? "按能力包络自动推进，但支付、删除、scope 扩张仍继续受审批。"
-            : "默认允许按能力包络预授权推进，但支付、删除、scope 扩张仍继续受审批。"
+            ? "按能力包络自动推进，但支付、删除、范围扩张仍继续受审批。"
+            : "默认允许按能力包络预授权推进，但支付、删除、范围扩张仍继续受审批。"
     }
 }
 
@@ -778,10 +778,10 @@ private func xtConfiguredTemplateDeviationReasons(_ config: AXProjectConfig) -> 
 
     var reasons: [String] = []
     if config.executionTier != spec.executionTier {
-        reasons.append("execution tier 已偏离 \(baseline.displayName) 默认档。")
+        reasons.append("执行档位已偏离 \(baseline.displayName) 默认档。")
     }
     if config.supervisorInterventionTier != spec.supervisorTier {
-        reasons.append("supervisor tier 已被单独调节。")
+        reasons.append("监督档位已被单独调节。")
     }
     if config.reviewPolicyMode != spec.reviewPolicyMode
         || config.progressHeartbeatSeconds != spec.progressHeartbeatSeconds
@@ -789,19 +789,19 @@ private func xtConfiguredTemplateDeviationReasons(_ config: AXProjectConfig) -> 
         || config.brainstormReviewSeconds != spec.brainstormReviewSeconds
         || config.eventDrivenReviewEnabled != spec.eventDrivenReviewEnabled
         || config.eventReviewTriggers != spec.eventReviewTriggers {
-        reasons.append("review cadence / trigger 已偏离默认映射。")
+        reasons.append("审查节奏 / 触发器已偏离默认映射。")
     }
     if config.runtimeSurfaceMode != spec.runtimeSurfaceMode {
-        reasons.append("runtime surface preset 已被单独改动。")
+        reasons.append("执行面预设已被单独改动。")
     }
     if config.governedAutoApproveLocalToolCalls != spec.localAutoApproveConfigured {
-        reasons.append("local auto-approve 已被单独改动。")
+        reasons.append("本地自动审批已被单独改动。")
     }
     if config.runtimeSurfaceHubOverrideMode != .none {
-        reasons.append("Terminal clamp 当前不为 none。")
+        reasons.append("终端本地收束当前不为无。")
     }
     if spec.requiresHubMemory && !config.preferHubMemory {
-        reasons.append("当前档位要求 Hub memory，但项目已切到 local-only prompt memory。")
+        reasons.append("当前档位要求 Hub 记忆，但项目已切到仅本地提示记忆。")
     }
     return Array(reasons.prefix(4))
 }
@@ -813,20 +813,20 @@ private func xtEffectiveTemplateDeviationReasons(
 ) -> [String] {
     var reasons: [String] = []
     if resolved.validation.shouldFailClosed {
-        reasons.append("当前治理组合无效，runtime 已 fail-closed 到保守基线。")
+        reasons.append("当前治理组合无效，运行时已 fail-closed 到保守基线。")
     }
     if resolved.effectiveRuntimeSurface.killSwitchEngaged {
-        reasons.append("Hub kill-switch 已回收高风险执行面。")
+        reasons.append("Hub 紧急回收已回收高风险执行面。")
     } else if resolved.effectiveRuntimeSurface.expired {
-        reasons.append("runtime surface TTL 已过期，执行面已自动回收。")
+        reasons.append("执行面 TTL 已过期，执行面已自动回收。")
     } else if resolved.effectiveRuntimeSurface.hubOverrideMode != .none {
-        reasons.append("当前存在 clamp：\(resolved.effectiveRuntimeSurface.hubOverrideMode.displayName)。")
+        reasons.append("当前存在收束：\(resolved.effectiveRuntimeSurface.hubOverrideMode.displayName)。")
     }
     if config.executionTier == .a4OpenClaw && !resolved.trustedAutomationStatus.trustedAutomationReady {
-        reasons.append("trusted automation 未就绪，完整设备面尚未真正放行。")
+        reasons.append("受治理自动化未就绪，完整设备面尚未真正放行。")
     }
     if config.governedAutoApproveLocalToolCalls && !effectiveCapability.allowAutoLocalApproval {
-        reasons.append("local auto-approve 已配置，但当前 effective capability 还未放行。")
+        reasons.append("本地自动审批已配置，但当前生效能力还未放行。")
     }
     return Array(reasons.prefix(4))
 }
@@ -847,7 +847,7 @@ private func xtRuntimeSummary(
     }
     let clamp = resolved.effectiveRuntimeSurface.hubOverrideMode.displayName
     let hubMemory = config.preferHubMemory ? "Hub" : "Local"
-    return "记忆来源: \(hubMemory) · surface TTL 剩余: \(ttl) · 本地 clamp: \(config.runtimeSurfaceHubOverrideMode.displayName) · 生效 clamp: \(clamp)"
+    return "记忆来源：\(hubMemory) · 执行面 TTL 剩余：\(ttl) · 本地收束：\(config.runtimeSurfaceHubOverrideMode.displayName) · 生效收束：\(clamp)"
 }
 
 private func xtEffectiveTemplateSummary(
@@ -860,15 +860,15 @@ private func xtEffectiveTemplateSummary(
             return "当前生效状态已因无效组合进入保守 fail-closed。"
         }
         if resolved.effectiveRuntimeSurface.killSwitchEngaged {
-            return "当前生效状态已被 kill-switch 回收。"
+            return "当前生效状态已被紧急回收。"
         }
         if resolved.effectiveRuntimeSurface.expired {
-            return "当前生效状态已因 runtime surface TTL 到期被回收。"
+            return "当前生效状态已因执行面 TTL 到期被回收。"
         }
         if resolved.effectiveRuntimeSurface.hubOverrideMode != .none {
-            return "当前生效状态已被 runtime clamp 收窄。"
+            return "当前生效状态已被运行时收束收窄。"
         }
-        return "当前生效状态仍受 readiness、grant 和治理细项共同影响。"
+        return "当前生效状态仍受就绪状态、授权门和治理细项共同影响。"
     }
     return template.shortDescription
 }

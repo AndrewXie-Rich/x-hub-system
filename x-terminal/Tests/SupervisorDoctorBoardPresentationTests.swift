@@ -276,7 +276,7 @@ scope=device scope_id=supervisor source=file_ipc reason=device_canonical_memory_
         #expect(presentation.memoryContinuitySummaryLine == "最近连续对话保留 12 组，已满足至少 8 组底线。")
         #expect(
             presentation.memoryContinuityDetailLine ==
-                "来源：混合上下文 · 背景分区 2 个 · 关联引用 1 条 · 执行证据 1 条 · 过滤低信号 2 条 · 已保留滚动摘要"
+                "来源：Hub 快照 + 本地 overlay · 背景分区 2 个 · 关联引用 1 条 · 执行证据 1 条 · 过滤低信号 2 条 · 已保留滚动摘要"
         )
     }
 

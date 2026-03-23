@@ -148,4 +148,29 @@ struct XTGuardrailMessagePresentationTests {
         #expect(hint?.buttonTitle == "打开治理设置")
         #expect(hint?.helpText.contains("项目治理") == true)
     }
+
+    @Test
+    func toolResultBodyPrefixesEffectiveGovernanceTruthWhenPresent() {
+        let body = XTGuardrailMessagePresentation.toolResultBody(
+            tool: .write_file,
+            summary: [
+                "deny_code": .string("governance_capability_denied"),
+                "policy_source": .string("project_governance"),
+                "policy_reason": .string("execution_tier_missing_repo_write"),
+                "execution_tier": .string(AXProjectExecutionTier.a1Plan.rawValue),
+                "effective_execution_tier": .string(AXProjectExecutionTier.a1Plan.rawValue),
+                "supervisor_intervention_tier": .string(AXProjectSupervisorInterventionTier.s1MilestoneReview.rawValue),
+                "effective_supervisor_intervention_tier": .string(AXProjectSupervisorInterventionTier.s2PeriodicReview.rawValue),
+                "review_policy_mode": .string(AXProjectReviewPolicyMode.periodic.rawValue),
+                "progress_heartbeat_sec": .number(900),
+                "review_pulse_sec": .number(1800),
+                "brainstorm_review_sec": .number(0),
+                "governance_compat_source": .string(AXProjectGovernanceCompatSource.legacyAutonomyMode.rawValue)
+            ],
+            detail: "governance denied write_file"
+        )
+
+        #expect(body?.contains("治理真相：预设 A1/S1 · 当前生效 A1/S2 · 审查 Periodic · 节奏 心跳 15m / 脉冲 30m / 脑暴 off · 来源 兼容旧执行面预设。") == true)
+        #expect(body?.contains("当前项目执行档位不允许写文件。") == true)
+    }
 }

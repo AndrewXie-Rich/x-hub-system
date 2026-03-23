@@ -27,11 +27,11 @@ enum AXProjectExecutionTier: String, Codable, CaseIterable, Sendable {
         case .a0Observe:
             return "只读项目记忆和状态，给建议，但不自动落任务。"
         case .a1Plan:
-            return "可以把目标整理成 job / plan，并回写 project memory，但不直接执行 repo 或设备动作。"
+            return "可以把目标整理成工单 / 计划，并回写项目记忆，但不直接执行仓库或设备动作。"
         case .a2RepoAuto:
-            return "可在 project root 内自主改文件、跑 build/test 并更新计划，仍不碰高风险执行面。"
+            return "可在项目根目录内自主改文件、跑 build / test 并更新计划，仍不碰高风险执行面。"
         case .a3DeliverAuto:
-            return "围绕单个 project 连续推进到交付完成，可自动收口并回写总结。"
+            return "围绕单个项目连续推进到交付完成，可自动收口并回写总结。"
         case .a4OpenClaw:
             return "在受治理前提下使用完整 Agent 执行面，包含 browser / device / connector / extension。"
         }
@@ -47,13 +47,13 @@ enum AXProjectExecutionTier: String, Codable, CaseIterable, Sendable {
             ]
         case .a1Plan:
             return [
-                "创建 job / plan",
-                "回写 project memory",
+                "创建工单 / 计划",
+                "回写项目记忆",
                 "整理执行方案"
             ]
         case .a2RepoAuto:
             return [
-                "改 project root 文件",
+                "改项目根目录文件",
                 "跑 build / test",
                 "做 patch 并更新计划"
             ]
@@ -102,9 +102,9 @@ enum AXProjectExecutionTier: String, Codable, CaseIterable, Sendable {
             ]
         case .a4OpenClaw:
             return [
-                "不能绕过 trusted automation readiness",
+                "不能绕过受治理自动化就绪检查",
                 "不能绕过 Hub 授权 / allowlist",
-                "不能绕过 TTL / kill-switch / audit trail"
+                "不能绕过 TTL / 紧急回收 / 审计轨迹"
             ]
         }
     }

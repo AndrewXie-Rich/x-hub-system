@@ -69,13 +69,14 @@ Project route diagnose: coder
         )
 
         #expect(recommendation.modelId == "openai/gpt-4.1")
+        #expect(recommendation.kind == .continueWithoutSwitch)
         #expect(recommendation.message.contains("openai/gpt-4.1"))
 
         let actionTitle = RouteDiagnoseMessagePresentation.actionTitle(
             for: recommendation,
             models: models
         )
-        #expect(actionTitle.contains("改用"))
+        #expect(actionTitle.contains("固定成"))
         #expect(actionTitle.contains("GPT 4.1"))
     }
 
@@ -135,7 +136,11 @@ Project route diagnose: coder
             RouteDiagnoseMessagePresentation.title(
                 for: .openChooseModel,
                 inProgress: false
-            ) == "检查已加载远端"
+            ) == "检查 XT AI 模型"
+        )
+        #expect(
+            RouteDiagnoseMessagePresentation.helperText(for: .openChooseModel)
+                .contains("只有你想固定当前配置时，再手动切")
         )
     }
 
@@ -217,10 +222,29 @@ Project route diagnose: coder
             )
         )
 
-        #expect(context.title == "路由诊断：检查已加载远端")
-        #expect(context.detail?.contains("requested=openai/gpt-5.4") == true)
-        #expect(context.detail?.contains("actual=openai/gpt-5.4") == true)
-        #expect(context.detail?.contains("reason=model_not_found") == true)
+        #expect(context.title == "路由诊断：检查 XT AI 模型")
+        #expect(context.detail?.contains("configured route=openai/gpt-5.4") == true)
+        #expect(context.detail?.contains("actual route=Hub (Remote) -> openai/gpt-5.4 [local_fallback_after_remote_error]") == true)
+        #expect(context.detail?.contains("fallback reason=目标模型当前不在可执行清单里（model_not_found）") == true)
+    }
+
+    @Test
+    func focusContextForChooseModelUsesPassiveFallbackWhenRememberedRemoteWillBeAutoTried() throws {
+        let context = try #require(
+            RouteDiagnoseMessagePresentation.focusContext(
+                for: .openChooseModel,
+                latestEvent: nil,
+                recommendation: HubModelPickerRecommendationState(
+                    kind: .continueWithoutSwitch,
+                    modelId: "openai/gpt-4.1",
+                    message: "XT 会先自动改试 remembered remote。"
+                )
+            )
+        )
+
+        #expect(context.title == "路由诊断：检查 XT AI 模型")
+        #expect(context.detail?.contains("不用手动切模型") == true)
+        #expect(context.detail?.contains("自动改试上次稳定远端") == true)
     }
 
     @Test
@@ -255,9 +279,10 @@ Project route diagnose: coder
             )
         )
 
-        #expect(context.title == "路由诊断：检查 coder 模型设置")
-        #expect(context.detail?.contains("requested=openai/gpt-5.4") == true)
-        #expect(context.detail?.contains("reason=model_not_found") == true)
+        #expect(context.title == "路由诊断：检查 AI 模型页签")
+        #expect(context.detail?.contains("configured route=openai/gpt-5.4") == true)
+        #expect(context.detail?.contains("fallback reason=目标模型当前不在可执行清单里（model_not_found）") == true)
+        #expect(context.detail?.contains("真实可用视图") == true)
     }
 
     @Test
@@ -340,8 +365,9 @@ Project route diagnose: coder
         let chooseModel = try #require(
             RouteDiagnoseMessagePresentation.actionOpenedNotice(for: .openChooseModel)
         )
-        #expect(chooseModel.title == "已打开 Choose Model")
+        #expect(chooseModel.title == "已打开 XT AI 模型")
         #expect(chooseModel.detail.contains("loaded"))
+        #expect(chooseModel.detail.contains("不一定需要立刻手动切模型"))
 
         let recovery = try #require(
             RouteDiagnoseMessagePresentation.actionOpenedNotice(for: .openHubRecovery)
@@ -363,9 +389,10 @@ Project route diagnose: coder
     @Test
     func directSettingsEntryNoticesExplainNextCheck() {
         let modelSettings = RouteDiagnoseMessagePresentation.modelSettingsOpenedNotice()
-        #expect(modelSettings.title == "已打开 coder 模型设置")
+        #expect(modelSettings.title == "已打开 Supervisor Control Center · AI 模型")
         #expect(modelSettings.detail.contains("override"))
         #expect(modelSettings.detail.contains("loaded"))
+        #expect(modelSettings.detail.contains("真实可用模型视图"))
 
         let diagnostics = RouteDiagnoseMessagePresentation.diagnosticsOpenedNotice()
         #expect(diagnostics.title == "已打开 XT Diagnostics")
@@ -388,7 +415,7 @@ Project route diagnose: coder
         let chooseModel = RouteDiagnoseMessagePresentation.railFeedbackPlan(
             for: .repairSurfaceOpened(.openChooseModel)
         )
-        #expect(try #require(chooseModel.notice).title == "已打开 Choose Model")
+        #expect(try #require(chooseModel.notice).title == "已打开 XT AI 模型")
         #expect(chooseModel.shouldHighlight)
 
         let recovery = RouteDiagnoseMessagePresentation.railFeedbackPlan(
@@ -415,7 +442,7 @@ Project route diagnose: coder
         let modelSettings = RouteDiagnoseMessagePresentation.railFeedbackPlan(
             for: .modelSettingsOpened
         )
-        #expect(try #require(modelSettings.notice).title == "已打开 coder 模型设置")
+        #expect(try #require(modelSettings.notice).title == "已打开 Supervisor Control Center · AI 模型")
         #expect(modelSettings.shouldHighlight)
 
         let diagnostics = RouteDiagnoseMessagePresentation.railFeedbackPlan(
