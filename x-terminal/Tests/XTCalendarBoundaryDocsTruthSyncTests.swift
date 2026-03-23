@@ -35,15 +35,15 @@ struct XTCalendarBoundaryDocsTruthSyncTests {
         let hubStore = try read(
             root.appendingPathComponent("x-hub/macos/RELFlowHub/Sources/RELFlowHub/HubStore.swift")
         )
-        let hubMenu = try read(
-            root.appendingPathComponent("x-hub/macos/RELFlowHub/Sources/RELFlowHub/HubMenuView.swift")
+        let hubUIStrings = try read(
+            root.appendingPathComponent("x-hub/macos/RELFlowHub/Sources/RELFlowHub/HubUIStrings.swift")
         )
         let xtSettings = try read(
             root.appendingPathComponent("x-terminal/Sources/UI/SupervisorSettingsView.swift")
         )
 
-        #expect(hubStore.contains("Calendar moved to X-Terminal"))
-        #expect(hubMenu.contains("Calendar reminders moved to X-Terminal Supervisor so Hub launch stays permission-free."))
+        #expect(hubStore.contains("日历已迁移到 X-Terminal"))
+        #expect(hubUIStrings.contains("日历提醒已经迁到 X-Terminal Supervisor，这样 Hub 启动时就不需要再申请日历权限。"))
         #expect(!hubStore.contains("CalendarPipeline"))
         #expect(!hubStore.contains("requestCalendarAccessAndStart"))
         #expect(!hubStore.contains("requestNotificationAuthorizationIfNeeded"))
@@ -69,8 +69,8 @@ struct XTCalendarBoundaryDocsTruthSyncTests {
             "x-hub/macos/RELFlowHub/Sources/RELFlowHub/CalendarPipeline.swift"
         )
 
-        #expect(installDoctor.contains("stable Accessibility permissions and helper launch paths"))
-        #expect(installDoctor.contains("drag X-Hub.app into /Applications"))
+        #expect(installDoctor.contains("为了让辅助功能权限和辅助进程启动路径保持稳定"))
+        #expect(installDoctor.contains("请把 X-Hub.app 拖到 /Applications，然后从那里重新打开。"))
         #expect(!installDoctor.contains("Calendar/Accessibility permissions"))
         #expect(!installDoctor.contains("X-Hub Dock Agent.app / X-Hub Bridge.app"))
 

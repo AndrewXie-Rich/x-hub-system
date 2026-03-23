@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+REPO_ROOT="$(cd "${ROOT_DIR}/.." && pwd)"
 REPORT_DIR="${XT_W3_36_REPORT_DIR:-${ROOT_DIR}/build/reports}"
 REPORT_FILE="${XT_W3_36_REPORT_FILE:-${REPORT_DIR}/xt_w3_36_project_governance_evidence.v1.json}"
 LOG_DIR="${XT_W3_36_LOG_DIR:-${REPORT_DIR}/xt_w3_36_project_governance_logs}"
@@ -10,9 +11,71 @@ BUILD_LOG="${LOG_DIR}/swift-build.log"
 SWIFT_CHECK_HOME="${XT_W3_36_SWIFT_HOME:-${ROOT_DIR}/.axcoder/swift-home}"
 SWIFT_CLANG_CACHE="${XT_W3_36_CLANG_MODULE_CACHE:-${ROOT_DIR}/.build/clang-module-cache}"
 SWIFT_SCRATCH_PATH="${XT_W3_36_SWIFT_SCRATCH_PATH:-${ROOT_DIR}/.build/xt_w3_36_gate}"
+SOURCE_SNAPSHOT_DIR="${XT_W3_36_SOURCE_SNAPSHOT_DIR:-${REPO_ROOT}/build/.xt_w3_36_source_snapshot}"
+PACKAGE_ROOT="${SOURCE_SNAPSHOT_DIR}/x-terminal"
 
-mkdir -p "${REPORT_DIR}" "${LOG_DIR}" "${SWIFT_CHECK_HOME}" "${SWIFT_CLANG_CACHE}" "${SWIFT_SCRATCH_PATH}"
+mkdir -p "${REPORT_DIR}" "${SWIFT_CHECK_HOME}" "${SWIFT_CLANG_CACHE}" "${SWIFT_SCRATCH_PATH}"
+rm -rf "${LOG_DIR}"
+mkdir -p "${LOG_DIR}"
 : > "${CASE_TABLE}"
+rm -f "${REPORT_FILE}"
+
+rm -rf "${SOURCE_SNAPSHOT_DIR}"
+mkdir -p "${SOURCE_SNAPSHOT_DIR}"
+
+sync_tree() {
+  local source_path="$1"
+  local destination_path="$2"
+  mkdir -p "$(dirname "${destination_path}")"
+  rsync -a --delete \
+    --exclude '.git' \
+    --exclude '*/.git' \
+    --exclude '.axcoder' \
+    --exclude '*/.axcoder' \
+    --exclude '.ax-test-cache' \
+    --exclude '*/.ax-test-cache' \
+    --exclude '.scratch' \
+    --exclude '*/.scratch' \
+    --exclude '.scratch-*' \
+    --exclude '*/.scratch-*' \
+    --exclude '.scratch-memory*' \
+    --exclude '*/.scratch-memory*' \
+    --exclude '.scratch-registry' \
+    --exclude '*/.scratch-registry' \
+    --exclude '.sandbox_home' \
+    --exclude '*/.sandbox_home' \
+    --exclude '.sandbox_tmp' \
+    --exclude '*/.sandbox_tmp' \
+    --exclude '.clang-module-cache' \
+    --exclude '*/.clang-module-cache' \
+    --exclude '.swift-module-cache' \
+    --exclude '*/.swift-module-cache' \
+    --exclude '.build' \
+    --exclude '*/.build' \
+    --exclude 'build' \
+    --exclude '*/build' \
+    --exclude '.xt_w3_36_source_snapshot' \
+    --exclude '*/.xt_w3_36_source_snapshot' \
+    --exclude '.swiftpm' \
+    --exclude '*/.swiftpm' \
+    --exclude '.DS_Store' \
+    --exclude '*/.DS_Store' \
+    --exclude 'node_modules' \
+    --exclude '*/node_modules' \
+    "${source_path}" "${destination_path}"
+}
+
+sync_file() {
+  local source_path="$1"
+  local destination_path="$2"
+  mkdir -p "$(dirname "${destination_path}")"
+  cp -f "${source_path}" "${destination_path}"
+}
+
+sync_tree "${REPO_ROOT}/x-terminal/" "${SOURCE_SNAPSHOT_DIR}/x-terminal/"
+sync_tree "${REPO_ROOT}/docs/" "${SOURCE_SNAPSHOT_DIR}/docs/"
+sync_file "${REPO_ROOT}/README.md" "${SOURCE_SNAPSHOT_DIR}/README.md"
+sync_file "${REPO_ROOT}/X_MEMORY.md" "${SOURCE_SNAPSHOT_DIR}/X_MEMORY.md"
 
 overall_ok=1
 invalid_governance_combo_execution_count=0
@@ -64,7 +127,7 @@ run_case() {
   local cmd_status="0"
 
   if (
-    cd "${ROOT_DIR}"
+    cd "${PACKAGE_ROOT}"
     HOME="${SWIFT_CHECK_HOME}" \
     CLANG_MODULE_CACHE_PATH="${SWIFT_CLANG_CACHE}" \
       swift test --disable-sandbox --skip-build --scratch-path "${SWIFT_SCRATCH_PATH}" --filter "${filter}" >"${log_file}" 2>&1
@@ -90,7 +153,7 @@ run_case() {
 build_status="passed"
 build_exit_code="0"
 if (
-  cd "${ROOT_DIR}"
+  cd "${PACKAGE_ROOT}"
   HOME="${SWIFT_CHECK_HOME}" \
   CLANG_MODULE_CACHE_PATH="${SWIFT_CLANG_CACHE}" \
     swift build --disable-sandbox --build-tests --scratch-path "${SWIFT_SCRATCH_PATH}" >"${BUILD_LOG}" 2>&1
@@ -116,9 +179,27 @@ run_case \
   ""
 
 run_case \
+  "create_project_governance_transition" \
+  "CreateProjectGovernanceTransitionTests" \
+  "create flow keeps review cadence while enforcing minimum supervisor floor and normalized triggers" \
+  "invalid_governance_combo_execution_count"
+
+run_case \
   "project_governance_presentation_summary" \
   "ProjectGovernancePresentationSummaryTests" \
   "governance badge/home summary keeps invalid-warning-clamp messaging stable" \
+  ""
+
+run_case \
+  "project_detail_governance_summary" \
+  "ProjectDetailGovernanceSummaryTests" \
+  "project detail summary keeps execution tier, supervisor tier, clamp, and guidance signals readable" \
+  ""
+
+run_case \
+  "project_governance_docs_truth_sync" \
+  "ProjectGovernanceDocsTruthSyncTests" \
+  "docs truth stays aligned with A-tier/S-tier/Heartbeat-and-Review governance language" \
   ""
 
 run_case \
@@ -150,6 +231,60 @@ run_case \
   "ProjectModelGovernanceBindingTests" \
   "multi-project card binding resolves stable project context before root fallback" \
   ""
+
+run_case \
+  "appmodel_multi_project_governance" \
+  "AppModelMultiProjectGovernanceTests" \
+  "new project creation paths stay conservative by default and do not reintroduce legacy overgrant" \
+  "legacy_project_overgrant_after_migration"
+
+run_case \
+  "supervisor_auto_launch_policy" \
+  "SupervisorAutoLaunchPolicyTests" \
+  "one-shot auto-launch policy follows execution tier and refuses legacy shadow escalation" \
+  "legacy_project_overgrant_after_migration"
+
+run_case \
+  "supervisor_multilane_flow" \
+  "SupervisorMultilaneFlowTests" \
+  "lane allocation and child project materialization prefer governance tiers over legacy autonomyLevel shadows" \
+  "legacy_project_overgrant_after_migration"
+
+run_case \
+  "directed_unblock_router" \
+  "DirectedUnblockRouterTests" \
+  "directed unblock resume flow stays scoped after conservative governance default tightening" \
+  ""
+
+run_case \
+  "supervisor_runtime_reliability_kernel" \
+  "SupervisorRuntimeReliabilityKernelTests" \
+  "runtime failure, cancel, and fallback cleanup paths stay deterministic under governed execution" \
+  ""
+
+run_case \
+  "supervisor_auto_continue_executor" \
+  "SupervisorAutoContinueExecutorTests" \
+  "auto-continue resumes dependency-ready lanes without bypassing governed follow-up checkpoints" \
+  ""
+
+run_case \
+  "supervisor_intake_acceptance" \
+  "SupervisorIntakeAcceptanceTests" \
+  "project intake and acceptance workflows keep governed bootstrap and fail-closed validation boundaries intact" \
+  ""
+
+run_case \
+  "delivery_scope_freeze" \
+  "DeliveryScopeFreezeTests" \
+  "delivery freeze keeps validated scope boundaries fail-closed before governed continuation or replay" \
+  ""
+
+run_case \
+  "task_assigner_governance" \
+  "TaskAssignerGovernanceTests" \
+  "task assignment prefers execution and supervisor governance tiers over misleading legacy autonomyLevel shadows" \
+  "legacy_project_overgrant_after_migration"
 
 run_case \
   "tool_runtime_governance_clamp" \
@@ -208,6 +343,124 @@ const rows = fs.readFileSync(caseTable, "utf8")
 
 const passedCount = rows.filter((row) => row.status === "passed").length;
 const failedCount = rows.filter((row) => row.status !== "passed").length;
+const caseById = new Map(rows.map((row) => [row.case_id, row]));
+
+function coverageItem(key, label, caseIds, capabilities) {
+  const supportingCases = caseIds
+    .map((caseId) => caseById.get(caseId))
+    .filter(Boolean)
+    .map((row) => ({
+      case_id: row.case_id,
+      filter: row.filter,
+      status: row.status
+    }));
+
+  return {
+    key,
+    label,
+    covered: supportingCases.length === caseIds.length && supportingCases.every((row) => row.status === "passed"),
+    capabilities,
+    supporting_cases: supportingCases
+  };
+}
+
+const reviewGuidanceChain = [
+  coverageItem(
+    "review_policy_resolution",
+    "Supervisor review policy resolution and event trigger scheduling",
+    ["supervisor_review_policy_engine"],
+    ["review_trigger_resolution", "intervention_policy_resolution"]
+  ),
+  coverageItem(
+    "cadence_editing_and_visibility",
+    "Review cadence editing and governance visibility stay aligned across create/settings/detail surfaces",
+    [
+      "project_settings_governance_ui",
+      "create_project_governance_transition",
+      "project_detail_governance_summary"
+    ],
+    ["review_cadence_editing", "trigger_normalization", "detail_visibility"]
+  ),
+  coverageItem(
+    "guidance_queue_and_ack",
+    "Guidance queue state, pending ack visibility, and ack durability remain tracked",
+    [
+      "project_governance_activity_presentation",
+      "supervisor_guidance_injection_store"
+    ],
+    ["guidance_queue", "ack_tracking", "pending_ack_visibility"]
+  ),
+  coverageItem(
+    "safe_point_delivery",
+    "Guidance delivery respects safe-point boundaries before interruption",
+    ["supervisor_safe_point_coordinator"],
+    ["safe_point_delivery", "interrupt_boundary_control"]
+  ),
+  coverageItem(
+    "dependency_ready_follow_up",
+    "Dependency-ready auto-continue keeps governed follow-up checkpoints intact",
+    ["supervisor_auto_continue_executor"],
+    ["dependency_ready_resume", "follow_up_checkpoint_respect"]
+  )
+];
+const reviewGuidanceCoveredCount = reviewGuidanceChain.filter((item) => item.covered).length;
+const ingressRuntimeChain = [
+  coverageItem(
+    "intake_acceptance_boundaries",
+    "Project intake, bootstrap binding, and acceptance validation stay fail-closed",
+    ["supervisor_intake_acceptance"],
+    ["project_intake_bootstrap_binding", "acceptance_fail_closed_validation"]
+  ),
+  coverageItem(
+    "scope_freeze_enforcement",
+    "Validated delivery scope freeze stays enforced before replay or governed continuation",
+    ["delivery_scope_freeze"],
+    ["validated_scope_freeze", "replay_scope_fail_closed"]
+  ),
+  coverageItem(
+    "assignment_prefers_governance_tiers",
+    "Lane and task assignment prefer execution/supervisor tiers over legacy autonomyLevel shadows",
+    ["task_assigner_governance", "supervisor_multilane_flow"],
+    ["task_assignment_governance", "lane_materialization_governance"]
+  ),
+  coverageItem(
+    "creation_and_launch_overgrant_guard",
+    "Project creation and one-shot launch paths refuse legacy-shadow overgrant",
+    ["appmodel_multi_project_governance", "supervisor_auto_launch_policy"],
+    ["conservative_project_creation", "one_shot_launch_overgrant_guard"]
+  ),
+  coverageItem(
+    "runtime_capability_clamp",
+    "Runtime capability clamp and deny paths stay governed at tool execution time",
+    ["tool_runtime_governance_clamp", "tool_executor_runtime_policy"],
+    ["runtime_capability_clamp", "tool_deny_path_governance"]
+  )
+];
+const ingressRuntimeCoveredCount = ingressRuntimeChain.filter((item) => item.covered).length;
+const reviewGuidanceCapabilities = Array.from(
+  new Set(reviewGuidanceChain.flatMap((item) => item.capabilities || []))
+);
+const ingressRuntimeCapabilities = Array.from(
+  new Set(ingressRuntimeChain.flatMap((item) => item.capabilities || []))
+);
+const governanceCoverageDigest = {
+  review_guidance: {
+    covered_count: reviewGuidanceCoveredCount,
+    total_count: reviewGuidanceChain.length,
+    covered_labels: reviewGuidanceChain.filter((item) => item.covered).map((item) => item.label),
+    capabilities: reviewGuidanceCapabilities
+  },
+  ingress_runtime: {
+    covered_count: ingressRuntimeCoveredCount,
+    total_count: ingressRuntimeChain.length,
+    covered_labels: ingressRuntimeChain.filter((item) => item.covered).map((item) => item.label),
+    capabilities: ingressRuntimeCapabilities
+  }
+};
+governanceCoverageDigest.human_summary_lines = [
+  `review_guidance ${governanceCoverageDigest.review_guidance.covered_count}/${governanceCoverageDigest.review_guidance.total_count}: ${governanceCoverageDigest.review_guidance.covered_labels.join("; ")}`,
+  `ingress_runtime ${governanceCoverageDigest.ingress_runtime.covered_count}/${governanceCoverageDigest.ingress_runtime.total_count}: ${governanceCoverageDigest.ingress_runtime.covered_labels.join("; ")}`
+];
 
 const report = {
   schema_version: "xt_w3_36_project_governance_evidence.v1",
@@ -217,7 +470,11 @@ const report = {
     build_status: process.env.build_status,
     build_exit_code: Number(process.env.build_exit_code),
     passed_case_count: passedCount,
-    failed_case_count: failedCount
+    failed_case_count: failedCount,
+    review_guidance_covered_dimension_count: reviewGuidanceCoveredCount,
+    review_guidance_total_dimension_count: reviewGuidanceChain.length,
+    ingress_runtime_covered_dimension_count: ingressRuntimeCoveredCount,
+    ingress_runtime_total_dimension_count: ingressRuntimeChain.length
   },
   metrics: {
     invalid_governance_combo_execution_count: Number(process.env.invalid_governance_combo_execution_count || "0"),
@@ -228,6 +485,13 @@ const report = {
   evidence: {
     build_log: process.env.BUILD_LOG,
     cases: rows
+  },
+  coverage: {
+    review_guidance_chain: reviewGuidanceChain,
+    ingress_runtime_chain: ingressRuntimeChain
+  },
+  digest: {
+    governance_coverage: governanceCoverageDigest
   }
 };
 

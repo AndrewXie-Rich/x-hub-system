@@ -25,6 +25,7 @@ fail_lines=()
 
 coverage_xt_w3_08_status="PASS"
 coverage_xt_w3_36_status="SKIP"
+coverage_xt_w3_40_status="SKIP"
 coverage_crk_w1_08_status="PASS"
 coverage_cm_w5_20_status="PASS"
 coverage_xt_w3_36_required=0
@@ -56,6 +57,12 @@ coverage_release_evidence_matrix_validator_regression_log_path="(not checked)"
 coverage_project_governance_evidence_report_path="(not checked)"
 coverage_project_governance_evidence_log_dir="(not checked)"
 coverage_project_governance_metrics_summary="(not checked)"
+coverage_project_governance_digest_summary="(not checked)"
+coverage_calendar_boundary_evidence_report_path="(not checked)"
+coverage_calendar_boundary_evidence_log_dir="(not checked)"
+coverage_calendar_boundary_digest_summary="(not checked)"
+coverage_calendar_real_device_report_path="(not checked)"
+coverage_calendar_real_device_digest_summary="(not checked)"
 
 note_pass() {
   pass_count=$((pass_count + 1))
@@ -1207,11 +1214,114 @@ const summary = report.summary || {};
 if (Number(summary.failed_case_count || 0) !== 0) {
   throw new Error(`failed_case_count must be 0, got ${summary.failed_case_count}`);
 }
+const reviewGuidanceCovered = Number(summary.review_guidance_covered_dimension_count || 0);
+const reviewGuidanceTotal = Number(summary.review_guidance_total_dimension_count || 0);
+if (reviewGuidanceTotal <= 0) {
+  throw new Error("review_guidance_total_dimension_count must be > 0");
+}
+if (reviewGuidanceCovered !== reviewGuidanceTotal) {
+  throw new Error(
+    `review guidance coverage incomplete: ${reviewGuidanceCovered}/${reviewGuidanceTotal}`
+  );
+}
+const ingressRuntimeCovered = Number(summary.ingress_runtime_covered_dimension_count || 0);
+const ingressRuntimeTotal = Number(summary.ingress_runtime_total_dimension_count || 0);
+if (ingressRuntimeTotal <= 0) {
+  throw new Error("ingress_runtime_total_dimension_count must be > 0");
+}
+if (ingressRuntimeCovered !== ingressRuntimeTotal) {
+  throw new Error(
+    `ingress/runtime coverage incomplete: ${ingressRuntimeCovered}/${ingressRuntimeTotal}`
+  );
+}
 const metrics = report.metrics || {};
 for (const [key, value] of Object.entries(metrics)) {
   if (Number(value) !== 0) {
     throw new Error(`${key} must be 0, got ${value}`);
   }
+}
+const coverage = report.coverage || {};
+const reviewChain = Array.isArray(coverage.review_guidance_chain) ? coverage.review_guidance_chain : [];
+if (reviewChain.length !== reviewGuidanceTotal) {
+  throw new Error(
+    `review_guidance_chain length mismatch: expected ${reviewGuidanceTotal}, got ${reviewChain.length}`
+  );
+}
+if (reviewChain.some((item) => item.covered !== true)) {
+  throw new Error("review_guidance_chain must report every dimension as covered");
+}
+const ingressRuntimeChain = Array.isArray(coverage.ingress_runtime_chain) ? coverage.ingress_runtime_chain : [];
+if (ingressRuntimeChain.length !== ingressRuntimeTotal) {
+  throw new Error(
+    `ingress_runtime_chain length mismatch: expected ${ingressRuntimeTotal}, got ${ingressRuntimeChain.length}`
+  );
+}
+if (ingressRuntimeChain.some((item) => item.covered !== true)) {
+  throw new Error("ingress_runtime_chain must report every dimension as covered");
+}
+const digest = report.digest || {};
+const governanceCoverage = digest.governance_coverage || {};
+const reviewGuidanceDigest = governanceCoverage.review_guidance || {};
+const ingressRuntimeDigest = governanceCoverage.ingress_runtime || {};
+if (Number(reviewGuidanceDigest.covered_count || 0) !== reviewGuidanceCovered) {
+  throw new Error(
+    `digest.review_guidance.covered_count mismatch: expected ${reviewGuidanceCovered}, got ${reviewGuidanceDigest.covered_count}`
+  );
+}
+if (Number(reviewGuidanceDigest.total_count || 0) !== reviewGuidanceTotal) {
+  throw new Error(
+    `digest.review_guidance.total_count mismatch: expected ${reviewGuidanceTotal}, got ${reviewGuidanceDigest.total_count}`
+  );
+}
+const reviewGuidanceLabels = Array.isArray(reviewGuidanceDigest.covered_labels)
+  ? reviewGuidanceDigest.covered_labels
+  : [];
+if (reviewGuidanceLabels.length !== reviewGuidanceCovered) {
+  throw new Error(
+    `digest.review_guidance.covered_labels length mismatch: expected ${reviewGuidanceCovered}, got ${reviewGuidanceLabels.length}`
+  );
+}
+const reviewGuidanceCapabilities = Array.isArray(reviewGuidanceDigest.capabilities)
+  ? reviewGuidanceDigest.capabilities
+  : [];
+if (reviewGuidanceCapabilities.length === 0) {
+  throw new Error("digest.review_guidance.capabilities must not be empty");
+}
+if (Number(ingressRuntimeDigest.covered_count || 0) !== ingressRuntimeCovered) {
+  throw new Error(
+    `digest.ingress_runtime.covered_count mismatch: expected ${ingressRuntimeCovered}, got ${ingressRuntimeDigest.covered_count}`
+  );
+}
+if (Number(ingressRuntimeDigest.total_count || 0) !== ingressRuntimeTotal) {
+  throw new Error(
+    `digest.ingress_runtime.total_count mismatch: expected ${ingressRuntimeTotal}, got ${ingressRuntimeDigest.total_count}`
+  );
+}
+const ingressRuntimeLabels = Array.isArray(ingressRuntimeDigest.covered_labels)
+  ? ingressRuntimeDigest.covered_labels
+  : [];
+if (ingressRuntimeLabels.length !== ingressRuntimeCovered) {
+  throw new Error(
+    `digest.ingress_runtime.covered_labels length mismatch: expected ${ingressRuntimeCovered}, got ${ingressRuntimeLabels.length}`
+  );
+}
+const ingressRuntimeCapabilities = Array.isArray(ingressRuntimeDigest.capabilities)
+  ? ingressRuntimeDigest.capabilities
+  : [];
+if (ingressRuntimeCapabilities.length === 0) {
+  throw new Error("digest.ingress_runtime.capabilities must not be empty");
+}
+const humanSummaryLines = Array.isArray(governanceCoverage.human_summary_lines)
+  ? governanceCoverage.human_summary_lines
+  : [];
+if (humanSummaryLines.length < 2) {
+  throw new Error("governance_coverage.human_summary_lines must include review and ingress summaries");
+}
+if (!humanSummaryLines.some((line) => typeof line === "string" && line.startsWith("review_guidance "))) {
+  throw new Error("governance_coverage.human_summary_lines must include review_guidance summary");
+}
+if (!humanSummaryLines.some((line) => typeof line === "string" && line.startsWith("ingress_runtime "))) {
+  throw new Error("governance_coverage.human_summary_lines must include ingress_runtime summary");
 }
 NODE
   then
@@ -1219,19 +1329,176 @@ NODE
 const fs = require("fs");
 const report = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 const metrics = report.metrics || {};
+const summary = report.summary || {};
 console.log(
   `invalid_combo=${Number(metrics.invalid_governance_combo_execution_count || 0)}, ` +
   `guidance_ack=${Number(metrics.guidance_without_ack_tracking || 0)}, ` +
   `device_under_subminimum=${Number(metrics.device_action_under_subminimum_supervision || 0)}, ` +
-  `legacy_overgrant=${Number(metrics.legacy_project_overgrant_after_migration || 0)}`
+  `legacy_overgrant=${Number(metrics.legacy_project_overgrant_after_migration || 0)}, ` +
+  `review_guidance=${Number(summary.review_guidance_covered_dimension_count || 0)}/${Number(summary.review_guidance_total_dimension_count || 0)}, ` +
+  `ingress_runtime=${Number(summary.ingress_runtime_covered_dimension_count || 0)}/${Number(summary.ingress_runtime_total_dimension_count || 0)}`
 );
 NODE
 )"
+    digest_summary="$(node - "${report_json}" <<'NODE'
+const fs = require("fs");
+const report = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const digest = (((report || {}).digest || {}).governance_coverage || {});
+const lines = Array.isArray(digest.human_summary_lines) ? digest.human_summary_lines : [];
+console.log(lines.join(" | "));
+NODE
+)"
     coverage_project_governance_metrics_summary="${metrics_summary}"
+    coverage_project_governance_digest_summary="${digest_summary}"
     note_pass "${gate_name}: governance evidence schema validated (${report_json})"
   else
     mark_status_fail coverage_xt_w3_36_status
     note_fail "${gate_name}: governance evidence schema invalid (see ${validate_log})"
+  fi
+}
+
+run_gate_calendar_boundary_evidence() {
+  local gate_name="XT-W3-40 / Calendar Boundary Evidence"
+  local release_preset="${XT_GATE_RELEASE_PRESET:-0}"
+  local enabled_default="0"
+  local enabled
+  local checker="${ROOT_DIR}/scripts/ci/xt_w3_40_calendar_boundary_evidence.sh"
+  local report_json="${REPORT_DIR}/xt_w3_40_calendar_boundary_evidence.v1.json"
+  local report_log_dir="${REPORT_DIR}/xt_w3_40_calendar_boundary_logs"
+  local log_file="/tmp/xt_gate_calendar_boundary_evidence.log"
+  local validate_log="/tmp/xt_gate_calendar_boundary_evidence_validate.log"
+  local digest_summary
+
+  if [[ "${release_preset}" == "1" ]]; then
+    enabled_default="1"
+  fi
+  enabled="${XT_GATE_VALIDATE_CALENDAR_BOUNDARY:-${enabled_default}}"
+
+  if [[ "${enabled}" != "0" && "${enabled}" != "1" ]]; then
+    note_fail "${gate_name}: invalid XT_GATE_VALIDATE_CALENDAR_BOUNDARY=${enabled} (expected 0|1)"
+    mark_status_fail coverage_xt_w3_40_status
+    return
+  fi
+
+  if [[ "${enabled}" != "1" ]]; then
+    return
+  fi
+
+  if [[ ! -f "${checker}" ]]; then
+    note_fail "${gate_name}: checker script missing (${checker})"
+    mark_status_fail coverage_xt_w3_40_status
+    return
+  fi
+
+  coverage_calendar_boundary_evidence_report_path="${report_json}"
+  coverage_calendar_boundary_evidence_log_dir="${report_log_dir}"
+
+  if (
+    cd "${ROOT_DIR}" \
+      && XT_W3_40_REPORT_DIR="${REPORT_DIR}" \
+      XT_W3_40_REPORT_FILE="${report_json}" \
+      XT_W3_40_LOG_DIR="${report_log_dir}" \
+      bash "${checker}" >"${log_file}" 2>&1
+  ); then
+    coverage_xt_w3_40_status="PASS"
+    note_pass "${gate_name}: calendar boundary evidence passed (${report_json})"
+  else
+    mark_status_fail coverage_xt_w3_40_status
+    note_fail "${gate_name}: calendar boundary evidence failed (see ${log_file})"
+    return
+  fi
+
+  if [[ ! -f "${report_json}" ]]; then
+    mark_status_fail coverage_xt_w3_40_status
+    note_fail "${gate_name}: calendar boundary evidence report missing (${report_json})"
+    return
+  fi
+
+  if node - "${report_json}" >"${validate_log}" 2>&1 <<'NODE'
+const fs = require("fs");
+const reportPath = process.argv[2];
+const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
+if (report.schema_version !== "xt_w3_40_calendar_boundary_evidence.v1") {
+  throw new Error(`unexpected schema_version=${report.schema_version}`);
+}
+if (report.ok !== true) {
+  throw new Error("calendar boundary evidence ok must be true");
+}
+const summary = report.summary || {};
+if (Number(summary.failed_case_count || 0) !== 0) {
+  throw new Error(`failed_case_count must be 0, got ${summary.failed_case_count}`);
+}
+const total = Number(summary.total_dimension_count || 0);
+const covered = Number(summary.covered_dimension_count || 0);
+if (total <= 0) {
+  throw new Error("total_dimension_count must be > 0");
+}
+if (covered !== total) {
+  throw new Error(`covered_dimension_count must equal total_dimension_count (${covered}/${total})`);
+}
+const coverage = report.coverage || {};
+const chain = Array.isArray(coverage.calendar_boundary_chain) ? coverage.calendar_boundary_chain : [];
+if (chain.length !== total) {
+  throw new Error(`calendar_boundary_chain length mismatch: expected ${total}, got ${chain.length}`);
+}
+if (chain.some((item) => item.covered !== true)) {
+  throw new Error("calendar_boundary_chain must report every dimension as covered");
+}
+const digest = report.digest?.human_summary;
+if (typeof digest !== "string" || digest.trim() === "") {
+  throw new Error("digest.human_summary must be non-empty");
+}
+console.log(digest.trim());
+NODE
+  then
+    digest_summary="$(tail -n 1 "${validate_log}" | tr -d '\r')"
+    coverage_calendar_boundary_digest_summary="${digest_summary}"
+    note_pass "${gate_name}: calendar boundary evidence schema validated (${report_json})"
+  else
+    mark_status_fail coverage_xt_w3_40_status
+    note_fail "${gate_name}: calendar boundary evidence schema invalid (see ${validate_log})"
+  fi
+}
+
+run_gate_calendar_real_device_smoke_evidence() {
+  local gate_name="XT-W3-40 / Real-Device Smoke Evidence"
+  local enabled="${XT_GATE_VALIDATE_CALENDAR_REAL_DEVICE_SMOKE:-0}"
+  local validator="${ROOT_DIR}/scripts/ci/xt_w3_40_real_device_smoke_validate.sh"
+  local template_script="${ROOT_DIR}/scripts/ci/xt_w3_40_real_device_smoke_template.sh"
+  local report_json="${XT_W3_40_REAL_SMOKE_REPORT_FILE:-${ROOT_DIR}/build/reports/xt_w3_40_real_device_smoke_evidence.v1.json}"
+  local validate_log="/tmp/xt_gate_calendar_real_device_smoke_validate.log"
+  local digest_summary
+
+  if [[ "${enabled}" != "0" && "${enabled}" != "1" ]]; then
+    note_fail "${gate_name}: invalid XT_GATE_VALIDATE_CALENDAR_REAL_DEVICE_SMOKE=${enabled} (expected 0|1)"
+    mark_status_fail coverage_xt_w3_40_status
+    return
+  fi
+
+  if [[ "${enabled}" != "1" ]]; then
+    return
+  fi
+
+  coverage_calendar_real_device_report_path="${report_json}"
+
+  if [[ ! -f "${validator}" ]]; then
+    note_fail "${gate_name}: validator missing (${validator})"
+    mark_status_fail coverage_xt_w3_40_status
+    return
+  fi
+
+  if XT_W3_40_REQUIRE_PASS=1 bash "${validator}" "${report_json}" >"${validate_log}" 2>&1; then
+    digest_summary="$(tail -n 1 "${validate_log}" | tr -d '\r')"
+    coverage_calendar_real_device_digest_summary="${digest_summary}"
+    coverage_xt_w3_40_status="PASS"
+    note_pass "${gate_name}: real-device smoke evidence validated (${report_json})"
+  else
+    mark_status_fail coverage_xt_w3_40_status
+    if [[ -f "${template_script}" ]]; then
+      note_fail "${gate_name}: real-device smoke evidence invalid or missing (see ${validate_log}); template helper: ${template_script}"
+    else
+      note_fail "${gate_name}: real-device smoke evidence invalid or missing (see ${validate_log})"
+    fi
   fi
 }
 
@@ -1574,12 +1841,13 @@ render_report() {
     echo
     echo "- decision: ${release_decision}"
     echo "- criteria: fail_count=0 and XT-W3-08/CRK-W1-08/CM-W5-20 all PASS and ${xt_w3_36_required_clause}"
-    echo "- observed: fail_count=${fail_count}, XT-W3-08=${coverage_xt_w3_08_status}, XT-W3-36=${coverage_xt_w3_36_status} (${xt_w3_36_observed_suffix}), CRK-W1-08=${coverage_crk_w1_08_status}, CM-W5-20=${coverage_cm_w5_20_status}"
+    echo "- observed: fail_count=${fail_count}, XT-W3-08=${coverage_xt_w3_08_status}, XT-W3-36=${coverage_xt_w3_36_status} (${xt_w3_36_observed_suffix}), XT-W3-40=${coverage_xt_w3_40_status}, CRK-W1-08=${coverage_crk_w1_08_status}, CM-W5-20=${coverage_cm_w5_20_status}"
     echo
     echo "## 新增工单ID覆盖区块"
     echo
     echo "- XT-W3-08: ${coverage_xt_w3_08_status}"
     echo "- XT-W3-36: ${coverage_xt_w3_36_status}"
+    echo "- XT-W3-40: ${coverage_xt_w3_40_status}"
     echo "- CRK-W1-08: ${coverage_crk_w1_08_status}"
     echo "- CM-W5-20: ${coverage_cm_w5_20_status}"
     echo "- evidence.doctor_report: ${coverage_doctor_report_path}"
@@ -1607,6 +1875,12 @@ render_report() {
     echo "- evidence.project_governance_report: ${coverage_project_governance_evidence_report_path}"
     echo "- evidence.project_governance_log_dir: ${coverage_project_governance_evidence_log_dir}"
     echo "- evidence.project_governance_metrics: ${coverage_project_governance_metrics_summary}"
+    echo "- evidence.project_governance_digest: ${coverage_project_governance_digest_summary}"
+    echo "- evidence.calendar_boundary_report: ${coverage_calendar_boundary_evidence_report_path}"
+    echo "- evidence.calendar_boundary_log_dir: ${coverage_calendar_boundary_evidence_log_dir}"
+    echo "- evidence.calendar_boundary_digest: ${coverage_calendar_boundary_digest_summary}"
+    echo "- evidence.calendar_real_device_report: ${coverage_calendar_real_device_report_path}"
+    echo "- evidence.calendar_real_device_digest: ${coverage_calendar_real_device_digest_summary}"
     echo "- evidence.report_index: ${REPORT_INDEX_FILE}"
     echo
     if (( ${#fail_lines[@]} > 0 )); then
@@ -1638,6 +1912,7 @@ render_report() {
   COVERAGE_XT_W3_08="${coverage_xt_w3_08_status}" \
   COVERAGE_XT_W3_36="${coverage_xt_w3_36_status}" \
   COVERAGE_XT_W3_36_REQUIRED="${coverage_xt_w3_36_required}" \
+  COVERAGE_XT_W3_40="${coverage_xt_w3_40_status}" \
   COVERAGE_CRK_W1_08="${coverage_crk_w1_08_status}" \
   COVERAGE_CM_W5_20="${coverage_cm_w5_20_status}" \
   EVIDENCE_DOCTOR_REPORT="${coverage_doctor_report_path}" \
@@ -1665,6 +1940,12 @@ render_report() {
   EVIDENCE_PROJECT_GOVERNANCE_REPORT="${coverage_project_governance_evidence_report_path}" \
   EVIDENCE_PROJECT_GOVERNANCE_LOG_DIR="${coverage_project_governance_evidence_log_dir}" \
   EVIDENCE_PROJECT_GOVERNANCE_METRICS="${coverage_project_governance_metrics_summary}" \
+  EVIDENCE_PROJECT_GOVERNANCE_DIGEST="${coverage_project_governance_digest_summary}" \
+  EVIDENCE_CALENDAR_BOUNDARY_REPORT="${coverage_calendar_boundary_evidence_report_path}" \
+  EVIDENCE_CALENDAR_BOUNDARY_LOG_DIR="${coverage_calendar_boundary_evidence_log_dir}" \
+  EVIDENCE_CALENDAR_BOUNDARY_DIGEST="${coverage_calendar_boundary_digest_summary}" \
+  EVIDENCE_CALENDAR_REAL_DEVICE_REPORT="${coverage_calendar_real_device_report_path}" \
+  EVIDENCE_CALENDAR_REAL_DEVICE_DIGEST="${coverage_calendar_real_device_digest_summary}" \
   node - <<'NODE'
 const fs = require("fs");
 const path = require("path");
@@ -1684,6 +1965,7 @@ const report = {
   coverage: {
     "XT-W3-08": process.env.COVERAGE_XT_W3_08 || "",
     "XT-W3-36": process.env.COVERAGE_XT_W3_36 || "",
+    "XT-W3-40": process.env.COVERAGE_XT_W3_40 || "",
     "CRK-W1-08": process.env.COVERAGE_CRK_W1_08 || "",
     "CM-W5-20": process.env.COVERAGE_CM_W5_20 || ""
   },
@@ -1703,12 +1985,23 @@ const report = {
     release_evidence_matrix_validator_regression_log:
       process.env.EVIDENCE_RELEASE_EVIDENCE_MATRIX_VALIDATOR_REGRESSION_LOG || "",
     project_governance_report: process.env.EVIDENCE_PROJECT_GOVERNANCE_REPORT || "",
-    project_governance_log_dir: process.env.EVIDENCE_PROJECT_GOVERNANCE_LOG_DIR || ""
+    project_governance_log_dir: process.env.EVIDENCE_PROJECT_GOVERNANCE_LOG_DIR || "",
+    calendar_boundary_report: process.env.EVIDENCE_CALENDAR_BOUNDARY_REPORT || "",
+    calendar_boundary_log_dir: process.env.EVIDENCE_CALENDAR_BOUNDARY_LOG_DIR || "",
+    calendar_real_device_report: process.env.EVIDENCE_CALENDAR_REAL_DEVICE_REPORT || ""
   },
   project_governance_regression: {
     required: process.env.COVERAGE_XT_W3_36_REQUIRED === "1",
     status: process.env.COVERAGE_XT_W3_36 || "",
-    metrics_summary: process.env.EVIDENCE_PROJECT_GOVERNANCE_METRICS || ""
+    metrics_summary: process.env.EVIDENCE_PROJECT_GOVERNANCE_METRICS || "",
+    digest_summary: process.env.EVIDENCE_PROJECT_GOVERNANCE_DIGEST || ""
+  },
+  calendar_boundary_regression: {
+    status: process.env.COVERAGE_XT_W3_40 || "",
+    digest_summary: process.env.EVIDENCE_CALENDAR_BOUNDARY_DIGEST || ""
+  },
+  calendar_real_device_evidence: {
+    digest_summary: process.env.EVIDENCE_CALENDAR_REAL_DEVICE_DIGEST || ""
   },
   split_audit_summary: {
     overridden_events: Number(process.env.EVIDENCE_SPLIT_AUDIT_OVERRIDDEN_EVENTS || "0"),
@@ -1753,6 +2046,8 @@ main() {
   run_gate_split_flow_runtime_policy_regression
   run_gate_release_evidence_matrix_regression
   run_gate_project_governance_evidence
+  run_gate_calendar_boundary_evidence
+  run_gate_calendar_real_device_smoke_evidence
   render_report
 
   echo "[xt-gate] report: ${REPORT_FILE}"

@@ -20,10 +20,14 @@ if [ "$USE_BUILD_SNAPSHOT" = "1" ]; then
   rsync -a --delete \
     --exclude '.build' \
     --exclude '.scratch' \
+    --exclude '.scratch-*' \
+    --exclude '.scratch-memory*' \
+    --exclude '.scratch-registry' \
     --exclude '.sandbox_home' \
     --exclude '.sandbox_tmp' \
     --exclude '.clang-module-cache' \
     --exclude '.swift-module-cache' \
+    --exclude '.ax-test-cache' \
     --exclude '.DS_Store' \
     "$XT_DIR/" "$SNAPSHOT_DIR/"
   BUILD_SRC_DIR="$SNAPSHOT_DIR"

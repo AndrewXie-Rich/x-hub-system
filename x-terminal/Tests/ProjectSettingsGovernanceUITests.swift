@@ -64,7 +64,7 @@ struct ProjectSettingsGovernanceUITests {
 
         #expect(presentation.effectiveExecutionTier == nil)
         #expect(presentation.capabilityLabels.contains("device.tools"))
-        #expect(presentation.clampSummary.contains("trusted automation readiness"))
+        #expect(presentation.clampSummary.contains("受治理自动化就绪检查"))
     }
 
     @Test
@@ -96,7 +96,11 @@ struct ProjectSettingsGovernanceUITests {
         #expect(AXProjectExecutionTier.a0Observe.allowedHighlights.contains("读项目记忆"))
         #expect(AXProjectExecutionTier.a1Plan.oneLineSummary.contains("job / plan"))
         #expect(AXProjectExecutionTier.a2RepoAuto.defaultBudgetSummary.contains("45m run"))
-        #expect(AXProjectExecutionTier.a4OpenClaw.blockedHighlights.contains(where: { $0.contains("kill-switch") }))
+        #expect(
+            AXProjectExecutionTier.a4OpenClaw.blockedHighlights.contains(
+                where: { $0.contains("TTL") && $0.contains("紧急回收") && $0.contains("审计轨迹") }
+            )
+        )
     }
 
     @Test
