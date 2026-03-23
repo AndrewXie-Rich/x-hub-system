@@ -1316,13 +1316,37 @@ messages:
                     flow.lastPromptVisibleGuidanceInjectionId = promptBuild.visiblePendingGuidanceInjectionId
                     let prompt = promptBuild.prompt
                     recordAwaitingModel(ctx: ctx, detail: "awaiting finalize_only response")
-                    let out = try await llmGenerate(
-                        role: .coder,
+                    let finalizeOnlyUsageFields: [String: Any] = [
+                        "memory_v1_source": promptBuild.memory.source,
+                        "memory_v1_longterm_mode": promptBuild.memory.longtermMode as Any,
+                        "memory_v1_retrieval_available": promptBuild.memory.retrievalAvailable as Any,
+                        "memory_v1_fulltext_not_loaded": promptBuild.memory.fulltextNotLoaded as Any,
+                        "memory_v1_tokens_est": promptBuild.memory.usedTokens as Any,
+                        "memory_v1_budget_tokens": promptBuild.memory.budgetTokens as Any,
+                        "memory_v1_truncated_layers": promptBuild.memory.truncatedLayers,
+                        "memory_v1_redacted_items": promptBuild.memory.redactedItems as Any,
+                        "memory_v1_private_drops": promptBuild.memory.privateDrops as Any,
+                        "prompt_compact_mode": true,
+                    ]
+                    let (out, strictFailure) = try await projectCoderGenerateWithRouteTruth(
+                        stage: "chat_finalize_only",
                         prompt: prompt,
                         router: router,
+                        ctx: ctx,
+                        config: flow.config,
                         assistantIndexForStreaming: assistantIndex,
-                        visibleStreamMode: .finalOrPlainText
+                        visibleStreamMode: .finalOrPlainText,
+                        extraUsageFields: finalizeOnlyUsageFields
                     )
+                    if let strictFailure {
+                        finalizeTurn(
+                            ctx: ctx,
+                            userText: userText,
+                            assistantText: strictFailure,
+                            assistantIndex: assistantIndex
+                        )
+                        return
+                    }
 
                     switch parseToolActionEnvelope(from: out) {
                     case .envelope(let env):
@@ -1481,30 +1505,7 @@ messages:
                 )
                 flow.lastPromptVisibleGuidanceInjectionId = promptBuild.visiblePendingGuidanceInjectionId
                 let prompt = promptBuild.prompt
-                let (out, usage, routeDecision) = try await llmGenerateWithUsage(
-                    role: .coder,
-                    prompt: prompt,
-                    router: router,
-                    assistantIndexForStreaming: assistantIndex,
-                    visibleStreamMode: .finalOrPlainText
-                )
-                appendAssistantProgress(assistantIndex: assistantIndex, line: "我在整理这一步的执行方案。")
-
-                // Log usage for the planning step.
-                var usageEntry: [String: Any] = [
-                    "type": "ai_usage",
-                    "created_at": Date().timeIntervalSince1970,
-                    "stage": "chat_plan",
-                    "role": "coder",
-                    "provider": router.provider(for: .coder).displayName,
-                    "task_type": router.taskType(for: .coder),
-                    "prompt_chars": prompt.count,
-                    "output_chars": out.count,
-                    "prompt_tokens": usage?.promptTokens as Any,
-                    "output_tokens": usage?.completionTokens as Any,
-                    "token_source": (usage != nil) ? "provider" : "estimate",
-                    "prompt_tokens_est": TokenEstimator.estimateTokens(prompt),
-                    "output_tokens_est": TokenEstimator.estimateTokens(out),
+                let planningUsageFields: [String: Any] = [
                     "memory_v1_source": promptBuild.memory.source,
                     "memory_v1_longterm_mode": promptBuild.memory.longtermMode as Any,
                     "memory_v1_retrieval_available": promptBuild.memory.retrievalAvailable as Any,
@@ -1516,53 +1517,18 @@ messages:
                     "memory_v1_private_drops": promptBuild.memory.privateDrops as Any,
                     "prompt_compact_mode": true,
                 ]
-                if let requested = usage?.requestedModelId, !requested.isEmpty {
-                    usageEntry["requested_model_id"] = requested
-                }
-                if let actual = usage?.actualModelId, !actual.isEmpty {
-                    usageEntry["actual_model_id"] = actual
-                }
-                if let provider = usage?.runtimeProvider, !provider.isEmpty {
-                    usageEntry["runtime_provider"] = provider
-                }
-                if let path = usage?.executionPath, !path.isEmpty {
-                    usageEntry["execution_path"] = path
-                }
-                if let reason = usage?.fallbackReasonCode, !reason.isEmpty {
-                    usageEntry["fallback_reason_code"] = reason
-                }
-                if let auditRef = usage?.auditRef, !auditRef.isEmpty {
-                    usageEntry["audit_ref"] = auditRef
-                }
-                if let denyCode = usage?.denyCode, !denyCode.isEmpty {
-                    usageEntry["deny_code"] = denyCode
-                }
-                if let projectExplainability = promptBuild.memory.projectExplainability {
-                    for (key, value) in projectExplainability.usageFields {
-                        usageEntry[key] = value
-                    }
-                }
-                if usage?.remoteRetryAttempted == true {
-                    usageEntry["remote_retry_attempted"] = true
-                }
-                if let retryFrom = usage?.remoteRetryFromModelId, !retryFrom.isEmpty {
-                    usageEntry["remote_retry_from_model_id"] = retryFrom
-                }
-                if let retryTo = usage?.remoteRetryToModelId, !retryTo.isEmpty {
-                    usageEntry["remote_retry_to_model_id"] = retryTo
-                }
-                if let retryReason = usage?.remoteRetryReasonCode, !retryReason.isEmpty {
-                    usageEntry["remote_retry_reason_code"] = retryReason
-                }
-                AXProjectStore.appendUsage(usageEntry, for: ctx)
-
-                let configuredModelId = routeDecision.configuredModelId
-                    ?? configuredProjectModelID(for: .coder, config: flow.config, router: router)
-                if let strictFailure = strictProjectRemoteModelMismatchResponse(
-                    configuredModelId: configuredModelId,
-                    routeDecision: routeDecision,
-                    usage: usage
-                ) {
+                let (out, strictFailure) = try await projectCoderGenerateWithRouteTruth(
+                    stage: "chat_plan",
+                    prompt: prompt,
+                    router: router,
+                    ctx: ctx,
+                    config: flow.config,
+                    assistantIndexForStreaming: assistantIndex,
+                    visibleStreamMode: .finalOrPlainText,
+                    extraUsageFields: planningUsageFields
+                )
+                appendAssistantProgress(assistantIndex: assistantIndex, line: "我在整理这一步的执行方案。")
+                if let strictFailure {
                     finalizeTurn(
                         ctx: ctx,
                         userText: userText,
@@ -1581,7 +1547,27 @@ messages:
                     // The model didn't follow the JSON-only contract (common with local models). Try one repair round.
                     if !flow.formatRetryUsed {
                         flow.formatRetryUsed = true
-                        let repaired = try await llmGenerate(role: .coder, prompt: formatRepairPrompt(original: out), router: router)
+                        let repairPrompt = formatRepairPrompt(original: out)
+                        let (repaired, strictFailure) = try await projectCoderGenerateWithRouteTruth(
+                            stage: "chat_format_repair",
+                            prompt: repairPrompt,
+                            router: router,
+                            ctx: ctx,
+                            config: flow.config,
+                            extraUsageFields: [
+                                "repair_kind": "format_contract",
+                                "repair_source_stage": "chat_plan"
+                            ]
+                        )
+                        if let strictFailure {
+                            finalizeTurn(
+                                ctx: ctx,
+                                userText: userText,
+                                assistantText: strictFailure,
+                                assistantIndex: assistantIndex
+                            )
+                            return
+                        }
                         let repairedParse = parseToolActionEnvelope(from: repaired)
                         if case .envelope(let env2) = repairedParse {
                             env = env2
@@ -1616,14 +1602,31 @@ messages:
                 if let final = env.final, !final.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     if shouldRepairImmediateExecution(flow: flow, assistantText: final) {
                         flow.executionRetryUsed = true
-                        let repaired = try await llmGenerate(
-                            role: .coder,
-                            prompt: immediateExecutionRepairPrompt(
-                                basePrompt: prompt,
-                                previousResponse: final
-                            ),
-                            router: router
+                        let repairPrompt = immediateExecutionRepairPrompt(
+                            basePrompt: prompt,
+                            previousResponse: final
                         )
+                        let (repaired, strictFailure) = try await projectCoderGenerateWithRouteTruth(
+                            stage: "chat_execution_repair",
+                            prompt: repairPrompt,
+                            router: router,
+                            ctx: ctx,
+                            config: flow.config,
+                            extraUsageFields: [
+                                "repair_kind": "immediate_execution",
+                                "repair_source_stage": "chat_plan",
+                                "repair_previous_response": "final"
+                            ]
+                        )
+                        if let strictFailure {
+                            finalizeTurn(
+                                ctx: ctx,
+                                userText: userText,
+                                assistantText: strictFailure,
+                                assistantIndex: assistantIndex
+                            )
+                            return
+                        }
                         if case .envelope(let repairedEnv) = parseToolActionEnvelope(from: repaired),
                            immediateExecutionRepairProducedExecutableResult(repairedEnv) {
                             env = repairedEnv
@@ -1700,14 +1703,31 @@ messages:
                 if calls.isEmpty {
                     if shouldRepairImmediateExecution(flow: flow, assistantText: "(no action)") {
                         flow.executionRetryUsed = true
-                        let repaired = try await llmGenerate(
-                            role: .coder,
-                            prompt: immediateExecutionRepairPrompt(
-                                basePrompt: prompt,
-                                previousResponse: "(no action)"
-                            ),
-                            router: router
+                        let repairPrompt = immediateExecutionRepairPrompt(
+                            basePrompt: prompt,
+                            previousResponse: "(no action)"
                         )
+                        let (repaired, strictFailure) = try await projectCoderGenerateWithRouteTruth(
+                            stage: "chat_execution_repair",
+                            prompt: repairPrompt,
+                            router: router,
+                            ctx: ctx,
+                            config: flow.config,
+                            extraUsageFields: [
+                                "repair_kind": "immediate_execution",
+                                "repair_source_stage": "chat_plan",
+                                "repair_previous_response": "(no_action)"
+                            ]
+                        )
+                        if let strictFailure {
+                            finalizeTurn(
+                                ctx: ctx,
+                                userText: userText,
+                                assistantText: strictFailure,
+                                assistantIndex: assistantIndex
+                            )
+                            return
+                        }
                         if case .envelope(let repairedEnv) = parseToolActionEnvelope(from: repaired),
                            immediateExecutionRepairProducedExecutableResult(repairedEnv) {
                             if let final = repairedEnv.final, !final.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -2217,7 +2237,7 @@ messages:
         activeConfig = cfg
         try? AXProjectStore.saveConfig(cfg, for: ctx)
 
-        if assessment?.isExactMatchLoaded == true {
+        if AXProjectModelRouteMemoryStore.isDirectlyRunnable(assessment: assessment) {
             return "已将 coder 模型设置为：\(mid)"
         }
         if snapshot.models.isEmpty {
@@ -2299,7 +2319,7 @@ messages:
         cfg = cfg.settingModelOverride(role: role, modelId: modelArg)
         activeConfig = cfg
         try? AXProjectStore.saveConfig(cfg, for: ctx)
-        if assessment?.isExactMatchLoaded == true {
+        if AXProjectModelRouteMemoryStore.isDirectlyRunnable(assessment: assessment) {
             return "已将 \(role.rawValue) 模型设置为：\(modelArg)"
         }
         if snapshot.models.isEmpty {
@@ -2319,12 +2339,14 @@ messages:
         assistantIndex: Int
     ) {
         Task {
-            async let routeSnapshot = HubAIClient.shared.loadModelsState()
+            async let displaySnapshot = HubAIClient.shared.loadModelsState()
+            async let routeDecisionSnapshot = HubAIClient.shared.loadRouteDecisionModelsState()
             async let localSnapshot = HubAIClient.shared.loadModelsState(transportOverride: .fileIPC)
             let reply = slashModelsText(
                 ctx: ctx,
                 config: config,
-                snapshot: await routeSnapshot,
+                snapshot: await displaySnapshot,
+                routeDecisionSnapshot: await routeDecisionSnapshot,
                 localSnapshot: await localSnapshot
             )
             finalizeTurn(ctx: ctx, userText: userText, assistantText: reply, assistantIndex: assistantIndex)
@@ -2339,7 +2361,7 @@ messages:
         assistantIndex: Int
     ) {
         Task {
-            async let routeSnapshot = HubAIClient.shared.loadModelsState()
+            async let routeSnapshot = HubAIClient.shared.loadRouteDecisionModelsState()
             async let localSnapshot = HubAIClient.shared.loadModelsState(transportOverride: .fileIPC)
             let reply = projectRouteDiagnosisText(
                 ctx: ctx,
@@ -3227,10 +3249,12 @@ Tool policy:
         ctx: AXProjectContext? = nil,
         config: AXProjectConfig?,
         snapshot: ModelStateSnapshot? = nil,
+        routeDecisionSnapshot: ModelStateSnapshot? = nil,
         localSnapshot: ModelStateSnapshot? = nil
     ) -> String {
         let baseSnapshot = modelsSnapshotForSlash(snapshot: snapshot)
-        let resolvedLocalSnapshot = modelsSnapshotForSlash(snapshot: localSnapshot ?? snapshot)
+        let resolvedRouteDecisionSnapshot = modelsSnapshotForSlash(snapshot: routeDecisionSnapshot ?? snapshot)
+        let resolvedLocalSnapshot = modelsSnapshotForSlash(snapshot: localSnapshot ?? routeDecisionSnapshot ?? snapshot)
         let current = config?.modelOverride(for: .coder)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let models = HubModelSelectionAdvisor.loadedModels(in: baseSnapshot)
         let inventory = HubModelSelectionAdvisor.allModels(in: baseSnapshot)
@@ -3240,7 +3264,7 @@ Tool policy:
             configuredModelId: current,
             role: .coder,
             ctx: ctx,
-            snapshot: baseSnapshot,
+            snapshot: resolvedRouteDecisionSnapshot,
             localSnapshot: resolvedLocalSnapshot
         )
         let routeMemory = ctx.flatMap { AXProjectModelRouteMemoryStore.load(for: $0, role: .coder) }
@@ -3250,7 +3274,7 @@ Tool policy:
             lines.append("状态：当前 project 没有固定 model id，会按全局/Hub 路由继续尝试。")
         } else {
             lines.append("当前 coder 模型：\(current)")
-            lines.append("状态：\(slashConfiguredModelStatusText(configuredModelId: current, snapshot: baseSnapshot))")
+            lines.append("状态：\(slashConfiguredModelStatusText(configuredModelId: current, snapshot: resolvedRouteDecisionSnapshot))")
         }
         lines.append("当前 transport：\(mode)")
         if routeDecision.forceLocalExecution,
@@ -3272,7 +3296,7 @@ Tool policy:
             configuredModelId: current,
             routeDecision: routeDecision,
             routeMemory: routeMemory,
-            snapshot: baseSnapshot
+            snapshot: resolvedRouteDecisionSnapshot
         ) {
             lines.append(routeStatus)
         }
@@ -3356,7 +3380,7 @@ Tool policy:
             requestedId: configured,
             snapshot: snapshot
         )
-        guard configuredAssessment?.isExactMatchLoaded == true else {
+        guard AXProjectModelRouteMemoryStore.isDirectlyRunnable(assessment: configuredAssessment) else {
             return nil
         }
         return "路由状态：之前因连续 fallback 触发的本地锁已自动解除；`\(configured)` 现在恢复可执行。"
@@ -3415,7 +3439,7 @@ Tool policy:
         snapshot: ModelStateSnapshot
     ) -> Bool {
         guard !snapshot.models.isEmpty, let assessment else { return false }
-        return !assessment.isExactMatchLoaded
+        return !AXProjectModelRouteMemoryStore.isDirectlyRunnable(assessment: assessment)
     }
 
     private struct SlashModelSelectionPreflightGuidance {
@@ -3449,7 +3473,7 @@ Tool policy:
                 requestedId: rememberedRaw,
                 snapshot: snapshot
             )
-            let rememberedLoaded = rememberedAssessment?.isExactMatchLoaded == true
+            let rememberedLoaded = AXProjectModelRouteMemoryStore.isDirectlyRunnable(assessment: rememberedAssessment)
             let rememberedCommand = slashModelSelectionCommand(role: role, modelId: rememberedRaw)
             let requestedCommand = slashModelSelectionCommand(role: role, modelId: requestedModelId)
 
@@ -3614,9 +3638,13 @@ Tool policy:
             return "当前没有固定模型。"
         }
 
-        if assessment.isExactMatchLoaded, let exact = assessment.exactMatch {
+        if AXProjectModelRouteMemoryStore.isDirectlyRunnable(assessment: assessment),
+           let exact = assessment.exactMatch {
             let locality = isRemoteModelForSlash(exact) ? "远端" : "本地"
-            return "已加载，可直接执行（\(locality)）。"
+            if exact.state == .loaded {
+                return "已加载，可直接执行（\(locality)）。"
+            }
+            return "Hub inventory 已精确命中；当前会继续按远端执行尝试（\(locality)，状态=\(HubModelSelectionAdvisor.stateLabel(exact.state))）。"
         }
         if let blocked = assessment.nonInteractiveExactMatch {
             return "当前命中的是非对话模型：`\(blocked.id)`。\(blocked.interactiveRoutingDisabledReason ?? "这个模型属于非对话能力，会由 Supervisor 按需调用，不作为对话模型。")"
@@ -3637,7 +3665,7 @@ Tool policy:
         ) else {
             return []
         }
-        guard !assessment.isExactMatchLoaded else { return [] }
+        guard !AXProjectModelRouteMemoryStore.isDirectlyRunnable(assessment: assessment) else { return [] }
 
         var lines = [
             "检查 Hub -> Models，确认 `\(configuredModelId)` 已加载。",
@@ -3940,10 +3968,12 @@ Tool policy:
            !preferred.isEmpty,
            let configured = decision.configuredModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
            !configured.isEmpty,
-           HubModelSelectionAdvisor.assess(
-                requestedId: configured,
-                snapshot: routeSnapshot
-           )?.isExactMatchLoaded == true {
+           AXProjectModelRouteMemoryStore.isDirectlyRunnable(
+                assessment: HubModelSelectionAdvisor.assess(
+                    requestedId: configured,
+                    snapshot: routeSnapshot
+                )
+           ) {
             return "之前的本地锁已自动解除；当前按配置继续尝试：\(preferred)"
         }
         if let preferred = decision.preferredModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -4143,10 +4173,12 @@ Tool policy:
         if let routeMemory,
            routeMemory.shouldSuggestLocalModeNotice,
            !configuredModelId.isEmpty,
-           HubModelSelectionAdvisor.assess(
-                requestedId: configuredModelId,
-                snapshot: routeSnapshot
-           )?.isExactMatchLoaded == true {
+           AXProjectModelRouteMemoryStore.isDirectlyRunnable(
+                assessment: HubModelSelectionAdvisor.assess(
+                    requestedId: configuredModelId,
+                    snapshot: routeSnapshot
+                )
+           ) {
             if transport == .fileIPC {
                 return "从 XT 这层看，之前因连续 fallback 触发的项目级本地锁已经解除；只是当前 transport 是 fileIPC，所以这轮本来就不会强制走远端。先把 transport 切回 `/hub route auto` 或 `/hub route grpc` 再验证。"
             }
@@ -5100,12 +5132,14 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         ctx: AXProjectContext? = nil,
         config: AXProjectConfig?,
         snapshot: ModelStateSnapshot,
+        routeDecisionSnapshot: ModelStateSnapshot? = nil,
         localSnapshot: ModelStateSnapshot? = nil
     ) -> String {
         slashModelsText(
             ctx: ctx,
             config: config,
             snapshot: snapshot,
+            routeDecisionSnapshot: routeDecisionSnapshot,
             localSnapshot: localSnapshot
         )
     }
@@ -5138,7 +5172,7 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
     ) {
         ensureLoaded(ctx: ctx, limit: 200)
         Task {
-            async let routeSnapshot = HubAIClient.shared.loadModelsState()
+            async let routeSnapshot = HubAIClient.shared.loadRouteDecisionModelsState()
             async let localSnapshot = HubAIClient.shared.loadModelsState(transportOverride: .fileIPC)
             let assistantText = projectRouteDiagnosisText(
                 ctx: ctx,
@@ -5583,6 +5617,120 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         return t
     }
 
+    private func appendProjectCoderUsage(
+        ctx: AXProjectContext,
+        router: LLMRouter,
+        stage: String,
+        prompt: String,
+        output: String,
+        usage: LLMUsage?,
+        extraFields: [String: Any] = [:]
+    ) {
+        var usageEntry: [String: Any] = [
+            "type": "ai_usage",
+            "created_at": Date().timeIntervalSince1970,
+            "stage": stage,
+            "role": AXRole.coder.rawValue,
+            "provider": router.provider(for: .coder).displayName,
+            "task_type": router.taskType(for: .coder),
+            "prompt_chars": prompt.count,
+            "output_chars": output.count,
+            "prompt_tokens": usage?.promptTokens as Any,
+            "output_tokens": usage?.completionTokens as Any,
+            "token_source": (usage != nil) ? "provider" : "estimate",
+            "prompt_tokens_est": TokenEstimator.estimateTokens(prompt),
+            "output_tokens_est": TokenEstimator.estimateTokens(output),
+        ]
+
+        for (key, value) in extraFields {
+            usageEntry[key] = value
+        }
+        if let requested = usage?.requestedModelId, !requested.isEmpty {
+            usageEntry["requested_model_id"] = requested
+        }
+        if let actual = usage?.actualModelId, !actual.isEmpty {
+            usageEntry["actual_model_id"] = actual
+        }
+        if let provider = usage?.runtimeProvider, !provider.isEmpty {
+            usageEntry["runtime_provider"] = provider
+        }
+        if let path = usage?.executionPath, !path.isEmpty {
+            usageEntry["execution_path"] = path
+        }
+        if let reason = usage?.fallbackReasonCode, !reason.isEmpty {
+            usageEntry["fallback_reason_code"] = reason
+        }
+        if let auditRef = usage?.auditRef, !auditRef.isEmpty {
+            usageEntry["audit_ref"] = auditRef
+        }
+        if let denyCode = usage?.denyCode, !denyCode.isEmpty {
+            usageEntry["deny_code"] = denyCode
+        }
+        if usage?.remoteRetryAttempted == true {
+            usageEntry["remote_retry_attempted"] = true
+        }
+        if let retryFrom = usage?.remoteRetryFromModelId, !retryFrom.isEmpty {
+            usageEntry["remote_retry_from_model_id"] = retryFrom
+        }
+        if let retryTo = usage?.remoteRetryToModelId, !retryTo.isEmpty {
+            usageEntry["remote_retry_to_model_id"] = retryTo
+        }
+        if let retryReason = usage?.remoteRetryReasonCode, !retryReason.isEmpty {
+            usageEntry["remote_retry_reason_code"] = retryReason
+        }
+        AXProjectStore.appendUsage(usageEntry, for: ctx)
+    }
+
+    private func strictProjectRemoteModelMismatchResponse(
+        config: AXProjectConfig?,
+        router: LLMRouter,
+        routeDecision: AXProjectPreferredModelRouteDecision,
+        usage: LLMUsage?
+    ) -> String? {
+        let configuredModelId = routeDecision.configuredModelId
+            ?? configuredProjectModelID(for: .coder, config: config, router: router)
+        return strictProjectRemoteModelMismatchResponse(
+            configuredModelId: configuredModelId,
+            routeDecision: routeDecision,
+            usage: usage
+        )
+    }
+
+    private func projectCoderGenerateWithRouteTruth(
+        stage: String,
+        prompt: String,
+        router: LLMRouter,
+        ctx: AXProjectContext,
+        config: AXProjectConfig?,
+        assistantIndexForStreaming: Int? = nil,
+        visibleStreamMode: VisibleLLMStreamMode = .none,
+        extraUsageFields: [String: Any] = [:]
+    ) async throws -> (String, String?) {
+        let (output, usage, routeDecision) = try await llmGenerateWithUsage(
+            role: .coder,
+            prompt: prompt,
+            router: router,
+            assistantIndexForStreaming: assistantIndexForStreaming,
+            visibleStreamMode: visibleStreamMode
+        )
+        appendProjectCoderUsage(
+            ctx: ctx,
+            router: router,
+            stage: stage,
+            prompt: prompt,
+            output: output,
+            usage: usage,
+            extraFields: extraUsageFields
+        )
+        let strictFailure = strictProjectRemoteModelMismatchResponse(
+            config: config,
+            router: router,
+            routeDecision: routeDecision,
+            usage: usage
+        )
+        return (output, strictFailure)
+    }
+
     private func llmGenerateWithUsage(
         role: AXRole,
         prompt: String,
@@ -5593,7 +5741,7 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         let provider = router.provider(for: role)
         let configuredPreferredHub = router.preferredModelIdForHub(for: role, projectConfig: activeConfig)
         let projectContext = currentProjectContextForLLM()
-        async let routeSnapshot = HubAIClient.shared.loadModelsState()
+        async let routeSnapshot = HubAIClient.shared.loadRouteDecisionModelsState()
         async let localSnapshot = HubAIClient.shared.loadModelsState(transportOverride: .fileIPC)
         let modelsSnapshot = await routeSnapshot
         let localModelsSnapshot = await localSnapshot

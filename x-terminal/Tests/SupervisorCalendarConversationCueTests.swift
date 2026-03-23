@@ -20,8 +20,28 @@ struct SupervisorCalendarConversationCueTests {
 
         let reply = try #require(manager.directSupervisorReplyIfApplicableForTesting("说下现在进度"))
 
-        #expect(reply.contains("我来简短说一下《Calendar Cue Project》。"))
+        #expect(reply.contains("⚠️ Hub Brief 暂不可用 · Calendar Cue Project"))
+        #expect(reply.contains("按当前 fail-closed 规则，我先不在 XT 本地即兴拼接 Supervisor brief。"))
         #expect(reply.contains("哦，对了，23 分钟后你有一个Phoenix weekly sync的会议"))
+    }
+
+    @Test
+    func fallbackStatusQueryAlsoUsesHubBriefFailClosedGuardAndKeepsMeetingCue() throws {
+        let now = try #require(isoDate("2026-03-20T09:47:00+08:00"))
+        let meeting = makeMeeting(
+            id: "meeting-1b",
+            title: "Phoenix staff",
+            start: try #require(isoDate("2026-03-20T10:10:00+08:00")),
+            end: try #require(isoDate("2026-03-20T10:40:00+08:00"))
+        )
+        defer { resetCalendarOverrides() }
+        let manager = makeManager(now: now, meetings: [meeting])
+
+        let reply = manager.fallbackSupervisorResponseForTesting("说下现在进度")
+
+        #expect(reply.contains("⚠️ Hub Brief 暂不可用 · Calendar Cue Project"))
+        #expect(reply.contains("按当前 fail-closed 规则，我先不在 XT 本地即兴拼接 Supervisor brief。"))
+        #expect(reply.contains("哦，对了，23 分钟后你有一个Phoenix staff的会议"))
     }
 
     @Test

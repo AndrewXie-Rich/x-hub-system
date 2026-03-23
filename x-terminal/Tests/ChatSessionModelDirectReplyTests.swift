@@ -135,16 +135,18 @@ struct ChatSessionModelDirectReplyTests {
         #expect(rendered.contains("global_coder_assignment=openai/gpt-5-low"))
         #expect(rendered.contains("global_supervisor_assignment=openai/gpt-5-low"))
         #expect(rendered.contains("relation=当前项目有 project override；它会盖过 coder 全局 assignment `openai/gpt-5-low`。Supervisor 仍只看自己的全局 assignment。"))
-        #expect(rendered.contains("当前决策：XT 当前会先锁本地：qwen3-14b-mlx"))
+        #expect(rendered.contains("配置状态：Hub inventory 已精确命中；当前会继续按远端执行尝试（远端，状态=可用未加载）。"))
+        #expect(rendered.contains("当前决策：之前的本地锁已自动解除；当前按配置继续尝试：openai/gpt-5.4"))
         #expect(rendered.contains("route memory"))
         #expect(rendered.contains("consecutive_remote_fallbacks=3"))
         #expect(rendered.contains("异常趋势：最近 3 次主要是 `model_not_found`"))
         #expect(rendered.contains("建议动作：先去 Hub -> Models 确认目标模型已加载"))
+        #expect(rendered.contains("项目级本地锁已经解除"))
         #expect(rendered.contains("提示：project override 会优先于 coder 全局 assignment；Supervisor 只看自己的全局 assignment"))
     }
 
     @Test
-    func routeDiagnoseExplainsRememberedRemoteWillBeTriedAutomatically() throws {
+    func routeDiagnoseShowsConfiguredRemoteAvailableBypassesRememberedFallback() throws {
         let root = try makeProjectRoot(named: "project-route-diagnose-remembered-remote")
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -204,9 +206,11 @@ struct ChatSessionModelDirectReplyTests {
             )
         )
 
-        #expect(rendered.contains("当前决策：当前配置还不能直接执行；XT 这轮会先自动试上次稳定远端：openai/gpt-4.1"))
+        #expect(rendered.contains("配置状态：Hub inventory 已精确命中；当前会继续按远端执行尝试（远端，状态=可用未加载）。"))
+        #expect(rendered.contains("当前决策：按当前配置继续尝试：openai/gpt-5.4"))
         #expect(rendered.contains("判定："))
-        #expect(rendered.contains("XT 当前不会再直接掉回本地；因为 `openai/gpt-5.4` 还不能直接执行，这轮会先自动试上次稳定远端 `openai/gpt-4.1`"))
+        #expect(rendered.contains("XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端"))
+        #expect(!rendered.contains("会先自动试上次稳定远端"))
     }
 
     @Test
@@ -1184,7 +1188,7 @@ struct ChatSessionModelDirectReplyTests {
     }
 
     @Test
-    func modelSlashDoesNotPersistUnavailableCoderModel() throws {
+    func modelSlashPersistsRemoteAvailableCoderModel() throws {
         let root = try makeProjectRoot(named: "project-slash-model-unavailable")
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -1211,14 +1215,12 @@ struct ChatSessionModelDirectReplyTests {
         )
 
         let reloaded = try AXProjectStore.loadOrCreateConfig(for: ctx)
-        #expect(reloaded.modelOverride(for: .coder) == "openai/gpt-4.1")
-        #expect(reply.contains("未修改当前 coder 模型配置。"))
-        #expect(reply.contains("`openai/gpt-5.4` 当前还不能直接执行"))
-        #expect(reply.contains("/model openai/gpt-4.1"))
+        #expect(reloaded.modelOverride(for: .coder) == "openai/gpt-5.4")
+        #expect(reply == "已将 coder 模型设置为：openai/gpt-5.4")
     }
 
     @Test
-    func modelSlashExplainsRememberedRemoteWillBeAutoTriedDuringPreflight() throws {
+    func modelSlashPrefersRequestedRemoteWhenItRemainsAvailable() throws {
         let root = try makeProjectRoot(named: "project-slash-model-preflight-remembered")
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -1274,15 +1276,12 @@ struct ChatSessionModelDirectReplyTests {
         )
 
         let reloaded = try AXProjectStore.loadOrCreateConfig(for: ctx)
-        #expect(reloaded.modelOverride(for: .coder) == "openai/gpt-4.1")
-        #expect(reply.contains("项目路由记忆：`openai/gpt-5.4` 当前还不能直接执行"))
-        #expect(reply.contains("不用手动切模型"))
-        #expect(reply.contains("XT 下一轮会先试 `openai/gpt-4.1`"))
-        #expect(reply.contains("/model openai/gpt-4.1"))
+        #expect(reloaded.modelOverride(for: .coder) == "openai/gpt-5.4")
+        #expect(reply == "已将 coder 模型设置为：openai/gpt-5.4")
     }
 
     @Test
-    func modelSlashExplainsFreshLocalLockDuringPreflight() throws {
+    func modelSlashSkipsProjectLocalLockWhenRequestedRemoteRemainsAvailable() throws {
         let root = try makeProjectRoot(named: "project-slash-model-preflight-local-lock")
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -1328,15 +1327,12 @@ struct ChatSessionModelDirectReplyTests {
         )
 
         let reloaded = try AXProjectStore.loadOrCreateConfig(for: ctx)
-        #expect(reloaded.modelOverride(for: .coder) == "openai/gpt-4.1")
-        #expect(reply.contains("项目路由记忆：这个项目最近连续 3 次没有稳定命中 `openai/gpt-5.4`"))
-        #expect(reply.contains("XT 当前仍会先锁到本地"))
-        #expect(reply.contains("当前项目级本地锁还在"))
-        #expect(reply.contains("/model openai/gpt-4.1"))
+        #expect(reloaded.modelOverride(for: .coder) == "openai/gpt-5.4")
+        #expect(reply == "已将 coder 模型设置为：openai/gpt-5.4")
     }
 
     @Test
-    func modelsSlashExplainsRememberedRemoteWillBeTriedAutomatically() throws {
+    func modelsSlashShowsConfiguredRemoteAvailableAsDirectlyRunnable() throws {
         let root = try makeProjectRoot(named: "project-slash-models-remembered-remote")
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -1394,11 +1390,12 @@ struct ChatSessionModelDirectReplyTests {
             )
         )
 
-        #expect(rendered.contains("路由状态：当前配置的 `openai/gpt-5.4` 还不能直接执行；XT 这轮会先自动试上次稳定远端 `openai/gpt-4.1`，不用手动切模型。"))
+        #expect(rendered.contains("状态：Hub inventory 已精确命中；当前会继续按远端执行尝试（远端，状态=可用未加载）。"))
         #expect(rendered.contains("上次稳定远端模型：openai/gpt-4.1"))
         #expect(rendered.contains("默认加载配置：ctx 128000"))
         #expect(rendered.contains("本地加载上限：ctx 128000"))
         #expect(!rendered.contains("当前 project 已锁到本地模式"))
+        #expect(!rendered.contains("会先自动试上次稳定远端"))
     }
 
     @Test
@@ -1504,7 +1501,7 @@ struct ChatSessionModelDirectReplyTests {
     }
 
     @Test
-    func roleModelSlashDoesNotPersistUnavailableRoleModel() throws {
+    func roleModelSlashPersistsRemoteAvailableRoleModel() throws {
         let root = try makeProjectRoot(named: "project-slash-role-model-unavailable")
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -1531,9 +1528,8 @@ struct ChatSessionModelDirectReplyTests {
         )
 
         let reloaded = try AXProjectStore.loadOrCreateConfig(for: ctx)
-        #expect(reloaded.modelOverride(for: .reviewer) == "anthropic/reviewer-pro")
-        #expect(reply.contains("未修改当前 reviewer 模型配置。"))
-        #expect(reply.contains("/rolemodel reviewer anthropic/reviewer-pro"))
+        #expect(reloaded.modelOverride(for: .reviewer) == "anthropic/reviewer-max")
+        #expect(reply == "已将 reviewer 模型设置为：anthropic/reviewer-max")
     }
 
     @Test

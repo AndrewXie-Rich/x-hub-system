@@ -127,7 +127,7 @@ enum AXProjectModelRouteMemoryStore {
             )
         }
 
-        if configuredAssessment?.isExactMatchLoaded == true {
+        if isDirectlyRunnable(assessment: configuredAssessment) {
             return AXProjectPreferredModelRouteDecision(
                 preferredModelId: configuredModelId,
                 configuredModelId: configuredModelId,
@@ -139,7 +139,7 @@ enum AXProjectModelRouteMemoryStore {
             )
         }
 
-        if rememberedAssessment?.isExactMatchLoaded == true,
+        if isDirectlyRunnable(assessment: rememberedAssessment),
            modelIDsDiffer(rememberedRemoteModelId, configuredModelId) {
             return AXProjectPreferredModelRouteDecision(
                 preferredModelId: rememberedRemoteModelId,
@@ -255,7 +255,7 @@ enum AXProjectModelRouteMemoryStore {
             )
         }
 
-        if configuredAssessment?.isExactMatchLoaded == true {
+        if isDirectlyRunnable(assessment: configuredAssessment) {
             return nil
         }
 
@@ -273,7 +273,7 @@ enum AXProjectModelRouteMemoryStore {
             requestText: requestText
         )
 
-        if rememberedAssessment?.isExactMatchLoaded == true,
+        if isDirectlyRunnable(assessment: rememberedAssessment),
            modelIDsDiffer(remembered, requestText),
            !remembered.isEmpty {
             return "模型路由：\(project.displayName) 当前配置的 `\(requestText)` 还不能直接执行；XT 现在会先试这个项目上次稳定的远端 `\(remembered)`，避免继续直接掉到本地。\(heartbeatRememberedRemoteActionHint(project: project, requestText: requestText, rememberedText: remembered))"
@@ -318,6 +318,10 @@ enum AXProjectModelRouteMemoryStore {
             snapshot: snapshot
         )
 
+        if isDirectlyRunnable(assessment: configuredAssessment) {
+            return nil
+        }
+
         if let routeMemory,
            shouldPreferLocalLock(
                 configuredAssessment: configuredAssessment,
@@ -355,7 +359,7 @@ enum AXProjectModelRouteMemoryStore {
             )
         }
 
-        if rememberedAssessment?.isExactMatchLoaded == true,
+        if isDirectlyRunnable(assessment: rememberedAssessment),
            modelIDsDiffer(rememberedRemoteModelId, configuredModelId),
            let configured = configuredModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
            !configured.isEmpty,
@@ -604,13 +608,22 @@ enum AXProjectModelRouteMemoryStore {
         configuredAssessment: HubModelAvailabilityAssessment?,
         rememberedAssessment: HubModelAvailabilityAssessment?
     ) -> Bool {
-        if configuredAssessment?.isExactMatchLoaded == true {
+        if isDirectlyRunnable(assessment: configuredAssessment) {
             return false
         }
-        if rememberedAssessment?.isExactMatchLoaded == true {
+        if isDirectlyRunnable(assessment: rememberedAssessment) {
             return false
         }
         return true
+    }
+
+    static func isDirectlyRunnable(assessment: HubModelAvailabilityAssessment?) -> Bool {
+        guard let assessment else { return false }
+        guard let exact = assessment.exactMatch else { return false }
+        if exact.state == .loaded {
+            return true
+        }
+        return isRemoteInteractiveModel(exact) && exact.state == .available
     }
 
     private static func firstLoadedLocalModel(in snapshot: ModelStateSnapshot) -> HubModel? {
@@ -650,6 +663,11 @@ enum AXProjectModelRouteMemoryStore {
             return true
         }
         return model.backend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "mlx"
+    }
+
+    private static func isRemoteInteractiveModel(_ model: HubModel) -> Bool {
+        guard model.isSelectableForInteractiveRouting else { return false }
+        return !isLocalModel(model)
     }
 
     private static func resolvedPreferredLocalModelLabel(

@@ -176,7 +176,7 @@ struct AXProjectModelRouteMemoryTests {
     }
 
     @Test
-    func heartbeatNoticeExplainsRememberedRemoteWillBeTriedWhenItHasRecovered() throws {
+    func heartbeatNoticeDisappearsWhenConfiguredRemoteModelRemainsAvailableRemotely() throws {
         let root = try makeProjectRoot(named: "route-memory-heartbeat-remembered")
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -223,24 +223,18 @@ struct AXProjectModelRouteMemoryTests {
             lastEventAt: 300
         )
 
-        let notice = try #require(
-            AXProjectModelRouteMemoryStore.heartbeatNotice(
-                for: entry,
-                snapshot: ModelStateSnapshot(
-                    models: [
-                        makeModel(id: "openai/gpt-5.4", state: .available),
-                        makeModel(id: "openai/gpt-4.1", state: .loaded),
-                        makeModel(id: "qwen3-14b-mlx", state: .loaded, backend: "mlx", modelPath: "/models/qwen3")
-                    ],
-                    updatedAt: 400
-                )
+        let notice = AXProjectModelRouteMemoryStore.heartbeatNotice(
+            for: entry,
+            snapshot: ModelStateSnapshot(
+                models: [
+                    makeModel(id: "openai/gpt-5.4", state: .available),
+                    makeModel(id: "openai/gpt-4.1", state: .loaded),
+                    makeModel(id: "qwen3-14b-mlx", state: .loaded, backend: "mlx", modelPath: "/models/qwen3")
+                ],
+                updatedAt: 400
             )
         )
-        #expect(notice.contains("当前配置的 `openai/gpt-5.4` 还不能直接执行"))
-        #expect(notice.contains("上次稳定的远端 `openai/gpt-4.1`"))
-        #expect(notice.contains("避免继续直接掉到本地"))
-        #expect(notice.contains("不用手动切模型"))
-        #expect(notice.contains("/route diagnose"))
+        #expect(notice == nil)
     }
 
     @Test
@@ -278,7 +272,7 @@ struct AXProjectModelRouteMemoryTests {
     }
 
     @Test
-    func routeMemoryLocksProjectToLocalModeAfterFreshRepeatedRemoteFallbacks() throws {
+    func routeMemoryDoesNotLockProjectToLocalModeWhenConfiguredRemoteModelRemainsAvailable() throws {
         let root = try makeProjectRoot(named: "route-memory-locks-local")
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -329,10 +323,10 @@ struct AXProjectModelRouteMemoryTests {
             )
         )
 
-        #expect(decision.forceLocalExecution)
-        #expect(decision.preferredModelId == "qwen3-14b-mlx")
-        #expect(decision.preferredLocalModelId == "qwen3-14b-mlx")
-        #expect(decision.reasonCode == "project_remote_fallback_lock_local_recent_actual")
+        #expect(!decision.forceLocalExecution)
+        #expect(decision.preferredModelId == "openai/gpt-5.4")
+        #expect(decision.preferredLocalModelId == nil)
+        #expect(decision.reasonCode == nil)
     }
 
     @Test
@@ -512,7 +506,25 @@ struct AXProjectModelRouteMemoryTests {
             lastEventAt: now
         )
 
-        let notice = try #require(AXProjectModelRouteMemoryStore.heartbeatNotice(for: entry))
+        let notice = try #require(
+            AXProjectModelRouteMemoryStore.heartbeatNotice(
+                for: entry,
+                snapshot: ModelStateSnapshot(
+                    models: [
+                        makeModel(id: "openai/gpt-5.4", state: .sleeping),
+                        makeModel(id: "qwen3-14b-mlx", state: .loaded, backend: "mlx", modelPath: "/models/qwen3")
+                    ],
+                    updatedAt: now
+                ),
+                localSnapshot: ModelStateSnapshot(
+                    models: [
+                        makeModel(id: "qwen3-14b-mlx", state: .loaded, backend: "mlx", modelPath: "/models/qwen3")
+                    ],
+                    updatedAt: now
+                ),
+                now: now
+            )
+        )
         #expect(notice.contains("已切到本地模式"))
         #expect(notice.contains("qwen3-14b-mlx"))
         #expect(notice.contains("恢复远端"))
@@ -569,7 +581,7 @@ struct AXProjectModelRouteMemoryTests {
     }
 
     @Test
-    func selectionWarningExplainsProjectWillStayLocalWhileFreshLockIsActive() throws {
+    func selectionWarningDoesNotAppearWhenConfiguredRemoteModelRemainsAvailable() throws {
         let root = try makeProjectRoot(named: "route-memory-selection-warning-lock")
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -602,38 +614,30 @@ struct AXProjectModelRouteMemoryTests {
             for: ctx
         )
 
-        let guidance = try #require(
-            AXProjectModelRouteMemoryStore.selectionGuidance(
-                configuredModelId: "openai/gpt-5.4",
-                role: .coder,
-                ctx: ctx,
-                snapshot: ModelStateSnapshot(
-                    models: [
-                        makeModel(id: "openai/gpt-5.4", state: .available),
-                        makeModel(id: "openai/gpt-4.1", state: .loaded)
-                    ],
-                    updatedAt: now
-                ),
-                localSnapshot: ModelStateSnapshot(
-                    models: [
-                        makeModel(id: "qwen3-14b-mlx", state: .loaded, backend: "mlx", modelPath: "/models/qwen3")
-                    ],
-                    updatedAt: now
-                )
+        let guidance = AXProjectModelRouteMemoryStore.selectionGuidance(
+            configuredModelId: "openai/gpt-5.4",
+            role: .coder,
+            ctx: ctx,
+            snapshot: ModelStateSnapshot(
+                models: [
+                    makeModel(id: "openai/gpt-5.4", state: .available),
+                    makeModel(id: "openai/gpt-4.1", state: .loaded)
+                ],
+                updatedAt: now
+            ),
+            localSnapshot: ModelStateSnapshot(
+                models: [
+                    makeModel(id: "qwen3-14b-mlx", state: .loaded, backend: "mlx", modelPath: "/models/qwen3")
+                ],
+                updatedAt: now
             )
         )
 
-        let warning = guidance.warningText
-        #expect(warning.contains("连续 3 次"))
-        #expect(warning.contains("先锁到本地 `qwen3-14b-mlx`"))
-        #expect(warning.contains("openai/gpt-5.4"))
-        #expect(guidance.recommendedModelId == "openai/gpt-4.1")
-        #expect(guidance.recommendationText?.contains("openai/gpt-4.1") == true)
-        #expect(guidance.recommendationKind == .switchRecommended)
+        #expect(guidance == nil)
     }
 
     @Test
-    func selectionWarningExplainsRememberedRemoteWillBeTriedBeforeLocalFallback() throws {
+    func selectionWarningDoesNotOverrideConfiguredRemoteWhenItRemainsAvailable() throws {
         let root = try makeProjectRoot(named: "route-memory-selection-warning-remembered")
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -657,28 +661,20 @@ struct AXProjectModelRouteMemoryTests {
             for: ctx
         )
 
-        let guidance = try #require(
-            AXProjectModelRouteMemoryStore.selectionGuidance(
-                configuredModelId: "openai/gpt-5.4",
-                role: .coder,
-                ctx: ctx,
-                snapshot: ModelStateSnapshot(
-                    models: [
-                        makeModel(id: "openai/gpt-4.1", state: .loaded),
-                        makeModel(id: "openai/gpt-5.4", state: .available)
-                    ],
-                    updatedAt: 300
-                )
+        let guidance = AXProjectModelRouteMemoryStore.selectionGuidance(
+            configuredModelId: "openai/gpt-5.4",
+            role: .coder,
+            ctx: ctx,
+            snapshot: ModelStateSnapshot(
+                models: [
+                    makeModel(id: "openai/gpt-4.1", state: .loaded),
+                    makeModel(id: "openai/gpt-5.4", state: .available)
+                ],
+                updatedAt: 300
             )
         )
 
-        let warning = guidance.warningText
-        #expect(warning.contains("当前配置的 `openai/gpt-5.4`"))
-        #expect(warning.contains("上次稳定的远端 `openai/gpt-4.1`"))
-        #expect(warning.contains("避免直接掉到本地"))
-        #expect(guidance.recommendedModelId == "openai/gpt-4.1")
-        #expect(guidance.recommendationText?.contains("不用手动切模型") == true)
-        #expect(guidance.recommendationKind == .continueWithoutSwitch)
+        #expect(guidance == nil)
     }
 
     private func appendUsage(

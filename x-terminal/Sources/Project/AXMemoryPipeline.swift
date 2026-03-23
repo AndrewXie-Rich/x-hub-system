@@ -166,7 +166,7 @@ Merge rules:
 
         let existing = try AXProjectStore.loadOrCreateMemory(for: ctx)
         let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
-        async let routeSnapshotTask = HubAIClient.shared.loadModelsState()
+        async let routeSnapshotTask = HubAIClient.shared.loadRouteDecisionModelsState()
         async let localSnapshotTask = HubAIClient.shared.loadModelsState(transportOverride: .fileIPC)
         let routeSnapshot = await routeSnapshotTask
         let localSnapshot = await localSnapshotTask
