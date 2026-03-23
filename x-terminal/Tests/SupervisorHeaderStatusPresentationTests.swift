@@ -41,6 +41,16 @@ struct SupervisorHeaderStatusPresentationTests {
         )
         #expect(
             SupervisorHeaderStatusResolver.map(
+                snapshot: snapshot(path: "hub_downgraded_to_local"),
+                hubInteractive: true
+            ) == SupervisorHeaderStatusPresentation(
+                text: "已降级",
+                tone: .warning,
+                detailBadge: nil
+            )
+        )
+        #expect(
+            SupervisorHeaderStatusResolver.map(
                 snapshot: snapshot(path: "remote_error"),
                 hubInteractive: true
             ) == SupervisorHeaderStatusPresentation(

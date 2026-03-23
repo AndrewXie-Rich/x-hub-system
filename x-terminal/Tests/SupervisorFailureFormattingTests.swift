@@ -542,6 +542,69 @@ struct SupervisorFailureFormattingTests {
     }
 
     @Test
+    func routeDiagnoseReportsHubSideDowngradeToLocalForSupervisor() throws {
+        let originalMode = HubAIClient.transportMode()
+        defer { HubAIClient.setTransportMode(originalMode) }
+
+        HubAIClient.setTransportMode(.grpc)
+        let manager = SupervisorManager.makeForTesting()
+        let root = try makeProjectRoot(named: "supervisor-route-diagnose-hub-downgrade")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let appModel = AppModel()
+        appModel.settingsStore.settings = appModel.settingsStore.settings.setting(
+            role: .supervisor,
+            providerKind: .hub,
+            model: "openai/gpt-5.4"
+        )
+        appModel.modelsState = ModelStateSnapshot(
+            models: [
+                HubModel(
+                    id: "openai/gpt-5.4",
+                    name: "GPT 5.4",
+                    backend: "remote",
+                    quant: "n/a",
+                    contextLength: 200_000,
+                    paramsB: 0,
+                    roles: nil,
+                    state: .loaded,
+                    memoryBytes: nil,
+                    tokensPerSec: nil,
+                    modelPath: nil,
+                    note: nil
+                )
+            ],
+            updatedAt: Date().timeIntervalSince1970
+        )
+        appModel.registry = registry(
+            with: [
+                makeProjectEntry(
+                    root: root,
+                    displayName: "supervisor-route-diagnose-hub-downgrade-project",
+                    blockerSummary: nil,
+                    nextStepSummary: "继续推进"
+                )
+            ]
+        )
+        manager.setAppModel(appModel)
+        manager.recordSupervisorReplyExecutionForTesting(
+            mode: "hub_downgraded_to_local",
+            actualModelId: "qwen3-14b-mlx",
+            requestedModelId: "openai/gpt-5.4",
+            failureReasonCode: "downgrade_to_local"
+        )
+
+        let rendered = try #require(manager.directSupervisorReplyIfApplicableForTesting("/route diagnose"))
+
+        #expect(rendered.contains("最近一次执行模式：hub_downgraded_to_local"))
+        #expect(rendered.contains("requested_model=openai/gpt-5.4"))
+        #expect(rendered.contains("actual_model=qwen3-14b-mlx"))
+        #expect(rendered.contains("failure_reason=downgrade_to_local"))
+        #expect(rendered.contains("Hub 在执行阶段把远端请求降到了本地"))
+        #expect(rendered.contains("ai.generate.downgraded_to_local"))
+    }
+
+    @Test
     func grpcModeRejectsMismatchedActualRemoteModel() throws {
         let originalMode = HubAIClient.transportMode()
         defer { HubAIClient.setTransportMode(originalMode) }

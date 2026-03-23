@@ -46,6 +46,10 @@ struct SupervisorStatusBar: View {
             snapshot: snapshot
         )
         let statusColor = supervisorStatusColor(snapshot: snapshot)
+        let detailBadge = ExecutionRoutePresentation.detailBadge(
+            configuredModelId: configuredSupervisorModelId,
+            snapshot: snapshot
+        )
         let pendingMemoryFollowUpQuestion = supervisorManager.supervisorPendingMemoryFactFollowUpQuestion
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -54,7 +58,7 @@ struct SupervisorStatusBar: View {
                 .foregroundColor(.purple)
                 .font(.system(size: 14))
 
-            Text("Supervisor · \(ExecutionRoutePresentation.activeModelLabel(configuredModelId: configuredSupervisorModelId, snapshot: snapshot))")
+            Text("Supervisor · \(ExecutionRoutePresentation.configuredModelLabel(configuredModelId: configuredSupervisorModelId, snapshot: snapshot))")
                 .font(.system(size: 13, weight: .medium))
                 .lineLimit(1)
                 .help(tooltip)
@@ -67,6 +71,18 @@ struct SupervisorStatusBar: View {
                 .background(statusColor.opacity(0.12))
                 .clipShape(Capsule())
                 .help(tooltip)
+
+            if let detailBadge {
+                Text(detailBadge.text)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(detailBadge.color)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(detailBadge.color.opacity(0.12))
+                    .clipShape(Capsule())
+                    .lineLimit(1)
+                    .help(tooltip)
+            }
 
             if !supervisor.memorySize.isEmpty && supervisor.memorySize != "0GB" {
                 Label(supervisor.memorySize, systemImage: "internaldrive")

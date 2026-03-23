@@ -71,6 +71,12 @@ private struct RoleExecutionStatusCard: View {
             if !snapshot.fallbackReasonCode.isEmpty {
                 executionLine(label: "回退", value: snapshot.fallbackReasonCode)
             }
+            if !snapshot.auditRef.isEmpty {
+                executionLine(label: "审计", value: snapshot.auditRef)
+            }
+            if !snapshot.denyCode.isEmpty {
+                executionLine(label: "拒绝码", value: snapshot.denyCode)
+            }
         }
         .padding(10)
         .frame(width: 230, alignment: .leading)

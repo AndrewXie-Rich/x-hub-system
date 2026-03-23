@@ -248,7 +248,9 @@ enum SupervisorConversationQuickIntentSupport {
     ) -> SupervisorConversationQuickIntent {
         let executionMode = normalizedToken(context.lastReplyExecutionMode)
         let failureReason = normalizedToken(context.lastRemoteFailureReasonCode)
-        let hasFallbackSignal = executionMode == "local_fallback_after_remote_error" || !failureReason.isEmpty
+        let hasFallbackSignal = executionMode == "local_fallback_after_remote_error"
+            || executionMode == "hub_downgraded_to_local"
+            || !failureReason.isEmpty
         let prompt: String
         let tone: SupervisorConversationQuickIntent.Tone
         let helpText: String
