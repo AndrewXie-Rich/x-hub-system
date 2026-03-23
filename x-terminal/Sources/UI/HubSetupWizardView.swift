@@ -264,6 +264,34 @@ enum UIFirstRunJourneyPlanner {
                     "diagnostic_entrypoint=pairing_health"
                 ], runtime: state.runtime)
             )
+        } else if failureIssue == .multipleHubsAmbiguous {
+            primaryStatus = StatusExplanation(
+                state: .diagnosticRequired,
+                headline: "局域网里发现了多台 Hub，必须先固定目标",
+                whatHappened: "当前不是单纯的 Hub 没开，而是 auto-discovery 同时发现了多台候选 Hub；继续 bootstrap / connect 会把首用路径带进歧义状态。",
+                whyItHappened: "只要 Internet Host、pairing port 和 gRPC port 还没明确绑定到一台 Hub，后续重连就可能反复打到不同目标。",
+                userAction: "先在连接进度里明确选择要连接的那台 Hub，或直接手填 Internet Host / 端口；必要时到目标 Hub 的 LAN (gRPC) 页面关闭另一台 Hub 的广播。",
+                machineStatusRef: machineStatusRef,
+                hardLine: "ambiguous hub discovery must be resolved before connect",
+                highlights: mergedHighlights([
+                    "primary_cta=resolve_hub_ambiguity",
+                    "diagnostic_entrypoint=pairing_health"
+                ], runtime: state.runtime)
+            )
+        } else if failureIssue == .hubPortConflict {
+            primaryStatus = StatusExplanation(
+                state: .diagnosticRequired,
+                headline: "Hub 端口冲突，需要先释放占用或切换端口",
+                whatHappened: "当前阻塞更像是目标 Hub 的 gRPC / pairing 端口被别的进程占用，而不是 XT 参数完全缺失。",
+                whyItHappened: "如果端口仍处于 already in use / eaddrinuse 状态，继续重连只会重复得到同一类失败。",
+                userAction: "先到 Hub Settings -> LAN (gRPC) 或 Diagnostics & Recovery 切到空闲端口，或释放占用进程；再把新端口同步回 XT 并重跑 reconnect smoke。",
+                machineStatusRef: machineStatusRef,
+                hardLine: "port conflict must be repaired before connect resumes",
+                highlights: mergedHighlights([
+                    "primary_cta=repair_hub_port_conflict",
+                    "diagnostic_entrypoint=lan_grpc"
+                ], runtime: state.runtime)
+            )
         } else if !connected {
             primaryStatus = StatusExplanation(
                 state: failureIssue == .hubUnreachable ? .diagnosticRequired : .blockedWaitingUpstream,
@@ -387,14 +415,16 @@ enum UIFirstRunJourneyPlanner {
             ], runtime: state.runtime)
         )
 
+        let primaryAction = UITroubleshootKnowledgeBase.primaryAction(
+            for: failureIssue,
+            defaultPairSubtitle: "discover / bootstrap / connect 一次走通"
+        )
         let actions = [
             PrimaryActionRailAction(
-                id: failureIssue == .pairingRepairRequired ? "repair_pairing" : "pair_hub",
-                title: failureIssue == .pairingRepairRequired ? "清理失效配对并重连" : "开始连接 Hub（Pair Hub）",
-                subtitle: failureIssue == .pairingRepairRequired
-                    ? "删除本地失效 token / cert / cached profile 后重新 bootstrap + connect"
-                    : "discover / bootstrap / connect 一次走通",
-                systemImage: failureIssue == .pairingRepairRequired ? "arrow.trianglehead.2.clockwise.rotate.90" : "link.badge.plus",
+                id: primaryAction.id,
+                title: primaryAction.title,
+                subtitle: primaryAction.subtitle,
+                systemImage: primaryAction.systemImage,
                 style: .primary
             ),
             PrimaryActionRailAction(
@@ -406,7 +436,7 @@ enum UIFirstRunJourneyPlanner {
             ),
             PrimaryActionRailAction(
                 id: "open_repair_entry",
-                title: failureIssue == .pairingRepairRequired ? "打开配对修复入口" : "查看授权与排障",
+                title: UITroubleshootKnowledgeBase.repairEntryTitle(for: failureIssue),
                 subtitle: reviewSubtitle(failureIssue: failureIssue, runtime: state.runtime),
                 systemImage: "checkmark.shield",
                 style: .diagnostic
@@ -451,12 +481,25 @@ enum UIFirstRunJourneyPlanner {
         } else {
             firstTaskState = .releaseFrozen
         }
+        let pairHubState: XTUISurfaceState
+        if connected {
+            pairHubState = .ready
+        } else if state.linking {
+            pairHubState = .inProgress
+        } else if failureIssue == .pairingRepairRequired
+            || failureIssue == .multipleHubsAmbiguous
+            || failureIssue == .hubPortConflict
+            || failureIssue == .hubUnreachable {
+            pairHubState = .diagnosticRequired
+        } else {
+            pairHubState = .blockedWaitingUpstream
+        }
         let steps = [
             UIFirstRunStep(
                 kind: .pairHub,
                 title: "连接 Hub（Pair Hub）",
                 summary: "先把 discover / bootstrap / connect 路径打通。",
-                state: connected ? .ready : (state.linking ? .inProgress : .blockedWaitingUpstream),
+                state: pairHubState,
                 repairEntry: .xtPairHub
             ),
             UIFirstRunStep(
@@ -545,8 +588,8 @@ enum UIFirstRunJourneyPlanner {
     }
 
     fileprivate static func reviewSubtitle(failureIssue: UITroubleshootIssue?, runtime: UIFailClosedRuntimeSnapshot) -> String {
-        if failureIssue == .pairingRepairRequired {
-            return "XT 清本地配对 -> Hub 删旧设备 -> 重新批准 -> reconnect smoke"
+        if failureIssue == .pairingRepairRequired || failureIssue == .multipleHubsAmbiguous || failureIssue == .hubPortConflict {
+            return UITroubleshootKnowledgeBase.repairEntryDetail(for: failureIssue, runtime: runtime)
         }
         if !runtime.nextDirectedAction.isEmpty {
             return "resume baton: \(runtime.nextDirectedAction)"
@@ -957,7 +1000,17 @@ struct HubSetupWizardView: View {
                         }
                     }
                 }
-                TroubleshootPanel(title: "高频问题 3 步修复", issues: [.pairingRepairRequired, .grantRequired, .permissionDenied, .hubUnreachable])
+                TroubleshootPanel(
+                    title: "高频问题 3 步修复",
+                    issues: [
+                        .multipleHubsAmbiguous,
+                        .hubPortConflict,
+                        .pairingRepairRequired,
+                        .grantRequired,
+                        .permissionDenied,
+                        .hubUnreachable
+                    ]
+                )
             }
             .padding(8)
         }
@@ -1081,23 +1134,40 @@ struct HubSetupWizardView: View {
             appModel.startHubOneClickSetup()
         case "repair_pairing":
             appModel.resetPairingStateAndOneClickSetup()
+        case "resolve_hub_ambiguity":
+            appModel.requestHubSetupFocus(
+                sectionId: "pair_progress",
+                title: "固定目标 Hub 后继续连接",
+                detail: UITroubleshootKnowledgeBase.repairEntryDetail(
+                    for: .multipleHubsAmbiguous,
+                    runtime: runtimeSnapshot
+                )
+            )
+        case "repair_hub_port_conflict":
+            appModel.requestHubSetupFocus(
+                sectionId: "pair_progress",
+                title: "修复 Hub 端口冲突",
+                detail: UITroubleshootKnowledgeBase.repairEntryDetail(
+                    for: .hubPortConflict,
+                    runtime: runtimeSnapshot
+                )
+            )
         case "run_smoke":
             appModel.startHubReconnectOnly()
         case "open_repair_entry":
             let issue = journeyPlan.currentFailureIssue
-            let targetSection = issue == .pairingRepairRequired ? "pair_progress" : "troubleshoot"
-            let title: String
-            let detail: String
-            if issue == .pairingRepairRequired {
-                title = "清理失效配对并重连"
-                detail = "先删除本地失效 pairing profile，再重新 bootstrap + connect；然后到 Hub Settings -> Pairing & Device Trust -> 设备列表（允许清单），筛“过期”并删除旧设备。"
-            } else {
-                title = "查看当前排障入口"
-                detail = UIFirstRunJourneyPlanner.reviewSubtitle(
-                    failureIssue: issue,
-                    runtime: runtimeSnapshot
-                )
+            let targetSection: String
+            switch issue {
+            case .pairingRepairRequired, .multipleHubsAmbiguous, .hubPortConflict:
+                targetSection = "pair_progress"
+            default:
+                targetSection = "troubleshoot"
             }
+            let title = UITroubleshootKnowledgeBase.repairEntryTitle(for: issue)
+            let detail = UIFirstRunJourneyPlanner.reviewSubtitle(
+                failureIssue: issue,
+                runtime: runtimeSnapshot
+            )
             appModel.requestHubSetupFocus(
                 sectionId: targetSection,
                 title: title,

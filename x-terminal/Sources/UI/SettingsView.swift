@@ -141,14 +141,16 @@ enum XTSettingsSurfacePlanner {
 
     static func quickActions(for state: XTSettingsSurfaceState) -> [PrimaryActionRailAction] {
         let issue = issue(for: state)
+        let primaryAction = UITroubleshootKnowledgeBase.primaryAction(
+            for: issue,
+            defaultPairSubtitle: "从 One-Click Setup 开始首用路径"
+        )
         return [
             PrimaryActionRailAction(
-                id: issue == .pairingRepairRequired ? "repair_pairing" : "pair_hub",
-                title: issue == .pairingRepairRequired ? "清理失效配对并重连" : "连接 Hub（Pair Hub）",
-                subtitle: issue == .pairingRepairRequired
-                    ? "删除本地失效 token / cert / cached profile 后重新 bootstrap + connect"
-                    : "从 One-Click Setup 开始首用路径",
-                systemImage: issue == .pairingRepairRequired ? "arrow.trianglehead.2.clockwise.rotate.90" : "link.badge.plus",
+                id: primaryAction.id,
+                title: primaryAction.title,
+                subtitle: primaryAction.subtitle,
+                systemImage: primaryAction.systemImage,
                 style: .primary
             ),
             PrimaryActionRailAction(
@@ -160,7 +162,7 @@ enum XTSettingsSurfacePlanner {
             ),
             PrimaryActionRailAction(
                 id: "open_repair_entry",
-                title: issue == .pairingRepairRequired ? "打开配对修复入口" : "查看授权与排障",
+                title: UITroubleshootKnowledgeBase.repairEntryTitle(for: issue),
                 subtitle: reviewSubtitle(issue: issue, runtime: state.runtime),
                 systemImage: "checkmark.shield",
                 style: .diagnostic
@@ -194,8 +196,8 @@ enum XTSettingsSurfacePlanner {
     }
 
     fileprivate static func reviewSubtitle(issue: UITroubleshootIssue?, runtime: UIFailClosedRuntimeSnapshot) -> String {
-        if issue == .pairingRepairRequired {
-            return "XT 清本地配对 -> Hub 删旧设备 -> 重新批准 -> reconnect smoke"
+        if issue == .pairingRepairRequired || issue == .multipleHubsAmbiguous || issue == .hubPortConflict {
+            return UITroubleshootKnowledgeBase.repairEntryDetail(for: issue, runtime: runtime)
         }
         if let issue {
             return "\(issue.rawValue) → \(runtime.nextRepairAction ?? "open_repair_entry")"
@@ -509,7 +511,17 @@ struct SettingsView: View {
     private var grantAndRepairSection: some View {
         GroupBox("3) 授权与修复") {
             VStack(alignment: .leading, spacing: 10) {
-                TroubleshootPanel(title: "3 步内定位修复入口", issues: [.pairingRepairRequired, .grantRequired, .permissionDenied, .hubUnreachable])
+                TroubleshootPanel(
+                    title: "3 步内定位修复入口",
+                    issues: [
+                        .multipleHubsAmbiguous,
+                        .hubPortConflict,
+                        .pairingRepairRequired,
+                        .grantRequired,
+                        .permissionDenied,
+                        .hubUnreachable
+                    ]
+                )
             }
             .padding(8)
         }
@@ -906,6 +918,24 @@ struct SettingsView: View {
             appModel.startHubOneClickSetup()
         case "repair_pairing":
             appModel.resetPairingStateAndOneClickSetup()
+        case "resolve_hub_ambiguity":
+            appModel.requestSettingsFocus(
+                sectionId: "pair_hub",
+                title: "固定目标 Hub 后继续连接",
+                detail: UITroubleshootKnowledgeBase.repairEntryDetail(
+                    for: .multipleHubsAmbiguous,
+                    runtime: runtimeSnapshot
+                )
+            )
+        case "repair_hub_port_conflict":
+            appModel.requestSettingsFocus(
+                sectionId: "pair_hub",
+                title: "修复 Hub 端口冲突",
+                detail: UITroubleshootKnowledgeBase.repairEntryDetail(
+                    for: .hubPortConflict,
+                    runtime: runtimeSnapshot
+                )
+            )
         case "run_smoke":
             appModel.startHubReconnectOnly()
         case "open_repair_entry":
@@ -922,10 +952,10 @@ struct SettingsView: View {
                 targetSection = "grant_permissions"
                 title = "查看权限与 policy 修复入口"
                 detail = XTSettingsSurfacePlanner.reviewSubtitle(issue: issue, runtime: runtimeSnapshot)
-            case .pairingRepairRequired:
+            case .pairingRepairRequired, .multipleHubsAmbiguous, .hubPortConflict:
                 targetSection = "pair_hub"
-                title = "清理失效配对并重连"
-                detail = "先删除本地失效 pairing profile，再重新 bootstrap + connect；然后到 Hub Settings -> Pairing & Device Trust -> 设备列表（允许清单），筛“过期”并删除旧设备。"
+                title = UITroubleshootKnowledgeBase.repairEntryTitle(for: issue)
+                detail = XTSettingsSurfacePlanner.reviewSubtitle(issue: issue, runtime: runtimeSnapshot)
             case .hubUnreachable, .none:
                 targetSection = "diagnostics"
                 title = "查看连接与诊断入口"

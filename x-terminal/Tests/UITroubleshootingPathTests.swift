@@ -18,6 +18,14 @@ struct UITroubleshootingPathTests {
         let permissionGuide = UITroubleshootKnowledgeBase.guide(for: .permissionDenied)
         #expect(permissionGuide.steps.map(\.destination).contains(.systemPermissions))
 
+        let ambiguousGuide = UITroubleshootKnowledgeBase.guide(for: .multipleHubsAmbiguous)
+        #expect(ambiguousGuide.steps.first?.destination == .xtPairHub)
+        #expect(ambiguousGuide.steps.map(\.destination).contains(.hubLAN))
+
+        let portConflictGuide = UITroubleshootKnowledgeBase.guide(for: .hubPortConflict)
+        #expect(portConflictGuide.steps.first?.destination == .xtPairHub)
+        #expect(portConflictGuide.steps.map(\.destination).contains(.hubLAN))
+
         let reachabilityGuide = UITroubleshootKnowledgeBase.guide(for: .hubUnreachable)
         #expect(reachabilityGuide.steps.first?.destination == .xtPairHub)
         #expect(reachabilityGuide.steps.last?.destination == .hubPairing)
@@ -33,6 +41,14 @@ struct UITroubleshootingPathTests {
         #expect(grantGuide.steps[1].instruction.contains("能力范围"))
         #expect(permissionGuide.summary.contains("安全边界"))
         #expect(paidGuide.summary.contains("设备信任、模型与预算"))
+    }
+
+    @Test
+    func troubleshootingRoutesAmbiguousDiscoveryAndPortConflictToDedicatedIssues() {
+        #expect(UITroubleshootKnowledgeBase.issue(forFailureCode: "bonjour_multiple_hubs_ambiguous") == .multipleHubsAmbiguous)
+        #expect(UITroubleshootKnowledgeBase.issue(forFailureCode: "lan_multiple_hubs_ambiguous") == .multipleHubsAmbiguous)
+        #expect(UITroubleshootKnowledgeBase.issue(forFailureCode: "hub_port_conflict") == .hubPortConflict)
+        #expect(UITroubleshootKnowledgeBase.issue(forFailureCode: "address already in use") == .hubPortConflict)
     }
 
     @Test

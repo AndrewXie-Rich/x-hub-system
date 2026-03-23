@@ -84,6 +84,29 @@ struct UIFirstRunJourneyTests {
         #expect(plan.consumedFrozenFields.contains("xt.unblock_baton.v1"))
         #expect(plan.consumedFrozenFields.contains("xt.one_shot_replay_regression.v1"))
     }
+
+    @Test
+    func firstRunJourneyTurnsAmbiguousDiscoveryIntoExplicitRepairAction() {
+        let plan = UIFirstRunJourneyPlanner.plan(
+            for: HubSetupWizardState(
+                localConnected: false,
+                remoteConnected: false,
+                linking: false,
+                configuredModelRoles: 0,
+                totalModelRoles: AXRole.allCases.count,
+                failureCode: "bonjour_multiple_hubs_ambiguous",
+                runtime: .empty
+            )
+        )
+
+        #expect(plan.currentFailureIssue == .multipleHubsAmbiguous)
+        #expect(plan.primaryStatus.state == .diagnosticRequired)
+        #expect(plan.primaryStatus.headline.contains("多台 Hub"))
+        #expect(plan.actions.first?.id == "resolve_hub_ambiguity")
+        #expect(plan.actions.first?.title == "固定目标 Hub 后继续连接")
+        #expect(plan.actions.last?.title == "打开 Hub 选择入口")
+        #expect(plan.steps.first?.state == .diagnosticRequired)
+    }
 }
 
 private func sampleRuntimeSnapshot() -> UIFailClosedRuntimeSnapshot {
