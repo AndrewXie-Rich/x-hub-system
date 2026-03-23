@@ -18,12 +18,13 @@ If you are entering the repository cold, read in this order:
 1. `README.md`
 2. `docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md`
 3. `docs/open-source/XHUB_V1_PRODUCT_BOUNDARY_AND_PRIORITIES_v1.md`
-4. `docs/open-source/XHUB_NEXT_10_WORK_ORDERS_v1.md`
-5. `docs/REPO_LAYOUT.md`
-6. `X_MEMORY.md`
-7. `docs/memory-new/xhub-memory-updates-2026q1.md`
-8. `x-hub/README.md`
-9. `x-terminal/README.md`
+4. `docs/open-source/XHUB_NEXT_4_WEEKS_EXECUTION_PLAN_v1.md`
+5. `docs/open-source/XHUB_NEXT_10_WORK_ORDERS_v1.md`
+6. `docs/REPO_LAYOUT.md`
+7. `X_MEMORY.md`
+8. `docs/memory-new/xhub-memory-updates-2026q1.md`
+9. `x-hub/README.md`
+10. `x-terminal/README.md`
 
 After that, choose the relevant track below.
 
@@ -35,6 +36,8 @@ After that, choose the relevant track below.
   - Surface-by-surface capability state for public preview and active delivery.
 - `docs/open-source/XHUB_V1_PRODUCT_BOUNDARY_AND_PRIORITIES_v1.md`
   - V1 must-ship boundary, should-ship next, and what should be frozen or deprioritized.
+- `docs/open-source/XHUB_NEXT_4_WEEKS_EXECUTION_PLAN_v1.md`
+  - The current four-week execution sequence: three lanes, weekly demo loop, done criteria, and freeze list.
 - `docs/open-source/XHUB_NEXT_10_WORK_ORDERS_v1.md`
   - Concrete next-10 backlog for human maintainers and AI collaborators.
 - `X_MEMORY.md`
@@ -54,12 +57,13 @@ After that, choose the relevant track below.
 
 - `docs/open-source/XHUB_CAPABILITY_MATRIX_v1.md`
 - `docs/open-source/XHUB_V1_PRODUCT_BOUNDARY_AND_PRIORITIES_v1.md`
+- `docs/open-source/XHUB_NEXT_4_WEEKS_EXECUTION_PLAN_v1.md`
 - `docs/open-source/XHUB_NEXT_10_WORK_ORDERS_v1.md`
 - `docs/open-source/XHUB_PUBLIC_ADOPTION_ROADMAP_v1.md`
 - `docs/open-source/PUBLIC_PREVIEW_SCRUB_NOTES_v1.md`
 - `docs/memory-new/xhub-ironclaw-reference-adoption-checklist-v1.md`
 
-Start here when the question is "what can we honestly claim now?", "what is actually in v1 scope?", "which work-order family should land next?", "what are the next 10 concrete default tasks?", "which IronClaw-inspired shell should land next?", or "is this surface validated, preview-working, or only protocol-frozen?"
+Start here when the question is "what can we honestly claim now?", "what is actually in v1 scope?", "what should the next 4 weeks optimize for?", "which work-order family should land next?", "what are the next 10 concrete default tasks?", "which IronClaw-inspired shell should land next?", or "is this surface validated, preview-working, or only protocol-frozen?"
 
 ### Product And Runtime
 
@@ -70,6 +74,7 @@ Start here when the question is "what can we honestly claim now?", "what is actu
 - `docs/xhub-local-provider-runtime-and-transformers-integration-v1.md`
 - `docs/memory-new/README-local-provider-runtime-productization-v1.md`
 - `docs/memory-new/xhub-local-provider-runtime-require-real-runbook-v1.md`
+- `scripts/lpr_w3_03_require_real_status.js`
 - `docs/memory-new/xhub-local-bench-fixture-pack-v1.md`
 - `docs/xhub-client-modes-and-connectors-v1.md`
 - `docs/xhub-hub-architecture-tradeoffs-v1.md`
@@ -172,6 +177,7 @@ For current runtime truth, keep the explainability chain in mind: `ProjectSettin
 - `scripts/m3_extract_xt_ready_incident_events_from_audit.js`
 - `scripts/m3_resolve_xt_ready_audit_input.js`
 - `scripts/m3_export_xt_ready_audit_from_db.js`
+- `scripts/m3_fetch_connector_ingress_gate_snapshot.js`
 - `scripts/xt_ready_release_diagnostics.js`
 
 ### X-Terminal Execution Packs
@@ -337,7 +343,7 @@ bash scripts/ci/xhub_doctor_source_gate.sh
 
 That gate now emits `build/reports/xhub_doctor_source_gate_summary.v1.json`, `build/reports/xhub_doctor_xt_source_smoke_evidence.v1.json`, and `build/reports/xhub_doctor_all_source_smoke_evidence.v1.json`. The summary also exposes `project_context_summary_support`, `durable_candidate_mirror_support`, and `memory_route_truth_support` so release evidence can reuse the same structured XT project-context, supervisor handoff, and route-truth assertions. The project-context support block keeps `source_badge / status_line` together with the dialogue/depth metrics, while the durable-candidate mirror block keeps `status / target / attempted / local_store_role`, instead of forcing downstream tools to re-parse raw XT `detail_lines`.
 
-When you also need release/operator wording for Hub-managed local runtime recovery, run `node scripts/generate_xhub_local_service_operator_recovery_report.js` or just use `bash scripts/refresh_oss_release_evidence.sh`; the downstream boundary/readiness bundle and `build/reports/lpr_w4_09_c_product_exit_packet.v1.json` will consume the same machine-readable `action_category / external_status_line / top_recommended_action`. The product-exit packet also exposes `release_refresh_preflight.missing_inputs[]`, so you can see exactly which upstream release artifacts are still blocking the full refresh helper.
+When you also need release/operator wording for Hub-managed local runtime recovery, run `node scripts/generate_xhub_local_service_operator_recovery_report.js` or just use `bash scripts/refresh_oss_release_evidence.sh`; the downstream boundary/readiness bundle and `build/reports/lpr_w4_09_c_product_exit_packet.v1.json` will consume the same machine-readable `action_category / external_status_line / top_recommended_action`. The product-exit packet also exposes `release_refresh_preflight.missing_inputs[]`, so you can see exactly which upstream release artifacts are still blocking the full refresh helper, including the selected XT-ready report/source plus matching connector snapshot chain.
 
 The same XT-ready priority now applies consistently across refresh, compat, product-exit, and internal-pass helpers: `require_real -> db_real -> current`.
 
@@ -363,6 +369,7 @@ bash scripts/refresh_oss_release_evidence.sh
 ```
 
 The refresh helper now accepts the preferred XT-ready release evidence chain in this order: `build/xt_ready_gate_e2e_require_real_report.json`, then `build/xt_ready_gate_e2e_db_real_report.json`, then `build/xt_ready_gate_e2e_report.json`; it no longer fail-closes just because the legacy current-gate path is absent while a stricter release chain already exists.
+The same preferred chain now applies to XT-ready evidence-source and connector-gate artifacts, and `build/reports/xt_ready_release_diagnostics.v1.json` records the selected mode plus the exact report/source/connector refs that were used.
 
 That helper now refreshes `build/reports/xhub_local_service_operator_recovery_report.v1.json` before rebuilding the boundary, secret-scrub, OSS readiness, and `build/reports/lpr_w4_09_c_product_exit_packet.v1.json`.
 It also refreshes `build/reports/release_legacy_compat_pack.v1.json` first, so legacy XT-W3 release artifact names are backfilled from current repo truth before the boundary/readiness scripts run.

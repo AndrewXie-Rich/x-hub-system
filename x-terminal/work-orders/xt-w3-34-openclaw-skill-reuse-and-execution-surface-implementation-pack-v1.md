@@ -139,7 +139,7 @@
 
 ### 2.3 X-Hub / X-Terminal 的硬边界
 
-- 所有高风险 side effect 仍需经过 Hub grant / XT local approval / autonomy clamp 之一或组合。
+- 所有高风险 side effect 仍需经过 Hub grant / XT local approval / runtime-surface clamp 之一或组合。
 - 默认 memory 继续优先走 Hub；高风险动作继续要求 fresh memory recheck。
 - Agent skill 导入后只能成为：
   - `Hub skill registry` 中的一个受治理条目
@@ -200,7 +200,7 @@
 
 - 只能接受 test/verify allowlist 命令族。
 - 禁止 shell control operators、command chaining、subshell、redirect。
-- 最终仍走 `run_command` 的本地审批与 autonomy gate，不新增旁路。
+- 最终仍走 `run_command` 的本地审批与 runtime-surface gate，不新增旁路。
 
 ### 3.4 `xt.supervisor_skill_result_evidence.v1`
 

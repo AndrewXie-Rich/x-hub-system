@@ -271,6 +271,16 @@
    - session runtime readiness
    - skills compatibility readiness
 2. 统一 doctor 输出 machine-readable report。
+   - XT 原生 source report contract 与 normalized export contract 必须分层维护：
+     - `xt_unified_doctor_report.json` 受 `docs/memory-new/schema/xt_unified_doctor_report_contract.v1.json` 约束
+     - `xhub_doctor_output_xt.json` 受 `docs/memory-new/schema/xhub_doctor_output_contract.v1.json` 约束
+   - `XTUnifiedDoctorReport.consumedContracts` 应显式带 `xt.unified_doctor_report_contract.v1`，而不是把 report 自己的 schema version 伪装成上游依赖。
+   - 若某个 readiness section 依赖上游 memory route 结果，必须追加可选 `memory_route_truth_snapshot`。
+   - `memory_route_truth_snapshot` 只读复用 Hub 已冻结的 diagnostics surface，不得由 XT doctor 本地重算。
+   - `XTUnifiedDoctorReport` 在 `model_route_readiness` 上应优先携带一等结构化字段 `memoryRouteTruthProjection`；通用导出再由该字段映射出 `memory_route_truth_snapshot`。
+   - 若 XT 当前只能拿到局部 route 诊断，必须显式输出 `projection_source / completeness` 并把缺失 leaf 标成 `unknown`，不能伪装成 full upstream truth。
+   - 重新解析 `detail_lines` 只允许作为 legacy migration fallback；当结构化字段已存在时，export/doctor 不得回退成文本解析优先。
+   - session/runtime/tool 本地状态继续单列为 producer context，不得覆盖上游 `route_source / route_reason_code / fallback_* / model_id` 语义。
 3. `X-Hub` UI 补 pairing values / runtime readiness / remote bootstrap clarity。
 4. XT setup 向导增加 “Verify” 步骤，不只做配置输入。
 5. 支持用户显式看到：
@@ -286,6 +296,8 @@
   - pairing ok but model route unavailable
   - model route ok but bridge unavailable
   - bridge ok but runtime not recoverable
+  - memory route truth 明确，但本地 runtime/serving clamp 导致降级
+- 当 XT 只能提供局部 route truth 时，导出仍能通过 `projection_source / completeness` 明确暴露“这是 partial XT projection”，而不是假装拿到了完整上游解析面。
 - 所有问题都有 actionable next step。
 
 ### `OCA-W1-05` Runtime-Aware UI Shell + Explainability

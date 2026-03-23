@@ -3,7 +3,7 @@
 - owner: XT-L2（Primary）/ Hub-L5 / Security / QA / Product
 - status: planned
 - last_updated: 2026-03-11
-- purpose: 针对当前与 OpenClaw 现成能力面的关键差距，按 `Hub-first trust + XT execution surface` 的既定架构，补齐 `managed browser runtime + external triggers + email/channel action plane + autonomy policy surface + extension/MCP bridge + node capability registry` 六条主链，让系统从“受控自动化骨架”进入“可开箱自主执行”的下一阶段。
+- purpose: 针对当前与 OpenClaw 现成能力面的关键差距，按 `Hub-first trust + XT execution surface` 的既定架构，补齐 `managed browser runtime + external triggers + email/channel action plane + runtime-surface policy plane + extension/MCP bridge + node capability registry` 六条主链，让系统从“受控自动化骨架”进入“可开箱自主执行”的下一阶段。
 - depends_on:
   - `x-terminal/work-orders/xt-w3-25-automation-product-gap-closure-implementation-pack-v1.md`
   - `x-terminal/work-orders/xt-w3-25-governed-automation-recipe-runtime-implementation-pack-v1.md`
@@ -28,7 +28,7 @@
 1. 浏览器执行面还停留在 `web_fetch/web_search/browser_read + open_url`，没有形成受管浏览器 runtime。
 2. 自动触发语义已经存在，但实际落到 run runtime 的主链仍以 `manual` 为主。
 3. Hub 侧已有多渠道与 webhook 边界，但邮件/消息执行链仍未形成 `draft -> send -> reply -> cancel -> audit` 的成品面。
-4. XT 用户侧还缺少一个明确的“完全自治 / 受控自治 / 手动”策略面，用户与 Hub 都无法从单一入口限制或放开能力。
+4. XT 用户侧还缺少一个明确的运行时 surface 策略面，用户与 Hub 都无法从单一入口限制或放开能力。
 5. 现有 skills/store 更接近“file-backed skills catalog + pins”，还不是 OpenClaw 那种完整插件/MCP 扩展 runtime。
 6. 设备执行目前是 `macOS-first`，离跨 `macOS / iOS / Android` 的 node family 还有明显距离。
 
@@ -220,7 +220,7 @@
 - `XT-OC-G1`: 受管浏览器 runtime 可运行，session/profile/snapshot/audit 全链路成立。
 - `XT-OC-G2`: `schedule/webhook/connector_event` 至少两类真实接入 run runtime，不再只靠 manual。
 - `XT-OC-G3`: 邮件/消息 action plane 具备真实 side effect、outbox/undo/audit 主链。
-- `XT-OC-G4`: XT 与 Hub 双侧自治策略面成立，kill-switch 与 clamp 生效。
+- `XT-OC-G4`: XT 与 Hub 双侧运行时 surface 策略面成立，kill-switch 与 clamp 生效。
 - `XT-OC-G5`: 扩展 / plugin / MCP bridge 接入不破坏 Hub 主权和 revocation。
 - `XT-OC-G6`: 桌面级 OpenClaw-mode ready 具备 require-real 样本，可发布内部 GO/NO-GO 决策。
 - `XT-OC-G7`: node family 扩展完成真实设备证据，不再停留在文档。
@@ -239,7 +239,7 @@
 
 ### 7.1 `XT-W3-30` OpenClaw-Mode Capability Gap Closure
 
-- 目标：形成一份统一父包，约束浏览器、触发器、connector、自治策略、扩展、node family 六条链路的推进顺序与毕业标准。
+- 目标：形成一份统一父包，约束浏览器、触发器、connector、runtime-surface policy、扩展、node family 六条链路的推进顺序与毕业标准。
 - 交付物：`build/reports/xt_w3_30_openclaw_mode_gap_closure_evidence.v1.json`
 - DoD:
   - P0/P1/P2 边界冻结，不再把不同成熟度能力混成一个“已具备”口径。
@@ -359,7 +359,7 @@
      - `clamp_guided`
      - `clamp_manual`
      - `kill_switch`
-  4. 将 `device/browser/connector/extension` 四类面统一挂到自治策略面。
+  4. 将 `device/browser/connector/extension` 四类面统一挂到运行时 surface 策略面。
   5. 所有模式切换必须写 audit，并显示 TTL/剩余时间/当前被 Hub clamp 状态。
 - DoD：
   - 用户能按项目明确选择自治程度。
@@ -370,7 +370,7 @@
   - kill switch 下浏览器/device 仍可执行 -> 失败
   - TTL 到期但 UI 仍显示 trusted -> 失败
 - 证据：
-  - `build/reports/xt_w3_30_d_autonomy_policy_surface_evidence.v1.json`
+  - `build/reports/xt_w3_30_d_runtime_surface_policy_evidence.v1.json`
 
 ### 7.6 `XT-W3-30-E` Managed Extension / Plugin / MCP Bridge
 
@@ -464,7 +464,7 @@
 
 原因：
 
-- 没有显式自治策略面，就不该扩张“完全自治”能力口径。
+- 没有显式运行时 surface 策略面，就不该扩张“完全自治”能力口径。
 - 没有受管浏览器 runtime，就仍然和 OpenClaw 差一个核心执行面。
 - 没有非 manual trigger closure，就还不算真正自主运行。
 - 没有正式 connector action plane，就还不算具备“自己发邮件/自己发消息”的成品能力。

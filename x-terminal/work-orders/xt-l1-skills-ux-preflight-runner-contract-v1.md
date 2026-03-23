@@ -52,7 +52,7 @@
 
 ### 2.3 分层 Pin（Layered Pin）
 
-- pin 层级必须可见：`Memory-Core > Global > Project`
+- pin 层级必须可见：保留系统层 `Memory-Core` + 普通 pin 层 `Global > Project`
 - pin 变更必须可回放（旧值/新值 + scope）
 - pin 操作必须写审计：`skills.pin.updated`
 

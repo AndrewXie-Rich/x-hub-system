@@ -16,6 +16,11 @@
   - `docs/memory-new/xhub-trusted-automation-device-execution-plane-implementation-pack-v1.md`
   - `docs/memory-new/xhub-hub-to-xterminal-capability-gate-v1.md`
 
+## Direct-Execution Child Pack
+
+- `x-terminal/work-orders/xt-w3-24-safe-operator-channel-onboarding-automation-implementation-pack-v1.md`
+  - Purpose: 把首次接入从“手工建 binding”升级为 `unknown ingress quarantine -> admin approve once -> auto-bind -> first smoke`，让 Slack / Telegram / Feishu / WhatsApp Cloud API 的首用路径更自动，但不降低 Hub-first 安全基线。
+
 ## 0) Why This Pack Exists
 
 `XT-W3-24` 已经把“多渠道入口、流式体验、operator console、channel-hub boundary”作为父级产品目标冻结下来，但还缺一份真正可直接开工的子包，来回答下面这些更细的问题：

@@ -20,7 +20,7 @@
 
 当前系统已经具备三类关键基础：
 
-1. `XT` 已有 browser runtime / `browser_read` / `device.browser.control` / Supervisor tool routing / governed autonomy skeleton。
+1. `XT` 已有 browser runtime / `browser_read` / `device.browser.control` / Supervisor tool routing / governed execution skeleton。
 2. `Hub` 已有 `ai.vision.local`、`vision_understand`、`ocr`、Hub-first memory 与 policy / grant / audit 主链。
 3. `acceptance pack`、project governance、Supervisor memory / event loop 也已经具备可继续挂接的骨架。
 
@@ -461,6 +461,7 @@ v1 正式表面：
   - `XT-W3-37-B6` Project settings + doctor
     - 项目级新增 `ui_review_mode`、`probe_depth_default`、`auto_probe_triggers`。
     - doctor 明确提示缺少 runtime readiness / permissions / unsupported surface。
+    - 若 probe readiness / explainability 被挂进 `XTUnifiedDoctor`，source report 先按 `docs/memory-new/schema/xt_unified_doctor_report_contract.v1.json` 冻结，再由 generic export 走 `docs/memory-new/schema/xhub_doctor_output_contract.v1.json`
 - DoD:
   - `browser_page` 的 `light` 和 `standard` probe 可 require-real 跑通。
   - 至少一条 `native_window` 或 `canvas_surface` 真实 probe 主链跑通。

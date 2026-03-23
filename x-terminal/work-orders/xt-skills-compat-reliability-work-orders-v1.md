@@ -225,7 +225,7 @@ Definition of Done (DoD)
 - 依赖：`SKC-W1-03`。
 - 对齐条目：`SKL-V1-011/022/023/052`。
 - 交付物：
-  - 分层 pin 解析器（memory_core/global/project）。
+  - 分层 pin 解析器（`global/project`；兼容读取保留系统层 `memory_core`，但不把它暴露成普通 client pin scope）。
   - revocation 双侧 gate（Hub download deny + Runner execute deny）。
   - 冲突解析与回滚工具（pin 回指旧版本）。
 - DoD：

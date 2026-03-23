@@ -1,7 +1,7 @@
 # XT-W3-23 XT 记忆 UX 适配层 / Supervisor Memory Bus 实现子工单包
 
 - version: v1.0
-- updatedAt: 2026-03-06
+- updatedAt: 2026-03-22
 - owner: XT-L2（Primary）/ Hub-L5 / XT-L1 / QA / AI-COORD-PRIMARY
 - status: active
 - scope: `XT-W3-23`（XT Memory UX Adapter）+ `XT-W3-23-A/B/C/D/E`
@@ -31,6 +31,18 @@
   - `secret`、`credential`、`private` 内容默认不允许进入 remote prompt bundle；命中远程外发场景必须按 `remote_export.secret_mode` gate 处理。
   - Supervisor/Lane 之间只传 `Context Refs + Capsule + Delta`，禁止把整份 memory 文档全文粘到多泳道提示词里。
   - `chat / supervisor / tool_plan / tool_act_high_risk / lane_handoff / remote_prompt_bundle` 的 layer 使用差异，后续统一按 `xhub-terminal-hub-memory-layer-usage-work-orders-v1.md` 收口。
+
+### 0.1 Control-Plane Boundary
+
+这份包只定义 XT 的 memory UX / selector / bus / injection surface，不定义 memory maintenance control plane。
+
+固定边界：
+
+- XT 若在产品层显示 `Memory-Core Skill`，那只是用户可理解的能力名；真实的规则资产仍在 Hub。
+- 用户在 XT 里选择的是 `channel / scope / budget split / exposure policy`，不是选择哪个 AI 执行 memory jobs。
+- 真正的 memory executor 仍由用户在 X-Hub 中通过 `memory_model_preferences` 选择，并由 `Scheduler -> Worker -> Writer + Gate` 执行。
+- `xt.memory_channel_selector.v1` 只表达这轮要不要带 `user/project` memory、预算如何切、是否允许跨 scope，不得扩写成新的 memory model chooser。
+- XT local capsule / bus / cache 继续只是 consumption surface 与 fallback buffer，不得冒充 durable truth source。
 
 ## 1) 机读契约
 

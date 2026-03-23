@@ -295,6 +295,7 @@
     - talk loop readiness
     - tts readiness
   - doctor 输出与 runtime UI reason code 必须共享同一份 aggregation 结果。
+  - 若该 aggregation 被写入 `XTUnifiedDoctorReport`，则 source report 语义受 `docs/memory-new/schema/xt_unified_doctor_report_contract.v1.json` 约束；后续 normalized export 再映射到 `docs/memory-new/schema/xhub_doctor_output_contract.v1.json`
 - DoD：
   - 用户看到的是一个统一 verdict，不是四块互相打架的 warning。
   - `Verify` 行为能直接指出下一步修复顺序。

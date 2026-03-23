@@ -17,7 +17,7 @@
 
 当前系统已经有两个很强的基础：
 
-- `XT-W3-30` 正在补执行面，解决 browser runtime / external trigger / connector action / autonomy policy / extension bridge 的“手和脚”问题。
+- `XT-W3-30` 正在补执行面，解决 browser runtime / external trigger / connector action / runtime-surface policy / extension bridge 的“手和脚”问题。
 - `XT-W3-31` 已经把 Supervisor 的 portfolio / capsule / action feed 做成机读结构，解决“看见哪些项目、哪些阻塞、哪些需要授权”的问题。
 
 但从真实 Supervisor 体验看，还存在一个单独的大缺口：
@@ -137,8 +137,8 @@
 6. 心跳、skill callback、incident、external trigger 都能触发 Supervisor 自动开下一轮，而不是只能靠用户输入“继续”。
 7. 高风险动作继续遵守：
    - Hub grant
-   - project autonomy
-   - user slider / Hub clamp
+   - project governance bundle
+   - A-tier / runtime-surface clamp
    - constitution / injection defense
    - audit / kill-switch
 
@@ -203,18 +203,18 @@ Supervisor 不再只在用户聊天时工作。
 - 带上 policy verdict
 - 失败时 fail-closed
 
-### 3.6 与现有自治策略的关系
+### 3.6 与现有项目治理策略的关系
 
-- `XT-W3-30-D` 的项目自治策略继续约束：
+- `XT-W3-30-D` 的项目治理策略继续约束：
   - device
   - browser
   - connector
   - extension
-- `XT-W3-32` 额外增加的是 Supervisor orchestration 层的策略，不取代项目自治策略。
+- `XT-W3-32` 额外增加的是 Supervisor orchestration 层的策略，不取代项目治理策略。
 
 二者关系：
 
-- `project autonomy` 决定“某类执行面能不能跑”
+- `project governance bundle` 决定“某类执行面能不能跑”
 - `supervisor orchestration policy` 决定“Supervisor 能不能自动下这种动作”
 
 ## 4) 机读契约冻结
