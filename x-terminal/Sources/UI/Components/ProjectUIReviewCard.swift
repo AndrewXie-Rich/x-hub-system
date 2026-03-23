@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 struct ProjectUIReviewCard: View {
@@ -6,6 +5,7 @@ struct ProjectUIReviewCard: View {
     var onShowHistory: (() -> Void)? = nil
     var onResampleSnapshot: (() -> Void)? = nil
     var isResampling: Bool = false
+    var showsScreenshotPreview: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -36,6 +36,10 @@ struct ProjectUIReviewCard: View {
                 badge(review.confidenceLabel, tint: .blue)
                 badge(review.evidenceLabel, tint: review.sufficientEvidence ? .green : .orange)
                 badge(review.objectiveLabel, tint: review.objectiveReady ? .green : .orange)
+            }
+
+            if showsScreenshotPreview, let screenshotFileURL = review.screenshotFileURL {
+                ProjectUIReviewScreenshotPreview(url: screenshotFileURL)
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -78,38 +82,10 @@ struct ProjectUIReviewCard: View {
             }
 
             if review.hasAnyOpenableArtifact {
-                HStack(spacing: 8) {
-                    artifactButton("Open Review", url: review.reviewFileURL)
-                    artifactButton("Open Bundle", url: review.bundleFileURL)
-                    artifactButton("Open Screenshot", url: review.screenshotFileURL)
-                    artifactButton("Open Text", url: review.visibleTextFileURL)
-                }
+                XTUIReviewActionStrip(items: artifactActions)
             }
 
-            HStack(spacing: 8) {
-                if let onShowHistory {
-                    Button("History") {
-                        onShowHistory()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
-
-                if let onResampleSnapshot {
-                    Button {
-                        onResampleSnapshot()
-                    } label: {
-                        if isResampling {
-                            Label("Sampling…", systemImage: "arrow.triangle.2.circlepath")
-                        } else {
-                            Label("Re-run Snapshot", systemImage: "camera.viewfinder")
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .disabled(isResampling)
-                }
-            }
+            XTUIReviewActionStrip(items: reviewActions)
         }
         .padding(14)
         .background(
@@ -205,14 +181,58 @@ struct ProjectUIReviewCard: View {
         }
     }
 
-    private func artifactButton(_ title: String, url: URL?) -> some View {
-        Button(title) {
-            guard let url else { return }
+    private var artifactActions: [XTUIReviewActionStripItem] {
+        [
+            artifactAction(id: "open-review", title: "Open Review", url: review.reviewFileURL),
+            artifactAction(id: "open-bundle", title: "Open Bundle", url: review.bundleFileURL),
+            artifactAction(id: "open-screenshot", title: "Open Screenshot", url: review.screenshotFileURL),
+            artifactAction(id: "open-text", title: "Open Text", url: review.visibleTextFileURL),
+        ].compactMap { $0 }
+    }
+
+    private var reviewActions: [XTUIReviewActionStripItem] {
+        var items: [XTUIReviewActionStripItem] = []
+
+        if let onShowHistory {
+            items.append(
+                XTUIReviewActionStripItem(
+                    id: "history",
+                    title: "History",
+                    style: .bordered,
+                    action: onShowHistory
+                )
+            )
+        }
+
+        if let onResampleSnapshot {
+            items.append(
+                XTUIReviewActionStripItem(
+                    id: "resample",
+                    title: isResampling ? "Sampling…" : "Re-run Snapshot",
+                    systemImage: isResampling ? "arrow.triangle.2.circlepath" : "camera.viewfinder",
+                    style: .borderedProminent,
+                    isDisabled: isResampling,
+                    action: onResampleSnapshot
+                )
+            )
+        }
+
+        return items
+    }
+
+    private func artifactAction(
+        id: String,
+        title: String,
+        url: URL?
+    ) -> XTUIReviewActionStripItem? {
+        guard let url else { return nil }
+        return XTUIReviewActionStripItem(
+            id: id,
+            title: title,
+            style: .bordered
+        ) {
             NSWorkspace.shared.open(url)
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .disabled(url == nil)
     }
 
     private func trendRow(_ trend: XTUIReviewTrendPresentation) -> some View {

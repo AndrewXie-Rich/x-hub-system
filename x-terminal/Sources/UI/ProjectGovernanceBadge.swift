@@ -93,6 +93,7 @@ struct ProjectGovernancePresentation {
         reviewPulseSeconds: Int,
         brainstormReviewSeconds: Int,
         eventDrivenReviewEnabled: Bool,
+        eventReviewTriggers: [AXProjectReviewTrigger]? = nil,
         compatSource: String = "ui_draft"
     ) {
         let minimumSafe = executionTier.minimumSafeSupervisorTier
@@ -114,8 +115,11 @@ struct ProjectGovernancePresentation {
         self.reviewPulseSeconds = max(0, reviewPulseSeconds)
         self.brainstormReviewSeconds = max(0, brainstormReviewSeconds)
         self.eventDrivenReviewEnabled = eventDrivenReviewEnabled
+        let configuredTriggers = AXProjectReviewTrigger.normalizedList(
+            eventReviewTriggers ?? executionTier.defaultEventReviewTriggers
+        )
         eventReviewTriggerLabels = eventDrivenReviewEnabled
-            ? executionTier.defaultEventReviewTriggers.map(\.displayName)
+            ? configuredTriggers.map(\.displayName)
             : []
         projectMemoryCeiling = executionTier.defaultProjectMemoryCeiling
         supervisorReviewMemoryCeiling = supervisorInterventionTier.defaultReviewMemoryCeiling
@@ -173,7 +177,7 @@ struct ProjectGovernancePresentation {
     var compatSourceDetail: String? {
         switch compatSource {
         case AXProjectGovernanceCompatSource.explicitDualDial.rawValue:
-            return "当前项目已明确保存 A-tier / S-tier / Review Policy，后续以这组治理拨盘为准。"
+            return "当前项目已明确保存 A-tier / S-tier / Review Policy，后续以这组治理设置为准。"
         case AXProjectGovernanceCompatSource.legacyAutonomyLevel.rawValue:
             return "当前治理仍在兼容旧 project card 档位影子值。建议在项目设置里保存一次 A-tier / S-tier，让运行时不再依赖旧字段。"
         case AXProjectGovernanceCompatSource.legacyAutonomyMode.rawValue:
@@ -310,16 +314,16 @@ struct ProjectGovernancePresentation {
     }
 
     private static func clampSummary(_ resolved: AXProjectResolvedGovernanceState) -> String {
-        let autonomy = resolved.effectiveAutonomy
-        if let clamp = xtAutonomyClampExplanation(
-            effective: autonomy,
+        let runtimeSurface = resolved.effectiveRuntimeSurface
+        if let clamp = xtProjectGovernanceClampExplanation(
+            effective: runtimeSurface,
             style: .uiChinese
         ) {
             return clamp.summary
         }
         if resolved.configuredBundle.executionTier == .a4OpenClaw
             && (!resolved.trustedAutomationStatus.trustedAutomationReady || !resolved.trustedAutomationStatus.permissionOwnerReady) {
-            return "A4 Full Surface 已配置，但 device/browser 仍受 trusted automation readiness 和 permission owner gate 约束。"
+            return "A4 Agent 已配置，但 device/browser 仍受 trusted automation readiness 和 permission owner gate 约束。"
         }
         return "当前没有额外 clamp；但仍继续受 Hub 授权、runtime surface TTL、readiness 与 kill-switch 约束。"
     }
@@ -348,16 +352,46 @@ enum ProjectGovernanceCalloutTone {
 struct ProjectGovernanceCompactSummaryView: View {
     let presentation: ProjectGovernancePresentation
     var showCallout: Bool = true
+    var onExecutionTierTap: (() -> Void)? = nil
+    var onSupervisorTierTap: (() -> Void)? = nil
+    var onReviewCadenceTap: (() -> Void)? = nil
+    var onStatusTap: (() -> Void)? = nil
+    var onCalloutTap: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            ProjectGovernanceBadge(presentation: presentation, compact: true)
+            ProjectGovernanceBadge(
+                presentation: presentation,
+                compact: true,
+                onExecutionTierTap: onExecutionTierTap,
+                onSupervisorTierTap: onSupervisorTierTap,
+                onReviewCadenceTap: onReviewCadenceTap,
+                onStatusTap: onStatusTap
+            )
 
             if showCallout, let callout = presentation.compactCalloutMessage {
-                Text(callout)
-                    .font(.caption2)
-                    .foregroundStyle(calloutColor(presentation.compactCalloutTone))
-                    .lineLimit(2)
+                if let onCalloutTap {
+                    interactiveSurface(
+                        help: "Open the project governance overview",
+                        action: onCalloutTap
+                    ) {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text(callout)
+                                .font(.caption2)
+                                .foregroundStyle(calloutColor(presentation.compactCalloutTone))
+                                .lineLimit(2)
+                            Spacer(minLength: 4)
+                            Image(systemName: "chevron.right")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                } else {
+                    Text(callout)
+                        .font(.caption2)
+                        .foregroundStyle(calloutColor(presentation.compactCalloutTone))
+                        .lineLimit(2)
+                }
             }
 
             if let followUpRhythmSummary = presentation.followUpRhythmSummary,
@@ -367,6 +401,27 @@ struct ProjectGovernanceCompactSummaryView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
+        }
+    }
+
+    @ViewBuilder
+    private func interactiveSurface<Content: View>(
+        help: String,
+        action: (() -> Void)?,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        let surface = content()
+            .contentShape(Rectangle())
+
+        if let action {
+            surface
+                .highPriorityGesture(TapGesture().onEnded { action() })
+                .help(help)
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction(.default) { action() }
+        } else {
+            surface
         }
     }
 
@@ -387,34 +442,47 @@ struct ProjectGovernanceCompactSummaryView: View {
 struct ProjectGovernanceBadge: View {
     let presentation: ProjectGovernancePresentation
     var compact: Bool = false
+    var onExecutionTierTap: (() -> Void)? = nil
+    var onSupervisorTierTap: (() -> Void)? = nil
+    var onReviewCadenceTap: (() -> Void)? = nil
+    var onStatusTap: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: compact ? 6 : 8) {
             governanceChip(
                 presentation.executionTier.shortToken,
                 label: presentation.executionTier.shortLabel,
-                color: .blue
+                color: .blue,
+                action: onExecutionTierTap
             )
             governanceChip(
                 presentation.supervisorInterventionTier.shortToken,
                 label: presentation.supervisorInterventionTier.shortLabel,
-                color: .orange
+                color: .orange,
+                action: onSupervisorTierTap
             )
             governanceChip(
                 presentation.reviewPolicyMode.shortLabel,
                 label: presentation.reviewCadenceText,
-                color: .green
+                color: .green,
+                action: onReviewCadenceTap
             )
             if !presentation.invalidMessages.isEmpty {
-                governanceChip("无效", label: "fail-closed", color: .red)
+                governanceChip("无效", label: "fail-closed", color: .red, action: onStatusTap)
             } else if !presentation.warningMessages.isEmpty {
-                governanceChip("注意", label: "低于推荐", color: .yellow)
+                governanceChip("注意", label: "低于推荐", color: .yellow, action: onStatusTap)
             }
         }
     }
 
-    private func governanceChip(_ title: String, label: String, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: compact ? 1 : 2) {
+    @ViewBuilder
+    private func governanceChip(
+        _ title: String,
+        label: String,
+        color: Color,
+        action: (() -> Void)? = nil
+    ) -> some View {
+        let chip = VStack(alignment: .leading, spacing: compact ? 1 : 2) {
             Text(title)
                 .font(.system(compact ? .caption : .caption, design: .monospaced).weight(.semibold))
             Text(label)
@@ -428,6 +496,34 @@ struct ProjectGovernanceBadge: View {
             RoundedRectangle(cornerRadius: compact ? 8 : 10)
                 .fill(color.opacity(0.10))
         )
+
+        interactiveSurface(
+            help: "Open the matching project governance setting",
+            action: action
+        ) {
+            chip
+        }
+    }
+
+    @ViewBuilder
+    private func interactiveSurface<Content: View>(
+        help: String,
+        action: (() -> Void)?,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        let surface = content()
+            .contentShape(Rectangle())
+
+        if let action {
+            surface
+                .highPriorityGesture(TapGesture().onEnded { action() })
+                .help(help)
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction(.default) { action() }
+        } else {
+            surface
+        }
     }
 }
 
@@ -630,7 +726,7 @@ extension AXProjectExecutionTier {
         case .a3DeliverAuto:
             return "Deliver Auto"
         case .a4OpenClaw:
-            return "Full Surface"
+            return "Agent"
         }
     }
 }
@@ -683,6 +779,48 @@ extension AXProjectReviewPolicyMode {
         }
     }
 
+    var oneLineSummary: String {
+        switch self {
+        case .off:
+            return "只保留手动请求和 A-tier 强制 checkpoint，不做周期 review。"
+        case .milestoneOnly:
+            return "只在 blocker、pre-done 等关键里程碑 review，不跑周期 pulse。"
+        case .periodic:
+            return "按固定节奏做 pulse review，不额外跑 brainstorm。"
+        case .hybrid:
+            return "周期 pulse + brainstorm + 事件触发一起工作，是默认推荐档。"
+        case .aggressive:
+            return "高频复盘并放大 failure / no-progress 类触发，更适合救火和高风险项目。"
+        }
+    }
+
+    var supportsPulseCadence: Bool {
+        switch self {
+        case .periodic, .hybrid, .aggressive:
+            return true
+        case .off, .milestoneOnly:
+            return false
+        }
+    }
+
+    var supportsBrainstormCadence: Bool {
+        switch self {
+        case .hybrid, .aggressive:
+            return true
+        case .off, .milestoneOnly, .periodic:
+            return false
+        }
+    }
+
+    var supportsEventDrivenReview: Bool {
+        switch self {
+        case .off:
+            return false
+        case .milestoneOnly, .periodic, .hybrid, .aggressive:
+            return true
+        }
+    }
+
     var displayName: String {
         switch self {
         case .off:
@@ -700,6 +838,31 @@ extension AXProjectReviewPolicyMode {
 }
 
 extension AXProjectReviewTrigger {
+    var governanceSummary: String {
+        switch self {
+        case .periodicHeartbeat:
+            return "轻量进度检查；不是战略 review。"
+        case .periodicPulse:
+            return "按周期节奏做一次常规 pulse review。"
+        case .failureStreak:
+            return "连续失败达到阈值时，触发一次补救型 review。"
+        case .noProgressWindow:
+            return "长时间没有进展时，触发 brainstorm / rescue review。"
+        case .blockerDetected:
+            return "发现 blocker 或卡点时，要求 supervisor 介入看方向。"
+        case .planDrift:
+            return "执行路径开始偏离最初交付目标时触发。"
+        case .preHighRiskAction:
+            return "做高风险动作前先 review，一般不会让它裸跑。"
+        case .preDoneSummary:
+            return "准备宣布完成前做收口审查。"
+        case .manualRequest:
+            return "用户或系统手动要求 review。"
+        case .userOverride:
+            return "用户强制覆盖当前策略。"
+        }
+    }
+
     var displayName: String {
         switch self {
         case .periodicHeartbeat:

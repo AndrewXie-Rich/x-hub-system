@@ -33,7 +33,7 @@ struct AXProjectGovernedAuthorityPresentationTests {
                 deviceToolGroups: ["device.browser.control"],
                 workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
             )
-            .settingAutonomyPolicy(
+            .settingRuntimeSurfacePolicy(
                 mode: .trustedOpenClawMode,
                 updatedAt: Date(timeIntervalSince1970: 1_773_900_000)
             )

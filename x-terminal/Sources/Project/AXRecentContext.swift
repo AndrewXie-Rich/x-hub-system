@@ -137,11 +137,13 @@ enum AXRecentContextStore {
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let data = try? enc.encode(cur) {
-            try? data.write(to: jsonURL(for: ctx), options: .atomic)
+            try? XTStoreWriteSupport.writeSnapshotData(data, to: jsonURL(for: ctx))
         }
 
         let md = renderMarkdown(cur)
-        try? md.data(using: .utf8)?.write(to: markdownURL(for: ctx), options: .atomic)
+        if let markdownData = md.data(using: .utf8) {
+            try? XTStoreWriteSupport.writeSnapshotData(markdownData, to: markdownURL(for: ctx))
+        }
     }
 
     private static func overwriteUnlocked(ctx: AXProjectContext, messages: [AXRecentContextMessage]) {

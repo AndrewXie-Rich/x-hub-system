@@ -229,8 +229,8 @@ struct SupervisorVoiceAuthorizationBridge {
             ? .escalatedToMobile
             : .pending
         let nextAction = challenge.requiresMobileConfirm
-            ? "complete mobile confirmation, then verify the spoken challenge"
-            : "capture the spoken response and verify the challenge"
+            ? "先完成 mobile confirmation，再核验 spoken challenge"
+            : "先采集 spoken response，再核验 challenge"
 
         return SupervisorVoiceAuthorizationResolution(
             schemaVersion: SupervisorVoiceAuthorizationResolution.currentSchemaVersion,
@@ -338,7 +338,7 @@ struct SupervisorVoiceAuthorizationBridge {
                     reasonCode: nil,
                     challenge: challenge
                 ),
-                nextAction: "authorization verified; proceed with the gated action"
+                nextAction: "授权已通过，可以继续执行受控动作"
             )
         }
 
@@ -475,34 +475,34 @@ struct SupervisorVoiceAuthorizationBridge {
     private func nextActionForDenyCode(_ denyCode: String?) -> String {
         switch normalized(denyCode) {
         case "voice_only_forbidden":
-            return "complete the required mobile confirmation before retrying verify"
+            return "先完成要求的 mobile confirmation，再 retry verify"
         case "mobile_confirmation_required":
-            return "confirm on the paired mobile terminal, then retry verify"
+            return "先在配对移动端完成确认，再 retry verify"
         case "challenge_missing":
-            return "issue a new challenge and retry verification"
+            return "先重新发起一个 challenge，再 retry verify"
         case "semantic_ambiguous":
-            return "repeat the authorization phrase more clearly and retry verify"
+            return "把授权短语说得更清楚一些，然后 retry verify"
         case "device_not_bound":
-            return "re-bind the expected voice device before retrying"
+            return "先重新绑定预期语音设备，再 retry verify"
         case "challenge_expired":
-            return "issue a new challenge because the current one expired"
+            return "当前 challenge 已过期，请重新发起 challenge 后再 retry verify"
         case "replay_detected":
-            return "issue a fresh challenge and use a new verify nonce"
+            return "请重新发起 challenge，并使用新的 verify nonce"
         default:
-            return "authorization denied; inspect deny_code and retry only after the prerequisite is satisfied"
+            return "这次授权已拒绝；先检查 deny_code，满足前置条件后再 retry verify"
         }
     }
 
     private func nextActionForFailClosed(_ reasonCode: String?) -> String {
         switch normalized(reasonCode) {
         case "hub_env_missing":
-            return "repair Hub pairing/runtime profile before retrying voice authorization"
+            return "先 repair Hub pairing/runtime profile，再重试 voice authorization"
         case "voice_grant_file_ipc_not_supported":
-            return "switch XT to remote/grpc Hub transport; file IPC cannot service voice authorization"
+            return "先把 XT 切到 remote/grpc Hub transport；file IPC 不能处理 voice authorization"
         case "node_missing":
-            return "repair the client runtime dependency before retrying voice authorization"
+            return "先修复客户端运行时依赖，再重试 voice authorization"
         default:
-            return "hold the gated action and repair the upstream voice authorization route first"
+            return "先继续阻塞受控动作，并优先修复上游 voice authorization route"
         }
     }
 

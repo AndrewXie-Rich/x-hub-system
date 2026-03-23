@@ -45,6 +45,7 @@ struct ProjectGovernanceActivityPresentation: Equatable {
         var ackUpdatedAtText: String
         var ackNote: String
         var auditRef: String
+        var contractSummary: SupervisorGuidanceContractSummary? = nil
 
         var id: String { injectionID }
     }
@@ -93,11 +94,20 @@ struct ProjectGovernanceActivityPresentation: Equatable {
         }
         latestReview = recentReviews.first
 
+        let reviewById = Dictionary(reviewNotes.notes.map { ($0.reviewId, $0) }, uniquingKeysWith: { first, _ in first })
         pendingGuidance = actionableGuidance.first.map {
-            Self.makeGuidanceSummary($0, nowMs: nowMs)
+            Self.makeGuidanceSummary(
+                $0,
+                reviewNote: reviewById[$0.reviewId],
+                nowMs: nowMs
+            )
         }
         recentGuidance = guidance.items.prefix(5).map {
-            Self.makeGuidanceSummary($0, nowMs: nowMs)
+            Self.makeGuidanceSummary(
+                $0,
+                reviewNote: reviewById[$0.reviewId],
+                nowMs: nowMs
+            )
         }
         latestGuidance = recentGuidance.first
 
@@ -137,6 +147,24 @@ struct ProjectGovernanceActivityPresentation: Equatable {
         ),
         now: Date(timeIntervalSince1970: 0)
     )
+
+    static func load(
+        for ctx: AXProjectContext,
+        resolvedGovernance: AXProjectResolvedGovernanceState? = nil,
+        now: Date = Date()
+    ) -> ProjectGovernanceActivityPresentation {
+        let reviewNotes = SupervisorReviewNoteStore.load(for: ctx)
+        let guidance = SupervisorGuidanceInjectionStore.load(for: ctx)
+        let schedule = SupervisorReviewScheduleStore.load(for: ctx)
+
+        return ProjectGovernanceActivityPresentation(
+            reviewNotes: reviewNotes,
+            guidance: guidance,
+            scheduleState: schedule,
+            resolvedGovernance: resolvedGovernance ?? resolvedGovernanceState(for: ctx),
+            now: now
+        )
+    }
 
     private static func timestampText(ms: Int64, nowMs: Int64) -> String {
         guard ms > 0 else { return "(none)" }
@@ -222,6 +250,7 @@ struct ProjectGovernanceActivityPresentation: Equatable {
 
     private static func makeGuidanceSummary(
         _ record: SupervisorGuidanceInjectionRecord,
+        reviewNote: SupervisorReviewNoteRecord?,
         nowMs: Int64
     ) -> GuidanceSummary {
         GuidanceSummary(
@@ -241,7 +270,11 @@ struct ProjectGovernanceActivityPresentation: Equatable {
             guidanceText: Self.orNone(record.guidanceText),
             ackUpdatedAtText: Self.timestampText(ms: record.ackUpdatedAtMs, nowMs: nowMs),
             ackNote: Self.orNone(record.ackNote),
-            auditRef: Self.orNone(record.auditRef)
+            auditRef: Self.orNone(record.auditRef),
+            contractSummary: SupervisorGuidanceContractResolver.resolve(
+                guidance: record,
+                reviewNote: reviewNote
+            )
         )
     }
 
@@ -265,6 +298,24 @@ struct ProjectGovernanceActivityPresentation: Equatable {
         guard let confidence else { return band.displayName }
         return "\(band.displayName) · conf=\(String(format: "%.2f", max(0, min(1, confidence))))"
     }
+
+    private static func resolvedGovernanceState(
+        for ctx: AXProjectContext
+    ) -> AXProjectResolvedGovernanceState {
+        let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: ctx.root)
+        let adaptationPolicy = AXProjectSupervisorAdaptationPolicy.default
+        let strengthProfile = AXProjectAIStrengthAssessor.assess(
+            ctx: ctx,
+            adaptationPolicy: adaptationPolicy
+        )
+        return xtResolveProjectGovernance(
+            projectRoot: ctx.root,
+            config: config,
+            projectAIStrengthProfile: strengthProfile,
+            adaptationPolicy: adaptationPolicy,
+            permissionReadiness: .current()
+        )
+    }
 }
 
 struct ProjectGovernanceActivityView: View {
@@ -278,10 +329,10 @@ struct ProjectGovernanceActivityView: View {
     @State private var ackInlineMessageIsError = false
 
     var body: some View {
-        GroupBox("Governance Activity") {
+        GroupBox("治理动态") {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Text("展示当前 project 最近一次 supervisor review、guidance 注入、ack 状态，以及下次 heartbeat / review 的计划时间。")
+                    Text("展示当前项目最近一次 supervisor 审查、指导注入、确认状态，以及下一次 heartbeat / review 的计划时间。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -289,7 +340,7 @@ struct ProjectGovernanceActivityView: View {
                     Spacer()
 
                     if presentation.pendingAckCount > 0 {
-                        Text("Pending Ack × \(presentation.pendingAckCount)")
+                        Text("待确认 × \(presentation.pendingAckCount)")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.orange)
                             .padding(.horizontal, 8)
@@ -300,12 +351,12 @@ struct ProjectGovernanceActivityView: View {
                             )
                     }
 
-                    Button("Reload") {
+                    Button("刷新") {
                         reload()
                     }
                 }
 
-                Text("snapshot: reviews=\(presentation.reviewCount) · guidance=\(presentation.guidanceCount) · refreshed_at=\(refreshedAtText)")
+                Text("快照：审查 \(presentation.reviewCount) · 指导 \(presentation.guidanceCount) · 刷新于 \(refreshedAtText)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
@@ -339,7 +390,7 @@ struct ProjectGovernanceActivityView: View {
 
     private var latestReviewSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Latest Review")
+            Text("最新审查")
                 .font(.caption.weight(.semibold))
 
             if let review = presentation.latestReview {
@@ -367,7 +418,7 @@ struct ProjectGovernanceActivityView: View {
 
                 if !review.recommendedActions.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("recommended_actions")
+                        Text(ProjectGovernanceActivityDisplay.fieldLabel("recommended_actions"))
                             .font(.system(.caption, design: .monospaced))
                             .foregroundStyle(.secondary)
                         ForEach(review.recommendedActions, id: \.self) { action in
@@ -381,7 +432,7 @@ struct ProjectGovernanceActivityView: View {
 
                 GovernanceActivityRow(label: "audit_ref", value: review.auditRef)
             } else {
-                Text("还没有 supervisor review note。")
+                Text("还没有 supervisor 审查记录。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -390,12 +441,12 @@ struct ProjectGovernanceActivityView: View {
 
     private var latestGuidanceSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Latest Guidance")
+            Text("最新指导")
                 .font(.caption.weight(.semibold))
 
             if let guidance = presentation.latestGuidance {
                 if guidance.injectionID == presentation.pendingGuidance?.injectionID {
-                    Text("最新 guidance 就是上面这条待确认 guidance。")
+                    Text("最新指导就是上面这条待确认记录。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
@@ -417,13 +468,33 @@ struct ProjectGovernanceActivityView: View {
                             ? .orange
                             : .secondary
                     )
+                    if let contract = guidance.contractSummary {
+                        GovernanceActivityRow(label: "contract_kind", value: contract.kindText)
+                        GovernanceActivityRow(label: "contract_summary", value: contract.summaryText)
+                        if let uiReview = contract.uiReviewRepair {
+                            GovernanceActivityRow(
+                                label: "repair_action",
+                                value: uiReview.repairAction.isEmpty ? "(none)" : uiReview.repairAction
+                            )
+                            GovernanceActivityRow(
+                                label: "repair_focus",
+                                value: uiReview.repairFocus.isEmpty ? "(none)" : uiReview.repairFocus
+                            )
+                        } else {
+                            GovernanceActivityRow(label: "primary_blocker", value: contract.primaryFocusText)
+                        }
+                        GovernanceActivityRow(label: "next_safe_action", value: contract.nextSafeActionText)
+                        if let actions = contract.recommendedActionsText {
+                            GovernanceActivityRow(label: "recommended_actions", value: actions)
+                        }
+                    }
                     GovernanceActivityRow(label: "guidance", value: guidance.guidanceText)
                     GovernanceActivityRow(label: "ack_updated_at", value: guidance.ackUpdatedAtText)
                     GovernanceActivityRow(label: "ack_note", value: guidance.ackNote)
                     GovernanceActivityRow(label: "audit_ref", value: guidance.auditRef)
                 }
             } else {
-                Text("还没有 guidance injection。")
+                Text("还没有指导注入记录。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -432,15 +503,14 @@ struct ProjectGovernanceActivityView: View {
 
     private var pendingGuidanceSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Pending Guidance Ack")
+            Text("待确认指导")
                 .font(.caption.weight(.semibold))
 
             if let guidance = presentation.pendingGuidance {
-                Text("这条 guidance 还没确认。你可以在这里直接接受、暂缓或拒绝，结果会回写到治理审计和 ack 状态。")
+                Text("这条指导还没确认。你可以在这里直接接受、暂缓或拒绝，结果会回写到治理审计和确认状态。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-
                 GovernanceActivityRow(label: "injection_id", value: guidance.injectionID)
                 GovernanceActivityRow(label: "review_id", value: guidance.reviewID)
                 GovernanceActivityRow(label: "injected_at", value: guidance.injectedAtText)
@@ -451,28 +521,48 @@ struct ProjectGovernanceActivityView: View {
                 GovernanceActivityRow(label: "supervisor_tier", value: guidance.effectiveSupervisorTierText)
                 GovernanceActivityRow(label: "work_order_depth", value: guidance.workOrderDepthText)
                 GovernanceActivityRow(label: "work_order_ref", value: guidance.workOrderRef)
+                if let contract = guidance.contractSummary {
+                    GovernanceActivityRow(label: "contract_kind", value: contract.kindText)
+                    GovernanceActivityRow(label: "contract_summary", value: contract.summaryText)
+                    if let uiReview = contract.uiReviewRepair {
+                        GovernanceActivityRow(
+                            label: "repair_action",
+                            value: uiReview.repairAction.isEmpty ? "(none)" : uiReview.repairAction
+                        )
+                        GovernanceActivityRow(
+                            label: "repair_focus",
+                            value: uiReview.repairFocus.isEmpty ? "(none)" : uiReview.repairFocus
+                        )
+                    } else {
+                        GovernanceActivityRow(label: "primary_blocker", value: contract.primaryFocusText)
+                    }
+                    GovernanceActivityRow(label: "next_safe_action", value: contract.nextSafeActionText)
+                    if let actions = contract.recommendedActionsText {
+                        GovernanceActivityRow(label: "recommended_actions", value: actions)
+                    }
+                }
                 GovernanceActivityRow(label: "guidance", value: guidance.guidanceText, accent: .primary)
 
-                TextField("optional ack note / reject reason", text: $pendingAckNoteDraft, axis: .vertical)
+                TextField("可选：确认备注 / 拒绝原因", text: $pendingAckNoteDraft, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
 
                 HStack(spacing: 8) {
-                    Button("Accept") {
+                    Button("接受") {
                         acknowledgePendingGuidance(.accepted)
                     }
 
-                    Button("Defer") {
+                    Button("暂缓") {
                         acknowledgePendingGuidance(.deferred)
                     }
 
-                    Button("Reject") {
+                    Button("拒绝") {
                         acknowledgePendingGuidance(.rejected)
                     }
 
                     Spacer()
                 }
             } else {
-                Text("当前没有待确认 guidance。")
+                Text("当前没有待确认指导。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -488,7 +578,7 @@ struct ProjectGovernanceActivityView: View {
 
     private var scheduleSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Review Schedule")
+            Text("审查节奏")
                 .font(.caption.weight(.semibold))
 
             GovernanceActivityRow(label: "last_heartbeat", value: presentation.schedule.lastHeartbeatText)
@@ -502,29 +592,29 @@ struct ProjectGovernanceActivityView: View {
 
     private var recentActivitySection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Recent Activity")
+            Text("最近动态")
                 .font(.caption.weight(.semibold))
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Recent Reviews")
+                Text("最近审查")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                 if presentation.recentReviews.isEmpty {
-                    Text("还没有 review 历史。")
+                    Text("还没有审查历史。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(presentation.recentReviews) { review in
                         GovernanceHistoryCard(
-                            title: "\(review.verdictText) · \(review.reviewLevelText)",
-                            subtitle: "\(review.createdAtText) · \(review.triggerText)",
+                            title: "\(ProjectGovernanceActivityDisplay.displayValue(label: "verdict", value: review.verdictText)) · \(ProjectGovernanceActivityDisplay.displayValue(label: "level", value: review.reviewLevelText))",
+                            subtitle: "\(review.createdAtText) · \(ProjectGovernanceActivityDisplay.displayValue(label: "trigger", value: review.triggerText))",
                             bodyText: review.summary,
                             footnote: governanceHistoryFootnote(
-                                "next_step: \(review.nextStep)",
-                                "depth: \(review.workOrderDepthText)",
-                                "strength: \(review.projectAIStrengthText)",
-                                "work_order: \(review.workOrderRef)"
+                                ProjectGovernanceActivityDisplay.fieldLine("next_step", value: review.nextStep),
+                                ProjectGovernanceActivityDisplay.fieldLine("work_order_depth", value: review.workOrderDepthText),
+                                ProjectGovernanceActivityDisplay.fieldLine("project_ai_strength", value: review.projectAIStrengthText),
+                                ProjectGovernanceActivityDisplay.fieldLine("work_order_ref", value: review.workOrderRef)
                             )
                         )
                     }
@@ -532,24 +622,25 @@ struct ProjectGovernanceActivityView: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Recent Guidance")
+                Text("最近指导")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                 if presentation.recentGuidance.isEmpty {
-                    Text("还没有 guidance 历史。")
+                    Text("还没有指导历史。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(presentation.recentGuidance) { guidance in
                         GovernanceHistoryCard(
-                            title: "\(guidance.ackText) · \(guidance.interventionText)",
-                            subtitle: "\(guidance.injectedAtText) · \(guidance.safePointText)",
-                            bodyText: guidance.guidanceText,
+                            title: "\(ProjectGovernanceActivityDisplay.displayValue(label: "ack", value: guidance.ackText)) · \(ProjectGovernanceActivityDisplay.displayValue(label: "intervention", value: guidance.interventionText))",
+                            subtitle: "\(guidance.injectedAtText) · \(ProjectGovernanceActivityDisplay.displayValue(label: "safe_point", value: guidance.safePointText))",
+                            bodyText: governanceGuidanceBodyText(guidance),
                             footnote: governanceHistoryFootnote(
-                                "delivery: \(guidance.deliveryModeText)",
-                                "depth: \(guidance.workOrderDepthText)",
-                                "work_order: \(guidance.workOrderRef)"
+                                ProjectGovernanceActivityDisplay.fieldLine("delivery", value: guidance.deliveryModeText),
+                                ProjectGovernanceActivityDisplay.fieldLine("work_order_depth", value: guidance.workOrderDepthText),
+                                ProjectGovernanceActivityDisplay.fieldLine("work_order_ref", value: guidance.workOrderRef),
+                                governanceGuidanceFootnote(guidance)
                             )
                         )
                     }
@@ -559,34 +650,12 @@ struct ProjectGovernanceActivityView: View {
     }
 
     private var refreshedAtText: String {
-        guard let refreshedAt else { return "(not loaded)" }
+        guard let refreshedAt else { return "未加载" }
         return governanceActivityTimestampFormatter.string(from: refreshedAt)
     }
 
     private func reload() {
-        let reviewNotes = SupervisorReviewNoteStore.load(for: ctx)
-        let guidance = SupervisorGuidanceInjectionStore.load(for: ctx)
-        let schedule = SupervisorReviewScheduleStore.load(for: ctx)
-        let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: ctx.root)
-        let adaptationPolicy = AXProjectSupervisorAdaptationPolicy.default
-        let strengthProfile = AXProjectAIStrengthAssessor.assess(
-            ctx: ctx,
-            adaptationPolicy: adaptationPolicy
-        )
-        let resolvedGovernance = xtResolveProjectGovernance(
-            projectRoot: ctx.root,
-            config: config,
-            projectAIStrengthProfile: strengthProfile,
-            adaptationPolicy: adaptationPolicy,
-            permissionReadiness: .current()
-        )
-        let nextPresentation = ProjectGovernanceActivityPresentation(
-            reviewNotes: reviewNotes,
-            guidance: guidance,
-            scheduleState: schedule,
-            resolvedGovernance: resolvedGovernance,
-            now: Date()
-        )
+        let nextPresentation = ProjectGovernanceActivityPresentation.load(for: ctx, now: Date())
         let nextPendingInjectionID = nextPresentation.pendingGuidance?.injectionID
         if nextPendingInjectionID != pendingAckInjectionID {
             pendingAckInjectionID = nextPendingInjectionID
@@ -598,7 +667,7 @@ struct ProjectGovernanceActivityView: View {
 
     private func acknowledgePendingGuidance(_ status: SupervisorGuidanceAckStatus) {
         guard let guidance = presentation.pendingGuidance else {
-            ackInlineMessage = "当前没有待确认 guidance。"
+            ackInlineMessage = "当前没有待确认指导。"
             ackInlineMessageIsError = true
             return
         }
@@ -612,11 +681,11 @@ struct ProjectGovernanceActivityView: View {
                 source: "project_settings_governance_activity"
             )
             pendingAckNoteDraft = ""
-            ackInlineMessage = "已更新 guidance ack：\(updated.injectionId) -> \(updated.ackStatus.displayName)"
+            ackInlineMessage = "已更新指导确认：\(updated.injectionId) -> \(ProjectGovernanceActivityDisplay.ackStatusLabel(updated.ackStatus))"
             ackInlineMessageIsError = false
             reload()
         } catch {
-            ackInlineMessage = "更新 guidance ack 失败：\(error.localizedDescription)"
+            ackInlineMessage = "更新指导确认失败：\(error.localizedDescription)"
             ackInlineMessageIsError = true
         }
     }
@@ -629,6 +698,49 @@ private func governanceHistoryFootnote(_ parts: String...) -> String {
     return filtered.isEmpty ? "(none)" : filtered.joined(separator: " · ")
 }
 
+private func governanceGuidanceBodyText(
+    _ guidance: ProjectGovernanceActivityPresentation.GuidanceSummary
+) -> String {
+    guard let contract = guidance.contractSummary else {
+        return guidance.guidanceText
+    }
+
+    var lines: [String] = [contract.summaryText]
+    if let uiReview = contract.uiReviewRepair {
+        if !uiReview.repairAction.isEmpty || !uiReview.repairFocus.isEmpty {
+            let repair = [
+                uiReview.repairAction.isEmpty ? nil : ProjectGovernanceActivityDisplay.fieldLine("repair_action", value: uiReview.repairAction),
+                uiReview.repairFocus.isEmpty ? nil : ProjectGovernanceActivityDisplay.fieldLine("repair_focus", value: uiReview.repairFocus)
+            ]
+            .compactMap { $0 }
+            .joined(separator: " · ")
+            if !repair.isEmpty {
+                lines.append(repair)
+            }
+        }
+    } else if !contract.primaryBlocker.isEmpty {
+        lines.append(ProjectGovernanceActivityDisplay.fieldLine("primary_blocker", value: contract.primaryBlocker))
+    }
+
+    if contract.nextSafeActionText != "(none)" {
+        lines.append(ProjectGovernanceActivityDisplay.fieldLine("next_safe_action", value: contract.nextSafeActionText))
+    }
+
+    return lines.joined(separator: "\n")
+}
+
+private func governanceGuidanceFootnote(
+    _ guidance: ProjectGovernanceActivityPresentation.GuidanceSummary
+) -> String {
+    guard let contract = guidance.contractSummary else { return "" }
+    return governanceHistoryFootnote(
+        ProjectGovernanceActivityDisplay.fieldLine("contract_kind", value: contract.kindText),
+        contract.recommendedActionsText.map {
+            ProjectGovernanceActivityDisplay.fieldLine("recommended_actions", value: $0)
+        } ?? ""
+    )
+}
+
 private struct GovernanceActivityRow: View {
     let label: String
     let value: String
@@ -636,12 +748,12 @@ private struct GovernanceActivityRow: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text(label)
+            Text(ProjectGovernanceActivityDisplay.fieldLabel(label))
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .frame(width: 150, alignment: .leading)
 
-            Text(value)
+            Text(ProjectGovernanceActivityDisplay.displayValue(label: label, value: value))
                 .font(.caption)
                 .foregroundStyle(accent)
                 .textSelection(.enabled)
@@ -649,6 +761,383 @@ private struct GovernanceActivityRow: View {
 
             Spacer(minLength: 0)
         }
+    }
+}
+
+enum ProjectGovernanceActivityDisplay {
+    static func fieldLabel(_ raw: String) -> String {
+        switch raw {
+        case "review_id":
+            return "审查 ID"
+        case "created_at":
+            return "创建时间"
+        case "trigger":
+            return "触发原因"
+        case "level":
+            return "审查层级"
+        case "verdict":
+            return "结论"
+        case "delivery":
+            return "交付方式"
+        case "ack":
+            return "确认状态"
+        case "ack_status":
+            return "确认状态"
+        case "supervisor_tier":
+            return "Supervisor 层级"
+        case "work_order_depth":
+            return "工单深度"
+        case "project_ai_strength":
+            return "项目 AI 强度"
+        case "follow_up_rhythm":
+            return "跟进节奏"
+        case "work_order_ref":
+            return "工单引用"
+        case "summary":
+            return "摘要"
+        case "anchor_goal":
+            return "锚定目标"
+        case "done_definition":
+            return "完成定义"
+        case "constraints":
+            return "约束"
+        case "current_state":
+            return "当前状态"
+        case "next_step":
+            return "下一步"
+        case "blocker":
+            return "阻塞点"
+        case "recommended_actions":
+            return "建议动作"
+        case "audit_ref":
+            return "审计引用"
+        case "injection_id":
+            return "指导 ID"
+        case "injected_at":
+            return "注入时间"
+        case "intervention":
+            return "干预方式"
+        case "safe_point":
+            return "安全点"
+        case "lifecycle":
+            return "生命周期"
+        case "contract_kind":
+            return "指导合同类型"
+        case "contract_summary":
+            return "指导合同摘要"
+        case "repair_action":
+            return "修复动作"
+        case "repair_focus":
+            return "修复焦点"
+        case "primary_blocker":
+            return "主要阻塞点"
+        case "next_safe_action":
+            return "下一个安全动作"
+        case "guidance":
+            return "指导内容"
+        case "ack_updated_at":
+            return "确认更新时间"
+        case "ack_note":
+            return "确认备注"
+        case "expires_at_ms":
+            return "过期时间(ms)"
+        case "retry_at_ms":
+            return "重试时间(ms)"
+        case "retry_count":
+            return "重试次数"
+        case "last_heartbeat":
+            return "上次心跳"
+        case "next_heartbeat":
+            return "下次心跳"
+        case "last_pulse_review":
+            return "上次脉冲审查"
+        case "next_pulse_review":
+            return "下次脉冲审查"
+        case "last_brainstorm_review":
+            return "上次脑暴审查"
+        case "next_brainstorm_review":
+            return "下次脑暴审查"
+        default:
+            return raw
+        }
+    }
+
+    static func displayValue(label: String, value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return value }
+
+        switch label {
+        case "trigger":
+            return localizedReviewTrigger(trimmed)
+        case "level":
+            return localizedReviewLevel(trimmed)
+        case "verdict":
+            return localizedVerdict(trimmed)
+        case "delivery":
+            return localizedDeliveryMode(trimmed)
+        case "intervention":
+            return localizedInterventionMode(trimmed)
+        case "safe_point":
+            return localizedSafePoint(trimmed)
+        case "ack":
+            return localizedAckText(trimmed)
+        case "ack_status":
+            return localizedAckText(trimmed)
+        case "lifecycle":
+            return localizedLifecycleText(trimmed)
+        case "supervisor_tier":
+            return localizedSupervisorTier(trimmed)
+        case "work_order_depth":
+            return localizedWorkOrderDepth(trimmed)
+        case "project_ai_strength":
+            return localizedProjectAIStrength(trimmed)
+        case "follow_up_rhythm":
+            return localizedFollowUpRhythm(trimmed)
+        default:
+            return trimmed
+        }
+    }
+
+    static func fieldLine(_ label: String, value: String) -> String {
+        "\(fieldLabel(label))：\(displayValue(label: label, value: value))"
+    }
+
+    static func ackStatusLabel(_ status: SupervisorGuidanceAckStatus) -> String {
+        switch status {
+        case .pending:
+            return "待确认"
+        case .accepted:
+            return "已接受"
+        case .deferred:
+            return "已暂缓"
+        case .rejected:
+            return "已拒绝"
+        }
+    }
+
+    private static func localizedAckText(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "Pending", with: "待确认")
+            .replacingOccurrences(of: "Accepted", with: "已接受")
+            .replacingOccurrences(of: "Deferred", with: "已暂缓")
+            .replacingOccurrences(of: "Rejected", with: "已拒绝")
+            .replacingOccurrences(of: "required", with: "需要确认")
+            .replacingOccurrences(of: "optional", with: "可选")
+    }
+
+    private static func localizedLifecycleText(_ value: String) -> String {
+        let lowered = value.lowercased()
+        switch lowered {
+        case "active":
+            return "生效中"
+        case "retry due now":
+            return "现在可重试"
+        case "expired":
+            return "已过期"
+        case "settled":
+            return "已结束"
+        case "deferred":
+            return "已暂缓"
+        case "retry budget exhausted":
+            return "重试额度已用尽"
+        default:
+            if lowered.hasPrefix("expires ") {
+                let offset = String(value.dropFirst("expires ".count))
+                return "将在\(localizedRelativeTime(offset))过期"
+            }
+            if lowered.hasPrefix("retry ") {
+                let offset = String(value.dropFirst("retry ".count))
+                return "将在\(localizedRelativeTime(offset))重试"
+            }
+            return value
+        }
+    }
+
+    private static func localizedRelativeTime(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowered = trimmed.lowercased()
+        switch lowered {
+        case "now":
+            return "现在"
+        case "in <1m":
+            return "1分钟内"
+        case "<1m ago":
+            return "不到1分钟前"
+        default:
+            break
+        }
+
+        if lowered.hasPrefix("in ") {
+            let future = String(trimmed.dropFirst(3))
+            return "\(localizedDurationParts(future))后"
+        }
+
+        if lowered.hasSuffix(" ago") {
+            let past = String(trimmed.dropLast(4))
+            return "\(localizedDurationParts(past))前"
+        }
+
+        return trimmed
+    }
+
+    private static func localizedDurationParts(_ value: String) -> String {
+        let parts = value
+            .split(separator: " ")
+            .map(String.init)
+            .map { part -> String in
+                if part.hasSuffix("h"), let hours = Int(part.dropLast()) {
+                    return "\(hours)小时"
+                }
+                if part.hasSuffix("m"), let minutes = Int(part.dropLast()) {
+                    return "\(minutes)分钟"
+                }
+                return part
+            }
+        return parts.joined()
+    }
+
+    private static func localizedReviewTrigger(_ value: String) -> String {
+        switch value.lowercased() {
+        case "periodic heartbeat":
+            return "周期心跳"
+        case "periodic pulse":
+            return "周期脉冲审查"
+        case "failure streak":
+            return "连续失败"
+        case "no progress window":
+            return "进展停滞"
+        case "blocker detected":
+            return "发现阻塞"
+        case "plan drift":
+            return "计划漂移"
+        case "pre-high-risk":
+            return "高风险前审查"
+        case "pre-done":
+            return "完成前审查"
+        case "manual request":
+            return "手动请求"
+        case "user override":
+            return "用户覆盖"
+        default:
+            return value
+        }
+    }
+
+    private static func localizedReviewLevel(_ value: String) -> String {
+        switch value.lowercased() {
+        case "r1 pulse":
+            return "R1 脉冲"
+        case "r2 strategic":
+            return "R2 战略"
+        case "r3 rescue":
+            return "R3 救援"
+        default:
+            return value
+        }
+    }
+
+    private static func localizedVerdict(_ value: String) -> String {
+        switch value.lowercased() {
+        case "on track":
+            return "进展正常"
+        case "watch":
+            return "需要关注"
+        case "better path found":
+            return "发现更优路径"
+        case "wrong direction":
+            return "方向错误"
+        case "high risk":
+            return "高风险"
+        default:
+            return value
+        }
+    }
+
+    private static func localizedDeliveryMode(_ value: String) -> String {
+        switch value.lowercased() {
+        case "context append":
+            return "上下文追加"
+        case "priority insert":
+            return "优先插入"
+        case "replan request":
+            return "请求重规划"
+        case "stop signal":
+            return "停止信号"
+        default:
+            return value
+        }
+    }
+
+    private static func localizedInterventionMode(_ value: String) -> String {
+        switch value.lowercased() {
+        case "observe only":
+            return "仅观察"
+        case "suggest at safe point":
+            return "在安全点建议"
+        case "replan at safe point":
+            return "在安全点重规划"
+        case "stop immediately":
+            return "立即停止"
+        default:
+            return value
+        }
+    }
+
+    private static func localizedSafePoint(_ value: String) -> String {
+        switch value.lowercased() {
+        case "next tool boundary":
+            return "下一个工具边界"
+        case "next step boundary":
+            return "下一步边界"
+        case "checkpoint boundary":
+            return "检查点边界"
+        case "immediate":
+            return "立即执行"
+        default:
+            return value
+        }
+    }
+
+    private static func localizedSupervisorTier(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "S0 Silent Audit", with: "S0 静默审计")
+            .replacingOccurrences(of: "S1 Milestone Review", with: "S1 里程碑审查")
+            .replacingOccurrences(of: "S2 Periodic Review", with: "S2 周期审查")
+            .replacingOccurrences(of: "S3 Strategic Coach", with: "S3 战略教练")
+            .replacingOccurrences(of: "S4 Tight Supervision", with: "S4 紧密监督")
+    }
+
+    private static func localizedWorkOrderDepth(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "Execution Ready", with: "执行就绪")
+            .replacingOccurrences(of: "Milestone Contract", with: "里程碑合同")
+            .replacingOccurrences(of: "Step-Locked Rescue", with: "锁步救援")
+            .replacingOccurrences(of: "Brief", with: "简要")
+            .replacingOccurrences(of: "None", with: "无")
+    }
+
+    private static func localizedProjectAIStrength(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "Unknown", with: "未知")
+            .replacingOccurrences(of: "Weak", with: "弱")
+            .replacingOccurrences(of: "Developing", with: "成长中")
+            .replacingOccurrences(of: "Capable", with: "可胜任")
+            .replacingOccurrences(of: "Strong", with: "强")
+            .replacingOccurrences(of: "conf=", with: "置信度=")
+    }
+
+    private static func localizedFollowUpRhythm(_ value: String) -> String {
+        let localized = value
+            .replacingOccurrences(of: "cadence=tight", with: "节奏=紧凑")
+            .replacingOccurrences(of: "cadence=active", with: "节奏=活跃")
+            .replacingOccurrences(of: "cadence=balanced", with: "节奏=平衡")
+            .replacingOccurrences(of: "cadence=light", with: "节奏=轻量")
+            .replacingOccurrences(of: "blocker cooldown≈", with: "阻塞冷却≈")
+        return localized.replacingOccurrences(
+            of: #"(\d+)s\b"#,
+            with: "$1秒",
+            options: .regularExpression
+        )
     }
 }
 
@@ -693,7 +1182,7 @@ enum ProjectGovernanceGuidanceAckAction {
         var errorDescription: String? {
             switch self {
             case .injectionNotFound(let injectionId):
-                return "找不到 guidance injection：\(injectionId)"
+                return "找不到指导注入记录：\(injectionId)"
             }
         }
     }

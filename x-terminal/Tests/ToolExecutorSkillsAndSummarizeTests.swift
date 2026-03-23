@@ -34,8 +34,12 @@ struct ToolExecutorSkillsAndSummarizeTests {
         let summary = try #require(toolSummaryObject(result.output))
         #expect(jsonString(summary["tool"]) == ToolName.skills_search.rawValue)
         #expect(jsonString(summary["source"]) == "local_hub_index")
-        #expect(jsonNumber(summary["results_count"]) == 1)
-        let first = try #require(jsonArray(summary["results"])?.first)
+        #expect((jsonNumber(summary["results_count"]) ?? 0) >= 1)
+        let first = try #require(
+            jsonArray(summary["results"])?.first(where: { row in
+                jsonString(jsonObject(row)?["skill_id"]) == "summarize"
+            })
+        )
         #expect(jsonString(jsonObject(first)?["risk_level"]) == "medium")
         #expect(jsonBool(jsonObject(first)?["requires_grant"]) == false)
         #expect(jsonString(jsonObject(first)?["side_effect_class"]) == "read_only")
@@ -186,6 +190,155 @@ struct ToolExecutorSkillsAndSummarizeTests {
     }
 
     @Test
+    func supervisorVoicePlaybackDefaultsToStatusAndReturnsStructuredSummary() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "supervisor-voice-status")
+        defer { fixture.cleanup() }
+
+        await MainActor.run {
+            SupervisorManager.shared.installSupervisorVoiceSkillActionOverrideForTesting { action, text in
+                #expect(action == "status")
+                #expect(text == nil)
+                return makeSupervisorVoiceSkillResult(
+                    action: action,
+                    ok: true,
+                    reasonCode: "status_ready",
+                    detail: "",
+                    resolvedSource: .systemSpeech,
+                    activityState: .idle,
+                    actualSource: nil
+                )
+            }
+        }
+        defer {
+            Task { @MainActor in
+                SupervisorManager.shared.resetSupervisorVoiceSkillActionOverrideForTesting()
+            }
+        }
+
+        let result = try await ToolExecutor.execute(
+            call: ToolCall(
+                tool: .supervisorVoicePlayback,
+                args: [:]
+            ),
+            projectRoot: fixture.root
+        )
+
+        #expect(result.ok)
+        let summary = try #require(toolSummaryObject(result.output))
+        #expect(jsonString(summary["tool"]) == ToolName.supervisorVoicePlayback.rawValue)
+        #expect(jsonBool(summary["ok"]) == true)
+        #expect(jsonString(summary["action"]) == "status")
+        #expect(jsonString(summary["reason"]) == "status_ready")
+        #expect(jsonString(summary["resolved_source"]) == VoicePlaybackSource.systemSpeech.rawValue)
+        #expect(jsonString(summary["activity_state"]) == VoicePlaybackActivityState.idle.rawValue)
+        #expect(jsonString(summary["actual_source"]) == nil)
+        #expect(jsonString(summary["engine_name"]) == "macos_system_speech")
+        #expect(jsonString(summary["speaker_id"]) == "")
+
+        let body = toolBody(result.output)
+        #expect(body.contains("Supervisor 语音状态已就绪。"))
+        #expect(body.contains("实际输出：系统语音"))
+        #expect(body.contains("原因：status_ready"))
+    }
+
+    @Test
+    func supervisorVoicePlaybackTreatsInlineTextAsSpeak() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "supervisor-voice-speak")
+        defer { fixture.cleanup() }
+
+        await MainActor.run {
+            SupervisorManager.shared.installSupervisorVoiceSkillActionOverrideForTesting { action, text in
+                #expect(action == "speak")
+                #expect(text == "Ship the checkpoint update.")
+                return makeSupervisorVoiceSkillResult(
+                    action: action,
+                    ok: true,
+                    reasonCode: "playback_completed",
+                    detail: "Played through the preferred Hub voice pack.",
+                    resolvedSource: .hubVoicePack,
+                    resolvedHubVoicePackID: "voice-pack-supervisor",
+                    activityState: .played,
+                    actualSource: .hubVoicePack
+                )
+            }
+        }
+        defer {
+            Task { @MainActor in
+                SupervisorManager.shared.resetSupervisorVoiceSkillActionOverrideForTesting()
+            }
+        }
+
+        let result = try await ToolExecutor.execute(
+            call: ToolCall(
+                tool: .supervisorVoicePlayback,
+                args: [
+                    "text": .string("Ship the checkpoint update."),
+                ]
+            ),
+            projectRoot: fixture.root
+        )
+
+        #expect(result.ok)
+        let summary = try #require(toolSummaryObject(result.output))
+        #expect(jsonString(summary["action"]) == "speak")
+        #expect(jsonString(summary["reason"]) == "playback_completed")
+        #expect(jsonString(summary["resolved_source"]) == VoicePlaybackSource.hubVoicePack.rawValue)
+        #expect(jsonString(summary["resolved_hub_voice_pack_id"]) == "voice-pack-supervisor")
+        #expect(jsonNumber(summary["input_chars"]) == 27)
+        #expect(jsonString(summary["voice_name"]) == "Supervisor Voice")
+        #expect(jsonString(summary["engine_name"]) == "kokoro")
+        #expect(jsonString(summary["speaker_id"]) == "zh_warm_f1")
+        #expect(jsonBool(summary["native_tts_used"]) == true)
+        #expect(jsonString(summary["fallback_reason_code"]) == "")
+
+        let body = toolBody(result.output)
+        #expect(body.contains("Supervisor 语音播放已完成。"))
+        #expect(body.contains("文本：Ship the checkpoint update."))
+        #expect(body.contains("实际语音包：voice-pack-supervisor"))
+        #expect(body.contains("原因：playback_completed"))
+        #expect(body.contains("引擎：kokoro"))
+        #expect(body.contains("说话人：zh_warm_f1"))
+        #expect(body.contains("执行模式：原生 TTS"))
+    }
+
+    @Test
+    func supervisorVoicePlaybackValidatesSpeakPayload() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "supervisor-voice-validate")
+        defer { fixture.cleanup() }
+
+        let missingTextResult = try await ToolExecutor.execute(
+            call: ToolCall(
+                tool: .supervisorVoicePlayback,
+                args: [
+                    "action": .string("speak"),
+                ]
+            ),
+            projectRoot: fixture.root
+        )
+
+        #expect(!missingTextResult.ok)
+        let missingTextSummary = try #require(toolSummaryObject(missingTextResult.output))
+        #expect(jsonString(missingTextSummary["reason"]) == "missing_text")
+
+        let tooLongText = String(repeating: "a", count: 321)
+        let longTextResult = try await ToolExecutor.execute(
+            call: ToolCall(
+                tool: .supervisorVoicePlayback,
+                args: [
+                    "action": .string("speak"),
+                    "text": .string(tooLongText),
+                ]
+            ),
+            projectRoot: fixture.root
+        )
+
+        #expect(!longTextResult.ok)
+        let longTextSummary = try #require(toolSummaryObject(longTextResult.output))
+        #expect(jsonString(longTextSummary["reason"]) == "text_too_long")
+        #expect(jsonNumber(longTextSummary["input_chars"]) == 321)
+    }
+
+    @Test
     func summarizeProducesGovernedBulletSummaryFromInlineText() async throws {
         let fixture = ToolExecutorProjectFixture(name: "summarize-inline")
         defer { fixture.cleanup() }
@@ -253,8 +406,8 @@ struct ToolExecutorSkillsAndSummarizeTests {
         let summary = try #require(toolSummaryObject(result.output))
         #expect(jsonString(summary["source_kind"]) == "path")
         #expect(jsonString(summary["source_title"]) == "NOTES.md")
-        #expect(toolBody(result.output).contains("Release Notes"))
-        #expect(toolBody(result.output).contains("governed runtime tools"))
+        #expect(toolBody(result.output).contains("NOTES.md:"))
+        #expect(toolBody(result.output).contains("hub memory path is now the default source for supervisor recall"))
     }
 
     private func writeLocalHubSkillsIndex(baseDir: URL) throws {
@@ -298,4 +451,56 @@ struct ToolExecutorSkillsAndSummarizeTests {
         """#
         try index.write(to: storeDir.appendingPathComponent("skills_store_index.json"), atomically: true, encoding: .utf8)
     }
+}
+
+private func makeSupervisorVoiceSkillResult(
+    action: String,
+    ok: Bool,
+    reasonCode: String,
+    detail: String,
+    resolvedSource: VoicePlaybackSource,
+    resolvedHubVoicePackID: String = "",
+    activityState: VoicePlaybackActivityState,
+    actualSource: VoicePlaybackSource?
+) -> SupervisorManager.SupervisorVoiceSkillExecutionResult {
+    let preferences = VoiceRuntimePreferences.default()
+    let resolution = VoicePlaybackResolution(
+        requestedPreference: preferences.playbackPreference,
+        resolvedSource: resolvedSource,
+        preferredHubVoicePackID: preferences.preferredHubVoicePackID,
+        resolvedHubVoicePackID: resolvedHubVoicePackID,
+        reasonCode: resolvedSource == .hubVoicePack ? "preferred_hub_voice_pack_ready" : "preferred_system_speech",
+        fallbackFrom: nil
+    )
+    let activity = VoicePlaybackActivity(
+        state: activityState,
+        configuredResolution: resolution,
+        actualSource: actualSource,
+        reasonCode: reasonCode,
+        detail: detail,
+        provider: resolvedSource == .hubVoicePack ? "hub_voice" : "system_speech",
+        modelID: resolvedSource == .hubVoicePack ? "voice-pack-supervisor" : "",
+        engineName: resolvedSource == .hubVoicePack ? "kokoro" : "macos_system_speech",
+        speakerId: resolvedSource == .hubVoicePack ? "zh_warm_f1" : "",
+        deviceBackend: resolvedSource == .hubVoicePack ? "hub_voice_pack" : "macos_speech",
+        nativeTTSUsed: resolvedSource == .hubVoicePack ? true : nil,
+        fallbackMode: "",
+        fallbackReasonCode: "",
+        audioFormat: "pcm16",
+        voiceName: "Supervisor Voice",
+        updatedAt: 123.0
+    )
+    return SupervisorManager.SupervisorVoiceSkillExecutionResult(
+        action: action,
+        ok: ok,
+        reasonCode: reasonCode,
+        detail: detail,
+        playbackPreference: preferences.playbackPreference.rawValue,
+        persona: preferences.persona.rawValue,
+        timbre: preferences.timbre.rawValue,
+        speechRateMultiplier: Double(preferences.speechRateMultiplier),
+        localeIdentifier: preferences.localeIdentifier,
+        resolution: resolution,
+        activity: activity
+    )
 }

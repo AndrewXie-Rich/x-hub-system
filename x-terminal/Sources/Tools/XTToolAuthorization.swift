@@ -24,8 +24,13 @@ struct XTToolAuthorizationDecision: Equatable {
     var policySource: String
     var policyReason: String
     var runtimePolicyDecision: XTToolRuntimePolicyDecision?
-    var runtimeEffectiveAutonomy: AXProjectAutonomyEffectivePolicy?
+    var runtimeEffectiveSurface: AXProjectRuntimeSurfaceEffectivePolicy?
     var deviceGateDecision: XTDeviceAutomationGateDecision?
+
+    var runtimeEffectiveAutonomy: AXProjectRuntimeSurfaceEffectivePolicy? {
+        get { runtimeEffectiveSurface }
+        set { runtimeEffectiveSurface = newValue }
+    }
 
     static func allow(risk: ToolRisk = .safe) -> XTToolAuthorizationDecision {
         XTToolAuthorizationDecision(
@@ -36,7 +41,7 @@ struct XTToolAuthorizationDecision: Equatable {
             policySource: "",
             policyReason: "",
             runtimePolicyDecision: nil,
-            runtimeEffectiveAutonomy: nil,
+            runtimeEffectiveSurface: nil,
             deviceGateDecision: nil
         )
     }
@@ -50,7 +55,7 @@ struct XTToolAuthorizationDecision: Equatable {
             policySource: policySource,
             policyReason: policyReason,
             runtimePolicyDecision: nil,
-            runtimeEffectiveAutonomy: nil,
+            runtimeEffectiveSurface: nil,
             deviceGateDecision: nil
         )
     }
@@ -64,14 +69,14 @@ struct XTToolAuthorizationDecision: Equatable {
             policySource: policySource,
             policyReason: policyReason,
             runtimePolicyDecision: nil,
-            runtimeEffectiveAutonomy: nil,
+            runtimeEffectiveSurface: nil,
             deviceGateDecision: nil
         )
     }
 
     static func denyRuntime(
         _ decision: XTToolRuntimePolicyDecision,
-        effectiveAutonomy: AXProjectAutonomyEffectivePolicy
+        effectiveRuntimeSurface: AXProjectRuntimeSurfaceEffectivePolicy
     ) -> XTToolAuthorizationDecision {
         XTToolAuthorizationDecision(
             disposition: .deny,
@@ -81,7 +86,7 @@ struct XTToolAuthorizationDecision: Equatable {
             policySource: decision.policySource,
             policyReason: decision.policyReason,
             runtimePolicyDecision: decision,
-            runtimeEffectiveAutonomy: effectiveAutonomy,
+            runtimeEffectiveSurface: effectiveRuntimeSurface,
             deviceGateDecision: nil
         )
     }
@@ -101,7 +106,7 @@ struct XTToolAuthorizationDecision: Equatable {
                 ? "device_gate_failed"
                 : "required_device_tool_group=\(decision.requiredDeviceToolGroup)",
             runtimePolicyDecision: nil,
-            runtimeEffectiveAutonomy: nil,
+            runtimeEffectiveSurface: nil,
             deviceGateDecision: decision
         )
     }
@@ -170,7 +175,7 @@ func xtToolAuthorizationDecision(
         }
     }
 
-    let autonomyState = await xtResolveProjectAutonomyPolicy(
+    let runtimeSurfaceState = await xtResolveProjectRuntimeSurfacePolicy(
         projectRoot: projectRoot,
         config: config
     )
@@ -178,12 +183,12 @@ func xtToolAuthorizationDecision(
         call: call,
         projectRoot: projectRoot,
         config: config,
-        effectiveAutonomy: autonomyState.effectivePolicy
+        effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
     )
     guard runtimePolicyDecision.allowed else {
         return .denyRuntime(
             runtimePolicyDecision,
-            effectiveAutonomy: autonomyState.effectivePolicy
+            effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
         )
     }
 
@@ -212,7 +217,7 @@ func xtToolAuthorizationDecision(
        xtProjectGovernedAutoApprovalEnabled(
         projectRoot: projectRoot,
         config: config,
-        effectiveAutonomy: autonomyState.effectivePolicy
+        effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
        ) {
         let policyReason = call.tool == .run_command
             ? "governed_repo_command_allowlist"
@@ -242,12 +247,12 @@ func xtToolAuthorizationDeniedSummary(
     decision: XTToolAuthorizationDecision
 ) -> [String: JSONValue] {
     if let runtimePolicyDecision = decision.runtimePolicyDecision {
-        return xtToolRuntimePolicyDeniedSummary(
+       return xtToolRuntimePolicyDeniedSummary(
             call: call,
             projectRoot: projectRoot,
             config: config,
             decision: runtimePolicyDecision,
-            effectiveAutonomy: decision.runtimeEffectiveAutonomy
+            effectiveRuntimeSurface: decision.runtimeEffectiveSurface
         )
     }
 

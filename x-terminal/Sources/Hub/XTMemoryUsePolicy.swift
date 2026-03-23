@@ -289,6 +289,7 @@ enum XTMemoryRoleScopedRouter {
         var sanitized = payload
         sanitized.mode = mode.rawValue
         sanitized.servingProfile = selectedProfile.rawValue
+        sanitized.reviewLevelHint = sanitizedReviewLevelHint(payload.reviewLevelHint)
         sanitized.constitutionHint = allowed(contract.allowedLayers, .l0Constitution)
             ? XTMemorySanitizer.sanitizeText(
                 payload.constitutionHint,
@@ -296,6 +297,46 @@ enum XTMemoryRoleScopedRouter {
                 lineCap: contract.lineCap
             )
             : nil
+        sanitized.dialogueWindowText = XTMemorySanitizer.sanitizeText(
+            payload.dialogueWindowText,
+            maxChars: max(2_400, min(max(contract.workingSetMaxChars * 3, 2_400), 6_400)),
+            lineCap: max(48, contract.lineCap * 3)
+        )
+        sanitized.portfolioBriefText = XTMemorySanitizer.sanitizeText(
+            payload.portfolioBriefText,
+            maxChars: min(max(280, contract.canonicalMaxChars / 2), contract.canonicalMaxChars),
+            lineCap: max(8, contract.lineCap)
+        )
+        sanitized.focusedProjectAnchorPackText = XTMemorySanitizer.sanitizeText(
+            payload.focusedProjectAnchorPackText,
+            maxChars: max(contract.workingSetMaxChars, min(1_600, contract.canonicalMaxChars)),
+            lineCap: max(10, contract.lineCap)
+        )
+        sanitized.longtermOutlineText = XTMemorySanitizer.sanitizeText(
+            payload.longtermOutlineText,
+            maxChars: max(360, min(max(contract.canonicalMaxChars, 1_200), 2_000)),
+            lineCap: max(10, contract.lineCap)
+        )
+        sanitized.deltaFeedText = XTMemorySanitizer.sanitizeText(
+            payload.deltaFeedText,
+            maxChars: max(220, contract.observationsMaxChars),
+            lineCap: max(8, contract.lineCap)
+        )
+        sanitized.conflictSetText = XTMemorySanitizer.sanitizeText(
+            payload.conflictSetText,
+            maxChars: max(220, contract.observationsMaxChars / 2),
+            lineCap: max(8, contract.lineCap)
+        )
+        sanitized.contextRefsText = XTMemorySanitizer.sanitizeText(
+            payload.contextRefsText,
+            maxChars: max(260, min(max(contract.rawEvidenceMaxChars, 900), 1_200)),
+            lineCap: max(10, contract.lineCap)
+        )
+        sanitized.evidencePackText = XTMemorySanitizer.sanitizeText(
+            payload.evidencePackText,
+            maxChars: max(360, min(max(contract.rawEvidenceMaxChars, 1_100), 1_600)),
+            lineCap: max(12, contract.lineCap)
+        )
         sanitized.canonicalText = allowed(contract.allowedLayers, .l1Canonical)
             ? XTMemorySanitizer.sanitizeText(
                 payload.canonicalText,
@@ -402,12 +443,12 @@ enum XTMemoryRoleScopedRouter {
                 rawEvidenceMaxChars: 0,
                 lineCap: 22,
                 budgetCap: HubIPCClient.MemoryContextBudgets(
-                    totalTokens: 1_300,
+                    totalTokens: 1_700,
                     l0Tokens: 80,
-                    l1Tokens: 420,
-                    l2Tokens: 240,
-                    l3Tokens: 500,
-                    l4Tokens: 60
+                    l1Tokens: 460,
+                    l2Tokens: 280,
+                    l3Tokens: 800,
+                    l4Tokens: 80
                 ),
                 directUseDenyCode: nil
             )
@@ -534,6 +575,19 @@ enum XTMemoryRoleScopedRouter {
 
     private static func allowed(_ layers: Set<XTMemoryLayer>, _ layer: XTMemoryLayer) -> Bool {
         layers.contains(layer)
+    }
+
+    private static func sanitizedReviewLevelHint(_ raw: String?) -> String? {
+        switch (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case SupervisorReviewLevel.r1Pulse.rawValue:
+            return SupervisorReviewLevel.r1Pulse.rawValue
+        case SupervisorReviewLevel.r2Strategic.rawValue:
+            return SupervisorReviewLevel.r2Strategic.rawValue
+        case SupervisorReviewLevel.r3Rescue.rawValue:
+            return SupervisorReviewLevel.r3Rescue.rawValue
+        default:
+            return nil
+        }
     }
 
     private static func resolveServingProfile(
@@ -823,12 +877,11 @@ enum XTMemorySanitizer {
 
         let redacted = redactSecrets(in: normalized)
         let rawLines = redacted.split(separator: "\n", omittingEmptySubsequences: false)
-        var sanitized: [String] = []
-        sanitized.reserveCapacity(min(lineCap, rawLines.count))
         var droppedBlob = false
+        var cleanedLines: [String] = []
+        cleanedLines.reserveCapacity(min(lineCap, rawLines.count))
 
         for rawLine in rawLines {
-            if sanitized.count >= lineCap { break }
             let line = String(rawLine).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !line.isEmpty else { continue }
 
@@ -839,19 +892,37 @@ enum XTMemorySanitizer {
                 continue
             }
             if lower.hasPrefix("authorization:") || lower.hasPrefix("cookie:") || lower.hasPrefix("set-cookie:") {
-                sanitized.append("[redacted_sensitive_header]")
+                cleanedLines.append("[redacted_sensitive_header]")
                 continue
             }
             if lower.hasPrefix("from:") || lower.hasPrefix("to:") || lower.hasPrefix("cc:") ||
                 lower.hasPrefix("bcc:") || lower.hasPrefix("reply-to:") || lower.hasPrefix("delivered-to:") {
-                sanitized.append("[redacted_message_header]")
+                cleanedLines.append("[redacted_message_header]")
                 continue
             }
             if line.count > 260 && !line.contains(" ") {
                 droppedBlob = true
                 continue
             }
-            sanitized.append(capText(line, maxChars: 220))
+            cleanedLines.append(capText(line, maxChars: 220))
+        }
+
+        if let structured = sanitizeStructuredRawEvidenceSummary(
+            cleanedLines,
+            maxChars: maxChars,
+            lineCap: lineCap,
+            droppedBlob: droppedBlob
+        ) {
+            return structured
+        }
+
+        var sanitized: [String] = []
+        sanitized.reserveCapacity(min(lineCap, cleanedLines.count))
+        for line in cleanedLines {
+            if sanitized.count >= lineCap {
+                break
+            }
+            sanitized.append(line)
         }
 
         if sanitized.isEmpty {
@@ -861,6 +932,248 @@ enum XTMemorySanitizer {
         }
 
         return capText(sanitized.joined(separator: "\n"), maxChars: maxChars)
+    }
+
+    private static func sanitizeStructuredRawEvidenceSummary(
+        _ lines: [String],
+        maxChars: Int,
+        lineCap: Int,
+        droppedBlob: Bool
+    ) -> String? {
+        let parsed = parseStructuredRawEvidence(lines)
+        guard !parsed.sections.isEmpty else { return nil }
+
+        let prioritizedTop = prioritizedRawEvidenceTopLines(
+            parsed.topLines,
+            maxItems: min(5, max(3, lineCap / 4))
+        )
+
+        var selected: [String] = []
+        selected.reserveCapacity(min(lineCap, 18))
+        var usedChars = 0
+        var truncated = droppedBlob
+
+        func canAppend(_ line: String) -> Bool {
+            let separator = selected.isEmpty ? 0 : 1
+            return selected.count < lineCap && usedChars + separator + line.count <= maxChars
+        }
+
+        func appendLine(_ line: String) -> Bool {
+            let capped = capText(line, maxChars: 220)
+            guard canAppend(capped) else { return false }
+            usedChars += (selected.isEmpty ? 0 : 1) + capped.count
+            selected.append(capped)
+            return true
+        }
+
+        for line in prioritizedTop {
+            if !appendLine(line) {
+                truncated = true
+                break
+            }
+        }
+
+        let topLinesOmitted = parsed.topLines.count > prioritizedTop.count
+        truncated = truncated || topLinesOmitted
+
+        for section in prioritizedRawEvidenceSections(parsed.sections) {
+            let cappedItems = prioritizedRawEvidenceSectionItems(
+                heading: section.heading,
+                items: section.items,
+                maxItems: rawEvidenceSectionItemCap(for: section.heading)
+            )
+            if cappedItems.isEmpty {
+                truncated = truncated || !section.items.isEmpty
+                continue
+            }
+
+            guard canAppend(section.heading) else {
+                truncated = true
+                break
+            }
+            _ = appendLine(section.heading)
+
+            var appendedItems = 0
+            for item in cappedItems {
+                if appendLine(item) {
+                    appendedItems += 1
+                } else {
+                    truncated = true
+                    break
+                }
+            }
+
+            if appendedItems < cappedItems.count || section.items.count > cappedItems.count {
+                truncated = true
+            }
+            if appendedItems < cappedItems.count || appendedItems == 0 {
+                break
+            }
+        }
+
+        if selected.isEmpty {
+            return droppedBlob ? "[sanitized_raw_evidence_truncated]" : "[sanitized_raw_evidence_omitted]"
+        }
+
+        if truncated {
+            let marker = "[sanitized_raw_evidence_truncated]"
+            if !canAppend(marker) {
+                while !selected.isEmpty {
+                    let removed = selected.removeLast()
+                    usedChars -= removed.count
+                    if !selected.isEmpty {
+                        usedChars -= 1
+                    }
+                    if canAppend(marker) {
+                        break
+                    }
+                }
+            }
+            _ = appendLine(marker)
+        }
+
+        return selected.joined(separator: "\n")
+    }
+
+    private static func parseStructuredRawEvidence(
+        _ lines: [String]
+    ) -> (topLines: [String], sections: [StructuredRawEvidenceSection]) {
+        var topLines: [String] = []
+        var sections: [StructuredRawEvidenceSection] = []
+        var currentSectionIndex: Int?
+
+        for line in lines {
+            if isStructuredRawEvidenceHeading(line) {
+                sections.append(StructuredRawEvidenceSection(heading: line, items: []))
+                currentSectionIndex = sections.indices.last
+                continue
+            }
+
+            if let currentSectionIndex {
+                sections[currentSectionIndex].items.append(line)
+            } else {
+                topLines.append(line)
+            }
+        }
+
+        return (topLines, sections)
+    }
+
+    private static func prioritizedRawEvidenceTopLines(
+        _ lines: [String],
+        maxItems: Int
+    ) -> [String] {
+        let priorities = [
+            "ref=",
+            "verdict=",
+            "confidence=",
+            "issue_codes=",
+            "summary=",
+            "updated_at_ms=",
+            "bundle_ref=",
+            "sufficient_evidence=",
+            "objective_ready="
+        ]
+
+        var ordered: [String] = []
+        for prefix in priorities {
+            if let line = lines.first(where: { $0.hasPrefix(prefix) }) {
+                ordered.append(line)
+            }
+        }
+
+        for line in lines where !ordered.contains(line) {
+            ordered.append(line)
+        }
+
+        return Array(ordered.prefix(max(1, maxItems)))
+    }
+
+    private static func prioritizedRawEvidenceSections(
+        _ sections: [StructuredRawEvidenceSection]
+    ) -> [StructuredRawEvidenceSection] {
+        let priorities = [
+            "artifact_refs:",
+            "checks:",
+            "trend:",
+            "recent_history:",
+            "comparison:",
+            "artifact_paths:"
+        ]
+
+        return sections.sorted { lhs, rhs in
+            let lhsPriority = priorities.firstIndex(of: lhs.heading) ?? priorities.count
+            let rhsPriority = priorities.firstIndex(of: rhs.heading) ?? priorities.count
+            if lhsPriority != rhsPriority {
+                return lhsPriority < rhsPriority
+            }
+            return lhs.heading < rhs.heading
+        }
+    }
+
+    private static func prioritizedRawEvidenceSectionItems(
+        heading: String,
+        items: [String],
+        maxItems: Int
+    ) -> [String] {
+        guard maxItems > 0 else { return [] }
+
+        let priorities: [String]
+        switch heading {
+        case "artifact_refs:":
+            priorities = [
+                "screenshot_ref=",
+                "visible_text_ref=",
+                "ocr_ref=",
+                "runtime_log_ref=",
+                "layout_metrics_ref=",
+                "role_snapshot_ref=",
+                "ax_tree_ref=",
+                "thumbnail_ref="
+            ]
+        default:
+            priorities = []
+        }
+
+        var ordered: [String] = []
+        for prefix in priorities {
+            if let line = items.first(where: { $0.contains(prefix) }) {
+                ordered.append(line)
+            }
+        }
+
+        for item in items where !ordered.contains(item) {
+            ordered.append(item)
+        }
+
+        return Array(ordered.prefix(maxItems))
+    }
+
+    private static func rawEvidenceSectionItemCap(for heading: String) -> Int {
+        switch heading {
+        case "artifact_refs:":
+            return 2
+        case "recent_history:":
+            return 2
+        case "checks:", "trend:", "comparison:", "artifact_paths:":
+            return 1
+        default:
+            return 1
+        }
+    }
+
+    private static func isStructuredRawEvidenceHeading(_ line: String) -> Bool {
+        guard line.hasSuffix(":"), !line.hasPrefix("- ") else { return false }
+        let token = String(line.dropLast())
+        guard !token.isEmpty else { return false }
+        return token.allSatisfy { character in
+            character.isLetter || character.isNumber || character == "_"
+        }
+    }
+
+    private struct StructuredRawEvidenceSection {
+        var heading: String
+        var items: [String]
     }
 
     private static func normalize(_ raw: String?) -> String {

@@ -20,6 +20,8 @@ struct SupervisorXTReadyIncidentPresentation: Equatable {
     var hubRuntimeIssueLine: SupervisorXTReadyIncidentLinePresentation?
     var hubRuntimeDetailLine: SupervisorXTReadyIncidentLinePresentation?
     var hubRuntimeNextLine: SupervisorXTReadyIncidentLinePresentation?
+    var hubRuntimeInstallHintLine: SupervisorXTReadyIncidentLinePresentation?
+    var hubRuntimeRecommendedActionLine: SupervisorXTReadyIncidentLinePresentation?
     var memoryAssemblyLine: SupervisorXTReadyIncidentLinePresentation
     var memoryAssemblyIssueLine: SupervisorXTReadyIncidentLinePresentation?
     var memoryAssemblyDetailLine: SupervisorXTReadyIncidentLinePresentation?
@@ -123,6 +125,30 @@ enum SupervisorXTReadyIncidentPresentationMapper {
                 }
                 return SupervisorXTReadyIncidentLinePresentation(
                     text: "Hub 运行时下一步：\(diagnosis.nextStep)",
+                    tone: .accent,
+                    lineLimit: 3
+                )
+            }(),
+            hubRuntimeInstallHintLine: {
+                guard let diagnosis = hubRuntimeDiagnosis,
+                      diagnosis.overallState != XHubDoctorOverallState.ready.rawValue,
+                      !diagnosis.installHint.isEmpty else {
+                    return nil
+                }
+                return SupervisorXTReadyIncidentLinePresentation(
+                    text: "Hub 安装提示：\(diagnosis.installHint)",
+                    tone: hubRuntimeTone == .danger ? .warning : .accent,
+                    lineLimit: 3
+                )
+            }(),
+            hubRuntimeRecommendedActionLine: {
+                guard let diagnosis = hubRuntimeDiagnosis,
+                      diagnosis.overallState != XHubDoctorOverallState.ready.rawValue,
+                      !diagnosis.recommendedAction.isEmpty else {
+                    return nil
+                }
+                return SupervisorXTReadyIncidentLinePresentation(
+                    text: "Hub 建议动作：\(diagnosis.recommendedAction)",
                     tone: .accent,
                     lineLimit: 3
                 )

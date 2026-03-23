@@ -146,7 +146,7 @@ struct SupervisorAuditDrillDownPresentationTests {
             $0.label == "路由说明" && $0.value.contains("浏览器入口会先收敛到受治理内建 guarded-automation 再执行")
         }))
         #expect(presentation.sections[1].fields.contains(where: {
-            $0.label == "路由解释" && $0.value.contains("requested entrypoint browser.open converged to preferred builtin guarded-automation")
+            $0.label == "路由原文" && $0.value.contains("requested entrypoint browser.open converged to preferred builtin guarded-automation")
         }))
     }
 
@@ -398,7 +398,7 @@ struct SupervisorAuditDrillDownPresentationTests {
             $0.label == "路由说明" && $0.value.contains("浏览器入口会先收敛到受治理内建 guarded-automation 再执行")
         }))
         #expect(presentation.sections[2].fields.contains(where: {
-            $0.label == "路由解释" && $0.value.contains("requested entrypoint browser.open converged to preferred builtin guarded-automation")
+            $0.label == "路由原文" && $0.value.contains("requested entrypoint browser.open converged to preferred builtin guarded-automation")
         }))
     }
 

@@ -294,8 +294,22 @@ enum SupervisorSkillActivityPresentation {
                     value: routingNarrative ?? field.value
                 )
             default:
-                return field
+                return ProjectSkillRecordField(
+                    label: displayFieldLabel(field.label),
+                    value: field.value
+                )
             }
+        }
+    }
+
+    static func displayMetadataFields(
+        _ fields: [ProjectSkillRecordField]
+    ) -> [ProjectSkillRecordField] {
+        fields.map { field in
+            ProjectSkillRecordField(
+                label: displayFieldLabel(field.label),
+                value: field.value
+            )
         }
     }
 
@@ -781,6 +795,125 @@ enum SupervisorSkillActivityPresentation {
         return lines.joined(separator: "\n")
     }
 
+    static func displayFullRecordText(_ record: SupervisorSkillFullRecord) -> String {
+        var lines: [String] = [
+            "Supervisor 技能完整记录",
+            "project_name=\(record.projectName)",
+            "request_id=\(record.requestID)"
+        ]
+
+        if !record.latestStatus.isEmpty {
+            lines.append("latest_status=\(record.latestStatus)")
+        }
+
+        appendRecordSection(
+            "请求信息",
+            fields: displayRequestMetadataFields(record.requestMetadata),
+            into: &lines
+        )
+        appendRecordSection(
+            "审批状态",
+            fields: displayMetadataFields(record.approvalFields),
+            into: &lines
+        )
+        appendRecordSection(
+            "治理上下文",
+            fields: displayMetadataFields(record.governanceFields),
+            into: &lines
+        )
+
+        if let payload = nonEmpty(record.skillPayloadText) {
+            lines.append("")
+            lines.append("== 技能载荷 ==")
+            lines.append(payload)
+        }
+
+        if let toolArgs = nonEmpty(record.toolArgumentsText) {
+            lines.append("")
+            lines.append("== 工具参数 ==")
+            lines.append(toolArgs)
+        }
+
+        appendRecordSection(
+            "执行结果",
+            fields: displayMetadataFields(record.resultFields),
+            into: &lines
+        )
+
+        if let rawOutputPreview = nonEmpty(record.rawOutputPreview) {
+            lines.append("")
+            lines.append("== 原始输出预览 ==")
+            lines.append(rawOutputPreview)
+        }
+
+        if let rawOutput = nonEmpty(record.rawOutput) {
+            lines.append("")
+            lines.append("== 完整原始输出 ==")
+            lines.append(rawOutput)
+        }
+
+        appendRecordSection(
+            "证据引用",
+            fields: displayMetadataFields(record.evidenceFields),
+            into: &lines
+        )
+
+        appendRecordSection(
+            "UI 审查代理证据",
+            fields: displayMetadataFields(record.uiReviewAgentEvidenceFields),
+            into: &lines
+        )
+
+        if let uiReviewAgentEvidenceText = nonEmpty(record.uiReviewAgentEvidenceText) {
+            lines.append("")
+            lines.append("== UI 审查代理证据详情 ==")
+            lines.append(uiReviewAgentEvidenceText)
+        }
+
+        if !record.approvalHistory.isEmpty {
+            lines.append("")
+            lines.append("== 审批记录 ==")
+            for entry in record.approvalHistory {
+                lines.append(formattedTimelineEntry(entry))
+            }
+        }
+
+        if !record.timeline.isEmpty {
+            lines.append("")
+            lines.append("== 事件时间线 ==")
+            for entry in record.timeline {
+                lines.append(formattedTimelineEntry(entry))
+            }
+        }
+
+        let routingDiagnostics = record.requestMetadata.filter {
+            $0.label == "routing_reason_code" || $0.label == "routing_explanation"
+        }
+        if !routingDiagnostics.isEmpty {
+            lines.append("")
+            lines.append("== 路由诊断原文 ==")
+            for field in routingDiagnostics {
+                lines.append("\(field.label)=\(field.value)")
+            }
+        }
+
+        if let evidence = nonEmpty(record.supervisorEvidenceJSON) {
+            lines.append("")
+            lines.append("== 执行证据 ==")
+            lines.append(evidence)
+        }
+
+        if !record.timeline.isEmpty {
+            lines.append("")
+            lines.append("== 原始 JSON 事件 ==")
+            for entry in record.timeline {
+                lines.append(entry.rawJSON)
+            }
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
     private struct SupervisorSkillRawEvent: Equatable, Sendable {
         var type: String
         var action: String
@@ -1043,6 +1176,101 @@ enum SupervisorSkillActivityPresentation {
         pairs.compactMap { label, value in
             guard let value = nonEmpty(value) else { return nil }
             return ProjectSkillRecordField(label: label, value: value)
+        }
+    }
+
+    private static func displayFieldLabel(_ rawLabel: String) -> String {
+        switch rawLabel {
+        case "project_name":
+            return "项目"
+        case "request_id":
+            return "请求"
+        case "project_id":
+            return "项目 ID"
+        case "job_id":
+            return "任务"
+        case "plan_id":
+            return "计划"
+        case "step_id":
+            return "步骤"
+        case "tool_name":
+            return "工具"
+        case "latest_status":
+            return "最新状态"
+        case "current_owner":
+            return "当前负责人"
+        case "created_at":
+            return "创建时间"
+        case "updated_at":
+            return "更新时间"
+        case "required_capability":
+            return "所需能力"
+        case "grant_request_id":
+            return "授权请求"
+        case "grant_id":
+            return "授权"
+        case "deny_code":
+            return "拒绝码"
+        case "policy_source":
+            return "策略来源"
+        case "policy_reason":
+            return "策略原因"
+        case "trigger_source":
+            return "触发源"
+        case "latest_review_id":
+            return "最新审查"
+        case "review_verdict":
+            return "审查结论"
+        case "review_level":
+            return "审查层级"
+        case "supervisor_tier":
+            return "Supervisor 层级"
+        case "work_order_depth":
+            return "工单深度"
+        case "work_order_ref":
+            return "工单"
+        case "latest_guidance_id":
+            return "最新指导"
+        case "latest_guidance_delivery":
+            return "最新指导交付"
+        case "pending_guidance_id":
+            return "待确认指导"
+        case "pending_guidance_ack":
+            return "待确认指导状态"
+        case "follow_up_rhythm":
+            return "跟进节奏"
+        case "result_status":
+            return "结果状态"
+        case "result_summary":
+            return "结果摘要"
+        case "raw_output_chars":
+            return "原始输出字符数"
+        case "result_evidence_ref":
+            return "结果证据引用"
+        case "raw_output_ref":
+            return "原始输出引用"
+        case "audit_ref":
+            return "审计引用"
+        case "ui_review_agent_evidence_ref":
+            return "UI 审查代理证据引用"
+        case "review_ref":
+            return "审查引用"
+        case "bundle_ref":
+            return "观测包引用"
+        case "verdict":
+            return "结论"
+        case "confidence":
+            return "置信度"
+        case "sufficient_evidence":
+            return "证据充分"
+        case "objective_ready":
+            return "目标就绪"
+        case "issue_codes":
+            return "问题代码"
+        case "summary":
+            return "摘要"
+        default:
+            return rawLabel
         }
     }
 

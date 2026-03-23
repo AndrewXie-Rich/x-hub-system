@@ -7,14 +7,77 @@
 
 import SwiftUI
 
+struct ProjectDetailGovernanceSummary: Equatable {
+    let headerSummary: String
+    let executionTierSummary: String
+    let supervisorTierSummary: String
+    let capabilitySummary: String
+    let clampSummary: String
+    let sourceLabel: String
+    let sourceDetail: String?
+
+    init(presentation: ProjectGovernancePresentation) {
+        var headerParts: [String] = [
+            "\(presentation.effectiveExecutionLabel) / \(presentation.effectiveSupervisorLabel)",
+            "Review \(presentation.reviewPolicyMode.displayName)",
+            "Guidance \(presentation.guidanceSummary)"
+        ]
+        if let clamp = presentation.homeClampMessage {
+            headerParts.append(clamp)
+        } else {
+            headerParts.append(presentation.homeStatusMessage)
+        }
+        headerSummary = headerParts.joined(separator: " · ")
+
+        let effectiveExecutionTier = presentation.effectiveExecutionTier ?? presentation.executionTier
+        executionTierSummary = "预设 \(presentation.executionTier.shortToken) ，当前生效 \(effectiveExecutionTier.shortToken)。"
+
+        let effectiveSupervisorTier = presentation.effectiveSupervisorInterventionTier ?? presentation.supervisorInterventionTier
+        var supervisorParts: [String] = []
+        supervisorParts.append(
+            "预设 \(presentation.supervisorInterventionTier.shortToken) ，当前生效 \(effectiveSupervisorTier.shortToken)。"
+        )
+        if let recommended = presentation.recommendedSupervisorInterventionTier {
+            supervisorParts.append("建议至少 \(recommended.shortToken)。")
+        }
+        supervisorTierSummary = supervisorParts.joined(separator: " ")
+
+        capabilitySummary = presentation.capabilityLabels.isEmpty
+            ? "(none)"
+            : presentation.capabilityLabels.joined(separator: ", ")
+        clampSummary = presentation.homeClampMessage ?? "无额外 clamp"
+        sourceLabel = presentation.compatSourceLabel
+        sourceDetail = presentation.compatSourceDetail
+    }
+}
+
 /// 项目详情视图
 struct ProjectDetailView: View {
     @ObservedObject var project: ProjectModel
+    let initialFocusSection: XTProjectDetailSection
+    let initialFocusContext: XTSectionFocusContext?
     @EnvironmentObject private var appModel: AppModel
     @Environment(\.dismiss) private var dismiss
 
     @State private var showDeleteConfirmation = false
     @State private var showEditSheet = false
+    @StateObject private var uiReviewActionState = XTUIReviewActionState()
+    @StateObject private var uiReviewUpdateFeedback = XTTransientUpdateFeedbackState()
+    @State private var uiReviewRefreshNonce = 0
+    @State private var lastObservedUIReviewSignature: String?
+    @State private var governanceDestination: XTProjectGovernanceDestination = .overview
+    @State private var selectedSection: XTProjectDetailSection
+
+    init(
+        project: ProjectModel,
+        initialFocusSection: XTProjectDetailSection = .overview,
+        initialFocusContext: XTSectionFocusContext? = nil
+    ) {
+        self.project = project
+        self.initialFocusSection = initialFocusSection
+        self.initialFocusContext = initialFocusContext
+        _selectedSection = State(initialValue: initialFocusSection)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,52 +87,82 @@ struct ProjectDetailView: View {
             Divider()
 
             // 内容区域
-            ScrollView {
-                VStack(spacing: 20) {
-                    // 基本信息
-                    basicInfoSection
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: 20) {
+                        if let initialFocusContext {
+                            XTFocusContextCard(context: initialFocusContext)
+                        }
 
-                    Divider()
+                        projectDetailSectionRail
 
-                    // 状态和进度
-                    statusSection
+                        // 基本信息
+                        basicInfoSection
+                            .id(XTProjectDetailSection.overview)
 
-                    Divider()
+                        Divider()
 
-                    // 最新 UI review
-                    uiReviewSection
+                        // 状态和进度
+                        statusSection
+                            .id(XTProjectDetailSection.status)
 
-                    Divider()
+                        Divider()
 
-                    // 模型和配置
-                    modelSection
+                        // 最新 UI review
+                        uiReviewSection
+                            .id(XTProjectDetailSection.uiReview)
 
-                    Divider()
+                        Divider()
 
-                    // 治理活动
-                    governanceActivitySection
+                        // 模型和配置
+                        modelSection
+                            .id(XTProjectDetailSection.model)
 
-                    Divider()
+                        Divider()
 
-                    // 成本和预算
-                    costSection
+                        // 治理活动
+                        governanceActivitySection
+                            .id(XTProjectDetailSection.governanceActivity)
 
-                    Divider()
+                        Divider()
 
-                    // 协作信息
-                    collaborationSection
+                        // 成本和预算
+                        costSection
+                            .id(XTProjectDetailSection.cost)
 
-                    Divider()
+                        Divider()
 
-                    // 时间线
-                    timelineSection
+                        // 协作信息
+                        collaborationSection
+                            .id(XTProjectDetailSection.collaboration)
 
-                    Divider()
+                        Divider()
 
-                    // 危险操作
-                    dangerZoneSection
+                        // 时间线
+                        timelineSection
+                            .id(XTProjectDetailSection.timeline)
+
+                        Divider()
+
+                        // 危险操作
+                        dangerZoneSection
+                            .id(XTProjectDetailSection.dangerZone)
+                    }
+                    .padding(20)
                 }
-                .padding(20)
+                .onAppear {
+                    if initialFocusSection != .overview {
+                        focusSection(initialFocusSection, using: proxy)
+                    }
+                }
+                .onChange(of: initialFocusSection) { section in
+                    if selectedSection != section {
+                        selectedSection = section
+                    }
+                }
+                .onChange(of: selectedSection) { section in
+                    focusSection(section, using: proxy)
+                }
             }
 
             Divider()
@@ -91,12 +184,52 @@ struct ProjectDetailView: View {
         } message: {
             Text("删除项目 \"\(project.name)\" 将无法恢复。确定要继续吗？")
         }
+        .sheet(isPresented: $showEditSheet) {
+            if let ctx = projectSettingsContext {
+                ProjectSettingsView(
+                    ctx: ctx,
+                    initialGovernanceDestination: governanceDestination
+                )
+                    .environmentObject(appModel)
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Project Settings unavailable")
+                        .font(.headline)
+                    Text("当前多项目卡片还没有绑定到可编辑的 project context，因此这里暂时无法打开治理设置。")
+                        .foregroundStyle(.secondary)
+                    Button("Close") {
+                        showEditSheet = false
+                    }
+                }
+                .padding(20)
+                .frame(minWidth: 420, minHeight: 180, alignment: .topLeading)
+            }
+        }
+        .sheet(isPresented: $uiReviewActionState.showHistorySheet) {
+            if let uiReviewContext {
+                ProjectUIReviewHistorySheet(ctx: uiReviewContext)
+            }
+        }
     }
 
     // MARK: - Subviews
 
     private var titleBar: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let canOpenGovernance = projectSettingsContext != nil
+        let executionTap: (() -> Void)? = canOpenGovernance ? {
+            openGovernanceSettings(.executionTier)
+        } : nil
+        let supervisorTap: (() -> Void)? = canOpenGovernance ? {
+            openGovernanceSettings(.supervisorTier)
+        } : nil
+        let heartbeatTap: (() -> Void)? = canOpenGovernance ? {
+            openGovernanceSettings(.heartbeatReview)
+        } : nil
+        let overviewTap: (() -> Void)? = canOpenGovernance ? {
+            openGovernanceSettings(.overview)
+        } : nil
+
+        return VStack(alignment: .leading, spacing: 10) {
             HStack {
                 // 状态指示器
                 Circle()
@@ -109,6 +242,17 @@ struct ProjectDetailView: View {
 
                 Spacer()
 
+                Button {
+                    openGovernanceSettings(.overview)
+                } label: {
+                    Label("治理设置", systemImage: "slider.horizontal.3")
+                }
+                .buttonStyle(.bordered)
+                .disabled(projectSettingsContext == nil)
+                .help(projectSettingsContext == nil
+                      ? "当前卡片未绑定可编辑的 project context"
+                      : "打开 Project Settings，调整 A/S 档位和治理细节")
+
                 Button(action: { dismiss() }) {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundColor(.secondary)
@@ -117,9 +261,16 @@ struct ProjectDetailView: View {
                 .buttonStyle(.plain)
             }
 
-            ProjectGovernanceCompactSummaryView(presentation: governancePresentation)
+            ProjectGovernanceCompactSummaryView(
+                presentation: governancePresentation,
+                onExecutionTierTap: executionTap,
+                onSupervisorTierTap: supervisorTap,
+                onReviewCadenceTap: heartbeatTap,
+                onStatusTap: overviewTap,
+                onCalloutTap: overviewTap
+            )
 
-            Text(autonomyHeaderSummary)
+            Text(governanceDetailSummary.headerSummary)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -190,14 +341,40 @@ struct ProjectDetailView: View {
 
     private var uiReviewSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("最新 UI Review")
-                .font(.headline)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("最新 UI Review")
+                    .font(.headline)
+                if uiReviewUpdateFeedback.showsBadge {
+                    XTTransientUpdateBadge(tint: uiReviewUpdateTintColor)
+                }
+            }
+
+            if let latestUIReview {
+                uiReviewSnapshotOverview(latestUIReview)
+                    .xtTransientUpdateCardChrome(
+                        cornerRadius: 14,
+                        isUpdated: uiReviewUpdateFeedback.isHighlighted,
+                        focusTint: uiReviewUpdateTintColor,
+                        updateTint: uiReviewUpdateTintColor,
+                        baseBackground: .clear,
+                        baseBorder: .clear,
+                        updateBackgroundOpacity: 0.04,
+                        updateBorderOpacity: 0.24,
+                        updateShadowOpacity: 0.12
+                    )
+            }
 
             if let uiReviewContext {
                 ProjectUIReviewWorkspaceView(
                     ctx: uiReviewContext,
                     emptyTitle: "暂无浏览器 UI review",
-                    emptyMessage: "该项目还没有最近一次浏览器页面自观察结果。运行 `device.browser.control snapshot` 后，这里会显示最新的受治理 UI review，帮助你和 Agent 判断页面是否真的可执行。"
+                    emptyMessage: "该项目还没有最近一次浏览器页面自观察结果。运行 `device.browser.control snapshot` 后，这里会显示最新的受治理 UI review，帮助你和 Agent 判断页面是否真的可执行。",
+                    helperText: "这里保留完整 review 卡片、历史和重采样动作，Supervisor 与 Project Agent 会共用这份页面证据。",
+                    showsScreenshotPreview: true,
+                    reloadNonce: uiReviewRefreshNonce,
+                    onSnapshotResolved: { _ in
+                        uiReviewRefreshNonce += 1
+                    }
                 )
             } else {
                 infoNote(
@@ -206,11 +383,26 @@ struct ProjectDetailView: View {
                 )
             }
         }
+        .onAppear {
+            lastObservedUIReviewSignature = observedUIReviewSignature
+        }
+        .onChange(of: observedUIReviewSignature) { newValue in
+            defer { lastObservedUIReviewSignature = newValue }
+            guard let lastObservedUIReviewSignature, lastObservedUIReviewSignature != newValue else {
+                return
+            }
+            uiReviewUpdateFeedback.trigger()
+        }
+        .onChange(of: uiReviewActionState.refreshNonce) { refreshNonce in
+            guard refreshNonce > 0 else { return }
+            uiReviewUpdateFeedback.trigger()
+        }
+        .onDisappear {
+            uiReviewUpdateFeedback.cancel(resetState: true)
+        }
     }
 
     private var modelSection: some View {
-        let switchboard = autonomySwitchboard
-
         return VStack(alignment: .leading, spacing: 12) {
             Text("模型和治理")
                 .font(.headline)
@@ -224,50 +416,95 @@ struct ProjectDetailView: View {
                 ModelCapabilityStrip(model: project.currentModel, limit: 5)
             }
             HStack(alignment: .top, spacing: 12) {
-                autonomyProfileStateCard(
-                    title: "当前预设",
-                    profile: switchboard.configuredProfile,
-                    summary: switchboard.configuredProfileSummary
+                governanceStateCard(
+                    title: "执行档位",
+                    value: governancePresentation.executionTier.displayName,
+                    summary: governanceDetailSummary.executionTierSummary,
+                    destination: projectSettingsContext == nil ? nil : .executionTier,
+                    help: "打开 Execution Tier 设置"
                 )
 
-                autonomyProfileStateCard(
-                    title: "当前生效",
-                    profile: switchboard.effectiveProfile,
-                    summary: switchboard.effectiveProfileSummary
+                governanceStateCard(
+                    title: "Supervisor 档位",
+                    value: governancePresentation.supervisorInterventionTier.displayName,
+                    summary: governanceDetailSummary.supervisorTierSummary,
+                    destination: projectSettingsContext == nil ? nil : .supervisorTier,
+                    help: "打开 Supervisor Tier 设置"
                 )
             }
-            InfoRow(
-                label: "设备执行面",
-                value: "\(switchboard.configuredDeviceAuthorityPosture.displayName) -> \(switchboard.effectiveDeviceAuthorityPosture.displayName)"
+            governanceStateCard(
+                title: "Review 策略",
+                value: governancePresentation.reviewPolicyMode.displayName,
+                summary: governancePresentation.reviewCadenceText,
+                destination: projectSettingsContext == nil ? nil : .heartbeatReview,
+                help: "打开 Heartbeat & Review 设置"
             )
             InfoRow(
-                label: "Supervisor 视角",
-                value: "\(switchboard.configuredSupervisorScope.displayName) -> \(switchboard.effectiveSupervisorScope.displayName)"
+                label: "执行档位",
+                value: governancePresentation.effectiveExecutionLabel,
+                destination: projectSettingsContext == nil ? nil : .executionTier,
+                help: "打开 Execution Tier 设置"
             )
             InfoRow(
-                label: "Hub 授权",
-                value: "\(switchboard.configuredGrantPosture.displayName) -> \(switchboard.effectiveGrantPosture.displayName)"
+                label: "Supervisor 档位",
+                value: governancePresentation.effectiveSupervisorLabel,
+                destination: projectSettingsContext == nil ? nil : .supervisorTier,
+                help: "打开 Supervisor Tier 设置"
             )
-            InfoRow(label: "运行时限制", value: switchboard.runtimeSummary)
-            InfoRow(label: "执行档位", value: governancePresentation.effectiveExecutionLabel)
-            InfoRow(label: "Supervisor 档位", value: governancePresentation.effectiveSupervisorLabel)
-            InfoRow(label: "Review 策略", value: governancePresentation.reviewPolicyMode.displayName)
+            InfoRow(
+                label: "Review 策略",
+                value: governancePresentation.reviewPolicyMode.displayName,
+                destination: projectSettingsContext == nil ? nil : .heartbeatReview,
+                help: "打开 Heartbeat & Review 设置"
+            )
             InfoRow(
                 label: "Review 节奏",
-                value: governancePresentation.reviewCadenceText
+                value: governancePresentation.reviewCadenceText,
+                destination: projectSettingsContext == nil ? nil : .heartbeatReview,
+                help: "打开 Heartbeat & Review 设置"
             )
+            if let followUpRhythmSummary = governancePresentation.followUpRhythmSummary,
+               !followUpRhythmSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                InfoRow(
+                    label: "自动跟进",
+                    value: followUpRhythmSummary,
+                    destination: projectSettingsContext == nil ? nil : .heartbeatReview,
+                    help: "打开 Heartbeat & Review 设置"
+                )
+            }
             InfoRow(
                 label: "Guidance 注入",
-                value: "\(governancePresentation.guidanceSummary) · \(governancePresentation.guidanceAckSummary)"
+                value: "\(governancePresentation.guidanceSummary) · \(governancePresentation.guidanceAckSummary)",
+                destination: projectSettingsContext == nil ? nil : .overview,
+                help: "打开治理概览"
             )
-            InfoRow(label: "治理状态", value: governancePresentation.homeStatusMessage)
-            InfoRow(label: "Clamp / 收束", value: governancePresentation.homeClampMessage ?? "无额外 clamp")
+            InfoRow(
+                label: "能力包",
+                value: governanceDetailSummary.capabilitySummary,
+                destination: projectSettingsContext == nil ? nil : .overview,
+                help: "打开治理概览"
+            )
+            InfoRow(
+                label: "治理状态",
+                value: governancePresentation.homeStatusMessage,
+                destination: projectSettingsContext == nil ? nil : .overview,
+                help: "打开治理概览"
+            )
+            InfoRow(
+                label: "Clamp / 收束",
+                value: governanceDetailSummary.clampSummary,
+                destination: projectSettingsContext == nil ? nil : .overview,
+                help: "打开治理概览"
+            )
+            InfoRow(
+                label: "治理来源",
+                value: governanceDetailSummary.sourceLabel,
+                destination: projectSettingsContext == nil ? nil : .overview,
+                help: "打开治理概览"
+            )
 
-            if !switchboard.configuredDeviationReasons.isEmpty {
-                infoNote(title: "预设备注", message: switchboard.configuredDeviationReasons.joined(separator: " · "))
-            }
-            if !switchboard.effectiveDeviationReasons.isEmpty {
-                infoNote(title: "生效备注", message: switchboard.effectiveDeviationReasons.joined(separator: " · "))
+            if let detail = governanceDetailSummary.sourceDetail {
+                infoNote(title: "治理来源说明", message: detail)
             }
 
             ProjectGovernanceInspector(presentation: governancePresentation)
@@ -504,14 +741,38 @@ struct ProjectDetailView: View {
 
     // MARK: - Helper Views
 
-    private func InfoRow(label: String, value: String) -> some View {
-        HStack(alignment: .top) {
+    @ViewBuilder
+    private func InfoRow(
+        label: String,
+        value: String,
+        destination: XTProjectGovernanceDestination? = nil,
+        help: String? = nil
+    ) -> some View {
+        let content = HStack(alignment: .top, spacing: 8) {
             Text(label)
                 .foregroundColor(.secondary)
                 .frame(width: 140, alignment: .leading)
             Text(value)
                 .foregroundColor(.primary)
-            Spacer()
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if destination != nil {
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+
+        if let destination {
+            Button {
+                openGovernanceSettings(destination)
+            } label: {
+                content
+            }
+            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+            .help(help ?? governanceDrillDownHelp(for: destination))
+        } else {
+            content
         }
     }
 
@@ -566,6 +827,93 @@ struct ProjectDetailView: View {
         }
     }
 
+    private func openGovernanceSettings(_ destination: XTProjectGovernanceDestination) {
+        guard projectSettingsContext != nil else { return }
+        governanceDestination = destination
+        showEditSheet = true
+    }
+
+    private func governanceDrillDownHelp(for destination: XTProjectGovernanceDestination) -> String {
+        switch destination {
+        case .overview:
+            return "打开治理概览"
+        case .uiReview:
+            return "打开 UI Review"
+        case .executionTier:
+            return "打开 Execution Tier 设置"
+        case .supervisorTier:
+            return "打开 Supervisor Tier 设置"
+        case .heartbeatReview:
+            return "打开 Heartbeat & Review 设置"
+        }
+    }
+
+    private func focusSection(
+        _ section: XTProjectDetailSection,
+        using proxy: ScrollViewProxy
+    ) {
+        DispatchQueue.main.async {
+            withAnimation(.easeInOut(duration: 0.18)) {
+                proxy.scrollTo(section, anchor: .top)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var projectDetailSectionRail: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(XTProjectDetailSection.allCases, id: \.rawValue) { section in
+                    Button {
+                        selectedSection = section
+                    } label: {
+                        projectDetailSectionLabel(section)
+                    }
+                    .buttonStyle(.plain)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(selectedSection == section ? Color.accentColor : Color.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 999, style: .continuous)
+                            .fill(
+                                selectedSection == section
+                                    ? Color.accentColor.opacity(0.12)
+                                    : Color(nsColor: .controlBackgroundColor)
+                            )
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 999, style: .continuous)
+                            .stroke(
+                                selectedSection == section
+                                    ? Color.accentColor.opacity(0.18)
+                                    : Color.secondary.opacity(0.12),
+                                lineWidth: 1
+                            )
+                    )
+                }
+            }
+            .padding(.horizontal, 2)
+        }
+    }
+
+    @ViewBuilder
+    private func projectDetailSectionLabel(_ section: XTProjectDetailSection) -> some View {
+        HStack(spacing: 6) {
+            Text(section.displayTitle)
+
+            if section == .uiReview, let latestUIReview {
+                Text(latestUIReview.verdictLabel)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(uiReviewVerdictColor(latestUIReview.verdict))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(uiReviewVerdictColor(latestUIReview.verdict).opacity(0.12))
+                    .clipShape(Capsule())
+            }
+        }
+    }
+
     // MARK: - Helpers
 
     private func formatDate(_ date: Date) -> String {
@@ -605,6 +953,13 @@ struct ProjectDetailView: View {
         return AXProjectContext(root: URL(fileURLWithPath: rootPath, isDirectory: true))
     }
 
+    private var latestUIReview: XTUIReviewPresentation? {
+        guard let uiReviewContext else {
+            return nil
+        }
+        return XTUIReviewPresentation.loadLatestBrowserPage(for: uiReviewContext)
+    }
+
     private var governancePresentation: ProjectGovernancePresentation {
         if let resolved = appModel.resolvedProjectGovernance(for: project) {
             return ProjectGovernancePresentation(resolved: resolved)
@@ -618,23 +973,13 @@ struct ProjectDetailView: View {
             reviewPulseSeconds: project.reviewPulseSeconds,
             brainstormReviewSeconds: project.brainstormReviewSeconds,
             eventDrivenReviewEnabled: project.eventDrivenReviewEnabled,
+            eventReviewTriggers: project.eventReviewTriggers,
             compatSource: "multi_project_detail"
         )
     }
 
-    private var autonomySwitchboard: AXProjectAutonomySwitchboardPresentation {
-        appModel.autonomySwitchboardPresentation(for: project)
-    }
-
-    private var autonomyHeaderSummary: String {
-        let switchboard = autonomySwitchboard
-        let profileSummary: String
-        if switchboard.hasConfiguredEffectiveDrift {
-            profileSummary = "治理预设 \(switchboard.configuredProfile.displayName) -> \(switchboard.effectiveProfile.displayName)"
-        } else {
-            profileSummary = "治理预设 \(switchboard.configuredProfile.displayName)"
-        }
-        return "\(profileSummary) · \(governancePresentation.effectiveExecutionLabel) / \(governancePresentation.effectiveSupervisorLabel) · Review \(governancePresentation.reviewPolicyMode.displayName) · 设备执行面 \(switchboard.effectiveDeviceAuthorityPosture.displayName) · Hub 授权 \(switchboard.effectiveGrantPosture.displayName)"
+    private var governanceDetailSummary: ProjectDetailGovernanceSummary {
+        ProjectDetailGovernanceSummary(presentation: governancePresentation)
     }
 
     private var governanceActivityContext: AXProjectContext? {
@@ -643,19 +988,38 @@ struct ProjectDetailView: View {
         }
     }
 
-    private func autonomyProfileStateCard(
-        title: String,
-        profile: AXProjectAutonomyProfile,
-        summary: String
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+    private var projectSettingsContext: AXProjectContext? {
+        project.governanceActivityContext { projectId in
+            appModel.projectContext(for: projectId)
+        }
+    }
 
-            Text(profile.displayName)
+    @ViewBuilder
+    private func governanceStateCard(
+        title: String,
+        value: String,
+        summary: String,
+        destination: XTProjectGovernanceDestination? = nil,
+        help: String? = nil
+    ) -> some View {
+        let content = VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                Spacer(minLength: 0)
+
+                if destination != nil {
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            Text(value)
                 .font(.headline)
-                .foregroundStyle(autonomyProfileAccent(profile))
+                .foregroundStyle(.primary)
 
             Text(summary)
                 .font(.caption)
@@ -666,21 +1030,202 @@ struct ProjectDetailView: View {
         .padding(10)
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(autonomyProfileAccent(profile).opacity(0.08))
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+
+        if let destination {
+            Button {
+                openGovernanceSettings(destination)
+            } label: {
+                content
+            }
+            .buttonStyle(.plain)
+            .contentShape(RoundedRectangle(cornerRadius: 12))
+            .help(help ?? governanceDrillDownHelp(for: destination))
+        } else {
+            content
+        }
+    }
+
+    private func uiReviewSnapshotOverview(_ review: XTUIReviewPresentation) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Text(review.verdictLabel)
+                            .font(.headline)
+                            .foregroundStyle(uiReviewVerdictColor(review.verdict))
+                        Text(review.updatedText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Text(review.issueSummary)
+                        .font(.subheadline)
+                        .foregroundStyle(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if let trend = review.trend {
+                        Text("\(trend.headline) · \(trend.detail)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            XTUIReviewActionStrip(
+                items: projectDetailUIReviewActions(review),
+                controlSize: .small
+            )
+
+            XTUIReviewStatusMessageView(
+                message: uiReviewActionState.statusMessage,
+                isError: uiReviewActionState.statusIsError,
+                font: .caption
+            )
+
+            HStack(alignment: .top, spacing: 12) {
+                uiReviewSignalCard(
+                    title: "执行结论",
+                    value: review.objectiveLabel,
+                    summary: review.summary,
+                    tint: uiReviewVerdictColor(review.verdict)
+                )
+                uiReviewSignalCard(
+                    title: "证据状态",
+                    value: review.evidenceLabel,
+                    summary: review.interactiveTargetSummary,
+                    tint: review.sufficientEvidence ? .green : .orange
+                )
+                uiReviewSignalCard(
+                    title: "关键动作",
+                    value: review.criticalActionSummary,
+                    summary: review.confidenceLabel + " 置信度",
+                    tint: review.criticalActionExpected && !review.criticalActionVisible ? .red : .blue
+                )
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(uiReviewVerdictColor(review.verdict).opacity(0.16), lineWidth: 1)
         )
     }
 
-    private func autonomyProfileAccent(_ profile: AXProjectAutonomyProfile) -> Color {
-        switch profile {
-        case .conservative:
-            return .secondary
-        case .safe:
-            return .green
-        case .fullAutonomy:
-            return .orange
-        case .custom:
-            return .blue
+    private func uiReviewSignalCard(
+        title: String,
+        value: String,
+        summary: String,
+        tint: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(tint)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(summary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(tint.opacity(0.08))
+        )
+    }
+
+    private func uiReviewVerdictColor(_ verdict: XTUIReviewVerdict) -> Color {
+        switch verdict {
+        case .ready:
+            return .green
+        case .attentionNeeded:
+            return .orange
+        case .insufficientEvidence:
+            return .red
+        }
+    }
+
+    private var observedUIReviewSignature: String {
+        latestUIReview?.transientUpdateSignature ?? "none"
+    }
+
+    private var uiReviewUpdateTintColor: Color {
+        guard let latestUIReview else { return .accentColor }
+        return uiReviewVerdictColor(latestUIReview.verdict)
+    }
+
+    private func openArtifact(_ url: URL?) {
+        guard let url else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func projectDetailUIReviewActions(
+        _ review: XTUIReviewPresentation
+    ) -> [XTUIReviewActionStripItem] {
+        var items: [XTUIReviewActionStripItem] = [
+            XTUIReviewActionStripItem(
+                id: "history",
+                title: "History",
+                style: .bordered,
+                isDisabled: uiReviewContext == nil
+            ) {
+                uiReviewActionState.presentHistory()
+            },
+            XTUIReviewActionStripItem(
+                id: "resample",
+                title: uiReviewActionState.isResampling ? "Sampling…" : "Re-run Snapshot",
+                systemImage: uiReviewActionState.isResampling
+                    ? "arrow.triangle.2.circlepath"
+                    : "camera.viewfinder",
+                style: .borderedProminent,
+                isDisabled: uiReviewContext == nil || uiReviewActionState.isResampling
+            ) {
+                guard let uiReviewContext else { return }
+                Task {
+                    await uiReviewActionState.runSnapshot(in: uiReviewContext) { _ in
+                        uiReviewRefreshNonce += 1
+                    }
+                }
+            }
+        ]
+
+        if review.reviewFileURL != nil {
+            items.append(
+                XTUIReviewActionStripItem(
+                    id: "open-review",
+                    title: "Open Review",
+                    style: .bordered
+                ) {
+                    openArtifact(review.reviewFileURL)
+                }
+            )
+        }
+
+        if review.screenshotFileURL != nil {
+            items.append(
+                XTUIReviewActionStripItem(
+                    id: "open-screenshot",
+                    title: "Open Screenshot",
+                    style: .bordered
+                ) {
+                    openArtifact(review.screenshotFileURL)
+                }
+            )
+        }
+
+        return items
     }
 }
 

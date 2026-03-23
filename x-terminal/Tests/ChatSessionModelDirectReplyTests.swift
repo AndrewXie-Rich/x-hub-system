@@ -106,6 +106,7 @@ struct ChatSessionModelDirectReplyTests {
 
         let store = SettingsStore()
         store.settings = store.settings.setting(role: .coder, providerKind: .hub, model: "openai/gpt-5-low")
+        store.settings = store.settings.setting(role: .supervisor, providerKind: .hub, model: "openai/gpt-5-low")
         let router = LLMRouter(settingsStore: store)
         let session = ChatSessionModel()
 
@@ -115,39 +116,14 @@ struct ChatSessionModelDirectReplyTests {
             router: router,
             routeSnapshot: ModelStateSnapshot(
                 models: [
-                    HubModel(
-                        id: "openai/gpt-5.4",
-                        name: "GPT 5.4",
-                        backend: "openai",
-                        quant: "n/a",
-                        contextLength: 200_000,
-                        paramsB: 0,
-                        roles: nil,
-                        state: .available,
-                        memoryBytes: nil,
-                        tokensPerSec: nil,
-                        modelPath: nil,
-                        note: nil
-                    )
+                    makeModel(id: "openai/gpt-5.4", name: "GPT 5.4", state: .available),
+                    makeModel(id: "openai/gpt-5-low", name: "GPT 5 Low", state: .loaded)
                 ],
                 updatedAt: 130
             ),
             localSnapshot: ModelStateSnapshot(
                 models: [
-                    HubModel(
-                        id: "qwen3-14b-mlx",
-                        name: "Qwen 3 14B",
-                        backend: "mlx",
-                        quant: "bf16",
-                        contextLength: 32_768,
-                        paramsB: 14,
-                        roles: nil,
-                        state: .loaded,
-                        memoryBytes: nil,
-                        tokensPerSec: nil,
-                        modelPath: "/models/qwen3",
-                        note: nil
-                    )
+                    makeModel(id: "qwen3-14b-mlx", name: "Qwen 3 14B", state: .loaded, backend: "mlx", modelPath: "/models/qwen3")
                 ],
                 updatedAt: 130
             )
@@ -155,10 +131,114 @@ struct ChatSessionModelDirectReplyTests {
 
         #expect(rendered.contains("Project route diagnose: coder"))
         #expect(rendered.contains("配置来源：project override"))
+        #expect(rendered.contains("全局对照："))
+        #expect(rendered.contains("global_coder_assignment=openai/gpt-5-low"))
+        #expect(rendered.contains("global_supervisor_assignment=openai/gpt-5-low"))
+        #expect(rendered.contains("relation=当前项目有 project override；它会盖过 coder 全局 assignment `openai/gpt-5-low`。Supervisor 仍只看自己的全局 assignment。"))
         #expect(rendered.contains("当前决策：XT 当前会先锁本地：qwen3-14b-mlx"))
         #expect(rendered.contains("route memory"))
         #expect(rendered.contains("consecutive_remote_fallbacks=3"))
-        #expect(rendered.contains("提示：project override 会优先于全局 assignment"))
+        #expect(rendered.contains("异常趋势：最近 3 次主要是 `model_not_found`"))
+        #expect(rendered.contains("建议动作：先去 Hub -> Models 确认目标模型已加载"))
+        #expect(rendered.contains("提示：project override 会优先于 coder 全局 assignment；Supervisor 只看自己的全局 assignment"))
+    }
+
+    @Test
+    func routeDiagnoseShowsGlobalAssignmentIssueWhenSupervisorAndCoderMatch() throws {
+        let root = try makeProjectRoot(named: "project-route-diagnose-global-match")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        let store = SettingsStore()
+        store.settings = store.settings.setting(role: .coder, providerKind: .hub, model: "openai/gpt-5.4")
+        store.settings = store.settings.setting(role: .supervisor, providerKind: .hub, model: "openai/gpt-5.4")
+        let router = LLMRouter(settingsStore: store)
+        let session = ChatSessionModel()
+
+        let rendered = session.projectRouteDiagnosisTextForTesting(
+            ctx: ctx,
+            config: nil,
+            router: router,
+            routeSnapshot: ModelStateSnapshot(
+                models: [
+                    makeModel(id: "openai/gpt-5.4", name: "GPT 5.4", state: .available),
+                    makeModel(id: "openai/gpt-4.1", name: "GPT 4.1", state: .loaded)
+                ],
+                updatedAt: 130
+            ),
+            localSnapshot: ModelStateSnapshot.empty()
+        )
+
+        #expect(rendered.contains("配置来源：global assignment"))
+        #expect(rendered.contains("global_coder_assignment=openai/gpt-5.4"))
+        #expect(rendered.contains("global_coder_issue="))
+        #expect(rendered.contains("global_supervisor_assignment=openai/gpt-5.4"))
+        #expect(rendered.contains("global_supervisor_issue="))
+        #expect(rendered.contains("relation=Supervisor 和 project coder 的全局 assignment 一致"))
+    }
+
+    @Test
+    func routeDiagnoseSummarizesHubRecoveryTrendForRemoteExportBlocked() throws {
+        let root = try makeProjectRoot(named: "project-route-diagnose-remote-export-blocked")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        AXProjectStore.appendUsage(
+            [
+                "type": "ai_usage",
+                "created_at": 100,
+                "stage": "chat_plan",
+                "role": "coder",
+                "requested_model_id": "openai/gpt-5.4",
+                "actual_model_id": "qwen3-14b-mlx",
+                "runtime_provider": "Hub (Local)",
+                "execution_path": "hub_downgraded_to_local",
+                "fallback_reason_code": "remote_export_blocked",
+            ],
+            for: ctx
+        )
+        AXProjectStore.appendUsage(
+            [
+                "type": "ai_usage",
+                "created_at": 110,
+                "stage": "chat_plan",
+                "role": "coder",
+                "requested_model_id": "openai/gpt-5.4",
+                "actual_model_id": "qwen3-14b-mlx",
+                "runtime_provider": "Hub (Local)",
+                "execution_path": "hub_downgraded_to_local",
+                "fallback_reason_code": "remote_export_blocked",
+            ],
+            for: ctx
+        )
+
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingModelOverride(role: .coder, modelId: "openai/gpt-5.4")
+
+        let router = LLMRouter(settingsStore: SettingsStore())
+        let session = ChatSessionModel()
+
+        let rendered = session.projectRouteDiagnosisTextForTesting(
+            ctx: ctx,
+            config: config,
+            router: router,
+            routeSnapshot: ModelStateSnapshot(
+                models: [
+                    makeModel(id: "openai/gpt-5.4", name: "GPT 5.4", state: .loaded)
+                ],
+                updatedAt: 130
+            ),
+            localSnapshot: ModelStateSnapshot.empty()
+        )
+
+        #expect(rendered.contains("path=hub_downgraded_to_local"))
+        #expect(rendered.contains("reason=remote_export_blocked"))
+        #expect(rendered.contains("异常趋势：最近 2 次主要是 `remote_export_blocked`"))
+        #expect(rendered.contains("建议动作：先去 Hub Recovery / Hub 审计看 `remote_export_blocked`"))
     }
 
     @Test
@@ -790,12 +870,12 @@ struct ChatSessionModelDirectReplyTests {
 
         let session = ChatSessionModel()
         session.ensureLoaded(ctx: ctx, limit: 20)
-        session.draft = "/model openai/gpt-5.4"
-        session.send(
+        _ = session.handleSlashModelForTesting(
+            args: ["openai/gpt-5.4"],
+            userText: "/model openai/gpt-5.4",
             ctx: ctx,
-            memory: memory,
             config: nil,
-            router: LLMRouter(settingsStore: SettingsStore())
+            snapshot: .empty()
         )
 
         #expect(FileManager.default.fileExists(atPath: ctx.latestSessionSummaryURL.path))
@@ -806,6 +886,212 @@ struct ChatSessionModelDirectReplyTests {
         #expect(summary.workingSetSummary.latestUserMessage == "Need to preserve a handoff before switching models.")
     }
 
+    @Test
+    func modelSlashDoesNotPersistUnavailableCoderModel() throws {
+        let root = try makeProjectRoot(named: "project-slash-model-unavailable")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingModelOverride(role: .coder, modelId: "openai/gpt-4.1")
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let session = ChatSessionModel()
+        let reply = session.handleSlashModelForTesting(
+            args: ["openai/gpt-5.4"],
+            userText: "/model openai/gpt-5.4",
+            ctx: ctx,
+            config: nil,
+            snapshot: ModelStateSnapshot(
+                models: [
+                    makeModel(id: "openai/gpt-5.4", name: "GPT 5.4", state: .available),
+                    makeModel(id: "openai/gpt-4.1", name: "GPT 4.1", state: .loaded)
+                ],
+                updatedAt: 1_776_400_000
+            )
+        )
+
+        let reloaded = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        #expect(reloaded.modelOverride(for: .coder) == "openai/gpt-4.1")
+        #expect(reply.contains("未修改当前 coder 模型配置。"))
+        #expect(reply.contains("`openai/gpt-5.4` 当前还不能直接执行"))
+        #expect(reply.contains("/model openai/gpt-4.1"))
+    }
+
+    @Test
+    func modelSlashDoesNotPersistNonInteractiveCoderModel() throws {
+        let root = try makeProjectRoot(named: "project-slash-model-noninteractive")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingModelOverride(role: .coder, modelId: "openai/gpt-4.1")
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let session = ChatSessionModel()
+        let reply = session.handleSlashModelForTesting(
+            args: ["mlx-community/qwen3-embedding-0.6b-4bit"],
+            userText: "/model mlx-community/qwen3-embedding-0.6b-4bit",
+            ctx: ctx,
+            config: nil,
+            snapshot: ModelStateSnapshot(
+                models: [
+                    makeModel(
+                        id: "mlx-community/qwen3-embedding-0.6b-4bit",
+                        name: "Qwen3 Embedding 0.6B",
+                        state: .loaded,
+                        backend: "mlx",
+                        modelPath: "/models/qwen3-embedding",
+                        taskKinds: ["embedding"]
+                    ),
+                    makeModel(
+                        id: "mlx-community/qwen3-8b-4bit",
+                        name: "Qwen3 8B",
+                        state: .loaded,
+                        backend: "mlx",
+                        modelPath: "/models/qwen3-8b"
+                    )
+                ],
+                updatedAt: 1_776_400_010
+            )
+        )
+
+        let reloaded = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        #expect(reloaded.modelOverride(for: .coder) == "openai/gpt-4.1")
+        #expect(reply.contains("未修改当前 coder 模型配置。"))
+        #expect(reply.contains("不能直接用于对话执行"))
+        #expect(reply.contains("/model mlx-community/qwen3-8b-4bit"))
+    }
+
+    @Test
+    func roleModelSlashDoesNotPersistUnavailableRoleModel() throws {
+        let root = try makeProjectRoot(named: "project-slash-role-model-unavailable")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingModelOverride(role: .reviewer, modelId: "anthropic/reviewer-pro")
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let session = ChatSessionModel()
+        let reply = session.handleSlashRoleModelForTesting(
+            args: ["reviewer", "anthropic/reviewer-max"],
+            userText: "/rolemodel reviewer anthropic/reviewer-max",
+            ctx: ctx,
+            config: nil,
+            snapshot: ModelStateSnapshot(
+                models: [
+                    makeModel(id: "anthropic/reviewer-max", name: "Reviewer Max", state: .available, backend: "anthropic"),
+                    makeModel(id: "anthropic/reviewer-pro", name: "Reviewer Pro", state: .loaded, backend: "anthropic")
+                ],
+                updatedAt: 1_776_400_020
+            )
+        )
+
+        let reloaded = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        #expect(reloaded.modelOverride(for: .reviewer) == "anthropic/reviewer-pro")
+        #expect(reply.contains("未修改当前 reviewer 模型配置。"))
+        #expect(reply.contains("/rolemodel reviewer anthropic/reviewer-pro"))
+    }
+
+    @Test
+    func modelSlashStillAllowsSaveWhenHubSnapshotIsUnavailable() throws {
+        let root = try makeProjectRoot(named: "project-slash-model-no-snapshot")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingModelOverride(role: .coder, modelId: "openai/gpt-4.1")
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let session = ChatSessionModel()
+        let reply = session.handleSlashModelForTesting(
+            args: ["openai/gpt-5.4"],
+            userText: "/model openai/gpt-5.4",
+            ctx: ctx,
+            config: nil,
+            snapshot: .empty()
+        )
+
+        let reloaded = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        #expect(reloaded.modelOverride(for: .coder) == "openai/gpt-5.4")
+        #expect(reply.contains("已将 coder 模型设置为：openai/gpt-5.4"))
+        #expect(reply.contains("当前拿不到 Hub 的模型快照"))
+    }
+
+    @Test
+    func pendingToolApprovalPersistenceUsesFriendlyProjectDisplayName() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "friendly-project-pending-tool-approval-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+        let friendlyName = "Supervisor 耳机项目"
+        let previousRegistry = AXProjectRegistryStore.load()
+        defer { AXProjectRegistryStore.save(previousRegistry) }
+        let registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: 900,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: projectId,
+            projects: [
+                AXProjectEntry(
+                    projectId: projectId,
+                    rootPath: root.path,
+                    displayName: friendlyName,
+                    lastOpenedAt: 900,
+                    manualOrderIndex: 0,
+                    pinned: false,
+                    statusDigest: nil,
+                    currentStateSummary: nil,
+                    nextStepSummary: nil,
+                    blockerSummary: nil,
+                    lastSummaryAt: nil,
+                    lastEventAt: nil
+                )
+            ]
+        )
+        AXProjectRegistryStore.save(registry)
+
+        let session = ChatSessionModel()
+        AXPendingActionsStore.clearAll(for: ctx)
+        session.persistPendingToolApprovalForTesting(
+            ctx: ctx,
+            calls: [
+                ToolCall(
+                    tool: .write_file,
+                    args: [
+                        "path": .string("notes.txt"),
+                        "content": .string("hello")
+                    ]
+                )
+            ],
+            reason: "tools",
+            userText: "帮我写个文件"
+        )
+
+        let pending = try #require(AXPendingActionsStore.pendingToolApproval(for: ctx))
+        #expect(pending.projectId == projectId)
+        #expect(pending.projectName == friendlyName)
+        #expect(pending.projectName.contains(root.lastPathComponent) == false)
+        #expect(pending.reason == "tools")
+    }
+
     private func makeProjectRoot(named name: String) throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "xt_chat_direct_reply_\(name)_\(UUID().uuidString)",
@@ -813,6 +1099,31 @@ struct ChatSessionModelDirectReplyTests {
         )
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
+    }
+
+    private func makeModel(
+        id: String,
+        name: String,
+        state: HubModelState,
+        backend: String = "openai",
+        modelPath: String? = nil,
+        taskKinds: [String]? = nil
+    ) -> HubModel {
+        HubModel(
+            id: id,
+            name: name,
+            backend: backend,
+            quant: "",
+            contextLength: 128_000,
+            paramsB: 0,
+            roles: nil,
+            state: state,
+            memoryBytes: nil,
+            tokensPerSec: nil,
+            modelPath: modelPath,
+            note: nil,
+            taskKinds: taskKinds
+        )
     }
 
     private func waitUntil(timeoutMs: UInt64, condition: @escaping () -> Bool) async throws {

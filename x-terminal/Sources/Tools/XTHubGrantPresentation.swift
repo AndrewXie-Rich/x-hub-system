@@ -16,6 +16,12 @@ enum XTHubGrantPresentation {
         if normalizedCapability.contains("web_fetch") || normalizedCapability.contains("web.fetch") {
             return "联网访问"
         }
+        if normalizedCapability.contains("browser.control")
+            || normalizedCapability.contains("browser_control")
+            || normalizedCapability.contains("device.browser.control")
+            || normalizedCapability.contains("device_browser_control") {
+            return "浏览器控制"
+        }
         if normalizedCapability.contains("ai_generate_paid") || normalizedCapability.contains("ai.generate.paid") {
             return cleanedModelID.isEmpty ? "付费模型调用" : "付费模型调用（\(cleanedModelID)）"
         }
@@ -40,7 +46,7 @@ enum XTHubGrantPresentation {
         modelId: String,
         grantRequestId: String?
     ) -> String {
-        var parts = ["waiting for Hub grant approval"]
+        var parts = ["等待 Hub 授权"]
         let capabilityText = capabilityLabel(capability: capability, modelId: modelId)
         let cleanedCapability = capability.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanedModelId = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -49,7 +55,7 @@ enum XTHubGrantPresentation {
         }
         let grantText = (grantRequestId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if !grantText.isEmpty {
-            parts.append("grant=\(grantText)")
+            parts.append("授权单号：\(grantText)")
         }
         return parts.joined(separator: " · ")
     }
@@ -59,7 +65,7 @@ enum XTHubGrantPresentation {
         modelId: String,
         deniedByUser: Bool
     ) -> String {
-        let prefix = deniedByUser ? "Hub grant denied by user" : "Hub grant denied"
+        let prefix = deniedByUser ? "Hub 授权已被你拒绝" : "Hub 授权已被拒绝"
         let cleanedCapability = capability.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanedModelId = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanedCapability.isEmpty || !cleanedModelId.isEmpty else {
@@ -71,17 +77,17 @@ enum XTHubGrantPresentation {
     static func emptyPendingReply(projectName: String?) -> String {
         let cleanedProjectName = (projectName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if cleanedProjectName.isEmpty {
-            return "当前没有待处理的 Hub grant。"
+            return "当前没有待处理的 Hub 授权。"
         }
-        return "项目 \(cleanedProjectName) 当前没有待处理的 Hub grant。"
+        return "项目 \(cleanedProjectName) 当前没有待处理的 Hub 授权。"
     }
 
     static func ambiguityHeader(projectName: String?) -> String {
         let cleanedProjectName = (projectName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if cleanedProjectName.isEmpty {
-            return "当前有多个待处理 Hub grant，我不能替你盲选。"
+            return "当前有多笔待处理的 Hub 授权，我不能替你盲选。"
         }
-        return "项目 \(cleanedProjectName) 还有多个待处理 Hub grant，我不能替你盲选。"
+        return "项目 \(cleanedProjectName) 还有多笔待处理的 Hub 授权，我不能替你盲选。"
     }
 
     static func voiceDecisionFailureReply(
@@ -118,7 +124,10 @@ enum XTHubGrantPresentation {
         if lower == "hub grant required"
             || lower == "grant required"
             || lower.hasPrefix("waiting for hub grant approval")
-            || lower.hasPrefix("hub grant denied") {
+            || lower.hasPrefix("hub grant denied")
+            || cleaned.hasPrefix("等待 Hub 授权")
+            || cleaned.hasPrefix("Hub 授权已被拒绝")
+            || cleaned.hasPrefix("Hub 授权已被你拒绝") {
             return nil
         }
 
@@ -149,9 +158,9 @@ enum XTHubGrantPresentation {
     static func approvalFooterNote(count: Int) -> String {
         let normalizedCount = max(1, count)
         if normalizedCount == 1 {
-            return "Approve 只放行当前这笔待处理的 Hub capability 请求；Deny 会保持阻断，但不会影响其它对话和项目。"
+            return "批准后只会放行当前这笔 Hub 授权；拒绝会继续拦下它，但不会影响其它对话和项目。"
         }
-        return "Approve 会分别放行这些待处理的 Hub capability 请求；Deny 会保持对应动作阻断，但不会影响其它对话和项目。"
+        return "批准后会分别放行这些 Hub 授权；拒绝会继续拦下对应动作，但不会影响其它对话和项目。"
     }
 
     static func decisionFailureDraft(
@@ -172,13 +181,13 @@ enum XTHubGrantPresentation {
 
         var message = "这笔\(capabilityText) Hub 授权\(actionText)未完成"
         if !grantText.isEmpty {
-            message += "（grant=\(grantText)"
+            message += "（授权单号：\(grantText)"
             if !reasonText.isEmpty {
-                message += "，reason=\(reasonText)"
+                message += "，原因：\(reasonText)"
             }
             message += "）"
         } else if !reasonText.isEmpty {
-            message += "（reason=\(reasonText)）"
+            message += "（原因：\(reasonText)）"
         }
         message += "。请检查 Hub 状态后再试。"
         return message

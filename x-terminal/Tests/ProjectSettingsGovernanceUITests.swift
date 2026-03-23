@@ -41,7 +41,7 @@ struct ProjectSettingsGovernanceUITests {
             deviceToolGroups: ["device.clipboard.read", "device.browser.control"],
             workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: root)
         )
-        config = config.settingAutonomyPolicy(
+        config = config.settingRuntimeSurfacePolicy(
             mode: .trustedOpenClawMode,
             ttlSeconds: 600,
             updatedAt: Date()
@@ -82,6 +82,93 @@ struct ProjectSettingsGovernanceUITests {
         #expect(!presentation.invalidMessages.isEmpty)
         #expect(presentation.statusSummary.contains("当前组合无效"))
         #expect(presentation.clampSummary.contains("未连接 runtime clamp"))
+    }
+
+    @Test
+    func executionTierMetadataSupportsDedicatedATierEditor() {
+        #expect(AXProjectExecutionTier.allCases.map(\.displayName) == [
+            "A0 Observe",
+            "A1 Plan",
+            "A2 Repo Auto",
+            "A3 Deliver Auto",
+            "A4 Agent"
+        ])
+        #expect(AXProjectExecutionTier.a0Observe.allowedHighlights.contains("读项目记忆"))
+        #expect(AXProjectExecutionTier.a1Plan.oneLineSummary.contains("job / plan"))
+        #expect(AXProjectExecutionTier.a2RepoAuto.defaultBudgetSummary.contains("45m run"))
+        #expect(AXProjectExecutionTier.a4OpenClaw.blockedHighlights.contains(where: { $0.contains("kill-switch") }))
+    }
+
+    @Test
+    func supervisorTierMetadataSupportsDedicatedSTierEditor() {
+        #expect(AXProjectSupervisorInterventionTier.allCases.map(\.displayName) == [
+            "S0 Silent Audit",
+            "S1 Milestone Review",
+            "S2 Periodic Review",
+            "S3 Strategic Coach",
+            "S4 Tight Supervision"
+        ])
+        #expect(AXProjectSupervisorInterventionTier.s0SilentAudit.behaviorHighlights.contains("默认 observe only"))
+        #expect(AXProjectSupervisorInterventionTier.s2PeriodicReview.typicalUseCases.contains("A2 Repo Auto"))
+        #expect(AXProjectSupervisorInterventionTier.s3StrategicCoach.oneLineSummary.contains("replan"))
+        #expect(AXProjectSupervisorInterventionTier.s4TightSupervision.defaultAckSummary == "Required")
+    }
+
+    @Test
+    func reviewPolicyMetadataSupportsDedicatedHeartbeatReviewEditor() {
+        #expect(AXProjectReviewPolicyMode.off.oneLineSummary.contains("手动请求"))
+        #expect(!AXProjectReviewPolicyMode.off.supportsPulseCadence)
+        #expect(!AXProjectReviewPolicyMode.periodic.supportsBrainstormCadence)
+        #expect(AXProjectReviewPolicyMode.hybrid.supportsBrainstormCadence)
+        #expect(AXProjectReviewPolicyMode.aggressive.supportsEventDrivenReview)
+    }
+
+    @Test
+    func contextAssemblyProfilesExposeIndependentContinuityAndDepthMetadata() {
+        #expect(XTSupervisorRecentRawContextProfile.allCases.map(\.displayName) == [
+            "Floor",
+            "Standard",
+            "Deep",
+            "Extended",
+            "Auto Max"
+        ])
+        #expect(AXProjectRecentDialogueProfile.deep20Pairs.shortLabel == "20 pairs")
+        #expect(AXProjectContextDepthProfile.balanced.summary.contains("默认档"))
+        #expect(AXProjectContextDepthProfile.full.summary.contains("retrieval"))
+    }
+
+    @Test
+    func mandatoryAndOptionalTriggerSetsStaySeparatedForHeartbeatReviewPage() {
+        #expect(AXProjectExecutionTier.a0Observe.defaultEventReviewTriggers == [.manualRequest])
+        #expect(AXProjectExecutionTier.a0Observe.mandatoryReviewTriggers == [.preDoneSummary])
+        #expect(AXProjectExecutionTier.a4OpenClaw.mandatoryReviewTriggers == [
+            .blockerDetected,
+            .preHighRiskAction,
+            .preDoneSummary
+        ])
+        #expect(AXProjectReviewTrigger.governanceOptionalSelectableCases == [
+            .failureStreak,
+            .blockerDetected,
+            .planDrift,
+            .preHighRiskAction,
+            .preDoneSummary
+        ])
+    }
+
+    @Test
+    func draftPresentationSurfacesCustomEventTriggerLabels() {
+        let presentation = ProjectGovernancePresentation(
+            executionTier: .a3DeliverAuto,
+            supervisorInterventionTier: .s3StrategicCoach,
+            reviewPolicyMode: .hybrid,
+            progressHeartbeatSeconds: 600,
+            reviewPulseSeconds: 1200,
+            brainstormReviewSeconds: 2400,
+            eventDrivenReviewEnabled: true,
+            eventReviewTriggers: [.planDrift, .preDoneSummary]
+        )
+
+        #expect(presentation.eventReviewTriggerLabels == ["plan drift", "pre-done"])
     }
 
     private func makeProjectRoot(named name: String) -> URL {

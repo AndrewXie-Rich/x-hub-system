@@ -12,15 +12,15 @@ enum VoiceRouteMode: String, Codable, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .funasrStreaming:
-            return "FunASR Streaming"
+            return "FunASR 流式"
         case .whisperKitLocal:
-            return "WhisperKit Local"
+            return "WhisperKit 本地"
         case .systemSpeechCompatibility:
-            return "System Speech"
+            return "系统语音"
         case .manualText:
-            return "Manual Text"
+            return "手动文本"
         case .failClosed:
-            return "Fail Closed"
+            return "安全关闭"
         }
     }
 
@@ -42,6 +42,21 @@ enum VoicePreferredRoute: String, Codable, CaseIterable, Identifiable {
     case manualText = "manual_text"
 
     var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .automatic:
+            return "自动"
+        case .funasrStreaming:
+            return "FunASR 流式"
+        case .whisperKitLocal:
+            return "WhisperKit 本地"
+        case .systemSpeechCompatibility:
+            return "系统语音"
+        case .manualText:
+            return "手动文本"
+        }
+    }
 }
 
 enum VoiceWakeMode: String, Codable, CaseIterable, Identifiable {
@@ -50,6 +65,17 @@ enum VoiceWakeMode: String, Codable, CaseIterable, Identifiable {
     case promptPhraseOnly = "prompt_phrase_only"
 
     var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .pushToTalk:
+            return "按住说话"
+        case .wakePhrase:
+            return "唤醒词"
+        case .promptPhraseOnly:
+            return "仅提示词"
+        }
+    }
 }
 
 enum VoiceAutoReportMode: String, Codable, CaseIterable, Identifiable {
@@ -59,6 +85,19 @@ enum VoiceAutoReportMode: String, Codable, CaseIterable, Identifiable {
     case full = "full"
 
     var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .silent:
+            return "静默"
+        case .blockersOnly:
+            return "仅阻塞"
+        case .summary:
+            return "摘要"
+        case .full:
+            return "全量"
+        }
+    }
 }
 
 enum VoicePersonaPreset: String, Codable, CaseIterable, Identifiable {
@@ -71,12 +110,366 @@ enum VoicePersonaPreset: String, Codable, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .briefing:
-            return "Briefing"
+            return "简报"
         case .conversational:
-            return "Conversational"
+            return "对话"
         case .calm:
-            return "Calm"
+            return "平静"
         }
+    }
+}
+
+enum VoiceSupportedLocale: String, Codable, CaseIterable, Identifiable {
+    case chineseMainland = "zh-CN"
+    case englishUS = "en-US"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .chineseMainland:
+            return "中文"
+        case .englishUS:
+            return "英文"
+        }
+    }
+}
+
+enum VoiceTimbrePreset: String, Codable, CaseIterable, Identifiable {
+    case neutral = "neutral"
+    case warm = "warm"
+    case clear = "clear"
+    case bright = "bright"
+    case calm = "calm"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .neutral:
+            return "中性"
+        case .warm:
+            return "温暖"
+        case .clear:
+            return "清晰"
+        case .bright:
+            return "明亮"
+        case .calm:
+            return "平静"
+        }
+    }
+}
+
+enum VoicePlaybackPreference: String, Codable, CaseIterable, Identifiable {
+    case automatic = "automatic"
+    case hubVoicePack = "hub_voice_pack"
+    case systemSpeech = "system_speech"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .automatic:
+            return "自动"
+        case .hubVoicePack:
+            return "Hub 语音包"
+        case .systemSpeech:
+            return "系统语音"
+        }
+    }
+}
+
+enum VoicePlaybackSource: String, Codable, Equatable, Sendable {
+    case hubVoicePack = "hub_voice_pack"
+    case systemSpeech = "system_speech"
+
+    var displayName: String {
+        switch self {
+        case .hubVoicePack:
+            return "Hub 语音包"
+        case .systemSpeech:
+            return "系统语音"
+        }
+    }
+}
+
+enum VoicePlaybackActivityState: String, Equatable, Sendable {
+    case idle = "idle"
+    case played = "played"
+    case fallbackPlayed = "fallback_played"
+    case suppressed = "suppressed"
+    case failed = "failed"
+
+    var displayName: String {
+        switch self {
+        case .idle:
+            return "还没有真实播放"
+        case .played:
+            return "播放成功"
+        case .fallbackPlayed:
+            return "已回退播放"
+        case .suppressed:
+            return "播放被抑制"
+        case .failed:
+            return "播放失败"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .idle:
+            return "waveform.slash"
+        case .played:
+            return "speaker.wave.2.fill"
+        case .fallbackPlayed:
+            return "arrow.trianglehead.branch"
+        case .suppressed:
+            return "speaker.slash.fill"
+        case .failed:
+            return "exclamationmark.triangle.fill"
+        }
+    }
+}
+
+struct VoicePlaybackActivity: Equatable, Sendable {
+    var state: VoicePlaybackActivityState
+    var configuredResolution: VoicePlaybackResolution?
+    var actualSource: VoicePlaybackSource?
+    var reasonCode: String
+    var detail: String
+    var provider: String
+    var modelID: String
+    var engineName: String
+    var speakerId: String
+    var deviceBackend: String
+    var nativeTTSUsed: Bool?
+    var fallbackMode: String
+    var fallbackReasonCode: String
+    var audioFormat: String
+    var voiceName: String
+    var auditLine: String
+    var updatedAt: TimeInterval
+
+    init(
+        state: VoicePlaybackActivityState,
+        configuredResolution: VoicePlaybackResolution?,
+        actualSource: VoicePlaybackSource?,
+        reasonCode: String,
+        detail: String,
+        provider: String,
+        modelID: String,
+        engineName: String,
+        speakerId: String,
+        deviceBackend: String,
+        nativeTTSUsed: Bool?,
+        fallbackMode: String,
+        fallbackReasonCode: String,
+        audioFormat: String,
+        voiceName: String,
+        auditLine: String = "",
+        updatedAt: TimeInterval
+    ) {
+        self.state = state
+        self.configuredResolution = configuredResolution
+        self.actualSource = actualSource
+        self.reasonCode = reasonCode
+        self.detail = detail
+        self.provider = provider
+        self.modelID = modelID
+        self.engineName = engineName
+        self.speakerId = speakerId
+        self.deviceBackend = deviceBackend
+        self.nativeTTSUsed = nativeTTSUsed
+        self.fallbackMode = fallbackMode
+        self.fallbackReasonCode = fallbackReasonCode
+        self.audioFormat = audioFormat
+        self.voiceName = voiceName
+        self.auditLine = auditLine
+        self.updatedAt = updatedAt
+    }
+
+    static let empty = VoicePlaybackActivity(
+        state: .idle,
+        configuredResolution: nil,
+        actualSource: nil,
+        reasonCode: "voice_playback_idle",
+        detail: "",
+        provider: "",
+        modelID: "",
+        engineName: "",
+        speakerId: "",
+        deviceBackend: "",
+        nativeTTSUsed: nil,
+        fallbackMode: "",
+        fallbackReasonCode: "",
+        audioFormat: "",
+        voiceName: "",
+        auditLine: "",
+        updatedAt: 0
+    )
+
+    var actualSourceDisplayName: String {
+        actualSource?.displayName ?? "还没有真实播放"
+    }
+
+    var engineDisplayName: String {
+        if let engineName = Self.normalized(engineName) {
+            return engineName
+        }
+        let normalizedFallback = Self.normalized(fallbackMode)
+        let normalizedBackend = Self.normalized(deviceBackend)
+        if normalizedFallback == "system_voice_compatibility" || normalizedBackend == "system_voice_compatibility" {
+            return "Hub 系统语音兼容层"
+        }
+        if let fallback = normalizedFallback {
+            return fallback
+        }
+        if let backend = normalizedBackend {
+            return backend
+        }
+        if let actualSource {
+            switch actualSource {
+            case .hubVoicePack:
+                return "Hub 语音包"
+            case .systemSpeech:
+                return "macOS 系统语音"
+            }
+        }
+        return "还没有真实播放"
+    }
+
+    var speakerDisplayName: String {
+        Self.normalized(speakerId) ?? "默认 / 未指定"
+    }
+
+    var hasFallbackContext: Bool {
+        Self.normalized(fallbackReasonCode) != nil
+            || Self.normalized(fallbackMode) != nil
+            || configuredResolution?.fallbackFrom != nil
+    }
+
+    var shouldDisplayExecutionMode: Bool {
+        actualSource == .hubVoicePack || nativeTTSUsed != nil || hasFallbackContext
+    }
+
+    var executionModeDisplayName: String {
+        guard let nativeTTSUsed else {
+            if actualSource == .systemSpeech {
+                return hasFallbackContext ? "系统语音回退" : "系统语音"
+            }
+            return "未知"
+        }
+        return nativeTTSUsed ? "原生 TTS" : "兼容回退"
+    }
+
+    var fallbackReasonDisplayName: String {
+        Self.normalized(fallbackReasonCode) ?? "无"
+    }
+
+    var compactRailSummaryLine: String? {
+        guard state != .idle else { return nil }
+
+        var parts: [String] = []
+        if let actualSource {
+            switch actualSource {
+            case .hubVoicePack:
+                parts.append("tts=\(engineDisplayName)")
+            case .systemSpeech:
+                parts.append("tts=system")
+            }
+        } else {
+            parts.append("tts=unknown")
+        }
+
+        if let speaker = Self.normalized(speakerId) {
+            parts.append("spk=\(speaker)")
+        }
+
+        if shouldDisplayExecutionMode {
+            parts.append("mode=\(executionModeDisplayName.replacingOccurrences(of: " ", with: "_").lowercased())")
+        }
+
+        if let reason = Self.normalized(fallbackReasonCode) {
+            parts.append("why=\(reason)")
+        }
+
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
+
+    var runtimeLogSummaryLine: String? {
+        guard state != .idle else { return nil }
+
+        var parts: [String] = ["voice_playback", "state=\(state.rawValue)"]
+
+        if let actualSource {
+            parts.append("output=\(actualSource.rawValue)")
+        }
+
+        if let compactSummary = compactRailSummaryLine {
+            parts.append(compactSummary)
+        }
+
+        let fallbackFromSource = configuredResolution?.fallbackFrom
+            ?? (state == .fallbackPlayed ? configuredResolution?.resolvedSource : nil)
+        if let fallbackFrom = fallbackFromSource?.rawValue {
+            parts.append("fallback_from=\(fallbackFrom)")
+        }
+
+        if let modelID = Self.normalized(modelID) {
+            parts.append("model=\(modelID)")
+        }
+
+        if let provider = Self.normalized(provider),
+           actualSource == .hubVoicePack || provider == "hub_voice_pack" {
+            parts.append("provider=\(provider)")
+        }
+
+        if parts.count == 2,
+           let reason = Self.normalized(reasonCode) {
+            parts.append("reason=\(reason)")
+        }
+
+        return parts.joined(separator: " ")
+    }
+
+    var headline: String {
+        switch state {
+        case .idle:
+            return "还没有真实播放记录"
+        case .played:
+            return "最近一次播放成功"
+        case .fallbackPlayed:
+            return "最近一次播放已回退"
+        case .suppressed:
+            return "最近一次播放请求被抑制"
+        case .failed:
+            return "最近一次播放失败"
+        }
+    }
+
+    var summaryLine: String {
+        switch state {
+        case .idle:
+            return "可以先点“试听语音”，用当前设置捕获实际播放后端。"
+        case .played:
+            if let nativeTTSUsed {
+                let mode = nativeTTSUsed ? "原生合成" : "兼容回退"
+                return "实际输出使用 \(actualSourceDisplayName)，引擎为 \(engineDisplayName)（\(mode)）。"
+            }
+            return "实际输出使用 \(actualSourceDisplayName)，引擎为 \(engineDisplayName)。"
+        case .fallbackPlayed:
+            let fallbackFrom = configuredResolution?.fallbackFrom?.displayName ?? "Hub 语音包"
+            return "播放已从 \(fallbackFrom) 回退到 \(actualSourceDisplayName)。"
+        case .suppressed:
+            return "最近一次播放请求在真正输出前被 XT 主动抑制。"
+        case .failed:
+            return "最近一次播放尝试没有成功抵达输出设备。"
+        }
+    }
+
+    private static func normalized(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 
@@ -96,9 +489,13 @@ struct VoiceQuietHours: Codable, Equatable {
 
 struct VoiceRuntimePreferences: Codable, Equatable {
     var preferredRoute: VoicePreferredRoute
+    var playbackPreference: VoicePlaybackPreference
     var wakeMode: VoiceWakeMode
     var autoReportMode: VoiceAutoReportMode
     var persona: VoicePersonaPreset
+    var timbre: VoiceTimbrePreset
+    var preferredHubVoicePackID: String
+    var speechRateMultiplier: Float
     var interruptOnSpeech: Bool
     var quietHours: VoiceQuietHours
     var localeIdentifier: String
@@ -106,9 +503,13 @@ struct VoiceRuntimePreferences: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case preferredRoute
+        case playbackPreference
         case wakeMode
         case autoReportMode
         case persona
+        case timbre
+        case preferredHubVoicePackID
+        case speechRateMultiplier
         case interruptOnSpeech
         case quietHours
         case localeIdentifier
@@ -118,30 +519,42 @@ struct VoiceRuntimePreferences: Codable, Equatable {
     static func `default`() -> VoiceRuntimePreferences {
         VoiceRuntimePreferences(
             preferredRoute: .automatic,
+            playbackPreference: .automatic,
             wakeMode: .pushToTalk,
             autoReportMode: .summary,
             persona: .conversational,
+            timbre: .neutral,
+            preferredHubVoicePackID: "",
+            speechRateMultiplier: 1.0,
             interruptOnSpeech: true,
             quietHours: .default(),
-            localeIdentifier: "zh-CN",
+            localeIdentifier: VoiceSupportedLocale.chineseMainland.rawValue,
             funASR: .default()
         )
     }
 
     init(
         preferredRoute: VoicePreferredRoute,
+        playbackPreference: VoicePlaybackPreference,
         wakeMode: VoiceWakeMode,
         autoReportMode: VoiceAutoReportMode,
         persona: VoicePersonaPreset,
+        timbre: VoiceTimbrePreset,
+        preferredHubVoicePackID: String,
+        speechRateMultiplier: Float,
         interruptOnSpeech: Bool,
         quietHours: VoiceQuietHours,
         localeIdentifier: String,
         funASR: FunASRSidecarConfig
     ) {
         self.preferredRoute = preferredRoute
+        self.playbackPreference = playbackPreference
         self.wakeMode = wakeMode
         self.autoReportMode = autoReportMode
         self.persona = persona
+        self.timbre = timbre
+        self.preferredHubVoicePackID = preferredHubVoicePackID
+        self.speechRateMultiplier = speechRateMultiplier
         self.interruptOnSpeech = interruptOnSpeech
         self.quietHours = quietHours
         self.localeIdentifier = localeIdentifier
@@ -151,12 +564,17 @@ struct VoiceRuntimePreferences: Codable, Equatable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         preferredRoute = (try? container.decode(VoicePreferredRoute.self, forKey: .preferredRoute)) ?? .automatic
+        playbackPreference = (try? container.decode(VoicePlaybackPreference.self, forKey: .playbackPreference)) ?? .automatic
         wakeMode = (try? container.decode(VoiceWakeMode.self, forKey: .wakeMode)) ?? .pushToTalk
         autoReportMode = (try? container.decode(VoiceAutoReportMode.self, forKey: .autoReportMode)) ?? .summary
         persona = (try? container.decode(VoicePersonaPreset.self, forKey: .persona)) ?? .conversational
+        timbre = (try? container.decode(VoiceTimbrePreset.self, forKey: .timbre)) ?? .neutral
+        preferredHubVoicePackID = (try? container.decode(String.self, forKey: .preferredHubVoicePackID)) ?? ""
+        speechRateMultiplier = (try? container.decode(Float.self, forKey: .speechRateMultiplier)) ?? 1.0
         interruptOnSpeech = (try? container.decode(Bool.self, forKey: .interruptOnSpeech)) ?? true
         quietHours = (try? container.decode(VoiceQuietHours.self, forKey: .quietHours)) ?? .default()
-        localeIdentifier = (try? container.decode(String.self, forKey: .localeIdentifier)) ?? "zh-CN"
+        localeIdentifier = (try? container.decode(String.self, forKey: .localeIdentifier))
+            ?? VoiceSupportedLocale.chineseMainland.rawValue
         funASR = (try? container.decode(FunASRSidecarConfig.self, forKey: .funASR)) ?? .default()
     }
 }
@@ -335,7 +753,7 @@ struct VoiceWakeEvent: Identifiable, Codable, Equatable {
     }
 }
 
-enum VoiceTranscriberAuthorizationStatus: String, Codable, Equatable {
+enum VoiceTranscriberAuthorizationStatus: String, Codable, Equatable, Sendable {
     case undetermined
     case authorized
     case denied
@@ -345,6 +763,16 @@ enum VoiceTranscriberAuthorizationStatus: String, Codable, Equatable {
     var isAuthorized: Bool {
         self == .authorized
     }
+}
+
+struct VoicePermissionSnapshot: Codable, Equatable, Sendable {
+    var microphone: VoiceTranscriberAuthorizationStatus
+    var speechRecognition: VoiceTranscriberAuthorizationStatus
+
+    static let unknown = VoicePermissionSnapshot(
+        microphone: .undetermined,
+        speechRecognition: .undetermined
+    )
 }
 
 enum VoiceSessionPhase: String, Codable, Equatable {

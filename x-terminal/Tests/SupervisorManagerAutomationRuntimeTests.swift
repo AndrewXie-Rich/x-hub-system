@@ -172,6 +172,186 @@ struct SupervisorManagerAutomationRuntimeTests {
     }
 
     @Test
+    func automationSafePointSystemMessageUsesFriendlyProjectDisplayName() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+        let friendlyName = "亮亮"
+        let project = AXProjectEntry(
+            projectId: projectId,
+            rootPath: root.path,
+            displayName: friendlyName,
+            lastOpenedAt: 1_773_200_180,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: nil,
+            currentStateSummary: nil,
+            nextStepSummary: nil,
+            blockerSummary: nil,
+            lastSummaryAt: nil,
+            lastEventAt: nil
+        )
+
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: 1_773_200_180,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: projectId,
+            projects: [project]
+        )
+        appModel.selectedProjectId = projectId
+        manager.setAppModel(appModel)
+        manager.clearMessages()
+
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-friendly-safe-point-1",
+                reviewId: "review-friendly-safe-point-1",
+                projectId: projectId,
+                targetRole: .coder,
+                deliveryMode: .replanRequest,
+                interventionMode: .replanNextSafePoint,
+                safePointPolicy: .checkpointBoundary,
+                guidanceText: "先暂停，让 supervisor 再看一遍。",
+                ackStatus: .pending,
+                ackRequired: true,
+                ackNote: "",
+                injectedAtMs: 1_773_200_180_000,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-friendly-safe-point-1"
+            ),
+            for: ctx
+        )
+
+        let prepared = try manager.startAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: 1_773_200_181)),
+            emitSystemMessage: true
+        )
+
+        try await waitUntil("friendly project safe point hold") {
+            manager.automationCurrentCheckpoint?.runID == prepared.launchRef &&
+            manager.automationCurrentCheckpoint?.state == .blocked
+        }
+
+        #expect(manager.messages.contains(where: {
+            $0.role == .system &&
+                $0.content.contains("automation 在 safe point 暂停") &&
+                $0.content.contains("项目: \(friendlyName)") &&
+                !$0.content.contains("项目: \(root.lastPathComponent)")
+        }))
+    }
+
+    @Test
+    func automationAutomaticSelfIterateSystemMessageUsesFriendlyProjectDisplayName() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+        try markAsSwiftPackage(root)
+
+        let ctx = AXProjectContext(root: root)
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config.verifyCommands = ["swift test --filter SmokeTests"]
+        config.verifyAfterChanges = true
+        config.automationSelfIterateEnabled = true
+        config.automationMaxAutoRetryDepth = 1
+        try AXProjectStore.saveConfig(config, for: ctx)
+        try armRepoAutomationGovernance(for: ctx)
+
+        _ = try AXProjectStore.upsertAutomationRecipe(makeMutationRecipe(), activate: true, for: ctx)
+        manager.installAutomationRunExecutorForTesting(
+            XTAutomationRunExecutor { call, _ in
+                switch call.tool {
+                case .write_file:
+                    return ToolResult(id: call.id, tool: call.tool, ok: true, output: "ok")
+                case .project_snapshot:
+                    return ToolResult(id: call.id, tool: call.tool, ok: true, output: "root=/tmp/project")
+                case .git_diff:
+                    return ToolResult(
+                        id: call.id,
+                        tool: call.tool,
+                        ok: true,
+                        output: """
+                        diff --git a/README.md b/README.md
+                        @@ -0,0 +1 @@
+                        +hello
+                        """
+                    )
+                case .run_command:
+                    return ToolResult(id: call.id, tool: call.tool, ok: false, output: "exit: 1\nSmokeTests failed")
+                default:
+                    return ToolResult(id: call.id, tool: call.tool, ok: false, output: "unexpected_tool")
+                }
+            }
+        )
+
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+        let friendlyName = "亮亮"
+        let project = AXProjectEntry(
+            projectId: projectId,
+            rootPath: root.path,
+            displayName: friendlyName,
+            lastOpenedAt: 1_773_200_190,
+            manualOrderIndex: nil,
+            pinned: false,
+            statusDigest: nil,
+            currentStateSummary: nil,
+            nextStepSummary: nil,
+            blockerSummary: nil,
+            lastSummaryAt: nil,
+            lastEventAt: nil
+        )
+
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: 1_773_200_190,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: projectId,
+            projects: [project]
+        )
+        appModel.selectedProjectId = projectId
+        manager.setAppModel(appModel)
+        manager.clearMessages()
+
+        _ = try manager.startAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: 1_773_200_191)),
+            emitSystemMessage: true
+        )
+
+        try await waitUntil("friendly project automatic self iterate system message", timeoutMs: 10_000) {
+            manager.messages.contains(where: {
+                $0.role == .system && $0.content.contains("automation 自动迭代已继续")
+            })
+        }
+
+        #expect(manager.messages.contains(where: {
+            $0.role == .system &&
+                $0.content.contains("automation 自动迭代已继续") &&
+                $0.content.contains("项目: \(friendlyName)") &&
+                !$0.content.contains("项目: \(root.lastPathComponent)")
+        }))
+    }
+
+    @Test
     func managerProjectEntryWrappersResolveContextAndPrepareRun() throws {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
@@ -1100,6 +1280,73 @@ struct SupervisorManagerAutomationRuntimeTests {
     }
 
     @Test
+    func naturalLanguageAutomationCancelPrependsProjectScopedGovernanceBriefForPendingGrant() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
+        var project = makeProjectEntry(root: root)
+        project.displayName = "亮亮"
+
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+        manager.setPendingHubGrantsForTesting(
+            [
+                SupervisorManager.SupervisorPendingGrant(
+                    id: "automation-cancel-grant-1",
+                    dedupeKey: "automation-cancel-grant-1",
+                    grantRequestId: "automation-cancel-grant-1",
+                    requestId: "req-automation-cancel-grant-1",
+                    projectId: project.projectId,
+                    projectName: project.displayName,
+                    capability: "device_authority",
+                    modelId: "",
+                    reason: "需要批准设备级权限后继续自动化",
+                    requestedTtlSec: 3600,
+                    requestedTokenCap: 12_000,
+                    createdAt: 1_000,
+                    actionURL: nil,
+                    priorityRank: 1,
+                    priorityReason: "release_path",
+                    nextAction: "打开授权并批准设备级权限"
+                )
+            ]
+        )
+
+        let prepared = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: 1_773_203_050))
+        )
+        #expect(manager.automationCurrentCheckpoint?.runID == prepared.launchRef)
+
+        let cancelText = try #require(
+            manager.directSupervisorActionIfApplicableForTesting("先暂停亮亮的自动流程")
+        )
+
+        #expect(cancelText.contains("🧭 Supervisor Brief · 亮亮"))
+        #expect(cancelText.contains("Hub 待处理授权"))
+        #expect(cancelText.contains("查看：查看授权板"))
+        #expect(cancelText.contains("🛑 automation 已取消"))
+        #expect(cancelText.contains("run_id: \(prepared.launchRef)"))
+    }
+
+    @Test
     func automationStatusPrependsProjectScopedGovernanceBriefForPendingGrant() throws {
         let manager = SupervisorManager.makeForTesting()
         manager.resetAutomationRuntimeState()
@@ -1233,6 +1480,168 @@ struct SupervisorManagerAutomationRuntimeTests {
         #expect(statusText.contains("项目: \(projectA.displayName)"))
         #expect(statusText.contains("🧭 Supervisor Brief") == false)
         #expect(statusText.contains("查看：查看授权板") == false)
+    }
+
+    @Test
+    func automationRecoverPrependsProjectScopedGovernanceBriefForPendingSkillApproval() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctx)
+        var project = makeProjectEntry(root: root)
+        project.displayName = "亮亮"
+
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+        manager.setPendingSupervisorSkillApprovalsForTesting(
+            [
+                SupervisorManager.SupervisorPendingSkillApproval(
+                    id: "automation-recover-approval-1",
+                    requestId: "automation-recover-approval-1",
+                    projectId: project.projectId,
+                    projectName: project.displayName,
+                    jobId: "job-1",
+                    planId: "plan-1",
+                    stepId: "step-1",
+                    skillId: "agent-browser",
+                    toolName: "browser.open",
+                    tool: nil,
+                    toolSummary: "打开浏览器查看失败后的页面状态",
+                    reason: "需要人工确认恢复前的页面操作",
+                    createdAt: 1_000,
+                    actionURL: nil,
+                    routingReasonCode: nil,
+                    routingExplanation: nil
+                )
+            ]
+        )
+
+        let prepared = try manager.prepareAutomationRun(
+            for: ctx,
+            request: makeRequest(now: Date(timeIntervalSince1970: 1_773_203_060))
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctx,
+            to: .blocked,
+            retryAfterSeconds: 120,
+            auditRef: "audit-xt-auto-recover-governance-brief",
+            now: Date(timeIntervalSince1970: 1_773_203_061)
+        )
+
+        let recoveryText = try #require(
+            manager.performAutomationRuntimeCommand("/automation recover \(project.projectId)")
+        )
+
+        #expect(recoveryText.contains("🧭 Supervisor Brief · 亮亮"))
+        #expect(recoveryText.contains("待审批技能"))
+        #expect(recoveryText.contains("查看：查看技能审批"))
+        #expect(recoveryText.contains("♻️ automation 恢复判定"))
+        #expect(recoveryText.contains("run_id: \(prepared.launchRef)"))
+        #expect(recoveryText.contains("decision: resume"))
+    }
+
+    @Test
+    func automationRecoverDoesNotLeakGovernanceBriefFromOtherProject() throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let rootA = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: rootA)
+        }
+
+        let ctxA = AXProjectContext(root: rootA)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeRecipe(), activate: true, for: ctxA)
+
+        var projectA = makeProjectEntry(root: rootA)
+        projectA.displayName = "Alpha"
+        let projectB = AXProjectEntry(
+            projectId: "project-beta-recover-governance-only",
+            rootPath: rootA.appendingPathComponent("beta-recover-governance-only").path,
+            displayName: "Beta",
+            lastOpenedAt: Date().timeIntervalSince1970,
+            manualOrderIndex: 1,
+            pinned: false,
+            statusDigest: nil,
+            currentStateSummary: nil,
+            nextStepSummary: nil,
+            blockerSummary: nil,
+            lastSummaryAt: nil,
+            lastEventAt: nil
+        )
+
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: projectA.projectId,
+            projects: [projectA, projectB]
+        )
+        appModel.selectedProjectId = projectA.projectId
+        manager.setAppModel(appModel)
+        manager.setPendingSupervisorSkillApprovalsForTesting(
+            [
+                SupervisorManager.SupervisorPendingSkillApproval(
+                    id: "automation-recover-other-project-approval-1",
+                    requestId: "automation-recover-other-project-approval-1",
+                    projectId: projectB.projectId,
+                    projectName: projectB.displayName,
+                    jobId: "job-1",
+                    planId: "plan-1",
+                    stepId: "step-1",
+                    skillId: "agent-browser",
+                    toolName: "browser.open",
+                    tool: nil,
+                    toolSummary: "打开浏览器查看失败后的页面状态",
+                    reason: "需要人工确认恢复前的页面操作",
+                    createdAt: 1_000,
+                    actionURL: nil,
+                    routingReasonCode: nil,
+                    routingExplanation: nil
+                )
+            ]
+        )
+
+        let prepared = try manager.prepareAutomationRun(
+            for: ctxA,
+            request: makeRequest(now: Date(timeIntervalSince1970: 1_773_203_060))
+        )
+        _ = try manager.advanceAutomationRun(
+            for: ctxA,
+            to: .blocked,
+            retryAfterSeconds: 120,
+            auditRef: "audit-xt-auto-recover-governance-no-leak",
+            now: Date(timeIntervalSince1970: 1_773_203_061)
+        )
+
+        let recoveryText = try #require(
+            manager.performAutomationRuntimeCommand("/automation recover \(projectA.projectId)")
+        )
+
+        #expect(recoveryText.contains("♻️ automation 恢复判定"))
+        #expect(recoveryText.contains("run_id: \(prepared.launchRef)"))
+        #expect(recoveryText.contains("decision: resume"))
+        #expect(recoveryText.contains("🧭 Supervisor Brief") == false)
+        #expect(recoveryText.contains("查看：查看技能审批") == false)
     }
 
     @Test
@@ -1555,6 +1964,82 @@ struct SupervisorManagerAutomationRuntimeTests {
         #expect(manager.automationLatestExecutionReport?.finalState == .delivered)
         let handoffPath = try #require(manager.automationLatestExecutionReport?.handoffArtifactPath)
         #expect(handoffPath.contains("build/reports/xt_automation_run_handoff_"))
+    }
+
+    @Test
+    func automationExecutionSystemSummaryPrependsProjectScopedGovernanceBriefForPendingGrant() async throws {
+        let manager = SupervisorManager.makeForTesting()
+        manager.resetAutomationRuntimeState()
+
+        let root = try makeRegistryVisibleProjectRoot()
+        defer {
+            manager.resetAutomationRuntimeState()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let ctx = AXProjectContext(root: root)
+        _ = try AXProjectStore.upsertAutomationRecipe(makeAutoExecutableRecipe(), activate: true, for: ctx)
+        try armRepoAutomationGovernance(for: ctx)
+        var project = makeProjectEntry(root: root)
+        project.displayName = "亮亮"
+
+        let appModel = AppModel()
+        appModel.registry = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: project.projectId,
+            projects: [project]
+        )
+        appModel.selectedProjectId = project.projectId
+        manager.setAppModel(appModel)
+        manager.clearMessages()
+        manager.setPendingHubGrantsForTesting(
+            [
+                SupervisorManager.SupervisorPendingGrant(
+                    id: "automation-execution-grant-1",
+                    dedupeKey: "automation-execution-grant-1",
+                    grantRequestId: "automation-execution-grant-1",
+                    requestId: "req-automation-execution-grant-1",
+                    projectId: project.projectId,
+                    projectName: project.displayName,
+                    capability: "device_authority",
+                    modelId: "",
+                    reason: "需要批准设备级权限后继续自动化",
+                    requestedTtlSec: 3600,
+                    requestedTokenCap: 12_000,
+                    createdAt: 1_000,
+                    actionURL: nil,
+                    priorityRank: 1,
+                    priorityReason: "release_path",
+                    nextAction: "打开授权并批准设备级权限"
+                )
+            ]
+        )
+
+        _ = try manager.startAutomationRun(
+            for: ctx,
+            request: makeManualRequest(now: Date(timeIntervalSince1970: 1_773_203_101)),
+            emitSystemMessage: true
+        )
+
+        try await waitUntil(
+            "automation action graph delivered for execution summary",
+            timeoutMs: 10_000
+        ) {
+            manager.automationLatestExecutionReport?.finalState == .delivered
+        }
+
+        #expect(
+            manager.messages.contains(where: {
+                $0.role == .system &&
+                    $0.content.contains("🧭 Supervisor Brief · 亮亮") &&
+                    $0.content.contains("Hub 待处理授权") &&
+                    $0.content.contains("查看：查看授权板") &&
+                    $0.content.contains("⚙️ automation 自动执行完成")
+            })
+        )
     }
 
     @Test

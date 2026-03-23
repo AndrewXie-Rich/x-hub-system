@@ -53,7 +53,7 @@ func xtAutomationRuntimePolicyDecision(
         )
     }
 
-    let autonomyState = await xtResolveProjectAutonomyPolicy(
+    let runtimeSurfaceState = await xtResolveProjectRuntimeSurfacePolicy(
         projectRoot: projectRoot,
         config: config
     )
@@ -65,7 +65,7 @@ func xtAutomationRuntimePolicyDecision(
         ),
         projectRoot: projectRoot,
         config: config,
-        effectiveAutonomy: autonomyState.effectivePolicy
+        effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
     )
     if !toolPolicyDecision.allowed {
         return .deny(

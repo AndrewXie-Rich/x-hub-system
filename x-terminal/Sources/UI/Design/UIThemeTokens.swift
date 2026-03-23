@@ -79,7 +79,7 @@ struct XTUIInformationArchitectureContract: Codable, Equatable {
             "hub.settings_center"
         ],
         primaryActions: [
-            "xt.global_home": ["start_big_task", "resume_project", "pair_hub"],
+            "xt.global_home": ["resume_project", "pair_hub", "model_status"],
             "xt.supervisor_cockpit": ["submit_intake", "approve_risk", "review_delivery"],
             "hub.settings_center": ["pair_terminal", "configure_models", "review_grants", "run_diagnostics"]
         ],

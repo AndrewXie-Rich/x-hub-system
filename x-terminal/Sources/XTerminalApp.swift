@@ -29,11 +29,6 @@ struct XTerminalApp: App {
                 .environmentObject(appModel)
         }
         
-        Window("Supervisor 设置", id: "supervisor_settings") {
-            SupervisorSettingsView()
-                .environmentObject(appModel)
-        }
-        
         Window("AI 模型设置", id: "model_settings") {
             ModelSettingsView()
                 .environmentObject(appModel)
@@ -167,6 +162,7 @@ final class XTerminalAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        appModel?.cleanupPairedSurfaceHeartbeat()
         appModel?.persistSessionSummariesForLifecycle(reason: "app_exit")
     }
 }
@@ -174,6 +170,7 @@ final class XTerminalAppDelegate: NSObject, NSApplicationDelegate {
 enum XTerminalGateSmokeRunner {
     static let grantSmokeFlag = "--xt-grant-smoke"
     static let supervisorDoctorRefreshFlag = "--xt-supervisor-doctor-refresh"
+    static let unifiedDoctorExportFlag = "--xt-unified-doctor-export"
     static let releaseEvidenceSmokeFlag = "--xt-release-evidence-smoke"
     static let splitFlowFixtureSmokeFlag = "--xt-split-flow-fixture-smoke"
     static let projectRootFlag = "--project-root"
@@ -182,6 +179,7 @@ enum XTerminalGateSmokeRunner {
     static func isSmokeInvocation(arguments: [String]) -> Bool {
         arguments.contains(grantSmokeFlag)
             || arguments.contains(supervisorDoctorRefreshFlag)
+            || arguments.contains(unifiedDoctorExportFlag)
             || arguments.contains(releaseEvidenceSmokeFlag)
             || arguments.contains(splitFlowFixtureSmokeFlag)
     }
@@ -192,6 +190,9 @@ enum XTerminalGateSmokeRunner {
         }
         if arguments.contains(supervisorDoctorRefreshFlag) {
             return runSupervisorDoctorRefresh(arguments: arguments)
+        }
+        if arguments.contains(unifiedDoctorExportFlag) {
+            return runUnifiedDoctorExport(arguments: arguments)
         }
         if arguments.contains(releaseEvidenceSmokeFlag) {
             return runReleaseEvidenceSmoke(arguments: arguments)
@@ -273,6 +274,50 @@ enum XTerminalGateSmokeRunner {
         }
 
         return report.ok ? 0 : 1
+    }
+
+    private static func runUnifiedDoctorExport(arguments: [String]) -> Int {
+        let root = projectRoot(from: arguments)
+            ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+        let sourceURL = XTUnifiedDoctorStore.defaultReportURL(workspaceRoot: root)
+        let defaultOutputURL = XHubDoctorOutputStore.defaultXTReportURL(workspaceRoot: root)
+        let outputURL = outputJSONURL(from: arguments, defaultURL: defaultOutputURL)
+
+        if sourceURL.standardizedFileURL == outputURL.standardizedFileURL {
+            print("[xt-unified-doctor-export] FAIL: output path must differ from source report path")
+            print("[xt-unified-doctor-export] source=\(sourceURL.path)")
+            print("[xt-unified-doctor-export] output=\(outputURL.path)")
+            return 2
+        }
+
+        do {
+            guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+                print("[xt-unified-doctor-export] FAIL: source report missing")
+                print("[xt-unified-doctor-export] workspace=\(root.path)")
+                print("[xt-unified-doctor-export] source=\(sourceURL.path)")
+                return 2
+            }
+
+            let sourceReport = try XTUnifiedDoctorStore.loadReport(from: sourceURL)
+            let outputReport = XHubDoctorOutputReport.xtReadinessBundle(
+                from: sourceReport,
+                outputPath: outputURL.path,
+                surface: .xtExport
+            )
+            XHubDoctorOutputStore.writeReport(outputReport, to: outputURL)
+
+            print("[xt-unified-doctor-export] workspace=\(root.path)")
+            print("[xt-unified-doctor-export] source=\(sourceURL.path)")
+            print("[xt-unified-doctor-export] output=\(outputURL.path)")
+            print("[xt-unified-doctor-export] overall_state=\(outputReport.overallState.rawValue) ready_for_first_task=\(outputReport.readyForFirstTask ? "yes" : "no") failed=\(outputReport.summary.failed) warned=\(outputReport.summary.warned)")
+
+            return outputReport.summary.failed == 0 ? 0 : 1
+        } catch {
+            print("[xt-unified-doctor-export] FAIL: \(error.localizedDescription)")
+            print("[xt-unified-doctor-export] workspace=\(root.path)")
+            print("[xt-unified-doctor-export] source=\(sourceURL.path)")
+            return 2
+        }
     }
 
     private static func runReleaseEvidenceSmoke(arguments: [String]) -> Int {

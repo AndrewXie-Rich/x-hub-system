@@ -1,6 +1,6 @@
 import Foundation
 
-actor HubRemoteAutonomyPolicyOverrideCache {
+actor HubRemoteRuntimeSurfaceOverrideCache {
     struct Key: Hashable, Sendable {
         var projectId: String?
         var limit: Int
@@ -17,7 +17,7 @@ actor HubRemoteAutonomyPolicyOverrideCache {
     }
 
     private struct Entry: Sendable {
-        var snapshot: HubIPCClient.AutonomyPolicyOverridesSnapshot
+        var snapshot: HubIPCClient.RuntimeSurfaceOverridesSnapshot
         var expiresAt: Date
     }
 
@@ -28,7 +28,7 @@ actor HubRemoteAutonomyPolicyOverrideCache {
         self.ttlSeconds = max(1.0, ttlSeconds)
     }
 
-    func snapshot(for key: Key, now: Date = Date()) -> HubIPCClient.AutonomyPolicyOverridesSnapshot? {
+    func snapshot(for key: Key, now: Date = Date()) -> HubIPCClient.RuntimeSurfaceOverridesSnapshot? {
         purgeExpiredEntries(now: now)
         guard let entry = entries[key], entry.expiresAt > now else {
             entries[key] = nil
@@ -37,7 +37,7 @@ actor HubRemoteAutonomyPolicyOverrideCache {
         return entry.snapshot
     }
 
-    func store(_ snapshot: HubIPCClient.AutonomyPolicyOverridesSnapshot, for key: Key, now: Date = Date()) {
+    func store(_ snapshot: HubIPCClient.RuntimeSurfaceOverridesSnapshot, for key: Key, now: Date = Date()) {
         purgeExpiredEntries(now: now)
         entries[key] = Entry(snapshot: snapshot, expiresAt: now.addingTimeInterval(ttlSeconds))
     }
@@ -59,3 +59,6 @@ actor HubRemoteAutonomyPolicyOverrideCache {
         entries = entries.filter { $0.value.expiresAt > now }
     }
 }
+
+@available(*, deprecated, message: "Use HubRemoteRuntimeSurfaceOverrideCache")
+typealias HubRemoteAutonomyPolicyOverrideCache = HubRemoteRuntimeSurfaceOverrideCache

@@ -43,9 +43,9 @@ struct XTToolAuthorizationTests {
                 deviceId: "device_xt_001",
                 workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
             )
-            .settingAutonomyPolicy(
+            .settingRuntimeSurfacePolicy(
                 mode: .trustedOpenClawMode,
-                updatedAt: Date(timeIntervalSince1970: 1_773_800_000)
+                updatedAt: Date()
             )
             .settingGovernedAutoApproveLocalToolCalls(enabled: true)
 
@@ -76,7 +76,7 @@ struct XTToolAuthorizationTests {
                 deviceId: "device_xt_001",
                 workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
             )
-            .settingAutonomyPolicy(
+            .settingRuntimeSurfacePolicy(
                 mode: .trustedOpenClawMode,
                 updatedAt: Date()
             )
@@ -113,9 +113,9 @@ struct XTToolAuthorizationTests {
                 deviceId: "device_xt_001",
                 workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
             )
-            .settingAutonomyPolicy(
+            .settingRuntimeSurfacePolicy(
                 mode: .trustedOpenClawMode,
-                updatedAt: Date(timeIntervalSince1970: 1_773_800_025)
+                updatedAt: Date()
             )
             .settingGovernedAutoApproveLocalToolCalls(enabled: true)
 
@@ -146,9 +146,9 @@ struct XTToolAuthorizationTests {
                 deviceId: "device_xt_001",
                 workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
             )
-            .settingAutonomyPolicy(
+            .settingRuntimeSurfacePolicy(
                 mode: .trustedOpenClawMode,
-                updatedAt: Date(timeIntervalSince1970: 1_773_800_050)
+                updatedAt: Date()
             )
             .settingGovernedAutoApproveLocalToolCalls(enabled: true)
 
@@ -304,7 +304,7 @@ struct XTToolAuthorizationTests {
                     deviceToolGroups: ["device.ui.observe", "device.ui.act"],
                     workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
                 )
-                .settingAutonomyPolicy(
+                .settingRuntimeSurfacePolicy(
                     mode: .trustedOpenClawMode,
                     updatedAt: Date()
                 )
@@ -351,9 +351,9 @@ struct XTToolAuthorizationTests {
                     deviceToolGroups: ["device.browser.control"],
                     workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
                 )
-                .settingAutonomyPolicy(
+                .settingRuntimeSurfacePolicy(
                     mode: .trustedOpenClawMode,
-                    updatedAt: Date(timeIntervalSince1970: 1_773_800_100)
+                    updatedAt: Date()
                 )
                 .settingGovernedAutoApproveLocalToolCalls(enabled: true)
 

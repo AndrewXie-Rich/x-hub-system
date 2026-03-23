@@ -233,11 +233,7 @@ func xtAutomationPersistRetryPackage(
     guard let data = try? encoder.encode(persisted) else { return nil }
 
     do {
-        try FileManager.default.createDirectory(
-            at: targetURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try data.write(to: targetURL, options: .atomic)
+        try SupervisorStoreWriteSupport.writeSnapshotData(data, to: targetURL)
         return persisted
     } catch {
         return nil
@@ -260,11 +256,7 @@ func xtAutomationPersistRetryPlanningArtifact(
     guard let data = try? encoder.encode(artifact) else { return nil }
 
     do {
-        try FileManager.default.createDirectory(
-            at: targetURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try data.write(to: targetURL, options: .atomic)
+        try SupervisorStoreWriteSupport.writeSnapshotData(data, to: targetURL)
         return relativePath
     } catch {
         return nil
@@ -287,11 +279,7 @@ func xtAutomationPersistRetryRecipeProposalArtifact(
     guard let data = try? encoder.encode(artifact) else { return nil }
 
     do {
-        try FileManager.default.createDirectory(
-            at: targetURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try data.write(to: targetURL, options: .atomic)
+        try SupervisorStoreWriteSupport.writeSnapshotData(data, to: targetURL)
         return relativePath
     } catch {
         return nil

@@ -283,6 +283,175 @@ Project route diagnose: coder
         #expect(context.detail?.contains("reason=grpc_route_unavailable") == true)
     }
 
+    @Test
+    func connectivityRepairNoticeUsesReconnectSuccessCopy() throws {
+        let notice = try #require(
+            RouteDiagnoseMessagePresentation.connectivityRepairNotice(
+                for: .reconnectHubAndDiagnose,
+                report: HubRemoteConnectReport(
+                    ok: true,
+                    route: .internet,
+                    summary: "remote route restored",
+                    logLines: [],
+                    reasonCode: nil
+                )
+            )
+        )
+
+        #expect(notice.title == "Hub 已重连并已重诊断")
+        #expect(notice.detail.contains("连接修复已完成"))
+        #expect(notice.detail.contains("remote route restored"))
+    }
+
+    @Test
+    func connectivityRepairNoticeUsesDiagnosticsFailureCopyWhenSummaryIsEmpty() throws {
+        let notice = try #require(
+            RouteDiagnoseMessagePresentation.connectivityRepairNotice(
+                for: .connectHubAndDiagnose,
+                report: HubRemoteConnectReport(
+                    ok: false,
+                    route: .none,
+                    summary: "   ",
+                    logLines: [],
+                    reasonCode: "runtime_not_running"
+                )
+            )
+        )
+
+        #expect(notice.title == "连接修复未完成")
+        #expect(notice.detail == "我已自动把焦点切到 XT Diagnostics，先看最新 route event、连通性和失败原因。")
+    }
+
+    @Test
+    func connectivityRepairNoticeUsesCompletionCopyWhenReportIsMissing() throws {
+        let notice = try #require(
+            RouteDiagnoseMessagePresentation.connectivityRepairNotice(
+                for: .reconnectHubAndDiagnose,
+                report: nil
+            )
+        )
+
+        #expect(notice.title == "重连流程已结束")
+        #expect(notice.detail.contains("重新对当前项目跑了一次路由诊断"))
+    }
+
+    @Test
+    func actionOpenedNoticeMatchesRepairEntryPoints() throws {
+        let chooseModel = try #require(
+            RouteDiagnoseMessagePresentation.actionOpenedNotice(for: .openChooseModel)
+        )
+        #expect(chooseModel.title == "已打开 Choose Model")
+        #expect(chooseModel.detail.contains("loaded"))
+
+        let recovery = try #require(
+            RouteDiagnoseMessagePresentation.actionOpenedNotice(for: .openHubRecovery)
+        )
+        #expect(recovery.title == "已打开 Hub Recovery")
+        #expect(recovery.detail.contains("paid route"))
+
+        let log = try #require(
+            RouteDiagnoseMessagePresentation.actionOpenedNotice(for: .openHubConnectionLog)
+        )
+        #expect(log.title == "已打开 Hub 日志")
+        #expect(log.detail.contains("降到本地"))
+
+        #expect(
+            RouteDiagnoseMessagePresentation.actionOpenedNotice(for: .connectHubAndDiagnose) == nil
+        )
+    }
+
+    @Test
+    func directSettingsEntryNoticesExplainNextCheck() {
+        let modelSettings = RouteDiagnoseMessagePresentation.modelSettingsOpenedNotice()
+        #expect(modelSettings.title == "已打开 coder 模型设置")
+        #expect(modelSettings.detail.contains("override"))
+        #expect(modelSettings.detail.contains("loaded"))
+
+        let diagnostics = RouteDiagnoseMessagePresentation.diagnosticsOpenedNotice()
+        #expect(diagnostics.title == "已打开 XT Diagnostics")
+        #expect(diagnostics.detail.contains("route event"))
+        #expect(diagnostics.detail.contains("修 Hub"))
+    }
+
+    @Test
+    func railFeedbackPlanKeepsInlineModelPickerQuiet() {
+        let plan = RouteDiagnoseMessagePresentation.railFeedbackPlan(
+            for: .inlineModelPickerOpened
+        )
+
+        #expect(plan.notice == nil)
+        #expect(plan.shouldHighlight == false)
+    }
+
+    @Test
+    func railFeedbackPlanHighlightsRepairSurfaceEntriesOnlyWhenTheyOpenAnotherSurface() throws {
+        let chooseModel = RouteDiagnoseMessagePresentation.railFeedbackPlan(
+            for: .repairSurfaceOpened(.openChooseModel)
+        )
+        #expect(try #require(chooseModel.notice).title == "已打开 Choose Model")
+        #expect(chooseModel.shouldHighlight)
+
+        let recovery = RouteDiagnoseMessagePresentation.railFeedbackPlan(
+            for: .repairSurfaceOpened(.openHubRecovery)
+        )
+        #expect(try #require(recovery.notice).title == "已打开 Hub Recovery")
+        #expect(recovery.shouldHighlight)
+
+        let log = RouteDiagnoseMessagePresentation.railFeedbackPlan(
+            for: .repairSurfaceOpened(.openHubConnectionLog)
+        )
+        #expect(try #require(log.notice).title == "已打开 Hub 日志")
+        #expect(log.shouldHighlight)
+
+        let connect = RouteDiagnoseMessagePresentation.railFeedbackPlan(
+            for: .repairSurfaceOpened(.connectHubAndDiagnose)
+        )
+        #expect(connect.notice == nil)
+        #expect(connect.shouldHighlight == false)
+    }
+
+    @Test
+    func railFeedbackPlanHighlightsDirectSettingsEntries() throws {
+        let modelSettings = RouteDiagnoseMessagePresentation.railFeedbackPlan(
+            for: .modelSettingsOpened
+        )
+        #expect(try #require(modelSettings.notice).title == "已打开 coder 模型设置")
+        #expect(modelSettings.shouldHighlight)
+
+        let diagnostics = RouteDiagnoseMessagePresentation.railFeedbackPlan(
+            for: .diagnosticsOpened
+        )
+        #expect(try #require(diagnostics.notice).title == "已打开 XT Diagnostics")
+        #expect(diagnostics.shouldHighlight)
+    }
+
+    @Test
+    func railFeedbackPlanWrapsConnectivityRepairCompletionCopy() throws {
+        let success = RouteDiagnoseMessagePresentation.railFeedbackPlan(
+            for: .connectivityRepairFinished(
+                action: .reconnectHubAndDiagnose,
+                report: HubRemoteConnectReport(
+                    ok: true,
+                    route: .internet,
+                    summary: "remote route restored",
+                    logLines: [],
+                    reasonCode: nil
+                )
+            )
+        )
+        #expect(try #require(success.notice).title == "Hub 已重连并已重诊断")
+        #expect(success.shouldHighlight)
+
+        let completion = RouteDiagnoseMessagePresentation.railFeedbackPlan(
+            for: .connectivityRepairFinished(
+                action: .connectHubAndDiagnose,
+                report: nil
+            )
+        )
+        #expect(try #require(completion.notice).title == "连接流程已结束")
+        #expect(completion.shouldHighlight)
+    }
+
     private func makeProjectRoot(named name: String) throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "xt_route_diagnose_message_\(name)_\(UUID().uuidString)",

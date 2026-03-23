@@ -14,14 +14,14 @@ struct MessageContextMenu: View {
             Button {
                 onCopy()
             } label: {
-                Label("Copy", systemImage: "doc.on.doc")
+                Label("复制", systemImage: "doc.on.doc")
             }
 
             // 回复
             Button {
                 onReply()
             } label: {
-                Label("Reply", systemImage: "arrowshape.turn.up.left")
+                Label("回复", systemImage: "arrowshape.turn.up.left")
             }
 
             Divider()
@@ -31,7 +31,7 @@ struct MessageContextMenu: View {
                 Button {
                     regenerate()
                 } label: {
-                    Label("Regenerate", systemImage: "arrow.clockwise")
+                    Label("重新生成", systemImage: "arrow.clockwise")
                 }
 
                 Divider()
@@ -41,7 +41,7 @@ struct MessageContextMenu: View {
             Button(role: .destructive) {
                 onDelete()
             } label: {
-                Label("Delete", systemImage: "trash")
+                Label("删除", systemImage: "trash")
             }
         }
     }
@@ -92,11 +92,11 @@ struct MessageReplyPreview: View {
     private var replyToLabel: String {
         switch replyTo.role {
         case .user:
-            return "Replying to You"
+            return "正在回复你"
         case .assistant:
-            return "Replying to Assistant"
+            return "正在回复助手"
         case .tool:
-            return "Replying to Tool"
+            return "正在回复工具结果"
         }
     }
 
@@ -227,7 +227,7 @@ struct CodeBlockView: View {
         VStack(alignment: .leading, spacing: 0) {
             // 头部
             HStack {
-                Text(language.isEmpty ? "code" : language)
+                Text(language.isEmpty ? "代码" : language)
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -238,7 +238,7 @@ struct CodeBlockView: View {
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
-                        Text(isCopied ? "Copied" : "Copy")
+                        Text(isCopied ? "已复制" : "复制")
                     }
                     .font(.caption)
                     .foregroundColor(isCopied ? .green : .secondary)

@@ -61,7 +61,7 @@ struct DockInputView: View {
                             HStack(spacing: 8) {
                                 Image(systemName: "sparkles")
                                     .foregroundStyle(.tertiary)
-                                Text("Ask anything or type / for commands...")
+                                Text("想问什么都可以，输入 / 查看命令…")
                                     .foregroundStyle(.tertiary)
                             }
                             .font(.body)
@@ -122,7 +122,7 @@ struct DockInputView: View {
                             .toggleStyle(.switch)
                             .controlSize(.small)
                             .disabled(!hubConnected)
-                            .help("Auto-run tools")
+                            .help("自动执行工具（Auto-run tools）")
                     }
                 }
                 .padding(.horizontal, 20)
@@ -134,7 +134,7 @@ struct DockInputView: View {
                         HStack(spacing: 6) {
                             Image(systemName: "wifi.slash")
                                 .foregroundColor(.red)
-                            Text("Hub not connected")
+                            Text("Hub 未连接")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -142,7 +142,7 @@ struct DockInputView: View {
                         HStack(spacing: 6) {
                             Image(systemName: "checkmark.circle.fill")
                                 .foregroundColor(.green)
-                            Text("Connected")
+                            Text("已连接")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -155,7 +155,7 @@ struct DockInputView: View {
                         Text("⌘↩")
                             .font(.system(.caption, design: .monospaced))
                             .foregroundStyle(.tertiary)
-                        Text("to send")
+                        Text("发送")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
                     }
@@ -265,7 +265,7 @@ struct ModelSelectorButton: View {
                 .cornerRadius(10)
         }
         .buttonStyle(.plain)
-        .help("Select Model")
+        .help("选择模型（Select Model）")
         .popover(isPresented: $showModelPicker) {
             ModelSelectorView(config: config)
                 .environmentObject(appModel)
@@ -301,7 +301,7 @@ struct SlashSuggestionsView: View {
                 items.insert(
                     SlashSuggestion(
                         title: "/model auto",
-                        subtitle: "Use default model",
+                        subtitle: "使用默认模型",
                         insertion: "/model auto"
                     ),
                     at: 0
@@ -317,14 +317,14 @@ struct SlashSuggestionsView: View {
 
         // 基础命令
         let base: [SlashSuggestion] = [
-            SlashSuggestion(title: "/models", subtitle: "Show available models", insertion: "/models"),
-            SlashSuggestion(title: "/model <id>", subtitle: "Select a model", insertion: "/model "),
-            SlashSuggestion(title: "/tools", subtitle: "Tool policy settings", insertion: "/tools"),
-            SlashSuggestion(title: "/hub route", subtitle: "Hub transport mode", insertion: "/hub route"),
-            SlashSuggestion(title: "/route diagnose", subtitle: "Diagnose current model route", insertion: "/route diagnose"),
-            SlashSuggestion(title: "/network 30m", subtitle: "Request network access", insertion: "/network 30m"),
-            SlashSuggestion(title: "/clear", subtitle: "Clear chat history", insertion: "/clear"),
-            SlashSuggestion(title: "/help", subtitle: "Show help", insertion: "/help"),
+            SlashSuggestion(title: "/models", subtitle: "查看可用模型", insertion: "/models"),
+            SlashSuggestion(title: "/model <id>", subtitle: "选择模型", insertion: "/model "),
+            SlashSuggestion(title: "/tools", subtitle: "工具策略设置", insertion: "/tools"),
+            SlashSuggestion(title: "/hub route", subtitle: "Hub 传输模式", insertion: "/hub route"),
+            SlashSuggestion(title: "/route diagnose", subtitle: "诊断当前模型路由", insertion: "/route diagnose"),
+            SlashSuggestion(title: "/network 30m", subtitle: "申请网络访问", insertion: "/network 30m"),
+            SlashSuggestion(title: "/clear", subtitle: "清空聊天记录", insertion: "/clear"),
+            SlashSuggestion(title: "/help", subtitle: "查看帮助", insertion: "/help"),
         ]
 
         if lower == "/" {

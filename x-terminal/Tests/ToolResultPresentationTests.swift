@@ -24,8 +24,8 @@ struct ToolResultPresentationTests {
 
         #expect(ToolResultPresentation.shouldShowTimelineCard(for: result))
         #expect(ToolResultPresentation.iconName(for: result) == "checkmark.shield.fill")
-        #expect(ToolResultPresentation.title(for: result) == "Credential filled from Secret Vault")
-        #expect(ToolResultPresentation.body(for: result).contains("Secret Vault credential"))
+        #expect(ToolResultPresentation.title(for: result) == "已从 Secret Vault 填充凭据")
+        #expect(ToolResultPresentation.body(for: result).contains("Secret Vault 凭据"))
         #expect(ToolResultPresentation.body(for: result).contains("input[type=password]"))
     }
 
@@ -52,8 +52,8 @@ struct ToolResultPresentationTests {
         )
 
         let summary = ToolResultPresentation.body(for: result)
-        #expect(summary.contains("Hub did not authorize this credential use"))
-        #expect(summary.contains("no longer available in Hub"))
+        #expect(summary.contains("Hub 未授权此次凭据使用"))
+        #expect(summary.contains("已不在 Hub 中"))
     }
 
     @Test
@@ -79,7 +79,7 @@ struct ToolResultPresentationTests {
         )
 
         let summary = ToolResultPresentation.body(for: result)
-        #expect(summary.contains("does not contain the target field"))
+        #expect(summary.contains("当前页面里找不到目标字段"))
         #expect(summary.contains("#password"))
     }
 
@@ -108,9 +108,9 @@ struct ToolResultPresentationTests {
 
         #expect(ToolResultPresentation.shouldShowTimelineCard(for: result))
         #expect(ToolResultPresentation.iconName(for: result) == "eye.fill")
-        #expect(ToolResultPresentation.title(for: result) == "Browser UI observation captured")
+        #expect(ToolResultPresentation.title(for: result) == "已采集浏览器 UI 观察")
         #expect(ToolResultPresentation.body(for: result).contains("https://example.com/login"))
-        #expect(ToolResultPresentation.body(for: result).contains("5 layers"))
-        #expect(ToolResultPresentation.body(for: result).contains("Review verdict: ready"))
+        #expect(ToolResultPresentation.body(for: result).contains("5 层"))
+        #expect(ToolResultPresentation.body(for: result).contains("审查结论：ready"))
     }
 }

@@ -18,11 +18,11 @@ struct PendingToolApprovalView: View {
                     .font(.system(size: 20))
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Pending Approval")
+                    Text("待审批")
                         .font(.system(.headline, design: .rounded))
                         .fontWeight(.semibold)
 
-                    Text("\(session.pendingToolCalls.count) tool call(s) require your approval")
+                    Text("\(session.pendingToolCalls.count) 个工具调用等待你确认")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -34,7 +34,7 @@ struct PendingToolApprovalView: View {
                     Button {
                         onReject()
                     } label: {
-                        Text("Reject")
+                        Text("拒绝")
                             .font(.system(.body, design: .rounded))
                             .fontWeight(.medium)
                             .foregroundColor(.red)
@@ -50,7 +50,7 @@ struct PendingToolApprovalView: View {
                     } label: {
                         HStack(spacing: 6) {
                             Image(systemName: "checkmark")
-                            Text("Approve & Run")
+                            Text("批准并执行")
                         }
                         .font(.system(.body, design: .rounded))
                         .fontWeight(.medium)
@@ -107,7 +107,7 @@ struct PendingToolApprovalView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "wifi.slash")
                         .foregroundColor(.red)
-                    Text("Hub not connected. Please connect to approve.")
+                    Text("Hub 未连接，连上后才能批准执行。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -211,7 +211,7 @@ struct ToolCallDetailsPopover: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("What Will Run")
+                Text("即将执行")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -221,7 +221,7 @@ struct ToolCallDetailsPopover: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("Approval Status")
+                Text("审批说明")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -239,7 +239,7 @@ struct ToolCallDetailsPopover: View {
             // 参数
             if !toolCall.args.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Arguments:")
+                    Text("参数")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 

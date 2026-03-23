@@ -30,6 +30,34 @@ enum AXProjectReviewTrigger: String, Codable, CaseIterable, Sendable {
     }
 }
 
+extension AXProjectReviewTrigger {
+    static var governanceOptionalSelectableCases: [AXProjectReviewTrigger] {
+        [
+            .failureStreak,
+            .blockerDetected,
+            .planDrift,
+            .preHighRiskAction,
+            .preDoneSummary
+        ]
+    }
+
+    static func normalizedSelectionForExecutionTierTransition(
+        to executionTier: AXProjectExecutionTier,
+        preserving current: [AXProjectReviewTrigger]
+    ) -> [AXProjectReviewTrigger] {
+        let optionalTriggers = current.filter {
+            governanceOptionalSelectableCases.contains($0)
+                && !executionTier.mandatoryReviewTriggers.contains($0)
+        }
+        let defaultExtras = executionTier.defaultEventReviewTriggers.filter {
+            !executionTier.mandatoryReviewTriggers.contains($0)
+        }
+        return normalizedList(
+            executionTier.mandatoryReviewTriggers + optionalTriggers + defaultExtras
+        )
+    }
+}
+
 enum AXProjectGovernanceCompatSource: String, Codable, CaseIterable, Sendable {
     case explicitDualDial = "explicit_dual_dial"
     case legacyAutonomyLevel = "legacy_autonomy_level"
@@ -157,19 +185,30 @@ struct AXProjectCapabilityBundle: Equatable, Sendable {
     )
 
     func applying(
-        effectiveAutonomy: AXProjectAutonomyEffectivePolicy,
+        effectiveRuntimeSurface: AXProjectRuntimeSurfaceEffectivePolicy,
         trustedAutomationStatus: AXTrustedAutomationProjectStatus
     ) -> AXProjectCapabilityBundle {
         var out = self
-        out.allowBrowserRuntime = out.allowBrowserRuntime && effectiveAutonomy.allowBrowserRuntime
+        out.allowBrowserRuntime = out.allowBrowserRuntime && effectiveRuntimeSurface.allowBrowserRuntime
         out.allowDeviceTools = out.allowDeviceTools
-            && effectiveAutonomy.allowDeviceTools
+            && effectiveRuntimeSurface.allowDeviceTools
             && trustedAutomationStatus.trustedAutomationReady
             && trustedAutomationStatus.permissionOwnerReady
-        out.allowConnectorActions = out.allowConnectorActions && effectiveAutonomy.allowConnectorActions
-        out.allowExtensions = out.allowExtensions && effectiveAutonomy.allowExtensions
+        out.allowConnectorActions = out.allowConnectorActions && effectiveRuntimeSurface.allowConnectorActions
+        out.allowExtensions = out.allowExtensions && effectiveRuntimeSurface.allowExtensions
         out.allowAutoLocalApproval = out.allowAutoLocalApproval && out.allowDeviceTools
         return out
+    }
+
+    @available(*, deprecated, message: "Use applying(effectiveRuntimeSurface:trustedAutomationStatus:)")
+    func applying(
+        effectiveAutonomy: AXProjectAutonomyEffectivePolicy,
+        trustedAutomationStatus: AXTrustedAutomationProjectStatus
+    ) -> AXProjectCapabilityBundle {
+        applying(
+            effectiveRuntimeSurface: effectiveAutonomy,
+            trustedAutomationStatus: trustedAutomationStatus
+        )
     }
 
     var allowedCapabilityLabels: [String] {
@@ -226,47 +265,62 @@ struct AXProjectResolvedGovernanceState: Equatable {
     var capabilityBundle: AXProjectCapabilityBundle
     var executionBudget: AXProjectExecutionBudget
     var validation: AXProjectGovernanceValidation
-    var effectiveAutonomy: AXProjectAutonomyEffectivePolicy
+    var effectiveRuntimeSurface: AXProjectRuntimeSurfaceEffectivePolicy
     var trustedAutomationStatus: AXTrustedAutomationProjectStatus
 
+    @available(*, deprecated, message: "Use effectiveRuntimeSurface")
+    var effectiveAutonomy: AXProjectAutonomyEffectivePolicy {
+        get { effectiveRuntimeSurface }
+        set { effectiveRuntimeSurface = newValue }
+    }
+
     func debugSnapshot() -> [String: JSONValue] {
-        [
-            "project_id": .string(projectId),
-            "compat_source": .string(compatSource.rawValue),
-            "execution_tier": .string(configuredBundle.executionTier.rawValue),
-            "effective_execution_tier": .string(effectiveBundle.executionTier.rawValue),
-            "supervisor_intervention_tier": .string(configuredBundle.supervisorInterventionTier.rawValue),
-            "recommended_supervisor_intervention_tier": .string(supervisorAdaptation.recommendedSupervisorTier.rawValue),
-            "effective_supervisor_intervention_tier": .string(effectiveBundle.supervisorInterventionTier.rawValue),
-            "recommended_supervisor_work_order_depth": .string(supervisorAdaptation.recommendedWorkOrderDepth.rawValue),
-            "effective_supervisor_work_order_depth": .string(supervisorAdaptation.effectiveWorkOrderDepth.rawValue),
-            "supervisor_adaptation_mode": .string(supervisorAdaptation.adaptationPolicy.adaptationMode.rawValue),
-            "supervisor_escalation_reasons": .array(supervisorAdaptation.escalationReasons.map(JSONValue.string)),
-            "project_ai_strength_band": .string(supervisorAdaptation.projectAIStrengthProfile?.strengthBand.rawValue ?? AXProjectAIStrengthBand.unknown.rawValue),
-            "project_ai_strength_confidence": .number(supervisorAdaptation.projectAIStrengthProfile?.confidence ?? 0),
-            "project_ai_strength_reasons": .array((supervisorAdaptation.projectAIStrengthProfile?.reasons ?? []).map(JSONValue.string)),
-            "project_ai_strength_audit_ref": .string(supervisorAdaptation.projectAIStrengthProfile?.auditRef ?? ""),
-            "review_policy_mode": .string(effectiveBundle.reviewPolicyMode.rawValue),
-            "project_memory_ceiling": .string(projectMemoryCeiling.rawValue),
-            "supervisor_review_memory_ceiling": .string(supervisorReviewMemoryCeiling.rawValue),
-            "progress_heartbeat_sec": .number(Double(effectiveBundle.schedule.progressHeartbeatSeconds)),
-            "review_pulse_sec": .number(Double(effectiveBundle.schedule.reviewPulseSeconds)),
-            "brainstorm_review_sec": .number(Double(effectiveBundle.schedule.brainstormReviewSeconds)),
-            "event_driven_review_enabled": .bool(effectiveBundle.schedule.eventDrivenReviewEnabled),
-            "event_review_triggers": .array(effectiveBundle.schedule.eventReviewTriggers.map { .string($0.rawValue) }),
-            "invalid_reasons": .array(validation.invalidReasons.map(JSONValue.string)),
-            "warning_reasons": .array(validation.warningReasons.map(JSONValue.string)),
-            "should_fail_closed": .bool(validation.shouldFailClosed),
-            "effective_autonomy_mode": .string(effectiveAutonomy.effectiveMode.rawValue),
-            "hub_override_mode": .string(effectiveAutonomy.hubOverrideMode.rawValue),
-            "autonomy_ttl_sec": .number(Double(effectiveAutonomy.ttlSeconds)),
-            "autonomy_remaining_sec": .number(Double(effectiveAutonomy.remainingSeconds)),
-            "autonomy_expired": .bool(effectiveAutonomy.expired),
-            "kill_switch_engaged": .bool(effectiveAutonomy.killSwitchEngaged),
-            "trusted_automation_state": .string(trustedAutomationStatus.state.rawValue),
-            "trusted_automation_ready": .bool(trustedAutomationStatus.trustedAutomationReady),
-            "permission_owner_ready": .bool(trustedAutomationStatus.permissionOwnerReady),
-            "allowed_capabilities": .array(capabilityBundle.allowedCapabilityLabels.map(JSONValue.string))
-        ]
+        let runtimeSurface = effectiveRuntimeSurface
+        let projectAIStrengthProfile = supervisorAdaptation.projectAIStrengthProfile
+        let schedule = effectiveBundle.schedule
+        var snapshot: [String: JSONValue] = [:]
+        snapshot["project_id"] = .string(projectId)
+        snapshot["compat_source"] = .string(compatSource.rawValue)
+        snapshot["execution_tier"] = .string(configuredBundle.executionTier.rawValue)
+        snapshot["effective_execution_tier"] = .string(effectiveBundle.executionTier.rawValue)
+        snapshot["supervisor_intervention_tier"] = .string(configuredBundle.supervisorInterventionTier.rawValue)
+        snapshot["recommended_supervisor_intervention_tier"] = .string(supervisorAdaptation.recommendedSupervisorTier.rawValue)
+        snapshot["effective_supervisor_intervention_tier"] = .string(effectiveBundle.supervisorInterventionTier.rawValue)
+        snapshot["recommended_supervisor_work_order_depth"] = .string(supervisorAdaptation.recommendedWorkOrderDepth.rawValue)
+        snapshot["effective_supervisor_work_order_depth"] = .string(supervisorAdaptation.effectiveWorkOrderDepth.rawValue)
+        snapshot["supervisor_adaptation_mode"] = .string(supervisorAdaptation.adaptationPolicy.adaptationMode.rawValue)
+        snapshot["supervisor_escalation_reasons"] = .array(supervisorAdaptation.escalationReasons.map(JSONValue.string))
+        snapshot["project_ai_strength_band"] = .string(projectAIStrengthProfile?.strengthBand.rawValue ?? AXProjectAIStrengthBand.unknown.rawValue)
+        snapshot["project_ai_strength_confidence"] = .number(projectAIStrengthProfile?.confidence ?? 0)
+        snapshot["project_ai_strength_reasons"] = .array((projectAIStrengthProfile?.reasons ?? []).map(JSONValue.string))
+        snapshot["project_ai_strength_audit_ref"] = .string(projectAIStrengthProfile?.auditRef ?? "")
+        snapshot["review_policy_mode"] = .string(effectiveBundle.reviewPolicyMode.rawValue)
+        snapshot["project_memory_ceiling"] = .string(projectMemoryCeiling.rawValue)
+        snapshot["supervisor_review_memory_ceiling"] = .string(supervisorReviewMemoryCeiling.rawValue)
+        snapshot["progress_heartbeat_sec"] = .number(Double(schedule.progressHeartbeatSeconds))
+        snapshot["review_pulse_sec"] = .number(Double(schedule.reviewPulseSeconds))
+        snapshot["brainstorm_review_sec"] = .number(Double(schedule.brainstormReviewSeconds))
+        snapshot["event_driven_review_enabled"] = .bool(schedule.eventDrivenReviewEnabled)
+        snapshot["event_review_triggers"] = .array(schedule.eventReviewTriggers.map { .string($0.rawValue) })
+        snapshot["invalid_reasons"] = .array(validation.invalidReasons.map(JSONValue.string))
+        snapshot["warning_reasons"] = .array(validation.warningReasons.map(JSONValue.string))
+        snapshot["should_fail_closed"] = .bool(validation.shouldFailClosed)
+        snapshot["runtime_surface_effective_mode"] = .string(runtimeSurface.effectiveMode.rawValue)
+        snapshot["runtime_surface_hub_override_mode"] = .string(runtimeSurface.hubOverrideMode.rawValue)
+        snapshot["runtime_surface_ttl_sec"] = .number(Double(runtimeSurface.ttlSeconds))
+        snapshot["runtime_surface_remaining_sec"] = .number(Double(runtimeSurface.remainingSeconds))
+        snapshot["runtime_surface_expired"] = .bool(runtimeSurface.expired)
+        snapshot["runtime_surface_kill_switch_engaged"] = .bool(runtimeSurface.killSwitchEngaged)
+        snapshot["effective_autonomy_mode"] = .string(runtimeSurface.effectiveMode.rawValue)
+        snapshot["hub_override_mode"] = .string(runtimeSurface.hubOverrideMode.rawValue)
+        snapshot["autonomy_ttl_sec"] = .number(Double(runtimeSurface.ttlSeconds))
+        snapshot["autonomy_remaining_sec"] = .number(Double(runtimeSurface.remainingSeconds))
+        snapshot["autonomy_expired"] = .bool(runtimeSurface.expired)
+        snapshot["kill_switch_engaged"] = .bool(runtimeSurface.killSwitchEngaged)
+        snapshot["trusted_automation_state"] = .string(trustedAutomationStatus.state.rawValue)
+        snapshot["trusted_automation_ready"] = .bool(trustedAutomationStatus.trustedAutomationReady)
+        snapshot["permission_owner_ready"] = .bool(trustedAutomationStatus.permissionOwnerReady)
+        snapshot["allowed_capabilities"] = .array(capabilityBundle.allowedCapabilityLabels.map(JSONValue.string))
+        return snapshot
     }
 }

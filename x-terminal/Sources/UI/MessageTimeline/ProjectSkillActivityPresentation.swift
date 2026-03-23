@@ -60,17 +60,17 @@ enum ProjectSkillActivityPresentation {
     static func title(for item: ProjectSkillActivityItem) -> String {
         switch normalizedStatus(item.status) {
         case "completed":
-            return "Skill completed"
+            return "技能已完成"
         case "failed":
-            return "Skill failed"
+            return "技能失败"
         case "blocked":
-            return "Skill blocked"
+            return "技能受阻"
         case "awaiting_approval":
-            return "Approval required"
+            return "待审批"
         case "resolved":
-            return "Skill routed"
+            return "技能已路由"
         default:
-            return "Skill activity"
+            return "技能动态"
         }
     }
 
@@ -101,18 +101,18 @@ enum ProjectSkillActivityPresentation {
 
     static func body(for item: ProjectSkillActivityItem) -> String {
         let skillLabel = item.skillID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "This skill"
-            : "Skill \(item.skillID)"
+            ? "这个技能"
+            : "技能 \(item.skillID)"
         let toolLabel = displayToolName(item.toolName)
 
         switch normalizedStatus(item.status) {
         case "completed":
             if !item.resultSummary.isEmpty { return item.resultSummary }
-            return "\(skillLabel) completed via \(toolLabel)."
+            return "\(skillLabel) 已通过\(toolLabel)完成。"
         case "failed":
             if !item.resultSummary.isEmpty { return item.resultSummary }
             if !item.detail.isEmpty { return item.detail }
-            return "\(skillLabel) failed while running \(toolLabel)."
+            return "\(skillLabel) 在执行\(toolLabel)时失败。"
         case "blocked":
             return XTGuardrailMessagePresentation.blockedBody(
                 tool: ToolName(rawValue: item.toolName),
@@ -131,13 +131,13 @@ enum ProjectSkillActivityPresentation {
             )
         case "resolved":
             if let preview = requestPreview(for: item), !preview.isEmpty {
-                return "\(skillLabel) was routed to \(toolLabel) for \(preview)."
+                return "\(skillLabel) 已路由到\(toolLabel)，目标：\(preview)。"
             }
-            return "\(skillLabel) was routed to \(toolLabel)."
+            return "\(skillLabel) 已路由到\(toolLabel)。"
         default:
             if !item.resultSummary.isEmpty { return item.resultSummary }
             if !item.detail.isEmpty { return item.detail }
-            return "\(skillLabel) activity updated."
+            return "\(skillLabel) 有新动态。"
         }
     }
 
@@ -244,8 +244,8 @@ enum ProjectSkillActivityPresentation {
             evidenceToolArgs: evidence?.toolArgs
         )
         let title = skillID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-            ? skillID ?? "Skill Record"
-            : "Skill Record"
+            ? skillID ?? "技能记录"
+            : "技能记录"
 
         let requestMetadata = recordFields([
             ("request_id", requestID),
@@ -316,73 +316,73 @@ enum ProjectSkillActivityPresentation {
         requestID: String
     ) -> String {
         guard let record = fullRecord(ctx: ctx, requestID: requestID) else {
-            return "No skill record was found for request_id=\(requestID)."
+            return "没有找到请求单号为 \(requestID) 的技能记录。"
         }
         return fullRecordText(record)
     }
 
-    static func fullRecordText(
+    static func displayFullRecordText(
         _ record: ProjectSkillFullRecord
     ) -> String {
         var lines: [String] = [
-            "Project Skill Full Record",
-            "request_id=\(record.requestID)"
+            "项目技能完整记录",
+            "请求单号：\(record.requestID)"
         ]
 
-        if !record.latestStatus.isEmpty {
-            lines.append("latest_status=\(record.latestStatus)")
+        if !record.latestStatusLabel.isEmpty {
+            lines.append("最新状态：\(record.latestStatusLabel)")
         }
 
-        appendRecordSection("Request Metadata", fields: record.requestMetadata, into: &lines)
-        appendRecordSection("Approval Status", fields: record.approvalFields, into: &lines)
+        appendDisplayRecordSection("请求信息", fields: record.requestMetadata, into: &lines)
+        appendDisplayRecordSection("审批状态", fields: record.approvalFields, into: &lines)
 
         if let toolArgs = nonEmpty(record.toolArgumentsText) {
             lines.append("")
-            lines.append("== Tool Arguments ==")
+            lines.append("== 工具参数 ==")
             lines.append(toolArgs)
         }
 
-        appendRecordSection("Result Summary", fields: record.resultFields, into: &lines)
+        appendDisplayRecordSection("执行结果", fields: record.resultFields, into: &lines)
 
         if let rawOutputPreview = nonEmpty(record.rawOutputPreview) {
             lines.append("")
-            lines.append("== Raw Output Preview ==")
+            lines.append("== 原始输出预览 ==")
             lines.append(rawOutputPreview)
         }
 
         if let rawOutput = nonEmpty(record.rawOutput) {
             lines.append("")
-            lines.append("== Raw Output Full ==")
+            lines.append("== 完整原始输出 ==")
             lines.append(rawOutput)
         }
 
-        appendRecordSection("Evidence Refs", fields: record.evidenceFields, into: &lines)
+        appendDisplayRecordSection("证据引用", fields: record.evidenceFields, into: &lines)
 
         if !record.approvalHistory.isEmpty {
             lines.append("")
-            lines.append("== Approval History ==")
+            lines.append("== 审批记录 ==")
             for entry in record.approvalHistory {
-                lines.append(formattedTimelineEntry(entry))
+                lines.append(displayFormattedTimelineEntry(entry))
             }
         }
 
         if !record.timeline.isEmpty {
             lines.append("")
-            lines.append("== Event Timeline ==")
+            lines.append("== 事件时间线 ==")
             for entry in record.timeline {
-                lines.append(formattedTimelineEntry(entry))
+                lines.append(displayFormattedTimelineEntry(entry))
             }
         }
 
         if let evidence = nonEmpty(record.supervisorEvidenceJSON) {
             lines.append("")
-            lines.append("== Result Evidence ==")
+            lines.append("== 执行证据 ==")
             lines.append(evidence)
         }
 
         if !record.timeline.isEmpty {
             lines.append("")
-            lines.append("== Raw JSON Events ==")
+            lines.append("== 原始 JSON 事件 ==")
             for entry in record.timeline {
                 lines.append(entry.rawJSON)
             }
@@ -391,76 +391,118 @@ enum ProjectSkillActivityPresentation {
         return lines.joined(separator: "\n")
     }
 
+    static func fullRecordText(
+        _ record: ProjectSkillFullRecord
+    ) -> String {
+        var lines: [String] = [
+            "项目技能完整记录",
+            "请求单号：\(record.requestID)"
+        ]
+
+        if !record.latestStatus.isEmpty {
+            lines.append("latest_status=\(record.latestStatus)")
+        }
+
+        appendRecordSection("请求信息", fields: record.requestMetadata, into: &lines)
+        appendRecordSection("审批状态", fields: record.approvalFields, into: &lines)
+
+        if let toolArgs = nonEmpty(record.toolArgumentsText) {
+            lines.append("")
+            lines.append("== 工具参数 ==")
+            lines.append(toolArgs)
+        }
+
+        appendRecordSection("执行结果", fields: record.resultFields, into: &lines)
+
+        if let rawOutputPreview = nonEmpty(record.rawOutputPreview) {
+            lines.append("")
+            lines.append("== 原始输出预览 ==")
+            lines.append(rawOutputPreview)
+        }
+
+        if let rawOutput = nonEmpty(record.rawOutput) {
+            lines.append("")
+            lines.append("== 完整原始输出 ==")
+            lines.append(rawOutput)
+        }
+
+        appendRecordSection("证据引用", fields: record.evidenceFields, into: &lines)
+
+        if !record.approvalHistory.isEmpty {
+            lines.append("")
+            lines.append("== 审批记录 ==")
+            for entry in record.approvalHistory {
+                lines.append(formattedTimelineEntry(entry))
+            }
+        }
+
+        if !record.timeline.isEmpty {
+            lines.append("")
+            lines.append("== 事件时间线 ==")
+            for entry in record.timeline {
+                lines.append(formattedTimelineEntry(entry))
+            }
+        }
+
+        if let evidence = nonEmpty(record.supervisorEvidenceJSON) {
+            lines.append("")
+            lines.append("== 执行证据 ==")
+            lines.append(evidence)
+        }
+
+        if !record.timeline.isEmpty {
+            lines.append("")
+            lines.append("== 原始 JSON 事件 ==")
+            for entry in record.timeline {
+                lines.append(entry.rawJSON)
+            }
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    static func displayFieldLabel(_ raw: String) -> String {
+        humanRecordFieldLabel(raw)
+    }
+
+    static func displayTimelineDetail(_ detail: String?) -> String? {
+        guard let detail = nonEmpty(detail) else { return nil }
+        let lines = detail
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { displayTimelineDetailLine(String($0)) }
+        return lines.joined(separator: "\n")
+    }
+
     private static func requestPreview(for item: ProjectSkillActivityItem) -> String? {
         let preferredKeys = ["url", "query", "path", "selector", "command", "action"]
         for key in preferredKeys {
             let value = item.toolArgs[key]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard !value.isEmpty else { continue }
-            switch key {
-            case "url":
-                return value
-            case "query":
-                return "query '\(value)'"
-            case "path":
-                return "path \(value)"
-            case "selector":
-                return "selector \(value)"
-            case "command":
-                return "command \(value)"
-            case "action":
-                return "action \(value)"
-            default:
-                return value
-            }
+        switch key {
+        case "url":
+            return value
+        case "query":
+            return "查询 '\(value)'"
+        case "path":
+            return "路径 \(value)"
+        case "selector":
+            return "选择器 \(value)"
+        case "command":
+            return "命令 \(value)"
+        case "action":
+            return "动作 \(value)"
+        default:
+            return value
+        }
         }
         return nil
     }
 
     private static func displayToolName(_ raw: String) -> String {
-        guard let tool = ToolName(rawValue: raw) else {
-            return raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "tool runtime" : raw
-        }
-
-        switch tool {
-        case .delete_path:
-            return "delete path"
-        case .move_path:
-            return "move path"
-        case .process_start:
-            return "start process"
-        case .process_status:
-            return "process status"
-        case .process_logs:
-            return "process logs"
-        case .process_stop:
-            return "stop process"
-        case .git_commit:
-            return "git commit"
-        case .git_push:
-            return "git push"
-        case .pr_create:
-            return "create pull request"
-        case .ci_read:
-            return "read ci"
-        case .ci_trigger:
-            return "trigger ci"
-        case .skills_search:
-            return "skills search"
-        case .summarize:
-            return "summarize"
-        case .browser_read:
-            return "browser read"
-        case .web_fetch:
-            return "web fetch"
-        case .web_search:
-            return "web search"
-        case .deviceBrowserControl:
-            return "browser control"
-        case .agentImportRecord:
-            return "agent import record"
-        default:
-            return tool.rawValue.replacingOccurrences(of: "_", with: " ")
-        }
+        XTPendingApprovalPresentation.displayToolName(
+            raw: raw,
+            tool: ToolName(rawValue: raw)
+        )
     }
 
     private static func normalizedStatus(_ raw: String) -> String {
@@ -470,17 +512,17 @@ enum ProjectSkillActivityPresentation {
     private static func statusLabel(for rawStatus: String) -> String {
         switch normalizedStatus(rawStatus) {
         case "completed":
-            return "Completed"
+            return "已完成"
         case "failed":
-            return "Failed"
+            return "失败"
         case "blocked":
-            return "Blocked"
+            return "受阻"
         case "awaiting_approval":
-            return "Awaiting Approval"
+            return "待审批"
         case "resolved":
-            return "Resolved"
+            return "已路由"
         default:
-            return rawStatus.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Unknown" : rawStatus
+            return rawStatus.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未知" : rawStatus
         }
     }
 
@@ -502,6 +544,21 @@ enum ProjectSkillActivityPresentation {
             lines.append("summary=\(entry.summary)")
         }
         if let detail = nonEmpty(entry.detail) {
+            lines.append(detail)
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func displayFormattedTimelineEntry(
+        _ entry: ProjectSkillRecordTimelineEntry
+    ) -> String {
+        var lines: [String] = [
+            "[\(entry.timestamp)] 状态：\(entry.statusLabel.isEmpty ? "未知" : entry.statusLabel)"
+        ]
+        if !entry.summary.isEmpty {
+            lines.append("摘要：\(entry.summary)")
+        }
+        if let detail = displayTimelineDetail(entry.detail) {
             lines.append(detail)
         }
         return lines.joined(separator: "\n")
@@ -584,7 +641,20 @@ enum ProjectSkillActivityPresentation {
         lines.append("")
         lines.append("== \(title) ==")
         for field in fields {
-            lines.append("\(field.label)=\(field.value)")
+            lines.append("\(humanRecordFieldLabel(field.label))：\(field.value)")
+        }
+    }
+
+    private static func appendDisplayRecordSection(
+        _ title: String,
+        fields: [ProjectSkillRecordField],
+        into lines: inout [String]
+    ) {
+        guard !fields.isEmpty else { return }
+        lines.append("")
+        lines.append("== \(title) ==")
+        for field in fields {
+            lines.append("\(displayFieldLabel(field.label))：\(field.value)")
         }
     }
 
@@ -640,6 +710,90 @@ enum ProjectSkillActivityPresentation {
             }
         }
         return nil
+    }
+
+    private static func humanRecordFieldLabel(_ raw: String) -> String {
+        switch raw {
+        case "request_id":
+            return "请求单号"
+        case "skill_id":
+            return "技能 ID"
+        case "tool_name":
+            return "工具"
+        case "latest_status":
+            return "最新状态"
+        case "resolution_source":
+            return "处理来源"
+        case "project_id":
+            return "项目 ID"
+        case "job_id":
+            return "任务 ID"
+        case "plan_id":
+            return "计划 ID"
+        case "step_id":
+            return "步骤 ID"
+        case "current_owner":
+            return "当前执行方"
+        case "trigger_source":
+            return "触发来源"
+        case "created_at":
+            return "创建时间"
+        case "updated_at":
+            return "更新时间"
+        case "authorization_disposition":
+            return "审批结论"
+        case "deny_code":
+            return "拒绝原因码"
+        case "policy_source":
+            return "策略来源"
+        case "policy_reason":
+            return "策略说明"
+        case "required_capability":
+            return "所需能力"
+        case "grant_request_id":
+            return "授权单号"
+        case "grant_id":
+            return "授权 ID"
+        case "result_status":
+            return "结果状态"
+        case "result_summary":
+            return "结果摘要"
+        case "detail":
+            return "详细说明"
+        case "tool_args":
+            return "工具参数"
+        case "raw_output_chars":
+            return "原始输出字符数"
+        case "result_evidence_ref":
+            return "结果证据引用"
+        case "raw_output_ref":
+            return "原始输出引用"
+        case "audit_ref":
+            return "审计引用"
+        case "status":
+            return "状态"
+        default:
+            return raw
+        }
+    }
+
+    private static func displayTimelineDetailLine(
+        _ line: String
+    ) -> String {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        guard let separatorIndex = trimmed.firstIndex(of: "=") else {
+            return trimmed
+        }
+        let rawLabel = String(trimmed[..<separatorIndex])
+        let rawValue = String(trimmed[trimmed.index(after: separatorIndex)...])
+        let value: String
+        if rawLabel == "status" {
+            value = statusLabel(for: rawValue)
+        } else {
+            value = rawValue
+        }
+        return "\(displayFieldLabel(rawLabel))：\(value)"
     }
 
     private static func formattedTimestamp(_ createdAt: Double) -> String {

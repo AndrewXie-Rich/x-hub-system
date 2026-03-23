@@ -5,6 +5,9 @@ import Testing
 @MainActor
 struct XTW330BrowserRuntimeEvidenceTests {
     private let permissionGate = TrustedAutomationPermissionTestGate.shared
+    private static func activeRuntimeSurfaceDate() -> Date {
+        Date()
+    }
 
     @Test
     func browserRuntimeProducesBoundedGapEvidenceAndCaptureArtifactWhenRequested() async throws {
@@ -38,9 +41,9 @@ struct XTW330BrowserRuntimeEvidenceTests {
                 deviceToolGroups: ["device.browser.control"],
                 workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
             )
-            config = config.settingAutonomyPolicy(
+            config = config.settingRuntimeSurfacePolicy(
                 mode: .trustedOpenClawMode,
-                updatedAt: Date(timeIntervalSince1970: 1_773_500_000)
+                updatedAt: Self.activeRuntimeSurfaceDate()
             )
             try AXProjectStore.saveConfig(config, for: ctx)
 

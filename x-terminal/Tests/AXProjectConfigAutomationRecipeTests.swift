@@ -32,6 +32,8 @@ struct AXProjectConfigAutomationRecipeTests {
         #expect(config.automationSelfIterateEnabled == false)
         #expect(config.automationMaxAutoRetryDepth == 2)
         #expect(config.preferHubMemory == true)
+        #expect(config.projectRecentDialogueProfile == .standard12Pairs)
+        #expect(config.projectContextDepthProfile == .balanced)
         #expect(config.autonomyMode == .manual)
         #expect(config.autonomyAllowDeviceTools == false)
         #expect(config.autonomyAllowBrowserRuntime == false)
@@ -40,6 +42,26 @@ struct AXProjectConfigAutomationRecipeTests {
         #expect(config.autonomyTTLSeconds == 3600)
         #expect(config.autonomyUpdatedAtMs == 0)
         #expect(config.autonomyHubOverrideMode == .none)
+    }
+
+    @Test
+    func settingProjectContextAssemblyPersistsAcrossSaveLoad() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xterminal-project-context-assembly-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let ctx = AXProjectContext(root: root)
+        var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        config = config.settingProjectContextAssembly(
+            projectRecentDialogueProfile: .deep20Pairs,
+            projectContextDepthProfile: .full
+        )
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let reloaded = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        #expect(reloaded.projectRecentDialogueProfile == .deep20Pairs)
+        #expect(reloaded.projectContextDepthProfile == .full)
     }
 
     @Test
@@ -74,9 +96,9 @@ struct AXProjectConfigAutomationRecipeTests {
     }
 
     @Test
-    func autonomyPolicyPresetPersistsAndClampTakesEffect() throws {
+    func runtimeSurfacePresetPersistsAndClampTakesEffect() throws {
         let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("xterminal-autonomy-policy-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("xterminal-runtime-surface-policy-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
@@ -84,7 +106,7 @@ struct AXProjectConfigAutomationRecipeTests {
         var config = try AXProjectStore.loadOrCreateConfig(for: ctx)
         let armedAt = Date(timeIntervalSince1970: 1_773_100_000)
 
-        config = config.settingAutonomyPolicy(
+        config = config.settingRuntimeSurfacePolicy(
             mode: .trustedOpenClawMode,
             ttlSeconds: 600,
             hubOverrideMode: .clampGuided,
@@ -93,7 +115,7 @@ struct AXProjectConfigAutomationRecipeTests {
         try AXProjectStore.saveConfig(config, for: ctx)
 
         let reloaded = try AXProjectStore.loadOrCreateConfig(for: ctx)
-        let effective = reloaded.effectiveAutonomyPolicy(now: armedAt.addingTimeInterval(120))
+        let effective = reloaded.effectiveRuntimeSurfacePolicy(now: armedAt.addingTimeInterval(120))
 
         #expect(reloaded.autonomyMode == .trustedOpenClawMode)
         #expect(reloaded.autonomyAllowDeviceTools == true)
@@ -132,19 +154,19 @@ struct AXProjectConfigAutomationRecipeTests {
     }
 
     @Test
-    func autonomyPolicyTTLExpiryFailsClosedToManual() {
+    func runtimeSurfaceTTLExpiryFailsClosedToManual() {
         var config = AXProjectConfig.default(
             forProjectRoot: FileManager.default.temporaryDirectory
-                .appendingPathComponent("xterminal-autonomy-expiry-\(UUID().uuidString)", isDirectory: true)
+                .appendingPathComponent("xterminal-runtime-surface-expiry-\(UUID().uuidString)", isDirectory: true)
         )
         let armedAt = Date(timeIntervalSince1970: 1_773_200_000)
 
-        config = config.settingAutonomyPolicy(
+        config = config.settingRuntimeSurfacePolicy(
             mode: .trustedOpenClawMode,
             ttlSeconds: 120,
             updatedAt: armedAt
         )
-        let effective = config.effectiveAutonomyPolicy(now: armedAt.addingTimeInterval(180))
+        let effective = config.effectiveRuntimeSurfacePolicy(now: armedAt.addingTimeInterval(180))
 
         #expect(effective.expired)
         #expect(effective.effectiveMode == .manual)

@@ -6,6 +6,25 @@ import Testing
 struct ProjectModelGovernanceBindingTests {
 
     @Test
+    func projectModelDefaultInitUsesConservativeGovernanceWithoutLegacyOrExplicitTier() {
+        let project = ProjectModel(
+            name: "Default Project",
+            taskDescription: "Default construction should stay conservative",
+            modelName: "claude-opus-4.6"
+        )
+
+        #expect(project.executionTier == .a0Observe)
+        #expect(project.supervisorInterventionTier == .s0SilentAudit)
+        #expect(project.reviewPolicyMode == .milestoneOnly)
+        #expect(project.progressHeartbeatSeconds == AXProjectExecutionTier.a0Observe.defaultProgressHeartbeatSeconds)
+        #expect(project.reviewPulseSeconds == 0)
+        #expect(project.brainstormReviewSeconds == 0)
+        #expect(project.eventDrivenReviewEnabled == false)
+        #expect(project.eventReviewTriggers == [.manualRequest])
+        #expect(project.autonomyLevel == .manual)
+    }
+
+    @Test
     func governanceContextPrefersResolvedProjectContext() {
         let project = ProjectModel(
             name: "Governed Project",
@@ -57,7 +76,7 @@ struct ProjectModelGovernanceBindingTests {
     func explicitExecutionTierKeepsLegacyAutonomyShadowAligned() {
         let project = ProjectModel(
             name: "Aligned Project",
-            taskDescription: "Execution tier should drive shadow autonomy",
+            taskDescription: "Execution tier should drive the legacy governance shadow",
             modelName: "claude-opus-4.6",
             autonomyLevel: .manual,
             executionTier: .a4OpenClaw,
@@ -66,6 +85,56 @@ struct ProjectModelGovernanceBindingTests {
 
         #expect(project.executionTier == .a4OpenClaw)
         #expect(project.autonomyLevel == .fullAuto)
+    }
+
+    @Test
+    func explicitGovernanceInitPreservesCustomReviewEventTriggers() {
+        let project = ProjectModel(
+            name: "Triggerful Project",
+            taskDescription: "Explicit governance init should preserve custom review triggers",
+            modelName: "claude-opus-4.6",
+            executionTier: .a3DeliverAuto,
+            supervisorInterventionTier: .s4TightSupervision,
+            reviewPolicyMode: .aggressive,
+            progressHeartbeatSeconds: 420,
+            reviewPulseSeconds: 840,
+            brainstormReviewSeconds: 1260,
+            eventDrivenReviewEnabled: true,
+            eventReviewTriggers: [.blockerDetected, .planDrift, .preDoneSummary]
+        )
+
+        #expect(project.executionTier == .a3DeliverAuto)
+        #expect(project.supervisorInterventionTier == .s4TightSupervision)
+        #expect(project.reviewPolicyMode == .aggressive)
+        #expect(project.eventDrivenReviewEnabled)
+        #expect(project.eventReviewTriggers == [.blockerDetected, .planDrift, .preDoneSummary])
+    }
+
+    @Test
+    func updateGovernanceNormalizesAndStoresEventReviewTriggers() {
+        let project = ProjectModel(
+            name: "Update Governance",
+            taskDescription: "Governance updates should dedupe trigger lists",
+            modelName: "claude-opus-4.6"
+        )
+
+        project.updateGovernance(
+            executionTier: .a2RepoAuto,
+            supervisorInterventionTier: .s3StrategicCoach,
+            reviewPolicyMode: .hybrid,
+            progressHeartbeatSeconds: 900,
+            reviewPulseSeconds: 1800,
+            brainstormReviewSeconds: 0,
+            eventDrivenReviewEnabled: true,
+            eventReviewTriggers: [.blockerDetected, .preDoneSummary, .blockerDetected, .planDrift]
+        )
+
+        #expect(project.executionTier == .a2RepoAuto)
+        #expect(project.supervisorInterventionTier == .s3StrategicCoach)
+        #expect(project.reviewPolicyMode == .hybrid)
+        #expect(project.eventDrivenReviewEnabled)
+        #expect(project.eventReviewTriggers == [.blockerDetected, .preDoneSummary, .planDrift])
+        #expect(project.autonomyLevel == .semiAuto)
     }
 
     @Test
@@ -100,7 +169,7 @@ struct ProjectModelGovernanceBindingTests {
             brainstormReviewSeconds: 2400,
             eventDrivenReviewEnabled: true
         )
-        config = config.settingAutonomyPolicy(
+        config = config.settingRuntimeSurfacePolicy(
             mode: .trustedOpenClawMode,
             ttlSeconds: 600,
             updatedAt: Date()
@@ -155,7 +224,7 @@ struct ProjectModelGovernanceBindingTests {
         #expect(resolved.configuredBundle.executionTier == .a4OpenClaw)
         #expect(resolved.configuredBundle.supervisorInterventionTier == .s3StrategicCoach)
         #expect(resolved.configuredBundle.reviewPolicyMode == .hybrid)
-        #expect(resolved.effectiveAutonomy.effectiveMode == .trustedOpenClawMode)
+        #expect(resolved.effectiveRuntimeSurface.effectiveMode == .trustedOpenClawMode)
     }
 
     @Test
@@ -165,7 +234,7 @@ struct ProjectModelGovernanceBindingTests {
 
         let ctx = AXProjectContext(root: root)
         var config = AXProjectConfig.default(forProjectRoot: root)
-        config = config.settingAutonomyPolicy(
+        config = config.settingRuntimeSurfacePolicy(
             mode: .guided,
             ttlSeconds: 600,
             updatedAt: Date()
@@ -238,7 +307,7 @@ struct ProjectModelGovernanceBindingTests {
             brainstormReviewSeconds: 0,
             eventDrivenReviewEnabled: false
         )
-        config = config.settingAutonomyPolicy(
+        config = config.settingRuntimeSurfacePolicy(
             mode: .guided,
             ttlSeconds: 600,
             updatedAt: Date()
@@ -264,6 +333,76 @@ struct ProjectModelGovernanceBindingTests {
         #expect(resolved.compatSource == .explicitDualDial)
         #expect(resolved.configuredBundle.executionTier == .a1Plan)
         #expect(resolved.configuredBundle.supervisorInterventionTier == .s2PeriodicReview)
+    }
+
+    @Test
+    func boundProjectGovernanceTemplatePreviewPrefersStoredTemplateOverCardDraft() throws {
+        let root = try makeProjectRoot(named: "project-model-governance-template-preview-stored")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        let config = AXProjectConfig.default(forProjectRoot: root)
+            .settingGovernanceTemplate(.safe, projectRoot: root)
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+        let project = ProjectModel(
+            name: "Preview Stored Template",
+            taskDescription: "Stored template should win over card draft",
+            modelName: "claude-opus-4.6",
+            registeredProjectBinding: ProjectRegistryBinding(
+                projectId: projectId,
+                rootPath: root.path,
+                displayName: "Preview Stored"
+            ),
+            executionTier: .a1Plan,
+            supervisorInterventionTier: .s1MilestoneReview,
+            reviewPolicyMode: .milestoneOnly,
+            progressHeartbeatSeconds: 3600,
+            reviewPulseSeconds: 0,
+            brainstormReviewSeconds: 0,
+            eventDrivenReviewEnabled: false
+        )
+
+        let appModel = AppModel()
+        let preview = appModel.governanceTemplatePreview(for: project)
+
+        #expect(preview.configuredProfile == .safe)
+        #expect(preview.effectiveProfile == .safe)
+        #expect(preview.configuredDeviceAuthorityPosture == .projectBound)
+        #expect(preview.effectiveGrantPosture == .guidedAuto)
+    }
+
+    @Test
+    func boundProjectGovernanceTemplatePreviewIgnoresLegacyShadowForExplicitDualDialConfig() throws {
+        let root = try makeProjectRoot(named: "project-model-governance-template-preview-explicit")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        let config = AXProjectConfig.default(forProjectRoot: root)
+            .settingGovernanceTemplate(.conservative, projectRoot: root)
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+        let project = ProjectModel(
+            name: "Preview Explicit Dual Dial",
+            taskDescription: "Legacy card shadow must not distort preview",
+            modelName: "claude-opus-4.6",
+            autonomyLevel: .fullAuto,
+            registeredProjectBinding: ProjectRegistryBinding(
+                projectId: projectId,
+                rootPath: root.path,
+                displayName: "Preview Explicit"
+            )
+        )
+
+        let appModel = AppModel()
+        let preview = appModel.governanceTemplatePreview(for: project)
+
+        #expect(preview.configuredProfile == .conservative)
+        #expect(preview.effectiveProfile == .conservative)
+        #expect(preview.configuredDeviceAuthorityPosture == .off)
+        #expect(preview.effectiveDeviceAuthorityPosture == .off)
     }
 
     private func makeProjectRoot(named name: String) throws -> URL {

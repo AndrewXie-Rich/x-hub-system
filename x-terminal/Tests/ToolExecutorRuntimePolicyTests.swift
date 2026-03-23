@@ -291,7 +291,7 @@ struct ToolExecutorRuntimePolicyTests {
                 deviceToolGroups: ["device.ui.observe", "device.ui.act"],
                 workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
             )
-            config = config.settingAutonomyPolicy(
+            config = config.settingRuntimeSurfacePolicy(
                 mode: .trustedOpenClawMode,
                 updatedAt: Date()
             )
@@ -328,9 +328,9 @@ struct ToolExecutorRuntimePolicyTests {
     }
 
     @Test
-    func deviceBrowserControlFailsClosedWhenAutonomyPolicyDisallowsBrowserRuntime() async throws {
+    func deviceBrowserControlFailsClosedWhenRuntimeSurfaceDisallowsBrowserRuntime() async throws {
         try await Self.permissionGate.run {
-            let fixture = ToolExecutorProjectFixture(name: "runtime-policy-browser-autonomy-deny")
+            let fixture = ToolExecutorProjectFixture(name: "runtime-policy-browser-surface-deny")
             defer { fixture.cleanup() }
 
             AXTrustedAutomationPermissionOwnerReadiness.installCurrentProviderForTesting {
@@ -338,7 +338,7 @@ struct ToolExecutorRuntimePolicyTests {
                     accessibility: .granted,
                     automation: .granted,
                     screenRecording: .missing,
-                    auditRef: "audit-runtime-policy-browser-autonomy-deny"
+                    auditRef: "audit-runtime-policy-browser-surface-deny"
                 )
             }
             defer { AXTrustedAutomationPermissionOwnerReadiness.resetCurrentProviderForTesting() }
@@ -352,7 +352,7 @@ struct ToolExecutorRuntimePolicyTests {
                 deviceToolGroups: ["device.browser.control"],
                 workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
             )
-            config = config.settingAutonomyPolicy(
+            config = config.settingRuntimeSurfacePolicy(
                 mode: .guided,
                 allowBrowserRuntime: false,
                 updatedAt: Date()
@@ -381,20 +381,20 @@ struct ToolExecutorRuntimePolicyTests {
             #expect(jsonString(summary["policy_reason"]) == "surface=browser_runtime_disallowed")
             #expect(jsonString(summary["runtime_surface_policy_reason"]) == "surface=browser_runtime_disallowed")
             let runtimeSurface = try #require(jsonObject(summary["runtime_surface"]))
-            #expect(jsonString(runtimeSurface["configured_surface"]) == AXProjectAutonomyMode.guided.rawValue)
-            #expect(jsonString(runtimeSurface["effective_surface"]) == AXProjectAutonomyMode.guided.rawValue)
+            #expect(jsonString(runtimeSurface["configured_surface"]) == AXProjectRuntimeSurfaceMode.guided.rawValue)
+            #expect(jsonString(runtimeSurface["effective_surface"]) == AXProjectRuntimeSurfaceMode.guided.rawValue)
             #expect(jsonBool(runtimeSurface["expired"]) == false)
             #expect(jsonArray(runtimeSurface["configured_surfaces"])?.isEmpty == true)
             #expect(jsonArray(runtimeSurface["effective_surfaces"])?.isEmpty == true)
-            #expect(jsonString(summary["runtime_surface_effective"]) == AXProjectAutonomyMode.guided.rawValue)
-            #expect(jsonString(summary["autonomy_effective_mode"]) == AXProjectAutonomyMode.guided.rawValue)
+            #expect(jsonString(summary["runtime_surface_effective"]) == AXProjectRuntimeSurfaceMode.guided.rawValue)
+            #expect(jsonString(summary["autonomy_effective_mode"]) == AXProjectRuntimeSurfaceMode.guided.rawValue)
             #expect(toolBody(result.output).contains("browser_runtime"))
         }
     }
 
     @Test
-    func deviceClipboardReadFailsClosedWhenAutonomyPolicyTTLExpires() async throws {
-        let fixture = ToolExecutorProjectFixture(name: "runtime-policy-device-autonomy-expired")
+    func deviceClipboardReadFailsClosedWhenRuntimeSurfaceTTLExpires() async throws {
+        let fixture = ToolExecutorProjectFixture(name: "runtime-policy-device-surface-expired")
         defer { fixture.cleanup() }
 
         let ctx = AXProjectContext(root: fixture.root)
@@ -405,7 +405,7 @@ struct ToolExecutorRuntimePolicyTests {
             deviceToolGroups: ["device.clipboard.read"],
             workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
         )
-        config = config.settingAutonomyPolicy(
+        config = config.settingRuntimeSurfacePolicy(
             mode: .trustedOpenClawMode,
             ttlSeconds: 60,
             updatedAt: Date(timeIntervalSince1970: 1)
@@ -431,12 +431,12 @@ struct ToolExecutorRuntimePolicyTests {
         #expect(jsonString(summary["policy_reason"]) == "autonomy_ttl_expired")
         #expect(jsonString(summary["runtime_surface_policy_reason"]) == "runtime_surface_ttl_expired")
         let runtimeSurface = try #require(jsonObject(summary["runtime_surface"]))
-        #expect(jsonString(runtimeSurface["configured_surface"]) == AXProjectAutonomyMode.trustedOpenClawMode.rawValue)
-        #expect(jsonString(runtimeSurface["effective_surface"]) == AXProjectAutonomyMode.manual.rawValue)
+        #expect(jsonString(runtimeSurface["configured_surface"]) == AXProjectRuntimeSurfaceMode.trustedOpenClawMode.rawValue)
+        #expect(jsonString(runtimeSurface["effective_surface"]) == AXProjectRuntimeSurfaceMode.manual.rawValue)
         #expect(jsonBool(runtimeSurface["expired"]) == true)
         #expect(jsonArray(runtimeSurface["effective_surfaces"])?.isEmpty == true)
-        #expect(jsonString(summary["runtime_surface_effective"]) == AXProjectAutonomyMode.manual.rawValue)
-        #expect(jsonString(summary["autonomy_effective_mode"]) == AXProjectAutonomyMode.manual.rawValue)
+        #expect(jsonString(summary["runtime_surface_effective"]) == AXProjectRuntimeSurfaceMode.manual.rawValue)
+        #expect(jsonString(summary["autonomy_effective_mode"]) == AXProjectRuntimeSurfaceMode.manual.rawValue)
         #expect(toolBody(result.output).contains("device.clipboard.read"))
     }
 
@@ -494,7 +494,7 @@ struct ToolExecutorRuntimePolicyTests {
                 deviceToolGroups: ["device.clipboard.read"],
                 workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
             )
-            config = config.settingAutonomyPolicy(
+            config = config.settingRuntimeSurfacePolicy(
                 mode: .trustedOpenClawMode,
                 ttlSeconds: 600,
                 updatedAt: Date()
@@ -517,16 +517,16 @@ struct ToolExecutorRuntimePolicyTests {
             #expect(jsonString(summary["policy_reason"]) == "hub_override=clamp_guided")
             #expect(jsonString(summary["runtime_surface_policy_reason"]) == "hub_override=clamp_guided")
             let runtimeSurface = try #require(jsonObject(summary["runtime_surface"]))
-            #expect(jsonString(runtimeSurface["configured_surface"]) == AXProjectAutonomyMode.trustedOpenClawMode.rawValue)
-            #expect(jsonString(runtimeSurface["effective_surface"]) == AXProjectAutonomyMode.guided.rawValue)
-            #expect(jsonString(runtimeSurface["hub_override_surface"]) == AXProjectAutonomyHubOverrideMode.clampGuided.rawValue)
-            #expect(jsonString(runtimeSurface["remote_override_surface"]) == AXProjectAutonomyHubOverrideMode.clampGuided.rawValue)
+            #expect(jsonString(runtimeSurface["configured_surface"]) == AXProjectRuntimeSurfaceMode.trustedOpenClawMode.rawValue)
+            #expect(jsonString(runtimeSurface["effective_surface"]) == AXProjectRuntimeSurfaceMode.guided.rawValue)
+            #expect(jsonString(runtimeSurface["hub_override_surface"]) == AXProjectRuntimeSurfaceHubOverrideMode.clampGuided.rawValue)
+            #expect(jsonString(runtimeSurface["remote_override_surface"]) == AXProjectRuntimeSurfaceHubOverrideMode.clampGuided.rawValue)
             #expect(jsonString(runtimeSurface["remote_override_source"]) == "hub_autonomy_policy_overrides_file")
-            #expect(jsonString(summary["runtime_surface_effective"]) == AXProjectAutonomyMode.guided.rawValue)
-            #expect(jsonString(summary["autonomy_effective_mode"]) == AXProjectAutonomyMode.guided.rawValue)
-            #expect(jsonString(summary["autonomy_hub_override_mode"]) == AXProjectAutonomyHubOverrideMode.clampGuided.rawValue)
-            #expect(jsonString(summary["autonomy_local_override_mode"]) == AXProjectAutonomyHubOverrideMode.none.rawValue)
-            #expect(jsonString(summary["autonomy_remote_override_mode"]) == AXProjectAutonomyHubOverrideMode.clampGuided.rawValue)
+            #expect(jsonString(summary["runtime_surface_effective"]) == AXProjectRuntimeSurfaceMode.guided.rawValue)
+            #expect(jsonString(summary["autonomy_effective_mode"]) == AXProjectRuntimeSurfaceMode.guided.rawValue)
+            #expect(jsonString(summary["autonomy_hub_override_mode"]) == AXProjectRuntimeSurfaceHubOverrideMode.clampGuided.rawValue)
+            #expect(jsonString(summary["autonomy_local_override_mode"]) == AXProjectRuntimeSurfaceHubOverrideMode.none.rawValue)
+            #expect(jsonString(summary["autonomy_remote_override_mode"]) == AXProjectRuntimeSurfaceHubOverrideMode.clampGuided.rawValue)
             #expect(jsonString(summary["autonomy_remote_override_source"]) == "hub_autonomy_policy_overrides_file")
         }
     }
@@ -555,7 +555,7 @@ struct ToolExecutorRuntimePolicyTests {
                 deviceToolGroups: ["device.clipboard.read"],
                 workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
             )
-            config = config.settingAutonomyPolicy(
+            config = config.settingRuntimeSurfacePolicy(
                 mode: .trustedOpenClawMode,
                 ttlSeconds: 600,
                 updatedAt: Date()

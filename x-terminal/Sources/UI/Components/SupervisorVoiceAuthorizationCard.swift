@@ -42,9 +42,9 @@ struct SupervisorVoiceAuthorizationCard: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 10) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Voice Authorization")
+                    Text("语音授权")
                         .font(UIThemeTokens.sectionFont())
-                    Text("High-risk actions remain fail-closed until Hub verifies the spoken challenge.")
+                    Text("高风险动作会保持 fail-closed，直到 Hub 完成口令核验。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -69,7 +69,7 @@ struct SupervisorVoiceAuthorizationCard: View {
             } else if resolution != nil {
                 HStack {
                     Spacer()
-                    Button("Clear voice auth state") {
+                    Button("清空语音授权状态") {
                         supervisorManager.resetVoiceAuthorizationState()
                         resetDraftState()
                     }
@@ -133,21 +133,21 @@ struct SupervisorVoiceAuthorizationCard: View {
     @ViewBuilder
     private func challengeDetails(_ challenge: HubIPCClient.VoiceGrantChallengeSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Challenge Details")
+            Text("挑战详情")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
 
             LazyVGrid(columns: [GridItem(.flexible(minimum: 180), spacing: 12), GridItem(.flexible(minimum: 180), spacing: 12)], alignment: .leading, spacing: 8) {
-                challengeDetailRow(title: "Challenge ID", value: challenge.challengeId)
-                challengeDetailRow(title: "Risk level", value: challenge.riskLevel)
-                challengeDetailRow(title: "Spoken code", value: challenge.challengeCode)
-                challengeDetailRow(title: "Expires", value: expiryText(for: challenge.expiresAtMs))
+                challengeDetailRow(title: "挑战 ID", value: challenge.challengeId)
+                challengeDetailRow(title: "风险等级", value: challenge.riskLevel)
+                challengeDetailRow(title: "口令", value: challenge.challengeCode)
+                challengeDetailRow(title: "过期时间", value: expiryText(for: challenge.expiresAtMs))
 
                 if !challenge.boundDeviceId.isEmpty {
-                    challengeDetailRow(title: "Voice device", value: challenge.boundDeviceId)
+                    challengeDetailRow(title: "语音设备", value: challenge.boundDeviceId)
                 }
                 if !challenge.mobileTerminalId.isEmpty {
-                    challengeDetailRow(title: "Mobile terminal", value: challenge.mobileTerminalId)
+                    challengeDetailRow(title: "移动端终端", value: challenge.mobileTerminalId)
                 }
             }
 
@@ -173,18 +173,18 @@ struct SupervisorVoiceAuthorizationCard: View {
     @ViewBuilder
     private var verificationControls: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Verify Spoken Response")
+            Text("核验口令回复")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
 
-            TextField("Paste or dictate the spoken authorization phrase", text: $transcriptDraft)
+            TextField("粘贴或输入你刚才说出的授权短语", text: $transcriptDraft)
                 .textFieldStyle(.roundedBorder)
 
             HStack(spacing: 10) {
                 VoiceInputButton(text: $transcriptDraft, autoAppend: true)
 
                 if let challengeCode = challenge?.challengeCode, !challengeCode.isEmpty {
-                    Text("Target code: \(challengeCode)")
+                    Text("目标口令: \(challengeCode)")
                         .font(UIThemeTokens.monoFont())
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
@@ -192,7 +192,7 @@ struct SupervisorVoiceAuthorizationCard: View {
             }
 
             if resolution?.requiresMobileConfirm == true {
-                Toggle("Paired mobile confirmation already completed", isOn: mobileConfirmationBinding)
+                Toggle("已在配对手机上完成确认", isOn: mobileConfirmationBinding)
                     .toggleStyle(.switch)
             }
 
@@ -203,15 +203,15 @@ struct SupervisorVoiceAuthorizationCard: View {
                     }
                 } label: {
                     if verifyInFlight {
-                        Label("Verifying...", systemImage: "waveform.badge.magnifyingglass")
+                        Label("核验中...", systemImage: "waveform.badge.magnifyingglass")
                     } else {
-                        Label("Retry Verify", systemImage: "waveform.badge.checkmark")
+                        Label("重新核验", systemImage: "waveform.badge.checkmark")
                     }
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(verifyInFlight || transcriptDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
-                Button("Cancel challenge") {
+                Button("取消挑战") {
                     supervisorManager.cancelVoiceAuthorization()
                     resetDraftState()
                 }
@@ -290,56 +290,56 @@ struct SupervisorVoiceAuthorizationCard: View {
     private func headline(for resolution: SupervisorVoiceAuthorizationResolution) -> String {
         switch resolution.state {
         case .pending:
-            return "Voice challenge issued and waiting for spoken verification"
+            return "语音挑战已发出，等待口令核验"
         case .verified:
-            return "Voice authorization verified"
+            return "语音授权已通过"
         case .denied:
-            return "Voice authorization denied"
+            return "语音授权被拒绝"
         case .escalatedToMobile:
-            return "Voice authorization requires paired mobile confirmation"
+            return "语音授权需要配对手机确认"
         case .failClosed:
-            return "Voice authorization remains fail-closed"
+            return "语音授权仍保持 fail-closed"
         }
     }
 
     private func whatHappened(for resolution: SupervisorVoiceAuthorizationResolution) -> String {
         switch resolution.state {
         case .pending:
-            return "Hub issued a voice challenge. XT is holding the gated action until the spoken response is verified."
+            return "Hub 已发出语音挑战。在口令核验通过前，XT 会继续拦住这次受控动作。"
         case .verified:
-            return "The paired Hub accepted the spoken response and marked the challenge as verified."
+            return "配对的 Hub 已接受这次口令回复，并把挑战标记为已验证。"
         case .denied:
-            return "Hub received the verification attempt but denied it under the current voice-grant policy."
+            return "Hub 已收到这次核验尝试，但按当前语音授权策略拒绝了它。"
         case .escalatedToMobile:
-            return "The current challenge was issued, but the selected risk tier requires an extra confirmation on the paired mobile terminal."
+            return "当前挑战已经发出，但所选风险等级要求在配对移动端再做一次确认。"
         case .failClosed:
-            return "The voice authorization path could not finish safely, so the gated action remains blocked instead of pretending it can recover."
+            return "这条语音授权链路没能安全完成，所以受控动作会继续保持阻塞，而不是假装已经恢复。"
         }
     }
 
     private func whyItHappened(for resolution: SupervisorVoiceAuthorizationResolution) -> String {
         switch resolution.state {
         case .pending:
-            return "High-risk actions only proceed after the spoken challenge proves intent and device binding."
+            return "高风险动作只有在口令确认了用户意图和设备绑定之后才会继续。"
         case .verified:
-            return "The stored request digests, device binding, and spoken response all satisfied the Hub-side verifier."
+            return "请求摘要、设备绑定和口令回复都通过了 Hub 侧校验器。"
         case .denied:
-            return "A deny_code was returned by Hub, so XT keeps the decision explicit and does not auto-retry behind the user."
+            return "Hub 返回了 deny_code，所以 XT 会把这次拒绝明确展示出来，不会在背后悄悄重试。"
         case .escalatedToMobile:
-            return "The risk tier or challenge contract requires a second factor on mobile before voice-only verification can pass."
+            return "当前风险等级或挑战契约要求先完成移动端二次确认，纯语音核验才可能通过。"
         case .failClosed:
-            return "Transport, runtime, or challenge prerequisites were incomplete, and the contract requires an explicit fail-closed state."
+            return "传输、运行时或挑战前置条件不完整，而当前契约要求显式保持 fail-closed。"
         }
     }
 
     private func hardLine(for resolution: SupervisorVoiceAuthorizationResolution) -> String {
         switch resolution.state {
         case .verified:
-            return "gated action stays blocked until Hub verification passes"
+            return "Hub 完成核验前，受控动作不会放行"
         case .denied:
-            return "denied voice challenge must remain visible"
+            return "被拒绝的语音挑战必须保持可见"
         case .pending, .escalatedToMobile, .failClosed:
-            return "voice authorization remains fail-closed until verified"
+            return "语音授权在核验完成前都保持 fail-closed"
         }
     }
 
@@ -361,11 +361,11 @@ struct SupervisorVoiceAuthorizationCard: View {
     private func expiryText(for expiresAtMs: Double) -> String {
         let remaining = Int((expiresAtMs / 1000.0) - Date().timeIntervalSince1970)
         if remaining <= 0 {
-            return "expired"
+            return "已过期"
         }
         if remaining < 60 {
-            return "\(remaining)s remaining"
+            return "\(remaining) 秒后过期"
         }
-        return "\(remaining / 60)m \(remaining % 60)s remaining"
+        return "\(remaining / 60) 分 \(remaining % 60) 秒后过期"
     }
 }

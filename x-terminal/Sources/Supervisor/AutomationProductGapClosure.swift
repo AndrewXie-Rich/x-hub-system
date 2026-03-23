@@ -1185,7 +1185,7 @@ struct XTAutomationDirectedTakeoverEngine {
             schemaVersion: "xt.automation_directed_takeover_evidence.v1",
             runID: input.runID,
             takeoverDecision: decision,
-            topBlocker: "Hub grant pending on connector_event/github_pr",
+            topBlocker: "等待 Hub 授权：connector_event/github_pr",
             nextOwner: input.currentOwner,
             retryAfterSeconds: 600,
             unblockChecklist: [

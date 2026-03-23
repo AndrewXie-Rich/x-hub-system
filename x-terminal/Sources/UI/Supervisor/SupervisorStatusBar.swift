@@ -12,7 +12,6 @@ struct SupervisorStatusBar: View {
     @ObservedObject var supervisor: SupervisorModel
     @EnvironmentObject private var appModel: AppModel
     @StateObject private var supervisorManager = SupervisorManager.shared
-    @State private var showSupervisorChat = false
 
     var body: some View {
         HStack(spacing: 16) {
@@ -36,10 +35,6 @@ struct SupervisorStatusBar: View {
                 .foregroundColor(Color.secondary.opacity(0.2)),
             alignment: .bottom
         )
-        .sheet(isPresented: $showSupervisorChat) {
-            SupervisorChatWindow()
-                .environmentObject(appModel)
-        }
     }
 
     // MARK: - Subviews
@@ -59,7 +54,7 @@ struct SupervisorStatusBar: View {
                 .foregroundColor(.purple)
                 .font(.system(size: 14))
 
-            Text("Supervisor (\(ExecutionRoutePresentation.activeModelLabel(configuredModelId: configuredSupervisorModelId, snapshot: snapshot)))")
+            Text("Supervisor · \(ExecutionRoutePresentation.activeModelLabel(configuredModelId: configuredSupervisorModelId, snapshot: snapshot))")
                 .font(.system(size: 13, weight: .medium))
                 .lineLimit(1)
                 .help(tooltip)
@@ -104,7 +99,7 @@ struct SupervisorStatusBar: View {
 
     private func supervisorStatusText(snapshot: AXRoleExecutionSnapshot) -> String {
         if snapshot.executionPath == "no_record" && !appModel.hubInteractive {
-            return "Hub Off"
+            return "Hub 关闭"
         }
         return ExecutionRoutePresentation.statusText(snapshot: snapshot)
     }
@@ -156,13 +151,15 @@ struct SupervisorStatusBar: View {
 
     private var quickActions: some View {
         HStack(spacing: 8) {
-            Button(action: { showSupervisorChat.toggle() }) {
+            Button(action: {
+                supervisorManager.requestSupervisorWindow(reason: "status_bar")
+            }) {
                 Image(systemName: "message.circle.fill")
                     .foregroundColor(.purple)
                     .font(.system(size: 16))
             }
             .buttonStyle(.plain)
-            .help("与 Supervisor 对话 (⌘⇧S)")
+            .help("打开 Supervisor 窗口 (⌘⇧S)")
         }
     }
 }

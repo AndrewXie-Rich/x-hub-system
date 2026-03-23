@@ -18,6 +18,12 @@ struct XTHubGrantPresentationTests {
                 modelId: "gpt-5.4"
             ) == "付费模型调用（gpt-5.4）"
         )
+        #expect(
+            XTHubGrantPresentation.capabilityLabel(
+                capability: "browser.control",
+                modelId: ""
+            ) == "浏览器控制"
+        )
     }
 
     @Test
@@ -39,9 +45,9 @@ struct XTHubGrantPresentationTests {
             grantRequestId: "grant-123"
         )
 
-        #expect(summary.contains("waiting for Hub grant approval"))
+        #expect(summary.contains("等待 Hub 授权"))
         #expect(summary.contains("联网访问"))
-        #expect(summary.contains("grant=grant-123"))
+        #expect(summary.contains("授权单号：grant-123"))
     }
 
     @Test
@@ -52,23 +58,23 @@ struct XTHubGrantPresentationTests {
             deniedByUser: true
         )
 
-        #expect(summary.contains("Hub grant denied by user"))
+        #expect(summary.contains("Hub 授权已被你拒绝"))
         #expect(summary.contains("本地模型调用（llama）"))
     }
 
     @Test
     func emptyAndAmbiguityRepliesRespectProjectContext() {
         #expect(
-            XTHubGrantPresentation.emptyPendingReply(projectName: nil) == "当前没有待处理的 Hub grant。"
+            XTHubGrantPresentation.emptyPendingReply(projectName: nil) == "当前没有待处理的 Hub 授权。"
         )
         #expect(
-            XTHubGrantPresentation.emptyPendingReply(projectName: "Project Alpha") == "项目 Project Alpha 当前没有待处理的 Hub grant。"
+            XTHubGrantPresentation.emptyPendingReply(projectName: "Project Alpha") == "项目 Project Alpha 当前没有待处理的 Hub 授权。"
         )
         #expect(
-            XTHubGrantPresentation.ambiguityHeader(projectName: nil) == "当前有多个待处理 Hub grant，我不能替你盲选。"
+            XTHubGrantPresentation.ambiguityHeader(projectName: nil) == "当前有多笔待处理的 Hub 授权，我不能替你盲选。"
         )
         #expect(
-            XTHubGrantPresentation.ambiguityHeader(projectName: "Project Alpha") == "项目 Project Alpha 还有多个待处理 Hub grant，我不能替你盲选。"
+            XTHubGrantPresentation.ambiguityHeader(projectName: "Project Alpha") == "项目 Project Alpha 还有多笔待处理的 Hub 授权，我不能替你盲选。"
         )
     }
 
@@ -86,8 +92,8 @@ struct XTHubGrantPresentationTests {
         #expect(reply.contains("语音授权已验证"))
         #expect(reply.contains("《Local Runtime》"))
         #expect(reply.contains("本地模型调用（llama）"))
-        #expect(reply.contains("grant=grant-local-1"))
-        #expect(reply.contains("reason=hub_busy"))
+        #expect(reply.contains("授权单号：grant-local-1"))
+        #expect(reply.contains("原因：hub_busy"))
     }
 
     @Test
@@ -98,7 +104,7 @@ struct XTHubGrantPresentationTests {
             modelId: ""
         )
         let reasonWithCapability = XTHubGrantPresentation.supplementaryReason(
-            "waiting for Hub grant approval · 联网访问 · grant=grant-123",
+            "等待 Hub 授权 · 联网访问 · 授权单号：grant-123",
             capability: "web.fetch",
             modelId: ""
         )
@@ -136,7 +142,7 @@ struct XTHubGrantPresentationTests {
 
         #expect(approveDraft.contains("联网访问"))
         #expect(approveDraft.contains("放行未完成"))
-        #expect(approveDraft.contains("reason=quota_denied"))
+        #expect(approveDraft.contains("原因：quota_denied"))
         #expect(denyDraft.contains("付费模型调用（gpt-5.4）"))
         #expect(denyDraft.contains("拒绝未完成"))
     }

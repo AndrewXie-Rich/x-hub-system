@@ -237,7 +237,7 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
                             ) ?? ""
                         )),
                         ("路由代码", normalizedScalar(approval.routingReasonCode ?? "")),
-                        ("路由解释", normalizedScalar(approval.routingExplanation ?? "")),
+                        ("路由原文", normalizedScalar(approval.routingExplanation ?? "")),
                         ("摘要", normalizedScalar(approval.toolSummary)),
                         ("原因", reason)
                     ]
@@ -347,7 +347,7 @@ struct SupervisorAuditDrillDownPresentation: Equatable, Identifiable {
                             ) ?? ""
                         )),
                         ("路由代码", normalizedScalar(item.record.routingReasonCode ?? "")),
-                        ("路由解释", normalizedScalar(item.record.routingExplanation ?? "")),
+                        ("路由原文", normalizedScalar(item.record.routingExplanation ?? "")),
                         ("所需能力", normalizedScalar(item.requiredCapability)),
                         ("授权请求", normalizedScalar(item.grantRequestId)),
                         ("授权", normalizedScalar(item.grantId)),

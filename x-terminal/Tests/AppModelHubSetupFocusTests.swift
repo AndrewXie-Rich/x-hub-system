@@ -21,12 +21,16 @@ struct AppModelHubSetupFocusTests {
         appModel.requestHubSetupFocus(
             sectionId: " troubleshoot ",
             title: " 检查 Hub Recovery ",
-            detail: " reason=remote_export_blocked "
+            detail: " reason=remote_export_blocked ",
+            refreshAction: .recheckOfficialSkills,
+            refreshReason: "official_skill_blocker"
         )
         let first = try #require(appModel.hubSetupFocusRequest)
         #expect(first.sectionId == "troubleshoot")
         #expect(first.context?.title == "检查 Hub Recovery")
         #expect(first.context?.detail == "reason=remote_export_blocked")
+        #expect(first.context?.refreshAction == .recheckOfficialSkills)
+        #expect(first.context?.refreshReason == "official_skill_blocker")
 
         appModel.requestHubSetupFocus(sectionId: "connection_log")
         let second = try #require(appModel.hubSetupFocusRequest)

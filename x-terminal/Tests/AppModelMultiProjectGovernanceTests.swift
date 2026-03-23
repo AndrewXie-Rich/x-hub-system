@@ -6,12 +6,34 @@ import Testing
 @MainActor
 struct AppModelMultiProjectGovernanceTests {
     @Test
-    func multiProjectManagerCreateProjectFollowsExplicitGovernanceInsteadOfLegacyAutonomy() async {
+    func multiProjectManagerCreateProjectDefaultsToConservativeGovernanceWithoutLegacyOrExplicitTier() async {
+        let manager = MultiProjectManager(supervisor: SupervisorModel())
+        let project = await manager.createProject(
+            ProjectConfig(
+                name: "Conservative Default",
+                taskDescription: "No explicit governance should stay fail-closed.",
+                modelName: "claude-sonnet-4.6"
+            )
+        )
+
+        #expect(project.executionTier == .a0Observe)
+        #expect(project.supervisorInterventionTier == .s0SilentAudit)
+        #expect(project.reviewPolicyMode == .milestoneOnly)
+        #expect(project.progressHeartbeatSeconds == AXProjectExecutionTier.a0Observe.defaultProgressHeartbeatSeconds)
+        #expect(project.reviewPulseSeconds == 0)
+        #expect(project.brainstormReviewSeconds == 0)
+        #expect(project.eventDrivenReviewEnabled == false)
+        #expect(project.eventReviewTriggers == [.manualRequest])
+        #expect(project.autonomyLevel == .manual)
+    }
+
+    @Test
+    func multiProjectManagerCreateProjectFollowsExplicitGovernanceInsteadOfLegacyCompatShadow() async {
         let manager = MultiProjectManager(supervisor: SupervisorModel())
         let project = await manager.createProject(
             ProjectConfig(
                 name: "Governance First",
-                taskDescription: "Verify explicit governance wins over stale legacy autonomy.",
+                taskDescription: "Verify explicit governance wins over the stale legacy compat shadow.",
                 modelName: "claude-sonnet-4.6",
                 autonomyLevel: .manual,
                 executionTier: .a4OpenClaw,
@@ -20,7 +42,8 @@ struct AppModelMultiProjectGovernanceTests {
                 progressHeartbeatSeconds: 300,
                 reviewPulseSeconds: 600,
                 brainstormReviewSeconds: 900,
-                eventDrivenReviewEnabled: true
+                eventDrivenReviewEnabled: true,
+                eventReviewTriggers: [.failureStreak, .planDrift, .preDoneSummary]
             )
         )
 
@@ -31,6 +54,7 @@ struct AppModelMultiProjectGovernanceTests {
         #expect(project.reviewPulseSeconds == 600)
         #expect(project.brainstormReviewSeconds == 900)
         #expect(project.eventDrivenReviewEnabled)
+        #expect(project.eventReviewTriggers == [.failureStreak, .planDrift, .preDoneSummary])
         #expect(project.autonomyLevel == .fullAuto)
     }
 
@@ -80,7 +104,8 @@ struct AppModelMultiProjectGovernanceTests {
             progressHeartbeatSeconds: 420,
             reviewPulseSeconds: 840,
             brainstormReviewSeconds: 1260,
-            eventDrivenReviewEnabled: false
+            eventDrivenReviewEnabled: true,
+            eventReviewTriggers: [.blockerDetected, .preHighRiskAction, .preDoneSummary]
         )
 
         let binding = try #require(project.registeredProjectBinding)
@@ -93,7 +118,45 @@ struct AppModelMultiProjectGovernanceTests {
         #expect(project.progressHeartbeatSeconds == 420)
         #expect(project.reviewPulseSeconds == 840)
         #expect(project.brainstormReviewSeconds == 1260)
-        #expect(project.eventDrivenReviewEnabled == false)
+        #expect(project.eventDrivenReviewEnabled)
+        #expect(project.eventReviewTriggers == [.blockerDetected, .preHighRiskAction, .preDoneSummary])
         #expect(project.autonomyLevel == .auto)
+    }
+
+    @Test
+    func applyProjectGovernanceTemplatePersistsGovernanceTemplateRawLogType() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xt_appmodel_governance_template_log_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        let appModel = AppModel()
+        appModel.projectContext = ctx
+        appModel.projectConfig = try AXProjectStore.loadOrCreateConfig(for: ctx)
+
+        appModel.applyProjectGovernanceTemplate(.safe)
+
+        let rows = try rawLogEntries(for: ctx)
+        let row = try #require(rows.last(where: { ($0["type"] as? String) == "project_governance_template" }))
+        #expect(row["legacy_type"] as? String == "project_autonomy_profile")
+        #expect(row["template"] as? String == AXProjectGovernanceTemplate.safe.rawValue)
+        #expect(row["profile"] as? String == AXProjectGovernanceTemplate.safe.rawValue)
+        #expect(row["execution_tier"] as? String == AXProjectExecutionTier.a3DeliverAuto.rawValue)
+        #expect(row["supervisor_intervention_tier"] as? String == AXProjectSupervisorInterventionTier.s3StrategicCoach.rawValue)
+    }
+}
+
+private func rawLogEntries(for ctx: AXProjectContext) throws -> [[String: Any]] {
+    guard FileManager.default.fileExists(atPath: ctx.rawLogURL.path) else { return [] }
+    let data = try Data(contentsOf: ctx.rawLogURL)
+    let lines = String(decoding: data, as: UTF8.self)
+        .split(separator: "\n")
+        .map(String.init)
+
+    return try lines.map { line in
+        let rowData = try #require(line.data(using: .utf8))
+        let object = try #require(try JSONSerialization.jsonObject(with: rowData) as? [String: Any])
+        return object
     }
 }

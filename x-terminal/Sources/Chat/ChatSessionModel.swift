@@ -77,6 +77,7 @@ final class ChatSessionModel: ObservableObject {
         var truncatedLayers: [String]
         var redactedItems: Int?
         var privateDrops: Int?
+        var projectExplainability: ProjectPromptExplainabilityDiagnostics? = nil
         var visiblePendingGuidanceInjectionId: String? = nil
     }
 
@@ -85,6 +86,88 @@ final class ChatSessionModel: ObservableObject {
         var explicitRefs: [String]
         var stage: String
         var reason: String
+    }
+
+    private struct ProjectRecentDialogueSelection {
+        var profile: AXProjectRecentDialogueProfile
+        var source: String
+        var selectedPairs: Int
+        var floorPairs: Int
+        var floorSatisfied: Bool
+        var selectedMessages: [(String, String)]
+        var lowSignalDroppedMessages: Int
+        var messagesText: String
+
+        var dialogueWindowText: String {
+            return """
+recent_project_dialogue_profile: \(profile.rawValue)
+recent_project_dialogue_selected_pairs: \(selectedPairs)
+recent_project_dialogue_floor_pairs: \(floorPairs)
+recent_project_dialogue_floor_satisfied: \(floorSatisfied)
+recent_project_dialogue_source: \(source)
+recent_project_dialogue_low_signal_dropped: \(lowSignalDroppedMessages)
+messages:
+\(messagesText.isEmpty ? "(none)" : messagesText)
+"""
+        }
+    }
+
+    private struct ProjectPromptExplainabilityDiagnostics {
+        var recentProjectDialogueProfile: String
+        var recentProjectDialogueSelectedPairs: Int
+        var recentProjectDialogueFloorPairs: Int
+        var recentProjectDialogueFloorSatisfied: Bool
+        var recentProjectDialogueSource: String
+        var recentProjectDialogueLowSignalDropped: Int
+        var projectContextDepth: String
+        var effectiveProjectServingProfile: String
+        var workflowPresent: Bool
+        var executionEvidencePresent: Bool
+        var reviewGuidancePresent: Bool
+        var crossLinkHintsSelected: Int
+        var personalMemoryExcludedReason: String
+
+        var usageFields: [String: Any] {
+            [
+                "recent_project_dialogue_profile": recentProjectDialogueProfile,
+                "recent_project_dialogue_selected_pairs": recentProjectDialogueSelectedPairs,
+                "recent_project_dialogue_floor_pairs": recentProjectDialogueFloorPairs,
+                "recent_project_dialogue_floor_satisfied": recentProjectDialogueFloorSatisfied,
+                "recent_project_dialogue_source": recentProjectDialogueSource,
+                "recent_project_dialogue_low_signal_dropped": recentProjectDialogueLowSignalDropped,
+                "project_context_depth": projectContextDepth,
+                "effective_project_serving_profile": effectiveProjectServingProfile,
+                "workflow_present": workflowPresent,
+                "execution_evidence_present": executionEvidencePresent,
+                "review_guidance_present": reviewGuidancePresent,
+                "cross_link_hints_selected": crossLinkHintsSelected,
+                "personal_memory_excluded_reason": personalMemoryExcludedReason,
+            ]
+        }
+    }
+
+    private struct ProjectPromptContextAssembly {
+        var recentDialogueSelection: ProjectRecentDialogueSelection
+        var contextDepthProfile: AXProjectContextDepthProfile
+        var effectiveServingProfile: XTMemoryServingProfile?
+        var observationsText: String
+        var rawEvidenceText: String
+        var focusedProjectAnchorPackText: String
+        var longtermOutlineText: String
+        var contextRefsText: String
+        var evidencePackText: String
+        var diagnostics: ProjectPromptExplainabilityDiagnostics
+    }
+
+    private struct ProjectCrossLinkPromptHints {
+        var selectedCount: Int
+        var lines: [String]
+        var refs: [String]
+    }
+
+    private struct ProjectRouteIncidentTrendDiagnosis {
+        var summary: String
+        var actionHint: String?
     }
 
     private struct PromptBuildOutput {
@@ -96,6 +179,49 @@ final class ChatSessionModel: ObservableObject {
     private struct ProjectSupervisorGuidancePromptSnapshot {
         var block: String
         var visiblePendingGuidanceInjectionId: String?
+    }
+
+    private struct ProjectUIReviewRepairContract {
+        var summary: String
+        var instruction: String
+        var repairAction: String
+        var repairFocus: String
+        var nextSafeAction: String
+        var uiReviewRef: String
+        var uiReviewReviewId: String
+        var uiReviewVerdict: String
+        var uiReviewIssueCodes: String
+        var uiReviewSummary: String
+        var skillResultSummary: String
+    }
+
+    private struct ProjectSupervisorReplanContract {
+        var contractKind: String
+        var trigger: String
+        var reviewLevel: String
+        var verdict: String
+        var summary: String
+        var primaryBlocker: String
+        var currentState: String
+        var nextStep: String
+        var nextSafeAction: String
+        var recommendedActions: [String]
+        var workOrderRef: String
+        var effectiveSupervisorTier: String
+        var effectiveWorkOrderDepth: String
+    }
+
+    struct ProjectSupervisorGuidanceEnvelopeGateProbe: Equatable, Sendable {
+        var requiresFinalOnly: Bool
+        var guidanceInjectionId: String?
+        var toolCallCount: Int
+        var skillCallCount: Int
+        var final: String?
+    }
+
+    private enum ProjectSupervisorGuidanceEnvelopeGateResult {
+        case allow(ToolActionEnvelope)
+        case requireFinalOnly(SupervisorGuidanceInjectionRecord)
     }
 
     private enum ToolActionEnvelopeParseResult {
@@ -137,8 +263,17 @@ final class ChatSessionModel: ObservableObject {
 
     func cancel() {
         guard let rid = currentReqId else { return }
-        Task {
-            await HubAIClient.shared.cancel(reqId: rid)
+        Task { [weak self] in
+            let status = await HubAIClient.shared.cancel(reqId: rid)
+            guard let self else { return }
+
+            let requestError = status.requestError.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard status.requestQueued != true || !requestError.isEmpty else { return }
+
+            let detail = requestError.isEmpty ? "cancel_request_not_delivered" : requestError
+            await MainActor.run {
+                self.lastError = "取消请求未成功送达 Hub，当前生成可能仍会继续：\(detail)"
+            }
         }
     }
 
@@ -683,7 +818,7 @@ final class ChatSessionModel: ObservableObject {
                 if let pending = pendingSupervisorGuidancePauseBeforeToolExecution(for: updated) {
                     appendAssistantProgress(
                         assistantIndex: updated.assistantIndex,
-                        line: "supervisor guidance 命中 safe point，先暂停已审批工具。"
+                        line: "Supervisor 指导命中安全点，先暂停已审批工具。"
                     )
                     recordSupervisorSafePointPause(
                         flow: &updated,
@@ -764,7 +899,7 @@ final class ChatSessionModel: ObservableObject {
                 if let pending = pendingSupervisorGuidancePauseBeforeToolExecution(for: updated) {
                     appendAssistantProgress(
                         assistantIndex: updated.assistantIndex,
-                        line: "supervisor guidance 命中 safe point，先暂停已审批工具。"
+                        line: "Supervisor 指导命中安全点，先暂停已审批工具。"
                     )
                     recordSupervisorSafePointPause(
                         flow: &updated,
@@ -1188,12 +1323,36 @@ final class ChatSessionModel: ObservableObject {
 
                     switch parseToolActionEnvelope(from: out) {
                     case .envelope(let env):
-                        persistSupervisorGuidanceAckIfNeeded(
+                        let gatedEnv: ToolActionEnvelope
+                        switch applyProjectSupervisorGuidanceEnvelopeGateWithAudit(
                             env: env,
                             ctx: ctx,
                             visiblePendingGuidanceInjectionId: promptBuild.visiblePendingGuidanceInjectionId
+                        ) {
+                        case .allow(let allowed):
+                            gatedEnv = allowed
+                        case .requireFinalOnly(let pending):
+                            finalizeToolFlowTurn(
+                                flow: flow,
+                                assistantText: projectSupervisorGuidanceFinalOnlyFailureMessage(
+                                    pending,
+                                    ctx: ctx
+                                )
+                            )
+                            return
+                        }
+
+                        let normalizedFinal = normalizedProjectSupervisorFinalIfNeeded(
+                            final: gatedEnv.final,
+                            ctx: ctx,
+                            visiblePendingGuidanceInjectionId: promptBuild.visiblePendingGuidanceInjectionId
                         )
-                        if let final = env.final, !final.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        persistSupervisorGuidanceAckIfNeeded(
+                            env: gatedEnv,
+                            ctx: ctx,
+                            visiblePendingGuidanceInjectionId: promptBuild.visiblePendingGuidanceInjectionId
+                        )
+                        if let final = normalizedFinal, !final.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             finalizeToolFlowTurn(flow: flow, assistantText: final)
                         } else {
                             finalizeToolFlowTurn(
@@ -1251,11 +1410,11 @@ final class ChatSessionModel: ObservableObject {
                     }
 
                     if !toRun.isEmpty {
-                        if let pending = pendingSupervisorGuidancePauseBeforeToolExecution(for: flow) {
-                            appendAssistantProgress(
-                                assistantIndex: assistantIndex,
-                                line: "supervisor guidance 命中 safe point，先暂停验证。"
-                            )
+                            if let pending = pendingSupervisorGuidancePauseBeforeToolExecution(for: flow) {
+                                appendAssistantProgress(
+                                    assistantIndex: assistantIndex,
+                                    line: "Supervisor 指导命中安全点，先暂停验证。"
+                                )
                             recordSupervisorSafePointPause(
                                 flow: &flow,
                                 pending: pending,
@@ -1369,6 +1528,11 @@ final class ChatSessionModel: ObservableObject {
                 if let reason = usage?.fallbackReasonCode, !reason.isEmpty {
                     usageEntry["fallback_reason_code"] = reason
                 }
+                if let projectExplainability = promptBuild.memory.projectExplainability {
+                    for (key, value) in projectExplainability.usageFields {
+                        usageEntry[key] = value
+                    }
+                }
                 if usage?.remoteRetryAttempted == true {
                     usageEntry["remote_retry_attempted"] = true
                 }
@@ -1450,13 +1614,35 @@ final class ChatSessionModel: ObservableObject {
                     }
                 }
 
+                switch applyProjectSupervisorGuidanceEnvelopeGateWithAudit(
+                    env: env,
+                    ctx: ctx,
+                    visiblePendingGuidanceInjectionId: promptBuild.visiblePendingGuidanceInjectionId
+                ) {
+                case .allow(let allowed):
+                    env = allowed
+                case .requireFinalOnly:
+                    appendAssistantProgress(
+                        assistantIndex: assistantIndex,
+                        line: "Supervisor 指导要求先停机重规划，我先索取仅 final 响应。"
+                    )
+                    flow.finalizeOnly = true
+                    flow.deferredFinal = nil
+                    continue
+                }
+
+                let normalizedFinal = normalizedProjectSupervisorFinalIfNeeded(
+                    final: env.final,
+                    ctx: ctx,
+                    visiblePendingGuidanceInjectionId: promptBuild.visiblePendingGuidanceInjectionId
+                )
                 persistSupervisorGuidanceAckIfNeeded(
                     env: env,
                     ctx: ctx,
                     visiblePendingGuidanceInjectionId: promptBuild.visiblePendingGuidanceInjectionId
                 )
 
-                if let final = env.final, !final.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if let final = normalizedFinal, !final.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     // Gate final behind verification when we have pending changes.
                     if requiresVerify(flow: flow) {
                         flow.deferredFinal = final
@@ -1575,7 +1761,7 @@ final class ChatSessionModel: ObservableObject {
                                         if let pending = pendingSupervisorGuidancePauseBeforeToolExecution(for: flow) {
                                             appendAssistantProgress(
                                                 assistantIndex: assistantIndex,
-                                                line: "supervisor guidance 命中 safe point，先暂停修正后的工具批次。"
+                                                line: "Supervisor 指导命中安全点，先暂停修正后的工具批次。"
                                             )
                                             recordSupervisorSafePointPause(
                                                 flow: &flow,
@@ -1694,7 +1880,7 @@ final class ChatSessionModel: ObservableObject {
                     if let pending = pendingSupervisorGuidancePauseBeforeToolExecution(for: flow) {
                         appendAssistantProgress(
                             assistantIndex: assistantIndex,
-                            line: "supervisor guidance 命中 safe point，先暂停当前工具批次。"
+                            line: "Supervisor 指导命中安全点，先暂停当前工具批次。"
                         )
                         recordSupervisorSafePointPause(
                             flow: &flow,
@@ -1736,7 +1922,7 @@ final class ChatSessionModel: ObservableObject {
                             if let pending = pendingSupervisorGuidancePauseBeforeToolExecution(for: flow) {
                                 appendAssistantProgress(
                                     assistantIndex: assistantIndex,
-                                    line: "supervisor guidance 命中 safe point，先暂停审批前检查。"
+                                    line: "Supervisor 指导命中安全点，先暂停审批前检查。"
                                 )
                                 recordSupervisorSafePointPause(
                                     flow: &flow,
@@ -1937,7 +2123,8 @@ final class ChatSessionModel: ObservableObject {
         args: [String],
         userText: String,
         ctx: AXProjectContext,
-        config: AXProjectConfig?
+        config: AXProjectConfig?,
+        snapshot overrideSnapshot: ModelStateSnapshot? = nil
     ) -> String {
         if args.isEmpty {
             return slashModelsText(ctx: ctx, config: config)
@@ -1965,8 +2152,30 @@ final class ChatSessionModel: ObservableObject {
             return "已清除 coder 的项目级模型覆盖，回退到全局路由。"
         }
 
-        let snapshot = modelsSnapshotForSlash()
+        let snapshot = modelsSnapshotForSlash(snapshot: overrideSnapshot)
         let assessment = HubModelSelectionAdvisor.assess(requestedId: mid, snapshot: snapshot)
+        if let blocked = assessment?.nonInteractiveExactMatch {
+            return blockedSlashModelSelectionText(
+                role: .coder,
+                requestedModelId: mid,
+                blocked: blocked,
+                assessment: assessment,
+                ctx: ctx,
+                snapshot: snapshot
+            )
+        }
+        if shouldRejectUnavailableSlashModelSelection(
+            assessment: assessment,
+            snapshot: snapshot
+        ) {
+            return unavailableSlashModelSelectionPreflightText(
+                role: .coder,
+                requestedModelId: mid,
+                assessment: assessment,
+                ctx: ctx,
+                snapshot: snapshot
+            )
+        }
         guard var cfg = (config ?? (try? AXProjectStore.loadOrCreateConfig(for: ctx))) else {
             return "无法读取 project config，未修改。"
         }
@@ -1984,6 +2193,13 @@ final class ChatSessionModel: ObservableObject {
         if assessment?.isExactMatchLoaded == true {
             return "已将 coder 模型设置为：\(mid)"
         }
+        if snapshot.models.isEmpty {
+            return [
+                "已将 coder 模型设置为：\(mid)",
+                "",
+                "当前拿不到 Hub 的模型快照，暂时无法确认它是否真的可用。可执行 `/models` 或去 Hub -> Models 检查。"
+            ].joined(separator: "\n")
+        }
         return unavailableSlashModelSelectionText(modelId: mid, assessment: assessment, transportMode: HubAIClient.transportMode().rawValue)
     }
 
@@ -1991,7 +2207,8 @@ final class ChatSessionModel: ObservableObject {
         args: [String],
         userText: String,
         ctx: AXProjectContext,
-        config: AXProjectConfig?
+        config: AXProjectConfig?,
+        snapshot overrideSnapshot: ModelStateSnapshot? = nil
     ) -> String {
         guard args.count >= 2 else {
             return "用法：/rolemodel <coder|coarse|refine|reviewer|advisor> <model_id|auto>"
@@ -2020,6 +2237,31 @@ final class ChatSessionModel: ObservableObject {
             return "已清除 \(role.rawValue) 的项目级模型覆盖，回退到全局路由。"
         }
 
+        let snapshot = modelsSnapshotForSlash(snapshot: overrideSnapshot)
+        let assessment = HubModelSelectionAdvisor.assess(requestedId: modelArg, snapshot: snapshot)
+        if let blocked = assessment?.nonInteractiveExactMatch {
+            return blockedSlashModelSelectionText(
+                role: role,
+                requestedModelId: modelArg,
+                blocked: blocked,
+                assessment: assessment,
+                ctx: ctx,
+                snapshot: snapshot
+            )
+        }
+        if shouldRejectUnavailableSlashModelSelection(
+            assessment: assessment,
+            snapshot: snapshot
+        ) {
+            return unavailableSlashModelSelectionPreflightText(
+                role: role,
+                requestedModelId: modelArg,
+                assessment: assessment,
+                ctx: ctx,
+                snapshot: snapshot
+            )
+        }
+
         if projectModelOverrideChanged(current: cfg.modelOverride(for: role), next: modelArg) {
             writeSessionSummaryCapsuleIfPossible(
                 ctx: ctx,
@@ -2030,6 +2272,16 @@ final class ChatSessionModel: ObservableObject {
         cfg = cfg.settingModelOverride(role: role, modelId: modelArg)
         activeConfig = cfg
         try? AXProjectStore.saveConfig(cfg, for: ctx)
+        if assessment?.isExactMatchLoaded == true {
+            return "已将 \(role.rawValue) 模型设置为：\(modelArg)"
+        }
+        if snapshot.models.isEmpty {
+            return [
+                "已将 \(role.rawValue) 模型设置为：\(modelArg)",
+                "",
+                "当前拿不到 Hub 的模型快照，暂时无法确认它是否真的可用。可执行 `/models` 或去 Hub -> Models 检查。"
+            ].joined(separator: "\n")
+        }
         return "已将 \(role.rawValue) 模型设置为：\(modelArg)"
     }
 
@@ -2727,40 +2979,52 @@ Tool policy:
         let latest = SupervisorGuidanceInjectionStore.latest(for: ctx)
         let pending = SupervisorGuidanceInjectionStore.latestPendingAck(for: ctx)
         guard latest != nil || pending != nil else {
-            return "当前项目没有 supervisor guidance。\n\n" + slashGuidanceUsageText()
+            return "当前项目没有 Supervisor 指导。\n\n" + slashGuidanceUsageText()
         }
 
         let nowMs = Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
         var lines: [String] = []
         if let pending {
-            lines.append("pending guidance:")
-            lines.append("- injection_id: \(pending.injectionId)")
-            lines.append("- delivery_mode: \(pending.deliveryMode.rawValue)")
-            lines.append("- intervention_mode: \(pending.interventionMode.rawValue)")
-            lines.append("- safe_point_policy: \(pending.safePointPolicy.rawValue)")
-            lines.append("- lifecycle: \(SupervisorGuidanceInjectionStore.lifecycleSummary(for: pending, nowMs: nowMs))")
-            lines.append("- expires_at_ms: \(pending.expiresAtMs > 0 ? String(pending.expiresAtMs) : "(none)")")
-            lines.append("- retry_at_ms: \(pending.retryAtMs > 0 ? String(pending.retryAtMs) : "(none)")")
-            lines.append("- retry_count: \(pending.retryCount)/\(pending.maxRetryCount)")
-            lines.append("- ack_required: \(pending.ackRequired ? "yes" : "no")")
-            lines.append("- guidance_text: \(pending.guidanceText)")
+            lines.append("待确认指导：")
+            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("injection_id", value: pending.injectionId))")
+            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("delivery", value: pending.deliveryMode.displayName))")
+            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("intervention", value: pending.interventionMode.displayName))")
+            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("safe_point", value: pending.safePointPolicy.displayName))")
+            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("ack", value: slashGuidanceAckSummary(status: pending.ackStatus, required: pending.ackRequired)))")
+            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("lifecycle", value: SupervisorGuidanceInjectionStore.lifecycleSummary(for: pending, nowMs: nowMs)))")
+            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("expires_at_ms", value: slashGuidanceTimestampText(pending.expiresAtMs)))")
+            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("retry_at_ms", value: slashGuidanceTimestampText(pending.retryAtMs)))")
+            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("retry_count", value: "\(pending.retryCount)/\(pending.maxRetryCount)"))")
+            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("guidance", value: pending.guidanceText))")
         }
         if let latest {
             if !lines.isEmpty { lines.append("") }
-            lines.append("latest guidance:")
-            lines.append("- injection_id: \(latest.injectionId)")
-            lines.append("- ack_status: \(latest.ackStatus.rawValue)")
-            lines.append("- ack_note: \(latest.ackNote.isEmpty ? "(none)" : latest.ackNote)")
-            lines.append("- lifecycle: \(SupervisorGuidanceInjectionStore.lifecycleSummary(for: latest, nowMs: nowMs))")
-            lines.append("- expires_at_ms: \(latest.expiresAtMs > 0 ? String(latest.expiresAtMs) : "(none)")")
-            lines.append("- retry_at_ms: \(latest.retryAtMs > 0 ? String(latest.retryAtMs) : "(none)")")
-            lines.append("- retry_count: \(latest.retryCount)/\(latest.maxRetryCount)")
-            lines.append("- delivery_mode: \(latest.deliveryMode.rawValue)")
-            lines.append("- intervention_mode: \(latest.interventionMode.rawValue)")
+            lines.append("最新指导：")
+            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("injection_id", value: latest.injectionId))")
+            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("ack", value: slashGuidanceAckSummary(status: latest.ackStatus, required: latest.ackRequired)))")
+            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("ack_note", value: latest.ackNote.isEmpty ? "无" : latest.ackNote))")
+            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("lifecycle", value: SupervisorGuidanceInjectionStore.lifecycleSummary(for: latest, nowMs: nowMs)))")
+            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("expires_at_ms", value: slashGuidanceTimestampText(latest.expiresAtMs)))")
+            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("retry_at_ms", value: slashGuidanceTimestampText(latest.retryAtMs)))")
+            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("retry_count", value: "\(latest.retryCount)/\(latest.maxRetryCount)"))")
+            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("delivery", value: latest.deliveryMode.displayName))")
+            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("intervention", value: latest.interventionMode.displayName))")
+            lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("guidance", value: latest.guidanceText))")
         }
         lines.append("")
         lines.append(slashGuidanceUsageText())
         return lines.joined(separator: "\n")
+    }
+
+    private func slashGuidanceAckSummary(
+        status: SupervisorGuidanceAckStatus,
+        required: Bool
+    ) -> String {
+        "\(status.displayName) · \(required ? "required" : "optional")"
+    }
+
+    private func slashGuidanceTimestampText(_ value: Int64) -> String {
+        value > 0 ? String(value) : "无"
     }
 
     private func slashGuidanceUsageText() -> String {
@@ -2780,7 +3044,7 @@ Tool policy:
         note: String
     ) -> String {
         guard let pending = SupervisorGuidanceInjectionStore.latestPendingAck(for: ctx) else {
-            return "当前没有待确认的 supervisor guidance。\n\n" + slashGuidanceUsageText()
+            return "当前没有待确认的 Supervisor 指导。\n\n" + slashGuidanceUsageText()
         }
         let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedNote: String
@@ -2822,9 +3086,9 @@ Tool policy:
                 ctx: ctx,
                 injectionId: pending.injectionId
             )
-            return "已更新 guidance ack：\(pending.injectionId) -> \(status.rawValue)"
+            return "已更新指导确认：\(pending.injectionId) -> \(ProjectGovernanceActivityDisplay.ackStatusLabel(status))"
         } catch {
-            return "更新 guidance ack 失败：\(String(describing: error))"
+            return "更新指导确认失败：\(String(describing: error))"
         }
     }
 
@@ -3043,7 +3307,11 @@ Tool policy:
         ]
 
         if let assessment {
-            if let exact = assessment.exactMatch {
+            if let blocked = assessment.nonInteractiveExactMatch {
+                lines.append(
+                    "`\(blocked.id)` 是非对话模型。\(blocked.interactiveRoutingDisabledReason ?? "这个模型属于非对话能力，会由 Supervisor 按需调用，不作为对话模型。")"
+                )
+            } else if let exact = assessment.exactMatch {
                 lines.append(
                     "但 Hub 当前还没有把它放进可执行列表。现在记录里看到的是 `\(exact.id)`，状态是 \(HubModelSelectionAdvisor.stateLabel(exact.state))。"
                 )
@@ -3076,6 +3344,77 @@ Tool policy:
         return lines.joined(separator: "\n")
     }
 
+    private func shouldRejectUnavailableSlashModelSelection(
+        assessment: HubModelAvailabilityAssessment?,
+        snapshot: ModelStateSnapshot
+    ) -> Bool {
+        guard !snapshot.models.isEmpty, let assessment else { return false }
+        return !assessment.isExactMatchLoaded
+    }
+
+    private func blockedSlashModelSelectionText(
+        role: AXRole,
+        requestedModelId: String,
+        blocked: HubModel,
+        assessment: HubModelAvailabilityAssessment?,
+        ctx: AXProjectContext,
+        snapshot: ModelStateSnapshot
+    ) -> String {
+        let suggestions = slashSuggestedCandidates(
+            from: assessment,
+            configuredModelId: requestedModelId,
+            role: role,
+            ctx: ctx,
+            snapshot: snapshot
+        )
+        var lines = [
+            "未修改当前 \(role.rawValue) 模型配置。",
+            "`\(blocked.id)` 不能直接用于对话执行。\(blocked.interactiveRoutingDisabledReason ?? "这个模型属于非对话能力，会由 Supervisor 按需调用，不作为对话模型。")"
+        ]
+        if let first = suggestions.first {
+            lines.append("建议直接执行 `\(slashModelSelectionCommand(role: role, modelId: first))`。")
+        } else {
+            lines.append("可执行 `\(slashModelSelectionCommand(role: role, modelId: "auto"))` 恢复自动路由。")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func unavailableSlashModelSelectionPreflightText(
+        role: AXRole,
+        requestedModelId: String,
+        assessment: HubModelAvailabilityAssessment?,
+        ctx: AXProjectContext,
+        snapshot: ModelStateSnapshot
+    ) -> String {
+        let suggestions = slashSuggestedCandidates(
+            from: assessment,
+            configuredModelId: requestedModelId,
+            role: role,
+            ctx: ctx,
+            snapshot: snapshot
+        )
+        var lines = ["未修改当前 \(role.rawValue) 模型配置。"]
+        if let exact = assessment?.exactMatch {
+            lines.append("`\(exact.id)` 当前还不能直接执行，状态是 \(HubModelSelectionAdvisor.stateLabel(exact.state))。")
+        } else {
+            lines.append("当前 inventory 里没有找到 `\(requestedModelId)` 的精确匹配。")
+        }
+        if let first = suggestions.first {
+            lines.append("建议直接执行 `\(slashModelSelectionCommand(role: role, modelId: first))`，或先去 Hub -> Models 把目标模型加载好再试。")
+        } else {
+            lines.append("建议先去 Hub -> Models 确认目标模型已加载，再运行 `/models` 刷新。")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func slashModelSelectionCommand(role: AXRole, modelId: String) -> String {
+        let normalized = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if role == .coder {
+            return "/model \(normalized)"
+        }
+        return "/rolemodel \(role.rawValue) \(normalized)"
+    }
+
     private func slashConfiguredModelStatusText(
         configuredModelId: String,
         snapshot: ModelStateSnapshot
@@ -3090,6 +3429,9 @@ Tool policy:
         if assessment.isExactMatchLoaded, let exact = assessment.exactMatch {
             let locality = isRemoteModelForSlash(exact) ? "远端" : "本地"
             return "已加载，可直接执行（\(locality)）。"
+        }
+        if let blocked = assessment.nonInteractiveExactMatch {
+            return "当前命中的是非对话模型：`\(blocked.id)`。\(blocked.interactiveRoutingDisabledReason ?? "这个模型属于非对话能力，会由 Supervisor 按需调用，不作为对话模型。")"
         }
         if let exact = assessment.exactMatch {
             return "已配置，但当前只在 inventory 中可见，状态=\(HubModelSelectionAdvisor.stateLabel(exact.state))；本轮可能回退到本地。"
@@ -3113,22 +3455,47 @@ Tool policy:
             "检查 Hub -> Models，确认 `\(configuredModelId)` 已加载。",
             "执行 `/models` 刷新当前模型列表。"
         ]
+        if assessment.nonInteractiveExactMatch != nil {
+            lines[0] = "这个模型是检索专用，不建议作为当前对话模型。"
+            lines[1] = "执行 `/model auto` 恢复自动路由，或切到一个可对话模型。"
+        }
         if let first = slashSuggestedCandidates(from: assessment).first {
             lines.append("如果只是想先继续工作，可临时切到 `/model \(first)`。")
         }
         return lines
     }
 
-    private func slashSuggestedCandidates(from assessment: HubModelAvailabilityAssessment?) -> [String] {
+    private func slashSuggestedCandidates(
+        from assessment: HubModelAvailabilityAssessment?,
+        configuredModelId: String? = nil,
+        role: AXRole = .coder,
+        ctx: AXProjectContext? = nil,
+        snapshot: ModelStateSnapshot? = nil
+    ) -> [String] {
         guard let assessment else { return [] }
-        let source = assessment.loadedCandidates.isEmpty ? assessment.inventoryCandidates : assessment.loadedCandidates
         var seen = Set<String>()
         var result: [String] = []
-        for model in source {
-            let id = model.id.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !id.isEmpty else { continue }
-            guard seen.insert(id).inserted else { continue }
+
+        func append(_ raw: String?) {
+            let id = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !id.isEmpty else { return }
+            guard seen.insert(id.lowercased()).inserted else { return }
             result.append(id)
+        }
+
+        if let ctx, let snapshot,
+           let guidance = AXProjectModelRouteMemoryStore.selectionGuidance(
+                configuredModelId: configuredModelId ?? assessment.requestedId,
+                role: role,
+                ctx: ctx,
+                snapshot: snapshot
+           ) {
+            append(guidance.recommendedModelId)
+        }
+
+        let source = assessment.loadedCandidates.isEmpty ? assessment.inventoryCandidates : assessment.loadedCandidates
+        for model in source {
+            append(model.id)
             if result.count >= 3 { break }
         }
         return result
@@ -3143,6 +3510,8 @@ Tool policy:
     ) -> String {
         let projectOverride = config?.modelOverride(for: .coder)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let globalAssignment = router.preferredModelIdForHub(for: .coder, projectConfig: nil)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let supervisorAssignment = router.preferredModelIdForHub(for: .supervisor, projectConfig: nil)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let configuredModelId = configuredProjectModelID(for: .coder, config: config, router: router)
         let routeDecision = AXProjectModelRouteMemoryStore.resolvePreferredModel(
@@ -3177,6 +3546,17 @@ Tool policy:
             lines.append("配置状态：\(slashConfiguredModelStatusText(configuredModelId: configuredModelId, snapshot: routeSnapshot))")
         }
 
+        lines.append("")
+        lines.append("全局对照：")
+        lines.append(
+            projectGlobalRouteComparisonSummary(
+                projectOverride: projectOverride,
+                globalCoderAssignment: globalAssignment,
+                supervisorAssignment: supervisorAssignment,
+                snapshot: routeSnapshot
+            )
+        )
+        lines.append("")
         lines.append("当前决策：\(projectRouteDecisionSummary(routeDecision))")
         lines.append("远端备选：\(remoteRetryPlan)")
         lines.append("")
@@ -3185,6 +3565,13 @@ Tool policy:
         lines.append("")
         lines.append("最近路由异常 / 重试记录：")
         lines.append(projectRouteIncidentDiagnosisSummary(ctx))
+        if let trend = projectRouteIncidentTrendDiagnosis(ctx) {
+            lines.append("异常趋势：\(trend.summary)")
+            if let actionHint = trend.actionHint,
+               !actionHint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                lines.append("建议动作：\(actionHint)")
+            }
+        }
         lines.append("")
         lines.append("最近一次 coder 真实记录：")
         lines.append(projectExecutionSnapshotDiagnosis(executionSnapshot))
@@ -3198,7 +3585,7 @@ Tool policy:
             mismatchSummary: mismatch
         ))
         lines.append("")
-        lines.append("提示：project override 会优先于全局 assignment；如果你要排除项目级影响，可先执行 `/model auto`。")
+        lines.append("提示：project override 会优先于 coder 全局 assignment；Supervisor 只看自己的全局 assignment，不读取 project override 或 project route memory。要排除项目级影响，可先执行 `/model auto`。")
         return lines.joined(separator: "\n")
     }
 
@@ -3213,6 +3600,90 @@ Tool policy:
             return "global assignment（全局角色配置）"
         }
         return "default auto（没有固定 model id）"
+    }
+
+    private func projectGlobalRouteComparisonSummary(
+        projectOverride: String,
+        globalCoderAssignment: String,
+        supervisorAssignment: String,
+        snapshot: ModelStateSnapshot
+    ) -> String {
+        var lines: [String] = [
+            "- global_coder_assignment=\(displayRouteValue(globalCoderAssignment.isEmpty ? "auto" : globalCoderAssignment))",
+            "- global_coder_status=\(globalAssignmentStatusText(globalCoderAssignment, snapshot: snapshot))",
+        ]
+
+        if let issue = HubModelSelectionAdvisor.globalAssignmentIssue(
+            for: .coder,
+            configuredModelId: globalCoderAssignment,
+            snapshot: snapshot
+        ) {
+            lines.append("- global_coder_issue=\(singleLineRouteMessage(issue.message))")
+        }
+
+        lines.append("- global_supervisor_assignment=\(displayRouteValue(supervisorAssignment.isEmpty ? "auto" : supervisorAssignment))")
+        lines.append("- global_supervisor_status=\(globalAssignmentStatusText(supervisorAssignment, snapshot: snapshot))")
+
+        if let issue = HubModelSelectionAdvisor.globalAssignmentIssue(
+            for: .supervisor,
+            configuredModelId: supervisorAssignment,
+            snapshot: snapshot
+        ) {
+            lines.append("- global_supervisor_issue=\(singleLineRouteMessage(issue.message))")
+        }
+
+        lines.append(
+            "- relation=\(projectGlobalRouteRelationText(projectOverride: projectOverride, globalCoderAssignment: globalCoderAssignment, supervisorAssignment: supervisorAssignment))"
+        )
+        return lines.joined(separator: "\n")
+    }
+
+    private func globalAssignmentStatusText(
+        _ configuredModelId: String,
+        snapshot: ModelStateSnapshot
+    ) -> String {
+        let trimmed = configuredModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return "未固定，按默认 Hub 路由。"
+        }
+        return slashConfiguredModelStatusText(configuredModelId: trimmed, snapshot: snapshot)
+    }
+
+    private func projectGlobalRouteRelationText(
+        projectOverride: String,
+        globalCoderAssignment: String,
+        supervisorAssignment: String
+    ) -> String {
+        let trimmedProjectOverride = projectOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedCoderAssignment = globalCoderAssignment.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedSupervisorAssignment = supervisorAssignment.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if !trimmedProjectOverride.isEmpty {
+            if trimmedCoderAssignment.isEmpty {
+                return "当前项目有 project override；它会直接盖过 coder 的默认 Hub 路由。Supervisor 仍只看自己的全局 assignment。"
+            }
+            return "当前项目有 project override；它会盖过 coder 全局 assignment `\(trimmedCoderAssignment)`。Supervisor 仍只看自己的全局 assignment。"
+        }
+
+        if trimmedCoderAssignment.isEmpty && trimmedSupervisorAssignment.isEmpty {
+            return "coder 和 Supervisor 都没有固定全局 assignment；两边是否命中远端，主要取决于各自当轮的 Hub 路由与 fallback。"
+        }
+        if trimmedCoderAssignment.isEmpty {
+            return "project coder 当前没有固定全局 assignment，但 Supervisor 有自己的全局 assignment；两边本来就不一定一致。"
+        }
+        if trimmedSupervisorAssignment.isEmpty {
+            return "Supervisor 当前没有固定全局 assignment，但 project coder 有自己的全局 assignment；两边本来就不一定一致。"
+        }
+        if projectModelIdentitiesMatch(trimmedCoderAssignment, trimmedSupervisorAssignment) {
+            return "Supervisor 和 project coder 的全局 assignment 一致；如果两边表现不同，通常是 project route memory、本地锁定或项目最近执行记录触发了 fallback。"
+        }
+        return "Supervisor 和 project coder 的全局 assignment 不同，这本身就会导致两边命中模型不一致。"
+    }
+
+    private func singleLineRouteMessage(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func projectRouteDecisionSummary(_ decision: AXProjectPreferredModelRouteDecision) -> String {
@@ -3292,6 +3763,80 @@ Tool policy:
         AXModelRouteDiagnosticsStore.diagnosisSummary(for: ctx, limit: 3)
     }
 
+    private func projectRouteIncidentTrendDiagnosis(_ ctx: AXProjectContext) -> ProjectRouteIncidentTrendDiagnosis? {
+        let events = AXModelRouteDiagnosticsStore.recentEvents(for: ctx, limit: 6)
+            .filter { $0.role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == AXRole.coder.rawValue }
+        guard !events.isEmpty else { return nil }
+
+        let failureEvents = events.filter(\.isFailureIncident)
+        if !failureEvents.isEmpty {
+            let reasonCounts = countedRouteReasonCodes(in: failureEvents)
+
+            if let remoteExportBlocked = reasonCounts["remote_export_blocked"], remoteExportBlocked > 0 {
+                return ProjectRouteIncidentTrendDiagnosis(
+                    summary: "最近 \(remoteExportBlocked) 次主要是 `remote_export_blocked`，更像 Hub 的 remote export gate 或策略直接拦住了 paid 远端，并改派到本地。",
+                    actionHint: "先去 Hub Recovery / Hub 审计看 `remote_export_blocked`，不要先改 XT 的 project model。"
+                )
+            }
+            if let downgradeToLocal = reasonCounts["downgrade_to_local"], downgradeToLocal > 0 {
+                return ProjectRouteIncidentTrendDiagnosis(
+                    summary: "最近 \(downgradeToLocal) 次主要是 `downgrade_to_local`，更像 Hub 在执行阶段主动把远端请求降到了本地，不是 XT 先锁本地。",
+                    actionHint: "先查 Hub 侧 `ai.generate.downgraded_to_local` 或连接日志，再决定是否继续改 XT 路由。"
+                )
+            }
+            if let modelNotFound = reasonCounts["model_not_found"], modelNotFound > 0 {
+                return ProjectRouteIncidentTrendDiagnosis(
+                    summary: "最近 \(modelNotFound) 次主要是 `model_not_found`，更像目标远端模型没加载、模型 id 不匹配，或当前 assignment 指向了不可执行模型。",
+                    actionHint: "先去 Hub -> Models 确认目标模型已加载，再运行 `/models`；如果要先继续工作，切到已加载的推荐远端。"
+                )
+            }
+            if let remoteModelNotFound = reasonCounts["remote_model_not_found"], remoteModelNotFound > 0 {
+                return ProjectRouteIncidentTrendDiagnosis(
+                    summary: "最近 \(remoteModelNotFound) 次主要是 `remote_model_not_found`，更像 Hub 侧远端模型本身不可用；先查 Hub 的远端模型清单和导出状态。",
+                    actionHint: "优先检查 Hub 远端模型是否真的存在、是否允许导出到当前会话。"
+                )
+            }
+            let connectivityKeys = ["grpc_route_unavailable", "response_timeout", "runtime_not_running", "request_write_failed"]
+            let connectivityCount = connectivityKeys.reduce(0) { partial, key in
+                partial + (reasonCounts[key] ?? 0)
+            }
+            if connectivityCount > 0 {
+                return ProjectRouteIncidentTrendDiagnosis(
+                    summary: "最近 \(connectivityCount) 次主要是 Hub 链路或 runtime 异常（如 `grpc_route_unavailable` / `runtime_not_running`），更像连接问题，不是模型选择本身的问题。",
+                    actionHint: "先重连 Hub 或恢复 runtime，再重跑一次 `/route diagnose`。"
+                )
+            }
+        }
+
+        let recoveryEvents = events.filter(\.isRemoteRetryRecovery)
+        if !recoveryEvents.isEmpty {
+            return ProjectRouteIncidentTrendDiagnosis(
+                summary: "最近有 \(recoveryEvents.count) 次远端备选重试成功，说明 XT 还能在远端层改试同族已加载模型；不是所有 GPT 请求都会直接掉回本地。",
+                actionHint: "如果你要严格验证指定 GPT 是否被精确命中，先切 `/hub route grpc` 再复现。"
+            )
+        }
+
+        return nil
+    }
+
+    private func countedRouteReasonCodes(in events: [AXModelRouteDiagnosticEvent]) -> [String: Int] {
+        var counts: [String: Int] = [:]
+        for event in events {
+            let key = normalizedRouteReasonCode(event.fallbackReasonCode)
+            guard !key.isEmpty else { continue }
+            counts[key, default: 0] += 1
+        }
+        return counts
+    }
+
+    private func normalizedRouteReasonCode(_ raw: String) -> String {
+        raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+    }
+
     private func projectExecutionSnapshotDiagnosis(_ snapshot: AXRoleExecutionSnapshot) -> String {
         guard snapshot.hasRecord else {
             return "- no_record"
@@ -3363,7 +3908,7 @@ Tool policy:
 - /memory off             当前 project 只使用本地 memory
 - /memory default         恢复默认 Hub memory 优先模式
 - /tools                  查看当前工具策略与有效工具
-- /guidance               查看当前 project 的 supervisor guidance / ack 状态
+- /guidance               查看当前项目的 Supervisor 指导 / 确认状态
 - /guidance accept [note]
 - /guidance defer [note]
 - /guidance reject <reason>
@@ -4164,6 +4709,29 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         }
     }
 
+    @discardableResult
+    func appendLocalAssistantNotice(
+        _ text: String,
+        ctx: AXProjectContext
+    ) -> String? {
+        ensureLoaded(ctx: ctx, limit: 200)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let createdAt = Date().timeIntervalSince1970
+        messages.append(
+            AXChatMessage(
+                role: .assistant,
+                content: trimmed,
+                createdAt: createdAt
+            )
+        )
+        touchProjectActivity(ctx: ctx, eventAt: createdAt)
+        isSending = false
+        currentReqId = nil
+        return trimmed
+    }
+
     func projectResumeBriefForTesting(
         ctx: AXProjectContext,
         excludingTrailingUserText: String? = nil
@@ -4223,6 +4791,34 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         preferredProjectMemoryServingProfile(userText: userText)
     }
 
+    func resolvedProjectMemoryServingProfileForTesting(
+        userText: String,
+        config: AXProjectConfig?
+    ) -> XTMemoryServingProfile? {
+        resolvedProjectMemoryServingProfile(userText: userText, config: config)
+    }
+
+    func projectRecentDialogueSelectionForTesting(
+        ctx: AXProjectContext,
+        userText: String,
+        profile: AXProjectRecentDialogueProfile,
+        shouldExpandRecent: Bool = false
+    ) -> (profile: AXProjectRecentDialogueProfile, source: String, selectedPairs: Int, text: String, dropped: Int) {
+        let selection = buildProjectRecentDialogueSelection(
+            ctx: ctx,
+            userText: userText,
+            profile: profile,
+            shouldExpandRecent: shouldExpandRecent
+        )
+        return (
+            profile: selection.profile,
+            source: selection.source,
+            selectedPairs: selection.selectedPairs,
+            text: selection.messagesText,
+            dropped: selection.lowSignalDroppedMessages
+        )
+    }
+
     func projectMemoryBlockForTesting(
         canonicalMemory: String,
         recentText: String,
@@ -4243,16 +4839,31 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         canonicalMemory: String,
         recentText: String,
         userText: String,
+        config: AXProjectConfig? = nil,
+        toolResults: [ToolResult] = [],
         safePointState: SupervisorSafePointExecutionState? = nil
     ) -> String {
-        let guidanceBlock = projectSupervisorGuidancePromptSnapshot(
+        let guidanceSnapshot = projectSupervisorGuidancePromptSnapshot(
             ctx: ctx,
             safePointState: safePointState
-        ).block
+        )
         let reviewBlock = projectUIReviewPromptBlock(ctx: ctx)
+        let contextAssembly = buildProjectPromptContextAssembly(
+            ctx: ctx,
+            config: config,
+            userText: userText,
+            toolResults: toolResults,
+            skillRegistrySnapshot: nil,
+            safePointState: safePointState,
+            shouldExpandRecent: false
+        )
+        let mergedRecentText = mergeProjectMemoryRetrieval(
+            recentText: contextAssembly.recentDialogueSelection.messagesText,
+            retrievalBlock: recentText
+        )
         let workingSetWithGuidance = mergeProjectWorkingSetGuidance(
-            recentText: recentText,
-            guidanceBlock: guidanceBlock
+            recentText: mergedRecentText,
+            guidanceBlock: guidanceSnapshot.block
         )
         let workingSetText = mergeProjectWorkingSetUIReview(
             recentText: workingSetWithGuidance,
@@ -4262,9 +4873,16 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
             ctx: ctx,
             canonicalMemory: canonicalMemory,
             recentText: workingSetText,
-            toolResults: [],
+            toolResults: toolResults,
             userText: userText,
-            servingProfile: preferredProjectMemoryServingProfile(userText: userText)
+            dialogueWindowText: contextAssembly.recentDialogueSelection.dialogueWindowText,
+            focusedProjectAnchorPackText: contextAssembly.focusedProjectAnchorPackText,
+            longtermOutlineText: contextAssembly.longtermOutlineText,
+            contextRefsText: contextAssembly.contextRefsText,
+            evidencePackText: contextAssembly.evidencePackText,
+            observationsTextOverride: contextAssembly.observationsText,
+            rawEvidenceTextOverride: contextAssembly.rawEvidenceText,
+            servingProfile: resolvedProjectMemoryServingProfile(userText: userText, config: config)
         )
     }
 
@@ -4278,6 +4896,57 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
             ctx: ctx,
             visiblePendingGuidanceInjectionId: visiblePendingGuidanceInjectionId,
             source: "testing"
+        )
+    }
+
+    func applyProjectSupervisorGuidanceEnvelopeGateForTesting(
+        ctx: AXProjectContext,
+        envelope: ToolActionEnvelope,
+        visiblePendingGuidanceInjectionId: String? = nil
+    ) -> ProjectSupervisorGuidanceEnvelopeGateProbe {
+        switch applyProjectSupervisorGuidanceEnvelopeGateWithAudit(
+            env: envelope,
+            ctx: ctx,
+            visiblePendingGuidanceInjectionId: visiblePendingGuidanceInjectionId
+        ) {
+        case .allow(let allowed):
+            return ProjectSupervisorGuidanceEnvelopeGateProbe(
+                requiresFinalOnly: false,
+                guidanceInjectionId: nil,
+                toolCallCount: allowed.tool_calls?.count ?? 0,
+                skillCallCount: allowed.skill_calls?.count ?? 0,
+                final: allowed.final
+            )
+        case .requireFinalOnly(let pending):
+            return ProjectSupervisorGuidanceEnvelopeGateProbe(
+                requiresFinalOnly: true,
+                guidanceInjectionId: pending.injectionId,
+                toolCallCount: 0,
+                skillCallCount: 0,
+                final: nil
+            )
+        }
+    }
+
+    func projectSupervisorFinalizeOnlyResponseContractInstructionsForTesting(
+        ctx: AXProjectContext,
+        visiblePendingGuidanceInjectionId: String? = nil
+    ) -> String {
+        projectSupervisorFinalizeOnlyResponseContractInstructions(
+            ctx: ctx,
+            visiblePendingGuidanceInjectionId: visiblePendingGuidanceInjectionId
+        )
+    }
+
+    func normalizedProjectSupervisorFinalForTesting(
+        final: String?,
+        ctx: AXProjectContext,
+        visiblePendingGuidanceInjectionId: String? = nil
+    ) -> String? {
+        normalizedProjectSupervisorFinalIfNeeded(
+            final: final,
+            ctx: ctx,
+            visiblePendingGuidanceInjectionId: visiblePendingGuidanceInjectionId
         )
     }
 
@@ -4321,6 +4990,38 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         handleSlashGuidance(args: args, ctx: ctx)
     }
 
+    func handleSlashModelForTesting(
+        args: [String],
+        userText: String,
+        ctx: AXProjectContext,
+        config: AXProjectConfig?,
+        snapshot: ModelStateSnapshot
+    ) -> String {
+        handleSlashModel(
+            args: args,
+            userText: userText,
+            ctx: ctx,
+            config: config,
+            snapshot: snapshot
+        )
+    }
+
+    func handleSlashRoleModelForTesting(
+        args: [String],
+        userText: String,
+        ctx: AXProjectContext,
+        config: AXProjectConfig?,
+        snapshot: ModelStateSnapshot
+    ) -> String {
+        handleSlashRoleModel(
+            args: args,
+            userText: userText,
+            ctx: ctx,
+            config: config,
+            snapshot: snapshot
+        )
+    }
+
     func shouldRepairImmediateExecutionForTesting(
         userText: String,
         toolResults: [ToolResult],
@@ -4346,6 +5047,39 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         return shouldRepairImmediateExecution(flow: flow, assistantText: assistantText)
     }
 
+    func persistPendingToolApprovalForTesting(
+        ctx: AXProjectContext,
+        calls: [ToolCall],
+        assistantStub: String = "有待审批的工具操作（本页或 Home 可处理）。",
+        reason: String? = nil,
+        userText: String = "testing"
+    ) {
+        let flow = ToolFlowState(
+            ctx: ctx,
+            memory: nil,
+            config: nil,
+            userText: userText,
+            runStartedAtMs: 0,
+            step: 1,
+            toolResults: [],
+            assistantIndex: 0,
+            dirtySinceVerify: false,
+            verifyRunIndex: 0,
+            repairAttemptsUsed: 0,
+            deferredFinal: nil,
+            finalizeOnly: false,
+            formatRetryUsed: false,
+            executionRetryUsed: false
+        )
+        persistPendingToolApproval(
+            ctx: ctx,
+            flow: flow,
+            calls: calls,
+            assistantStub: assistantStub,
+            reason: reason
+        )
+    }
+
     func assistantToolOutcomeLinesForTesting(toolResults: [ToolResult]) -> [String] {
         assistantToolOutcomeLines(toolResults: toolResults)
     }
@@ -4358,6 +5092,10 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         snapshot: SupervisorSkillRegistrySnapshot?
     ) -> String {
         projectSkillRoutingPromptGuidance(snapshot: snapshot)
+    }
+
+    func projectToolLoopResponseRulesForTesting() -> String {
+        projectToolLoopResponseRules()
     }
 
     func projectSkillProgressLineForTesting(
@@ -4654,7 +5392,7 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
                ) {
                 appendAssistantProgress(
                     assistantIndex: f.assistantIndex,
-                    line: "supervisor guidance 命中 tool boundary，先暂停剩余工具。"
+                    line: "Supervisor 指导命中工具边界，先暂停剩余工具。"
                 )
                 recordSupervisorSafePointPause(
                     flow: &f,
@@ -4897,6 +5635,8 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
             return "我在查询技能目录。"
         case .summarize:
             return "我在整理内容摘要。"
+        case .supervisorVoicePlayback:
+            return "我在处理 Supervisor 的语音播放。"
         case .web_fetch, .browser_read:
             return "我在读取远端内容。"
         case .web_search:
@@ -4913,6 +5653,8 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
             return "我在通过技能 \(skillId) 查询技能目录。"
         case .summarize:
             return "我在通过技能 \(skillId) 总结内容。"
+        case .supervisorVoicePlayback:
+            return "我在通过技能 \(skillId) 处理 Supervisor 语音播放。"
         case .deviceBrowserControl:
             return "我在通过技能 \(skillId) 操作浏览器。"
         case .web_fetch, .web_search:
@@ -5234,8 +5976,12 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
             toolResults: toolResults,
             safePointState: safePointState
         )
+        let governedResponseContract = projectSupervisorFinalizeOnlyResponseContractInstructions(
+            ctx: ctx,
+            visiblePendingGuidanceInjectionId: base.visiblePendingGuidanceInjectionId
+        )
         return PromptBuildOutput(
-            prompt: base.prompt + "\n\nFINALIZE ONLY:\n- Verification is still failing after one auto-repair attempt.\n- Do NOT call tools. Output {\"final\": ...} only.\n- Include: what failed, likely cause, and the next 1-3 actions for the user.\n",
+            prompt: base.prompt + "\n\nFINALIZE ONLY:\n- Verification is still failing after one auto-repair attempt.\n- Do NOT call tools. Output {\"final\": ...} only.\n- Include: what failed, likely cause, and the next 1-3 actions for the user.\n\(governedResponseContract)",
             memory: base.memory,
             visiblePendingGuidanceInjectionId: base.visiblePendingGuidanceInjectionId
         )
@@ -5488,7 +6234,8 @@ Original output:
              .deviceClipboardWrite,
              .deviceScreenCapture,
              .deviceBrowserControl,
-             .deviceAppleScript:
+             .deviceAppleScript,
+             .supervisorVoicePlayback:
             return .blocking
         }
     }
@@ -5548,6 +6295,8 @@ Original output:
                 return "联网操作被当前策略或授权门控拦住了。"
             }
             return detail.isEmpty ? "联网操作失败。" : "联网操作失败：\(detail)"
+        case .supervisorVoicePlayback:
+            return detail.isEmpty ? "Supervisor 语音播放失败。" : "Supervisor 语音播放失败：\(detail)"
         default:
             return detail.isEmpty ? "\(result.tool.rawValue) 执行失败。" : "\(result.tool.rawValue) 执行失败：\(detail)"
         }
@@ -5726,13 +6475,20 @@ Instructions:
         if expandRecentOnceAfterLoad {
             expandRecentOnceAfterLoad = false
         }
-        let recentTurns = shouldExpand ? expandedRecentPromptTurns : defaultRecentPromptTurns
-        let recentText = recentConversationForPrompt(ctx: ctx, userText: userText, maxTurns: recentTurns)
+        let contextAssembly = buildProjectPromptContextAssembly(
+            ctx: ctx,
+            config: config,
+            userText: userText,
+            toolResults: toolResults,
+            skillRegistrySnapshot: skillRegistrySnapshot,
+            safePointState: safePointState,
+            shouldExpandRecent: shouldExpand
+        )
         let memoryInfo = await buildProjectMemoryV1ViaHub(
             ctx: ctx,
             config: config,
             canonicalMemory: memText,
-            recentText: recentText,
+            contextAssembly: contextAssembly,
             toolResults: toolResults,
             userText: userText,
             skillRegistrySnapshot: skillRegistrySnapshot,
@@ -5810,9 +6566,17 @@ Tool policy:
 
 Supervisor guidance (IMPORTANT):
 - If Memory v1 contains [pending_supervisor_guidance], treat it as active governed guidance for this project.
+- If Memory v1 contains [ui_review_repair_contract], treat it as the active repair contract for the current UI incident.
+- If Memory v1 contains [supervisor_replan_contract], treat it as the active governed replan contract for the current blocker or incident.
 - When that block is present and you emit tool_calls or final, include `guidance_ack` in the same JSON object whenever possible.
 - `guidance_ack` format:
   {"guidance_ack":{"injection_id":"guidance-id","status":"accepted|deferred|rejected","note":"brief reason"}}
+- If [pending_supervisor_guidance] shows `delivery_mode: stop_signal`, `intervention_mode: stop_immediately`, or `execution_gate: final_only_until_ack`, do NOT emit `tool_calls` or `skill_calls` in that response.
+- In that case, return `final` plus `guidance_ack` only, explaining the stop, replan, or evidence you need next.
+- If [ui_review_repair_contract] is present, do not resume browser automation blindly; first align your response with `repair_action`, `instruction`, and `next_safe_action`.
+- If [supervisor_replan_contract] is present, anchor your stop/replan response on `contract_kind`, `primary_blocker`, `next_safe_action`, and `work_order_ref`.
+- When you return `final` under a UI repair contract, mention the repair target and the next safe action explicitly.
+- When you return `final` under a supervisor replan contract, mention the blocker, the next safe action, and the first 1-3 replan actions explicitly.
 - Use `accepted` when you are following the guidance now.
 - Use `deferred` when you need a safe point, missing evidence, or another prerequisite before applying it.
 - Use `rejected` only with a concrete reason tied to goal, constraints, or evidence.
@@ -5835,19 +6599,7 @@ Tool results so far:
 User request:
 \(userText)
 
-Response rules (STRICT):
-- Output ONLY valid JSON.
-- If the current project has installed governed skills, you may use:
-  {"skill_calls":[{"id":"1","skill_id":"find-skills","payload":{"query":"browser automation"}}]}
-- If you need to use tools, output:
-  {"guidance_ack":{"injection_id":"guidance-id","status":"accepted","note":"Applying at next step boundary"},"tool_calls":[{"id":"1","tool":"read_file","args":{"path":"..."}}]}
-- If you are done, output:
-  {"guidance_ack":{"injection_id":"guidance-id","status":"deferred","note":"Need extra evidence before replan"},"final":"..."}
-- `skill_calls` and `tool_calls` are both allowed. Prefer `skill_calls` when the work matches an installed governed skill in `skills_registry`.
-- Only use `skill_id` values that appear in the current project's `skills_registry` snapshot.
-- Put variant selection inside `payload.action` when a skill exposes multiple actions.
-- If no pending supervisor guidance is present, `guidance_ack` may be omitted.
-- Do not include markdown. Do not include extra keys.
+\(projectToolLoopResponseRules())
 """
         return PromptBuildOutput(
             prompt: prompt,
@@ -5916,6 +6668,571 @@ Response rules (STRICT):
         }.joined(separator: "\n")
     }
 
+    private func buildProjectPromptContextAssembly(
+        ctx: AXProjectContext,
+        config: AXProjectConfig?,
+        userText: String,
+        toolResults: [ToolResult],
+        skillRegistrySnapshot: SupervisorSkillRegistrySnapshot?,
+        safePointState: SupervisorSafePointExecutionState?,
+        shouldExpandRecent: Bool
+    ) -> ProjectPromptContextAssembly {
+        let resolvedConfig = config ?? activeConfig ?? AXProjectConfig.default(forProjectRoot: ctx.root)
+        let recentDialogueProfile = resolvedConfig.projectRecentDialogueProfile
+        let contextDepthProfile = resolvedConfig.projectContextDepthProfile
+        let recentDialogueSelection = buildProjectRecentDialogueSelection(
+            ctx: ctx,
+            userText: userText,
+            profile: recentDialogueProfile,
+            shouldExpandRecent: shouldExpandRecent
+        )
+        let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+        let projectName = currentProjectDisplayName(ctx: ctx)
+        let workflowSnapshot = projectWorkflowSnapshot(
+            ctx: ctx,
+            projectId: projectId,
+            projectName: projectName
+        )
+        let latestReview = SupervisorReviewNoteStore.latest(for: ctx)
+        let guidanceSnapshot = projectSupervisorGuidancePromptSnapshot(
+            ctx: ctx,
+            safePointState: safePointState
+        )
+        let latestGuidance = SupervisorGuidanceInjectionStore.latest(for: ctx)
+        let crossLinkHints = projectCrossLinkPromptHints(projectId: projectId)
+        let observationsText = projectObservationDigest(ctx: ctx)
+        let rawEvidenceText = sanitizedPromptContextText(
+            projectRawEvidenceForMemoryV1(
+                ctx: ctx,
+                toolResults: toolResults,
+                skillRegistryEvidence: sanitizeSupervisorPromptIdentifiers(
+                    capped(
+                        skillRegistrySnapshot?.memorySummary(maxItems: 6, maxChars: 2_400) ?? "",
+                        maxChars: 2_400
+                    )
+                )
+            )
+        )
+        let effectiveServingProfile = resolvedProjectMemoryServingProfile(
+            userText: userText,
+            config: resolvedConfig,
+            contextDepthProfile: contextDepthProfile
+        )
+        let latestUIReview = XTUIReviewStore.loadLatestBrowserPageReference(for: ctx)
+        let executionEvidencePresent = !toolResults.isEmpty
+            || latestUIReview != nil
+            || workflowSnapshot?.activeSkillCall != nil
+        let reviewGuidancePresent = latestReview != nil
+            || latestGuidance != nil
+            || guidanceSnapshot.visiblePendingGuidanceInjectionId != nil
+        let diagnostics = ProjectPromptExplainabilityDiagnostics(
+            recentProjectDialogueProfile: recentDialogueSelection.profile.rawValue,
+            recentProjectDialogueSelectedPairs: recentDialogueSelection.selectedPairs,
+            recentProjectDialogueFloorPairs: recentDialogueSelection.floorPairs,
+            recentProjectDialogueFloorSatisfied: recentDialogueSelection.floorSatisfied,
+            recentProjectDialogueSource: recentDialogueSelection.source,
+            recentProjectDialogueLowSignalDropped: recentDialogueSelection.lowSignalDroppedMessages,
+            projectContextDepth: contextDepthProfile.rawValue,
+            effectiveProjectServingProfile: (effectiveServingProfile ?? .m1Execute).rawValue,
+            workflowPresent: workflowSnapshot != nil,
+            executionEvidencePresent: executionEvidencePresent,
+            reviewGuidancePresent: reviewGuidancePresent,
+            crossLinkHintsSelected: crossLinkHints.selectedCount,
+            personalMemoryExcludedReason: "project_ai_default_scopes_to_project_memory_only"
+        )
+        let focusedProjectAnchorPackText = projectFocusedAnchorPackText(
+            ctx: ctx,
+            projectId: projectId,
+            projectName: projectName,
+            recentDialogueSelection: recentDialogueSelection,
+            contextDepthProfile: contextDepthProfile,
+            effectiveServingProfile: effectiveServingProfile,
+            workflowSnapshot: workflowSnapshot,
+            latestReview: latestReview,
+            reviewGuidancePresent: reviewGuidancePresent,
+            executionEvidencePresent: executionEvidencePresent,
+            crossLinkHints: crossLinkHints
+        )
+        let longtermOutlineText = projectLongtermOutlineText(
+            contextDepthProfile: contextDepthProfile,
+            workflowSnapshot: workflowSnapshot,
+            latestReview: latestReview,
+            latestGuidance: latestGuidance
+        )
+        let contextRefsText = projectContextRefsText(
+            ctx: ctx,
+            contextDepthProfile: contextDepthProfile,
+            workflowSnapshot: workflowSnapshot,
+            latestReview: latestReview,
+            latestGuidance: latestGuidance,
+            latestUIReview: latestUIReview,
+            crossLinkHints: crossLinkHints
+        )
+        let evidencePackText = projectEvidencePackText(
+            ctx: ctx,
+            contextDepthProfile: contextDepthProfile,
+            workflowSnapshot: workflowSnapshot,
+            latestReview: latestReview,
+            latestGuidance: latestGuidance,
+            latestUIReview: latestUIReview,
+            toolResults: toolResults
+        )
+
+        return ProjectPromptContextAssembly(
+            recentDialogueSelection: recentDialogueSelection,
+            contextDepthProfile: contextDepthProfile,
+            effectiveServingProfile: effectiveServingProfile,
+            observationsText: observationsText,
+            rawEvidenceText: rawEvidenceText,
+            focusedProjectAnchorPackText: focusedProjectAnchorPackText,
+            longtermOutlineText: longtermOutlineText,
+            contextRefsText: contextRefsText,
+            evidencePackText: evidencePackText,
+            diagnostics: diagnostics
+        )
+    }
+
+    private func buildProjectRecentDialogueSelection(
+        ctx: AXProjectContext,
+        userText: String,
+        profile: AXProjectRecentDialogueProfile,
+        shouldExpandRecent: Bool
+    ) -> ProjectRecentDialogueSelection {
+        let requestedPairs = resolvedProjectRecentDialoguePairs(
+            profile: profile,
+            userText: userText,
+            shouldExpandRecent: shouldExpandRecent
+        )
+        let historySelection = projectDialogueHistory(
+            ctx: ctx,
+            userText: userText,
+            requestedPairs: requestedPairs
+        )
+        let history = historySelection.history
+        guard !history.isEmpty else {
+            return ProjectRecentDialogueSelection(
+                profile: profile,
+                source: historySelection.source,
+                selectedPairs: 0,
+                floorPairs: AXProjectRecentDialogueProfile.hardFloorPairs,
+                floorSatisfied: false,
+                selectedMessages: [],
+                lowSignalDroppedMessages: 0,
+                messagesText: "(none)"
+            )
+        }
+
+        let requiredMessages = min(
+            history.count,
+            max(
+                AXProjectRecentDialogueProfile.hardFloorPairs * 2,
+                requestedPairs * 2
+            )
+        )
+        var selectedIndices = Set<Int>()
+        var lowSignalIndices: [Int] = []
+
+        for (index, item) in history.enumerated().reversed() {
+            let decision = projectDialogueFilterDecision(role: item.0, content: item.1)
+            if decision.isLowSignal {
+                lowSignalIndices.append(index)
+                continue
+            }
+            selectedIndices.insert(index)
+            if selectedIndices.count >= requiredMessages {
+                break
+            }
+        }
+
+        if selectedIndices.count < requiredMessages {
+            let missing = requiredMessages - selectedIndices.count
+            for index in lowSignalIndices.prefix(missing) {
+                selectedIndices.insert(index)
+            }
+        }
+
+        let selectedMessages = history.enumerated()
+            .filter { selectedIndices.contains($0.offset) }
+            .map(\.element)
+        let selectedPairs = Int(ceil(Double(selectedMessages.count) / 2.0))
+        let floorPairs = AXProjectRecentDialogueProfile.hardFloorPairs
+        let floorSatisfied = selectedMessages.count >= floorPairs * 2
+        let selectedLowSignalCount = selectedMessages.filter {
+            projectDialogueFilterDecision(role: $0.0, content: $0.1).isLowSignal
+        }.count
+        let lowSignalDroppedMessages = max(0, lowSignalIndices.count - selectedLowSignalCount)
+        let renderedMessages = renderRecentConversationForPrompt(
+            history: selectedMessages,
+            maxTurns: max(AXProjectRecentDialogueProfile.hardFloorPairs, selectedPairs)
+        )
+
+        return ProjectRecentDialogueSelection(
+            profile: profile,
+            source: historySelection.source,
+            selectedPairs: selectedPairs,
+            floorPairs: floorPairs,
+            floorSatisfied: floorSatisfied,
+            selectedMessages: selectedMessages,
+            lowSignalDroppedMessages: lowSignalDroppedMessages,
+            messagesText: renderedMessages.isEmpty ? "(none)" : renderedMessages
+        )
+    }
+
+    private func resolvedProjectRecentDialoguePairs(
+        profile: AXProjectRecentDialogueProfile,
+        userText: String,
+        shouldExpandRecent: Bool
+    ) -> Int {
+        if let fixedCeiling = profile.windowCeilingPairs {
+            return max(AXProjectRecentDialogueProfile.hardFloorPairs, fixedCeiling)
+        }
+
+        if XTMemoryServingProfileSelector.fullScanRequestSignals(userText) {
+            return 40
+        }
+        if XTMemoryServingProfileSelector.reviewPlanRequestSignals(userText) || shouldExpandRecent {
+            return 20
+        }
+        return 12
+    }
+
+    private func projectDialogueHistory(
+        ctx: AXProjectContext,
+        userText: String,
+        requestedPairs: Int
+    ) -> (history: [(String, String)], source: String) {
+        let expectedMessages = max(
+            AXProjectRecentDialogueProfile.hardFloorPairs * 2,
+            requestedPairs * 2
+        )
+        let recentHistory = trimmedProjectDialogueHistory(
+            AXRecentContextStore.load(for: ctx).messages.compactMap { message in
+                let role = message.role.trimmingCharacters(in: .whitespacesAndNewlines)
+                if role != "user" && role != "assistant" {
+                    return nil
+                }
+                return (role, message.content)
+            },
+            userText: userText
+        )
+        let inMemoryHistory = trimmedProjectDialogueHistory(
+            messages
+                .filter { $0.role == .user || $0.role == .assistant }
+                .map { ($0.role == .user ? "user" : "assistant", $0.content) },
+            userText: userText
+        )
+
+        if recentHistory.count >= expectedMessages, recentHistory.count >= inMemoryHistory.count {
+            return (recentHistory, "recent_context")
+        }
+        if inMemoryHistory.count > recentHistory.count {
+            return (inMemoryHistory, "xt_cache")
+        }
+        if !recentHistory.isEmpty {
+            return (recentHistory, "recent_context")
+        }
+        return (inMemoryHistory, "xt_cache")
+    }
+
+    private func trimmedProjectDialogueHistory(
+        _ history: [(String, String)],
+        userText: String
+    ) -> [(String, String)] {
+        var trimmedHistory = history
+        if let last = trimmedHistory.last, last.0 == "user" {
+            let t = last.1.trimmingCharacters(in: .whitespacesAndNewlines)
+            let u = userText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !u.isEmpty, t == u {
+                trimmedHistory.removeLast()
+            }
+        }
+        return trimmedHistory
+    }
+
+    private func projectDialogueFilterDecision(role: String, content: String) -> SupervisorDialogueContinuityFilter.Decision {
+        let supervisorRole: SupervisorMessage.SupervisorRole
+        switch role {
+        case "assistant":
+            supervisorRole = .assistant
+        default:
+            supervisorRole = .user
+        }
+        return SupervisorDialogueContinuityFilter.classify(
+            SupervisorMessage(
+                id: "project-dialogue-\(role)",
+                role: supervisorRole,
+                content: content,
+                isVoice: false,
+                timestamp: 0
+            )
+        )
+    }
+
+    private func resolvedProjectMemoryServingProfile(
+        userText: String,
+        config: AXProjectConfig?,
+        contextDepthProfile: AXProjectContextDepthProfile? = nil
+    ) -> XTMemoryServingProfile? {
+        let baselineProfile: XTMemoryServingProfile? = {
+            switch contextDepthProfile ?? config?.projectContextDepthProfile ?? .defaultProfile {
+            case .lean:
+                return .m1Execute
+            case .balanced:
+                return .m2PlanReview
+            case .deep:
+                return .m3DeepDive
+            case .full:
+                return .m4FullScan
+            case .auto:
+                return nil
+            }
+        }()
+        guard let requestedProfile = preferredProjectMemoryServingProfile(userText: userText) else {
+            return baselineProfile
+        }
+        guard let baselineProfile else { return requestedProfile }
+        return baselineProfile.rank >= requestedProfile.rank ? baselineProfile : requestedProfile
+    }
+
+    private func projectWorkflowSnapshot(
+        ctx: AXProjectContext,
+        projectId: String,
+        projectName: String
+    ) -> SupervisorProjectWorkflowSnapshot? {
+        SupervisorProjectWorkflowCanonicalSync.snapshot(
+            projectId: projectId,
+            projectName: projectName,
+            jobSnapshot: SupervisorProjectJobStore.load(for: ctx),
+            planSnapshot: SupervisorProjectPlanStore.load(for: ctx),
+            skillCallSnapshot: SupervisorProjectSkillCallStore.load(for: ctx)
+        )
+    }
+
+    private func projectCrossLinkPromptHints(projectId: String) -> ProjectCrossLinkPromptHints {
+        let selected = SupervisorCrossLinkStore.shared.snapshot.items
+            .filter { $0.projectId == projectId && $0.isActiveLike }
+            .prefix(3)
+        let lines = selected.map { item in
+            let refs = item.backingRecordRefs.isEmpty ? "(none)" : item.backingRecordRefs.joined(separator: ", ")
+            return "- kind=\(item.kind.rawValue) status=\(item.status.rawValue) person=\(item.personName.isEmpty ? "(none)" : item.personName) summary=\(capped(item.summary, maxChars: 140)) refs=\(refs)"
+        }
+        let refs = selected.flatMap(\.backingRecordRefs)
+        return ProjectCrossLinkPromptHints(
+            selectedCount: selected.count,
+            lines: lines,
+            refs: refs
+        )
+    }
+
+    private func projectFocusedAnchorPackText(
+        ctx: AXProjectContext,
+        projectId: String,
+        projectName: String,
+        recentDialogueSelection: ProjectRecentDialogueSelection,
+        contextDepthProfile: AXProjectContextDepthProfile,
+        effectiveServingProfile: XTMemoryServingProfile?,
+        workflowSnapshot: SupervisorProjectWorkflowSnapshot?,
+        latestReview: SupervisorReviewNoteRecord?,
+        reviewGuidancePresent: Bool,
+        executionEvidencePresent: Bool,
+        crossLinkHints: ProjectCrossLinkPromptHints
+    ) -> String {
+        let registry = AXProjectRegistryStore.load()
+        let entry = registry.projects.first(where: { $0.projectId == projectId })
+        let currentState = (entry?.currentStateSummary ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let nextStep = (entry?.nextStepSummary ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let blocker = (entry?.blockerSummary ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let statusDigest = (entry?.statusDigest ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let activeJob = workflowSnapshot?.activeJob
+        let activePlan = workflowSnapshot?.activePlan
+        let planSteps = projectPlanStepDigest(activePlan)
+        let reviewLine = latestReview.map {
+            "review_id=\($0.reviewId) verdict=\($0.verdict.rawValue) summary=\(capped($0.summary, maxChars: 160))"
+        } ?? "(none)"
+
+        var lines = [
+            "recent_project_dialogue_profile: \(recentDialogueSelection.profile.rawValue)",
+            "recent_project_dialogue_selected_pairs: \(recentDialogueSelection.selectedPairs)",
+            "recent_project_dialogue_source: \(recentDialogueSelection.source)",
+            "project_context_depth: \(contextDepthProfile.rawValue)",
+            "effective_serving_profile: \((effectiveServingProfile ?? .m1Execute).rawValue)",
+            "workflow_present: \(workflowSnapshot != nil)",
+            "execution_evidence_present: \(executionEvidencePresent)",
+            "review_guidance_present: \(reviewGuidancePresent)",
+            "cross_link_hints_selected: \(crossLinkHints.selectedCount)",
+            "personal_memory_excluded_reason: project_ai_default_scopes_to_project_memory_only",
+            "project_id: \(projectId)",
+            "project_name: \(projectName)",
+            "status: \(statusDigest.isEmpty ? "(none)" : statusDigest)",
+            "current_state: \(currentState.isEmpty ? "(none)" : currentState)",
+            "next_step: \(nextStep.isEmpty ? "(none)" : nextStep)",
+            "blocker: \(blocker.isEmpty ? "(none)" : blocker)",
+            "active_job_id: \(activeJob?.jobId ?? "(none)")",
+            "active_job_status: \(activeJob?.status.rawValue ?? "(none)")",
+            "active_job_goal: \(((activeJob?.goal ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "(none)" : capped(activeJob?.goal ?? "", maxChars: 160)))",
+            "active_plan_id: \(activePlan?.planId ?? "(none)")",
+            "active_plan_status: \(activePlan?.status.rawValue ?? "(none)")",
+            "latest_review: \(reviewLine)",
+            "active_plan_steps:"
+        ]
+        lines.append(contentsOf: planSteps)
+        if !crossLinkHints.lines.isEmpty {
+            lines.append("selected_cross_link_hints:")
+            lines.append(contentsOf: crossLinkHints.lines)
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func projectLongtermOutlineText(
+        contextDepthProfile: AXProjectContextDepthProfile,
+        workflowSnapshot: SupervisorProjectWorkflowSnapshot?,
+        latestReview: SupervisorReviewNoteRecord?,
+        latestGuidance: SupervisorGuidanceInjectionRecord?
+    ) -> String {
+        switch contextDepthProfile {
+        case .lean:
+            return ""
+        case .balanced:
+            return ""
+        case .deep, .full, .auto:
+            break
+        }
+
+        var lines: [String] = []
+        if let latestReview {
+            lines.append("review_id: \(latestReview.reviewId)")
+            lines.append("review_level: \(latestReview.reviewLevel.rawValue)")
+            lines.append("verdict: \(latestReview.verdict.rawValue)")
+            lines.append("anchor_goal: \(latestReview.anchorGoal.isEmpty ? "(none)" : capped(latestReview.anchorGoal, maxChars: 200))")
+            lines.append("anchor_done_definition: \(latestReview.anchorDoneDefinition.isEmpty ? "(none)" : capped(latestReview.anchorDoneDefinition, maxChars: 220))")
+            let constraints = latestReview.anchorConstraints.isEmpty
+                ? "(none)"
+                : latestReview.anchorConstraints.prefix(4).joined(separator: " | ")
+            lines.append("anchor_constraints: \(constraints)")
+            lines.append("recommended_actions: \(latestReview.recommendedActions.isEmpty ? "(none)" : latestReview.recommendedActions.prefix(4).joined(separator: " | "))")
+        }
+        if workflowSnapshot?.activePlan != nil {
+            lines.append("active_plan_lineage:")
+            lines.append(contentsOf: Array(projectPlanStepDigest(workflowSnapshot?.activePlan).prefix(4)))
+        }
+        if let latestGuidance {
+            lines.append("latest_guidance_lineage: delivery=\(latestGuidance.deliveryMode.rawValue) intervention=\(latestGuidance.interventionMode.rawValue) ack_status=\(latestGuidance.ackStatus.rawValue)")
+        }
+        return lines.isEmpty ? "" : lines.joined(separator: "\n")
+    }
+
+    private func projectContextRefsText(
+        ctx: AXProjectContext,
+        contextDepthProfile: AXProjectContextDepthProfile,
+        workflowSnapshot: SupervisorProjectWorkflowSnapshot?,
+        latestReview: SupervisorReviewNoteRecord?,
+        latestGuidance: SupervisorGuidanceInjectionRecord?,
+        latestUIReview: XTUIReviewLatestReference?,
+        crossLinkHints: ProjectCrossLinkPromptHints
+    ) -> String {
+        switch contextDepthProfile {
+        case .lean:
+            return ""
+        case .balanced, .deep, .full, .auto:
+            break
+        }
+
+        var refs: [String] = []
+        refs.append("- ref_id=\(AXRecentContextStore.jsonURL(for: ctx).path)#recent ref_kind=dialogue_ref title=recent project dialogue source_scope=recent_project_dialogue freshness_hint=local")
+        refs.append("- ref_id=\(ctx.memoryMarkdownURL.path) ref_kind=canonical_ref title=project canonical memory source_scope=project_canonical freshness_hint=local")
+        if let latestReview {
+            refs.append("- ref_id=\(latestReview.memoryCursor ?? latestReview.auditRef) ref_kind=review_ref title=latest review note source_scope=review_note freshness_hint=recent")
+        }
+        if let latestGuidance {
+            let refId = latestGuidance.auditRef.isEmpty ? "guidance:\(latestGuidance.injectionId)" : latestGuidance.auditRef
+            refs.append("- ref_id=\(refId) ref_kind=workflow_ref title=latest guidance source_scope=guidance_injection freshness_hint=recent")
+        }
+        if let activeJob = workflowSnapshot?.activeJob {
+            refs.append("- ref_id=\(activeJob.auditRef.isEmpty ? "job:\(activeJob.jobId)" : activeJob.auditRef) ref_kind=workflow_ref title=active job / \(activeJob.jobId) source_scope=workflow_job freshness_hint=recent")
+        }
+        if let activePlan = workflowSnapshot?.activePlan {
+            refs.append("- ref_id=\(activePlan.auditRef.isEmpty ? "plan:\(activePlan.planId)" : activePlan.auditRef) ref_kind=workflow_ref title=active plan / \(activePlan.planId) source_scope=workflow_plan freshness_hint=recent")
+        }
+        if let activeSkillCall = workflowSnapshot?.activeSkillCall {
+            let refId = [activeSkillCall.resultEvidenceRef, activeSkillCall.auditRef]
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .first(where: { !$0.isEmpty }) ?? ""
+            refs.append("- ref_id=\(refId.isEmpty ? "skill_call:\(activeSkillCall.requestId)" : refId) ref_kind=evidence_ref title=latest skill result / \(activeSkillCall.skillId) source_scope=workflow_skill_call freshness_hint=recent")
+        }
+        if let latestUIReview {
+            refs.append("- ref_id=\(latestUIReview.reviewRef) ref_kind=evidence_ref title=latest ui review source_scope=ui_review freshness_hint=recent")
+            refs.append(
+                "- ref_id=\(XTUIReviewAgentEvidenceStore.reviewRef(reviewID: latestUIReview.reviewID)) ref_kind=evidence_ref title=latest ui review agent evidence source_scope=ui_review_agent_evidence freshness_hint=recent"
+            )
+        }
+        for ref in crossLinkHints.refs.prefix(3) {
+            refs.append("- ref_id=\(ref) ref_kind=cross_link_ref title=project cross-link backing record source_scope=cross_link freshness_hint=recent")
+        }
+        return refs.joined(separator: "\n")
+    }
+
+    private func projectEvidencePackText(
+        ctx: AXProjectContext,
+        contextDepthProfile: AXProjectContextDepthProfile,
+        workflowSnapshot: SupervisorProjectWorkflowSnapshot?,
+        latestReview: SupervisorReviewNoteRecord?,
+        latestGuidance: SupervisorGuidanceInjectionRecord?,
+        latestUIReview: XTUIReviewLatestReference?,
+        toolResults: [ToolResult]
+    ) -> String {
+        switch contextDepthProfile {
+        case .lean:
+            return ""
+        case .balanced, .deep, .full, .auto:
+            break
+        }
+
+        var items: [String] = []
+        if let latestReview {
+            items.append("- title=latest_review source_scope=review_note why_included=latest_supervisor_verdict excerpt=verdict=\(latestReview.verdict.rawValue) summary=\(capped(latestReview.summary, maxChars: 160))")
+        }
+        if let latestGuidance {
+            items.append("- title=latest_guidance source_scope=guidance_injection why_included=active_guidance_guardrail excerpt=delivery=\(latestGuidance.deliveryMode.rawValue) ack_status=\(latestGuidance.ackStatus.rawValue) guidance=\(capped(latestGuidance.guidanceText, maxChars: 160))")
+        }
+        if let latestUIReview {
+            items.append("- title=latest_ui_review source_scope=ui_review why_included=latest_browser_state excerpt=ref=\(latestUIReview.reviewRef) verdict=\(latestUIReview.verdict.rawValue) summary=\(capped(latestUIReview.summary, maxChars: 160))")
+        }
+        if let activeSkillCall = workflowSnapshot?.activeSkillCall,
+           !activeSkillCall.resultSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            items.append("- title=latest_skill_result source_scope=workflow_skill_call why_included=current_execution_result excerpt=status=\(activeSkillCall.status.rawValue) result=\(capped(activeSkillCall.resultSummary, maxChars: 160))")
+        }
+        let toolEvidence = toolEvidenceForMemoryV1(toolResults).trimmingCharacters(in: .whitespacesAndNewlines)
+        if !toolEvidence.isEmpty, toolEvidence != "(none)" {
+            items.append("- title=recent_tool_results source_scope=tool_results why_included=current_execution_evidence excerpt=\(capped(toolEvidence, maxChars: 180))")
+        }
+        if contextDepthProfile == .full || contextDepthProfile == .auto {
+            let uiEvidence = XTUIReviewPromptDigest.evidenceBlock(for: ctx, maxChecks: 2)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !uiEvidence.isEmpty {
+                items.append("- title=ui_review_checks source_scope=ui_review why_included=expanded_ui_evidence excerpt=\(capped(uiEvidence, maxChars: 180))")
+            }
+        }
+        guard !items.isEmpty else { return "" }
+        return """
+evidence_goal: recent_project_truth
+\(items.joined(separator: "\n"))
+"""
+    }
+
+    private func projectPlanStepDigest(_ plan: SupervisorPlanRecord?) -> [String] {
+        guard let plan else { return ["- (none)"] }
+        let ordered = plan.steps.sorted {
+            if $0.orderIndex != $1.orderIndex {
+                return $0.orderIndex < $1.orderIndex
+            }
+            return $0.stepId < $1.stepId
+        }
+        let selected = ordered.prefix(4).map { step in
+            "- \(step.orderIndex + 1). \(step.stepId) | \(step.status.rawValue) | \(step.kind.rawValue) | \(capped(step.title, maxChars: 120))"
+        }
+        return selected.isEmpty ? ["- (none)"] : selected
+    }
+
     private func currentProjectDisplayName(ctx: AXProjectContext) -> String {
         ctx.displayName()
     }
@@ -5950,7 +7267,7 @@ Response rules (STRICT):
         snapshot: SupervisorSkillRegistrySnapshot?
     ) -> String {
         let summary = sanitizeSupervisorPromptIdentifiers(
-            capped(snapshot?.memorySummary(maxItems: 6, maxChars: 1_200) ?? "", maxChars: 1_200)
+            capped(snapshot?.memorySummary(maxItems: 6, maxChars: 2_400) ?? "", maxChars: 2_400)
         )
         guard let snapshot, !snapshot.items.isEmpty, !summary.isEmpty else {
             return """
@@ -5964,11 +7281,47 @@ Skills registry:
 Skills registry (IMPORTANT):
 - This project currently has \(snapshot.items.count) governed skill(s) available.
 - When a matching installed skill exists, prefer `skill_calls` over raw `tool_calls`.
-- Use each skills_registry item's risk, grant, caps, dispatch, variant, and payload hints to shape `payload`.
+- Use each skills_registry item's risk, grant, caps, dispatch, variant, routing, and payload hints to shape `payload` and choose a stable `skill_id`.
+- Treat `routing: prefers_builtin=...` and `routing: entrypoints=...` as skill-family metadata. Wrapper ids, entrypoint ids, and builtin ids may describe one governed execution family.
+- If the user explicitly names a registered wrapper or entrypoint skill_id, keep that exact registered `skill_id` in `skill_calls` when it matches the request.
+- If the user asks only for a capability and the family advertises `routing: prefers_builtin=...`, choose the preferred builtin instead of an arbitrary sibling wrapper.
+- Do not emit duplicate sibling `skill_calls` for one intent just because multiple entrypoints map to the same routed family.
 - High-risk or grant-gated skills may still pause on approval even when routed through `skill_calls`.
 
 skills_registry:
 \(summary)
+"""
+    }
+
+    private func projectToolLoopResponseRules() -> String {
+        """
+Response rules (STRICT):
+- Output ONLY valid JSON.
+- If the current project has installed governed skills, you may use:
+  {"skill_calls":[{"id":"1","skill_id":"find-skills","payload":{"query":"browser automation"}}]}
+- If you need to use tools, output:
+  {"guidance_ack":{"injection_id":"guidance-id","status":"accepted","note":"Applying at next step boundary"},"tool_calls":[{"id":"1","tool":"read_file","args":{"path":"..."}}]}
+- If you are done, output:
+  {"guidance_ack":{"injection_id":"guidance-id","status":"deferred","note":"Need extra evidence before replan"},"final":"..."}
+- `skill_calls` and `tool_calls` are both allowed. Prefer `skill_calls` when the work matches an installed governed skill in `skills_registry`.
+- Only use `skill_id` values that appear in the current project's `skills_registry` snapshot.
+- Treat `routing: prefers_builtin=...` and `routing: entrypoints=...` as skill-family metadata when choosing `skill_id`.
+- If the user explicitly names a registered wrapper or entrypoint skill, keep that exact registered `skill_id` when it matches the request.
+- If the user asks only for a capability and the family marks a preferred builtin, choose the preferred builtin instead of an arbitrary sibling wrapper.
+- Do not emit duplicate sibling `skill_calls` for one intent just because multiple entrypoints map to the same routed family.
+- Put variant selection inside `payload.action` when a skill exposes multiple actions.
+- If no pending supervisor guidance is present, `guidance_ack` may be omitted.
+- Do not include markdown. Do not include extra keys.
+"""
+    }
+
+    private func namedProjectMemorySection(_ tag: String, body: String) -> String {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        return """
+[\(tag)]
+\(trimmed)
+[/\(tag)]
 """
     }
 
@@ -5979,11 +7332,26 @@ skills_registry:
         toolResults: [ToolResult],
         userText: String,
         skillRegistrySnapshot: SupervisorSkillRegistrySnapshot? = nil,
+        dialogueWindowText: String = "",
+        focusedProjectAnchorPackText: String = "",
+        longtermOutlineText: String = "",
+        contextRefsText: String = "",
+        evidencePackText: String = "",
+        observationsTextOverride: String? = nil,
+        rawEvidenceTextOverride: String? = nil,
         servingProfile: XTMemoryServingProfile? = nil
     ) -> String {
         let constitution = constitutionOneLinerForMemoryV1(userText: userText)
         let skillRegistryEvidence = sanitizeSupervisorPromptIdentifiers(
-            capped(skillRegistrySnapshot?.memorySummary(maxItems: 6, maxChars: 1_200) ?? "", maxChars: 1_200)
+            capped(skillRegistrySnapshot?.memorySummary(maxItems: 6, maxChars: 2_400) ?? "", maxChars: 2_400)
+        )
+        let observationsText = observationsTextOverride ?? projectObservationDigest(ctx: ctx)
+        let rawEvidenceText = rawEvidenceTextOverride ?? sanitizedPromptContextText(
+            projectRawEvidenceForMemoryV1(
+                ctx: ctx,
+                toolResults: toolResults,
+                skillRegistryEvidence: skillRegistryEvidence
+            )
         )
         let rawPayload = HubIPCClient.MemoryContextPayload(
             mode: XTMemoryUseMode.projectChat.rawValue,
@@ -5992,16 +7360,15 @@ skills_registry:
             displayName: currentProjectDisplayName(ctx: ctx),
             latestUser: userText,
             constitutionHint: constitution,
+            dialogueWindowText: dialogueWindowText,
+            focusedProjectAnchorPackText: focusedProjectAnchorPackText,
+            longtermOutlineText: longtermOutlineText,
+            contextRefsText: contextRefsText,
+            evidencePackText: evidencePackText,
             canonicalText: sanitizedPromptContextText(canonicalMemory),
-            observationsText: sanitizedPromptContextText(projectObservationDigest(ctx: ctx)),
+            observationsText: sanitizedPromptContextText(observationsText),
             workingSetText: sanitizedPromptContextText(recentText),
-            rawEvidenceText: sanitizedPromptContextText(
-                projectRawEvidenceForMemoryV1(
-                    ctx: ctx,
-                    toolResults: toolResults,
-                    skillRegistryEvidence: skillRegistryEvidence
-                )
-            ),
+            rawEvidenceText: sanitizedPromptContextText(rawEvidenceText),
             servingProfile: servingProfile?.rawValue,
             budgets: nil
         )
@@ -6023,10 +7390,35 @@ profile_id: \(profile)
             useMode: .projectChat,
             retrievalAvailable: false
         )
+        let dialogueWindowSection = namedProjectMemorySection(
+            "DIALOGUE_WINDOW",
+            body: payload.dialogueWindowText ?? ""
+        )
+        let focusedProjectAnchorPackSection = namedProjectMemorySection(
+            "FOCUSED_PROJECT_ANCHOR_PACK",
+            body: payload.focusedProjectAnchorPackText ?? ""
+        )
+        let longtermOutlineSection = namedProjectMemorySection(
+            "LONGTERM_OUTLINE",
+            body: payload.longtermOutlineText ?? ""
+        )
+        let contextRefsSection = namedProjectMemorySection(
+            "CONTEXT_REFS",
+            body: payload.contextRefsText ?? ""
+        )
+        let evidencePackSection = namedProjectMemorySection(
+            "EVIDENCE_PACK",
+            body: payload.evidencePackText ?? ""
+        )
         return HubIPCClient.ensureMemoryLongtermDisclosureText(
             """
 [MEMORY_V1]
 \(servingProfileSection.isEmpty ? "" : "\(servingProfileSection)\n")
+\(dialogueWindowSection.isEmpty ? "" : "\(dialogueWindowSection)\n")
+\(focusedProjectAnchorPackSection.isEmpty ? "" : "\(focusedProjectAnchorPackSection)\n")
+\(longtermOutlineSection.isEmpty ? "" : "\(longtermOutlineSection)\n")
+\(contextRefsSection.isEmpty ? "" : "\(contextRefsSection)\n")
+\(evidencePackSection.isEmpty ? "" : "\(evidencePackSection)\n")
 [L0_CONSTITUTION]
 \((payload.constitutionHint ?? "").isEmpty ? "(none)" : (payload.constitutionHint ?? ""))
 [/L0_CONSTITUTION]
@@ -6059,22 +7451,16 @@ latest_user:
         ctx: AXProjectContext,
         config: AXProjectConfig?,
         canonicalMemory: String,
-        recentText: String,
+        contextAssembly: ProjectPromptContextAssembly,
         toolResults: [ToolResult],
         userText: String,
         skillRegistrySnapshot: SupervisorSkillRegistrySnapshot? = nil,
         safePointState: SupervisorSafePointExecutionState? = nil
     ) async -> MemoryV1BuildInfo {
         let preferHubMemory = XTProjectMemoryGovernance.prefersHubMemory(config)
-        let observationsText = projectObservationDigest(ctx: ctx)
-        let rawEvidence = sanitizedPromptContextText(
-            projectRawEvidenceForMemoryV1(
-                ctx: ctx,
-                toolResults: toolResults,
-                skillRegistryEvidence: nil
-            )
-        )
-        let servingProfile = preferredProjectMemoryServingProfile(userText: userText)
+        let observationsText = contextAssembly.observationsText
+        let rawEvidence = contextAssembly.rawEvidenceText
+        let servingProfile = contextAssembly.effectiveServingProfile
         let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
         let displayName = currentProjectDisplayName(ctx: ctx)
         let constitutionHint = constitutionOneLinerForMemoryV1(userText: userText)
@@ -6090,7 +7476,7 @@ latest_user:
             retrievalBlock = ""
         }
         let mergedRecentText = mergeProjectMemoryRetrieval(
-            recentText: recentText,
+            recentText: contextAssembly.recentDialogueSelection.messagesText,
             retrievalBlock: retrievalBlock
         )
         let guidanceSnapshot = projectSupervisorGuidancePromptSnapshot(
@@ -6114,6 +7500,13 @@ latest_user:
             toolResults: toolResults,
             userText: userText,
             skillRegistrySnapshot: skillRegistrySnapshot,
+            dialogueWindowText: contextAssembly.recentDialogueSelection.dialogueWindowText,
+            focusedProjectAnchorPackText: contextAssembly.focusedProjectAnchorPackText,
+            longtermOutlineText: contextAssembly.longtermOutlineText,
+            contextRefsText: contextAssembly.contextRefsText,
+            evidencePackText: contextAssembly.evidencePackText,
+            observationsTextOverride: observationsText,
+            rawEvidenceTextOverride: rawEvidence,
             servingProfile: servingProfile
         )
 
@@ -6129,6 +7522,7 @@ latest_user:
                 truncatedLayers: [],
                 redactedItems: nil,
                 privateDrops: nil,
+                projectExplainability: contextAssembly.diagnostics,
                 visiblePendingGuidanceInjectionId: guidanceSnapshot.visiblePendingGuidanceInjectionId
             )
         }
@@ -6141,6 +7535,21 @@ latest_user:
             displayName: displayName,
             latestUser: userText,
             constitutionHint: constitutionHint,
+            dialogueWindowText: sanitizedPromptContextText(
+                contextAssembly.recentDialogueSelection.dialogueWindowText
+            ),
+            focusedProjectAnchorPackText: sanitizedPromptContextText(
+                contextAssembly.focusedProjectAnchorPackText
+            ),
+            longtermOutlineText: sanitizedPromptContextText(
+                contextAssembly.longtermOutlineText
+            ),
+            contextRefsText: sanitizedPromptContextText(
+                contextAssembly.contextRefsText
+            ),
+            evidencePackText: sanitizedPromptContextText(
+                contextAssembly.evidencePackText
+            ),
             canonicalText: sanitizedPromptContextText(canonicalMemory),
             observationsText: sanitizedPromptContextText(observationsText),
             workingSetText: sanitizedPromptContextText(workingSetText),
@@ -6169,13 +7578,14 @@ latest_user:
                 retrievalAvailable: disclosure.retrievalAvailable,
                 fulltextNotLoaded: disclosure.fulltextNotLoaded,
                 usedTokens: hubMemory.usedTotalTokens,
-            budgetTokens: hubMemory.budgetTotalTokens,
-            truncatedLayers: hubMemory.truncatedLayers,
-            redactedItems: hubMemory.redactedItems,
-            privateDrops: hubMemory.privateDrops,
-            visiblePendingGuidanceInjectionId: guidanceSnapshot.visiblePendingGuidanceInjectionId
-        )
-    }
+                budgetTokens: hubMemory.budgetTotalTokens,
+                truncatedLayers: hubMemory.truncatedLayers,
+                redactedItems: hubMemory.redactedItems,
+                privateDrops: hubMemory.privateDrops,
+                projectExplainability: contextAssembly.diagnostics,
+                visiblePendingGuidanceInjectionId: guidanceSnapshot.visiblePendingGuidanceInjectionId
+            )
+        }
 
         return MemoryV1BuildInfo(
             text: local,
@@ -6187,7 +7597,9 @@ latest_user:
             budgetTokens: nil,
             truncatedLayers: [],
             redactedItems: nil,
-            privateDrops: nil
+            privateDrops: nil,
+            projectExplainability: contextAssembly.diagnostics,
+            visiblePendingGuidanceInjectionId: guidanceSnapshot.visiblePendingGuidanceInjectionId
         )
     }
 
@@ -6243,9 +7655,12 @@ latest_user:
         let trimmedItems = items.trimmingCharacters(in: .whitespacesAndNewlines)
         let denyCode = response.denyCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let reasonCode = response.reasonCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let detail = response.detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let normalizedStatus = response.status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
         let status: String
-        if normalizedStatus == "denied" || !denyCode.isEmpty {
+        if normalizedStatus == "error" {
+            status = "unavailable"
+        } else if normalizedStatus == "denied" || !denyCode.isEmpty {
             status = "denied"
         } else if normalizedStatus == "truncated" || response.truncatedItems > 0 {
             status = "truncated"
@@ -6278,6 +7693,9 @@ latest_user:
         }
         if !reasonCode.isEmpty {
             lines.append("reason_code=\(reasonCode)")
+        }
+        if !detail.isEmpty {
+            lines.append("detail=\(detail)")
         }
         if !denyCode.isEmpty {
             lines.append("deny_code=\(denyCode)")
@@ -6590,26 +8008,44 @@ ui_review: \(uiReviewInline.isEmpty ? "(none)" : uiReviewInline)
         var sections: [String] = []
         if let pending {
             let nowMs = Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
+            let executionGate = projectSupervisorGuidanceExecutionGateLabel(pending)
+            let guidanceText = projectSupervisorGuidanceTextForPrompt(
+                pending,
+                ctx: ctx
+            )
             sections.append(
                 """
 [pending_supervisor_guidance]
 injection_id: \(pending.injectionId)
 review_id: \(pending.reviewId)
+target_role: \(pending.targetRole.rawValue)
 delivery_mode: \(pending.deliveryMode.rawValue)
 intervention_mode: \(pending.interventionMode.rawValue)
 safe_point_policy: \(pending.safePointPolicy.rawValue)
 lifecycle: \(SupervisorGuidanceInjectionStore.lifecycleSummary(for: pending, nowMs: nowMs))
 ack_status: \(pending.ackStatus.rawValue)
 ack_required: \(pending.ackRequired)
+effective_supervisor_tier: \(pending.effectiveSupervisorTier?.rawValue ?? "(none)")
+effective_work_order_depth: \(pending.effectiveWorkOrderDepth?.rawValue ?? "(none)")
+work_order_ref: \(pending.workOrderRef ?? "(none)")
+execution_gate: \(executionGate)
 expires_at_ms: \(pending.expiresAtMs)
 retry_at_ms: \(pending.retryAtMs)
 retry_count: \(pending.retryCount)
 max_retry_count: \(pending.maxRetryCount)
 guidance_text:
-\(pending.guidanceText)
+\(guidanceText)
 [/pending_supervisor_guidance]
 """
             )
+            if let repairContract = projectUIReviewRepairContractBlock(for: pending) {
+                sections.append(repairContract)
+            } else if let replanContract = projectSupervisorReplanContractBlock(
+                for: pending,
+                ctx: ctx
+            ) {
+                sections.append(replanContract)
+            }
         }
         if let latest {
             let nowMs = Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
@@ -6617,6 +8053,7 @@ guidance_text:
                 """
 [latest_supervisor_guidance]
 injection_id: \(latest.injectionId)
+target_role: \(latest.targetRole.rawValue)
 ack_status: \(latest.ackStatus.rawValue)
 ack_note: \(latest.ackNote.isEmpty ? "(none)" : latest.ackNote)
 lifecycle: \(SupervisorGuidanceInjectionStore.lifecycleSummary(for: latest, nowMs: nowMs))
@@ -6626,6 +8063,9 @@ retry_count: \(latest.retryCount)
 max_retry_count: \(latest.maxRetryCount)
 delivery_mode: \(latest.deliveryMode.rawValue)
 intervention_mode: \(latest.interventionMode.rawValue)
+effective_supervisor_tier: \(latest.effectiveSupervisorTier?.rawValue ?? "(none)")
+effective_work_order_depth: \(latest.effectiveWorkOrderDepth?.rawValue ?? "(none)")
+work_order_ref: \(latest.workOrderRef ?? "(none)")
 [/latest_supervisor_guidance]
 """
             )
@@ -6634,6 +8074,740 @@ intervention_mode: \(latest.interventionMode.rawValue)
             block: sections.joined(separator: "\n\n"),
             visiblePendingGuidanceInjectionId: pending?.injectionId
         )
+    }
+
+    private func projectSupervisorGuidanceTextForPrompt(
+        _ guidance: SupervisorGuidanceInjectionRecord,
+        ctx: AXProjectContext
+    ) -> String {
+        if let contract = projectUIReviewRepairContract(from: guidance) {
+            var lines = [
+                contract.summary.isEmpty ? "UI review repair guidance is active." : contract.summary,
+                "source=ui_review_repair",
+                "repair_action=\(contract.repairAction.isEmpty ? "(none)" : contract.repairAction)",
+                "repair_focus=\(contract.repairFocus.isEmpty ? "(none)" : contract.repairFocus)",
+                "next_safe_action=\(contract.nextSafeAction.isEmpty ? "(none)" : contract.nextSafeAction)"
+            ]
+            if !contract.instruction.isEmpty {
+                lines.append("instruction=\(contract.instruction)")
+            }
+            if !contract.uiReviewVerdict.isEmpty {
+                lines.append("ui_review_verdict=\(contract.uiReviewVerdict)")
+            }
+            return lines.joined(separator: "\n")
+        }
+
+        if let contract = projectSupervisorReplanContract(
+            for: guidance,
+            ctx: ctx
+        ) {
+            var lines = [
+                contract.summary.isEmpty ? "Supervisor replan guidance is active." : contract.summary,
+                "source=supervisor_replan",
+                "contract_kind=\(contract.contractKind)",
+                "primary_blocker=\(contract.primaryBlocker.isEmpty ? "(none)" : contract.primaryBlocker)",
+                "next_safe_action=\(contract.nextSafeAction.isEmpty ? "(none)" : contract.nextSafeAction)",
+                "work_order_ref=\(contract.workOrderRef.isEmpty ? "(none)" : contract.workOrderRef)"
+            ]
+            if !contract.nextStep.isEmpty {
+                lines.append("next_step=\(contract.nextStep)")
+            }
+            if !contract.recommendedActions.isEmpty {
+                lines.append("recommended_actions=\(contract.recommendedActions.prefix(3).joined(separator: " | "))")
+            }
+            return lines.joined(separator: "\n")
+        }
+
+        return guidance.guidanceText
+    }
+
+    private func projectUIReviewRepairContractBlock(
+        for guidance: SupervisorGuidanceInjectionRecord
+    ) -> String? {
+        guard let contract = projectUIReviewRepairContract(from: guidance) else {
+            return nil
+        }
+
+        return """
+[ui_review_repair_contract]
+injection_id: \(guidance.injectionId)
+review_id: \(guidance.reviewId)
+repair_action: \(contract.repairAction.isEmpty ? "(none)" : contract.repairAction)
+repair_focus: \(contract.repairFocus.isEmpty ? "(none)" : contract.repairFocus)
+next_safe_action: \(contract.nextSafeAction.isEmpty ? "(none)" : contract.nextSafeAction)
+ui_review_ref: \(contract.uiReviewRef.isEmpty ? "(none)" : contract.uiReviewRef)
+ui_review_review_id: \(contract.uiReviewReviewId.isEmpty ? "(none)" : contract.uiReviewReviewId)
+ui_review_verdict: \(contract.uiReviewVerdict.isEmpty ? "(none)" : contract.uiReviewVerdict)
+ui_review_issue_codes: \(contract.uiReviewIssueCodes.isEmpty ? "(none)" : contract.uiReviewIssueCodes)
+summary: \(contract.summary.isEmpty ? "(none)" : contract.summary)
+instruction: \(contract.instruction.isEmpty ? "(none)" : contract.instruction)
+ui_review_summary: \(contract.uiReviewSummary.isEmpty ? "(none)" : contract.uiReviewSummary)
+skill_result_summary: \(contract.skillResultSummary.isEmpty ? "(none)" : contract.skillResultSummary)
+[/ui_review_repair_contract]
+"""
+    }
+
+    private func projectUIReviewRepairContract(
+        from guidance: SupervisorGuidanceInjectionRecord
+    ) -> ProjectUIReviewRepairContract? {
+        let (summary, fields) = parsedProjectSupervisorGuidanceText(guidance.guidanceText)
+
+        guard fields["source"]?.lowercased() == "ui_review_repair" else {
+            return nil
+        }
+
+        return ProjectUIReviewRepairContract(
+            summary: summary,
+            instruction: fields["instruction"] ?? "",
+            repairAction: fields["repair_action"] ?? "",
+            repairFocus: fields["repair_focus"] ?? "",
+            nextSafeAction: fields["next_safe_action"] ?? "",
+            uiReviewRef: fields["ui_review_ref"] ?? "",
+            uiReviewReviewId: fields["ui_review_review_id"] ?? "",
+            uiReviewVerdict: fields["ui_review_verdict"] ?? "",
+            uiReviewIssueCodes: fields["ui_review_issue_codes"] ?? "",
+            uiReviewSummary: fields["ui_review_summary"] ?? "",
+            skillResultSummary: fields["skill_result_summary"] ?? ""
+        )
+    }
+
+    private func projectSupervisorReplanContractBlock(
+        for guidance: SupervisorGuidanceInjectionRecord,
+        ctx: AXProjectContext
+    ) -> String? {
+        guard let contract = projectSupervisorReplanContract(for: guidance, ctx: ctx) else {
+            return nil
+        }
+
+        let recommendedActions = contract.recommendedActions.isEmpty
+            ? "(none)"
+            : contract.recommendedActions.joined(separator: " | ")
+
+        return """
+[supervisor_replan_contract]
+injection_id: \(guidance.injectionId)
+review_id: \(guidance.reviewId)
+contract_kind: \(contract.contractKind.isEmpty ? "(none)" : contract.contractKind)
+trigger: \(contract.trigger.isEmpty ? "(none)" : contract.trigger)
+review_level: \(contract.reviewLevel.isEmpty ? "(none)" : contract.reviewLevel)
+verdict: \(contract.verdict.isEmpty ? "(none)" : contract.verdict)
+summary: \(contract.summary.isEmpty ? "(none)" : contract.summary)
+primary_blocker: \(contract.primaryBlocker.isEmpty ? "(none)" : contract.primaryBlocker)
+current_state: \(contract.currentState.isEmpty ? "(none)" : contract.currentState)
+next_step: \(contract.nextStep.isEmpty ? "(none)" : contract.nextStep)
+next_safe_action: \(contract.nextSafeAction.isEmpty ? "(none)" : contract.nextSafeAction)
+recommended_actions: \(recommendedActions)
+work_order_ref: \(contract.workOrderRef.isEmpty ? "(none)" : contract.workOrderRef)
+effective_supervisor_tier: \(contract.effectiveSupervisorTier.isEmpty ? "(none)" : contract.effectiveSupervisorTier)
+effective_work_order_depth: \(contract.effectiveWorkOrderDepth.isEmpty ? "(none)" : contract.effectiveWorkOrderDepth)
+[/supervisor_replan_contract]
+"""
+    }
+
+    private func projectSupervisorReplanContract(
+        for guidance: SupervisorGuidanceInjectionRecord,
+        ctx: AXProjectContext
+    ) -> ProjectSupervisorReplanContract? {
+        guard projectUIReviewRepairContract(from: guidance) == nil else {
+            return nil
+        }
+
+        let (parsedSummary, fields) = parsedProjectSupervisorGuidanceText(guidance.guidanceText)
+        let note = projectSupervisorReviewNote(
+            ctx: ctx,
+            reviewId: guidance.reviewId
+        )
+
+        let summary = firstNonEmptyProjectSupervisorRepairValue(
+            note?.summary ?? "",
+            fields["summary"] ?? "",
+            parsedSummary
+        ) ?? ""
+        let primaryBlocker = firstNonEmptyProjectSupervisorRepairValue(
+            note?.blocker ?? "",
+            fields["primary_blocker"] ?? "",
+            fields["blocker"] ?? ""
+        ) ?? ""
+        let currentState = firstNonEmptyProjectSupervisorRepairValue(
+            note?.currentState ?? "",
+            fields["current_state"] ?? ""
+        ) ?? ""
+        let nextStep = firstNonEmptyProjectSupervisorRepairValue(
+            note?.nextStep ?? "",
+            fields["next_step"] ?? ""
+        ) ?? ""
+        let actions = projectSupervisorRecommendedActions(
+            note: note,
+            parsedFields: fields
+        )
+        let contractKind = inferredProjectSupervisorReplanContractKind(
+            guidance: guidance,
+            note: note,
+            parsedFields: fields,
+            summary: summary,
+            primaryBlocker: primaryBlocker
+        )
+        let nextSafeAction = firstNonEmptyProjectSupervisorRepairValue(
+            fields["next_safe_action"] ?? "",
+            inferredProjectSupervisorNextSafeAction(
+                contractKind: contractKind,
+                note: note
+            )
+        ) ?? ""
+        let verdict = firstNonEmptyProjectSupervisorRepairValue(
+            note?.verdict.rawValue ?? "",
+            fields["verdict"] ?? ""
+        ) ?? ""
+        let reviewLevel = firstNonEmptyProjectSupervisorRepairValue(
+            note?.reviewLevel.rawValue ?? "",
+            fields["review_level"] ?? ""
+        ) ?? ""
+        let trigger = firstNonEmptyProjectSupervisorRepairValue(
+            note?.trigger.rawValue ?? "",
+            fields["trigger"] ?? ""
+        ) ?? ""
+        let workOrderRef = firstNonEmptyProjectSupervisorRepairValue(
+            note?.workOrderRef ?? "",
+            guidance.workOrderRef ?? "",
+            fields["work_order_ref"] ?? ""
+        ) ?? ""
+        let supervisorTier = firstNonEmptyProjectSupervisorRepairValue(
+            note?.effectiveSupervisorTier?.rawValue ?? "",
+            guidance.effectiveSupervisorTier?.rawValue ?? "",
+            fields["effective_supervisor_tier"] ?? ""
+        ) ?? ""
+        let workOrderDepth = firstNonEmptyProjectSupervisorRepairValue(
+            note?.effectiveWorkOrderDepth?.rawValue ?? "",
+            guidance.effectiveWorkOrderDepth?.rawValue ?? "",
+            fields["effective_work_order_depth"] ?? ""
+        ) ?? ""
+
+        guard !summary.isEmpty || !primaryBlocker.isEmpty || !actions.isEmpty || !nextStep.isEmpty else {
+            return nil
+        }
+
+        return ProjectSupervisorReplanContract(
+            contractKind: contractKind,
+            trigger: trigger,
+            reviewLevel: reviewLevel,
+            verdict: verdict,
+            summary: summary,
+            primaryBlocker: primaryBlocker,
+            currentState: currentState,
+            nextStep: nextStep,
+            nextSafeAction: nextSafeAction,
+            recommendedActions: actions,
+            workOrderRef: workOrderRef,
+            effectiveSupervisorTier: supervisorTier,
+            effectiveWorkOrderDepth: workOrderDepth
+        )
+    }
+
+    private func parsedProjectSupervisorGuidanceText(
+        _ text: String
+    ) -> (summary: String, fields: [String: String]) {
+        let lines = text
+            .split(whereSeparator: \.isNewline)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        var summary = ""
+        var fields: [String: String] = [:]
+        for line in lines {
+            if let eq = line.firstIndex(of: "=") {
+                let key = String(line[..<eq]).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let value = String(line[line.index(after: eq)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !key.isEmpty {
+                    fields[key] = value
+                    continue
+                }
+            }
+            if summary.isEmpty {
+                summary = line
+            }
+        }
+
+        return (summary, fields)
+    }
+
+    private func projectSupervisorReviewNote(
+        ctx: AXProjectContext,
+        reviewId: String
+    ) -> SupervisorReviewNoteRecord? {
+        let normalized = reviewId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
+        return SupervisorReviewNoteStore.load(for: ctx).notes.first {
+            $0.reviewId == normalized
+        }
+    }
+
+    private func projectSupervisorRecommendedActions(
+        note: SupervisorReviewNoteRecord?,
+        parsedFields: [String: String]
+    ) -> [String] {
+        if let note, !note.recommendedActions.isEmpty {
+            return note.recommendedActions
+        }
+        let raw = (parsedFields["recommended_actions"] ?? parsedFields["actions"] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return [] }
+        return raw
+            .split(separator: "|")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private func inferredProjectSupervisorReplanContractKind(
+        guidance: SupervisorGuidanceInjectionRecord,
+        note: SupervisorReviewNoteRecord?,
+        parsedFields: [String: String],
+        summary: String,
+        primaryBlocker: String
+    ) -> String {
+        let haystack = [
+            guidance.guidanceText,
+            summary,
+            primaryBlocker,
+            note?.summary ?? "",
+            note?.blocker ?? "",
+            note?.nextStep ?? "",
+            note?.recommendedActions.joined(separator: " | ") ?? "",
+            parsedFields["summary"] ?? "",
+            parsedFields["blocker"] ?? ""
+        ]
+        .joined(separator: "\n")
+        .lowercased()
+
+        if haystack.contains("grant_required")
+            || haystack.contains("grant_pending")
+            || haystack.contains("pending grant")
+            || haystack.contains("等待授权")
+            || haystack.contains("需要授权")
+            || haystack.contains("审批")
+            || haystack.contains("authorize")
+            || haystack.contains("approval") {
+            return "grant_resolution"
+        }
+        if haystack.contains("awaiting instruction")
+            || haystack.contains("awaiting_instruction")
+            || haystack.contains("clarify")
+            || haystack.contains("需要确认")
+            || haystack.contains("等待指令") {
+            return "awaiting_instruction"
+        }
+        if haystack.contains("runtime_error")
+            || haystack.contains("incident")
+            || haystack.contains("failure")
+            || haystack.contains("failed")
+            || haystack.contains("blocked") {
+            return "incident_recovery"
+        }
+        return "supervisor_replan"
+    }
+
+    private func inferredProjectSupervisorNextSafeAction(
+        contractKind: String,
+        note: SupervisorReviewNoteRecord?
+    ) -> String {
+        switch contractKind {
+        case "grant_resolution":
+            return "open_hub_grants"
+        case "awaiting_instruction":
+            return "clarify_with_user"
+        case "incident_recovery":
+            return "inspect_incident_and_replan"
+        default:
+            if note?.deliveryMode == .stopSignal {
+                return "replan_before_execution"
+            }
+            return "apply_supervisor_replan"
+        }
+    }
+
+    private func projectSupervisorFinalizeOnlyResponseContractInstructions(
+        ctx: AXProjectContext,
+        visiblePendingGuidanceInjectionId: String?
+    ) -> String {
+        guard let pending = visiblePendingSupervisorGuidanceExecutionGate(
+                ctx: ctx,
+                visiblePendingGuidanceInjectionId: visiblePendingGuidanceInjectionId
+              ) else {
+            return ""
+        }
+
+        if let contract = projectUIReviewRepairContract(from: pending) {
+            return """
+- Active UI repair contract detected for this final-only response.
+- Ground the stop reason in the current UI review evidence.
+- Your `final` should follow this structure:
+  1. Stop reason: why automation must pause now.
+  2. Repair target: mention `repair_action=\(contract.repairAction.isEmpty ? "(none)" : contract.repairAction)` and `repair_focus=\(contract.repairFocus.isEmpty ? "(none)" : contract.repairFocus)`.
+  3. Next safe action: mention `next_safe_action=\(contract.nextSafeAction.isEmpty ? "(none)" : contract.nextSafeAction)`.
+  4. Evidence: mention `ui_review_ref=\(contract.uiReviewRef.isEmpty ? "(none)" : contract.uiReviewRef)` or `ui_review_review_id=\(contract.uiReviewReviewId.isEmpty ? "(none)" : contract.uiReviewReviewId)`.
+  5. Replan: list 1-3 concrete next actions and do not claim the repair is complete without new evidence.
+- Also align with `instruction=\(contract.instruction.isEmpty ? "(none)" : contract.instruction)`.
+"""
+        }
+
+        guard let contract = projectSupervisorReplanContract(for: pending, ctx: ctx) else {
+            return ""
+        }
+
+        let actions = contract.recommendedActions.isEmpty
+            ? "(none)"
+            : contract.recommendedActions.prefix(3).joined(separator: " | ")
+
+        return """
+- Active supervisor replan contract detected for this final-only response.
+- Ground the stop reason in the current blocker, incident, or governance instruction.
+- Your `final` should follow this structure:
+  1. Stop reason: why execution must pause now.
+  2. Contract kind: mention `contract_kind=\(contract.contractKind.isEmpty ? "(none)" : contract.contractKind)`.
+  3. Primary blocker: mention `primary_blocker=\(contract.primaryBlocker.isEmpty ? "(none)" : contract.primaryBlocker)`.
+  4. Next safe action: mention `next_safe_action=\(contract.nextSafeAction.isEmpty ? "(none)" : contract.nextSafeAction)`.
+  5. Replan: list 1-3 concrete next actions, aligned with `recommended_actions=\(actions)`.
+- Also align with `work_order_ref=\(contract.workOrderRef.isEmpty ? "(none)" : contract.workOrderRef)` and `next_step=\(contract.nextStep.isEmpty ? "(none)" : contract.nextStep)`.
+"""
+    }
+
+    private func normalizedProjectSupervisorFinalIfNeeded(
+        final: String?,
+        ctx: AXProjectContext,
+        visiblePendingGuidanceInjectionId: String?
+    ) -> String? {
+        guard let trimmed = final?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return final
+        }
+        guard let pending = visiblePendingSupervisorGuidanceExecutionGate(
+                ctx: ctx,
+                visiblePendingGuidanceInjectionId: visiblePendingGuidanceInjectionId
+              ) else {
+            return trimmed
+        }
+        if let contract = projectUIReviewRepairContract(from: pending),
+           !projectSupervisorFinalAlreadyStructuredForUIRepair(trimmed, contract: contract) {
+            return structuredProjectSupervisorFinal(
+                final: trimmed,
+                contract: contract
+            )
+        }
+        if let contract = projectSupervisorReplanContract(for: pending, ctx: ctx),
+           !projectSupervisorFinalAlreadyStructuredForReplan(trimmed, contract: contract) {
+            return structuredProjectSupervisorReplanFinal(
+                final: trimmed,
+                contract: contract
+            )
+        }
+        return trimmed
+    }
+
+    private func projectSupervisorFinalAlreadyStructuredForUIRepair(
+        _ final: String,
+        contract: ProjectUIReviewRepairContract
+    ) -> Bool {
+        let normalized = final.lowercased()
+        let hasRepairAnchor =
+            normalized.contains("repair_action:")
+            || normalized.contains("repair_action=")
+            || (!contract.repairAction.isEmpty && normalized.contains(contract.repairAction.lowercased()))
+        let hasNextSafeAnchor =
+            normalized.contains("next_safe_action:")
+            || normalized.contains("next_safe_action=")
+            || (!contract.nextSafeAction.isEmpty && normalized.contains(contract.nextSafeAction.lowercased()))
+        return hasRepairAnchor && hasNextSafeAnchor
+    }
+
+    private func structuredProjectSupervisorFinal(
+        final: String,
+        contract: ProjectUIReviewRepairContract
+    ) -> String {
+        let evidence =
+            firstNonEmptyProjectSupervisorRepairValue(
+                contract.uiReviewSummary,
+                contract.skillResultSummary,
+                contract.summary
+            ) ?? ""
+        let ref =
+            firstNonEmptyProjectSupervisorRepairValue(
+                contract.uiReviewRef,
+                contract.uiReviewReviewId
+            ) ?? ""
+
+        var lines: [String] = [
+            "已暂停继续自动化，先处理当前 UI 修复要求。"
+        ]
+        if !contract.summary.isEmpty {
+            lines.append(contract.summary)
+        }
+        lines.append("")
+        lines.append("- repair_action: \(contract.repairAction.isEmpty ? "(none)" : contract.repairAction)")
+        lines.append("- repair_focus: \(contract.repairFocus.isEmpty ? "(none)" : contract.repairFocus)")
+        lines.append("- next_safe_action: \(contract.nextSafeAction.isEmpty ? "(none)" : contract.nextSafeAction)")
+        if !ref.isEmpty {
+            lines.append("- ui_review_ref: \(ref)")
+        }
+        if !contract.instruction.isEmpty {
+            lines.append("- instruction: \(contract.instruction)")
+        }
+        if !evidence.isEmpty {
+            lines.append("- evidence: \(evidence)")
+        }
+        lines.append("")
+        lines.append("当前重规划：")
+        lines.append(final)
+        return lines.joined(separator: "\n")
+    }
+
+    private func projectSupervisorFinalAlreadyStructuredForReplan(
+        _ final: String,
+        contract: ProjectSupervisorReplanContract
+    ) -> Bool {
+        let normalized = final.lowercased()
+        let hasKindAnchor =
+            normalized.contains("contract_kind:")
+            || normalized.contains("contract_kind=")
+            || (!contract.contractKind.isEmpty && normalized.contains(contract.contractKind.lowercased()))
+        let hasNextSafeAnchor =
+            normalized.contains("next_safe_action:")
+            || normalized.contains("next_safe_action=")
+            || (!contract.nextSafeAction.isEmpty && normalized.contains(contract.nextSafeAction.lowercased()))
+        return hasKindAnchor && hasNextSafeAnchor
+    }
+
+    private func structuredProjectSupervisorReplanFinal(
+        final: String,
+        contract: ProjectSupervisorReplanContract
+    ) -> String {
+        let actions = contract.recommendedActions.isEmpty
+            ? "(none)"
+            : contract.recommendedActions.joined(separator: " | ")
+
+        var lines: [String] = [
+            "已暂停继续执行，先处理当前 supervisor replan 合同。"
+        ]
+        if !contract.summary.isEmpty {
+            lines.append(contract.summary)
+        }
+        lines.append("")
+        lines.append("- contract_kind: \(contract.contractKind.isEmpty ? "(none)" : contract.contractKind)")
+        lines.append("- primary_blocker: \(contract.primaryBlocker.isEmpty ? "(none)" : contract.primaryBlocker)")
+        lines.append("- next_safe_action: \(contract.nextSafeAction.isEmpty ? "(none)" : contract.nextSafeAction)")
+        if !contract.nextStep.isEmpty {
+            lines.append("- next_step: \(contract.nextStep)")
+        }
+        if !contract.workOrderRef.isEmpty {
+            lines.append("- work_order_ref: \(contract.workOrderRef)")
+        }
+        if !actions.isEmpty {
+            lines.append("- recommended_actions: \(actions)")
+        }
+        lines.append("")
+        lines.append("当前重规划：")
+        lines.append(final)
+        return lines.joined(separator: "\n")
+    }
+
+    private func firstNonEmptyProjectSupervisorRepairValue(
+        _ values: String...
+    ) -> String? {
+        values
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first(where: { !$0.isEmpty && $0 != "(none)" })
+    }
+
+    private func projectSupervisorGuidanceExecutionGateLabel(
+        _ item: SupervisorGuidanceInjectionRecord
+    ) -> String {
+        projectSupervisorGuidanceRequiresFinalOnly(item) ? "final_only_until_ack" : "normal"
+    }
+
+    private func projectSupervisorGuidanceRequiresFinalOnly(
+        _ item: SupervisorGuidanceInjectionRecord
+    ) -> Bool {
+        item.deliveryMode == .stopSignal
+            || item.interventionMode == .stopImmediately
+            || item.safePointPolicy == .immediate
+    }
+
+    private func visiblePendingSupervisorGuidanceExecutionGate(
+        ctx: AXProjectContext,
+        visiblePendingGuidanceInjectionId: String?
+    ) -> SupervisorGuidanceInjectionRecord? {
+        let normalizedInjectionId = (visiblePendingGuidanceInjectionId ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedInjectionId.isEmpty,
+              let pending = SupervisorGuidanceInjectionStore.record(
+                injectionId: normalizedInjectionId,
+                for: ctx
+              ),
+              pending.ackRequired,
+              pending.ackStatus == .pending,
+              projectSupervisorGuidanceRequiresFinalOnly(pending) else {
+            return nil
+        }
+        return pending
+    }
+
+    private func applyProjectSupervisorGuidanceEnvelopeGate(
+        env: ToolActionEnvelope,
+        ctx: AXProjectContext,
+        visiblePendingGuidanceInjectionId: String?
+    ) -> ProjectSupervisorGuidanceEnvelopeGateResult {
+        guard let pending = visiblePendingSupervisorGuidanceExecutionGate(
+            ctx: ctx,
+            visiblePendingGuidanceInjectionId: visiblePendingGuidanceInjectionId
+        ) else {
+            return .allow(env)
+        }
+        let hasToolCalls = !(env.tool_calls ?? []).isEmpty
+        let hasSkillCalls = !(env.skill_calls ?? []).isEmpty
+        guard hasToolCalls || hasSkillCalls else {
+            return .allow(env)
+        }
+        let final = (env.final ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !final.isEmpty else {
+            return .requireFinalOnly(pending)
+        }
+        return .allow(
+            ToolActionEnvelope(
+                tool_calls: nil,
+                skill_calls: nil,
+                final: final,
+                guidance_ack: env.guidance_ack
+            )
+        )
+    }
+
+    private func applyProjectSupervisorGuidanceEnvelopeGateWithAudit(
+        env: ToolActionEnvelope,
+        ctx: AXProjectContext,
+        visiblePendingGuidanceInjectionId: String?
+    ) -> ProjectSupervisorGuidanceEnvelopeGateResult {
+        let result = applyProjectSupervisorGuidanceEnvelopeGate(
+            env: env,
+            ctx: ctx,
+            visiblePendingGuidanceInjectionId: visiblePendingGuidanceInjectionId
+        )
+
+        switch result {
+        case .allow(let allowed):
+            let originalToolCount = env.tool_calls?.count ?? 0
+            let originalSkillCount = env.skill_calls?.count ?? 0
+            let allowedToolCount = allowed.tool_calls?.count ?? 0
+            let allowedSkillCount = allowed.skill_calls?.count ?? 0
+            guard (originalToolCount != allowedToolCount || originalSkillCount != allowedSkillCount),
+                  let pending = visiblePendingSupervisorGuidanceExecutionGate(
+                      ctx: ctx,
+                      visiblePendingGuidanceInjectionId: visiblePendingGuidanceInjectionId
+                  ) else {
+                return result
+            }
+            recordProjectSupervisorGuidanceGate(
+                ctx: ctx,
+                pending: pending,
+                action: "strip_executable_calls_for_final_only",
+                originalEnv: env,
+                gatedEnv: allowed
+            )
+        case .requireFinalOnly(let pending):
+            recordProjectSupervisorGuidanceGate(
+                ctx: ctx,
+                pending: pending,
+                action: "require_final_only",
+                originalEnv: env,
+                gatedEnv: nil
+            )
+        }
+
+        return result
+    }
+
+    private func recordProjectSupervisorGuidanceGate(
+        ctx: AXProjectContext,
+        pending: SupervisorGuidanceInjectionRecord,
+        action: String,
+        originalEnv: ToolActionEnvelope,
+        gatedEnv: ToolActionEnvelope?
+    ) {
+        let gatedFinal = gatedEnv?.final?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let originalFinal = originalEnv.final?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        AXProjectStore.appendRawLog(
+            [
+                "type": "supervisor_guidance_gate",
+                "action": action,
+                "project_id": pending.projectId,
+                "review_id": pending.reviewId,
+                "injection_id": pending.injectionId,
+                "delivery_mode": pending.deliveryMode.rawValue,
+                "intervention_mode": pending.interventionMode.rawValue,
+                "safe_point_policy": pending.safePointPolicy.rawValue,
+                "original_tool_call_count": originalEnv.tool_calls?.count ?? 0,
+                "original_skill_call_count": originalEnv.skill_calls?.count ?? 0,
+                "gated_tool_call_count": gatedEnv?.tool_calls?.count ?? 0,
+                "gated_skill_call_count": gatedEnv?.skill_calls?.count ?? 0,
+                "has_final": !(gatedFinal.isEmpty && originalFinal.isEmpty),
+                "timestamp_ms": currentEpochMs()
+            ],
+            for: ctx
+        )
+    }
+
+    private func projectSupervisorGuidanceFinalOnlyFailureMessage(
+        _ pending: SupervisorGuidanceInjectionRecord,
+        ctx: AXProjectContext
+    ) -> String {
+        let summary = pending.guidanceText
+            .split(whereSeparator: \.isNewline)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first(where: { !$0.isEmpty }) ?? ""
+        let guidanceSummary = summary.isEmpty ? "先处理当前 Supervisor 指导。" : summary
+        if let contract = projectUIReviewRepairContract(from: pending) {
+            let evidence =
+                firstNonEmptyProjectSupervisorRepairValue(
+                    contract.uiReviewSummary,
+                    contract.skillResultSummary
+                ) ?? ""
+            var lines = [
+                "已命中 Supervisor 指导（\(pending.injectionId)）：当前必须先暂停新的工具/技能执行，只输出停机或重规划说明。",
+                guidanceSummary,
+                "",
+                "- \(ProjectGovernanceActivityDisplay.fieldLine("repair_action", value: contract.repairAction.isEmpty ? "无" : contract.repairAction))",
+                "- \(ProjectGovernanceActivityDisplay.fieldLine("repair_focus", value: contract.repairFocus.isEmpty ? "无" : contract.repairFocus))",
+                "- \(ProjectGovernanceActivityDisplay.fieldLine("next_safe_action", value: contract.nextSafeAction.isEmpty ? "无" : contract.nextSafeAction))"
+            ]
+            if !contract.uiReviewRef.isEmpty {
+                lines.append("- UI 审查引用：\(contract.uiReviewRef)")
+            }
+            if !contract.instruction.isEmpty {
+                lines.append("- 说明：\(contract.instruction)")
+            }
+            if !evidence.isEmpty {
+                lines.append("- 证据：\(evidence)")
+            }
+            return lines.joined(separator: "\n")
+        }
+        if let contract = projectSupervisorReplanContract(for: pending, ctx: ctx) {
+            var lines = [
+                "已命中 Supervisor 指导（\(pending.injectionId)）：当前必须先暂停新的工具/技能执行，只输出停机或重规划说明。",
+                guidanceSummary,
+                "",
+                "- \(ProjectGovernanceActivityDisplay.fieldLine("contract_kind", value: contract.contractKind.isEmpty ? "无" : contract.contractKind))",
+                "- \(ProjectGovernanceActivityDisplay.fieldLine("primary_blocker", value: contract.primaryBlocker.isEmpty ? "无" : contract.primaryBlocker))",
+                "- \(ProjectGovernanceActivityDisplay.fieldLine("next_safe_action", value: contract.nextSafeAction.isEmpty ? "无" : contract.nextSafeAction))"
+            ]
+            if !contract.nextStep.isEmpty {
+                lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("next_step", value: contract.nextStep))")
+            }
+            if !contract.workOrderRef.isEmpty {
+                lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("work_order_ref", value: contract.workOrderRef))")
+            }
+            if !contract.recommendedActions.isEmpty {
+                lines.append("- \(ProjectGovernanceActivityDisplay.fieldLine("recommended_actions", value: contract.recommendedActions.prefix(3).joined(separator: " | ")))")
+            }
+            return lines.joined(separator: "\n")
+        }
+        return "已命中 Supervisor 指导（\(pending.injectionId)）：当前必须先暂停新的工具/技能执行，只输出停机或重规划说明。\(guidanceSummary)"
     }
 
     private func projectSupervisorGuidancePromptBlock(

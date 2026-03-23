@@ -2,12 +2,12 @@ import Foundation
 import Testing
 @testable import XTerminal
 
-struct HubIPCClientAutonomyPolicyOverrideSnapshotTests {
+struct HubIPCClientRuntimeSurfaceOverrideSnapshotTests {
     @Test
-    func requestAutonomyPolicyOverridesReadsLocalSnapshotAndFiltersProject() async throws {
+    func requestRuntimeSurfaceOverridesReadsLocalSnapshotAndFiltersProject() async throws {
         let originalMode = HubAIClient.transportMode()
         let base = FileManager.default.temporaryDirectory
-            .appendingPathComponent("xt_hub_autonomy_policy_snapshot_\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("xt_hub_runtime_surface_snapshot_\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
 
         HubAIClient.setTransportMode(.fileIPC)
@@ -41,7 +41,7 @@ struct HubIPCClientAutonomyPolicyOverrideSnapshotTests {
         let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
         try data.write(to: base.appendingPathComponent("autonomy_policy_overrides_status.json"), options: .atomic)
 
-        let snapshot = await HubIPCClient.requestAutonomyPolicyOverrides(projectId: "project-a", limit: 10)
+        let snapshot = await HubIPCClient.requestRuntimeSurfaceOverrides(projectId: "project-a", limit: 10)
         let resolved = try #require(snapshot)
 
         #expect(resolved.source == "hub_autonomy_policy_overrides_file")
@@ -52,7 +52,7 @@ struct HubIPCClientAutonomyPolicyOverrideSnapshotTests {
         #expect(resolved.items.first?.reason == "hub_browser_only")
         #expect(resolved.items.first?.auditRef == "audit-a")
 
-        let remoteOverride = await HubIPCClient.requestProjectAutonomyPolicyOverride(projectId: "project-a")
+        let remoteOverride = await HubIPCClient.requestProjectRuntimeSurfaceOverride(projectId: "project-a")
         let resolvedOverride = try #require(remoteOverride)
         #expect(resolvedOverride.projectId == "project-a")
         #expect(resolvedOverride.overrideMode == .clampGuided)

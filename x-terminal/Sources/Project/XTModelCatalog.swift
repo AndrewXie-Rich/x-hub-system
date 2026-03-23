@@ -289,6 +289,10 @@ enum XTModelCatalog {
         if normalizedTaskKinds.contains("embedding") || normalizedOutputModalities.contains("embedding") {
             hints.append("向量嵌入")
         }
+        if normalizedTaskKinds.contains("text_to_speech") || normalizedOutputModalities.contains("audio") {
+            hints.append("Supervisor 语音")
+            hints.append("语音合成")
+        }
         if normalizedTaskKinds.contains("speech_to_text") || normalizedInputModalities.contains("audio") {
             hints.append("语音转写")
         }

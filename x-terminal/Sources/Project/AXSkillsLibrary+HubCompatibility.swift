@@ -57,6 +57,125 @@ struct AXDefaultAgentBaselineSkill: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+struct AXBuiltinGovernedSkillSummary: Identifiable, Codable, Equatable, Sendable {
+    var skillID: String
+    var displayName: String
+    var summary: String
+    var capabilitiesRequired: [String]
+    var sideEffectClass: String
+    var riskLevel: String
+    var policyScope: String
+
+    var id: String { skillID }
+
+    enum CodingKeys: String, CodingKey {
+        case skillID = "skill_id"
+        case displayName = "display_name"
+        case summary
+        case capabilitiesRequired = "capabilities_required"
+        case sideEffectClass = "side_effect_class"
+        case riskLevel = "risk_level"
+        case policyScope = "policy_scope"
+    }
+}
+
+struct AXOfficialSkillPackageLifecycleEntry: Identifiable, Codable, Equatable, Sendable {
+    var packageSHA256: String
+    var skillID: String
+    var name: String
+    var version: String
+    var riskLevel: String
+    var requiresGrant: Bool
+    var packageState: String
+    var overallState: String
+    var blockingFailures: Int
+    var transitionCount: Int
+    var updatedAtMs: Int64
+    var lastTransitionAtMs: Int64
+    var lastReadyAtMs: Int64
+    var lastBlockedAtMs: Int64
+
+    var id: String { packageSHA256 }
+
+    enum CodingKeys: String, CodingKey {
+        case packageSHA256 = "package_sha256"
+        case skillID = "skill_id"
+        case name
+        case version
+        case riskLevel = "risk_level"
+        case requiresGrant = "requires_grant"
+        case packageState = "package_state"
+        case overallState = "overall_state"
+        case blockingFailures = "blocking_failures"
+        case transitionCount = "transition_count"
+        case updatedAtMs = "updated_at_ms"
+        case lastTransitionAtMs = "last_transition_at_ms"
+        case lastReadyAtMs = "last_ready_at_ms"
+        case lastBlockedAtMs = "last_blocked_at_ms"
+    }
+
+    init(
+        packageSHA256: String,
+        skillID: String,
+        name: String,
+        version: String,
+        riskLevel: String,
+        requiresGrant: Bool,
+        packageState: String,
+        overallState: String,
+        blockingFailures: Int,
+        transitionCount: Int,
+        updatedAtMs: Int64,
+        lastTransitionAtMs: Int64,
+        lastReadyAtMs: Int64,
+        lastBlockedAtMs: Int64
+    ) {
+        self.packageSHA256 = packageSHA256
+        self.skillID = skillID
+        self.name = name
+        self.version = version
+        self.riskLevel = riskLevel
+        self.requiresGrant = requiresGrant
+        self.packageState = packageState
+        self.overallState = overallState
+        self.blockingFailures = blockingFailures
+        self.transitionCount = transitionCount
+        self.updatedAtMs = updatedAtMs
+        self.lastTransitionAtMs = lastTransitionAtMs
+        self.lastReadyAtMs = lastReadyAtMs
+        self.lastBlockedAtMs = lastBlockedAtMs
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        packageSHA256 = ((try? container.decode(String.self, forKey: .packageSHA256)) ?? "").lowercased()
+        skillID = (try? container.decode(String.self, forKey: .skillID)) ?? ""
+        name = (try? container.decode(String.self, forKey: .name)) ?? skillID
+        version = (try? container.decode(String.self, forKey: .version)) ?? ""
+        riskLevel = (try? container.decode(String.self, forKey: .riskLevel)) ?? ""
+        requiresGrant = (try? container.decode(Bool.self, forKey: .requiresGrant)) ?? false
+        packageState = (try? container.decode(String.self, forKey: .packageState)) ?? ""
+        overallState = (try? container.decode(String.self, forKey: .overallState)) ?? ""
+        blockingFailures = max(0, (try? container.decode(Int.self, forKey: .blockingFailures)) ?? 0)
+        transitionCount = max(0, (try? container.decode(Int.self, forKey: .transitionCount)) ?? 0)
+        updatedAtMs = max(0, (try? container.decode(Int64.self, forKey: .updatedAtMs)) ?? 0)
+        lastTransitionAtMs = max(0, (try? container.decode(Int64.self, forKey: .lastTransitionAtMs)) ?? 0)
+        lastReadyAtMs = max(0, (try? container.decode(Int64.self, forKey: .lastReadyAtMs)) ?? 0)
+        lastBlockedAtMs = max(0, (try? container.decode(Int64.self, forKey: .lastBlockedAtMs)) ?? 0)
+    }
+}
+
+struct AXOfficialSkillBlockerSummaryItem: Identifiable, Equatable, Sendable {
+    var packageSHA256: String
+    var title: String
+    var subtitle: String
+    var stateLabel: String
+    var summaryLine: String
+    var timelineLine: String
+
+    var id: String { packageSHA256 }
+}
+
 struct AXSkillsDoctorSnapshot: Codable, Equatable, Sendable {
     static let empty = AXSkillsDoctorSnapshot(
         hubIndexAvailable: false,
@@ -84,6 +203,7 @@ struct AXSkillsDoctorSnapshot: Codable, Equatable, Sendable {
     var trustEnabledPublisherCount: Int
     var baselineRecommendedSkills: [AXDefaultAgentBaselineSkill] = []
     var missingBaselineSkillIDs: [String] = []
+    var builtinGovernedSkills: [AXBuiltinGovernedSkillSummary] = []
     var projectIndexEntries: [AXSkillsIndexReference]
     var globalIndexEntries: [AXSkillsIndexReference]
     var conflictWarnings: [String]
@@ -91,6 +211,30 @@ struct AXSkillsDoctorSnapshot: Codable, Equatable, Sendable {
     var statusKind: AXSkillsCompatibilityStatusKind
     var statusLine: String
     var compatibilityExplain: String
+    var officialChannelID: String = ""
+    var officialChannelStatus: String = ""
+    var officialChannelUpdatedAtMs: Int64 = 0
+    var officialChannelLastSuccessAtMs: Int64 = 0
+    var officialChannelSkillCount: Int = 0
+    var officialChannelErrorCode: String = ""
+    var officialChannelMaintenanceEnabled: Bool = false
+    var officialChannelMaintenanceIntervalMs: Int64 = 0
+    var officialChannelMaintenanceLastRunAtMs: Int64 = 0
+    var officialChannelMaintenanceSourceKind: String = ""
+    var officialChannelLastTransitionAtMs: Int64 = 0
+    var officialChannelLastTransitionKind: String = ""
+    var officialChannelLastTransitionSummary: String = ""
+    var officialPackageLifecycleSchemaVersion: String = ""
+    var officialPackageLifecycleUpdatedAtMs: Int64 = 0
+    var officialPackageLifecyclePackagesTotal: Int = 0
+    var officialPackageLifecycleReadyTotal: Int = 0
+    var officialPackageLifecycleDegradedTotal: Int = 0
+    var officialPackageLifecycleBlockedTotal: Int = 0
+    var officialPackageLifecycleNotInstalledTotal: Int = 0
+    var officialPackageLifecycleNotSupportedTotal: Int = 0
+    var officialPackageLifecycleRevokedTotal: Int = 0
+    var officialPackageLifecycleActiveTotal: Int = 0
+    var officialPackageLifecyclePackages: [AXOfficialSkillPackageLifecycleEntry] = []
 
     static let localDevPublisherID = "xhub.local.dev"
 
@@ -124,6 +268,18 @@ struct AXSkillsDoctorSnapshot: Codable, Equatable, Sendable {
         max(0, baselineRecommendedSkills.count - missingBaselineSkillIDs.count)
     }
 
+    var builtinGovernedSkillCount: Int {
+        builtinGovernedSkills.count
+    }
+
+    var builtinGovernedSkillIDs: [String] {
+        builtinGovernedSkills.map(\.skillID).sorted()
+    }
+
+    var builtinSupervisorVoiceAvailable: Bool {
+        builtinGovernedSkillIDs.contains("supervisor-voice")
+    }
+
     var baselinePublisherIDs: [String] {
         Array(
             Set(
@@ -151,6 +307,374 @@ struct AXSkillsDoctorSnapshot: Codable, Equatable, Sendable {
         let baselineInstalled = installedSkills.filter { baselineSkillIDs.contains($0.skillID) }
         let pinnedBaselineInstalled = baselineInstalled.filter { !$0.pinnedScopes.isEmpty }
         return pinnedBaselineInstalled.isEmpty ? baselineInstalled : pinnedBaselineInstalled
+    }
+
+    private var officialPackageLifecycleProblemPackages: [AXOfficialSkillPackageLifecycleEntry] {
+        officialPackageLifecyclePackages.filter { item in
+            let overall = item.overallState.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let packageState = item.packageState.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return overall == "blocked"
+                || overall == "degraded"
+                || overall == "not_installed"
+                || overall == "not_supported"
+                || packageState == "revoked"
+        }
+    }
+
+    private var rankedOfficialPackageLifecycleProblemPackages: [AXOfficialSkillPackageLifecycleEntry] {
+        officialPackageLifecycleProblemPackages.sorted { lhs, rhs in
+            let leftSeverity = officialPackageLifecycleProblemSeverity(lhs)
+            let rightSeverity = officialPackageLifecycleProblemSeverity(rhs)
+            if leftSeverity != rightSeverity {
+                return leftSeverity < rightSeverity
+            }
+
+            let leftFailures = max(0, lhs.blockingFailures)
+            let rightFailures = max(0, rhs.blockingFailures)
+            if leftFailures != rightFailures {
+                return leftFailures > rightFailures
+            }
+
+            let leftRisk = officialPackageLifecycleProblemRiskPriority(lhs)
+            let rightRisk = officialPackageLifecycleProblemRiskPriority(rhs)
+            if leftRisk != rightRisk {
+                return leftRisk > rightRisk
+            }
+
+            let leftRecency = officialPackageLifecycleProblemRecency(lhs)
+            let rightRecency = officialPackageLifecycleProblemRecency(rhs)
+            if leftRecency != rightRecency {
+                return leftRecency > rightRecency
+            }
+
+            let leftSkillID = lhs.skillID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let rightSkillID = rhs.skillID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if leftSkillID != rightSkillID {
+                return leftSkillID < rightSkillID
+            }
+
+            return lhs.packageSHA256 < rhs.packageSHA256
+        }
+    }
+
+    private func officialPackageLifecycleProblemSeverity(
+        _ item: AXOfficialSkillPackageLifecycleEntry
+    ) -> Int {
+        let packageState = item.packageState.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if packageState == "revoked" {
+            return 1
+        }
+
+        let overall = item.overallState.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if (overall == "blocked" || overall == "degraded"), item.requiresGrant {
+            return 0
+        }
+
+        switch overall {
+        case "blocked":
+            return 2
+        case "not_supported":
+            return 3
+        case "not_installed":
+            return 4
+        case "degraded":
+            return 5
+        default:
+            return 6
+        }
+    }
+
+    private func officialPackageLifecycleProblemRiskPriority(
+        _ item: AXOfficialSkillPackageLifecycleEntry
+    ) -> Int {
+        switch item.riskLevel.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "critical":
+            return 4
+        case "high":
+            return 3
+        case "medium":
+            return 2
+        case "low":
+            return 1
+        default:
+            return 0
+        }
+    }
+
+    private func officialPackageLifecycleProblemRecency(
+        _ item: AXOfficialSkillPackageLifecycleEntry
+    ) -> Int64 {
+        max(max(item.lastBlockedAtMs, item.lastTransitionAtMs), item.updatedAtMs)
+    }
+
+    private func officialPackageLifecycleProblemStateLabel(
+        _ item: AXOfficialSkillPackageLifecycleEntry
+    ) -> String {
+        let packageState = item.packageState.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if packageState == "revoked" {
+            return "revoked"
+        }
+
+        let overall = item.overallState.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if overall.isEmpty {
+            return "unknown"
+        }
+        return overall.replacingOccurrences(of: "_", with: " ")
+    }
+
+    private func officialPackageLifecycleProblemDisplayLabel(
+        _ item: AXOfficialSkillPackageLifecycleEntry
+    ) -> String {
+        let name = officialPackageLifecycleDisplayTitle(item)
+        let skillID = officialPackageLifecycleDisplaySubtitle(item)
+        let state = officialPackageLifecycleProblemStateLabel(item)
+
+        let subject: String
+        if !name.isEmpty, !skillID.isEmpty {
+            subject = "\(name) (\(skillID))"
+        } else if !name.isEmpty {
+            subject = name
+        } else if !skillID.isEmpty {
+            subject = skillID
+        } else {
+            subject = item.packageSHA256
+        }
+
+        return "\(subject) [\(state)]"
+    }
+
+    private func officialPackageLifecycleDisplayTitle(
+        _ item: AXOfficialSkillPackageLifecycleEntry
+    ) -> String {
+        let name = item.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty {
+            return name
+        }
+
+        let skillID = item.skillID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !skillID.isEmpty {
+            return skillID
+        }
+
+        return item.packageSHA256
+    }
+
+    private func officialPackageLifecycleDisplaySubtitle(
+        _ item: AXOfficialSkillPackageLifecycleEntry
+    ) -> String {
+        let name = item.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let skillID = item.skillID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !skillID.isEmpty else { return "" }
+        guard name.caseInsensitiveCompare(skillID) != .orderedSame else { return "" }
+        return skillID
+    }
+
+    private func officialPackageLifecycleProblemSummaryLine(
+        _ item: AXOfficialSkillPackageLifecycleEntry
+    ) -> String {
+        var parts: [String] = []
+
+        let version = item.version.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !version.isEmpty {
+            parts.append("version=\(version)")
+        }
+
+        let packageState = item.packageState.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !packageState.isEmpty {
+            parts.append("package=\(packageState)")
+        }
+
+        let risk = item.riskLevel.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !risk.isEmpty {
+            parts.append("risk=\(risk)")
+        }
+
+        parts.append("grant=\(item.requiresGrant ? "required" : "none")")
+
+        if item.blockingFailures > 0 {
+            parts.append("failures=\(item.blockingFailures)")
+        }
+        if item.transitionCount > 0 {
+            parts.append("transitions=\(item.transitionCount)")
+        }
+
+        return parts.joined(separator: " ")
+    }
+
+    private func officialPackageLifecycleProblemTimelineLine(
+        _ item: AXOfficialSkillPackageLifecycleEntry
+    ) -> String {
+        let formatter = ISO8601DateFormatter()
+        var parts: [String] = []
+
+        if item.lastBlockedAtMs > 0 {
+            let iso = formatter.string(from: Date(timeIntervalSince1970: TimeInterval(item.lastBlockedAtMs) / 1000.0))
+            parts.append("last_blocked=\(iso)")
+        }
+
+        if item.lastTransitionAtMs > 0 {
+            let iso = formatter.string(from: Date(timeIntervalSince1970: TimeInterval(item.lastTransitionAtMs) / 1000.0))
+            parts.append("last_transition=\(iso)")
+        }
+
+        if item.updatedAtMs > 0 {
+            let iso = formatter.string(from: Date(timeIntervalSince1970: TimeInterval(item.updatedAtMs) / 1000.0))
+            parts.append("updated=\(iso)")
+        }
+
+        return parts.joined(separator: " ")
+    }
+
+    var officialPackageLifecycleProblemSkillIDs: [String] {
+        var seen = Set<String>()
+        var out: [String] = []
+        for item in rankedOfficialPackageLifecycleProblemPackages {
+            let skillID = item.skillID.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalized = skillID.lowercased()
+            guard !normalized.isEmpty, seen.insert(normalized).inserted else { continue }
+            out.append(skillID)
+            if out.count >= 4 {
+                break
+            }
+        }
+        return out
+    }
+
+    var officialPackageLifecycleTopBlockerLabels: [String] {
+        rankedOfficialPackageLifecycleProblemPackages
+            .prefix(3)
+            .map { officialPackageLifecycleProblemDisplayLabel($0) }
+    }
+
+    var officialPackageLifecycleTopBlockerSummaries: [AXOfficialSkillBlockerSummaryItem] {
+        rankedOfficialPackageLifecycleProblemPackages
+            .prefix(5)
+            .map { item in
+                AXOfficialSkillBlockerSummaryItem(
+                    packageSHA256: item.packageSHA256,
+                    title: officialPackageLifecycleDisplayTitle(item),
+                    subtitle: officialPackageLifecycleDisplaySubtitle(item),
+                    stateLabel: officialPackageLifecycleProblemStateLabel(item),
+                    summaryLine: officialPackageLifecycleProblemSummaryLine(item),
+                    timelineLine: officialPackageLifecycleProblemTimelineLine(item)
+                )
+            }
+    }
+
+    var officialChannelTopBlockersLine: String {
+        let labels = officialPackageLifecycleTopBlockerLabels
+        guard !labels.isEmpty else { return "" }
+
+        var line = "Top blockers: \(labels.joined(separator: "; "))"
+        let remainingCount = max(0, rankedOfficialPackageLifecycleProblemPackages.count - labels.count)
+        if remainingCount > 0 {
+            line += " +\(remainingCount) more"
+        }
+        return line
+    }
+
+    var officialPackageLifecycleRollupLine: String {
+        let packagesTotal = max(0, officialPackageLifecyclePackagesTotal)
+        guard packagesTotal > 0 else { return "" }
+
+        var parts = ["pkg=\(packagesTotal)"]
+        if officialPackageLifecycleReadyTotal > 0 {
+            parts.append("ready=\(max(0, officialPackageLifecycleReadyTotal))")
+        }
+        if officialPackageLifecycleDegradedTotal > 0 {
+            parts.append("degraded=\(max(0, officialPackageLifecycleDegradedTotal))")
+        }
+        if officialPackageLifecycleBlockedTotal > 0 {
+            parts.append("blocked=\(max(0, officialPackageLifecycleBlockedTotal))")
+        }
+        if officialPackageLifecycleNotInstalledTotal > 0 {
+            parts.append("not_installed=\(max(0, officialPackageLifecycleNotInstalledTotal))")
+        }
+        if officialPackageLifecycleNotSupportedTotal > 0 {
+            parts.append("not_supported=\(max(0, officialPackageLifecycleNotSupportedTotal))")
+        }
+        if officialPackageLifecycleRevokedTotal > 0 {
+            parts.append("revoked=\(max(0, officialPackageLifecycleRevokedTotal))")
+        }
+        if officialPackageLifecycleActiveTotal > 0 {
+            parts.append("active=\(max(0, officialPackageLifecycleActiveTotal))")
+        }
+        return parts.joined(separator: " ")
+    }
+
+    var officialChannelSummaryLine: String {
+        let status = officialChannelStatus.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lifecycle = officialPackageLifecycleRollupLine
+
+        guard !status.isEmpty else { return lifecycle }
+
+        let count = max(0, officialChannelSkillCount)
+        let autoSuffix: String
+        if officialChannelMaintenanceEnabled {
+            let sourceKind = officialChannelMaintenanceSourceKind.trimmingCharacters(in: .whitespacesAndNewlines)
+            autoSuffix = sourceKind.isEmpty ? " auto=on" : " auto=\(sourceKind)"
+        } else {
+            autoSuffix = ""
+        }
+
+        var base = "official \(status) skills=\(count)\(autoSuffix)"
+        if !lifecycle.isEmpty {
+            base += " \(lifecycle)"
+        }
+
+        let error = officialChannelErrorCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !error.isEmpty, status == "failed" || status == "missing" else { return base }
+        return "\(base) err=\(error)"
+    }
+
+    var officialChannelDetailLine: String {
+        let formatter = ISO8601DateFormatter()
+        var parts: [String] = []
+
+        let lastSuccessAtMs = max(0, officialChannelLastSuccessAtMs)
+        if lastSuccessAtMs > 0 {
+            let iso = formatter.string(from: Date(timeIntervalSince1970: TimeInterval(lastSuccessAtMs) / 1000.0))
+            parts.append("last_success=\(iso)")
+        }
+
+        let maintenanceLastRunAtMs = max(0, officialChannelMaintenanceLastRunAtMs)
+        if maintenanceLastRunAtMs > 0 {
+            let iso = formatter.string(from: Date(timeIntervalSince1970: TimeInterval(maintenanceLastRunAtMs) / 1000.0))
+            parts.append("last_run=\(iso)")
+        }
+
+        let maintenanceIntervalMs = max(0, officialChannelMaintenanceIntervalMs)
+        if maintenanceIntervalMs > 0 {
+            parts.append("every=\(max(1, maintenanceIntervalMs / 1000))s")
+        }
+
+        let lifecycle = officialPackageLifecycleRollupLine
+        if !lifecycle.isEmpty {
+            parts.append(lifecycle)
+        }
+
+        let lifecycleUpdatedAtMs = max(0, officialPackageLifecycleUpdatedAtMs)
+        if lifecycleUpdatedAtMs > 0 {
+            let iso = formatter.string(from: Date(timeIntervalSince1970: TimeInterval(lifecycleUpdatedAtMs) / 1000.0))
+            parts.append("pkg_updated=\(iso)")
+        }
+
+        let problemSkills = officialPackageLifecycleProblemSkillIDs
+        if !problemSkills.isEmpty {
+            parts.append("problem_skills=\(problemSkills.joined(separator: ","))")
+        }
+
+        let topBlockers = officialChannelTopBlockersLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !topBlockers.isEmpty {
+            parts.append(topBlockers)
+        }
+
+        let transitionSummary = officialChannelLastTransitionSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !transitionSummary.isEmpty {
+            parts.append("transition=\(transitionSummary)")
+        }
+
+        return parts.joined(separator: " ")
     }
 }
 
@@ -243,6 +767,20 @@ extension AXSkillsLibrary {
             summary: "Governed summarize wrapper for webpages, PDFs, and long documents."
         ),
     ]
+
+    static func canonicalSupervisorSkillID(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+
+        switch trimmed.lowercased() {
+        case "supervisor-voice", "supervisor.voice", "supervisor_voice":
+            return "supervisor-voice"
+        case "guarded-automation", "guarded.automation", "guarded_automation", "trusted-automation", "trusted_automation":
+            return "guarded-automation"
+        default:
+            return trimmed
+        }
+    }
 
     private static let nativeSupervisorSkillSpecs: [(String, String, String, [String], SupervisorGovernedSkillDispatch, String, SupervisorSkillRiskLevel, Int, Int)] = [
         (
@@ -357,6 +895,45 @@ extension AXSkillsLibrary {
             0
         ),
         (
+            "supervisor-voice",
+            "Supervisor Voice",
+            "Inspect, preview, speak, or stop the Supervisor playback path using the current XT voice settings.",
+            ["supervisor.voice.playback"],
+            SupervisorGovernedSkillDispatch(
+                tool: ToolName.supervisorVoicePlayback.rawValue,
+                fixedArgs: [:],
+                passthroughArgs: ["action", "text"],
+                argAliases: [
+                    "action": ["mode", "operation"],
+                    "text": ["content", "value"],
+                ],
+                requiredAny: [],
+                exactlyOneOf: []
+            ),
+            "local_side_effect",
+            .low,
+            12_000,
+            0
+        ),
+        (
+            "guarded-automation",
+            "Guarded Automation",
+            "Inspect trusted automation readiness and, when explicitly requested, route governed browser automation through the same XT runtime gates.",
+            ["project.snapshot", "browser.read", "device.browser.control"],
+            SupervisorGovernedSkillDispatch(
+                tool: ToolName.project_snapshot.rawValue,
+                fixedArgs: [:],
+                passthroughArgs: [],
+                argAliases: [:],
+                requiredAny: [],
+                exactlyOneOf: []
+            ),
+            "external_side_effect",
+            .high,
+            45_000,
+            1
+        ),
+        (
             "repo.git.commit",
             "Git Commit",
             "Create a governed git commit in the active repository.",
@@ -461,11 +1038,20 @@ extension AXSkillsLibrary {
         let pinsURL = storeDir.appendingPathComponent("skills_pins.json")
         let trustedPublishersURL = storeDir.appendingPathComponent("trusted_publishers.json")
         let revocationsURL = storeDir.appendingPathComponent("skill_revocations.json")
+        let officialChannelDir = storeDir
+            .appendingPathComponent("official_channels", isDirectory: true)
+            .appendingPathComponent("official-stable", isDirectory: true)
+        let officialChannelStateURL = officialChannelDir.appendingPathComponent("channel_state.json")
+        let officialChannelMaintenanceURL = officialChannelDir.appendingPathComponent("maintenance_status.json")
+        let officialPackageLifecycleURL = storeDir.appendingPathComponent("official_skill_package_lifecycle.json")
 
         let hubIndex = loadHubSkillsIndex(url: indexURL)
         let pins = loadHubSkillsPins(url: pinsURL)
         let trusted = loadTrustedPublishers(url: trustedPublishersURL)
         let revocations = loadSkillRevocations(url: revocationsURL)
+        let officialChannelState = loadOfficialSkillChannelState(baseURL: officialChannelDir, stateURL: officialChannelStateURL)
+        let officialChannelMaintenance = loadOfficialSkillChannelMaintenanceStatus(url: officialChannelMaintenanceURL)
+        let officialPackageLifecycle = loadOfficialSkillPackageLifecycle(url: officialPackageLifecycleURL)
         let relevantPins = relevantPinScopes(pins: pins, projectId: projectId)
         let pinnedScopesBySkill = Dictionary(grouping: relevantPins, by: \.skillID)
             .mapValues { pins in
@@ -512,6 +1098,7 @@ extension AXSkillsLibrary {
         let missingBaselineSkillIDs = defaultAgentBaselineSkills
             .map(\.skillID)
             .filter { !installedSkillIDs.contains($0) }
+        let builtinGovernedSkills = nativeBuiltinGovernedSkillSummaries()
         let projectIndexEntries = loadProjectIndexEntries(skillsDir: resolvedSkillsDir, projectId: projectId, projectName: projectName)
         let globalIndexEntries = loadGlobalIndexEntries(skillsDir: resolvedSkillsDir)
         let conflictWarnings = compatibilityConflicts(for: relevantPins)
@@ -551,6 +1138,7 @@ extension AXSkillsLibrary {
             trustEnabledPublisherCount: trusted.publishers.filter(\.enabled).count,
             baselineRecommendedSkills: defaultAgentBaselineSkills,
             missingBaselineSkillIDs: missingBaselineSkillIDs,
+            builtinGovernedSkills: builtinGovernedSkills,
             projectIndexEntries: projectIndexEntries,
             globalIndexEntries: globalIndexEntries,
             conflictWarnings: conflictWarnings,
@@ -566,6 +1154,7 @@ extension AXSkillsLibrary {
             installedSkills: installedSkills,
             baselineRecommendedSkills: defaultAgentBaselineSkills,
             missingBaselineSkillIDs: missingBaselineSkillIDs,
+            builtinGovernedSkills: builtinGovernedSkills,
             trustedPublisherCount: trusted.publishers.filter(\.enabled).count,
             projectIndexEntries: projectIndexEntries,
             globalIndexEntries: globalIndexEntries,
@@ -574,10 +1163,12 @@ extension AXSkillsLibrary {
             activeSourceIDs: draftSnapshot.activeSourceIDs,
             localDevPublisherActive: draftSnapshot.localDevPublisherActive,
             baselinePublisherIDs: draftSnapshot.baselinePublisherIDs,
-            baselineLocalDevSkillCount: draftSnapshot.baselineLocalDevSkillCount
+            baselineLocalDevSkillCount: draftSnapshot.baselineLocalDevSkillCount,
+            officialChannelSummaryLine: draftSnapshot.officialChannelSummaryLine,
+            officialChannelDetailLine: draftSnapshot.officialChannelDetailLine
         )
 
-        return AXSkillsDoctorSnapshot(
+        var snapshot = AXSkillsDoctorSnapshot(
             hubIndexAvailable: hubIndex.available,
             installedSkillCount: installedSkills.count,
             compatibleSkillCount: compatibleSkillCount,
@@ -586,6 +1177,7 @@ extension AXSkillsLibrary {
             trustEnabledPublisherCount: trusted.publishers.filter(\.enabled).count,
             baselineRecommendedSkills: defaultAgentBaselineSkills,
             missingBaselineSkillIDs: missingBaselineSkillIDs,
+            builtinGovernedSkills: builtinGovernedSkills,
             projectIndexEntries: projectIndexEntries,
             globalIndexEntries: globalIndexEntries,
             conflictWarnings: conflictWarnings,
@@ -594,10 +1186,53 @@ extension AXSkillsLibrary {
             statusLine: statusLine,
             compatibilityExplain: explain
         )
+        snapshot.officialChannelID = officialChannelState.channelID
+        snapshot.officialChannelStatus = officialChannelState.status
+        snapshot.officialChannelUpdatedAtMs = officialChannelState.updatedAtMs
+        snapshot.officialChannelLastSuccessAtMs = officialChannelState.lastSuccessAtMs
+        snapshot.officialChannelSkillCount = officialChannelState.skillCount
+        snapshot.officialChannelErrorCode = officialChannelState.errorCode
+        snapshot.officialChannelMaintenanceEnabled = officialChannelMaintenance.maintenanceEnabled
+        snapshot.officialChannelMaintenanceIntervalMs = officialChannelMaintenance.maintenanceIntervalMs
+        snapshot.officialChannelMaintenanceLastRunAtMs = officialChannelMaintenance.maintenanceLastRunAtMs
+        snapshot.officialChannelMaintenanceSourceKind = officialChannelMaintenance.maintenanceSourceKind
+        snapshot.officialChannelLastTransitionAtMs = officialChannelMaintenance.lastTransitionAtMs
+        snapshot.officialChannelLastTransitionKind = officialChannelMaintenance.lastTransitionKind
+        snapshot.officialChannelLastTransitionSummary = officialChannelMaintenance.lastTransitionSummary
+        snapshot.officialPackageLifecycleSchemaVersion = officialPackageLifecycle.schemaVersion
+        snapshot.officialPackageLifecycleUpdatedAtMs = officialPackageLifecycle.updatedAtMs
+        snapshot.officialPackageLifecyclePackagesTotal = officialPackageLifecycle.packagesTotal
+        snapshot.officialPackageLifecycleReadyTotal = officialPackageLifecycle.readyTotal
+        snapshot.officialPackageLifecycleDegradedTotal = officialPackageLifecycle.degradedTotal
+        snapshot.officialPackageLifecycleBlockedTotal = officialPackageLifecycle.blockedTotal
+        snapshot.officialPackageLifecycleNotInstalledTotal = officialPackageLifecycle.notInstalledTotal
+        snapshot.officialPackageLifecycleNotSupportedTotal = officialPackageLifecycle.notSupportedTotal
+        snapshot.officialPackageLifecycleRevokedTotal = officialPackageLifecycle.revokedTotal
+        snapshot.officialPackageLifecycleActiveTotal = officialPackageLifecycle.activeTotal
+        snapshot.officialPackageLifecyclePackages = officialPackageLifecycle.packages
+        snapshot.compatibilityExplain = renderCompatibilityExplainability(
+            statusKind: statusKind,
+            installedSkills: installedSkills,
+            baselineRecommendedSkills: defaultAgentBaselineSkills,
+            missingBaselineSkillIDs: missingBaselineSkillIDs,
+            builtinGovernedSkills: builtinGovernedSkills,
+            trustedPublisherCount: trusted.publishers.filter(\.enabled).count,
+            projectIndexEntries: projectIndexEntries,
+            globalIndexEntries: globalIndexEntries,
+            conflictWarnings: conflictWarnings,
+            activePublisherIDs: snapshot.activePublisherIDs,
+            activeSourceIDs: snapshot.activeSourceIDs,
+            localDevPublisherActive: snapshot.localDevPublisherActive,
+            baselinePublisherIDs: snapshot.baselinePublisherIDs,
+            baselineLocalDevSkillCount: snapshot.baselineLocalDevSkillCount,
+            officialChannelSummaryLine: snapshot.officialChannelSummaryLine,
+            officialChannelDetailLine: snapshot.officialChannelDetailLine
+        )
+        return snapshot
     }
 
-    private struct HubSkillsIndexSnapshot: Codable {
-        struct Skill: Codable {
+    private struct HubSkillsIndexSnapshot: Decodable {
+        struct Skill: Decodable {
             var skillID: String
             var name: String
             var version: String
@@ -663,13 +1298,13 @@ extension AXSkillsLibrary {
         }
     }
 
-    private struct HubSkillsPinsSnapshot: Codable {
+    private struct HubSkillsPinsSnapshot: Decodable {
         init(memoryCorePins: [Pin], globalPins: [Pin], projectPins: [Pin]) {
             self.memoryCorePins = memoryCorePins
             self.globalPins = globalPins
             self.projectPins = projectPins
         }
-        struct Pin: Codable {
+        struct Pin: Decodable {
             var skillID: String
             var packageSHA256: String
             var projectID: String?
@@ -706,8 +1341,8 @@ extension AXSkillsLibrary {
         }
     }
 
-    private struct TrustedPublishersSnapshot: Codable {
-        struct Publisher: Codable {
+    private struct TrustedPublishersSnapshot: Decodable {
+        struct Publisher: Decodable {
             var publisherID: String
             var enabled: Bool
 
@@ -720,7 +1355,7 @@ extension AXSkillsLibrary {
         var publishers: [Publisher]
     }
 
-    private struct SkillRevocationsSnapshot: Codable {
+    private struct SkillRevocationsSnapshot: Decodable {
         init(revokedSHA256: [String], revokedSkillIDs: [String], revokedPublisherIDs: [String]) {
             self.revokedSHA256 = revokedSHA256
             self.revokedSkillIDs = revokedSkillIDs
@@ -741,6 +1376,129 @@ extension AXSkillsLibrary {
             revokedSHA256 = ((try? container.decode([String].self, forKey: .revokedSHA256)) ?? []).map { $0.lowercased() }
             revokedSkillIDs = (try? container.decode([String].self, forKey: .revokedSkillIDs)) ?? []
             revokedPublisherIDs = (try? container.decode([String].self, forKey: .revokedPublisherIDs)) ?? []
+        }
+    }
+
+    private struct OfficialSkillChannelStateSnapshot: Decodable {
+        var channelID: String
+        var status: String
+        var updatedAtMs: Int64
+        var lastSuccessAtMs: Int64
+        var skillCount: Int
+        var errorCode: String
+
+        enum CodingKeys: String, CodingKey {
+            case channelID = "channel_id"
+            case status
+            case updatedAtMs = "updated_at_ms"
+            case lastSuccessAtMs = "last_success_at_ms"
+            case skillCount = "skill_count"
+            case errorCode = "error_code"
+        }
+    }
+
+    private struct OfficialSkillChannelMaintenanceSnapshot: Decodable {
+        var maintenanceEnabled: Bool
+        var maintenanceIntervalMs: Int64
+        var maintenanceLastRunAtMs: Int64
+        var maintenanceSourceKind: String
+        var lastTransitionAtMs: Int64
+        var lastTransitionKind: String
+        var lastTransitionSummary: String
+
+        enum CodingKeys: String, CodingKey {
+            case maintenanceEnabled = "maintenance_enabled"
+            case maintenanceIntervalMs = "maintenance_interval_ms"
+            case maintenanceLastRunAtMs = "maintenance_last_run_at_ms"
+            case maintenanceSourceKind = "maintenance_source_kind"
+            case lastTransitionAtMs = "last_transition_at_ms"
+            case lastTransitionKind = "last_transition_kind"
+            case lastTransitionSummary = "last_transition_summary"
+        }
+    }
+
+    private struct OfficialSkillPackageLifecycleSnapshot: Decodable {
+        struct Totals: Decodable {
+            var packagesTotal: Int
+            var readyTotal: Int
+            var degradedTotal: Int
+            var blockedTotal: Int
+            var notInstalledTotal: Int
+            var notSupportedTotal: Int
+            var revokedTotal: Int
+            var activeTotal: Int
+
+            enum CodingKeys: String, CodingKey {
+                case packagesTotal = "packages_total"
+                case readyTotal = "ready_total"
+                case degradedTotal = "degraded_total"
+                case blockedTotal = "blocked_total"
+                case notInstalledTotal = "not_installed_total"
+                case notSupportedTotal = "not_supported_total"
+                case revokedTotal = "revoked_total"
+                case activeTotal = "active_total"
+            }
+        }
+
+        var schemaVersion: String
+        var updatedAtMs: Int64
+        var packagesTotal: Int
+        var readyTotal: Int
+        var degradedTotal: Int
+        var blockedTotal: Int
+        var notInstalledTotal: Int
+        var notSupportedTotal: Int
+        var revokedTotal: Int
+        var activeTotal: Int
+        var packages: [AXOfficialSkillPackageLifecycleEntry]
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+            case updatedAtMs = "updated_at_ms"
+            case totals
+            case packages
+        }
+
+        init(
+            schemaVersion: String = "",
+            updatedAtMs: Int64 = 0,
+            packagesTotal: Int = 0,
+            readyTotal: Int = 0,
+            degradedTotal: Int = 0,
+            blockedTotal: Int = 0,
+            notInstalledTotal: Int = 0,
+            notSupportedTotal: Int = 0,
+            revokedTotal: Int = 0,
+            activeTotal: Int = 0,
+            packages: [AXOfficialSkillPackageLifecycleEntry] = []
+        ) {
+            self.schemaVersion = schemaVersion
+            self.updatedAtMs = updatedAtMs
+            self.packagesTotal = packagesTotal
+            self.readyTotal = readyTotal
+            self.degradedTotal = degradedTotal
+            self.blockedTotal = blockedTotal
+            self.notInstalledTotal = notInstalledTotal
+            self.notSupportedTotal = notSupportedTotal
+            self.revokedTotal = revokedTotal
+            self.activeTotal = activeTotal
+            self.packages = packages
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            schemaVersion = (try? container.decode(String.self, forKey: .schemaVersion)) ?? ""
+            updatedAtMs = max(0, (try? container.decode(Int64.self, forKey: .updatedAtMs)) ?? 0)
+            packages = (try? container.decode([AXOfficialSkillPackageLifecycleEntry].self, forKey: .packages)) ?? []
+            let totals = try? container.decode(Totals.self, forKey: .totals)
+            packagesTotal = max(0, totals?.packagesTotal ?? packages.count)
+            readyTotal = max(0, totals?.readyTotal ?? 0)
+            degradedTotal = max(0, totals?.degradedTotal ?? 0)
+            blockedTotal = max(0, totals?.blockedTotal ?? 0)
+            notInstalledTotal = max(0, totals?.notInstalledTotal ?? 0)
+            notSupportedTotal = max(0, totals?.notSupportedTotal ?? 0)
+            revokedTotal = max(0, totals?.revokedTotal ?? 0)
+            activeTotal = max(0, totals?.activeTotal ?? 0)
         }
     }
 
@@ -774,6 +1532,87 @@ extension AXSkillsLibrary {
             return SkillRevocationsSnapshot(revokedSHA256: [], revokedSkillIDs: [], revokedPublisherIDs: [])
         }
         return snapshot
+    }
+
+    private static func loadOfficialSkillChannelState(
+        baseURL: URL,
+        stateURL: URL
+    ) -> OfficialSkillChannelStateSnapshot {
+        if let data = try? Data(contentsOf: stateURL),
+           let snapshot = try? JSONDecoder().decode(OfficialSkillChannelStateSnapshot.self, from: data) {
+            return OfficialSkillChannelStateSnapshot(
+                channelID: snapshot.channelID.trimmingCharacters(in: .whitespacesAndNewlines),
+                status: snapshot.status.trimmingCharacters(in: .whitespacesAndNewlines),
+                updatedAtMs: max(0, snapshot.updatedAtMs),
+                lastSuccessAtMs: max(0, snapshot.lastSuccessAtMs),
+                skillCount: max(0, snapshot.skillCount),
+                errorCode: snapshot.errorCode.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        }
+
+        let currentDir = baseURL.appendingPathComponent("current", isDirectory: true)
+        let lastKnownGoodDir = baseURL.appendingPathComponent("last_known_good", isDirectory: true)
+        let currentHealthy = hasOfficialSkillSnapshotArtifacts(currentDir)
+        let lastKnownGoodHealthy = hasOfficialSkillSnapshotArtifacts(lastKnownGoodDir)
+        let inferredStatus: String
+        if currentHealthy {
+            inferredStatus = "healthy"
+        } else if lastKnownGoodHealthy {
+            inferredStatus = "stale"
+        } else {
+            inferredStatus = ""
+        }
+
+        return OfficialSkillChannelStateSnapshot(
+            channelID: "official-stable",
+            status: inferredStatus,
+            updatedAtMs: 0,
+            lastSuccessAtMs: 0,
+            skillCount: 0,
+            errorCode: ""
+        )
+    }
+
+    private static func loadOfficialSkillChannelMaintenanceStatus(
+        url: URL
+    ) -> OfficialSkillChannelMaintenanceSnapshot {
+        guard let data = try? Data(contentsOf: url),
+              let snapshot = try? JSONDecoder().decode(OfficialSkillChannelMaintenanceSnapshot.self, from: data) else {
+            return OfficialSkillChannelMaintenanceSnapshot(
+                maintenanceEnabled: false,
+                maintenanceIntervalMs: 0,
+                maintenanceLastRunAtMs: 0,
+                maintenanceSourceKind: "",
+                lastTransitionAtMs: 0,
+                lastTransitionKind: "",
+                lastTransitionSummary: ""
+            )
+        }
+        return OfficialSkillChannelMaintenanceSnapshot(
+            maintenanceEnabled: snapshot.maintenanceEnabled,
+            maintenanceIntervalMs: max(0, snapshot.maintenanceIntervalMs),
+            maintenanceLastRunAtMs: max(0, snapshot.maintenanceLastRunAtMs),
+            maintenanceSourceKind: snapshot.maintenanceSourceKind.trimmingCharacters(in: .whitespacesAndNewlines),
+            lastTransitionAtMs: max(0, snapshot.lastTransitionAtMs),
+            lastTransitionKind: snapshot.lastTransitionKind.trimmingCharacters(in: .whitespacesAndNewlines),
+            lastTransitionSummary: snapshot.lastTransitionSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+    }
+
+    private static func loadOfficialSkillPackageLifecycle(
+        url: URL
+    ) -> OfficialSkillPackageLifecycleSnapshot {
+        guard let data = try? Data(contentsOf: url),
+              let snapshot = try? JSONDecoder().decode(OfficialSkillPackageLifecycleSnapshot.self, from: data) else {
+            return OfficialSkillPackageLifecycleSnapshot()
+        }
+        return snapshot
+    }
+
+    private static func hasOfficialSkillSnapshotArtifacts(_ url: URL) -> Bool {
+        let fm = FileManager.default
+        return fm.fileExists(atPath: url.appendingPathComponent("index.json").path)
+            && fm.fileExists(atPath: url.appendingPathComponent("trusted_publishers.json").path)
     }
 
     private static func relevantPinScopes(pins: HubSkillsPinsSnapshot, projectId: String?) -> [HubSkillsPinsSnapshot.Pin] {
@@ -911,6 +1750,7 @@ extension AXSkillsLibrary {
         installedSkills: [AXHubSkillCompatibilityEntry],
         baselineRecommendedSkills: [AXDefaultAgentBaselineSkill],
         missingBaselineSkillIDs: [String],
+        builtinGovernedSkills: [AXBuiltinGovernedSkillSummary],
         trustedPublisherCount: Int,
         projectIndexEntries: [AXSkillsIndexReference],
         globalIndexEntries: [AXSkillsIndexReference],
@@ -919,7 +1759,9 @@ extension AXSkillsLibrary {
         activeSourceIDs: [String],
         localDevPublisherActive: Bool,
         baselinePublisherIDs: [String],
-        baselineLocalDevSkillCount: Int
+        baselineLocalDevSkillCount: Int,
+        officialChannelSummaryLine: String,
+        officialChannelDetailLine: String
     ) -> String {
         var lines: [String] = []
         switch statusKind {
@@ -935,7 +1777,19 @@ extension AXSkillsLibrary {
         lines.append("installed=\(installedSkills.count) trusted_publishers=\(trustedPublisherCount) project_index=\(projectIndexEntries.count) global_index=\(globalIndexEntries.count)")
         lines.append(activePublisherIDs.isEmpty ? "active_publishers=none" : "active_publishers=\(activePublisherIDs.joined(separator: ","))")
         lines.append(activeSourceIDs.isEmpty ? "active_sources=none" : "active_sources=\(activeSourceIDs.joined(separator: ","))")
+        lines.append("xt_builtin_governed_skills=\(builtinGovernedSkills.count)")
+        let builtinPreview = builtinGovernedSkills.prefix(5).map(\.skillID)
+        lines.append(builtinPreview.isEmpty ? "xt_builtin_governed_preview=none" : "xt_builtin_governed_preview=\(builtinPreview.joined(separator: ","))")
+        lines.append("xt_builtin_supervisor_voice=\(builtinGovernedSkills.contains(where: { $0.skillID == "supervisor-voice" }) ? "available" : "missing")")
         lines.append("local_dev_publisher_active=\(localDevPublisherActive ? "yes" : "no")")
+        let officialSummary = officialChannelSummaryLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !officialSummary.isEmpty {
+            lines.append("official_channel=\(officialSummary)")
+        }
+        let officialDetail = officialChannelDetailLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !officialDetail.isEmpty {
+            lines.append("official_channel_detail=\(officialDetail)")
+        }
         if !baselineRecommendedSkills.isEmpty {
             lines.append("baseline=\(baselineRecommendedSkills.count - missingBaselineSkillIDs.count)/\(baselineRecommendedSkills.count)")
             lines.append(baselinePublisherIDs.isEmpty ? "baseline_publishers=none" : "baseline_publishers=\(baselinePublisherIDs.joined(separator: ","))")
@@ -1197,17 +2051,31 @@ extension AXSkillsLibrary {
                 description: spec.2,
                 capabilitiesRequired: spec.3,
                 governedDispatch: spec.4,
-                governedDispatchVariants: [],
+                governedDispatchVariants: nativeSupervisorDispatchVariants(skillId: spec.0),
                 governedDispatchNotes: nativeSupervisorDispatchNotes(skillId: spec.0),
                 inputSchemaRef: "schema://\(spec.0).input",
                 outputSchemaRef: "schema://\(spec.0).output",
                 sideEffectClass: spec.5,
                 riskLevel: spec.6,
-                requiresGrant: false,
+                requiresGrant: nativeSupervisorRequiresGrant(skillId: spec.0),
                 policyScope: "xt_builtin",
                 timeoutMs: spec.7,
                 maxRetries: spec.8,
                 available: true
+            )
+        }
+    }
+
+    private static func nativeBuiltinGovernedSkillSummaries() -> [AXBuiltinGovernedSkillSummary] {
+        nativeSupervisorRegistryItems().map { item in
+            AXBuiltinGovernedSkillSummary(
+                skillID: item.skillId,
+                displayName: item.displayName,
+                summary: item.description,
+                capabilitiesRequired: item.capabilitiesRequired,
+                sideEffectClass: item.sideEffectClass,
+                riskLevel: item.riskLevel.rawValue,
+                policyScope: item.policyScope
             )
         }
     }
@@ -1235,16 +2103,161 @@ extension AXSkillsLibrary {
 
     private static func nativeSupervisorDispatchNotes(skillId: String) -> [String] {
         switch skillId {
+        case "guarded-automation":
+            return [
+                "Defaults to project snapshot / readiness inspection when no action is supplied; use it to verify trusted automation state before device work.",
+                "actions=open/navigate/snapshot/extract/click/type/upload -> device.browser.control; actions=read/fetch -> browser_read."
+            ]
         case "repo.move.path":
             return ["Use repo.move.path for both move and rename within the governed project root."]
         case "process.start":
             return ["restart_on_exit is honored only when the execution tier allows managed process auto-restart."]
+        case "supervisor-voice":
+            return ["Defaults to status when no action is supplied; if text/content/value is present, XT treats the request as speak."]
         case "repo.pr.create":
             return ["Requires GitHub CLI `gh` to be installed and authenticated for the active repository."]
         case "repo.ci.read", "repo.ci.trigger":
             return ["Currently implemented through GitHub CLI and therefore provider=github only."]
         default:
             return []
+        }
+    }
+
+    private static func nativeSupervisorDispatchVariants(
+        skillId: String
+    ) -> [SupervisorGovernedSkillDispatchVariant] {
+        switch skillId {
+        case "guarded-automation":
+            return [
+                SupervisorGovernedSkillDispatchVariant(
+                    actions: ["status", "readiness", "context", "project_snapshot"],
+                    dispatch: SupervisorGovernedSkillDispatch(
+                        tool: ToolName.project_snapshot.rawValue,
+                        fixedArgs: [:],
+                        passthroughArgs: [],
+                        argAliases: [:],
+                        requiredAny: [],
+                        exactlyOneOf: []
+                    ),
+                    actionArg: "",
+                    actionMap: [:]
+                ),
+                SupervisorGovernedSkillDispatchVariant(
+                    actions: ["open", "open_url", "navigate", "goto", "visit"],
+                    dispatch: SupervisorGovernedSkillDispatch(
+                        tool: ToolName.deviceBrowserControl.rawValue,
+                        fixedArgs: [:],
+                        passthroughArgs: ["url", "grant_id", "timeout_sec", "max_bytes"],
+                        argAliases: [:],
+                        requiredAny: [["url"]],
+                        exactlyOneOf: []
+                    ),
+                    actionArg: "action",
+                    actionMap: [
+                        "open": "open_url",
+                        "open_url": "open_url",
+                        "navigate": "navigate",
+                        "goto": "navigate",
+                        "visit": "navigate",
+                    ]
+                ),
+                SupervisorGovernedSkillDispatchVariant(
+                    actions: ["snapshot", "inspect", "extract"],
+                    dispatch: SupervisorGovernedSkillDispatch(
+                        tool: ToolName.deviceBrowserControl.rawValue,
+                        fixedArgs: [:],
+                        passthroughArgs: ["url", "session_id", "grant_id", "timeout_sec", "max_bytes"],
+                        argAliases: [:],
+                        requiredAny: [["url", "session_id"]],
+                        exactlyOneOf: []
+                    ),
+                    actionArg: "action",
+                    actionMap: [
+                        "snapshot": "snapshot",
+                        "inspect": "snapshot",
+                        "extract": "extract",
+                    ]
+                ),
+                SupervisorGovernedSkillDispatchVariant(
+                    actions: ["click", "tap"],
+                    dispatch: SupervisorGovernedSkillDispatch(
+                        tool: ToolName.deviceBrowserControl.rawValue,
+                        fixedArgs: [:],
+                        passthroughArgs: ["url", "session_id", "selector", "grant_id", "timeout_sec", "max_bytes"],
+                        argAliases: [:],
+                        requiredAny: [],
+                        exactlyOneOf: []
+                    ),
+                    actionArg: "action",
+                    actionMap: [
+                        "click": "click",
+                        "tap": "click",
+                    ]
+                ),
+                SupervisorGovernedSkillDispatchVariant(
+                    actions: ["type", "fill", "input", "enter"],
+                    dispatch: SupervisorGovernedSkillDispatch(
+                        tool: ToolName.deviceBrowserControl.rawValue,
+                        fixedArgs: [:],
+                        passthroughArgs: [
+                            "url", "session_id", "selector", "field_role",
+                            "text", "content", "value",
+                            "secret_item_id", "secret_scope", "secret_name", "secret_project_id",
+                            "grant_id", "timeout_sec", "max_bytes"
+                        ],
+                        argAliases: [:],
+                        requiredAny: [],
+                        exactlyOneOf: []
+                    ),
+                    actionArg: "action",
+                    actionMap: [
+                        "type": "type",
+                        "fill": "type",
+                        "input": "type",
+                        "enter": "type",
+                    ]
+                ),
+                SupervisorGovernedSkillDispatchVariant(
+                    actions: ["upload", "attach"],
+                    dispatch: SupervisorGovernedSkillDispatch(
+                        tool: ToolName.deviceBrowserControl.rawValue,
+                        fixedArgs: [:],
+                        passthroughArgs: ["url", "session_id", "selector", "path", "grant_id", "timeout_sec", "max_bytes"],
+                        argAliases: [:],
+                        requiredAny: [],
+                        exactlyOneOf: []
+                    ),
+                    actionArg: "action",
+                    actionMap: [
+                        "upload": "upload",
+                        "attach": "upload",
+                    ]
+                ),
+                SupervisorGovernedSkillDispatchVariant(
+                    actions: ["read", "read_page", "read-page", "fetch"],
+                    dispatch: SupervisorGovernedSkillDispatch(
+                        tool: ToolName.browser_read.rawValue,
+                        fixedArgs: [:],
+                        passthroughArgs: ["url", "grant_id", "timeout_sec", "max_bytes"],
+                        argAliases: [:],
+                        requiredAny: [["url"]],
+                        exactlyOneOf: []
+                    ),
+                    actionArg: "",
+                    actionMap: [:]
+                ),
+            ]
+        default:
+            return []
+        }
+    }
+
+    private static func nativeSupervisorRequiresGrant(skillId: String) -> Bool {
+        switch skillId {
+        case "guarded-automation":
+            return true
+        default:
+            return false
         }
     }
 
@@ -1488,6 +2501,27 @@ extension AXSkillsLibrary {
                 requiredAny: [],
                 exactlyOneOf: [["url", "path", "text"]]
             )
+        case "supervisor-voice", "supervisor.voice", "supervisor_voice":
+            return SupervisorGovernedSkillDispatch(
+                tool: ToolName.supervisorVoicePlayback.rawValue,
+                fixedArgs: [:],
+                passthroughArgs: ["action", "text"],
+                argAliases: [
+                    "action": ["mode", "operation"],
+                    "text": ["content", "value"],
+                ],
+                requiredAny: [],
+                exactlyOneOf: []
+            )
+        case "guarded-automation", "guarded.automation", "guarded_automation", "trusted-automation", "trusted_automation":
+            return SupervisorGovernedSkillDispatch(
+                tool: ToolName.project_snapshot.rawValue,
+                fixedArgs: [:],
+                passthroughArgs: [],
+                argAliases: [:],
+                requiredAny: [],
+                exactlyOneOf: []
+            )
         case "repo.delete.path", "repo.delete.file", "repo.delete":
             return SupervisorGovernedSkillDispatch(
                 tool: ToolName.delete_path.rawValue,
@@ -1602,6 +2636,16 @@ extension AXSkillsLibrary {
                 "actions=open/navigate/snapshot/extract/click/type/upload -> device.browser.control",
                 "actions=read/fetch -> browser_read; open/navigate/read/fetch require url; snapshot/extract accept url or session_id"
             ]
+        case "supervisor-voice", "supervisor.voice", "supervisor_voice":
+            return [
+                "action=status returns the resolved playback route, selected voice pack, and the last real playback outcome",
+                "action=preview plays the built-in preview line; action=speak uses text/content/value; action=stop interrupts active playback"
+            ]
+        case "guarded-automation", "guarded.automation", "guarded_automation", "trusted-automation", "trusted_automation":
+            return [
+                "Defaults to project_snapshot when no action is supplied; action=status/readiness/context also resolves to project_snapshot.",
+                "actions=open/navigate/snapshot/extract/click/type/upload -> device.browser.control; actions=read/fetch -> browser_read."
+            ]
         default:
             return []
         }
@@ -1609,6 +2653,126 @@ extension AXSkillsLibrary {
 
     private static func fallbackGovernedDispatchVariants(skillId: String) -> [SupervisorGovernedSkillDispatchVariant] {
         switch skillId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "guarded-automation", "guarded.automation", "guarded_automation", "trusted-automation", "trusted_automation":
+            return [
+                SupervisorGovernedSkillDispatchVariant(
+                    actions: ["status", "readiness", "context", "project_snapshot"],
+                    dispatch: SupervisorGovernedSkillDispatch(
+                        tool: ToolName.project_snapshot.rawValue,
+                        fixedArgs: [:],
+                        passthroughArgs: [],
+                        argAliases: [:],
+                        requiredAny: [],
+                        exactlyOneOf: []
+                    ),
+                    actionArg: "",
+                    actionMap: [:]
+                ),
+                SupervisorGovernedSkillDispatchVariant(
+                    actions: ["open", "open_url", "navigate", "goto", "visit"],
+                    dispatch: SupervisorGovernedSkillDispatch(
+                        tool: ToolName.deviceBrowserControl.rawValue,
+                        fixedArgs: [:],
+                        passthroughArgs: ["url", "grant_id", "timeout_sec", "max_bytes"],
+                        argAliases: [:],
+                        requiredAny: [["url"]],
+                        exactlyOneOf: []
+                    ),
+                    actionArg: "action",
+                    actionMap: [
+                        "open": "open_url",
+                        "open_url": "open_url",
+                        "navigate": "navigate",
+                        "goto": "navigate",
+                        "visit": "navigate",
+                    ]
+                ),
+                SupervisorGovernedSkillDispatchVariant(
+                    actions: ["snapshot", "inspect", "extract"],
+                    dispatch: SupervisorGovernedSkillDispatch(
+                        tool: ToolName.deviceBrowserControl.rawValue,
+                        fixedArgs: [:],
+                        passthroughArgs: ["url", "session_id", "grant_id", "timeout_sec", "max_bytes"],
+                        argAliases: [:],
+                        requiredAny: [["url", "session_id"]],
+                        exactlyOneOf: []
+                    ),
+                    actionArg: "action",
+                    actionMap: [
+                        "snapshot": "snapshot",
+                        "inspect": "snapshot",
+                        "extract": "extract",
+                    ]
+                ),
+                SupervisorGovernedSkillDispatchVariant(
+                    actions: ["click", "tap"],
+                    dispatch: SupervisorGovernedSkillDispatch(
+                        tool: ToolName.deviceBrowserControl.rawValue,
+                        fixedArgs: [:],
+                        passthroughArgs: ["url", "session_id", "selector", "grant_id", "timeout_sec", "max_bytes"],
+                        argAliases: [:],
+                        requiredAny: [],
+                        exactlyOneOf: []
+                    ),
+                    actionArg: "action",
+                    actionMap: [
+                        "click": "click",
+                        "tap": "click",
+                    ]
+                ),
+                SupervisorGovernedSkillDispatchVariant(
+                    actions: ["type", "fill", "input", "enter"],
+                    dispatch: SupervisorGovernedSkillDispatch(
+                        tool: ToolName.deviceBrowserControl.rawValue,
+                        fixedArgs: [:],
+                        passthroughArgs: [
+                            "url", "session_id", "selector", "field_role",
+                            "text", "content", "value",
+                            "secret_item_id", "secret_scope", "secret_name", "secret_project_id",
+                            "grant_id", "timeout_sec", "max_bytes"
+                        ],
+                        argAliases: [:],
+                        requiredAny: [],
+                        exactlyOneOf: []
+                    ),
+                    actionArg: "action",
+                    actionMap: [
+                        "type": "type",
+                        "fill": "type",
+                        "input": "type",
+                        "enter": "type",
+                    ]
+                ),
+                SupervisorGovernedSkillDispatchVariant(
+                    actions: ["upload", "attach"],
+                    dispatch: SupervisorGovernedSkillDispatch(
+                        tool: ToolName.deviceBrowserControl.rawValue,
+                        fixedArgs: [:],
+                        passthroughArgs: ["url", "session_id", "selector", "path", "grant_id", "timeout_sec", "max_bytes"],
+                        argAliases: [:],
+                        requiredAny: [],
+                        exactlyOneOf: []
+                    ),
+                    actionArg: "action",
+                    actionMap: [
+                        "upload": "upload",
+                        "attach": "upload",
+                    ]
+                ),
+                SupervisorGovernedSkillDispatchVariant(
+                    actions: ["read", "read_page", "read-page", "fetch"],
+                    dispatch: SupervisorGovernedSkillDispatch(
+                        tool: ToolName.browser_read.rawValue,
+                        fixedArgs: [:],
+                        passthroughArgs: ["url", "grant_id", "timeout_sec", "max_bytes"],
+                        argAliases: [:],
+                        requiredAny: [["url"]],
+                        exactlyOneOf: []
+                    ),
+                    actionArg: "",
+                    actionMap: [:]
+                ),
+            ]
         case "agent-browser", "agent_browser", "agent.browser":
             return [
                 SupervisorGovernedSkillDispatchVariant(

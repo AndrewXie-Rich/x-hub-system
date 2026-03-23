@@ -100,7 +100,7 @@ struct XTW330PolicyRecoveryEvidenceTests {
                 executionTier: .a4OpenClaw,
                 supervisorInterventionTier: .s2PeriodicReview
             )
-            clampGuidedConfig = clampGuidedConfig.settingAutonomyPolicy(
+            clampGuidedConfig = clampGuidedConfig.settingRuntimeSurfacePolicy(
                 mode: .trustedOpenClawMode,
                 hubOverrideMode: .clampGuided,
                 updatedAt: Date()
@@ -125,7 +125,7 @@ struct XTW330PolicyRecoveryEvidenceTests {
                 executionTier: .a4OpenClaw,
                 supervisorInterventionTier: .s2PeriodicReview
             )
-            clampManualConfig = clampManualConfig.settingAutonomyPolicy(
+            clampManualConfig = clampManualConfig.settingRuntimeSurfacePolicy(
                 mode: .trustedOpenClawMode,
                 hubOverrideMode: .clampManual,
                 updatedAt: Date()
@@ -269,8 +269,8 @@ struct XTW330PolicyRecoveryEvidenceTests {
                 && jsonString(clampGuidedSummary["policy_source"]) == "project_autonomy_policy"
                 && jsonString(clampGuidedSummary["policy_reason"]) == "hub_override=clamp_guided"
                 && jsonString(clampGuidedSummary["runtime_surface_policy_reason"]) == "hub_override=clamp_guided"
-                && jsonString(jsonObject(clampGuidedSummary["runtime_surface"])?["effective_surface"]) == AXProjectAutonomyMode.guided.rawValue
-                && jsonString(clampGuidedSummary["autonomy_effective_mode"]) == AXProjectAutonomyMode.guided.rawValue
+                && jsonString(jsonObject(clampGuidedSummary["runtime_surface"])?["effective_surface"]) == AXProjectRuntimeSurfaceMode.guided.rawValue
+                && jsonString(clampGuidedSummary["autonomy_effective_mode"]) == AXProjectRuntimeSurfaceMode.guided.rawValue
 
             let clampManualPass =
                 !clampManualResult.ok
@@ -278,8 +278,8 @@ struct XTW330PolicyRecoveryEvidenceTests {
                 && jsonString(clampManualSummary["policy_source"]) == "project_autonomy_policy"
                 && jsonString(clampManualSummary["policy_reason"]) == "hub_override=clamp_manual"
                 && jsonString(clampManualSummary["runtime_surface_policy_reason"]) == "hub_override=clamp_manual"
-                && jsonString(jsonObject(clampManualSummary["runtime_surface"])?["effective_surface"]) == AXProjectAutonomyMode.manual.rawValue
-                && jsonString(clampManualSummary["autonomy_effective_mode"]) == AXProjectAutonomyMode.manual.rawValue
+                && jsonString(jsonObject(clampManualSummary["runtime_surface"])?["effective_surface"]) == AXProjectRuntimeSurfaceMode.manual.rawValue
+                && jsonString(clampManualSummary["autonomy_effective_mode"]) == AXProjectRuntimeSurfaceMode.manual.rawValue
 
             let recoverySchedulePass =
                 recoveryDecision.decision == .resume

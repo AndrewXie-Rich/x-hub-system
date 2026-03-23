@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 enum HubRemoteRoute: String, Sendable {
     case none
@@ -52,11 +57,112 @@ struct HubRemotePortProbeResult: Sendable {
     var pairingPort: Int
     var grpcPort: Int
     var reasonCode: String?
+    var candidates: [HubDiscoveredHubCandidateSummary]
     var logLines: [String]
 
     var logText: String {
         logLines.joined(separator: "\n")
     }
+}
+
+struct HubDiscoveredHubCandidateSummary: Identifiable, Equatable, Sendable {
+    var host: String
+    var pairingPort: Int
+    var grpcPort: Int
+    var internetHost: String?
+    var hubInstanceID: String?
+    var lanDiscoveryName: String?
+
+    var id: String {
+        if let hubInstanceID = hubInstanceID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !hubInstanceID.isEmpty {
+            return hubInstanceID.lowercased()
+        }
+        let internet = (internetHost ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return "\(host.lowercased())|\(pairingPort)|\(grpcPort)|\(internet)"
+    }
+
+    var displayName: String {
+        if let lanDiscoveryName = lanDiscoveryName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !lanDiscoveryName.isEmpty {
+            return lanDiscoveryName
+        }
+        if let hubInstanceID = hubInstanceID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !hubInstanceID.isEmpty {
+            return hubInstanceID
+        }
+        return host
+    }
+}
+
+private struct HubPairingDiscoveryPayload: Decodable, Sendable {
+    var ok: Bool?
+    var service: String?
+    var hubHostHint: String?
+    var pairingPort: Int?
+    var grpcPort: Int?
+    var internetHostHint: String?
+    var hubInstanceID: String?
+    var lanDiscoveryName: String?
+
+    enum CodingKeys: String, CodingKey {
+        case ok
+        case service
+        case hubHostHint = "hub_host_hint"
+        case pairingPort = "pairing_port"
+        case grpcPort = "grpc_port"
+        case internetHostHint = "internet_host_hint"
+        case hubInstanceID = "hub_instance_id"
+        case lanDiscoveryName = "lan_discovery_name"
+    }
+
+    var matchesPairingService: Bool {
+        if ok == true { return true }
+        let normalizedService = (service ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return normalizedService.contains("pair")
+    }
+}
+
+private struct HubLANDiscoveryCandidate: Sendable {
+    var host: String
+    var pairingPort: Int
+    var grpcPort: Int
+    var internetHost: String?
+    var hubInstanceID: String?
+    var lanDiscoveryName: String?
+    var logLines: [String]
+}
+
+private struct HubLANDiscoveryProbeMatch: Sendable {
+    var host: String
+    var pairingPort: Int
+    var grpcPort: Int
+    var internetHost: String?
+    var hubInstanceID: String?
+    var lanDiscoveryName: String?
+}
+
+private struct HubCachedPairingInfo: Sendable {
+    var host: String?
+    var internetHost: String?
+    var pairingPort: Int?
+    var grpcPort: Int?
+    var hubInstanceID: String?
+    var lanDiscoveryName: String?
+}
+
+private struct HubLANDiscoveryAttempt: Sendable {
+    var candidate: HubLANDiscoveryCandidate?
+    var reasonCode: String?
+    var candidates: [HubLANDiscoveryCandidate]
+    var logLines: [String]
+}
+
+private struct HubLANDiscoveryScanPlan: Sendable {
+    var hosts: [String]
+    var networkSummaries: [String]
 }
 
 struct HubRemoteResetResult: Sendable {
@@ -78,6 +184,42 @@ struct HubRemoteModelsResult: Sendable {
     var logText: String {
         logLines.joined(separator: "\n")
     }
+}
+
+private func canonicalHubAppID(_ raw: String?) -> String? {
+    guard let raw else { return nil }
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+
+    let lower = trimmed.lowercased()
+    let compact = lower.unicodeScalars.reduce(into: "") { partialResult, scalar in
+        let value = scalar.value
+        if (value >= 48 && value <= 57) || (value >= 97 && value <= 122) {
+            partialResult.unicodeScalars.append(scalar)
+        }
+    }
+    if compact == "xterminal" || compact == "axterminal" {
+        return "x_terminal"
+    }
+
+    var normalized = ""
+    normalized.reserveCapacity(lower.count)
+    var lastWasUnderscore = false
+    for scalar in lower.unicodeScalars {
+        let value = scalar.value
+        if (value >= 48 && value <= 57) || (value >= 97 && value <= 122) {
+            normalized.unicodeScalars.append(scalar)
+            lastWasUnderscore = false
+        } else if value == 95 || value == 45 || value == 32 {
+            if !lastWasUnderscore {
+                normalized.append("_")
+                lastWasUnderscore = true
+            }
+        }
+    }
+
+    let finalValue = normalized.trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+    return finalValue.isEmpty ? nil : finalValue
 }
 
 struct HubRemoteGenerateResult: Sendable {
@@ -155,6 +297,14 @@ struct HubRemoteProjectConversationPayload: Sendable {
     var assistantText: String
 }
 
+struct HubRemoteSupervisorConversationPayload: Sendable {
+    var threadKey: String
+    var requestId: String
+    var createdAtMs: Int64
+    var userText: String
+    var assistantText: String
+}
+
 struct HubRemoteCanonicalMemoryItem: Codable, Equatable, Sendable {
     var key: String
     var value: String
@@ -198,6 +348,26 @@ struct HubRemoteSkillCatalogEntry: Sendable {
     var sourceID: String
     var packageSHA256: String
     var installHint: String
+    var riskLevel: String
+    var requiresGrant: Bool
+    var sideEffectClass: String
+}
+
+struct HubRemoteOfficialSkillChannelStatus: Sendable {
+    var channelID: String
+    var status: String
+    var updatedAtMs: Int64
+    var lastAttemptAtMs: Int64
+    var lastSuccessAtMs: Int64
+    var skillCount: Int
+    var errorCode: String
+    var maintenanceEnabled: Bool
+    var maintenanceIntervalMs: Int64
+    var maintenanceLastRunAtMs: Int64
+    var maintenanceSourceKind: String
+    var lastTransitionAtMs: Int64
+    var lastTransitionKind: String
+    var lastTransitionSummary: String
 }
 
 struct HubRemoteSkillsSearchResult: Sendable {
@@ -206,6 +376,7 @@ struct HubRemoteSkillsSearchResult: Sendable {
     var updatedAtMs: Int64
     var results: [HubRemoteSkillCatalogEntry]
     var reasonCode: String?
+    var officialChannelStatus: HubRemoteOfficialSkillChannelStatus? = nil
     var logLines: [String]
 
     var logText: String {
@@ -337,6 +508,38 @@ struct HubRemoteMemorySnapshotResult: Sendable {
     }
 }
 
+struct HubRemoteMemoryRetrievalItem: Sendable {
+    var ref: String
+    var sourceKind: String
+    var summary: String
+    var snippet: String
+    var score: Double
+    var redacted: Bool
+}
+
+struct HubRemoteMemoryRetrievalResult: Sendable {
+    var ok: Bool
+    var schemaVersion: String?
+    var requestId: String?
+    var status: String?
+    var resolvedScope: String?
+    var source: String
+    var scope: String
+    var auditRef: String
+    var reasonCode: String?
+    var denyCode: String?
+    var results: [HubRemoteMemoryRetrievalItem]
+    var truncated: Bool
+    var budgetUsedChars: Int
+    var truncatedItems: Int
+    var redactedItems: Int
+    var logLines: [String]
+
+    var logText: String {
+        logLines.joined(separator: "\n")
+    }
+}
+
 struct HubRemoteSchedulerScopeCount: Sendable {
     var scopeKey: String
     var count: Int
@@ -428,25 +631,38 @@ struct HubRemoteConnectorIngressReceiptsResult: Sendable {
     }
 }
 
-struct HubRemoteAutonomyPolicyOverrideItem: Sendable {
+struct HubRemoteRuntimeSurfaceOverrideItem: Sendable {
     var projectId: String
-    var overrideMode: AXProjectAutonomyHubOverrideMode
+    var overrideMode: AXProjectRuntimeSurfaceHubOverrideMode
     var updatedAtMs: Double
     var reason: String
     var auditRef: String
 }
 
-struct HubRemoteAutonomyPolicyOverridesResult: Sendable {
+struct HubRemoteRuntimeSurfaceOverridesResult: Sendable {
     var ok: Bool
     var source: String
     var updatedAtMs: Double
-    var items: [HubRemoteAutonomyPolicyOverrideItem]
+    var items: [HubRemoteRuntimeSurfaceOverrideItem]
     var reasonCode: String?
     var logLines: [String]
 
     var logText: String {
         logLines.joined(separator: "\n")
     }
+}
+
+@available(*, deprecated, message: "Use HubRemoteRuntimeSurfaceOverrideItem")
+typealias HubRemoteAutonomyPolicyOverrideItem = HubRemoteRuntimeSurfaceOverrideItem
+
+@available(*, deprecated, message: "Use HubRemoteRuntimeSurfaceOverridesResult")
+typealias HubRemoteAutonomyPolicyOverridesResult = HubRemoteRuntimeSurfaceOverridesResult
+
+private enum HubRemoteRuntimeSurfaceCompatContract {
+    static let failureReasonCode = "remote_autonomy_policy_overrides_failed"
+    static let legacyProjectIdEnv = "XTERMINAL_AUTONOMY_OVERRIDE_PROJECT_ID"
+    static let legacyLimitEnv = "XTERMINAL_AUTONOMY_OVERRIDE_LIMIT"
+    static let grpcMethod = "GetAutonomyPolicyOverrides"
 }
 
 enum HubRemotePendingGrantActionDecision: String, Sendable {
@@ -619,6 +835,37 @@ struct HubRemoteSecretVaultRedeemResult: Sendable {
     }
 }
 
+enum HubBundledToolSupport {
+    static func defaultApplicationSupportBase(fileManager: FileManager = .default) -> URL {
+        if let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            return base
+        }
+        return fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Application Support", isDirectory: true)
+    }
+
+    static func toolSupportBinDirectory(
+        applicationSupportBase: URL = defaultApplicationSupportBase()
+    ) -> URL {
+        applicationSupportBase
+            .appendingPathComponent("X-Terminal", isDirectory: true)
+            .appendingPathComponent("bin", isDirectory: true)
+    }
+
+    static func defaultAxhubctlFallbackCandidates(
+        homeDirectory: URL = XTProcessPaths.realHomeDirectory()
+    ) -> [String] {
+        [
+            homeDirectory
+                .appendingPathComponent(".local", isDirectory: true)
+                .appendingPathComponent("bin", isDirectory: true)
+                .appendingPathComponent("axhubctl", isDirectory: false)
+                .path,
+        ]
+    }
+}
+
 actor HubPairingCoordinator {
     static let shared = HubPairingCoordinator()
 
@@ -647,62 +894,119 @@ actor HubPairingCoordinator {
         options rawOptions: HubRemoteConnectOptions,
         allowBootstrap: Bool,
         onProgress: (@Sendable (HubRemoteProgressEvent) -> Void)? = nil
-    ) -> HubRemoteConnectReport {
+    ) async -> HubRemoteConnectReport {
         var opts = sanitize(rawOptions)
         var logs: [String] = []
-        let customEnv = discoveryEnv(internetHost: opts.internetHost)
         var discoveredHubHost: String?
         let cachedPairing = loadCachedPairingInfo(stateDir: opts.stateDir)
+        if nonEmpty(opts.internetHost) == nil, let cachedInternetHost = cachedPairing.internetHost {
+            opts.internetHost = cachedInternetHost
+        }
+        let customEnv = discoveryEnv(internetHost: opts.internetHost)
 
         let hasEnv = hasHubEnv(stateDir: opts.stateDir)
+        let effectiveAllowBootstrap: Bool
         if allowBootstrap {
+            effectiveAllowBootstrap = true
+        } else if !hasEnv {
+            effectiveAllowBootstrap = true
+            logs.append("[repair] missing hub.env; promote reconnect to bootstrap.")
+        } else {
+            effectiveAllowBootstrap = false
+        }
+
+        if effectiveAllowBootstrap {
             // Always try discover during one-click setup so stale pairing ports can self-heal.
             logs.append("[1/3] Discover Hub ...")
             emit(onProgress, .discover, .started, nil)
             var discoverSuccess = false
             var discoverUnsupported = false
             var lastDiscoverOutput = ""
-            let candidates = Array(Set([opts.pairingPort, 50052, 50053])).sorted()
-            let probeStateDir = makeEphemeralStateDir(prefix: "xterminal_discover_probe")
-            var discoverOpts = opts
-            discoverOpts.stateDir = probeStateDir
-            for p in candidates {
-                let discover = runAxhubctl(
-                    args: [
-                        "discover",
-                        "--pairing-port", "\(p)",
-                        "--timeout-sec", "3",
-                    ],
-                    options: discoverOpts,
-                    env: customEnv,
-                    timeoutSec: 30.0
-                )
-                appendStepLogs(into: &logs, step: discover)
-                lastDiscoverOutput = discover.output
-                if discover.exitCode == 0 {
-                    let parsedHost = parseStringField(discover.output, fieldName: "host")
-                    if shouldRequireConfiguredHubHost(options: opts),
-                       !hostMatchesConfiguredHost(discoveredHost: parsedHost, options: opts) {
-                        logs.append("[discover] ignore host mismatch (want \(opts.internetHost), got \(parsedHost ?? "unknown"))")
-                        continue
-                    }
+            let candidates = orderedPairingPortCandidates(opts.pairingPort)
+            var localDiscoveryBlockedReason: String?
 
+            if !shouldRequireConfiguredHubHost(options: opts) {
+                let lanFallback = await discoverHubOnLAN(
+                    options: opts,
+                    pairingPorts: candidates,
+                    cachedPairing: cachedPairing
+                )
+                logs.append(contentsOf: lanFallback.logLines)
+                if let candidate = lanFallback.candidate {
                     discoverSuccess = true
-                    opts.pairingPort = parsePortField(discover.output, fieldName: "pairing_port") ?? p
-                    opts.grpcPort = parsePortField(discover.output, fieldName: "grpc_port") ?? opts.grpcPort
-                    if let parsedHost, !parsedHost.isEmpty {
-                        discoveredHubHost = parsedHost
+                    opts.pairingPort = candidate.pairingPort
+                    opts.grpcPort = candidate.grpcPort
+                    if nonEmpty(opts.internetHost) == nil,
+                       let discoveredInternetHost = nonEmpty(candidate.internetHost) {
+                        opts.internetHost = discoveredInternetHost
                     }
-                    break
-                } else if isUnknownCommand(discover.output, command: "discover") {
-                    discoverUnsupported = true
-                    break
+                    discoveredHubHost = candidate.host
+                } else if let reason = lanFallback.reasonCode {
+                    localDiscoveryBlockedReason = reason
+                    lastDiscoverOutput = reason
                 }
             }
-            removeEphemeralStateDir(probeStateDir)
+
+            if !discoverSuccess, localDiscoveryBlockedReason == nil {
+                let probeStateDir = makeEphemeralStateDir(prefix: "xterminal_discover_probe")
+                var discoverOpts = opts
+                discoverOpts.stateDir = probeStateDir
+                for p in candidates {
+                    let discover = runAxhubctl(
+                        args: [
+                            "discover",
+                            "--pairing-port", "\(p)",
+                            "--timeout-sec", "3",
+                        ],
+                        options: discoverOpts,
+                        env: customEnv,
+                        timeoutSec: 30.0
+                    )
+                    appendStepLogs(into: &logs, step: discover)
+                    lastDiscoverOutput = discover.output
+                    if discover.exitCode == 0 {
+                        let parsedHost = parseStringField(discover.output, fieldName: "host")
+                        if shouldRequireConfiguredHubHost(options: opts),
+                           !hostMatchesConfiguredHost(discoveredHost: parsedHost, options: opts) {
+                            logs.append("[discover] ignore host mismatch (want \(opts.internetHost), got \(parsedHost ?? "unknown"))")
+                            continue
+                        }
+
+                        discoverSuccess = true
+                        opts.pairingPort = parsePortField(discover.output, fieldName: "pairing_port") ?? p
+                        opts.grpcPort = parsePortField(discover.output, fieldName: "grpc_port") ?? opts.grpcPort
+                        if nonEmpty(opts.internetHost) == nil,
+                           let parsedInternetHost = parseStringField(discover.output, fieldName: "internet_host") {
+                            opts.internetHost = parsedInternetHost
+                        }
+                        if let parsedHost, !parsedHost.isEmpty {
+                            discoveredHubHost = parsedHost
+                        }
+                        break
+                    } else if isUnknownCommand(discover.output, command: "discover") {
+                        discoverUnsupported = true
+                        break
+                    }
+                }
+                removeEphemeralStateDir(probeStateDir)
+            }
 
             if discoverSuccess {
                 emit(onProgress, .discover, .succeeded, nil)
+            } else if let blockedReason = localDiscoveryBlockedReason, hasEnv {
+                logs.append("[discover] multiple LAN hubs detected; keep existing paired profile.")
+                emit(onProgress, .discover, .failed, blockedReason)
+            } else if let blockedReason = localDiscoveryBlockedReason {
+                emit(onProgress, .discover, .failed, blockedReason)
+                emit(onProgress, .bootstrap, .skipped, "blocked_by_discover_failure")
+                emit(onProgress, .connect, .skipped, "blocked_by_discover_failure")
+                return HubRemoteConnectReport(
+                    ok: false,
+                    route: .none,
+                    summary: blockedReason,
+                    logLines: logs,
+                    reasonCode: blockedReason
+                )
             } else if discoverUnsupported {
                 if let configuredHost = nonEmpty(opts.internetHost) {
                     discoveredHubHost = configuredHost
@@ -758,7 +1062,7 @@ actor HubPairingCoordinator {
             emit(onProgress, .bootstrap, .skipped, "bootstrap_disabled")
         }
 
-        if allowBootstrap && !hasEnv {
+        if effectiveAllowBootstrap && !hasEnv {
             logs.append("[2/3] Pair + bootstrap (wait approval) ...")
             emit(onProgress, .bootstrap, .started, nil)
             let bootstrapHost = preferredBootstrapHub(discoveredHubHost: discoveredHubHost, options: opts)
@@ -813,7 +1117,7 @@ actor HubPairingCoordinator {
                 )
             }
             emit(onProgress, .bootstrap, .succeeded, nil)
-        } else if allowBootstrap {
+        } else if effectiveAllowBootstrap {
             logs.append("[2/3] Bootstrap already paired (cached profile).")
             emit(onProgress, .bootstrap, .succeeded, "already_paired")
         }
@@ -832,7 +1136,7 @@ actor HubPairingCoordinator {
         }
 
         // If one-click setup starts from an existing profile and connect fails, try a bootstrap refresh once.
-        if allowBootstrap && hasEnv {
+        if effectiveAllowBootstrap && hasEnv {
             logs.append("[2/3] Refresh pairing via bootstrap (connect failed with cached profile) ...")
             emit(onProgress, .bootstrap, .started, "refresh")
             let refreshBootstrap = runAxhubctl(
@@ -886,13 +1190,34 @@ actor HubPairingCoordinator {
         startProgress: Bool,
         autoReconnect: Bool
     ) -> HubRemoteConnectReport {
-        logs.append(autoReconnect ? "[3/3] Connect + auto-reconnect probe (LAN first) ..." : "[3/3] Connect probe (LAN first) ...")
+        let preferredHub = preferredConnectHub(primaryHubHost: primaryHubHost, options: opts)
+        let useAutoDiscovery = normalizeHost(preferredHub) == "auto"
+        if autoReconnect {
+            logs.append(useAutoDiscovery
+                ? "[3/3] Connect + auto-reconnect probe (LAN first) ..."
+                : "[3/3] Connect + auto-reconnect probe (preferred host: \(preferredHub)) ...")
+        } else {
+            logs.append(useAutoDiscovery
+                ? "[3/3] Connect probe (LAN first) ..."
+                : "[3/3] Connect probe (preferred host: \(preferredHub)) ...")
+        }
         if startProgress {
             emit(onProgress, .connect, .started, "lan")
         }
+        if hasHubEnv(stateDir: opts.stateDir), !hasInstalledClientKit(stateDir: opts.stateDir) {
+            let repairHosts = connectRepairHosts(primaryHubHost: preferredHub, options: opts)
+            if maybeInstallClientKit(
+                options: opts,
+                hosts: repairHosts,
+                env: customEnv,
+                logs: &logs
+            ) {
+                logs.append("[repair] client kit restored before connect probe.")
+            }
+        }
         var lanArgs: [String] = [
             "connect",
-            "--hub", primaryHubHost ?? "auto",
+            "--hub", preferredHub,
             "--pairing-port", "\(opts.pairingPort)",
             "--grpc-port", "\(opts.grpcPort)",
             "--timeout-sec", "2",
@@ -1038,12 +1363,30 @@ actor HubPairingCoordinator {
         )
     }
 
+    private func preferredConnectHub(
+        primaryHubHost: String?,
+        options: HubRemoteConnectOptions
+    ) -> String {
+        if let discovered = nonEmpty(primaryHubHost) {
+            return normalizedConnectHostCandidate(discovered)
+        }
+        if let configured = nonEmpty(options.internetHost) {
+            return normalizedConnectHostCandidate(configured)
+        }
+        let cachedPairing = loadCachedPairingInfo(stateDir: options.stateDir)
+        if let cachedHost = nonEmpty(cachedPairing.host), !isLoopbackHost(cachedHost) {
+            return normalizedConnectHostCandidate(cachedHost)
+        }
+        return "auto"
+    }
+
     func detectPorts(
         options rawOptions: HubRemoteConnectOptions,
-        candidates rawCandidates: [Int] = [50052, 50053]
-    ) -> HubRemotePortProbeResult {
+        candidates rawCandidates: [Int] = [50052, 50053, 50054, 50055, 50056]
+    ) async -> HubRemotePortProbeResult {
         let opts = sanitize(rawOptions)
         let customEnv = discoveryEnv(internetHost: opts.internetHost)
+        let cachedPairing = loadCachedPairingInfo(stateDir: opts.stateDir)
         var logs: [String] = []
 
         let normalized = rawCandidates
@@ -1055,12 +1398,42 @@ actor HubPairingCoordinator {
                 pairingPort: opts.pairingPort,
                 grpcPort: opts.grpcPort,
                 reasonCode: "no_port_candidates",
+                candidates: [],
                 logLines: ["port probe candidates are empty"]
             )
         }
 
         var lastOutput = ""
         var discoverUnsupported = false
+        if !shouldRequireConfiguredHubHost(options: opts) {
+            let lanFallback = await discoverHubOnLAN(
+                options: opts,
+                pairingPorts: candidates,
+                cachedPairing: cachedPairing
+            )
+            logs.append(contentsOf: lanFallback.logLines)
+            if let candidate = lanFallback.candidate {
+                return HubRemotePortProbeResult(
+                    ok: true,
+                    pairingPort: candidate.pairingPort,
+                    grpcPort: candidate.grpcPort,
+                    reasonCode: nil,
+                    candidates: [summary(from: candidate)],
+                    logLines: logs
+                )
+            }
+            if let blockedReason = lanFallback.reasonCode {
+                return HubRemotePortProbeResult(
+                    ok: false,
+                    pairingPort: opts.pairingPort,
+                    grpcPort: opts.grpcPort,
+                    reasonCode: blockedReason,
+                    candidates: lanFallback.candidates.map(summary(from:)),
+                    logLines: logs
+                )
+            }
+        }
+
         let probeStateDir = makeEphemeralStateDir(prefix: "xterminal_port_probe")
         var probeOptions = opts
         probeOptions.stateDir = probeStateDir
@@ -1092,6 +1465,7 @@ actor HubPairingCoordinator {
                     pairingPort: parsedPair,
                     grpcPort: parsedGrpc,
                     reasonCode: nil,
+                    candidates: [],
                     logLines: logs
                 )
             } else if isUnknownCommand(step.output, command: "discover") {
@@ -1109,6 +1483,7 @@ actor HubPairingCoordinator {
                     pairingPort: pair,
                     grpcPort: grpc,
                     reasonCode: nil,
+                    candidates: [],
                     logLines: logs + ["[port-detect] discover unsupported; using cached pairing/grpc ports."]
                 )
             }
@@ -1118,6 +1493,7 @@ actor HubPairingCoordinator {
                     pairingPort: opts.pairingPort,
                     grpcPort: opts.grpcPort,
                     reasonCode: nil,
+                    candidates: [],
                     logLines: logs + ["[port-detect] discover unsupported; keep configured ports."]
                 )
             }
@@ -1126,6 +1502,7 @@ actor HubPairingCoordinator {
                 pairingPort: opts.pairingPort,
                 grpcPort: opts.grpcPort,
                 reasonCode: "discover_unsupported",
+                candidates: [],
                 logLines: logs
             )
         }
@@ -1136,7 +1513,24 @@ actor HubPairingCoordinator {
             pairingPort: opts.pairingPort,
             grpcPort: opts.grpcPort,
             reasonCode: reason,
+            candidates: [],
             logLines: logs
+        )
+    }
+
+    func pinDiscoveredHubCandidate(
+        _ candidate: HubDiscoveredHubCandidateSummary,
+        options rawOptions: HubRemoteConnectOptions
+    ) throws {
+        let opts = sanitize(rawOptions)
+        try persistDiscoveredPairingInfo(
+            host: candidate.host,
+            pairingPort: candidate.pairingPort,
+            grpcPort: candidate.grpcPort,
+            internetHost: nonEmpty(candidate.internetHost) ?? nonEmpty(opts.internetHost),
+            hubInstanceID: candidate.hubInstanceID,
+            lanDiscoveryName: candidate.lanDiscoveryName,
+            options: opts
         )
     }
 
@@ -1386,11 +1780,14 @@ actor HubPairingCoordinator {
             step: StepOutput,
             fallback: String
         ) -> String {
-            let reason = nonEmpty(decoded.errorCode)
+            let rawReason = nonEmpty(decoded.errorCode)
                 ?? nonEmpty(decoded.reason)
                 ?? nonEmpty(decoded.errorMessage)
-                ?? inferFailureCode(from: step.output, fallback: fallback)
-            return reason.replacingOccurrences(of: " ", with: "_")
+            return normalizedRemoteReasonCode(
+                rawReason: rawReason,
+                stepOutput: step.output,
+                fallback: fallback
+            )
         }
 
         func finalizeGenerateStep(_ step: StepOutput) -> HubRemoteGenerateResult {
@@ -1634,10 +2031,20 @@ actor HubPairingCoordinator {
         }()
 
         let ok = decoded.ok ?? (mappedDecision == .approved || mappedDecision == .queued)
-        let reasonCode = nonEmpty(decoded.errorCode)
+        let rawReasonCode = nonEmpty(decoded.errorCode)
             ?? nonEmpty(decoded.reason)
             ?? nonEmpty(decoded.errorMessage)
-            ?? (ok ? nil : inferFailureCode(from: step.output, fallback: "remote_grant_failed"))
+        let reasonCode = rawReasonCode.map {
+            normalizedRemoteReasonCode(
+                rawReason: $0,
+                stepOutput: step.output,
+                fallback: "remote_grant_failed"
+            )
+        } ?? (ok ? nil : normalizedRemoteReasonCode(
+            rawReason: nil,
+            stepOutput: step.output,
+            fallback: "remote_grant_failed"
+        ))
 
         let expiresAtSec: Double? = {
             guard let ms = decoded.expiresAtMs, ms > 0 else { return nil }
@@ -1649,7 +2056,7 @@ actor HubPairingCoordinator {
             decision: mappedDecision,
             grantRequestId: nonEmpty(decoded.grantRequestId),
             expiresAtSec: expiresAtSec,
-            reasonCode: reasonCode?.replacingOccurrences(of: " ", with: "_"),
+            reasonCode: reasonCode,
             logLines: logs
         )
     }
@@ -1720,7 +2127,7 @@ actor HubPairingCoordinator {
         }
 
         var scriptEnv = merged
-        let effectiveAppId = rawAppId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let effectiveAppId = canonicalHubAppID(rawAppId) ?? ""
         if !effectiveAppId.isEmpty {
             scriptEnv["HUB_APP_ID"] = effectiveAppId
         }
@@ -1798,10 +2205,20 @@ actor HubPairingCoordinator {
         }()
 
         let ok = decoded.ok ?? (mappedDecision == .approved || mappedDecision == .queued)
-        let reasonCode = nonEmpty(decoded.errorCode)
+        let rawReasonCode = nonEmpty(decoded.errorCode)
             ?? nonEmpty(decoded.reason)
             ?? nonEmpty(decoded.errorMessage)
-            ?? (ok ? nil : inferFailureCode(from: step.output, fallback: "remote_paid_grant_failed"))
+        let reasonCode = rawReasonCode.map {
+            normalizedRemoteReasonCode(
+                rawReason: $0,
+                stepOutput: step.output,
+                fallback: "remote_paid_grant_failed"
+            )
+        } ?? (ok ? nil : normalizedRemoteReasonCode(
+            rawReason: nil,
+            stepOutput: step.output,
+            fallback: "remote_paid_grant_failed"
+        ))
 
         let expiresAtSec: Double? = {
             guard let ms = decoded.expiresAtMs, ms > 0 else { return nil }
@@ -1813,7 +2230,7 @@ actor HubPairingCoordinator {
             decision: mappedDecision,
             grantRequestId: nonEmpty(decoded.grantRequestId),
             expiresAtSec: expiresAtSec,
-            reasonCode: reasonCode?.replacingOccurrences(of: " ", with: "_"),
+            reasonCode: reasonCode,
             logLines: logs
         )
     }
@@ -2165,6 +2582,102 @@ actor HubPairingCoordinator {
         )
     }
 
+    func appendRemoteSupervisorConversationTurn(
+        options rawOptions: HubRemoteConnectOptions,
+        payload: HubRemoteSupervisorConversationPayload
+    ) -> HubRemoteMutationResult {
+        let opts = sanitize(rawOptions)
+        var logs: [String] = []
+
+        let threadKey = payload.threadKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let requestId = payload.requestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let userText = payload.userText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let assistantText = payload.assistantText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !threadKey.isEmpty else {
+            return HubRemoteMutationResult(ok: false, reasonCode: "thread_key_empty", logLines: ["conversation thread_key is empty"])
+        }
+        guard !requestId.isEmpty else {
+            return HubRemoteMutationResult(ok: false, reasonCode: "request_id_empty", logLines: ["conversation request_id is empty"])
+        }
+        guard !userText.isEmpty || !assistantText.isEmpty else {
+            return HubRemoteMutationResult(ok: false, reasonCode: "turn_empty", logLines: ["conversation turn payload is empty"])
+        }
+
+        let stateDir = opts.stateDir ?? defaultStateDir()
+        let hubEnv = stateDir.appendingPathComponent("hub.env")
+        let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
+        let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
+        let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
+
+        guard FileManager.default.fileExists(atPath: hubEnv.path) else {
+            return HubRemoteMutationResult(ok: false, reasonCode: "hub_env_missing", logLines: ["missing hub env: \(hubEnv.path)"])
+        }
+        guard FileManager.default.fileExists(atPath: clientKitSrc.path) else {
+            return HubRemoteMutationResult(ok: false, reasonCode: "client_kit_missing", logLines: ["missing client kit src: \(clientKitSrc.path)"])
+        }
+
+        let exported = readEnvExports(from: hubEnv)
+        let merged = mergedAxhubEnv(options: opts, extra: exported)
+        let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged)
+        guard let nodeBin else {
+            return HubRemoteMutationResult(ok: false, reasonCode: "node_missing", logLines: ["missing node runtime for remote supervisor conversation append"])
+        }
+
+        var scriptEnv = merged
+        scriptEnv["XTERMINAL_SUPERVISOR_CONV_THREAD_KEY"] = threadKey
+        scriptEnv["XTERMINAL_SUPERVISOR_CONV_REQUEST_ID"] = requestId
+        scriptEnv["XTERMINAL_SUPERVISOR_CONV_CREATED_AT_MS"] = String(max(Int64(0), payload.createdAtMs))
+        scriptEnv["XTERMINAL_SUPERVISOR_CONV_USER_TEXT"] = userText
+        scriptEnv["XTERMINAL_SUPERVISOR_CONV_ASSISTANT_TEXT"] = assistantText
+
+        let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
+        func runScript() -> StepOutput {
+            do {
+                let script = self.remoteSupervisorConversationAppendScriptSource()
+                let result = try ProcessCapture.run(
+                    nodeBin,
+                    ["--input-type=module", "-"],
+                    cwd: clientKitHub,
+                    stdin: script.data(using: .utf8),
+                    timeoutSec: 20.0,
+                    env: scriptEnv
+                )
+                return StepOutput(exitCode: result.exitCode, output: result.combined, command: command)
+            } catch {
+                return StepOutput(exitCode: 127, output: String(describing: error), command: command)
+            }
+        }
+
+        var step = runScript()
+        appendStepLogs(into: &logs, step: step)
+        if step.exitCode != 0, shouldRetryAfterClientKitInstall(step.output) {
+            let install = runAxhubctl(args: ["install-client"], options: opts, env: [:], timeoutSec: 120.0)
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                step = runScript()
+                appendStepLogs(into: &logs, step: step)
+            }
+        }
+
+        guard let jsonLine = extractTrailingJSONObjectLine(step.output),
+              let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteMutationScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(from: step.output, fallback: "remote_supervisor_conversation_append_failed")
+            return HubRemoteMutationResult(ok: false, reasonCode: fallback, logLines: logs)
+        }
+
+        let reason = nonEmpty(decoded.errorCode)
+            ?? nonEmpty(decoded.reason)
+            ?? nonEmpty(decoded.errorMessage)
+            ?? ((decoded.ok ?? false) ? nil : "remote_supervisor_conversation_append_failed")
+
+        return HubRemoteMutationResult(
+            ok: decoded.ok ?? false,
+            reasonCode: reason?.replacingOccurrences(of: " ", with: "_"),
+            logLines: logs
+        )
+    }
+
     func upsertRemoteProjectCanonicalMemory(
         options rawOptions: HubRemoteConnectOptions,
         payload: HubRemoteProjectCanonicalMemoryPayload
@@ -2467,6 +2980,7 @@ actor HubPairingCoordinator {
                 updatedAtMs: 0,
                 results: [],
                 reasonCode: FileManager.default.fileExists(atPath: hubEnv.path) ? "client_kit_missing" : "hub_env_missing",
+                officialChannelStatus: nil,
                 logLines: ["hub env or client kit missing for remote skills search"]
             )
         }
@@ -2480,6 +2994,7 @@ actor HubPairingCoordinator {
                 updatedAtMs: 0,
                 results: [],
                 reasonCode: "node_missing",
+                officialChannelStatus: nil,
                 logLines: ["missing node runtime for remote skills search"]
             )
         }
@@ -2529,6 +3044,7 @@ actor HubPairingCoordinator {
                 updatedAtMs: 0,
                 results: [],
                 reasonCode: fallback,
+                officialChannelStatus: nil,
                 logLines: logs
             )
         }
@@ -2549,7 +3065,28 @@ actor HubPairingCoordinator {
                 capabilitiesRequired: row.capabilitiesRequired ?? [],
                 sourceID: nonEmpty(row.sourceID) ?? "",
                 packageSHA256: nonEmpty(row.packageSHA256) ?? "",
-                installHint: nonEmpty(row.installHint) ?? ""
+                installHint: nonEmpty(row.installHint) ?? "",
+                riskLevel: nonEmpty(row.riskLevel) ?? "low",
+                requiresGrant: row.requiresGrant ?? false,
+                sideEffectClass: nonEmpty(row.sideEffectClass) ?? ""
+            )
+        }
+        let officialChannelStatus = decoded.officialChannelStatus.map { row in
+            HubRemoteOfficialSkillChannelStatus(
+                channelID: nonEmpty(row.channelID) ?? "official-stable",
+                status: nonEmpty(row.status) ?? "",
+                updatedAtMs: max(0, row.updatedAtMs ?? 0),
+                lastAttemptAtMs: max(0, row.lastAttemptAtMs ?? 0),
+                lastSuccessAtMs: max(0, row.lastSuccessAtMs ?? 0),
+                skillCount: max(0, row.skillCount ?? 0),
+                errorCode: nonEmpty(row.errorCode) ?? "",
+                maintenanceEnabled: row.maintenanceEnabled ?? false,
+                maintenanceIntervalMs: max(0, row.maintenanceIntervalMs ?? 0),
+                maintenanceLastRunAtMs: max(0, row.maintenanceLastRunAtMs ?? 0),
+                maintenanceSourceKind: nonEmpty(row.maintenanceSourceKind) ?? "",
+                lastTransitionAtMs: max(0, row.lastTransitionAtMs ?? 0),
+                lastTransitionKind: nonEmpty(row.lastTransitionKind) ?? "",
+                lastTransitionSummary: nonEmpty(row.lastTransitionSummary) ?? ""
             )
         }
 
@@ -2559,6 +3096,7 @@ actor HubPairingCoordinator {
             updatedAtMs: max(0, decoded.updatedAtMs ?? 0),
             results: results,
             reasonCode: reason?.replacingOccurrences(of: " ", with: "_"),
+            officialChannelStatus: officialChannelStatus,
             logLines: logs
         )
     }
@@ -2824,7 +3362,10 @@ actor HubPairingCoordinator {
                 capabilitiesRequired: skillRow.capabilitiesRequired ?? [],
                 sourceID: nonEmpty(skillRow.sourceID) ?? "",
                 packageSHA256: nonEmpty(skillRow.packageSHA256) ?? "",
-                installHint: nonEmpty(skillRow.installHint) ?? ""
+                installHint: nonEmpty(skillRow.installHint) ?? "",
+                riskLevel: nonEmpty(skillRow.riskLevel) ?? "low",
+                requiresGrant: skillRow.requiresGrant ?? false,
+                sideEffectClass: nonEmpty(skillRow.sideEffectClass) ?? ""
             )
             return HubRemoteResolvedSkillEntry(
                 scope: nonEmpty(row.scope) ?? "",
@@ -3590,7 +4131,9 @@ actor HubPairingCoordinator {
     func fetchRemoteMemorySnapshot(
         options rawOptions: HubRemoteConnectOptions,
         mode rawMode: String,
-        projectId: String?
+        projectId: String?,
+        canonicalLimit: Int = 24,
+        workingLimit: Int = 12
     ) -> HubRemoteMemorySnapshotResult {
         let opts = sanitize(rawOptions)
         var logs: [String] = []
@@ -3641,8 +4184,8 @@ actor HubPairingCoordinator {
         var scriptEnv = merged
         scriptEnv["XTERMINAL_MEM_MODE"] = normalizedMode
         scriptEnv["XTERMINAL_MEM_PROJECT_ID"] = projectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        scriptEnv["XTERMINAL_MEM_CANONICAL_LIMIT"] = "24"
-        scriptEnv["XTERMINAL_MEM_WORKING_LIMIT"] = "12"
+        scriptEnv["XTERMINAL_MEM_CANONICAL_LIMIT"] = String(max(1, min(80, canonicalLimit)))
+        scriptEnv["XTERMINAL_MEM_WORKING_LIMIT"] = String(max(1, min(80, workingLimit)))
 
         let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
         func runScript() -> StepOutput {
@@ -3698,6 +4241,203 @@ actor HubPairingCoordinator {
             canonicalEntries: decoded.canonicalEntries ?? [],
             workingEntries: decoded.workingEntries ?? [],
             reasonCode: reason?.replacingOccurrences(of: " ", with: "_"),
+            logLines: logs
+        )
+    }
+
+    func fetchRemoteMemoryRetrieval(
+        options rawOptions: HubRemoteConnectOptions,
+        payload: HubIPCClient.MemoryRetrievalPayload
+    ) -> HubRemoteMemoryRetrievalResult {
+        let opts = sanitize(rawOptions)
+        var logs: [String] = []
+
+        let stateDir = opts.stateDir ?? defaultStateDir()
+        let hubEnv = stateDir.appendingPathComponent("hub.env")
+        let clientKitBase = stateDir.appendingPathComponent("client_kit", isDirectory: true)
+        let clientKitHub = clientKitBase.appendingPathComponent("hub_grpc_server", isDirectory: true)
+        let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
+
+        guard FileManager.default.fileExists(atPath: hubEnv.path) else {
+            return HubRemoteMemoryRetrievalResult(
+                ok: false,
+                schemaVersion: nil,
+                requestId: payload.requestId,
+                status: nil,
+                resolvedScope: nil,
+                source: "hub_memory_retrieval_grpc_v1",
+                scope: payload.scope,
+                auditRef: payload.auditRef,
+                reasonCode: "hub_env_missing",
+                denyCode: nil,
+                results: [],
+                truncated: false,
+                budgetUsedChars: 0,
+                truncatedItems: 0,
+                redactedItems: 0,
+                logLines: ["missing hub env: \(hubEnv.path)"]
+            )
+        }
+        guard FileManager.default.fileExists(atPath: clientKitSrc.path) else {
+            return HubRemoteMemoryRetrievalResult(
+                ok: false,
+                schemaVersion: nil,
+                requestId: payload.requestId,
+                status: nil,
+                resolvedScope: nil,
+                source: "hub_memory_retrieval_grpc_v1",
+                scope: payload.scope,
+                auditRef: payload.auditRef,
+                reasonCode: "client_kit_missing",
+                denyCode: nil,
+                results: [],
+                truncated: false,
+                budgetUsedChars: 0,
+                truncatedItems: 0,
+                redactedItems: 0,
+                logLines: ["missing client kit src: \(clientKitSrc.path)"]
+            )
+        }
+
+        let exported = readEnvExports(from: hubEnv)
+        let merged = mergedAxhubEnv(options: opts, extra: exported)
+        let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged)
+        guard let nodeBin else {
+            return HubRemoteMemoryRetrievalResult(
+                ok: false,
+                schemaVersion: nil,
+                requestId: payload.requestId,
+                status: nil,
+                resolvedScope: nil,
+                source: "hub_memory_retrieval_grpc_v1",
+                scope: payload.scope,
+                auditRef: payload.auditRef,
+                reasonCode: "node_missing",
+                denyCode: nil,
+                results: [],
+                truncated: false,
+                budgetUsedChars: 0,
+                truncatedItems: 0,
+                redactedItems: 0,
+                logLines: ["missing node runtime for remote memory retrieval"]
+            )
+        }
+
+        let encodeJSON: ([String]) -> String = { values in
+            guard let data = try? JSONEncoder().encode(values),
+                  let text = String(data: data, encoding: .utf8) else {
+                return "[]"
+            }
+            return text
+        }
+
+        var scriptEnv = merged
+        scriptEnv["XTERMINAL_MEM_RETR_SCHEMA_VERSION"] = payload.schemaVersion
+        scriptEnv["XTERMINAL_MEM_RETR_REQUEST_ID"] = payload.requestId
+        scriptEnv["XTERMINAL_MEM_RETR_SCOPE"] = payload.scope
+        scriptEnv["XTERMINAL_MEM_RETR_REQUESTER_ROLE"] = payload.requesterRole
+        scriptEnv["XTERMINAL_MEM_RETR_MODE"] = payload.mode
+        scriptEnv["XTERMINAL_MEM_RETR_PROJECT_ID"] = payload.projectId ?? ""
+        scriptEnv["XTERMINAL_MEM_RETR_CROSS_PROJECT_TARGET_IDS_JSON"] = encodeJSON(payload.crossProjectTargetIds)
+        scriptEnv["XTERMINAL_MEM_RETR_PROJECT_ROOT"] = payload.projectRoot ?? ""
+        scriptEnv["XTERMINAL_MEM_RETR_DISPLAY_NAME"] = payload.displayName ?? ""
+        scriptEnv["XTERMINAL_MEM_RETR_QUERY"] = payload.query
+        scriptEnv["XTERMINAL_MEM_RETR_LATEST_USER"] = payload.latestUser
+        scriptEnv["XTERMINAL_MEM_RETR_ALLOWED_LAYERS_JSON"] = encodeJSON(payload.allowedLayers)
+        scriptEnv["XTERMINAL_MEM_RETR_RETRIEVAL_KIND"] = payload.retrievalKind
+        scriptEnv["XTERMINAL_MEM_RETR_MAX_RESULTS"] = String(max(1, payload.maxResults))
+        scriptEnv["XTERMINAL_MEM_RETR_REASON"] = payload.reason ?? ""
+        scriptEnv["XTERMINAL_MEM_RETR_REQUIRE_EXPLAINABILITY"] = payload.requireExplainability ? "1" : "0"
+        scriptEnv["XTERMINAL_MEM_RETR_REQUESTED_KINDS_JSON"] = encodeJSON(payload.requestedKinds)
+        scriptEnv["XTERMINAL_MEM_RETR_EXPLICIT_REFS_JSON"] = encodeJSON(payload.explicitRefs)
+        scriptEnv["XTERMINAL_MEM_RETR_MAX_SNIPPETS"] = String(max(1, payload.maxSnippets))
+        scriptEnv["XTERMINAL_MEM_RETR_MAX_SNIPPET_CHARS"] = String(max(120, payload.maxSnippetChars))
+        scriptEnv["XTERMINAL_MEM_RETR_AUDIT_REF"] = payload.auditRef
+
+        let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
+        func runScript() -> StepOutput {
+            do {
+                let script = remoteMemoryRetrievalScriptSource()
+                let result = try ProcessCapture.run(
+                    nodeBin,
+                    ["--input-type=module", "-"],
+                    cwd: clientKitHub,
+                    stdin: script.data(using: .utf8),
+                    timeoutSec: 20.0,
+                    env: scriptEnv
+                )
+                return StepOutput(exitCode: result.exitCode, output: result.combined, command: command)
+            } catch {
+                return StepOutput(exitCode: 127, output: String(describing: error), command: command)
+            }
+        }
+
+        var step = runScript()
+        appendStepLogs(into: &logs, step: step)
+        if step.exitCode != 0, shouldRetryAfterClientKitInstall(step.output) {
+            let install = runAxhubctl(args: ["install-client"], options: opts, env: [:], timeoutSec: 120.0)
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                step = runScript()
+                appendStepLogs(into: &logs, step: step)
+            }
+        }
+
+        guard let jsonLine = extractTrailingJSONObjectLine(step.output),
+              let data = jsonLine.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(RemoteMemoryRetrievalScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(from: step.output, fallback: "remote_memory_retrieval_failed")
+            return HubRemoteMemoryRetrievalResult(
+                ok: false,
+                schemaVersion: nil,
+                requestId: payload.requestId,
+                status: nil,
+                resolvedScope: nil,
+                source: "hub_memory_retrieval_grpc_v1",
+                scope: payload.scope,
+                auditRef: payload.auditRef,
+                reasonCode: fallback,
+                denyCode: nil,
+                results: [],
+                truncated: false,
+                budgetUsedChars: 0,
+                truncatedItems: 0,
+                redactedItems: 0,
+                logLines: logs
+            )
+        }
+
+        let reason = nonEmpty(decoded.errorCode)
+            ?? nonEmpty(decoded.reasonCode)
+            ?? nonEmpty(decoded.reason)
+            ?? nonEmpty(decoded.errorMessage)
+            ?? ((decoded.ok ?? false) ? nil : "remote_memory_retrieval_failed")
+
+        return HubRemoteMemoryRetrievalResult(
+            ok: decoded.ok ?? false,
+            schemaVersion: nonEmpty(decoded.schemaVersion),
+            requestId: nonEmpty(decoded.requestId) ?? payload.requestId,
+            status: nonEmpty(decoded.status),
+            resolvedScope: nonEmpty(decoded.resolvedScope),
+            source: nonEmpty(decoded.source) ?? "hub_memory_retrieval_grpc_v1",
+            scope: nonEmpty(decoded.scope) ?? payload.scope,
+            auditRef: nonEmpty(decoded.auditRef) ?? payload.auditRef,
+            reasonCode: reason?.replacingOccurrences(of: " ", with: "_"),
+            denyCode: nonEmpty(decoded.denyCode),
+            results: (decoded.results ?? []).map { item in
+                HubRemoteMemoryRetrievalItem(
+                    ref: nonEmpty(item.ref) ?? "",
+                    sourceKind: nonEmpty(item.sourceKind) ?? "memory_doc",
+                    summary: nonEmpty(item.summary) ?? "",
+                    snippet: nonEmpty(item.snippet) ?? "",
+                    score: min(1.0, max(0.0, item.score ?? 0)),
+                    redacted: item.redacted ?? false
+                )
+            },
+            truncated: decoded.truncated ?? false,
+            budgetUsedChars: max(0, decoded.budgetUsedChars ?? 0),
+            truncatedItems: max(0, decoded.truncatedItems ?? 0),
+            redactedItems: max(0, decoded.redactedItems ?? 0),
             logLines: logs
         )
     }
@@ -4308,11 +5048,11 @@ actor HubPairingCoordinator {
         )
     }
 
-    func fetchRemoteAutonomyPolicyOverrides(
+    func fetchRemoteRuntimeSurfaceOverrides(
         options rawOptions: HubRemoteConnectOptions,
         projectId: String?,
         limit: Int
-    ) -> HubRemoteAutonomyPolicyOverridesResult {
+    ) -> HubRemoteRuntimeSurfaceOverridesResult {
         let opts = sanitize(rawOptions)
         var logs: [String] = []
 
@@ -4323,7 +5063,7 @@ actor HubPairingCoordinator {
         let clientKitSrc = clientKitHub.appendingPathComponent("src", isDirectory: true)
 
         guard FileManager.default.fileExists(atPath: hubEnv.path) else {
-            return HubRemoteAutonomyPolicyOverridesResult(
+            return HubRemoteRuntimeSurfaceOverridesResult(
                 ok: false,
                 source: "hub_runtime_grpc",
                 updatedAtMs: 0,
@@ -4333,7 +5073,7 @@ actor HubPairingCoordinator {
             )
         }
         guard FileManager.default.fileExists(atPath: clientKitSrc.path) else {
-            return HubRemoteAutonomyPolicyOverridesResult(
+            return HubRemoteRuntimeSurfaceOverridesResult(
                 ok: false,
                 source: "hub_runtime_grpc",
                 updatedAtMs: 0,
@@ -4347,24 +5087,24 @@ actor HubPairingCoordinator {
         let merged = mergedAxhubEnv(options: opts, extra: exported)
         let nodeBin = resolveNodeExecutable(clientKitBaseDir: clientKitBase, env: merged)
         guard let nodeBin else {
-            return HubRemoteAutonomyPolicyOverridesResult(
+            return HubRemoteRuntimeSurfaceOverridesResult(
                 ok: false,
                 source: "hub_runtime_grpc",
                 updatedAtMs: 0,
                 items: [],
                 reasonCode: "node_missing",
-                logLines: ["missing node runtime for remote autonomy policy overrides"]
+                logLines: ["missing node runtime for remote runtime surface overrides"]
             )
         }
 
         var scriptEnv = merged
-        scriptEnv["XTERMINAL_AUTONOMY_OVERRIDE_PROJECT_ID"] = projectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        scriptEnv["XTERMINAL_AUTONOMY_OVERRIDE_LIMIT"] = String(max(1, min(500, limit)))
+        scriptEnv["XTERMINAL_RUNTIME_SURFACE_OVERRIDE_PROJECT_ID"] = projectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        scriptEnv["XTERMINAL_RUNTIME_SURFACE_OVERRIDE_LIMIT"] = String(max(1, min(500, limit)))
 
         let command = [nodeBin, "--input-type=module", "-"].joined(separator: " ")
         func runScript() -> StepOutput {
             do {
-                let script = remoteAutonomyPolicyOverridesScriptSource()
+                let script = remoteRuntimeSurfaceOverridesScriptSource()
                 let result = try ProcessCapture.run(
                     nodeBin,
                     ["--input-type=module", "-"],
@@ -4392,9 +5132,12 @@ actor HubPairingCoordinator {
 
         guard let jsonLine = extractTrailingJSONObjectLine(step.output),
               let data = jsonLine.data(using: .utf8),
-              let decoded = try? JSONDecoder().decode(RemoteAutonomyPolicyOverridesScriptResult.self, from: data) else {
-            let fallback = inferFailureCode(from: step.output, fallback: "remote_autonomy_policy_overrides_failed")
-            return HubRemoteAutonomyPolicyOverridesResult(
+              let decoded = try? JSONDecoder().decode(RemoteRuntimeSurfaceOverridesScriptResult.self, from: data) else {
+            let fallback = inferFailureCode(
+                from: step.output,
+                fallback: HubRemoteRuntimeSurfaceCompatContract.failureReasonCode
+            )
+            return HubRemoteRuntimeSurfaceOverridesResult(
                 ok: false,
                 source: "hub_runtime_grpc",
                 updatedAtMs: 0,
@@ -4407,16 +5150,16 @@ actor HubPairingCoordinator {
         let reason = nonEmpty(decoded.errorCode)
             ?? nonEmpty(decoded.reason)
             ?? nonEmpty(decoded.errorMessage)
-            ?? ((decoded.ok ?? false) ? nil : "remote_autonomy_policy_overrides_failed")
+            ?? ((decoded.ok ?? false) ? nil : HubRemoteRuntimeSurfaceCompatContract.failureReasonCode)
 
-        let items: [HubRemoteAutonomyPolicyOverrideItem] = (decoded.items ?? []).compactMap { row in
+        let items: [HubRemoteRuntimeSurfaceOverrideItem] = (decoded.items ?? []).compactMap { row in
             let projectId = row.projectId.trimmingCharacters(in: .whitespacesAndNewlines)
             let rawMode = row.overrideMode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             guard !projectId.isEmpty,
-                  let overrideMode = AXProjectAutonomyHubOverrideMode(rawValue: rawMode) else {
+                  let overrideMode = AXProjectRuntimeSurfaceHubOverrideMode(rawValue: rawMode) else {
                 return nil
             }
-            return HubRemoteAutonomyPolicyOverrideItem(
+            return HubRemoteRuntimeSurfaceOverrideItem(
                 projectId: projectId,
                 overrideMode: overrideMode,
                 updatedAtMs: max(0, row.updatedAtMs ?? 0),
@@ -4425,13 +5168,26 @@ actor HubPairingCoordinator {
             )
         }
 
-        return HubRemoteAutonomyPolicyOverridesResult(
+        return HubRemoteRuntimeSurfaceOverridesResult(
             ok: decoded.ok ?? false,
             source: nonEmpty(decoded.source) ?? "hub_runtime_grpc",
             updatedAtMs: max(0, decoded.updatedAtMs ?? 0),
             items: items,
             reasonCode: reason?.replacingOccurrences(of: " ", with: "_"),
             logLines: logs
+        )
+    }
+
+    @available(*, deprecated, message: "Use fetchRemoteRuntimeSurfaceOverrides(options:projectId:limit:)")
+    func fetchRemoteAutonomyPolicyOverrides(
+        options rawOptions: HubRemoteConnectOptions,
+        projectId: String?,
+        limit: Int
+    ) -> HubRemoteAutonomyPolicyOverridesResult {
+        fetchRemoteRuntimeSurfaceOverrides(
+            options: rawOptions,
+            projectId: projectId,
+            limit: limit
         )
     }
 
@@ -6005,6 +6761,30 @@ actor HubPairingCoordinator {
         )
     }
 
+    nonisolated static func normalizedRemoteReasonCodeForTesting(
+        _ rawReason: String?,
+        stepOutput: String = "",
+        fallback: String = "remote_chat_failed"
+    ) -> String {
+        normalizedRemoteReasonCode(
+            rawReason: rawReason,
+            stepOutput: stepOutput,
+            fallback: fallback
+        )
+    }
+
+    nonisolated static func inferredReusableInternetHostForTesting(
+        _ host: String?,
+        hubInstanceID: String? = nil,
+        lanDiscoveryName: String? = nil
+    ) -> String? {
+        inferredReusableInternetHostValue(
+            host,
+            hubInstanceID: hubInstanceID,
+            lanDiscoveryName: lanDiscoveryName
+        )
+    }
+
     private struct RemoteNetworkGrantScriptResult: Codable {
         var ok: Bool?
         var decision: String?
@@ -6079,6 +6859,9 @@ actor HubPairingCoordinator {
         var sourceID: String?
         var packageSHA256: String?
         var installHint: String?
+        var riskLevel: String?
+        var requiresGrant: Bool?
+        var sideEffectClass: String?
 
         enum CodingKeys: String, CodingKey {
             case skillID = "skill_id"
@@ -6090,10 +6873,47 @@ actor HubPairingCoordinator {
             case sourceID = "source_id"
             case packageSHA256 = "package_sha256"
             case installHint = "install_hint"
+            case riskLevel = "risk_level"
+            case requiresGrant = "requires_grant"
+            case sideEffectClass = "side_effect_class"
         }
     }
 
     private struct RemoteSkillsSearchScriptResult: Codable {
+        struct OfficialSkillChannelStatus: Codable {
+            var channelID: String?
+            var status: String?
+            var updatedAtMs: Int64?
+            var lastAttemptAtMs: Int64?
+            var lastSuccessAtMs: Int64?
+            var skillCount: Int?
+            var errorCode: String?
+            var maintenanceEnabled: Bool?
+            var maintenanceIntervalMs: Int64?
+            var maintenanceLastRunAtMs: Int64?
+            var maintenanceSourceKind: String?
+            var lastTransitionAtMs: Int64?
+            var lastTransitionKind: String?
+            var lastTransitionSummary: String?
+
+            enum CodingKeys: String, CodingKey {
+                case channelID = "channel_id"
+                case status
+                case updatedAtMs = "updated_at_ms"
+                case lastAttemptAtMs = "last_attempt_at_ms"
+                case lastSuccessAtMs = "last_success_at_ms"
+                case skillCount = "skill_count"
+                case errorCode = "error_code"
+                case maintenanceEnabled = "maintenance_enabled"
+                case maintenanceIntervalMs = "maintenance_interval_ms"
+                case maintenanceLastRunAtMs = "maintenance_last_run_at_ms"
+                case maintenanceSourceKind = "maintenance_source_kind"
+                case lastTransitionAtMs = "last_transition_at_ms"
+                case lastTransitionKind = "last_transition_kind"
+                case lastTransitionSummary = "last_transition_summary"
+            }
+        }
+
         var ok: Bool?
         var source: String?
         var updatedAtMs: Int64?
@@ -6101,6 +6921,7 @@ actor HubPairingCoordinator {
         var reason: String?
         var errorCode: String?
         var errorMessage: String?
+        var officialChannelStatus: OfficialSkillChannelStatus?
 
         enum CodingKeys: String, CodingKey {
             case ok
@@ -6110,6 +6931,7 @@ actor HubPairingCoordinator {
             case reason
             case errorCode = "error_code"
             case errorMessage = "error_message"
+            case officialChannelStatus = "official_channel_status"
         }
     }
 
@@ -6308,6 +7130,66 @@ actor HubPairingCoordinator {
             case source
             case canonicalEntries = "canonical_entries"
             case workingEntries = "working_entries"
+            case reason
+            case errorCode = "error_code"
+            case errorMessage = "error_message"
+        }
+    }
+
+    private struct RemoteMemoryRetrievalScriptItem: Codable {
+        var ref: String?
+        var sourceKind: String?
+        var summary: String?
+        var snippet: String?
+        var score: Double?
+        var redacted: Bool?
+
+        enum CodingKeys: String, CodingKey {
+            case ref
+            case sourceKind = "source_kind"
+            case summary
+            case snippet
+            case score
+            case redacted
+        }
+    }
+
+    private struct RemoteMemoryRetrievalScriptResult: Codable {
+        var ok: Bool?
+        var schemaVersion: String?
+        var requestId: String?
+        var status: String?
+        var resolvedScope: String?
+        var source: String?
+        var scope: String?
+        var auditRef: String?
+        var reasonCode: String?
+        var denyCode: String?
+        var results: [RemoteMemoryRetrievalScriptItem]?
+        var truncated: Bool?
+        var budgetUsedChars: Int?
+        var truncatedItems: Int?
+        var redactedItems: Int?
+        var reason: String?
+        var errorCode: String?
+        var errorMessage: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case schemaVersion = "schema_version"
+            case requestId = "request_id"
+            case status
+            case resolvedScope = "resolved_scope"
+            case source
+            case scope
+            case auditRef = "audit_ref"
+            case reasonCode = "reason_code"
+            case denyCode = "deny_code"
+            case results
+            case truncated
+            case budgetUsedChars = "budget_used_chars"
+            case truncatedItems = "truncated_items"
+            case redactedItems = "redacted_items"
             case reason
             case errorCode = "error_code"
             case errorMessage = "error_message"
@@ -6548,7 +7430,7 @@ actor HubPairingCoordinator {
         }
     }
 
-    private struct RemoteAutonomyPolicyOverrideRow: Codable {
+    private struct RemoteRuntimeSurfaceOverrideRow: Codable {
         var projectId: String
         var overrideMode: String
         var updatedAtMs: Double?
@@ -6564,11 +7446,11 @@ actor HubPairingCoordinator {
         }
     }
 
-    private struct RemoteAutonomyPolicyOverridesScriptResult: Codable {
+    private struct RemoteRuntimeSurfaceOverridesScriptResult: Codable {
         var ok: Bool?
         var source: String?
         var updatedAtMs: Double?
-        var items: [RemoteAutonomyPolicyOverrideRow]?
+        var items: [RemoteRuntimeSurfaceOverrideRow]?
         var reason: String?
         var errorCode: String?
         var errorMessage: String?
@@ -6838,6 +7720,7 @@ actor HubPairingCoordinator {
         out.deviceName = device.isEmpty ? Host.current().localizedName ?? "X-Terminal" : device
         out.internetHost = options.internetHost.trimmingCharacters(in: .whitespacesAndNewlines)
         out.axhubctlPath = options.axhubctlPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        out.stateDir = options.stateDir ?? defaultStateDir()
         return out
     }
 
@@ -6923,7 +7806,7 @@ actor HubPairingCoordinator {
 
     private func orderedPairingPortCandidates(_ preferred: Int) -> [Int] {
         var out: [Int] = []
-        for p in [preferred, 50052, 50053] {
+        for p in [preferred] + Array(50052...50056) {
             let clamped = max(1, min(65_535, p))
             if !out.contains(clamped) {
                 out.append(clamped)
@@ -8385,6 +9268,24 @@ async function main() {
   });
 
   const results = Array.isArray(resp?.results) ? resp.results : [];
+  const officialChannelStatus = resp?.official_channel_status && typeof resp.official_channel_status === 'object'
+    ? {
+      channel_id: safe(resp.official_channel_status.channel_id || ''),
+      status: safe(resp.official_channel_status.status || ''),
+      updated_at_ms: Number(resp.official_channel_status.updated_at_ms || 0),
+      last_attempt_at_ms: Number(resp.official_channel_status.last_attempt_at_ms || 0),
+      last_success_at_ms: Number(resp.official_channel_status.last_success_at_ms || 0),
+      skill_count: Number(resp.official_channel_status.skill_count || 0),
+      error_code: safe(resp.official_channel_status.error_code || ''),
+      maintenance_enabled: !!resp.official_channel_status.maintenance_enabled,
+      maintenance_interval_ms: Number(resp.official_channel_status.maintenance_interval_ms || 0),
+      maintenance_last_run_at_ms: Number(resp.official_channel_status.maintenance_last_run_at_ms || 0),
+      maintenance_source_kind: safe(resp.official_channel_status.maintenance_source_kind || ''),
+      last_transition_at_ms: Number(resp.official_channel_status.last_transition_at_ms || 0),
+      last_transition_kind: safe(resp.official_channel_status.last_transition_kind || ''),
+      last_transition_summary: safe(resp.official_channel_status.last_transition_summary || ''),
+    }
+    : null;
   out({
     ok: true,
     source: 'hub_runtime_grpc',
@@ -8399,7 +9300,11 @@ async function main() {
       source_id: safe(row?.source_id || ''),
       package_sha256: safe(row?.package_sha256 || ''),
       install_hint: safe(row?.install_hint || ''),
+      risk_level: safe(row?.risk_level || ''),
+      requires_grant: !!row?.requires_grant,
+      side_effect_class: safe(row?.side_effect_class || ''),
     })),
+    official_channel_status: officialChannelStatus,
   });
 }
 
@@ -8722,6 +9627,9 @@ async function main() {
         source_id: safe(row?.skill?.source_id || ''),
         package_sha256: safe(row?.skill?.package_sha256 || ''),
         install_hint: safe(row?.skill?.install_hint || ''),
+        risk_level: safe(row?.skill?.risk_level || ''),
+        requires_grant: !!row?.skill?.requires_grant,
+        side_effect_class: safe(row?.skill?.side_effect_class || ''),
       },
     })),
   });
@@ -9628,6 +10536,162 @@ main().catch((err) => {
 """#
     }
 
+    private func remoteSupervisorConversationAppendScriptSource() -> String {
+        #"""
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
+
+const safe = (v) => String(v ?? '').trim();
+const out = (obj) => {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+};
+
+function reqClientFromEnv() {
+  return {
+    device_id: safe(process.env.HUB_DEVICE_ID || 'terminal_device'),
+    user_id: safe(process.env.HUB_USER_ID || ''),
+    app_id: safe(process.env.HUB_APP_ID || 'x_terminal'),
+    project_id: '',
+    session_id: safe(process.env.HUB_SESSION_ID || ''),
+  };
+}
+
+function metadataFromEnv() {
+  const tok = safe(process.env.HUB_CLIENT_TOKEN || '');
+  const md = new grpc.Metadata();
+  if (tok) md.set('authorization', `Bearer ${tok}`);
+  return md;
+}
+
+async function resolveProtoPath() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'proto_path.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.resolveHubProtoPath === 'function') {
+        const p = safe(mod.resolveHubProtoPath(process.env));
+        if (p) return p;
+      }
+    } catch {}
+  }
+  const candidates = [
+    path.resolve(process.cwd(), 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', '..', 'protocol', 'hub_protocol_v1.proto'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+function loadProto(protoPath) {
+  const packageDef = protoLoader.loadSync(protoPath, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+  });
+  const loaded = grpc.loadPackageDefinition(packageDef);
+  return loaded?.ax?.hub?.v1;
+}
+
+async function makeClientCreds() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'client_credentials.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.makeClientCredentials === 'function') {
+        const built = mod.makeClientCredentials(process.env);
+        if (built?.creds) return { creds: built.creds, options: built.options || {} };
+      }
+    } catch {}
+  }
+  return { creds: grpc.credentials.createInsecure(), options: {} };
+}
+
+async function getOrCreateThread(memoryClient, md, client, threadKey) {
+  const resp = await new Promise((resolve, reject) => {
+    memoryClient.GetOrCreateThread({ client, thread_key: threadKey }, md, (err, out) => {
+      if (err) reject(err);
+      else resolve(out || {});
+    });
+  });
+  return resp?.thread || null;
+}
+
+async function appendTurns(memoryClient, md, client, threadId, requestId, createdAtMs, userText, assistantText) {
+  const messages = [];
+  if (userText) messages.push({ role: 'user', content: userText });
+  if (assistantText) messages.push({ role: 'assistant', content: assistantText });
+  if (messages.length === 0) throw new Error('turn_empty');
+
+  return await new Promise((resolve, reject) => {
+    memoryClient.AppendTurns(
+      {
+        request_id: requestId,
+        client,
+        thread_id: threadId,
+        messages,
+        created_at_ms: createdAtMs,
+        allow_private: false,
+      },
+      md,
+      (err, out) => {
+        if (err) reject(err);
+        else resolve(out || {});
+      }
+    );
+  });
+}
+
+async function main() {
+  const threadKey = safe(process.env.XTERMINAL_SUPERVISOR_CONV_THREAD_KEY || '');
+  const requestId = safe(process.env.XTERMINAL_SUPERVISOR_CONV_REQUEST_ID || '');
+  const userText = safe(process.env.XTERMINAL_SUPERVISOR_CONV_USER_TEXT || '');
+  const assistantText = safe(process.env.XTERMINAL_SUPERVISOR_CONV_ASSISTANT_TEXT || '');
+  const createdAtMsRaw = Number.parseInt(safe(process.env.XTERMINAL_SUPERVISOR_CONV_CREATED_AT_MS || `${Date.now()}`), 10);
+  const createdAtMs = Number.isFinite(createdAtMsRaw) ? createdAtMsRaw : Date.now();
+
+  if (!threadKey) throw new Error('thread_key_empty');
+  if (!requestId) throw new Error('request_id_empty');
+  if (!userText && !assistantText) throw new Error('turn_empty');
+
+  const protoPath = await resolveProtoPath();
+  const proto = loadProto(protoPath);
+  if (!proto?.HubMemory) throw new Error('hub_memory_missing');
+
+  const host = safe(process.env.HUB_HOST || '127.0.0.1');
+  const port = Number.parseInt(safe(process.env.HUB_PORT || '50051'), 10) || 50051;
+  const addr = `${host}:${port}`;
+  const client = reqClientFromEnv();
+
+  const { creds, options } = await makeClientCreds();
+  const memoryClient = new proto.HubMemory(addr, creds, options);
+  const md = metadataFromEnv();
+
+  const th = await getOrCreateThread(memoryClient, md, client, threadKey);
+  const threadId = safe(th?.thread_id || '');
+  if (!threadId) throw new Error('thread_missing');
+
+  await appendTurns(memoryClient, md, client, threadId, requestId, createdAtMs, userText, assistantText);
+  out({ ok: true });
+}
+
+main().catch((err) => {
+  const msg = safe(err?.message || err);
+  out({ ok: false, error_code: msg || 'remote_supervisor_conversation_append_failed', error_message: msg || 'remote_supervisor_conversation_append_failed' });
+  process.exit(1);
+});
+"""#
+    }
+
     private func remoteProjectCanonicalMemoryUpsertScriptSource() -> String {
         #"""
 import fs from 'node:fs';
@@ -10146,6 +11210,184 @@ main().catch((err) => {
 """#
     }
 
+    private func remoteMemoryRetrievalScriptSource() -> String {
+        #"""
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
+
+const safe = (v) => String(v ?? '').trim();
+const out = (obj) => {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+};
+
+function reqClientFromEnv(projectIdOverride) {
+  const projectId = projectIdOverride === undefined || projectIdOverride === null
+    ? safe(process.env.HUB_PROJECT_ID || '')
+    : safe(projectIdOverride);
+  return {
+    device_id: safe(process.env.HUB_DEVICE_ID || 'terminal_device'),
+    user_id: safe(process.env.HUB_USER_ID || ''),
+    app_id: safe(process.env.HUB_APP_ID || 'x_terminal'),
+    project_id: projectId,
+    session_id: safe(process.env.HUB_SESSION_ID || ''),
+  };
+}
+
+function metadataFromEnv() {
+  const tok = safe(process.env.HUB_CLIENT_TOKEN || '');
+  const md = new grpc.Metadata();
+  if (tok) md.set('authorization', `Bearer ${tok}`);
+  return md;
+}
+
+function parseJsonList(raw) {
+  const text = safe(raw);
+  if (!text) return [];
+  try {
+    const decoded = JSON.parse(text);
+    if (!Array.isArray(decoded)) return [];
+    return decoded.map((item) => safe(item)).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+async function resolveProtoPath() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'proto_path.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.resolveHubProtoPath === 'function') {
+        const p = safe(mod.resolveHubProtoPath(process.env));
+        if (p) return p;
+      }
+    } catch {}
+  }
+  const candidates = [
+    path.resolve(process.cwd(), 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', 'protocol', 'hub_protocol_v1.proto'),
+    path.resolve(process.cwd(), '..', '..', 'protocol', 'hub_protocol_v1.proto'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+function loadProto(protoPath) {
+  const packageDef = protoLoader.loadSync(protoPath, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+  });
+  const loaded = grpc.loadPackageDefinition(packageDef);
+  return loaded?.ax?.hub?.v1;
+}
+
+async function makeClientCreds() {
+  const srcDir = path.resolve(process.cwd(), 'src');
+  const helper = path.join(srcDir, 'client_credentials.js');
+  if (fs.existsSync(helper)) {
+    try {
+      const mod = await import(pathToFileURL(helper).href);
+      if (typeof mod.makeClientCredentials === 'function') {
+        const built = mod.makeClientCredentials(process.env);
+        if (built?.creds) return { creds: built.creds, options: built.options || {} };
+      }
+    } catch {}
+  }
+  return { creds: grpc.credentials.createInsecure(), options: {} };
+}
+
+async function retrieveMemory(memoryClient, md, payload) {
+  return await new Promise((resolve, reject) => {
+    memoryClient.RetrieveMemory(payload, md, (err, out) => {
+      if (err) reject(err);
+      else resolve(out || {});
+    });
+  });
+}
+
+async function main() {
+  const protoPath = await resolveProtoPath();
+  const proto = loadProto(protoPath);
+  if (!proto?.HubMemory) throw new Error('hub_memory_missing');
+
+  const host = safe(process.env.HUB_HOST || '127.0.0.1');
+  const port = Number.parseInt(safe(process.env.HUB_PORT || '50051'), 10) || 50051;
+  const addr = `${host}:${port}`;
+
+  const projectId = safe(process.env.XTERMINAL_MEM_RETR_PROJECT_ID || process.env.HUB_PROJECT_ID || '');
+  const client = reqClientFromEnv(projectId);
+  const payload = {
+    schema_version: safe(process.env.XTERMINAL_MEM_RETR_SCHEMA_VERSION || 'xt.memory_retrieval_request.v1'),
+    request_id: safe(process.env.XTERMINAL_MEM_RETR_REQUEST_ID || ''),
+    client,
+    scope: safe(process.env.XTERMINAL_MEM_RETR_SCOPE || 'current_project'),
+    requester_role: safe(process.env.XTERMINAL_MEM_RETR_REQUESTER_ROLE || 'chat'),
+    mode: safe(process.env.XTERMINAL_MEM_RETR_MODE || 'project_chat'),
+    project_id: projectId,
+    cross_project_target_ids: parseJsonList(process.env.XTERMINAL_MEM_RETR_CROSS_PROJECT_TARGET_IDS_JSON || '[]'),
+    project_root: safe(process.env.XTERMINAL_MEM_RETR_PROJECT_ROOT || ''),
+    display_name: safe(process.env.XTERMINAL_MEM_RETR_DISPLAY_NAME || ''),
+    query: safe(process.env.XTERMINAL_MEM_RETR_QUERY || ''),
+    latest_user: safe(process.env.XTERMINAL_MEM_RETR_LATEST_USER || ''),
+    allowed_layers: parseJsonList(process.env.XTERMINAL_MEM_RETR_ALLOWED_LAYERS_JSON || '[]'),
+    retrieval_kind: safe(process.env.XTERMINAL_MEM_RETR_RETRIEVAL_KIND || ''),
+    max_results: Number.parseInt(safe(process.env.XTERMINAL_MEM_RETR_MAX_RESULTS || '3'), 10) || 3,
+    reason: safe(process.env.XTERMINAL_MEM_RETR_REASON || ''),
+    require_explainability: ['1', 'true', 'yes'].includes(safe(process.env.XTERMINAL_MEM_RETR_REQUIRE_EXPLAINABILITY || '').toLowerCase()),
+    requested_kinds: parseJsonList(process.env.XTERMINAL_MEM_RETR_REQUESTED_KINDS_JSON || '[]'),
+    explicit_refs: parseJsonList(process.env.XTERMINAL_MEM_RETR_EXPLICIT_REFS_JSON || '[]'),
+    max_snippets: Number.parseInt(safe(process.env.XTERMINAL_MEM_RETR_MAX_SNIPPETS || '3'), 10) || 3,
+    max_snippet_chars: Number.parseInt(safe(process.env.XTERMINAL_MEM_RETR_MAX_SNIPPET_CHARS || '420'), 10) || 420,
+    audit_ref: safe(process.env.XTERMINAL_MEM_RETR_AUDIT_REF || ''),
+  };
+
+  const { creds, options } = await makeClientCreds();
+  const memoryClient = new proto.HubMemory(addr, creds, options);
+  const md = metadataFromEnv();
+  const response = await retrieveMemory(memoryClient, md, payload);
+
+  out({
+    ok: true,
+    ...response,
+  });
+}
+
+main().catch((err) => {
+  const msg = safe(err?.message || err);
+  out({
+    ok: false,
+    schema_version: 'xt.memory_retrieval_result.v1',
+    request_id: safe(process.env.XTERMINAL_MEM_RETR_REQUEST_ID || ''),
+    status: '',
+    resolved_scope: safe(process.env.XTERMINAL_MEM_RETR_SCOPE || 'current_project'),
+    source: 'hub_memory_retrieval_grpc_v1',
+    scope: safe(process.env.XTERMINAL_MEM_RETR_SCOPE || 'current_project'),
+    audit_ref: safe(process.env.XTERMINAL_MEM_RETR_AUDIT_REF || ''),
+    reason: msg || 'remote_memory_retrieval_failed',
+    reason_code: msg || 'remote_memory_retrieval_failed',
+    deny_code: '',
+    results: [],
+    truncated: false,
+    budget_used_chars: 0,
+    truncated_items: 0,
+    redacted_items: 0,
+    error_code: msg || 'remote_memory_retrieval_failed',
+    error_message: msg || 'remote_memory_retrieval_failed',
+  });
+  process.exit(1);
+});
+"""#
+    }
+
     private func remotePendingGrantRequestsScriptSource() -> String {
         #"""
 import fs from 'node:fs';
@@ -10491,7 +11733,7 @@ main().catch((err) => {
 """#
     }
 
-    private func remoteAutonomyPolicyOverridesScriptSource() -> String {
+    private func remoteRuntimeSurfaceOverridesScriptSource() -> String {
         #"""
 import fs from 'node:fs';
 import path from 'node:path';
@@ -10587,8 +11829,19 @@ function asMs(v, fallback = 0) {
 }
 
 async function main() {
-  const projectId = safe(process.env.XTERMINAL_AUTONOMY_OVERRIDE_PROJECT_ID || '');
-  const limitRaw = Number.parseInt(safe(process.env.XTERMINAL_AUTONOMY_OVERRIDE_LIMIT || '200'), 10);
+  const projectId = safe(
+    process.env.XTERMINAL_RUNTIME_SURFACE_OVERRIDE_PROJECT_ID
+      || process.env.\#(HubRemoteRuntimeSurfaceCompatContract.legacyProjectIdEnv)
+      || ''
+  );
+  const limitRaw = Number.parseInt(
+    safe(
+      process.env.XTERMINAL_RUNTIME_SURFACE_OVERRIDE_LIMIT
+        || process.env.\#(HubRemoteRuntimeSurfaceCompatContract.legacyLimitEnv)
+        || '200'
+    ),
+    10
+  );
   const limit = Math.max(1, Math.min(500, Number.isFinite(limitRaw) ? limitRaw : 200));
 
   const protoPath = await resolveProtoPath();
@@ -10604,7 +11857,7 @@ async function main() {
   const runtimeClient = new proto.HubRuntime(addr, creds, options);
 
   const resp = await new Promise((resolve, reject) => {
-    runtimeClient.GetAutonomyPolicyOverrides(
+    runtimeClient[\#(String(reflecting: HubRemoteRuntimeSurfaceCompatContract.grpcMethod))](
       {
         client,
         project_id: projectId,
@@ -10639,7 +11892,7 @@ async function main() {
 main().catch((err) => {
   const msg = safe(err?.message || err);
   const lower = msg.toLowerCase();
-  const code = lower.includes('unimplemented') ? 'hub_runtime_unimplemented' : (msg || 'remote_autonomy_policy_overrides_failed');
+  const code = lower.includes('unimplemented') ? 'hub_runtime_unimplemented' : (msg || '\#(HubRemoteRuntimeSurfaceCompatContract.failureReasonCode)');
   out({
     ok: false,
     source: 'hub_runtime_grpc',
@@ -10652,6 +11905,11 @@ main().catch((err) => {
   process.exit(1);
 });
 """#
+    }
+
+    @available(*, deprecated, message: "Use remoteRuntimeSurfaceOverridesScriptSource()")
+    private func remoteAutonomyPolicyOverridesScriptSource() -> String {
+        remoteRuntimeSurfaceOverridesScriptSource()
     }
 
     private func remotePendingGrantActionScriptSource() -> String {
@@ -12626,16 +13884,83 @@ main().catch((err) => {
         callback?(HubRemoteProgressEvent(phase: phase, state: state, detail: detail))
     }
 
+    private func normalizedRemoteReasonCode(
+        rawReason: String?,
+        stepOutput: String,
+        fallback: String
+    ) -> String {
+        Self.normalizedRemoteReasonCode(
+            rawReason: rawReason,
+            stepOutput: stepOutput,
+            fallback: fallback
+        )
+    }
+
+    private nonisolated static func normalizedRemoteReasonCode(
+        rawReason: String?,
+        stepOutput: String,
+        fallback: String
+    ) -> String {
+        let trimmedRaw = rawReason?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if let sanitized = sanitizedReasonToken(trimmedRaw),
+           isCanonicalReasonToken(trimmedRaw) {
+            if sanitized == "14_unavailable" {
+                return "grpc_unavailable"
+            }
+            return sanitized
+        }
+
+        if !trimmedRaw.isEmpty {
+            let inferredFromRaw = inferFailureCodeFromText(trimmedRaw, fallback: fallback)
+            if inferredFromRaw != fallback || stepOutput.isEmpty {
+                return inferredFromRaw
+            }
+        }
+
+        return inferFailureCodeFromText(stepOutput, fallback: fallback)
+    }
+
+    private nonisolated static func sanitizedReasonToken(_ raw: String?) -> String? {
+        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return nil }
+        var token = trimmed
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+        while token.contains("__") {
+            token = token.replacingOccurrences(of: "__", with: "_")
+        }
+        token = token.trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+        return token.isEmpty ? nil : token
+    }
+
+    private nonisolated static func isCanonicalReasonToken(_ raw: String) -> Bool {
+        guard !raw.isEmpty, raw.count <= 80 else { return false }
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+        return raw.rangeOfCharacter(from: allowed.inverted) == nil
+    }
+
     private func inferFailureCode(from output: String, fallback: String) -> String {
+        Self.inferFailureCodeFromText(output, fallback: fallback)
+    }
+
+    private nonisolated static func inferFailureCodeFromText(_ output: String, fallback: String) -> String {
         let text = output.lowercased()
         if text.isEmpty { return fallback }
-        if let done = extractRegexGroup(text, pattern: #"(?m)^\[done\].*reason=([a-z0-9_.-]+)\s*$"#) {
+        if text.contains("alert certificate required")
+            || text.contains("tlsv13 alert certificate required")
+            || text.contains("peer did not return a certificate")
+            || text.contains("client certificate required")
+            || text.contains("certificate required") {
+            return "mtls_client_certificate_required"
+        }
+        if let done = extractRegexGroup(in: text, pattern: #"(?m)^\[done\].*reason=([a-z0-9_.-]+)\s*$"#) {
             return done.replacingOccurrences(of: "-", with: "_")
         }
-        if let errCode = extractRegexGroup(text, pattern: #"(?m)^\[error\]\s*([a-z0-9_.-]+)\s*:"#) {
+        if let errCode = extractRegexGroup(in: text, pattern: #"(?m)^\[error\]\s*([a-z0-9_.-]+)\s*:"#) {
             return errCode.replacingOccurrences(of: "-", with: "_")
         }
-        if let fromParens = extractParenReason(text, prefix: "connect failed (") {
+        if let fromParens = extractParenReason(in: text, prefix: "connect failed (") {
             return fromParens
         }
         if text.contains("bridge_disabled") { return "bridge_disabled" }
@@ -12655,6 +13980,15 @@ main().catch((err) => {
             return "source_ip_not_allowed"
         }
         if text.contains("grpc_unavailable") { return "grpc_unavailable" }
+        if text.contains("14 unavailable") || text.contains("14_unavailable") {
+            return "grpc_unavailable"
+        }
+        if text.contains("no connection established") {
+            return "grpc_unavailable"
+        }
+        if text.contains("failed to connect to all addresses") {
+            return "grpc_unavailable"
+        }
         if text.contains("killed: 9")
             || text.contains("(exit=137)")
             || text.contains("(exit=134)")
@@ -12788,6 +14122,10 @@ main().catch((err) => {
     }
 
     private func extractParenReason(_ lowerText: String, prefix: String) -> String? {
+        Self.extractParenReason(in: lowerText, prefix: prefix)
+    }
+
+    private nonisolated static func extractParenReason(in lowerText: String, prefix: String) -> String? {
         guard let start = lowerText.range(of: prefix) else { return nil }
         let tail = lowerText[start.upperBound...]
         guard let close = tail.firstIndex(of: ")") else { return nil }
@@ -12797,6 +14135,10 @@ main().catch((err) => {
     }
 
     private func extractRegexGroup(_ text: String, pattern: String) -> String? {
+        Self.extractRegexGroup(in: text, pattern: pattern)
+    }
+
+    private nonisolated static func extractRegexGroup(in text: String, pattern: String) -> String? {
         guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
         let ns = text as NSString
         let range = NSRange(location: 0, length: ns.length)
@@ -12831,16 +14173,81 @@ main().catch((err) => {
         return s.isEmpty ? nil : s
     }
 
+    private func hasInstalledClientKit(stateDir: URL?) -> Bool {
+        let base = stateDir ?? defaultStateDir()
+        let marker = base
+            .appendingPathComponent("client_kit", isDirectory: true)
+            .appendingPathComponent("hub_grpc_server", isDirectory: true)
+            .appendingPathComponent("src", isDirectory: true)
+            .appendingPathComponent("list_models_client.js", isDirectory: false)
+        return FileManager.default.fileExists(atPath: marker.path)
+    }
+
+    private func connectRepairHosts(
+        primaryHubHost: String?,
+        options: HubRemoteConnectOptions
+    ) -> [String] {
+        var out: [String] = []
+        func append(_ raw: String?) {
+            guard let raw = nonEmpty(raw) else { return }
+            let host = normalizedConnectHostCandidate(raw)
+            guard !host.isEmpty, !out.contains(host) else { return }
+            out.append(host)
+        }
+
+        append(primaryHubHost)
+        append(options.internetHost)
+
+        let cached = loadCachedPairingInfo(stateDir: options.stateDir)
+        append(cached.host)
+        append(cached.internetHost)
+
+        if out.isEmpty || out.contains(where: { isCurrentMachineHost($0) }) || out.contains("127.0.0.1") {
+            append("127.0.0.1")
+        }
+        return out
+    }
+
+    private func maybeInstallClientKit(
+        options opts: HubRemoteConnectOptions,
+        hosts: [String],
+        env customEnv: [String: String],
+        logs: inout [String]
+    ) -> Bool {
+        guard !hosts.isEmpty else { return false }
+        for host in hosts {
+            let install = runAxhubctl(
+                args: [
+                    "install-client",
+                    "--hub", host,
+                    "--pairing-port", "\(opts.pairingPort)",
+                ],
+                options: opts,
+                env: customEnv,
+                timeoutSec: 120.0
+            )
+            appendStepLogs(into: &logs, step: install)
+            if install.exitCode == 0 {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func normalizedConnectHostCandidate(_ host: String) -> String {
+        isCurrentMachineHost(host) ? "127.0.0.1" : host
+    }
+
     private func preferredBootstrapHub(
         discoveredHubHost: String?,
         options: HubRemoteConnectOptions
     ) -> String {
         if let discoveredHubHost, !discoveredHubHost.isEmpty {
-            return discoveredHubHost
+            return normalizedConnectHostCandidate(discoveredHubHost)
         }
         let internetHost = options.internetHost.trimmingCharacters(in: .whitespacesAndNewlines)
         if !internetHost.isEmpty {
-            return internetHost
+            return normalizedConnectHostCandidate(internetHost)
         }
         return "127.0.0.1"
     }
@@ -12848,6 +14255,7 @@ main().catch((err) => {
     private func shouldRequireConfiguredHubHost(options: HubRemoteConnectOptions) -> Bool {
         let configured = options.internetHost.trimmingCharacters(in: .whitespacesAndNewlines)
         if configured.isEmpty { return false }
+        if isCurrentMachineHost(configured) { return false }
         return !isLoopbackHost(configured)
     }
 
@@ -12855,6 +14263,9 @@ main().catch((err) => {
         let configured = normalizeHost(options.internetHost)
         guard !configured.isEmpty else { return true }
         guard let discoveredHost else { return false }
+        if isCurrentMachineHost(configured), isCurrentMachineHost(discoveredHost) {
+            return true
+        }
         return normalizeHost(discoveredHost) == configured
     }
 
@@ -12865,6 +14276,13 @@ main().catch((err) => {
     private func isLoopbackHost(_ host: String) -> Bool {
         let n = normalizeHost(host)
         return n == "localhost" || n == "127.0.0.1"
+    }
+
+    private func isCurrentMachineHost(_ host: String) -> Bool {
+        let normalized = normalizeHost(host)
+        if normalized.isEmpty { return false }
+        if isLoopbackHost(normalized) { return true }
+        return Self.currentMachineIPv4Hosts().contains(normalized)
     }
 
     private func makeEphemeralStateDir(prefix: String) -> URL? {
@@ -12884,10 +14302,630 @@ main().catch((err) => {
         try? FileManager.default.removeItem(at: dir)
     }
 
+    private func discoverHubOnLAN(
+        options: HubRemoteConnectOptions,
+        pairingPorts: [Int],
+        cachedPairing: HubCachedPairingInfo
+    ) async -> HubLANDiscoveryAttempt {
+        if shouldRequireConfiguredHubHost(options: options) {
+            return HubLANDiscoveryAttempt(candidate: nil, reasonCode: nil, candidates: [], logLines: [])
+        }
+
+        let bonjourResult = await discoverHubViaBonjour(
+            options: options,
+            cachedPairing: cachedPairing
+        )
+        if bonjourResult.candidate != nil || bonjourResult.reasonCode != nil {
+            return bonjourResult
+        }
+
+        let plan = Self.buildLANDiscoveryScanPlan()
+        guard !plan.hosts.isEmpty else {
+            return HubLANDiscoveryAttempt(
+                candidate: nil,
+                reasonCode: nil,
+                candidates: [],
+                logLines: ["[lan-discover] no active IPv4 subnets available for fallback scan."]
+            )
+        }
+
+        let prioritizedHosts = prioritizeLANHosts(plan.hosts, preferredHosts: [
+            cachedPairing.host,
+            options.internetHost
+        ])
+
+        let portCandidates = Array(Set(pairingPorts.map { max(1, min(65_535, $0)) })).sorted()
+        let summary = plan.networkSummaries.isEmpty
+            ? "unknown"
+            : plan.networkSummaries.joined(separator: ", ")
+        var logs = [
+            "[lan-discover] fallback subnet scan: networks=\(summary) hosts=\(prioritizedHosts.count)"
+        ]
+
+        for pairingPort in portCandidates {
+            let matches = await Self.collectLANDiscoveryMatches(
+                hosts: prioritizedHosts,
+                pairingPort: pairingPort,
+                timeoutSec: 0.35
+            )
+            let resolved = resolveDiscoveryCandidate(
+                matches.map {
+                    HubLANDiscoveryCandidate(
+                        host: $0.host,
+                        pairingPort: $0.pairingPort,
+                        grpcPort: $0.grpcPort,
+                        internetHost: $0.internetHost,
+                        hubInstanceID: $0.hubInstanceID,
+                        lanDiscoveryName: $0.lanDiscoveryName,
+                        logLines: []
+                    )
+                },
+                cachedPairing: cachedPairing,
+                configuredInternetHost: nonEmpty(options.internetHost),
+                source: "lan-discover",
+                ambiguousReasonCode: "lan_multiple_hubs_ambiguous"
+            )
+            logs.append(contentsOf: resolved.logLines)
+            if let candidate = resolved.candidate {
+                let discoveredInternetHost = nonEmpty(candidate.internetHost)
+                    ?? nonEmpty(cachedPairing.internetHost)
+                do {
+                    try persistDiscoveredPairingInfo(
+                        host: candidate.host,
+                        pairingPort: candidate.pairingPort,
+                        grpcPort: candidate.grpcPort,
+                        internetHost: discoveredInternetHost,
+                        hubInstanceID: candidate.hubInstanceID,
+                        lanDiscoveryName: candidate.lanDiscoveryName,
+                        options: options
+                    )
+                    logs.append("[lan-discover] cached host=\(candidate.host) pairing=\(candidate.pairingPort) grpc=\(candidate.grpcPort)")
+                } catch {
+                    logs.append("[lan-discover] cache_write_failed: \(error.localizedDescription)")
+                }
+                return HubLANDiscoveryAttempt(
+                    candidate: HubLANDiscoveryCandidate(
+                        host: candidate.host,
+                        pairingPort: candidate.pairingPort,
+                        grpcPort: candidate.grpcPort,
+                        internetHost: discoveredInternetHost,
+                        hubInstanceID: candidate.hubInstanceID,
+                        lanDiscoveryName: candidate.lanDiscoveryName,
+                        logLines: logs
+                    ),
+                    reasonCode: nil,
+                    candidates: [candidate],
+                    logLines: logs
+                )
+            }
+            if let reasonCode = resolved.reasonCode {
+                return HubLANDiscoveryAttempt(candidate: nil, reasonCode: reasonCode, candidates: resolved.candidates, logLines: logs)
+            }
+        }
+
+        logs.append("[lan-discover] no Hub responded on scanned subnets.")
+        return HubLANDiscoveryAttempt(candidate: nil, reasonCode: nil, candidates: [], logLines: logs)
+    }
+
+    private func discoverHubViaBonjour(
+        options: HubRemoteConnectOptions,
+        cachedPairing: HubCachedPairingInfo
+    ) async -> HubLANDiscoveryAttempt {
+        let outcome = await HubBonjourDiscovery.discover(timeoutSec: 1.6)
+        let resolved = resolveDiscoveryCandidate(
+            outcome.candidates.map {
+                HubLANDiscoveryCandidate(
+                    host: $0.host,
+                    pairingPort: $0.pairingPort,
+                    grpcPort: $0.grpcPort,
+                    internetHost: $0.internetHost,
+                    hubInstanceID: $0.hubInstanceID,
+                    lanDiscoveryName: $0.lanDiscoveryName,
+                    logLines: []
+                )
+            },
+            cachedPairing: cachedPairing,
+            configuredInternetHost: nonEmpty(options.internetHost),
+            source: "bonjour-discover",
+            ambiguousReasonCode: "bonjour_multiple_hubs_ambiguous"
+        )
+
+        guard let candidate = resolved.candidate else {
+            return HubLANDiscoveryAttempt(
+                candidate: nil,
+                reasonCode: resolved.reasonCode,
+                candidates: resolved.candidates,
+                logLines: resolved.logLines
+            )
+        }
+
+        let discoveredInternetHost = nonEmpty(candidate.internetHost)
+            ?? nonEmpty(cachedPairing.internetHost)
+        var logs = resolved.logLines
+        do {
+            try persistDiscoveredPairingInfo(
+                host: candidate.host,
+                pairingPort: candidate.pairingPort,
+                grpcPort: candidate.grpcPort,
+                internetHost: discoveredInternetHost,
+                hubInstanceID: candidate.hubInstanceID,
+                lanDiscoveryName: candidate.lanDiscoveryName,
+                options: options
+            )
+            logs.append("[bonjour-discover] cached host=\(candidate.host) pairing=\(candidate.pairingPort) grpc=\(candidate.grpcPort)")
+        } catch {
+            logs.append("[bonjour-discover] cache_write_failed: \(error.localizedDescription)")
+        }
+
+        return HubLANDiscoveryAttempt(
+            candidate: HubLANDiscoveryCandidate(
+                host: candidate.host,
+                pairingPort: candidate.pairingPort,
+                grpcPort: candidate.grpcPort,
+                internetHost: discoveredInternetHost,
+                hubInstanceID: candidate.hubInstanceID,
+                lanDiscoveryName: candidate.lanDiscoveryName,
+                logLines: logs
+            ),
+            reasonCode: nil,
+            candidates: [candidate],
+            logLines: logs
+        )
+    }
+
+    private func resolveDiscoveryCandidate(
+        _ rawCandidates: [HubLANDiscoveryCandidate],
+        cachedPairing: HubCachedPairingInfo,
+        configuredInternetHost: String?,
+        source: String,
+        ambiguousReasonCode: String
+    ) -> HubLANDiscoveryAttempt {
+        let candidates = deduplicatedDiscoveryCandidates(rawCandidates)
+        guard !candidates.isEmpty else {
+            return HubLANDiscoveryAttempt(candidate: nil, reasonCode: nil, candidates: [], logLines: [])
+        }
+
+        if candidates.count == 1, let candidate = candidates.first {
+            return HubLANDiscoveryAttempt(
+                candidate: candidate,
+                reasonCode: nil,
+                candidates: candidates,
+                logLines: ["[\(source)] selected \(describeDiscoveryCandidate(candidate))"]
+            )
+        }
+
+        if let pinnedHubInstanceID = normalizedDiscoveryToken(cachedPairing.hubInstanceID) {
+            let matches = candidates.filter {
+                normalizedDiscoveryToken($0.hubInstanceID) == pinnedHubInstanceID
+            }
+            if matches.count == 1, let match = matches.first {
+                return HubLANDiscoveryAttempt(
+                    candidate: match,
+                    reasonCode: nil,
+                    candidates: candidates,
+                    logLines: ["[\(source)] selected cached hub identity=\(pinnedHubInstanceID) -> \(describeDiscoveryCandidate(match))"]
+                )
+            }
+        }
+
+        let pinnedInternetHosts = [
+            normalizedHostToken(configuredInternetHost),
+            normalizedHostToken(cachedPairing.internetHost),
+        ].compactMap { $0 }
+
+        for pinnedInternetHost in pinnedInternetHosts {
+            let matches = candidates.filter {
+                normalizedHostToken($0.internetHost) == pinnedInternetHost
+            }
+            if matches.count == 1, let match = matches.first {
+                return HubLANDiscoveryAttempt(
+                    candidate: match,
+                    reasonCode: nil,
+                    candidates: candidates,
+                    logLines: ["[\(source)] selected pinned internet host=\(pinnedInternetHost) -> \(describeDiscoveryCandidate(match))"]
+                )
+            }
+        }
+
+        let rendered = candidates
+            .map { describeDiscoveryCandidate($0) }
+            .joined(separator: " | ")
+        return HubLANDiscoveryAttempt(
+            candidate: nil,
+            reasonCode: ambiguousReasonCode,
+            candidates: candidates,
+            logLines: ["[\(source)] multiple hubs discovered; refusing auto-select. candidates=\(rendered)"]
+        )
+    }
+
+    private func summary(from candidate: HubLANDiscoveryCandidate) -> HubDiscoveredHubCandidateSummary {
+        HubDiscoveredHubCandidateSummary(
+            host: candidate.host,
+            pairingPort: candidate.pairingPort,
+            grpcPort: candidate.grpcPort,
+            internetHost: candidate.internetHost,
+            hubInstanceID: candidate.hubInstanceID,
+            lanDiscoveryName: candidate.lanDiscoveryName
+        )
+    }
+
+    private func deduplicatedDiscoveryCandidates(
+        _ rawCandidates: [HubLANDiscoveryCandidate]
+    ) -> [HubLANDiscoveryCandidate] {
+        var mergedByKey: [String: HubLANDiscoveryCandidate] = [:]
+        var orderedKeys: [String] = []
+
+        for candidate in rawCandidates {
+            let key = discoveryCandidateKey(candidate)
+            if let existing = mergedByKey[key] {
+                mergedByKey[key] = richerDiscoveryCandidate(existing, candidate)
+            } else {
+                mergedByKey[key] = candidate
+                orderedKeys.append(key)
+            }
+        }
+
+        return orderedKeys.compactMap { mergedByKey[$0] }
+    }
+
+    private func discoveryCandidateKey(_ candidate: HubLANDiscoveryCandidate) -> String {
+        if let hubInstanceID = normalizedDiscoveryToken(candidate.hubInstanceID) {
+            return "id:\(hubInstanceID)"
+        }
+        return [
+            normalizedHostToken(candidate.host) ?? "",
+            String(candidate.pairingPort),
+            String(candidate.grpcPort),
+            normalizedHostToken(candidate.internetHost) ?? "",
+        ].joined(separator: "|")
+    }
+
+    private func richerDiscoveryCandidate(
+        _ lhs: HubLANDiscoveryCandidate,
+        _ rhs: HubLANDiscoveryCandidate
+    ) -> HubLANDiscoveryCandidate {
+        discoveryCandidateScore(lhs) >= discoveryCandidateScore(rhs) ? lhs : rhs
+    }
+
+    private func discoveryCandidateScore(_ candidate: HubLANDiscoveryCandidate) -> Int {
+        var score = 0
+        if nonEmpty(candidate.internetHost) != nil { score += 4 }
+        if nonEmpty(candidate.hubInstanceID) != nil { score += 3 }
+        if nonEmpty(candidate.lanDiscoveryName) != nil { score += 2 }
+        if !candidate.logLines.isEmpty { score += 1 }
+        return score
+    }
+
+    private func describeDiscoveryCandidate(_ candidate: HubLANDiscoveryCandidate) -> String {
+        let service = nonEmpty(candidate.lanDiscoveryName)
+            ?? nonEmpty(candidate.hubInstanceID)
+            ?? candidate.host
+        let internet = nonEmpty(candidate.internetHost) ?? "-"
+        return "service=\(service) host=\(candidate.host) pairing=\(candidate.pairingPort) grpc=\(candidate.grpcPort) internet=\(internet)"
+    }
+
+    private func normalizedDiscoveryToken(_ raw: String?) -> String? {
+        nonEmpty(raw)?.lowercased()
+    }
+
+    private func normalizedHostToken(_ raw: String?) -> String? {
+        guard let value = nonEmpty(raw)?.lowercased() else { return nil }
+        if value.hasSuffix(".") {
+            return String(value.dropLast())
+        }
+        return value
+    }
+
+    private func prioritizeLANHosts(
+        _ hosts: [String],
+        preferredHosts: [String?]
+    ) -> [String] {
+        var ordered: [String] = []
+        var seen: Set<String> = []
+
+        func appendHost(_ raw: String?) {
+            guard let raw else { return }
+            let host = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !host.isEmpty else { return }
+            guard !isLoopbackHost(host) else { return }
+            guard seen.insert(normalizeHost(host)).inserted else { return }
+            ordered.append(host)
+        }
+
+        for host in preferredHosts {
+            appendHost(host)
+        }
+        for host in hosts {
+            appendHost(host)
+        }
+        return ordered
+    }
+
+    private func persistDiscoveredPairingInfo(
+        host: String,
+        pairingPort: Int,
+        grpcPort: Int,
+        internetHost: String?,
+        hubInstanceID: String?,
+        lanDiscoveryName: String?,
+        options: HubRemoteConnectOptions
+    ) throws {
+        let base = options.stateDir ?? defaultStateDir()
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+
+        let pairingEnv = base.appendingPathComponent("pairing.env")
+        let appID = canonicalHubAppID(readEnvValue(from: pairingEnv, key: "AXHUB_APP_ID")) ?? "x_terminal"
+        let deviceName = nonEmpty(readEnvValue(from: pairingEnv, key: "AXHUB_DEVICE_NAME"))
+            ?? nonEmpty(options.deviceName)
+            ?? "X-Terminal"
+        let pairingRequestID = readEnvValue(from: pairingEnv, key: "AXHUB_PAIRING_REQUEST_ID") ?? ""
+        let pairingSecret = readEnvValue(from: pairingEnv, key: "AXHUB_PAIRING_SECRET") ?? ""
+        let preservedInternetHost = nonEmpty(internetHost)
+            ?? nonEmpty(readEnvValue(from: pairingEnv, key: "AXHUB_INTERNET_HOST"))
+            ?? ""
+        let preservedHubInstanceID = nonEmpty(hubInstanceID)
+            ?? nonEmpty(readEnvValue(from: pairingEnv, key: "AXHUB_HUB_INSTANCE_ID"))
+            ?? ""
+        let preservedLanDiscoveryName = nonEmpty(lanDiscoveryName)
+            ?? nonEmpty(readEnvValue(from: pairingEnv, key: "AXHUB_LAN_DISCOVERY_NAME"))
+            ?? ""
+
+        let contents = [
+            "AXHUB_HUB_HOST=\(shellSingleQuoted(host))",
+            "AXHUB_PAIRING_PORT=\(shellSingleQuoted(String(pairingPort)))",
+            "AXHUB_GRPC_PORT=\(shellSingleQuoted(String(grpcPort)))",
+            "AXHUB_APP_ID=\(shellSingleQuoted(appID))",
+            "AXHUB_DEVICE_NAME=\(shellSingleQuoted(deviceName))",
+            "AXHUB_PAIRING_REQUEST_ID=\(shellSingleQuoted(pairingRequestID))",
+            "AXHUB_PAIRING_SECRET=\(shellSingleQuoted(pairingSecret))",
+            "AXHUB_INTERNET_HOST=\(shellSingleQuoted(preservedInternetHost))",
+            "AXHUB_HUB_INSTANCE_ID=\(shellSingleQuoted(preservedHubInstanceID))",
+            "AXHUB_LAN_DISCOVERY_NAME=\(shellSingleQuoted(preservedLanDiscoveryName))",
+        ].joined(separator: "\n") + "\n"
+
+        try contents.write(to: pairingEnv, atomically: true, encoding: .utf8)
+    }
+
+    private nonisolated static func buildLANDiscoveryScanPlan() -> HubLANDiscoveryScanPlan {
+        var discoveredHosts: [String] = []
+        var seenHosts: Set<String> = []
+        var networkSummaries: [String] = []
+        var seenNetworks: Set<String> = []
+
+        var cursor: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&cursor) == 0, let first = cursor else {
+            return HubLANDiscoveryScanPlan(hosts: [], networkSummaries: [])
+        }
+        defer { freeifaddrs(cursor) }
+
+        var current: UnsafeMutablePointer<ifaddrs>? = first
+        while let pointer = current {
+            defer { current = pointer.pointee.ifa_next }
+
+            let entry = pointer.pointee
+            guard let addr = entry.ifa_addr, let netmask = entry.ifa_netmask else { continue }
+            guard addr.pointee.sa_family == UInt8(AF_INET) else { continue }
+            guard netmask.pointee.sa_family == UInt8(AF_INET) else { continue }
+
+            let flags = Int32(entry.ifa_flags)
+            guard (flags & IFF_UP) != 0 else { continue }
+            guard (flags & IFF_LOOPBACK) == 0 else { continue }
+
+            guard let addressValue = ipv4UInt32(from: addr),
+                  let maskValue = ipv4UInt32(from: netmask),
+                  maskValue != 0 else {
+                continue
+            }
+
+            var prefixLength = maskValue.nonzeroBitCount
+            var effectiveMask = maskValue
+            if prefixLength < 24 {
+                prefixLength = 24
+                effectiveMask = 0xFF_FF_FF_00
+            }
+            if prefixLength > 30 { continue }
+
+            let network = addressValue & effectiveMask
+            let broadcast = network | ~effectiveMask
+            guard broadcast > network + 1 else { continue }
+
+            let networkSummary = "\(ipv4String(network))/\(prefixLength)"
+            if seenNetworks.insert(networkSummary).inserted {
+                networkSummaries.append(networkSummary)
+            }
+
+            func appendHost(_ rawValue: UInt32) {
+                guard rawValue > network, rawValue < broadcast else { return }
+                guard rawValue != addressValue else { return }
+                let host = ipv4String(rawValue)
+                let key = host.lowercased()
+                guard seenHosts.insert(key).inserted else { return }
+                discoveredHosts.append(host)
+            }
+
+            appendHost(network &+ 1)
+            var candidate = network &+ 1
+            while candidate < broadcast {
+                appendHost(candidate)
+                candidate &+= 1
+            }
+        }
+
+        return HubLANDiscoveryScanPlan(
+            hosts: discoveredHosts,
+            networkSummaries: networkSummaries
+        )
+    }
+
+    private nonisolated static func collectLANDiscoveryMatches(
+        hosts: [String],
+        pairingPort: Int,
+        timeoutSec: TimeInterval
+    ) async -> [HubLANDiscoveryProbeMatch] {
+        await withTaskGroup(of: HubLANDiscoveryProbeMatch?.self) { group in
+            for host in hosts {
+                group.addTask {
+                    await probeLANPairingEndpoint(
+                        host: host,
+                        pairingPort: pairingPort,
+                        timeoutSec: timeoutSec
+                    )
+                }
+            }
+
+            var matches: [HubLANDiscoveryProbeMatch] = []
+            for await result in group {
+                if let result {
+                    matches.append(result)
+                }
+            }
+            return matches
+        }
+    }
+
+    private nonisolated static func probeLANPairingEndpoint(
+        host: String,
+        pairingPort: Int,
+        timeoutSec: TimeInterval
+    ) async -> HubLANDiscoveryProbeMatch? {
+        guard let url = URL(string: "http://\(host):\(pairingPort)/pairing/discovery") else {
+            return nil
+        }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = timeoutSec
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200...299).contains(http.statusCode) else {
+                return nil
+            }
+            let payload = try JSONDecoder().decode(HubPairingDiscoveryPayload.self, from: data)
+            guard payload.matchesPairingService else { return nil }
+
+            let matchedHost = normalizedTrimmed(payload.hubHostHint) ?? host
+            return HubLANDiscoveryProbeMatch(
+                host: matchedHost,
+                pairingPort: payload.pairingPort ?? pairingPort,
+                grpcPort: payload.grpcPort ?? 50051,
+                internetHost: normalizedTrimmed(payload.internetHostHint),
+                hubInstanceID: normalizedTrimmed(payload.hubInstanceID),
+                lanDiscoveryName: normalizedTrimmed(payload.lanDiscoveryName)
+            )
+        } catch {
+            return nil
+        }
+    }
+
+    private nonisolated static func ipv4UInt32(from sockaddrPointer: UnsafeMutablePointer<sockaddr>) -> UInt32? {
+        guard sockaddrPointer.pointee.sa_family == UInt8(AF_INET) else { return nil }
+        return sockaddrPointer.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { pointer in
+            UInt32(bigEndian: pointer.pointee.sin_addr.s_addr)
+        }
+    }
+
+    private nonisolated static func ipv4String(_ address: UInt32) -> String {
+        [
+            String((address >> 24) & 0xFF),
+            String((address >> 16) & 0xFF),
+            String((address >> 8) & 0xFF),
+            String(address & 0xFF),
+        ].joined(separator: ".")
+    }
+
+    private nonisolated static func currentMachineIPv4Hosts() -> Set<String> {
+        var hosts: Set<String> = ["127.0.0.1", "localhost"]
+        var cursor: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&cursor) == 0, let first = cursor else {
+            return hosts
+        }
+        defer { freeifaddrs(cursor) }
+
+        var current: UnsafeMutablePointer<ifaddrs>? = first
+        while let pointer = current {
+            defer { current = pointer.pointee.ifa_next }
+            let entry = pointer.pointee
+            guard let addr = entry.ifa_addr else { continue }
+            guard addr.pointee.sa_family == UInt8(AF_INET) else { continue }
+            guard let addressValue = ipv4UInt32(from: addr) else { continue }
+            hosts.insert(ipv4String(addressValue).lowercased())
+        }
+        return hosts
+    }
+
+    private nonisolated static func normalizedTrimmed(_ raw: String?) -> String? {
+        let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? nil : value
+    }
+
     private enum ExecutableRef {
         case direct(String)
         case bashScript(String)
         case viaEnv
+    }
+
+    private func stagedBundledExecutable(named fileName: String) -> String? {
+        guard let resourceURL = Bundle.main.resourceURL else { return nil }
+        let sourceURL = resourceURL.appendingPathComponent(fileName, isDirectory: false)
+        return stageBundledExecutableIfNeeded(sourceURL: sourceURL)
+    }
+
+    private func stageBundledExecutableIfNeeded(sourceURL: URL) -> String? {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: sourceURL.path) else { return nil }
+
+        let stagedDir = HubBundledToolSupport.toolSupportBinDirectory(
+            applicationSupportBase: HubBundledToolSupport.defaultApplicationSupportBase(fileManager: fm)
+        )
+        do {
+            try fm.createDirectory(at: stagedDir, withIntermediateDirectories: true)
+        } catch {
+            return sourceURL.path
+        }
+
+        let stagedURL = stagedDir.appendingPathComponent(sourceURL.lastPathComponent, isDirectory: false)
+        if shouldRefreshStagedExecutable(sourceURL: sourceURL, stagedURL: stagedURL, fileManager: fm) {
+            do {
+                if fm.fileExists(atPath: stagedURL.path) {
+                    try fm.removeItem(at: stagedURL)
+                }
+                try fm.copyItem(at: sourceURL, to: stagedURL)
+                try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stagedURL.path)
+            } catch {
+                return sourceURL.path
+            }
+        }
+
+        return stagedURL.path
+    }
+
+    private func shouldRefreshStagedExecutable(
+        sourceURL: URL,
+        stagedURL: URL,
+        fileManager: FileManager
+    ) -> Bool {
+        guard fileManager.fileExists(atPath: stagedURL.path) else { return true }
+        guard
+            let sourceAttrs = try? fileManager.attributesOfItem(atPath: sourceURL.path),
+            let stagedAttrs = try? fileManager.attributesOfItem(atPath: stagedURL.path)
+        else {
+            return true
+        }
+
+        let sourceSize = sourceAttrs[.size] as? NSNumber
+        let stagedSize = stagedAttrs[.size] as? NSNumber
+        if sourceSize != stagedSize {
+            return true
+        }
+
+        let sourceModified = sourceAttrs[.modificationDate] as? Date
+        let stagedModified = stagedAttrs[.modificationDate] as? Date
+        if let sourceModified, let stagedModified {
+            return sourceModified > stagedModified
+        }
+        return false
     }
 
     private func resolveAxhubctlExecutable(override: String) -> ExecutableRef {
@@ -12905,12 +14943,9 @@ main().catch((err) => {
             return fm.isExecutableFile(atPath: bundled) ? .direct(bundled) : .bashScript(bundled)
         }
 
-        let home = fm.homeDirectoryForCurrentUser.path
-        let directCandidates: [String] = [
-            "\(home)/.local/bin/axhubctl",
-            "\(home)/Documents/AX/x-hub-system/x-hub/grpc-server/hub_grpc_server/assets/axhubctl",
-            "\(home)/Documents/AX/x-hub/grpc-server/hub_grpc_server/assets/axhubctl",
-        ]
+        let directCandidates = HubBundledToolSupport.defaultAxhubctlFallbackCandidates(
+            homeDirectory: fm.homeDirectoryForCurrentUser
+        )
 
         for p in directCandidates {
             let e = expandTilde(p)
@@ -12929,9 +14964,8 @@ main().catch((err) => {
     }
 
     private func bundledAxhubctlCandidate() -> String? {
-        guard let resourceURL = Bundle.main.resourceURL else { return nil }
-        let p = resourceURL.appendingPathComponent("axhubctl").path
-        return FileManager.default.fileExists(atPath: p) ? p : nil
+        guard let staged = stagedBundledExecutable(named: "axhubctl") else { return nil }
+        return FileManager.default.fileExists(atPath: staged) ? staged : nil
     }
 
     private func preferredAxhubctlPath(primary: String) -> String {
@@ -12998,14 +15032,17 @@ main().catch((err) => {
         if out["AXHUBCTL_NODE_BIN"] == nil, let node = preferredNodeBinPath() {
             out["AXHUBCTL_NODE_BIN"] = node
         }
+        if let appID = canonicalHubAppID(out["HUB_APP_ID"]) {
+            out["HUB_APP_ID"] = appID
+        }
         return out
     }
 
     private func preferredNodeBinPath() -> String? {
         let fm = FileManager.default
-        if let resourceNode = Bundle.main.resourceURL?.appendingPathComponent("relflowhub_node").path,
-           fm.isExecutableFile(atPath: resourceNode) {
-            return resourceNode
+        if let stagedNode = stagedBundledExecutable(named: "relflowhub_node"),
+           fm.isExecutableFile(atPath: stagedNode) {
+            return stagedNode
         }
         let candidates = [
             "/opt/homebrew/bin/node",
@@ -13019,23 +15056,37 @@ main().catch((err) => {
     }
 
     private func defaultStateDir() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".axhub", isDirectory: true)
+        XTProcessPaths.defaultAxhubStateDir()
     }
 
-    private func loadCachedPairingInfo(stateDir: URL?) -> (host: String?, pairingPort: Int?, grpcPort: Int?) {
+    private func loadCachedPairingInfo(stateDir: URL?) -> HubCachedPairingInfo {
         let base = stateDir ?? defaultStateDir()
         let pairingEnv = base.appendingPathComponent("pairing.env")
         let hubEnv = base.appendingPathComponent("hub.env")
 
         let hostFromPairing = readEnvValue(from: pairingEnv, key: "AXHUB_HUB_HOST")
+        let internetHostFromPairing = readEnvValue(from: pairingEnv, key: "AXHUB_INTERNET_HOST")
+        let hubInstanceID = readEnvValue(from: pairingEnv, key: "AXHUB_HUB_INSTANCE_ID")
+        let lanDiscoveryName = readEnvValue(from: pairingEnv, key: "AXHUB_LAN_DISCOVERY_NAME")
         let pairingPort = normalizePort(readEnvValue(from: pairingEnv, key: "AXHUB_PAIRING_PORT"))
         let grpcFromPairing = normalizePort(readEnvValue(from: pairingEnv, key: "AXHUB_GRPC_PORT"))
 
         let host = nonEmpty(hostFromPairing) ?? nonEmpty(readEnvValue(from: hubEnv, key: "HUB_HOST"))
+        let internetHost = nonEmpty(internetHostFromPairing) ?? inferredReusableInternetHost(
+            host,
+            hubInstanceID: nonEmpty(hubInstanceID),
+            lanDiscoveryName: nonEmpty(lanDiscoveryName)
+        )
         let grpcPort = grpcFromPairing ?? normalizePort(readEnvValue(from: hubEnv, key: "HUB_PORT"))
 
-        return (host: host, pairingPort: pairingPort, grpcPort: grpcPort)
+        return HubCachedPairingInfo(
+            host: host,
+            internetHost: internetHost,
+            pairingPort: pairingPort,
+            grpcPort: grpcPort,
+            hubInstanceID: nonEmpty(hubInstanceID),
+            lanDiscoveryName: nonEmpty(lanDiscoveryName)
+        )
     }
 
     private func expandTilde(_ text: String) -> String {
@@ -13053,6 +15104,64 @@ main().catch((err) => {
             return nil
         }
         return p
+    }
+
+    private func inferredReusableInternetHost(
+        _ host: String?,
+        hubInstanceID: String? = nil,
+        lanDiscoveryName: String? = nil
+    ) -> String? {
+        Self.inferredReusableInternetHostValue(
+            host,
+            hubInstanceID: hubInstanceID,
+            lanDiscoveryName: lanDiscoveryName
+        )
+    }
+
+    private static func inferredReusableInternetHostValue(
+        _ host: String?,
+        hubInstanceID: String? = nil,
+        lanDiscoveryName: String? = nil
+    ) -> String? {
+        func trimmedNonEmpty(_ value: String?) -> String? {
+            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? nil : trimmed
+        }
+
+        guard let host = trimmedNonEmpty(host) else { return nil }
+        let lowered = host.lowercased()
+        if lowered == "localhost" || lowered == "127.0.0.1" || lowered.hasSuffix(".local") {
+            return nil
+        }
+        if isPrivateIPv4Host(lowered) {
+            return nil
+        }
+        if isIPv4Host(lowered),
+           trimmedNonEmpty(hubInstanceID) != nil || trimmedNonEmpty(lanDiscoveryName) != nil {
+            return nil
+        }
+        return host
+    }
+
+    private static func isIPv4Host(_ host: String) -> Bool {
+        let parts = host.split(separator: ".")
+        guard parts.count == 4 else { return false }
+        let octets = parts.compactMap { Int($0) }
+        guard octets.count == 4 else { return false }
+        return octets.allSatisfy { (0...255).contains($0) }
+    }
+
+    private static func isPrivateIPv4Host(_ host: String) -> Bool {
+        guard isIPv4Host(host) else { return false }
+        let octets = host.split(separator: ".").compactMap { Int($0) }
+        let a = octets[0]
+        let b = octets[1]
+        if a == 10 { return true }
+        if a == 127 { return true }
+        if a == 169, b == 254 { return true }
+        if a == 172, b >= 16, b <= 31 { return true }
+        if a == 192, b == 168 { return true }
+        return false
     }
 
     private func readEnvValue(from fileURL: URL, key: String) -> String? {
@@ -13083,5 +15192,9 @@ main().catch((err) => {
             return String(value.dropFirst().dropLast())
         }
         return value
+    }
+
+    private func shellSingleQuoted(_ raw: String) -> String {
+        "'" + raw.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }

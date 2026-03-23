@@ -165,7 +165,10 @@ struct SupervisorXTReadyIncidentPresentationTests {
                     "managed_service_ready_count=0",
                     "provider=local-chat service_state=unreachable ready=0 runtime_reason=xhub_local_service_unreachable endpoint=http://127.0.0.1:50171 execution_mode=xhub_local_service loaded_instances=0 queued=2"
                 ],
-                nextStep: "Start xhub_local_service or fix the configured endpoint, then refresh diagnostics."
+                nextStep: "Start xhub_local_service or fix the configured endpoint, then refresh diagnostics.",
+                actionCategory: "inspect_health_payload",
+                installHint: "Inspect the local /health payload and stderr log to confirm why xhub_local_service never reached ready.",
+                recommendedAction: "Inspect the local /health payload | Open Hub Diagnostics and compare /health with stderr."
             ),
             status: "strict_risk:hub_runtime:xhub_local_service_unreachable",
             reportPath: "/tmp/xt-ready.json"
@@ -187,5 +190,15 @@ struct SupervisorXTReadyIncidentPresentationTests {
                 "Hub 运行时下一步：Start xhub_local_service or fix the configured endpoint, then refresh diagnostics."
         )
         #expect(presentation.hubRuntimeNextLine?.tone == .accent)
+        #expect(
+            presentation.hubRuntimeInstallHintLine?.text ==
+                "Hub 安装提示：Inspect the local /health payload and stderr log to confirm why xhub_local_service never reached ready."
+        )
+        #expect(presentation.hubRuntimeInstallHintLine?.tone == .warning)
+        #expect(
+            presentation.hubRuntimeRecommendedActionLine?.text ==
+                "Hub 建议动作：Inspect the local /health payload | Open Hub Diagnostics and compare /health with stderr."
+        )
+        #expect(presentation.hubRuntimeRecommendedActionLine?.tone == .accent)
     }
 }

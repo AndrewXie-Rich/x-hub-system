@@ -5,23 +5,31 @@ struct ProjectUIReviewWorkspaceView: View {
     let emptyTitle: String
     let emptyMessage: String
     let helperText: String?
+    let showsScreenshotPreview: Bool
+    let reloadNonce: Int
+    let onSnapshotResolved: ((ToolResult) -> Void)?
 
     @State private var latestReview: XTUIReviewPresentation?
-    @State private var isRefreshing = false
-    @State private var showHistorySheet = false
-    @State private var statusMessage = ""
-    @State private var statusIsError = false
+    @StateObject private var uiReviewActions = XTUIReviewActionState()
+    @StateObject private var updateFeedback = XTTransientUpdateFeedbackState()
+    @State private var lastObservedReviewSignature: String?
 
     init(
         ctx: AXProjectContext,
         emptyTitle: String = "暂无浏览器 UI review",
         emptyMessage: String = "该项目还没有最近一次浏览器页面自观察结果。",
-        helperText: String? = nil
+        helperText: String? = nil,
+        showsScreenshotPreview: Bool = false,
+        reloadNonce: Int = 0,
+        onSnapshotResolved: ((ToolResult) -> Void)? = nil
     ) {
         self.ctx = ctx
         self.emptyTitle = emptyTitle
         self.emptyMessage = emptyMessage
         self.helperText = helperText
+        self.showsScreenshotPreview = showsScreenshotPreview
+        self.reloadNonce = reloadNonce
+        self.onSnapshotResolved = onSnapshotResolved
     }
 
     var body: some View {
@@ -29,10 +37,29 @@ struct ProjectUIReviewWorkspaceView: View {
             if let latestReview {
                 ProjectUIReviewCard(
                     review: latestReview,
-                    onShowHistory: { showHistorySheet = true },
-                    onResampleSnapshot: refreshSnapshot,
-                    isResampling: isRefreshing
+                    onShowHistory: { uiReviewActions.presentHistory() },
+                    onResampleSnapshot: {
+                        Task {
+                            await uiReviewActions.runSnapshot(
+                                in: ctx,
+                                onSnapshotResolved: onSnapshotResolved
+                            )
+                        }
+                    },
+                    isResampling: uiReviewActions.isResampling,
+                    showsScreenshotPreview: showsScreenshotPreview
                 )
+                .projectUIReviewWorkspaceChrome(
+                    isUpdated: updateFeedback.isHighlighted,
+                    tint: reviewTintColor
+                )
+                .overlay(alignment: .topTrailing) {
+                    if updateFeedback.showsBadge {
+                        XTTransientUpdateBadge(tint: reviewTintColor)
+                            .padding(.top, 10)
+                            .padding(.trailing, 10)
+                    }
+                }
             } else {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(emptyTitle)
@@ -44,9 +71,14 @@ struct ProjectUIReviewWorkspaceView: View {
                         .fixedSize(horizontal: false, vertical: true)
 
                     Button {
-                        refreshSnapshot()
+                        Task {
+                            await uiReviewActions.runSnapshot(
+                                in: ctx,
+                                onSnapshotResolved: onSnapshotResolved
+                            )
+                        }
                     } label: {
-                        if isRefreshing {
+                        if uiReviewActions.isResampling {
                             Label("Sampling…", systemImage: "arrow.triangle.2.circlepath")
                         } else {
                             Label("Run Snapshot", systemImage: "camera.viewfinder")
@@ -54,7 +86,7 @@ struct ProjectUIReviewWorkspaceView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
-                    .disabled(isRefreshing)
+                    .disabled(uiReviewActions.isResampling)
                 }
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -62,12 +94,23 @@ struct ProjectUIReviewWorkspaceView: View {
                     RoundedRectangle(cornerRadius: 12)
                         .fill(Color(nsColor: .controlBackgroundColor))
                 )
+                .projectUIReviewWorkspaceChrome(
+                    isUpdated: updateFeedback.isHighlighted,
+                    tint: reviewTintColor
+                )
+                .overlay(alignment: .topTrailing) {
+                    if updateFeedback.showsBadge {
+                        XTTransientUpdateBadge(tint: reviewTintColor)
+                            .padding(.top, 10)
+                            .padding(.trailing, 10)
+                    }
+                }
             }
 
-            if !statusMessage.isEmpty {
-                Text(statusMessage)
+            if !uiReviewActions.statusMessage.isEmpty {
+                Text(uiReviewActions.statusMessage)
                     .font(.caption)
-                    .foregroundStyle(statusIsError ? .red : .secondary)
+                    .foregroundStyle(uiReviewActions.statusIsError ? .red : .secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -78,10 +121,27 @@ struct ProjectUIReviewWorkspaceView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .task(id: ctx.root.path) {
+        .task(id: "\(ctx.root.path)#\(reloadNonce)#\(uiReviewActions.refreshNonce)") {
             reload()
         }
-        .sheet(isPresented: $showHistorySheet) {
+        .onAppear {
+            lastObservedReviewSignature = observedReviewSignature
+        }
+        .onChange(of: observedReviewSignature) { newValue in
+            defer { lastObservedReviewSignature = newValue }
+            guard let lastObservedReviewSignature, lastObservedReviewSignature != newValue else {
+                return
+            }
+            updateFeedback.trigger()
+        }
+        .onChange(of: uiReviewActions.refreshNonce) { refreshNonce in
+            guard refreshNonce > 0 else { return }
+            updateFeedback.trigger()
+        }
+        .onDisappear {
+            updateFeedback.cancel(resetState: true)
+        }
+        .sheet(isPresented: $uiReviewActions.showHistorySheet) {
             ProjectUIReviewHistorySheet(ctx: ctx)
         }
     }
@@ -90,39 +150,38 @@ struct ProjectUIReviewWorkspaceView: View {
         latestReview = XTUIReviewPresentation.loadLatestBrowserPage(for: ctx)
     }
 
-    private func refreshSnapshot() {
-        guard !isRefreshing else { return }
-        isRefreshing = true
-        statusMessage = ""
-        statusIsError = false
+    private var observedReviewSignature: String {
+        latestReview?.transientUpdateSignature ?? "none"
+    }
 
-        Task {
-            let call = ToolCall(
-                tool: .deviceBrowserControl,
-                args: [
-                    "action": .string("snapshot"),
-                    "probe_depth": .string("standard")
-                ]
-            )
-
-            let result: ToolResult
-            do {
-                result = try await ToolExecutor.execute(call: call, projectRoot: ctx.root)
-            } catch {
-                await MainActor.run {
-                    statusMessage = "Snapshot failed: \(error.localizedDescription)"
-                    statusIsError = true
-                    isRefreshing = false
-                }
-                return
-            }
-
-            await MainActor.run {
-                reload()
-                statusMessage = ToolResultHumanSummary.body(for: result)
-                statusIsError = !result.ok
-                isRefreshing = false
-            }
+    private var reviewTintColor: Color {
+        guard let latestReview else { return .accentColor }
+        switch latestReview.verdict {
+        case .ready:
+            return .green
+        case .attentionNeeded:
+            return .orange
+        case .insufficientEvidence:
+            return .red
         }
+    }
+}
+
+private extension View {
+    func projectUIReviewWorkspaceChrome(
+        isUpdated: Bool,
+        tint: Color
+    ) -> some View {
+        xtTransientUpdateCardChrome(
+            cornerRadius: 14,
+            isUpdated: isUpdated,
+            focusTint: tint,
+            updateTint: tint,
+            baseBackground: .clear,
+            baseBorder: .clear,
+            updateBackgroundOpacity: 0.04,
+            updateBorderOpacity: 0.24,
+            updateShadowOpacity: 0.12
+        )
     }
 }

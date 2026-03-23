@@ -47,6 +47,78 @@ struct AXProjectModelRouteMemoryTests {
     }
 
     @Test
+    func routeMemoryTreatsEmbeddingOnlyConfiguredModelAsRetrievalOnlyAndFallsBackToRememberedRemote() throws {
+        let root = try makeProjectRoot(named: "route-memory-retrieval-only-config")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        appendUsage(
+            createdAt: 100,
+            requestedModelId: "openai/gpt-4.1",
+            actualModelId: "openai/gpt-4.1",
+            executionPath: "remote_model",
+            fallbackReasonCode: "",
+            for: ctx
+        )
+
+        let decision = AXProjectModelRouteMemoryStore.resolvePreferredModel(
+            configuredModelId: "mlx-community/qwen3-embedding-0.6b-4bit",
+            role: .coder,
+            ctx: ctx,
+            snapshot: ModelStateSnapshot(
+                models: [
+                    makeModel(
+                        id: "mlx-community/qwen3-embedding-0.6b-4bit",
+                        state: .loaded,
+                        backend: "mlx",
+                        modelPath: "/models/qwen3-embedding",
+                        taskKinds: ["embedding"]
+                    ),
+                    makeModel(id: "openai/gpt-4.1", state: .loaded)
+                ],
+                updatedAt: 300
+            )
+        )
+
+        #expect(decision.preferredModelId == "openai/gpt-4.1")
+        #expect(decision.usedRememberedRemoteModel)
+        #expect(decision.reasonCode == "project_last_remote_success_loaded")
+    }
+
+    @Test
+    func routeMemoryClearsPreferredRemoteWhenConfiguredModelIsRetrievalOnlyAndNoFallbackExists() throws {
+        let root = try makeProjectRoot(named: "route-memory-retrieval-only-no-fallback")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        let decision = AXProjectModelRouteMemoryStore.resolvePreferredModel(
+            configuredModelId: "mlx-community/qwen3-embedding-0.6b-4bit",
+            role: .coder,
+            ctx: ctx,
+            snapshot: ModelStateSnapshot(
+                models: [
+                    makeModel(
+                        id: "mlx-community/qwen3-embedding-0.6b-4bit",
+                        state: .loaded,
+                        backend: "mlx",
+                        modelPath: "/models/qwen3-embedding",
+                        taskKinds: ["embedding"]
+                    )
+                ],
+                updatedAt: 300
+            )
+        )
+
+        #expect(decision.preferredModelId == nil)
+        #expect(!decision.usedRememberedRemoteModel)
+        #expect(decision.reasonCode == "project_configured_model_retrieval_only")
+    }
+
+    @Test
     func heartbeatNoticeAppearsAfterConsecutiveRemoteFallbacks() throws {
         let root = try makeProjectRoot(named: "route-memory-heartbeat-notice")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -496,7 +568,8 @@ struct AXProjectModelRouteMemoryTests {
         id: String,
         state: HubModelState,
         backend: String = "openai",
-        modelPath: String? = nil
+        modelPath: String? = nil,
+        taskKinds: [String]? = nil
     ) -> HubModel {
         HubModel(
             id: id,
@@ -510,7 +583,8 @@ struct AXProjectModelRouteMemoryTests {
             memoryBytes: nil,
             tokensPerSec: nil,
             modelPath: modelPath,
-            note: nil
+            note: nil,
+            taskKinds: taskKinds
         )
     }
 

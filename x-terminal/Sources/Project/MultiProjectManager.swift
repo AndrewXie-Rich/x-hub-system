@@ -69,6 +69,7 @@ class MultiProjectManager: ObservableObject {
             reviewPulseSeconds: config.reviewPulseSeconds,
             brainstormReviewSeconds: config.brainstormReviewSeconds,
             eventDrivenReviewEnabled: config.eventDrivenReviewEnabled,
+            eventReviewTriggers: config.eventReviewTriggers,
             budget: config.budget
         )
 
@@ -344,6 +345,7 @@ struct ProjectConfig {
     let reviewPulseSeconds: Int
     let brainstormReviewSeconds: Int
     let eventDrivenReviewEnabled: Bool
+    let eventReviewTriggers: [AXProjectReviewTrigger]
     let budget: Budget
     let autoStart: Bool
 
@@ -353,7 +355,7 @@ struct ProjectConfig {
         taskIcon: String = "doc.text",
         modelName: String = "llama-3-70b-local",
         isLocalModel: Bool = true,
-        autonomyLevel: AutonomyLevel = .assisted,
+        autonomyLevel: AutonomyLevel = .manual,
         registeredProjectBinding: ProjectRegistryBinding? = nil,
         executionTier: AXProjectExecutionTier? = nil,
         supervisorInterventionTier: AXProjectSupervisorInterventionTier? = nil,
@@ -362,6 +364,7 @@ struct ProjectConfig {
         reviewPulseSeconds: Int? = nil,
         brainstormReviewSeconds: Int? = nil,
         eventDrivenReviewEnabled: Bool? = nil,
+        eventReviewTriggers: [AXProjectReviewTrigger]? = nil,
         budget: Budget = Budget(daily: 10.0, monthly: 300.0),
         autoStart: Bool = false
     ) {
@@ -384,6 +387,9 @@ struct ProjectConfig {
         self.reviewPulseSeconds = reviewPulseSeconds ?? governance.schedule.reviewPulseSeconds
         self.brainstormReviewSeconds = brainstormReviewSeconds ?? governance.schedule.brainstormReviewSeconds
         self.eventDrivenReviewEnabled = eventDrivenReviewEnabled ?? governance.schedule.eventDrivenReviewEnabled
+        self.eventReviewTriggers = AXProjectReviewTrigger.normalizedList(
+            eventReviewTriggers ?? governance.schedule.eventReviewTriggers
+        )
         self.budget = budget
         self.autoStart = autoStart
     }

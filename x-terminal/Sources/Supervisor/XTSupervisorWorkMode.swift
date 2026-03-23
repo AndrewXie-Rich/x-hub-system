@@ -34,22 +34,22 @@ enum XTSupervisorWorkMode: String, Codable, CaseIterable, Identifiable {
     var summary: String {
         switch self {
         case .conversationOnly:
-            return "只在你明确发问时回答，不主动推进，也不自动发起 governed coder / skill / tool 执行。"
+            return "只在你明确需要时回答，不主动推进，也不会自己调 coder / skill / tool 去执行。"
         case .guidedProgress:
-            return "会主动给计划、提醒和下一步建议，但保持 proposal-first，不会自动发起 governed coder / skill / tool 执行。"
+            return "会主动给计划、提醒和下一步建议，但先给方案、不直接开跑，也不会自己发起 coder / skill / tool 执行。"
         case .governedAutomation:
-            return "会主动推进，并且在治理边界、授权状态和运行时条件都允许时，可以自动发起 governed coder / skill / tool 执行。"
+            return "会主动推进，并且在治理边界、授权状态和运行时条件都允许时，可以自动发起 coder / skill / tool 执行。"
         }
     }
 
     var runtimeBehaviorSummary: String {
         switch self {
         case .conversationOnly:
-            return "实际行为上限：回答直达问题；不主动推进；自动执行上限固定收束到 manual。"
+            return "实际效果：只回答当前问题；不主动追进度；任何自动执行都会收回到 manual。"
         case .guidedProgress:
-            return "实际行为上限：可以主动给计划、提醒、下一步；自动执行上限固定收束到 manual。"
+            return "实际效果：可以主动给计划、提醒和下一步；但执行层面仍会收回到 manual。"
         case .governedAutomation:
-            return "实际行为上限：允许主动推进；自动执行仍只会受 A-tier、S-tier、授权、runtime readiness 和 fail-closed gate 继续收紧。"
+            return "实际效果：允许主动推进；但执行权限仍会被 A-tier、S-tier、授权、runtime readiness 和 fail-closed gate 继续收紧。"
         }
     }
 

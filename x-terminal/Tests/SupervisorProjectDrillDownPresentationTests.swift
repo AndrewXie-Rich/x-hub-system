@@ -309,17 +309,17 @@ struct SupervisorProjectDrillDownPresentationTests {
         ])
 
         let governanceSection = try #require(presentation.sections.first(where: { $0.id == "governance" }))
-        #expect(governanceSection.lines.contains(where: { $0.text == "follow-up rhythm: review every 4h or on blocker" }))
-        #expect(governanceSection.lines.contains(where: { $0.text.contains("review: Watch · R2 Strategic · Manual Request") }))
-        #expect(governanceSection.lines.contains(where: { $0.text.contains("strength: Capable · conf=82%") }))
-        #expect(governanceSection.lines.contains(where: { $0.text.contains("pending guidance: Priority Insert · Replan At Safe Point") }))
-        #expect(governanceSection.lines.contains(where: { $0.text == "contract: Supervisor Replan" }))
-        #expect(governanceSection.lines.contains(where: { $0.text == "blocker: API uncertainty" }))
-        #expect(governanceSection.lines.contains(where: { $0.text == "next_safe_action: apply_supervisor_replan" }))
+        #expect(governanceSection.lines.contains(where: { $0.text == "跟进节奏：review every 4h or on blocker" }))
+        #expect(governanceSection.lines.contains(where: { $0.text.contains("审查：需要关注 · R2 战略 · 手动请求") }))
+        #expect(governanceSection.lines.contains(where: { $0.text.contains("AI 强度：可胜任 · 置信度=82%") }))
+        #expect(governanceSection.lines.contains(where: { $0.text.contains("待确认指导：优先插入 · 在安全点重规划") }))
+        #expect(governanceSection.lines.contains(where: { $0.text == "指导合同：监督重规划" }))
+        #expect(governanceSection.lines.contains(where: { $0.text == "阻塞：API uncertainty" }))
+        #expect(governanceSection.lines.contains(where: { $0.text == "下一个安全动作：apply_supervisor_replan" }))
         #expect(governanceSection.lines.contains(where: {
-            $0.text == "recommended_actions: Freeze the API contract before adding more skills."
+            $0.text == "建议动作：Freeze the API contract before adding more skills."
         }))
-        #expect(governanceSection.lines.contains(where: { $0.text.contains("latest delivered guidance: Context Append · Suggest At Safe Point") }))
+        #expect(governanceSection.lines.contains(where: { $0.text.contains("最新指导：上下文追加 · 在安全点建议") }))
 
         let workflowSection = try #require(presentation.sections.first(where: { $0.id == "active-workflow" }))
         #expect(workflowSection.lines.map(\.text) == [

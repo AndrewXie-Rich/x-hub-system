@@ -188,6 +188,6 @@ enum AXPendingActionsStore {
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? enc.encode(cur) else { return }
-        try? data.write(to: url(for: ctx), options: .atomic)
+        try? XTStoreWriteSupport.writeSnapshotData(data, to: url(for: ctx))
     }
 }

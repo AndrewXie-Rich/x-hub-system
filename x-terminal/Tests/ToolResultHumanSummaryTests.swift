@@ -25,8 +25,9 @@ struct ToolResultHumanSummaryTests {
 
         let body = ToolResultHumanSummary.body(for: result)
 
-        #expect(body.contains("does not allow command execution"))
-        #expect(body.contains("Raise the execution tier"))
+        #expect(body.contains("不允许运行构建或测试命令"))
+        #expect(body.contains("打开项目设置 -> 执行档位"))
+        #expect(body.contains("A2 Repo Auto"))
     }
 
     @Test
@@ -50,8 +51,8 @@ struct ToolResultHumanSummaryTests {
 
         let body = ToolResultHumanSummary.body(for: result)
 
-        #expect(body.contains("Project tool policy blocks"))
-        #expect(body.contains("Allow this tool"))
+        #expect(body.contains("项目工具策略禁止执行"))
+        #expect(body.contains("放行这个工具"))
     }
 
     @Test
@@ -76,7 +77,7 @@ struct ToolResultHumanSummaryTests {
 
         let body = ToolResultHumanSummary.body(for: result)
 
-        #expect(body.contains("not authenticated"))
+        #expect(body.contains("还没有完成 GitHub 登录授权"))
         #expect(body.contains("GitHub CLI"))
     }
 
@@ -103,7 +104,7 @@ struct ToolResultHumanSummaryTests {
         let body = ToolResultHumanSummary.body(for: result)
 
         #expect(body.contains("GitHub CLI"))
-        #expect(body.contains("require"))
+        #expect(body.contains("还没有安装"))
     }
 
     @Test
@@ -128,8 +129,7 @@ struct ToolResultHumanSummaryTests {
 
         let body = ToolResultHumanSummary.body(for: result)
 
-        #expect(body.contains("could not resolve"))
-        #expect(body.contains("GitHub repository"))
+        #expect(body.contains("无法从当前目录解析出 GitHub 仓库"))
     }
 
     @Test
@@ -155,7 +155,7 @@ struct ToolResultHumanSummaryTests {
         let body = ToolResultHumanSummary.body(for: result)
 
         #expect(body.contains("GitHub CLI"))
-        #expect(body.contains("could not be started"))
+        #expect(body.contains("无法从当前项目启动"))
     }
 
     @Test
@@ -178,8 +178,8 @@ struct ToolResultHumanSummaryTests {
 
         let body = ToolResultHumanSummary.body(for: result)
 
-        #expect(body.contains("Multiple git remotes"))
-        #expect(body.contains("explicit remote"))
+        #expect(body.contains("多个远端仓库"))
+        #expect(body.contains("显式指定 remote"))
     }
 
     @Test
@@ -202,7 +202,7 @@ struct ToolResultHumanSummaryTests {
 
         let body = ToolResultHumanSummary.body(for: result)
 
-        #expect(body.contains("explicit branch"))
+        #expect(body.contains("显式指定分支"))
         #expect(body.contains("detached HEAD"))
     }
 
@@ -226,8 +226,7 @@ struct ToolResultHumanSummaryTests {
 
         let body = ToolResultHumanSummary.body(for: result)
 
-        #expect(body.contains("configured remote"))
-        #expect(body.contains("before it can continue"))
+        #expect(body.contains("先配置远端仓库"))
     }
 
     @Test
@@ -251,8 +250,8 @@ struct ToolResultHumanSummaryTests {
 
         let body = ToolResultHumanSummary.body(for: result)
 
-        #expect(body.contains("local branch"))
-        #expect(body.contains("does not exist yet"))
+        #expect(body.contains("本地分支"))
+        #expect(body.contains("还不存在"))
     }
 
     @Test
@@ -275,7 +274,7 @@ struct ToolResultHumanSummaryTests {
 
         let body = ToolResultHumanSummary.body(for: result)
 
-        #expect(body.contains("user identity"))
+        #expect(body.contains("Git 身份"))
         #expect(body.contains("user.name"))
         #expect(body.contains("user.email"))
     }
@@ -301,8 +300,8 @@ struct ToolResultHumanSummaryTests {
 
         let body = ToolResultHumanSummary.body(for: result)
 
-        #expect(body.contains("requested commit paths"))
-        #expect(body.contains("tracked changes"))
+        #expect(body.contains("提交路径"))
+        #expect(body.contains("已跟踪改动"))
     }
 
     @Test
@@ -326,8 +325,8 @@ struct ToolResultHumanSummaryTests {
 
         let body = ToolResultHumanSummary.body(for: result)
 
-        #expect(body.contains("tracked changes"))
-        #expect(!body.contains("staged changes"))
+        #expect(body.contains("已跟踪改动"))
+        #expect(!body.contains("暂存改动"))
     }
 
     @Test
@@ -351,8 +350,8 @@ struct ToolResultHumanSummaryTests {
 
         let body = ToolResultHumanSummary.body(for: result)
 
-        #expect(body.contains("commit paths"))
-        #expect(body.contains("not tracked"))
+        #expect(body.contains("提交路径"))
+        #expect(body.contains("Git 跟踪范围"))
     }
 
     @Test
@@ -378,7 +377,7 @@ struct ToolResultHumanSummaryTests {
         let body = ToolResultHumanSummary.body(for: result)
 
         #expect(body.contains("all=true"))
-        #expect(body.contains("explicit `paths`"))
+        #expect(body.contains("显式 `paths`"))
     }
 
     @Test
@@ -401,8 +400,7 @@ struct ToolResultHumanSummaryTests {
 
         let body = ToolResultHumanSummary.body(for: result)
 
-        #expect(body.contains("could not reach"))
-        #expect(body.contains("configured git remote"))
+        #expect(body.contains("无法连接到已配置的 Git 远端"))
     }
 
     @Test
@@ -425,7 +423,7 @@ struct ToolResultHumanSummaryTests {
 
         let body = ToolResultHumanSummary.body(for: result)
 
-        #expect(body.contains("rejected"))
-        #expect(body.contains("remote branch has diverged"))
+        #expect(body.contains("被拒绝"))
+        #expect(body.contains("远端分支已发生分叉"))
     }
 }

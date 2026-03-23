@@ -13,6 +13,12 @@ struct XTGuardrailMessage: Equatable, Sendable {
     }
 }
 
+struct XTGuardrailRepairHint: Equatable, Sendable {
+    var destination: XTProjectGovernanceDestination
+    var buttonTitle: String
+    var helpText: String
+}
+
 enum XTGuardrailMessagePresentation {
     static func awaitingApprovalMessage(
         toolLabel: String,
@@ -32,19 +38,19 @@ enum XTGuardrailMessagePresentation {
         if !cleanedCapability.isEmpty || cleanedDenyCode == "grant_required" {
             if cleanedCapability.isEmpty {
                 return XTGuardrailMessage(
-                    summary: "Waiting for Hub grant approval before running \(cleanedToolLabel)\(targetSuffix).",
-                    nextStep: "Approve the grant in Hub or Supervisor before retrying."
+                    summary: "运行\(cleanedToolLabel)\(targetSuffix)前，还需要先通过 Hub 授权。",
+                    nextStep: "先在 Hub 或 Supervisor 里批准授权，再重试。"
                 )
             }
             return XTGuardrailMessage(
-                summary: "Waiting for Hub grant approval for \(humanCapability) before running \(cleanedToolLabel)\(targetSuffix).",
-                nextStep: "Approve the grant in Hub or Supervisor before retrying."
+                summary: "运行\(cleanedToolLabel)\(targetSuffix)前，还需要先批准 \(humanCapability) 的 Hub 授权。",
+                nextStep: "先在 Hub 或 Supervisor 里批准授权，再重试。"
             )
         }
 
         return XTGuardrailMessage(
-            summary: "Waiting for local approval before running \(cleanedToolLabel)\(targetSuffix).",
-            nextStep: "Approve it in X-Terminal to let the guarded tool run."
+            summary: "运行\(cleanedToolLabel)\(targetSuffix)前，还需要先通过本地审批。",
+            nextStep: "先在 X-Terminal 里批准，让受治理工具继续执行。"
         )
     }
 
@@ -93,9 +99,9 @@ enum XTGuardrailMessagePresentation {
 
         let cleanedToolLabel = normalizedToolLabel(toolLabel)
         if !cleanedToolLabel.isEmpty {
-            return "This action was blocked before \(cleanedToolLabel) could continue."
+            return "在继续执行\(cleanedToolLabel)之前，这个动作已被拦下。"
         }
-        return "This action was blocked by a guarded policy check."
+        return "这个动作被治理策略拦下了。"
     }
 
     static func toolResultBody(
@@ -129,6 +135,36 @@ enum XTGuardrailMessagePresentation {
         )
     }
 
+    static func repairHint(
+        denyCode: String,
+        policySource: String = "",
+        policyReason: String = ""
+    ) -> XTGuardrailRepairHint? {
+        let cleanedDenyCode = normalized(denyCode)
+        let cleanedPolicySource = normalized(policySource)
+        let cleanedPolicyReason = normalized(policyReason)
+
+        if cleanedDenyCode == "governance_capability_denied" || cleanedPolicySource == "project_governance" {
+            return XTGuardrailRepairHint(
+                destination: .executionTier,
+                buttonTitle: "打开执行档位",
+                helpText: executionTierHelpText(minimumTier: recommendedExecutionTier(for: cleanedPolicyReason))
+            )
+        }
+
+        if cleanedDenyCode == "autonomy_policy_denied"
+            || cleanedPolicySource == "project_autonomy_policy"
+            || cleanedPolicySource == "trusted_automation_device_gate" {
+            return XTGuardrailRepairHint(
+                destination: .overview,
+                buttonTitle: "打开治理设置",
+                helpText: "打开项目设置 -> 项目治理，检查当前运行面限制、可信自动化状态和生效策略。"
+            )
+        }
+
+        return nil
+    }
+
     private static func explanation(
         tool: ToolName?,
         toolLabel: String,
@@ -151,123 +187,123 @@ enum XTGuardrailMessagePresentation {
         case "grant_required":
             let summary: String
             if cleanedCapability.isEmpty {
-                summary = "Hub grant approval is still required before this action can continue."
+                summary = "继续这个动作前，仍然需要先通过 Hub 授权。"
             } else {
-                summary = "Hub grant approval for \(humanCapability) is still required before this action can continue."
+                summary = "继续这个动作前，仍然需要先通过 \(humanCapability) 的 Hub 授权。"
             }
             return XTGuardrailMessage(
                 summary: summary,
-                nextStep: "Approve the grant in Hub or Supervisor before retrying."
+                nextStep: "先在 Hub 或 Supervisor 里批准授权，再重试。"
             )
         case "grant_denied", "voice_grant_denied":
             let summary: String
             if cleanedCapability.isEmpty {
-                summary = "Hub grant approval was denied, so this action did not run."
+                summary = "Hub 授权被拒绝了，所以这个动作没有执行。"
             } else {
-                summary = "Hub grant approval for \(humanCapability) was denied, so this action did not run."
+                summary = "\(humanCapability) 的 Hub 授权被拒绝了，所以这个动作没有执行。"
             }
             return XTGuardrailMessage(
                 summary: summary,
-                nextStep: "Adjust the request scope or approve a new grant before retrying."
+                nextStep: "调整请求范围，或先批准新的授权，再重试。"
             )
         case "local_approval_required":
             return XTGuardrailMessage(
-                summary: "Local approval is still required before this action can continue.",
-                nextStep: "Approve it in X-Terminal to let the guarded tool run."
+                summary: "继续这个动作前，仍然需要本地审批。",
+                nextStep: "先在 X-Terminal 里批准，让受治理工具继续执行。"
             )
         case "local_approval_denied", "user_rejected_pending_tool_approval":
             return XTGuardrailMessage(
-                summary: "Local approval was denied, so this action did not run.",
-                nextStep: "Review the request and retry only if it is still appropriate."
+                summary: "本地审批被拒绝了，所以这个动作没有执行。",
+                nextStep: "先确认这个请求仍然合理，再决定是否重试。"
             )
         case "governance_capability_denied":
             return governanceExplanation(policyReason: cleanedPolicyReason)
         case "autonomy_policy_denied":
-            return autonomyExplanation(policyReason: cleanedPolicyReason)
+            return runtimeSurfaceExplanation(policyReason: cleanedPolicyReason)
         case "tool_policy_denied":
             return XTGuardrailMessage(
-                summary: "Project tool policy blocks \(cleanedToolLabel).",
-                nextStep: "Allow this tool in the project tool policy before retrying."
+                summary: "项目工具策略禁止执行\(cleanedToolLabel)。",
+                nextStep: "先在项目工具策略里放行这个工具，再重试。"
             )
         case XTDeviceAutomationRejectCode.trustedAutomationModeOff.rawValue:
             return XTGuardrailMessage(
-                summary: "Trusted device authority is off for this project.",
-                nextStep: "Turn on trusted automation and pair the project with a device before retrying."
+                summary: "这个项目还没有开启可信设备权限。",
+                nextStep: "先打开可信自动化，并把项目绑定到设备，再重试。"
             )
         case XTDeviceAutomationRejectCode.trustedAutomationProjectNotBound.rawValue:
             return XTGuardrailMessage(
-                summary: "This project is not bound to a paired device yet.",
-                nextStep: "Bind the project to a paired device before retrying."
+                summary: "这个项目还没有绑定到已配对设备。",
+                nextStep: "先把项目绑定到已配对设备，再重试。"
             )
         case XTDeviceAutomationRejectCode.trustedAutomationWorkspaceMismatch.rawValue:
             return XTGuardrailMessage(
-                summary: "The paired-device binding no longer matches this project folder.",
-                nextStep: "Re-bind the project so the workspace hash matches the current root."
+                summary: "当前项目文件夹和已配对设备的绑定已经不匹配了。",
+                nextStep: "重新绑定项目，让工作区哈希与当前根目录一致。"
             )
         case XTDeviceAutomationRejectCode.trustedAutomationSurfaceNotEnabled.rawValue:
             return XTGuardrailMessage(
-                summary: "Device automation surfaces are not enabled for this project.",
-                nextStep: "Enable governed device authority before retrying."
+                summary: "这个项目还没有开启设备自动化运行面。",
+                nextStep: "先开启受治理的设备权限，再重试。"
             )
         case XTDeviceAutomationRejectCode.deviceAutomationToolNotArmed.rawValue:
             return XTGuardrailMessage(
-                summary: "The required device capability is not armed for this project.",
-                nextStep: "Arm the missing device tool group in project settings before retrying."
+                summary: "这个项目还没有启用所需的设备能力。",
+                nextStep: "先在项目设置里启用缺失的设备工具组，再重试。"
             )
         case XTDeviceAutomationRejectCode.systemPermissionMissing.rawValue:
             return XTGuardrailMessage(
-                summary: "macOS permissions required for this device action are missing.",
-                nextStep: "Grant the missing system permissions, then retry."
+                summary: "执行这个设备动作所需的 macOS 权限还没授予。",
+                nextStep: "先授予缺失的系统权限，再重试。"
             )
         case XTDeviceAutomationRejectCode.uiObservationRequired.rawValue:
             return XTGuardrailMessage(
-                summary: "This UI action needs a fresh UI observation before it can continue.",
-                nextStep: "Run an observe step first, then retry the action."
+                summary: "这个 UI 动作继续前，需要一份新的 UI 观察结果。",
+                nextStep: "先执行一次观察步骤，再重试这个动作。"
             )
         case XTDeviceAutomationRejectCode.uiObservationExpired.rawValue:
             return XTGuardrailMessage(
-                summary: "The last UI observation is stale.",
-                nextStep: "Capture a fresh UI observation before retrying."
+                summary: "上一份 UI 观察已经过期。",
+                nextStep: "先采集新的 UI 观察结果，再重试。"
             )
         case XTDeviceAutomationRejectCode.browserManagedDriverUnavailable.rawValue:
             return XTGuardrailMessage(
-                summary: "Managed browser click/type automation is not available for this path yet.",
-                nextStep: "Use open or read flows for now, or keep the action manual."
+                summary: "当前路径暂时还不能使用受治理的浏览器点击/输入自动化。",
+                nextStep: "先改用打开或读取流程，或者先手动执行。"
             )
         case XTDeviceAutomationRejectCode.browserSessionMissing.rawValue:
             return XTGuardrailMessage(
-                summary: "The browser session is missing.",
-                nextStep: "Open or re-open the page before retrying."
+                summary: "浏览器会话不存在。",
+                nextStep: "先打开或重新打开页面，再重试。"
             )
         case XTDeviceAutomationRejectCode.browserSessionNoActiveURL.rawValue:
             return XTGuardrailMessage(
-                summary: "The browser session has no active page.",
-                nextStep: "Open a page before retrying."
+                summary: "当前浏览器会话里没有活动页面。",
+                nextStep: "先打开一个页面，再重试。"
             )
         case "path_outside_governed_read_roots":
             return XTGuardrailMessage(
-                summary: "This read is outside the project and governed readable roots.",
-                nextStep: "Add the path to governed readable roots or move the file into scope."
+                summary: "这次读取超出了项目目录和受治理可读根目录范围。",
+                nextStep: "把路径加入受治理可读根目录，或把文件移回项目范围内。"
             )
         case "path_write_outside_project_root":
             return XTGuardrailMessage(
-                summary: "Writes stay inside the project root even when governed readable roots are enabled.",
-                nextStep: "Write inside the project or move the target file into the project root."
+                summary: "即使启用了受治理可读根目录，写入也仍然只能发生在项目根目录内。",
+                nextStep: "把写入目标放回项目目录内，再重试。"
             )
         case "payload.command_not_allowed":
             return XTGuardrailMessage(
-                summary: "This skill request asked for a command outside the governed allowlist.",
-                nextStep: "Use an allowed command or update the skill contract before retrying."
+                summary: "这次技能请求要求执行的命令不在受治理白名单里。",
+                nextStep: "改用允许的命令，或先更新技能契约，再重试。"
             )
         case "command_outside_governed_repo_allowlist":
             return XTGuardrailMessage(
-                summary: "Only governed repo build and test commands can auto-run for this project.",
-                nextStep: "Approve this command locally or switch to an allowlisted build/test command."
+                summary: "这个项目只能自动运行受治理的仓库构建/测试命令。",
+                nextStep: "先在本地批准这个命令，或改成白名单内的构建/测试命令。"
             )
         case "unsupported_skill_id", "skill_mapping_missing", "skill_not_registered":
             return XTGuardrailMessage(
-                summary: "This skill is not connected to a governed runtime yet.",
-                nextStep: "Install or register the skill before retrying."
+                summary: "这个技能还没有接入受治理运行时。",
+                nextStep: "先安装或注册这个技能，再重试。"
             )
         default:
             break
@@ -275,8 +311,8 @@ enum XTGuardrailMessagePresentation {
 
         if cleanedDenyCode.hasPrefix("payload.") {
             return XTGuardrailMessage(
-                summary: "This skill request is missing required or valid payload fields.",
-                nextStep: "Review the skill input payload and retry."
+                summary: "这次技能请求缺少必填字段，或 payload 字段不合法。",
+                nextStep: "先检查技能输入 payload，再重试。"
             )
         }
 
@@ -284,26 +320,26 @@ enum XTGuardrailMessagePresentation {
         case "project_governance":
             return governanceExplanation(policyReason: cleanedPolicyReason)
         case "project_autonomy_policy":
-            return autonomyExplanation(policyReason: cleanedPolicyReason)
+            return runtimeSurfaceExplanation(policyReason: cleanedPolicyReason)
         case "project_tool_policy":
             return XTGuardrailMessage(
-                summary: "Project tool policy blocks \(cleanedToolLabel).",
-                nextStep: "Allow this tool in the project tool policy before retrying."
+                summary: "项目工具策略禁止执行\(cleanedToolLabel)。",
+                nextStep: "先在项目工具策略里放行这个工具，再重试。"
             )
         case "trusted_automation_device_gate":
             return XTGuardrailMessage(
-                summary: "Trusted device authority blocked this action.",
-                nextStep: "Check project device authority and macOS permissions before retrying."
+                summary: "可信设备权限拦下了这个动作。",
+                nextStep: "先检查项目设备权限和 macOS 系统授权，再重试。"
             )
         case "governed_path_scope":
             return XTGuardrailMessage(
-                summary: "This action is outside the governed path scope for the project.",
-                nextStep: "Move the target back into scope or update the governed readable roots."
+                summary: "这个动作超出了项目的受治理路径范围。",
+                nextStep: "把目标移回允许范围内，或更新受治理可读根目录。"
             )
         case "governed_command_guard":
             return XTGuardrailMessage(
-                summary: "Only governed repo build and test commands can auto-run for this project.",
-                nextStep: "Approve this command locally or switch to an allowlisted build/test command."
+                summary: "这个项目只能自动运行受治理的仓库构建/测试命令。",
+                nextStep: "先在本地批准这个命令，或改成白名单内的构建/测试命令。"
             )
         default:
             return nil
@@ -316,93 +352,141 @@ enum XTGuardrailMessagePresentation {
         switch true {
         case policyReason.contains("repo_write"):
             return XTGuardrailMessage(
-                summary: "Project governance tier does not allow file writes for this project.",
-                nextStep: "Raise the execution tier to A2+ or keep the action read-only."
+                summary: "当前项目执行档位不允许写文件。",
+                nextStep: executionTierNextStep(
+                    minimumTier: .a2RepoAuto,
+                    action: "写文件"
+                )
             )
         case policyReason.contains("repo_delete_move"):
             return XTGuardrailMessage(
-                summary: "Project governance tier does not allow delete or move operations for this project.",
-                nextStep: "Raise the execution tier to A2+ before deleting, moving, or renaming paths."
+                summary: "当前项目执行档位不允许删除、移动或重命名路径。",
+                nextStep: executionTierNextStep(
+                    minimumTier: .a2RepoAuto,
+                    action: "删除、移动或重命名路径"
+                )
             )
         case policyReason.contains("repo_build_test"):
             return XTGuardrailMessage(
-                summary: "Project governance tier does not allow command execution for this project.",
-                nextStep: "Raise the execution tier to A2+ before running build or test commands."
+                summary: "当前项目执行档位不允许运行构建或测试命令。",
+                nextStep: executionTierNextStep(
+                    minimumTier: .a2RepoAuto,
+                    action: "运行构建或测试命令"
+                )
             )
         case policyReason.contains("repo_build"):
             return XTGuardrailMessage(
-                summary: "Project governance tier does not allow build commands for this project.",
-                nextStep: "Raise the execution tier to A2+ before running governed build commands."
+                summary: "当前项目执行档位不允许运行构建命令。",
+                nextStep: executionTierNextStep(
+                    minimumTier: .a2RepoAuto,
+                    action: "运行受治理的构建命令"
+                )
             )
         case policyReason.contains("repo_test"):
             return XTGuardrailMessage(
-                summary: "Project governance tier does not allow test commands for this project.",
-                nextStep: "Raise the execution tier to A2+ before running governed test commands."
+                summary: "当前项目执行档位不允许运行测试命令。",
+                nextStep: executionTierNextStep(
+                    minimumTier: .a2RepoAuto,
+                    action: "运行受治理的测试命令"
+                )
             )
         case policyReason.contains("git_apply"):
             return XTGuardrailMessage(
-                summary: "Project governance tier does not allow patch application for this project.",
-                nextStep: "Raise the execution tier to A2+ before applying patches."
+                summary: "当前项目执行档位不允许应用补丁。",
+                nextStep: executionTierNextStep(
+                    minimumTier: .a2RepoAuto,
+                    action: "应用补丁"
+                )
             )
         case policyReason.contains("git_commit"):
             return XTGuardrailMessage(
-                summary: "Project governance tier does not allow git commit for this project.",
-                nextStep: "Raise the execution tier to A3+ before creating commits."
+                summary: "当前项目执行档位不允许创建 Git 提交。",
+                nextStep: executionTierNextStep(
+                    minimumTier: .a3DeliverAuto,
+                    action: "创建提交"
+                )
             )
         case policyReason.contains("git_push"):
             return XTGuardrailMessage(
-                summary: "Project governance tier does not allow git push for this project.",
-                nextStep: "Raise the execution tier to A4 before pushing to remotes."
+                summary: "当前项目执行档位不允许 Git 推送。",
+                nextStep: executionTierNextStep(
+                    minimumTier: .a4OpenClaw,
+                    action: "向远端推送"
+                )
             )
         case policyReason.contains("pr_create"):
             return XTGuardrailMessage(
-                summary: "Project governance tier does not allow pull request creation for this project.",
-                nextStep: "Raise the execution tier to A3+ before creating pull requests."
+                summary: "当前项目执行档位不允许创建 Pull Request。",
+                nextStep: executionTierNextStep(
+                    minimumTier: .a3DeliverAuto,
+                    action: "创建 Pull Request"
+                )
             )
         case policyReason.contains("ci_read"):
             return XTGuardrailMessage(
-                summary: "Project governance tier does not allow CI status reads for this project.",
-                nextStep: "Raise the execution tier to A3+ before reading remote CI state."
+                summary: "当前项目执行档位不允许读取远端 CI 状态。",
+                nextStep: executionTierNextStep(
+                    minimumTier: .a3DeliverAuto,
+                    action: "读取远端 CI 状态"
+                )
             )
         case policyReason.contains("ci_trigger"):
             return XTGuardrailMessage(
-                summary: "Project governance tier does not allow CI trigger actions for this project.",
-                nextStep: "Raise the execution tier to A4 before dispatching CI workflows."
+                summary: "当前项目执行档位不允许触发 CI。",
+                nextStep: executionTierNextStep(
+                    minimumTier: .a4OpenClaw,
+                    action: "触发 CI 工作流"
+                )
             )
         case policyReason.contains("managed_processes"):
             return XTGuardrailMessage(
-                summary: "Project governance tier does not allow managed background processes for this project.",
-                nextStep: "Raise the execution tier to A2+ before starting, inspecting, or stopping managed processes."
+                summary: "当前项目执行档位不允许受治理的后台进程。",
+                nextStep: executionTierNextStep(
+                    minimumTier: .a2RepoAuto,
+                    action: "启动、查看或停止受治理进程"
+                )
             )
         case policyReason.contains("process_autorestart"):
             return XTGuardrailMessage(
-                summary: "Project governance tier does not allow process auto-restart for this project.",
-                nextStep: "Raise the execution tier to A3+ before enabling restart_on_exit."
+                summary: "当前项目执行档位不允许进程自动重启。",
+                nextStep: executionTierNextStep(
+                    minimumTier: .a3DeliverAuto,
+                    action: "启用 restart_on_exit"
+                )
             )
         case policyReason.contains("browser_runtime"):
             return XTGuardrailMessage(
-                summary: "Project governance tier does not allow browser automation for this project.",
-                nextStep: "Raise the execution tier to A4 or switch to a lower-risk path."
+                summary: "当前项目执行档位不允许浏览器自动化。",
+                nextStep: executionTierNextStep(
+                    minimumTier: .a4OpenClaw,
+                    action: "使用浏览器自动化"
+                )
             )
         case policyReason.contains("device_tools"):
             return XTGuardrailMessage(
-                summary: "Project governance tier does not allow device-level tools for this project.",
-                nextStep: "Raise the execution tier to A4 before using device authority."
+                summary: "当前项目执行档位不允许设备级工具。",
+                nextStep: executionTierNextStep(
+                    minimumTier: .a4OpenClaw,
+                    action: "使用设备权限"
+                )
             )
         default:
             return XTGuardrailMessage(
-                summary: "Project governance blocks this action at the current execution tier.",
-                nextStep: "Raise the execution tier or choose a lower-risk path before retrying."
+                summary: "当前执行档位拦下了这个动作。",
+                nextStep: executionTierNextStep(
+                    minimumTier: recommendedExecutionTier(for: policyReason),
+                    action: "重试这个动作"
+                )
             )
         }
     }
 
-    private static func autonomyExplanation(
+    private static func runtimeSurfaceExplanation(
         policyReason: String
     ) -> XTGuardrailMessage {
-        if let clamp = xtAutonomyClampExplanation(
+        if let clamp = xtProjectGovernanceClampExplanation(
             policyReason: policyReason,
-            style: .guardrailEnglish
+            style: .uiChinese
         ) {
             return XTGuardrailMessage(
                 summary: clamp.summary,
@@ -413,22 +497,56 @@ enum XTGuardrailMessagePresentation {
         switch true {
         case policyReason.contains("browser_runtime"):
             return XTGuardrailMessage(
-                summary: "The current runtime surface does not allow browser automation.",
-                nextStep: "Restore the guided/full runtime surface or wait for the clamp to clear."
+                summary: "当前运行面不允许浏览器自动化。",
+                nextStep: "恢复到允许浏览器自动化的运行面，或等待限制解除。"
             )
         case policyReason.contains("device_tools"),
              policyReason.contains("autonomy_mode=guided"),
              policyReason.contains("runtime_surface_effective=guided"),
              policyReason.contains("runtime_surface=guided"):
             return XTGuardrailMessage(
-                summary: "The current runtime surface keeps device-level actions disabled.",
-                nextStep: "Restore the full runtime surface or wait for the clamp to clear."
+                summary: "当前运行面仍然关闭了设备级动作。",
+                nextStep: "恢复完整运行面，或等待限制解除。"
             )
         default:
             return XTGuardrailMessage(
-                summary: "The current runtime surface blocks this action.",
-                nextStep: "Adjust the runtime surface or wait for the policy clamp to clear."
+                summary: "当前运行面拦下了这个动作。",
+                nextStep: "调整运行面，或等待策略限制解除。"
             )
+        }
+    }
+
+    private static func executionTierNextStep(
+        minimumTier: AXProjectExecutionTier,
+        action: String
+    ) -> String {
+        let cleanedAction = action.trimmingCharacters(in: .whitespacesAndNewlines)
+        let suffix = cleanedAction.isEmpty ? "继续这个动作" : cleanedAction
+        return "打开项目设置 -> 执行档位，把档位提升到 \(minimumTier.displayName) 或更高后，再\(suffix)。"
+    }
+
+    private static func executionTierHelpText(
+        minimumTier: AXProjectExecutionTier
+    ) -> String {
+        "打开项目设置 -> 执行档位，查看当前最低要求。这个动作至少需要 \(minimumTier.displayName)。"
+    }
+
+    private static func recommendedExecutionTier(
+        for policyReason: String
+    ) -> AXProjectExecutionTier {
+        switch true {
+        case policyReason.contains("git_push"),
+             policyReason.contains("ci_trigger"),
+             policyReason.contains("browser_runtime"),
+             policyReason.contains("device_tools"):
+            return .a4OpenClaw
+        case policyReason.contains("git_commit"),
+             policyReason.contains("pr_create"),
+             policyReason.contains("ci_read"),
+             policyReason.contains("process_autorestart"):
+            return .a3DeliverAuto
+        default:
+            return .a2RepoAuto
         }
     }
 
@@ -480,7 +598,7 @@ enum XTGuardrailMessagePresentation {
 
     private static func normalizedToolLabel(_ raw: String) -> String {
         let cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return cleaned.isEmpty ? "this action" : cleaned
+        return cleaned.isEmpty ? "这个动作" : cleaned
     }
 
     private static func targetClause(_ rawTarget: String?) -> String {
@@ -490,95 +608,97 @@ enum XTGuardrailMessagePresentation {
         let lower = cleaned.lowercased()
         let descriptivePrefixes = ["query ", "path ", "selector ", "command ", "action "]
         if descriptivePrefixes.contains(where: { lower.hasPrefix($0) }) {
-            return " for \(cleaned)"
+            return "（\(cleaned)）"
         }
-        return " on \(cleaned)"
+        return "（\(cleaned)）"
     }
 
     private static func toolLabel(for tool: ToolName) -> String {
         switch tool {
         case .read_file:
-            return "file read"
+            return "读取文件"
         case .write_file:
-            return "file write"
+            return "写入文件"
         case .delete_path:
-            return "path deletion"
+            return "删除路径"
         case .move_path:
-            return "path move"
+            return "移动路径"
         case .list_dir:
-            return "directory listing"
+            return "列出目录"
         case .search:
-            return "search"
+            return "搜索"
         case .run_command:
-            return "command execution"
+            return "运行命令"
         case .process_start:
-            return "managed process start"
+            return "启动受治理进程"
         case .process_status:
-            return "managed process status"
+            return "查看受治理进程状态"
         case .process_logs:
-            return "managed process logs"
+            return "读取受治理进程日志"
         case .process_stop:
-            return "managed process stop"
+            return "停止受治理进程"
         case .git_status:
             return "git status"
         case .git_diff:
             return "git diff"
         case .git_commit:
-            return "git commit"
+            return "Git 提交"
         case .git_push:
-            return "git push"
+            return "Git 推送"
         case .git_apply_check:
-            return "patch validation"
+            return "校验补丁"
         case .git_apply:
-            return "patch apply"
+            return "应用补丁"
         case .pr_create:
-            return "pull request creation"
+            return "创建 Pull Request"
         case .ci_read:
-            return "CI status read"
+            return "读取 CI 状态"
         case .ci_trigger:
-            return "CI trigger"
+            return "触发 CI"
         case .session_list:
-            return "session listing"
+            return "查看会话列表"
         case .session_resume:
-            return "session resume"
+            return "恢复会话"
         case .session_compact:
-            return "session compaction"
+            return "压缩会话"
         case .agentImportRecord:
-            return "agent import record"
+            return "导入代理记录"
         case .memory_snapshot:
-            return "memory snapshot"
+            return "记忆快照"
         case .project_snapshot:
-            return "project snapshot"
+            return "项目快照"
         case .deviceUIObserve:
-            return "UI observation"
+            return "UI 观察"
         case .deviceUIAct:
-            return "UI action"
+            return "UI 动作"
         case .deviceUIStep:
-            return "guided UI step"
+            return "UI 引导步骤"
         case .deviceClipboardRead:
-            return "clipboard read"
+            return "读取剪贴板"
         case .deviceClipboardWrite:
-            return "clipboard write"
+            return "写入剪贴板"
         case .deviceScreenCapture:
-            return "screen capture"
+            return "屏幕截图"
         case .deviceBrowserControl:
-            return "browser automation"
+            return "浏览器自动化"
         case .deviceAppleScript:
-            return "AppleScript execution"
+            return "执行 AppleScript"
         case .need_network:
-            return "network request"
+            return "网络访问"
         case .bridge_status:
-            return "bridge status check"
+            return "检查桥接状态"
         case .skills_search:
-            return "skills search"
+            return "搜索技能"
         case .summarize:
-            return "content summary"
+            return "总结内容"
+        case .supervisorVoicePlayback:
+            return "Supervisor 语音播放"
         case .web_fetch:
-            return "web fetch"
+            return "抓取网页"
         case .web_search:
-            return "web search"
+            return "网页搜索"
         case .browser_read:
-            return "browser read"
+            return "浏览器读取"
         }
     }
 

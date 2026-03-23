@@ -561,7 +561,7 @@ enum SupervisorProjectDrillDownPresentationMapper {
             lines.append(
                 line(
                     id: "governance-follow-up",
-                    text: "follow-up rhythm: \(followUp)",
+                    text: "跟进节奏：\(ProjectGovernanceActivityDisplay.displayValue(label: "follow_up_rhythm", value: followUp))",
                     tone: .secondary,
                     lineLimit: 3
                 )
@@ -572,21 +572,21 @@ enum SupervisorProjectDrillDownPresentationMapper {
             lines.append(
                 line(
                     id: "review-headline",
-                    text: "review: \(review.verdict.displayName) · \(review.reviewLevel.displayName) · \(review.trigger.displayName)",
+                    text: "审查：\(ProjectGovernanceActivityDisplay.displayValue(label: "verdict", value: review.verdict.displayName)) · \(ProjectGovernanceActivityDisplay.displayValue(label: "level", value: review.reviewLevel.displayName)) · \(ProjectGovernanceActivityDisplay.displayValue(label: "trigger", value: review.trigger.displayName))",
                     tone: .primary
                 )
             )
             lines.append(
                 line(
                     id: "review-tier",
-                    text: "tier: \((review.effectiveSupervisorTier?.displayName) ?? "(none)") · depth: \((review.effectiveWorkOrderDepth?.displayName) ?? "(none)") · strength: \(projectAIStrengthText(band: review.projectAIStrengthBand, confidence: review.projectAIStrengthConfidence))",
+                    text: "层级：\(ProjectGovernanceActivityDisplay.displayValue(label: "supervisor_tier", value: (review.effectiveSupervisorTier?.displayName) ?? "(none)")) · 工单深度：\(ProjectGovernanceActivityDisplay.displayValue(label: "work_order_depth", value: (review.effectiveWorkOrderDepth?.displayName) ?? "(none)")) · AI 强度：\(ProjectGovernanceActivityDisplay.displayValue(label: "project_ai_strength", value: projectAIStrengthText(band: review.projectAIStrengthBand, confidence: review.projectAIStrengthConfidence)))",
                     tone: .secondary
                 )
             )
             lines.append(
                 line(
                     id: "review-summary",
-                    text: "summary: \(governanceScalar(review.summary))",
+                    text: "摘要：\(governanceScalar(review.summary))",
                     tone: .secondary
                 )
             )
@@ -604,7 +604,7 @@ enum SupervisorProjectDrillDownPresentationMapper {
                 lines.append(
                     line(
                         id: "review-work-order",
-                        text: "work_order: \(workOrderRef)",
+                        text: "工单：\(workOrderRef)",
                         tone: .secondary,
                         monospaced: true,
                         lineLimit: 1
@@ -617,21 +617,21 @@ enum SupervisorProjectDrillDownPresentationMapper {
             lines.append(
                 line(
                     id: "pending-guidance-headline",
-                    text: "pending guidance: \(guidance.deliveryMode.displayName) · \(guidance.interventionMode.displayName)",
+                    text: "待确认指导：\(ProjectGovernanceActivityDisplay.displayValue(label: "delivery", value: guidance.deliveryMode.displayName)) · \(ProjectGovernanceActivityDisplay.displayValue(label: "intervention", value: guidance.interventionMode.displayName))",
                     tone: .warning
                 )
             )
             lines.append(
                 line(
                     id: "pending-guidance-ack",
-                    text: "ack: \(guidanceAckText(guidance)) · safe point: \(guidance.safePointPolicy.displayName) · lifecycle: \(SupervisorGuidanceInjectionStore.lifecycleSummary(for: guidance, nowMs: governanceNowMs))",
+                    text: "确认：\(ProjectGovernanceActivityDisplay.displayValue(label: "ack", value: guidanceAckText(guidance))) · 安全点：\(ProjectGovernanceActivityDisplay.displayValue(label: "safe_point", value: guidance.safePointPolicy.displayName)) · 生命周期：\(ProjectGovernanceActivityDisplay.displayValue(label: "lifecycle", value: SupervisorGuidanceInjectionStore.lifecycleSummary(for: guidance, nowMs: governanceNowMs)))",
                     tone: .warning
                 )
             )
             lines.append(
                 line(
                     id: "pending-guidance-tier",
-                    text: "tier: \((guidance.effectiveSupervisorTier?.displayName) ?? "(none)") · depth: \((guidance.effectiveWorkOrderDepth?.displayName) ?? "(none)") · work_order: \(governanceScalar(guidance.workOrderRef))",
+                    text: "层级：\(ProjectGovernanceActivityDisplay.displayValue(label: "supervisor_tier", value: (guidance.effectiveSupervisorTier?.displayName) ?? "(none)")) · 工单深度：\(ProjectGovernanceActivityDisplay.displayValue(label: "work_order_depth", value: (guidance.effectiveWorkOrderDepth?.displayName) ?? "(none)")) · 工单：\(governanceScalar(guidance.workOrderRef))",
                     tone: .secondary
                 )
             )
@@ -650,14 +650,14 @@ enum SupervisorProjectDrillDownPresentationMapper {
             lines.append(
                 line(
                     id: "latest-guidance-headline",
-                    text: "latest delivered guidance: \(guidance.deliveryMode.displayName) · \(guidance.interventionMode.displayName)",
+                    text: "最新指导：\(ProjectGovernanceActivityDisplay.displayValue(label: "delivery", value: guidance.deliveryMode.displayName)) · \(ProjectGovernanceActivityDisplay.displayValue(label: "intervention", value: guidance.interventionMode.displayName))",
                     tone: .primary
                 )
             )
             lines.append(
                 line(
                     id: "latest-guidance-ack",
-                    text: "ack: \(guidanceAckText(guidance)) · safe point: \(guidance.safePointPolicy.displayName) · lifecycle: \(SupervisorGuidanceInjectionStore.lifecycleSummary(for: guidance, nowMs: governanceNowMs))",
+                    text: "确认：\(ProjectGovernanceActivityDisplay.displayValue(label: "ack", value: guidanceAckText(guidance))) · 安全点：\(ProjectGovernanceActivityDisplay.displayValue(label: "safe_point", value: guidance.safePointPolicy.displayName)) · 生命周期：\(ProjectGovernanceActivityDisplay.displayValue(label: "lifecycle", value: SupervisorGuidanceInjectionStore.lifecycleSummary(for: guidance, nowMs: governanceNowMs)))",
                     tone: .secondary
                 )
             )
@@ -698,7 +698,7 @@ enum SupervisorProjectDrillDownPresentationMapper {
             return [
                 line(
                     id: "\(prefix)-text",
-                    text: "guidance: \(governanceScalar(guidance.guidanceText))",
+                    text: "指导：\(governanceScalar(guidance.guidanceText))",
                     tone: .secondary,
                     lineLimit: 3
                 )
@@ -708,12 +708,12 @@ enum SupervisorProjectDrillDownPresentationMapper {
         var lines: [SupervisorProjectDrillDownLinePresentation] = [
             line(
                 id: "\(prefix)-contract",
-                text: "contract: \(contract.kindText)",
+                text: "指导合同：\(contract.kindText)",
                 tone: primaryTone
             ),
             line(
                 id: "\(prefix)-summary",
-                text: "summary: \(contract.summaryText)",
+                text: "摘要：\(contract.summaryText)",
                 tone: .secondary,
                 lineLimit: 3
             )
@@ -723,7 +723,7 @@ enum SupervisorProjectDrillDownPresentationMapper {
             lines.append(
                 line(
                     id: "\(prefix)-repair",
-                    text: "repair: \(uiReview.repairAction.isEmpty ? "(none)" : uiReview.repairAction) · focus: \(uiReview.repairFocus.isEmpty ? "(none)" : uiReview.repairFocus)",
+                    text: "修复：\(uiReview.repairAction.isEmpty ? "(none)" : uiReview.repairAction) · 焦点：\(uiReview.repairFocus.isEmpty ? "(none)" : uiReview.repairFocus)",
                     tone: primaryTone,
                     lineLimit: 3
                 )
@@ -732,7 +732,7 @@ enum SupervisorProjectDrillDownPresentationMapper {
                 lines.append(
                     line(
                         id: "\(prefix)-instruction",
-                        text: "instruction: \(uiReview.instruction)",
+                        text: "说明：\(uiReview.instruction)",
                         tone: .secondary,
                         lineLimit: 3
                     )
@@ -742,7 +742,7 @@ enum SupervisorProjectDrillDownPresentationMapper {
             lines.append(
                 line(
                     id: "\(prefix)-blocker",
-                    text: "blocker: \(contract.primaryBlocker)",
+                    text: "阻塞：\(contract.primaryBlocker)",
                     tone: primaryTone,
                     lineLimit: 3
                 )
@@ -752,7 +752,7 @@ enum SupervisorProjectDrillDownPresentationMapper {
         lines.append(
             line(
                 id: "\(prefix)-next-safe-action",
-                text: "next_safe_action: \(contract.nextSafeActionText)",
+                text: "下一个安全动作：\(contract.nextSafeActionText)",
                 tone: .secondary
             )
         )
@@ -761,7 +761,7 @@ enum SupervisorProjectDrillDownPresentationMapper {
             lines.append(
                 line(
                     id: "\(prefix)-recommended-actions",
-                    text: "recommended_actions: \(actions)",
+                    text: "建议动作：\(actions)",
                     tone: .secondary,
                     lineLimit: 3
                 )

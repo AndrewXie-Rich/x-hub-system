@@ -35,7 +35,9 @@ enum XTProjectSkillRouter {
             return .failure(XTProjectSkillMappingFailure(reasonCode: "skill_registry_unavailable"))
         }
 
-        let normalizedSkillId = normalized(call.skill_id)
+        let normalizedSkillId = normalized(
+            AXSkillsLibrary.canonicalSupervisorSkillID(call.skill_id)
+        )
         guard !normalizedSkillId.isEmpty else {
             return .failure(XTProjectSkillMappingFailure(reasonCode: "skill_id_missing"))
         }
@@ -44,7 +46,9 @@ enum XTProjectSkillRouter {
             projectId: normalizedProjectId,
             projectName: projectName
         )
-        guard let item = snapshot?.items.first(where: { normalized($0.skillId) == normalizedSkillId }) else {
+        guard let item = snapshot?.items.first(where: {
+            normalized(AXSkillsLibrary.canonicalSupervisorSkillID($0.skillId)) == normalizedSkillId
+        }) else {
             return .failure(XTProjectSkillMappingFailure(reasonCode: "skill_not_registered"))
         }
 

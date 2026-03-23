@@ -323,9 +323,9 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             intakeStatus = StatusExplanation(
                 state: .grantRequired,
                 headline: "one-shot intake 已接收，但等待风险授权",
-                whatHappened: oneShotSummary.isEmpty ? "Cockpit 发现授权链仍未完成，runtime policy 保持 fail-closed，不放行高风险 lane。" : oneShotSummary,
-                whyItHappened: "grant_required 来自 AI-2 runtime 合同、one-shot run state 与 lane launch deny 决策；未授权前不会越过 grant gate。",
-                userAction: directedResumeSummary ?? "先审批风险授权，再继续当前 one-shot intake。",
+                whatHappened: oneShotSummary.isEmpty ? "授权链还没完成，所以系统继续挡住高风险 lane，不会直接放行。" : oneShotSummary,
+                whyItHappened: "授权状态会综合运行时、当前 one-shot 状态和 lane 启动结果一起判断；没放行前不会越过 grant gate。",
+                userAction: directedResumeSummary ?? "先审批风险授权，再回来继续当前任务。",
                 machineStatusRef: plannerMachineStatusRef,
                 hardLine: "grant_fail_closed must remain visible",
                 highlights: [
@@ -339,20 +339,20 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                 state: .grantRequired,
                 headline: "Top blocker: \(oneShotTopBlocker == "none" ? "grant_required" : oneShotTopBlocker)",
                 whatHappened: "当前主 blocker 是 grant chain 未完成，auto-launch 被显式 deny。",
-                whyItHappened: "AI-2 的 `oneShotAutonomyPolicy` 与 `laneLaunchDecisions` 明确要求保持 fail-closed。",
+                whyItHappened: "授权没完成前，这条路会继续被显式挡住，而不是悄悄回落成普通等待。",
                 userAction: directedResumeSummary ?? "在 grant center 完成审批，然后回到当前 intake。",
                 machineStatusRef: plannerMachineStatusRef,
                 hardLine: "high-risk path remains fail-closed",
                 highlights: [input.grantGateMode.map { "grant_gate_mode=\($0)" } ?? "", "next_target=\(oneShotNextTarget)"]
                     .filter { !$0.isEmpty }
             )
-            plannerExplain = "\(contractSummary)。one-shot intake → planner explain → blocker triage → delivery freeze。当前停在 awaiting_grant；grant gate 未绿前不会自动继续。"
+            plannerExplain = "\(contractSummary)。当前链路：任务接入 → 规划说明 → 阻塞分诊 → 交付冻结。现在停在 awaiting_grant；grant gate 未变绿前不会自动继续。"
         } else if input.topLaunchDenyCode == "permission_denied" || oneShotTopBlocker == "permission_denied" {
             intakeStatus = StatusExplanation(
                 state: .permissionDenied,
-                headline: "runtime patch 检出 permission_denied，自动启动保持关闭",
-                whatHappened: "lane launch 决策返回 permission_denied，当前链路不会被 UI 包装成可继续。",
-                whyItHappened: "AI-2 在 runtime deny 决策里显式发出了 `permission_denied`，属于必须可见的 fail-closed 状态。",
+                headline: "检测到 permission_denied，自动启动继续保持关闭",
+                whatHappened: "lane 启动阶段返回 permission_denied，所以当前链路不会被显示成可继续。",
+                whyItHappened: "权限拒绝必须直接可见，不能被包装成普通等待。",
                 userAction: directedResumeSummary ?? "先修复权限或授权配置，再重新发起 intake / resume。",
                 machineStatusRef: plannerMachineStatusRef,
                 hardLine: "permission_denied remains explicit",
@@ -371,12 +371,12 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             plannerExplain = "\(contractSummary)。当前停在 permission_denied；lane launch deny 已把权限问题前移到 cockpit。"
         } else if input.topLaunchDenyCode == "scope_expansion" || freezeDecision == "no_go" || !input.scopeFreezeBlockedExpansionItems.isEmpty {
             let blockedItems = input.scopeFreezeBlockedExpansionItems.joined(separator: ",")
-            let nextAction = input.scopeFreezeNextActions.first ?? "drop_scope_expansion"
+            let nextAction = input.scopeFreezeNextActions.first ?? "先收回 scope expansion"
             intakeStatus = StatusExplanation(
                 state: .blockedWaitingUpstream,
-                headline: "validated scope freeze 拒绝 scope expansion",
-                whatHappened: "delivery scope freeze 标记为 `\(freezeDecision)`，且存在超出 validated mainline 的扩 scope 项。",
-                whyItHappened: "AI-2 的 `xt.delivery_scope_freeze.v1` 已明确 no-go / blocked expansion，UI 继续保持 fail-closed。",
+                headline: "已验证范围拒绝超范围请求",
+                whatHappened: "当前发布范围是 `\(freezeDecision)`，同时存在超出已验证主链的 scope expansion。",
+                whyItHappened: "这类超范围请求会继续被挡住，直到回到已验证主链。",
                 userAction: nextAction,
                 machineStatusRef: plannerMachineStatusRef,
                 hardLine: "scope_not_validated must remain visible",
@@ -385,20 +385,20 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             blockerStatus = StatusExplanation(
                 state: .blockedWaitingUpstream,
                 headline: "Top blocker: scope_expansion",
-                whatHappened: "当前主 blocker 是请求范围超出 validated scope。",
-                whyItHappened: "scope freeze 已落下 no-go 决策，因此不能继续对外或对内暗示已验证。",
+                whatHappened: "当前主 blocker 是请求超出了已验证范围。",
+                whyItHappened: "范围已经被判定为 no-go，所以不能继续对内对外暗示已验证。",
                 userAction: nextAction,
                 machineStatusRef: plannerMachineStatusRef,
                 hardLine: "validated-mainline-only stays enforced",
                 highlights: ["validated_scope=\(input.scopeFreezeValidatedScope.joined(separator: ","))"].filter { !$0.isEmpty }
             )
-            plannerExplain = "\(contractSummary)。当前停在 scope_expansion；需先回退到 validated mainline，再重新计算 delivery freeze。"
+            plannerExplain = "\(contractSummary)。当前停在 scope_expansion；需先回退到已验证主链，再重新计算 delivery freeze。"
         } else if input.releaseBlockedByDoctorWithoutReport != 0 {
             intakeStatus = StatusExplanation(
                 state: .diagnosticRequired,
                 headline: "Cockpit 等待 Doctor 预检证据",
                 whatHappened: "当前缺少可用的 Doctor release 证据，因此 release 相关动作仍保持阻断。",
-                whyItHappened: "secret scrub、diagnostics 与 fail-closed 口径要求先有机读报告，再允许 UI 提示可继续。",
+                whyItHappened: "发布前需要先拿到可读的诊断证据，不能只靠猜测继续往下走。",
                 userAction: "运行 Doctor 预检，确认阻断项与建议卡后再 review delivery。",
                 machineStatusRef: plannerMachineStatusRef,
                 hardLine: "diagnostic_required remains visible",
@@ -416,12 +416,12 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             )
             plannerExplain = "\(contractSummary)。当前停在 diagnostic_required，因为 Doctor / secret scrub 证据尚未齐备。"
         } else if oneShotState == .failedClosed {
-            let recommendation = directedResumeSummary ?? input.scopeFreezeNextActions.first ?? "先修复 fail-closed blocker，再重新发起当前 one-shot。"
+            let recommendation = directedResumeSummary ?? input.scopeFreezeNextActions.first ?? "先修复当前 blocker，再重新发起这次 one-shot。"
             intakeStatus = StatusExplanation(
                 state: .blockedWaitingUpstream,
                 headline: "one-shot runtime 已 fail-closed",
-                whatHappened: oneShotSummary.isEmpty ? "运行时没有继续假装可恢复，而是明确停在 fail-closed。" : oneShotSummary,
-                whyItHappened: "真实 one-shot run state 已进入 failed_closed；cockpit 必须直出 blocker，而不是退回泛化的 planning / ready 文案。",
+                whatHappened: oneShotSummary.isEmpty ? "运行时已经明确停住，不会再假装可以自动恢复。" : oneShotSummary,
+                whyItHappened: "这次 one-shot 已进入 failed_closed，所以 cockpit 必须直接把 blocker 摆出来。",
                 userAction: recommendation,
                 machineStatusRef: plannerMachineStatusRef,
                 hardLine: "fail_closed must remain visible",
@@ -434,22 +434,22 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             blockerStatus = StatusExplanation(
                 state: .blockedWaitingUpstream,
                 headline: "Top blocker: \(oneShotTopBlocker)",
-                whatHappened: "当前主 blocker 来自 one-shot runtime fail-closed。",
-                whyItHappened: "执行链已经做出 fail-closed 判定，所以 UI 不能回退成普通等待态。",
+                whatHappened: "当前主 blocker 来自这次 one-shot 的 fail-closed 判定。",
+                whyItHappened: "执行链已经明确挡住，所以 UI 不能回退成普通等待态。",
                 userAction: recommendation,
                 machineStatusRef: plannerMachineStatusRef,
                 hardLine: "runtime blocker stays explicit",
                 highlights: [input.oneShotRuntimeState.map { "one_shot_state=\($0)" } ?? ""].filter { !$0.isEmpty }
             )
-            plannerExplain = "\(contractSummary)。当前停在 failed_closed；需先消除 blocker=\(oneShotTopBlocker)，再允许重试当前 one-shot 主链。"
+            plannerExplain = "\(contractSummary)。当前停在 failed_closed；需先消除 blocker=\(oneShotTopBlocker)，再允许重试当前主链。"
         } else if oneShotState == .blocked || input.laneSummary.failed > 0 || input.laneSummary.stalled > 0 || input.laneSummary.blocked > 0 {
             let abnormalStatus = input.abnormalLaneStatus ?? "lane_health_abnormal"
             let recommendation = directedResumeSummary ?? input.abnormalLaneRecommendation ?? "查看 lane 健康态与阻塞原因，按 next action 续推。"
             intakeStatus = StatusExplanation(
                 state: .blockedWaitingUpstream,
-                headline: "one-shot run 已进入执行，但当前存在 blocker",
-                whatHappened: oneShotSummary.isEmpty ? "lane snapshot 显示 blocked/stalled/failed，且可选 directed resume baton 已可消费。" : oneShotSummary,
-                whyItHappened: "冻结契约要求 Supervisor cockpit 清楚暴露 blocker、resume baton 与 next action，而不是只显示聊天流水。",
+                headline: "one-shot 已进入执行，但当前被阻塞",
+                whatHappened: oneShotSummary.isEmpty ? "lane 快照显示 blocked/stalled/failed；如果已有 baton，也只会给当前允许的继续方向。" : oneShotSummary,
+                whyItHappened: "Cockpit 需要直接显示 blocker、恢复约束和 next action，而不是只剩聊天流水。",
                 userAction: recommendation,
                 machineStatusRef: plannerMachineStatusRef,
                 hardLine: "blocked_waiting_upstream must remain visible",
@@ -463,8 +463,8 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             blockerStatus = StatusExplanation(
                 state: .blockedWaitingUpstream,
                 headline: "Top blocker: \(oneShotTopBlocker == "none" ? abnormalStatus : oneShotTopBlocker)",
-                whatHappened: oneShotState == .blocked ? "当前主 blocker 已被 one-shot runtime 直接声明。" : "当前主 blocker 来自 lane health abnormal。",
-                whyItHappened: "planner 不会隐藏上游依赖或 runtime blocker；已有 baton 时也只允许 directed resume。",
+                whatHappened: oneShotState == .blocked ? "当前主 blocker 已被运行时直接标出来。" : "当前主 blocker 来自 lane 健康异常。",
+                whyItHappened: "planner 不会隐藏上游依赖；如果已有 baton，也只能按指定方向恢复。",
                 userAction: recommendation,
                 machineStatusRef: plannerMachineStatusRef,
                 hardLine: "upstream blocker stays explicit",
@@ -473,7 +473,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                     "xt_ready_status=\(input.xtReadyStatus)"
                 ].filter { !$0.isEmpty }
             )
-            plannerExplain = "\(contractSummary)。one-shot intake → planner explain → blocker triage → delivery freeze。当前停在 blocked_waiting_upstream；如 baton 已发出，则只允许 directed resume。"
+            plannerExplain = "\(contractSummary)。当前链路：任务接入 → 规划说明 → 阻塞分诊 → 交付冻结。现在停在 blocked_waiting_upstream；如 baton 已发出，则只允许 directed resume。"
         } else if input.isProcessing
             || input.laneSummary.running > 0
             || input.laneSummary.recovering > 0
@@ -485,8 +485,8 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             intakeStatus = StatusExplanation(
                 state: .inProgress,
                 headline: oneShotState == .running || oneShotState == .mergeback ? "one-shot run 正在真实执行" : "one-shot intake 已进入 planning / running",
-                whatHappened: oneShotSummary.isEmpty ? "Cockpit 发现 planner 正在归一化任务、分配 lane，并带着 AI-2 runtime policy / freeze / replay 合同推进。" : oneShotSummary,
-                whyItHappened: "XT-W3-27-D 现已绑定真实 runtime 数据，不再只依赖 mock 状态映射。",
+                whatHappened: oneShotSummary.isEmpty ? "planner 正在分配 lane 并推进当前任务，关键运行状态会同步显示。" : oneShotSummary,
+                whyItHappened: "Cockpit 现在接的是实时运行数据，不再只是模拟状态。",
                 userAction: directedResumeSummary ?? "保持关注 planner explain；如果出现授权提示，先处理授权再继续。",
                 machineStatusRef: plannerMachineStatusRef,
                 hardLine: "validated-mainline-only stays visible during execution",
@@ -501,13 +501,13 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                 state: input.directedUnblockBatonCount > 0 ? .inProgress : .ready,
                 headline: input.directedUnblockBatonCount > 0 ? "Top blocker: directed_resume_available" : "Top blocker: none",
                 whatHappened: input.directedUnblockBatonCount > 0 ? "当前没有新硬阻塞，但已存在 directed resume baton 可供续推。" : "当前没有 grant / doctor / lane 异常硬阻塞。",
-                whyItHappened: input.directedUnblockBatonCount > 0 ? "AI-2 的 baton 路由已把 resume scope 收敛到 continue_current_task_only。" : "执行仍在进行，但没有额外 fail-closed blocker 需要立刻人工干预。",
+                whyItHappened: input.directedUnblockBatonCount > 0 ? "恢复范围已经收口到 continue_current_task_only。" : "执行还在进行，但没有需要立刻人工介入的硬阻塞。",
                 userAction: directedResumeSummary ?? "继续观察 planner explain，并在需要时 review delivery。",
                 machineStatusRef: plannerMachineStatusRef,
                 hardLine: "scope freeze still applies",
                 highlights: ["xt_ready_status=\(input.xtReadyStatus)", "owner=\(oneShotOwner)"]
             )
-            plannerExplain = "\(contractSummary)。one-shot intake → planner explain → blocker triage → delivery freeze。当前处于 \(input.oneShotRuntimeState ?? "planning_or_running")，并附带 replay=\(replayStatus)、freeze=\(freezeDecision) 的解释上下文。"
+            plannerExplain = "\(contractSummary)。当前链路：任务接入 → 规划说明 → 阻塞分诊 → 交付冻结。当前处于 \(input.oneShotRuntimeState ?? "planning_or_running")，并附带 replay=\(replayStatus)、freeze=\(freezeDecision) 的解释上下文。"
         } else if oneShotState == .deliveryFreeze || oneShotState == .completed || !input.xtReadyStrictE2EReady || input.xtReadyIssueCount > 0 {
             let memoryUnderfed = !input.memoryAssemblyReady || input.memoryAssemblyIssueCount > 0
             let deliveryHeadline = memoryUnderfed
@@ -602,8 +602,8 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             intakeStatus = StatusExplanation(
                 state: .ready,
                 headline: "提交 one-shot intake 以开始复杂任务",
-                whatHappened: "Cockpit 已把 one-shot intake、planner explain、blocker、resume baton 与 validated scope freeze 组合成首个可运行入口。",
-                whyItHappened: "AI-3 当前已消费 AI-2 runtime 合同，不等待整包验证恢复后才展示真实状态语义。",
+                whatHappened: "Cockpit 已把任务接入、规划说明、阻塞卡和交付冻结收在同一个入口里。",
+                whyItHappened: "新的复杂任务从这里发起，后续状态也会持续显式展示。",
                 userAction: directedResumeSummary ?? "点击“提交 one-shot intake”，输入目标 / 约束 / 交付物 / 风险。",
                 machineStatusRef: plannerMachineStatusRef,
                 hardLine: "validated-mainline-only remains the only external scope",
@@ -616,8 +616,8 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             blockerStatus = StatusExplanation(
                 state: input.directedUnblockBatonCount > 0 ? .inProgress : .ready,
                 headline: input.directedUnblockBatonCount > 0 ? "Top blocker: directed_resume_available" : "Top blocker: none",
-                whatHappened: input.directedUnblockBatonCount > 0 ? "当前存在可执行的 directed resume baton。" : "当前没有显式 blocker；下一步由 one-shot intake 驱动 planner。",
-                whyItHappened: input.directedUnblockBatonCount > 0 ? "baton 已把恢复动作收敛到继续当前任务，不允许 scope expand。" : "冻结契约要求 UI 在 ready 态也明确 next action，而不是显示空白。",
+                whatHappened: input.directedUnblockBatonCount > 0 ? "当前存在可执行的 directed resume baton。" : "当前没有显式 blocker；下一步会由这次 one-shot intake 启动 planner。",
+                whyItHappened: input.directedUnblockBatonCount > 0 ? "baton 已把恢复动作收口到继续当前任务，不允许 scope expand。" : "就算现在是 ready，也会明确告诉你下一步，而不是留空。",
                 userAction: directedResumeSummary ?? "提交 one-shot intake，随后观察 planner explain 与 blocker card。",
                 machineStatusRef: plannerMachineStatusRef,
                 hardLine: "grant / scope / secret blocker will still fail-closed once triggered",
@@ -633,9 +633,9 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
 
         let releaseFreezeStatus = StatusExplanation(
             state: releaseFreezeState,
-            headline: "validated-mainline-only / delivery scope freeze (\(freezeDecision))",
-            whatHappened: "Cockpit 明确只围绕 \(validatedScope.joined(separator: " → ")) 的 validated mainline 展示与复盘；对外文案只消费 allowlist。",
-            whyItHappened: "R1 不扩 scope，不把未验证 surface 重新拉回当前 claim；AI-2 的 freeze 与 replay 摘要已成为 UI 真实数据源。",
+            headline: "已验证主链 / 交付冻结 (\(freezeDecision))",
+            whatHappened: "Cockpit 只围绕 \(validatedScope.joined(separator: " → ")) 这条已验证主链来展示与复盘；对外表述也只用允许的口径。",
+            whyItHappened: "这一轮只沿已验证范围推进，不把未验证功能重新拉回当前界面。",
             userAction: releaseNextAction,
             machineStatusRef: "current_release_scope=\(badge.currentReleaseScope); validated_paths=\(validatedScope.joined(separator: ",")); decision=\(freezeDecision); allowed_public_statements=\(input.allowedPublicStatementCount); replay=\(replayStatus)",
             hardLine: "scope_not_validated must remain visible",
@@ -650,7 +650,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             PrimaryActionRailAction(
                 id: "submit_intake",
                 title: "提交 one-shot intake",
-                subtitle: directedResumeSummary ?? "把复杂任务送入 planner，并保留 what happened / why / next action",
+                subtitle: directedResumeSummary ?? "把复杂任务送进 planner，并持续显示发生了什么、为什么、下一步",
                 systemImage: "paperplane.circle.fill",
                 style: .primary
             ),
@@ -733,7 +733,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                     title: "接入",
                     detail: oneShotState == nil
                         ? "等待提交复杂任务并冻结目标/约束/交付物。"
-                        : "请求已被 intake 接收并写入 runtime contract。",
+                        : "请求已被接入，并写入当前运行状态。",
                     progress: oneShotState == nil ? .active : .completed,
                     surfaceState: oneShotState == nil ? .ready : .inProgress,
                     actionID: "submit_intake",
@@ -768,7 +768,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             return SupervisorRuntimeStageItemPresentation(
                 id: "access",
                 title: "授权",
-                detail: "风险授权仍未完成，grant gate 保持 fail-closed。",
+                detail: "风险授权仍未完成，这条路会继续被挡住。",
                 progress: .active,
                 surfaceState: .grantRequired,
                 actionID: "resolve_access",
@@ -792,7 +792,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
         return SupervisorRuntimeStageItemPresentation(
             id: "access",
             title: "授权",
-            detail: "等待 risk gate / permission gate 决议。",
+            detail: "等待授权 / 权限决议。",
             progress: .pending,
             surfaceState: .ready,
             actionID: nil,
@@ -812,7 +812,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                 id: "runtime",
                 title: "执行",
                 detail: oneShotSummary.isEmpty
-                    ? "active_lanes=\(input.oneShotRuntimeActiveLaneCount) · planner / launch / mergeback 正在推进。"
+                    ? "当前有 \(input.oneShotRuntimeActiveLaneCount) 条 lane 在推进，planner / launch / mergeback 正在运行。"
                     : oneShotSummary,
                 progress: .active,
                 surfaceState: .inProgress,
@@ -826,7 +826,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                 id: "runtime",
                 title: "执行",
                 detail: oneShotSummary.isEmpty
-                    ? "runtime 当前阻塞于 \(oneShotTopBlocker)。"
+                    ? "当前执行被 \(oneShotTopBlocker) 挡住。"
                     : oneShotSummary,
                 progress: .blocked,
                 surfaceState: .blockedWaitingUpstream,
@@ -849,7 +849,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             return SupervisorRuntimeStageItemPresentation(
                 id: "runtime",
                 title: "执行",
-                detail: "主执行链已结束，进入 freeze / completion 收口。",
+                detail: "主执行链已结束，正在做 freeze / completion 收口。",
                 progress: .completed,
                 surfaceState: .ready,
                 actionID: nil,
@@ -859,7 +859,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             return SupervisorRuntimeStageItemPresentation(
                 id: "runtime",
                 title: "执行",
-                detail: "等待 access gate 放行后才会真正执行。",
+                detail: "等待授权放行后才会真正执行。",
                 progress: .pending,
                 surfaceState: .ready,
                 actionID: nil,
@@ -869,7 +869,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             return SupervisorRuntimeStageItemPresentation(
                 id: "runtime",
                 title: "执行",
-                detail: "等待 planner / launcher 接手当前 one-shot。",
+                detail: "等待 planner / launcher 接手当前任务。",
                 progress: .pending,
                 surfaceState: .ready,
                 actionID: nil,
@@ -889,7 +889,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                 id: "freeze",
                 title: "冻结",
                 detail: input.scopeFreezeBlockedExpansionItems.isEmpty
-                    ? "validated scope freeze 当前为 \(freezeDecision)。"
+                    ? "当前交付范围为 \(freezeDecision)。"
                     : "blocked_expansion=\(input.scopeFreezeBlockedExpansionItems.joined(separator: ","))",
                 progress: .blocked,
                 surfaceState: .blockedWaitingUpstream,
@@ -905,7 +905,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                 title: "冻结",
                 detail: memoryNeedsReview
                     ? "交付冻结进行中，但 strategic memory 仍需补齐后再 review delivery。"
-                    : "交付冻结进行中，等待 strict evidence / review delivery。",
+                    : "交付冻结进行中，等待更完整的证据和 review delivery。",
                 progress: .active,
                 surfaceState: input.xtReadyStrictE2EReady && input.xtReadyIssueCount == 0 && !memoryNeedsReview ? .releaseFrozen : .diagnosticRequired,
                 actionID: "review_delivery",
@@ -916,8 +916,8 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
                 id: "freeze",
                 title: "冻结",
                 detail: memoryNeedsReview
-                    ? "validated mainline 已完成执行，但 release freeze 仍需补齐 strategic memory。"
-                    : "validated mainline 已完成冻结收口。",
+                    ? "这条已验证主链已完成执行，但 release freeze 前还要补齐 strategic memory。"
+                    : "这条已验证主链已经完成冻结收口。",
                 progress: .completed,
                 surfaceState: memoryNeedsReview ? .diagnosticRequired : .releaseFrozen,
                 actionID: "review_delivery",
@@ -927,7 +927,7 @@ struct SupervisorCockpitPresentation: Codable, Equatable {
             return SupervisorRuntimeStageItemPresentation(
                 id: "freeze",
                 title: "冻结",
-                detail: "当前尚未进入 delivery freeze。",
+                detail: "当前尚未进入交付冻结。",
                 progress: .pending,
                 surfaceState: .ready,
                 actionID: nil,

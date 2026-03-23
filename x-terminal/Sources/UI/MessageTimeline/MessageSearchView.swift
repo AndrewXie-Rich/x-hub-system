@@ -16,7 +16,7 @@ struct MessageSearchBar: View {
                 .font(.system(size: 16))
 
             // 搜索输入框
-            TextField("Search messages...", text: $searchText)
+            TextField("搜索消息…", text: $searchText)
                 .textFieldStyle(.plain)
                 .focused($isFocused)
                 .onSubmit {
@@ -42,7 +42,7 @@ struct MessageSearchBar: View {
                 isSearching = false
                 isFocused = false
             } label: {
-                Text("Cancel")
+                Text("取消")
                     .font(.body)
                     .foregroundColor(.accentColor)
             }
@@ -167,24 +167,24 @@ struct MessageFilterPicker: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Filter Messages")
+            Text("筛选消息")
                 .font(.headline)
 
             Divider()
 
             // 类型过滤
             VStack(alignment: .leading, spacing: 8) {
-                Text("Message Type")
+                Text("消息类型")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 
-                Picker("Type", selection: $filter.type) {
-                    Text("All").tag(MessageFilter.FilterType.all)
-                    Text("User").tag(MessageFilter.FilterType.user)
-                    Text("Assistant").tag(MessageFilter.FilterType.assistant)
-                    Text("Tool").tag(MessageFilter.FilterType.tool)
-                    Text("Has Tool Calls").tag(MessageFilter.FilterType.hasToolCalls)
-                    Text("Has Errors").tag(MessageFilter.FilterType.hasErrors)
+                Picker("类型", selection: $filter.type) {
+                    Text("全部").tag(MessageFilter.FilterType.all)
+                    Text("用户").tag(MessageFilter.FilterType.user)
+                    Text("助手").tag(MessageFilter.FilterType.assistant)
+                    Text("工具").tag(MessageFilter.FilterType.tool)
+                    Text("含工具调用").tag(MessageFilter.FilterType.hasToolCalls)
+                    Text("含错误").tag(MessageFilter.FilterType.hasErrors)
                 }
                 .pickerStyle(.menu)
             }
@@ -197,7 +197,7 @@ struct MessageFilterPicker: View {
             } label: {
                 HStack {
                     Image(systemName: "arrow.counterclockwise")
-                    Text("Reset Filters")
+                    Text("重置筛选")
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 8)
@@ -241,7 +241,7 @@ struct EnhancedMessageTimelineView: View {
                         .foregroundColor(isSearching ? .accentColor : .secondary)
                 }
                 .buttonStyle(.plain)
-                .help("Search messages")
+                .help("搜索消息")
 
                 // 过滤按钮
                 Button {
@@ -252,7 +252,7 @@ struct EnhancedMessageTimelineView: View {
                         .foregroundColor(filter.type != .all ? .accentColor : .secondary)
                 }
                 .buttonStyle(.plain)
-                .help("Filter messages")
+                .help("筛选消息")
                 .popover(isPresented: $showFilterPicker) {
                     MessageFilterPicker(filter: $filter)
                 }
@@ -260,7 +260,7 @@ struct EnhancedMessageTimelineView: View {
                 Spacer()
 
                 // 消息计数
-                Text("\(filteredMessages.count) messages")
+                Text("\(filteredMessages.count) 条消息")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -348,15 +348,14 @@ struct EmptySearchResultView: View {
                 .foregroundColor(.secondary)
 
             VStack(spacing: 8) {
-                Text("No messages found")
+                Text("没有找到消息")
                     .font(.headline)
-
                 if hasSearch {
-                    Text("Try a different search term")
+                    Text("试试别的搜索词")
                         .font(.body)
                         .foregroundStyle(.secondary)
                 } else if hasFilter {
-                    Text("Try adjusting your filters")
+                    Text("试试调整筛选条件")
                         .font(.body)
                         .foregroundStyle(.secondary)
                 }

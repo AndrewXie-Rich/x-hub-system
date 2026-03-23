@@ -133,6 +133,38 @@ struct HubModelRoutingPickerStateTests {
     }
 
     @Test
+    func automaticRecommendationExplainsRetrievalOnlyModelFallback() throws {
+        let recommendation = try #require(
+            HubModelPickerRecommendationState.resolved(
+                explicitModelId: nil,
+                explicitMessage: nil,
+                selectedModelId: "mlx-community/qwen3-embedding-0.6b-4bit",
+                models: [
+                    makeModel(
+                        id: "mlx-community/qwen3-embedding-0.6b-4bit",
+                        name: "Qwen3 Embedding 0.6B",
+                        state: .loaded,
+                        backend: "mlx",
+                        modelPath: "/models/qwen3-embedding",
+                        taskKinds: ["embedding"]
+                    ),
+                    makeModel(
+                        id: "mlx-community/qwen3-8b-4bit",
+                        name: "Qwen3 8B",
+                        state: .loaded,
+                        backend: "mlx",
+                        modelPath: "/models/qwen3-8b"
+                    )
+                ]
+            )
+        )
+
+        #expect(recommendation.modelId == "mlx-community/qwen3-8b-4bit")
+        #expect(recommendation.message.contains("检索专用"))
+        #expect(recommendation.message.contains("retrieval"))
+    }
+
+    @Test
     func automaticRecommendationIsNilWhenSelectedModelIsAlreadyLoaded() {
         let recommendation = HubModelPickerRecommendationState.resolved(
             explicitModelId: nil,
@@ -152,7 +184,8 @@ struct HubModelRoutingPickerStateTests {
         name: String,
         state: HubModelState,
         backend: String = "openai",
-        modelPath: String? = nil
+        modelPath: String? = nil,
+        taskKinds: [String]? = nil
     ) -> HubModel {
         HubModel(
             id: id,
@@ -166,7 +199,8 @@ struct HubModelRoutingPickerStateTests {
             memoryBytes: nil,
             tokensPerSec: nil,
             modelPath: modelPath,
-            note: nil
+            note: nil,
+            taskKinds: taskKinds
         )
     }
 }

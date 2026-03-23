@@ -9,6 +9,7 @@ struct MessageTimelineView: View {
     let hubConnected: Bool
     let onApproveSkillActivity: (String) -> Void
     let onRetrySkillActivity: (ProjectSkillActivityItem) -> Void
+    let onOpenGovernance: (XTProjectGovernanceDestination) -> Void
     var focusedSkillActivityRequestId: String? = nil
     var focusedSkillActivityNonce: Int? = nil
     var bottomPadding: CGFloat = 24
@@ -56,6 +57,7 @@ struct MessageTimelineView: View {
                                 session.rejectPendingTool(requestID: requestID)
                             },
                             onRetry: onRetrySkillActivity,
+                            onOpenGovernance: onOpenGovernance,
                             onViewFullRecord: showFullRecord
                         )
                         .id(MessageTimelineFocusPresentation.projectSkillActivitySectionAnchorID)
@@ -269,11 +271,11 @@ struct MessageCard: View {
     private var roleLabel: String {
         switch message.role {
         case .user:
-            return "You"
+            return "你"
         case .assistant:
-            return "Assistant"
+            return "助手"
         case .tool:
-            return "Tool"
+            return "工具"
         }
     }
 
@@ -385,7 +387,7 @@ struct MessageActionButtons: View {
                     .foregroundColor(.secondary)
             }
             .buttonStyle(.plain)
-            .help("Copy")
+            .help("复制")
         }
     }
 
@@ -415,7 +417,7 @@ struct MessageContentView: View {
 
         case .tool:
             // Tool 消息：展示 tool result
-            ToolResultView(message: message)
+            ToolResultView(ctx: ctx, message: message)
 
         case .user:
             // User 消息：简单文本
@@ -437,6 +439,7 @@ struct ProjectSkillActivitySection: View {
     let onApprove: (String) -> Void
     let onReject: (String) -> Void
     let onRetry: (ProjectSkillActivityItem) -> Void
+    let onOpenGovernance: (XTProjectGovernanceDestination) -> Void
     let onViewFullRecord: (ProjectSkillActivityItem) -> Void
 
     var body: some View {
@@ -444,7 +447,7 @@ struct ProjectSkillActivitySection: View {
             HStack(spacing: 8) {
                 Image(systemName: "sparkles.rectangle.stack")
                     .foregroundStyle(.secondary)
-                Text("Recent Skill Activity")
+                Text("最近技能动态")
                     .font(.system(.subheadline, design: .rounded))
                     .fontWeight(.semibold)
                 Spacer()
@@ -468,6 +471,9 @@ struct ProjectSkillActivitySection: View {
                     },
                     onRetry: {
                         onRetry(item)
+                    },
+                    onOpenGovernance: {
+                        onOpenGovernance($0)
                     },
                     onViewFullRecord: {
                         onViewFullRecord(item)
@@ -495,6 +501,7 @@ struct ProjectSkillActivityCard: View {
     let onApprove: () -> Void
     let onReject: () -> Void
     let onRetry: () -> Void
+    let onOpenGovernance: (XTProjectGovernanceDestination) -> Void
     let onViewFullRecord: () -> Void
     @State private var showDiagnostics = false
 
@@ -550,31 +557,39 @@ struct ProjectSkillActivityCard: View {
 
             HStack(spacing: 8) {
                 if ProjectSkillActivityPresentation.isAwaitingApproval(item), isPendingApproval {
-                    Button("Approve") {
+                    Button("批准") {
                         onApprove()
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(isBusy || !hubConnected)
-                    .help(hubConnected ? "Approve and run this governed skill dispatch" : "Connect Hub before approving")
+                    .help(hubConnected ? "批准后继续执行这次受治理的技能调用" : "先连接 Hub，才能批准执行")
 
-                    Button("Reject") {
+                    Button("拒绝") {
                         onReject()
                     }
                     .buttonStyle(.bordered)
                     .disabled(isBusy)
-                    .help("Reject this pending governed skill dispatch without running it")
+                    .help("拒绝这次待审批的技能调用，不继续执行")
                 }
 
                 if ProjectSkillActivityPresentation.canRetry(item) {
-                    Button("Retry") {
+                    Button("重试") {
                         onRetry()
                     }
                     .buttonStyle(.bordered)
                     .disabled(isBusy || isPendingApproval)
-                    .help(isPendingApproval ? "This request is already waiting for approval" : "Replay the last governed dispatch with the same guarded tool arguments")
+                    .help(isPendingApproval ? "这条请求已经在等待审批" : "使用相同的受治理参数重新执行上一次调用")
                 }
 
-                Button("View Full Record") {
+                if let guardrailRepairHint {
+                    Button(guardrailRepairHint.buttonTitle) {
+                        onOpenGovernance(guardrailRepairHint.destination)
+                    }
+                    .buttonStyle(.bordered)
+                    .help(guardrailRepairHint.helpText)
+                }
+
+                Button("查看完整记录") {
                     onViewFullRecord()
                 }
                 .buttonStyle(.bordered)
@@ -582,7 +597,7 @@ struct ProjectSkillActivityCard: View {
                 Spacer()
             }
 
-            DisclosureGroup("Diagnostics", isExpanded: $showDiagnostics) {
+            DisclosureGroup("详细诊断", isExpanded: $showDiagnostics) {
                 ScrollView {
                     Text(ProjectSkillActivityPresentation.diagnostics(for: item))
                         .font(.system(.caption, design: .monospaced))
@@ -629,6 +644,14 @@ struct ProjectSkillActivityCard: View {
         formatter.dateStyle = .none
         return formatter.string(from: date)
     }
+
+    private var guardrailRepairHint: XTGuardrailRepairHint? {
+        XTGuardrailMessagePresentation.repairHint(
+            denyCode: item.denyCode,
+            policySource: item.policySource,
+            policyReason: item.policyReason
+        )
+    }
 }
 
 private struct ProjectSkillRecordSheetState: Identifiable {
@@ -657,16 +680,16 @@ private struct ProjectSkillRecordSheet: View {
 
                 Spacer()
 
-                Button("Copy") {
+                Button("复制") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(
-                        ProjectSkillActivityPresentation.fullRecordText(record.record),
+                        ProjectSkillActivityPresentation.displayFullRecordText(record.record),
                         forType: .string
                     )
                 }
                 .buttonStyle(.bordered)
 
-                Button("Close") {
+                Button("关闭") {
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
@@ -678,14 +701,14 @@ private struct ProjectSkillRecordSheet: View {
                 VStack(alignment: .leading, spacing: 16) {
                     if !record.record.requestMetadata.isEmpty {
                         ProjectSkillRecordFieldSection(
-                            title: "Request Metadata",
+                            title: "请求信息",
                             fields: record.record.requestMetadata
                         )
                     }
 
                     if !record.record.approvalFields.isEmpty {
                         ProjectSkillRecordFieldSection(
-                            title: "Approval Status",
+                            title: "审批状态",
                             fields: record.record.approvalFields
                         )
                     }
@@ -693,7 +716,7 @@ private struct ProjectSkillRecordSheet: View {
                     if let toolArgs = record.record.toolArgumentsText,
                        !toolArgs.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         ProjectSkillRecordCodeSection(
-                            title: "Tool Arguments",
+                            title: "工具参数",
                             text: toolArgs,
                             initiallyExpanded: true
                         )
@@ -707,21 +730,21 @@ private struct ProjectSkillRecordSheet: View {
 
                     if !record.record.evidenceFields.isEmpty {
                         ProjectSkillRecordFieldSection(
-                            title: "Evidence Refs",
+                            title: "证据引用",
                             fields: record.record.evidenceFields
                         )
                     }
 
                     if !record.record.approvalHistory.isEmpty {
                         ProjectSkillRecordTimelineSection(
-                            title: "Approval History",
+                            title: "审批记录",
                             entries: record.record.approvalHistory
                         )
                     }
 
                     if !record.record.timeline.isEmpty {
                         ProjectSkillRecordTimelineSection(
-                            title: "Event Timeline",
+                            title: "事件时间线",
                             entries: record.record.timeline
                         )
                     }
@@ -729,7 +752,7 @@ private struct ProjectSkillRecordSheet: View {
                     if let evidenceJSON = record.record.supervisorEvidenceJSON,
                        !evidenceJSON.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         ProjectSkillRecordCodeSection(
-                            title: "Supervisor Evidence JSON",
+                            title: "Supervisor 证据 JSON",
                             text: evidenceJSON,
                             initiallyExpanded: false
                         )
@@ -748,7 +771,8 @@ struct ProjectSkillRecordStatusBadge: View {
 
     var body: some View {
         if !statusLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           statusLabel != "Unknown" {
+           statusLabel != "Unknown",
+           statusLabel != "未知" {
             Text(statusLabel)
                 .font(.system(.caption2, design: .rounded))
                 .fontWeight(.semibold)
@@ -762,15 +786,15 @@ struct ProjectSkillRecordStatusBadge: View {
 
     private var color: Color {
         switch statusLabel.lowercased() {
-        case "completed":
+        case "completed", "已完成":
             return .green
-        case "failed":
+        case "failed", "失败":
             return .red
-        case "blocked":
+        case "blocked", "受阻":
             return .orange
-        case "awaiting approval":
+        case "awaiting approval", "待审批":
             return .yellow
-        case "resolved":
+        case "resolved", "已路由":
             return .blue
         default:
             return .secondary
@@ -788,7 +812,7 @@ struct ProjectSkillRecordFieldSection: View {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(fields) { field in
                     HStack(alignment: .top, spacing: 12) {
-                        Text(field.label)
+                        Text(ProjectSkillActivityPresentation.displayFieldLabel(field.label))
                             .font(.system(.caption, design: .monospaced))
                             .foregroundStyle(.secondary)
                             .frame(width: 150, alignment: .leading)
@@ -871,7 +895,7 @@ private struct ProjectSkillRecordResultSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Text("Result Summary")
+                Text("执行结果")
                     .font(.system(.subheadline, design: .rounded))
                     .fontWeight(.semibold)
                 Spacer()
@@ -881,7 +905,7 @@ private struct ProjectSkillRecordResultSection: View {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(record.resultFields) { field in
                         HStack(alignment: .top, spacing: 12) {
-                            Text(field.label)
+                            Text(ProjectSkillActivityPresentation.displayFieldLabel(field.label))
                                 .font(.system(.caption, design: .monospaced))
                                 .foregroundStyle(.secondary)
                                 .frame(width: 150, alignment: .leading)
@@ -898,7 +922,7 @@ private struct ProjectSkillRecordResultSection: View {
             if let preview = record.rawOutputPreview,
                !preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Raw Output Preview")
+                    Text("原始输出预览")
                         .font(.system(.caption, design: .rounded))
                         .foregroundStyle(.secondary)
                     ScrollView {
@@ -913,7 +937,7 @@ private struct ProjectSkillRecordResultSection: View {
 
             if let rawOutput = record.rawOutput,
                !rawOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                DisclosureGroup("Full Raw Output", isExpanded: $showFullRawOutput) {
+                DisclosureGroup("完整原始输出", isExpanded: $showFullRawOutput) {
                     ScrollView {
                         Text(rawOutput)
                             .font(.system(.caption, design: .monospaced))
@@ -994,7 +1018,7 @@ private struct ProjectSkillRecordTimelineCard: View {
                 .font(.system(.subheadline, design: .default))
                 .fixedSize(horizontal: false, vertical: true)
 
-            if let detail = entry.detail,
+            if let detail = ProjectSkillActivityPresentation.displayTimelineDetail(entry.detail),
                !detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text(detail)
                     .font(.system(.caption, design: .monospaced))
@@ -1003,7 +1027,7 @@ private struct ProjectSkillRecordTimelineCard: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            DisclosureGroup("Raw Event JSON", isExpanded: $showRawJSON) {
+            DisclosureGroup("原始事件 JSON", isExpanded: $showRawJSON) {
                 ScrollView {
                     Text(entry.rawJSON)
                         .font(.system(.caption, design: .monospaced))
@@ -1045,7 +1069,9 @@ private struct ProjectSkillRecordTimelineCard: View {
 
 /// Tool Result 视图
 struct ToolResultView: View {
+    let ctx: AXProjectContext?
     let message: AXChatMessage
+    @EnvironmentObject private var appModel: AppModel
     @State private var toolResult: ToolResult?
     @State private var showDiagnostics = false
 
@@ -1078,7 +1104,15 @@ struct ToolResultView: View {
                         .foregroundStyle(.primary)
                         .fixedSize(horizontal: false, vertical: true)
 
-                    DisclosureGroup("Diagnostics", isExpanded: $showDiagnostics) {
+                    if let guardrailRepairHint {
+                        Button(guardrailRepairHint.buttonTitle) {
+                            openGovernance(guardrailRepairHint.destination)
+                        }
+                        .buttonStyle(.bordered)
+                        .help(guardrailRepairHint.helpText)
+                    }
+
+                    DisclosureGroup("详细诊断", isExpanded: $showDiagnostics) {
                         ScrollView {
                             Text(diagnosticsText)
                                 .font(.system(.caption, design: .monospaced))
@@ -1119,15 +1153,20 @@ struct ToolResultView: View {
     }
 
     private var summaryTitle: String {
-        guard let result = toolResult else { return "Action needs attention" }
+        guard let result = toolResult else { return "这条操作需要处理" }
         return ToolResultPresentation.title(for: result)
     }
 
     private var summaryBody: String {
         guard let result = toolResult else {
-            return "A tool call returned diagnostics. Open Diagnostics to inspect the raw output."
+            return "这次工具调用返回了诊断信息，可展开“详细诊断”查看原始输出。"
         }
         return ToolResultPresentation.body(for: result)
+    }
+
+    private var guardrailRepairHint: XTGuardrailRepairHint? {
+        guard let result = toolResult, !result.ok else { return nil }
+        return ToolResultPresentation.repairHint(for: result)
     }
 
     private var diagnosticsText: String {
@@ -1145,6 +1184,16 @@ struct ToolResultView: View {
     private var resultBorderColor: Color {
         guard let result = toolResult else { return Color.orange.opacity(0.24) }
         return result.ok ? Color.green.opacity(0.24) : Color.orange.opacity(0.24)
+    }
+
+    private func openGovernance(_ destination: XTProjectGovernanceDestination) {
+        guard let ctx else { return }
+        let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+        guard !projectId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        appModel.requestProjectSettingsFocus(
+            projectId: projectId,
+            destination: destination
+        )
     }
 }
 
@@ -1198,12 +1247,18 @@ struct RouteDiagnoseActionRail: View {
     @ObservedObject var session: ChatSessionModel
     @EnvironmentObject private var appModel: AppModel
     @Environment(\.openWindow) private var openWindow
+    @StateObject private var updateFeedback = XTTransientUpdateFeedbackState()
     @State private var showModelPicker = false
     @State private var repairActionInFlight = false
+    @State private var actionNotice: XTSettingsChangeNotice?
+
+    private var effectiveProjectConfig: AXProjectConfig? {
+        appModel.projectConfig ?? config
+    }
 
     private var recommendation: HubModelPickerRecommendationState? {
         RouteDiagnoseMessagePresentation.recommendation(
-            config: config,
+            config: effectiveProjectConfig,
             settings: appModel.settingsStore.settings,
             ctx: ctx,
             modelsState: appModel.modelsState
@@ -1245,6 +1300,7 @@ struct RouteDiagnoseActionRail: View {
     private func openRouteDiagnoseModelPicker() {
         recordRouteRepairLog(actionId: "open_model_picker", outcome: "opened")
         showModelPicker = true
+        presentRouteActionFeedback(for: .inlineModelPickerOpened)
     }
 
     private var repairAction: RouteDiagnoseMessagePresentation.RepairAction? {
@@ -1289,17 +1345,7 @@ struct RouteDiagnoseActionRail: View {
                 if let recommendation,
                    let recommendationTitle {
                     Button(recommendationTitle) {
-                        recordRouteRepairLog(
-                            actionId: "apply_recommended_model",
-                            outcome: "selected",
-                            note: "target_model=\(recommendation.modelId)"
-                        )
-                        appModel.setProjectRoleModel(role: .coder, modelId: recommendation.modelId)
-                        session.presentProjectRouteDiagnosis(
-                            ctx: ctx,
-                            config: appModel.projectConfig ?? config,
-                            router: appModel.llmRouter
-                        )
+                        applyRecommendedModel(recommendation)
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
@@ -1323,7 +1369,7 @@ struct RouteDiagnoseActionRail: View {
                 Button("重新诊断") {
                     session.presentProjectRouteDiagnosis(
                         ctx: ctx,
-                        config: appModel.projectConfig ?? config,
+                        config: effectiveProjectConfig,
                         router: appModel.llmRouter
                     )
                 }
@@ -1357,6 +1403,7 @@ struct RouteDiagnoseActionRail: View {
                         detail: context.detail
                     )
                     openWindow(id: "model_settings")
+                    presentRouteActionFeedback(for: .modelSettingsOpened)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
@@ -1375,9 +1422,18 @@ struct RouteDiagnoseActionRail: View {
                         detail: context.detail
                     )
                     NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                    presentRouteActionFeedback(for: .diagnosticsOpened)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+            }
+
+            if updateFeedback.showsBadge,
+               let actionNotice {
+                XTSettingsChangeNoticeInlineView(
+                    notice: actionNotice,
+                    tint: .accentColor
+                )
             }
 
             if let recommendation {
@@ -1399,9 +1455,17 @@ struct RouteDiagnoseActionRail: View {
                 .stroke(Color.orange.opacity(0.18), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 10))
+        .xtTransientUpdateCardChrome(
+            cornerRadius: 10,
+            isUpdated: updateFeedback.isHighlighted,
+            focusTint: .orange,
+            updateTint: .accentColor,
+            baseBackground: Color.orange.opacity(0.06),
+            baseBorder: Color.orange.opacity(0.18)
+        )
         .popover(isPresented: $showModelPicker) {
             ModelSelectorView(
-                config: config,
+                config: effectiveProjectConfig,
                 focusContext: RouteDiagnoseMessagePresentation.focusContext(
                     for: .openChooseModel,
                     latestEvent: latestRouteEvent,
@@ -1410,6 +1474,10 @@ struct RouteDiagnoseActionRail: View {
             )
                 .environmentObject(appModel)
                 .frame(width: 420)
+        }
+        .onDisappear {
+            updateFeedback.cancel(resetState: true)
+            actionNotice = nil
         }
     }
 
@@ -1430,6 +1498,9 @@ struct RouteDiagnoseActionRail: View {
                         repairReasonCode: report.reasonCode,
                         note: report.summary
                     )
+                    presentRouteActionFeedback(
+                        for: .connectivityRepairFinished(action: action, report: report)
+                    )
                     if !report.ok {
                         let context = RouteDiagnoseMessagePresentation.diagnosticsFailureContext(
                             for: action,
@@ -1449,10 +1520,14 @@ struct RouteDiagnoseActionRail: View {
                         )
                         NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
                     }
+                } else {
+                    presentRouteActionFeedback(
+                        for: .connectivityRepairFinished(action: action, report: nil)
+                    )
                 }
                 session.presentProjectRouteDiagnosis(
                     ctx: ctx,
-                    config: appModel.projectConfig ?? config,
+                    config: effectiveProjectConfig,
                     router: appModel.llmRouter
                 )
             case .reconnectHubAndDiagnose:
@@ -1467,6 +1542,9 @@ struct RouteDiagnoseActionRail: View {
                         outcome: report.ok ? "succeeded" : "failed",
                         repairReasonCode: report.reasonCode,
                         note: report.summary
+                    )
+                    presentRouteActionFeedback(
+                        for: .connectivityRepairFinished(action: action, report: report)
                     )
                     if !report.ok {
                         let context = RouteDiagnoseMessagePresentation.diagnosticsFailureContext(
@@ -1487,10 +1565,14 @@ struct RouteDiagnoseActionRail: View {
                         )
                         NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
                     }
+                } else {
+                    presentRouteActionFeedback(
+                        for: .connectivityRepairFinished(action: action, report: nil)
+                    )
                 }
                 session.presentProjectRouteDiagnosis(
                     ctx: ctx,
-                    config: appModel.projectConfig ?? config,
+                    config: effectiveProjectConfig,
                     router: appModel.llmRouter
                 )
             case .openChooseModel:
@@ -1504,6 +1586,7 @@ struct RouteDiagnoseActionRail: View {
                     detail: repairFocusContext?.detail
                 )
                 NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                presentRouteActionFeedback(for: .repairSurfaceOpened(action))
             case .openHubRecovery:
                 recordRouteRepairLog(
                     actionId: "open_hub_recovery",
@@ -1515,6 +1598,7 @@ struct RouteDiagnoseActionRail: View {
                     detail: repairFocusContext?.detail
                 )
                 openWindow(id: "hub_setup")
+                presentRouteActionFeedback(for: .repairSurfaceOpened(action))
             case .openHubConnectionLog:
                 recordRouteRepairLog(
                     actionId: "open_hub_connection_log",
@@ -1526,8 +1610,48 @@ struct RouteDiagnoseActionRail: View {
                     detail: repairFocusContext?.detail
                 )
                 openWindow(id: "hub_setup")
+                presentRouteActionFeedback(for: .repairSurfaceOpened(action))
             }
             repairActionInFlight = false
+        }
+    }
+
+    private func applyRecommendedModel(_ recommendation: HubModelPickerRecommendationState) {
+        recordRouteRepairLog(
+            actionId: "apply_recommended_model",
+            outcome: "selected",
+            note: "target_model=\(recommendation.modelId)"
+        )
+        appModel.setProjectRoleModel(role: .coder, modelId: recommendation.modelId)
+        presentRouteActionNotice(
+            XTSettingsChangeNoticeBuilder.projectRoleModel(
+                projectName: ctx.displayName(registry: appModel.registry),
+                role: .coder,
+                modelId: recommendation.modelId,
+                inheritedModelId: appModel.settingsStore.settings.assignment(for: .coder).model,
+                snapshot: appModel.modelsState
+            )
+        )
+        session.presentProjectRouteDiagnosis(
+            ctx: ctx,
+            config: effectiveProjectConfig,
+            router: appModel.llmRouter
+        )
+    }
+
+    private func presentRouteActionNotice(_ notice: XTSettingsChangeNotice) {
+        actionNotice = notice
+        updateFeedback.trigger()
+    }
+
+    private func presentRouteActionFeedback(
+        for trigger: RouteDiagnoseMessagePresentation.RailFeedbackTrigger
+    ) {
+        let plan = RouteDiagnoseMessagePresentation.railFeedbackPlan(for: trigger)
+        guard let notice = plan.notice else { return }
+        actionNotice = notice
+        if plan.shouldHighlight {
+            updateFeedback.trigger()
         }
     }
 }
@@ -1571,9 +1695,17 @@ struct ToolCallCard: View {
                         .foregroundColor(.accentColor)
                         .font(.system(size: 14))
 
-                    Text(toolCall.tool.rawValue)
-                        .font(.system(.body, design: .monospaced))
-                        .fontWeight(.medium)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(displayToolName)
+                            .font(.system(.body, design: .rounded))
+                            .fontWeight(.medium)
+
+                        if displayToolName != toolCall.tool.rawValue {
+                            Text(toolCall.tool.rawValue)
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
 
                     Spacer()
 
@@ -1592,7 +1724,7 @@ struct ToolCallCard: View {
                     // 参数
                     if !toolCall.args.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Arguments:")
+                            Text("参数")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
 
@@ -1643,6 +1775,8 @@ struct ToolCallCard: View {
             return "magnifyingglass"
         case .summarize:
             return "text.alignleft"
+        case .supervisorVoicePlayback:
+            return "speaker.wave.2.fill"
         case .run_command:
             return "terminal"
         case .process_start:
@@ -1696,6 +1830,10 @@ struct ToolCallCard: View {
         }
     }
 
+    private var displayToolName: String {
+        XTPendingApprovalPresentation.displayToolName(for: toolCall.tool)
+    }
+
     private func formatArgValue(_ value: JSONValue?) -> String {
         guard let value = value else { return "null" }
 
@@ -1731,7 +1869,7 @@ struct ThinkingCard: View {
                 HStack {
                     Image(systemName: "brain")
                         .foregroundColor(.orange)
-                    Text("Thinking")
+                    Text("思考过程")
                         .font(.system(.body, design: .rounded))
                         .fontWeight(.medium)
                     Spacer()

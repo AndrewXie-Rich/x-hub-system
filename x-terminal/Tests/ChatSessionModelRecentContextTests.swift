@@ -410,6 +410,462 @@ struct ChatSessionModelRecentContextTests {
     }
 
     @Test
+    func stopSignalGuidancePromptIncludesExecutionGateAndRouteMetadata() throws {
+        let session = ChatSessionModel()
+        let root = try makeProjectRoot(named: "project-guidance-stop-signal-prompt")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-stop-signal-prompt-1",
+                reviewId: "review-stop-signal-prompt-1",
+                projectId: "proj-stop-signal-prompt-1",
+                targetRole: .projectChat,
+                deliveryMode: .stopSignal,
+                interventionMode: .stopImmediately,
+                safePointPolicy: .immediate,
+                guidanceText: """
+source=ui_review_repair
+repair_action=repair_primary_cta_visibility
+next_safe_action=open_ui_review
+""",
+                ackStatus: .pending,
+                ackRequired: true,
+                effectiveSupervisorTier: .s4TightSupervision,
+                effectiveWorkOrderDepth: .stepLockedRescue,
+                workOrderRef: "plan:plan-ui-review-safe-next-action-v1",
+                ackNote: "",
+                injectedAtMs: 1_773_382_210_000,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-guidance-stop-signal-prompt-1"
+            ),
+            for: ctx
+        )
+
+        let block = session.projectMemoryBlockForTesting(
+            ctx: ctx,
+            canonicalMemory: "goal: recover browser flow safely",
+            recentText: "recent",
+            userText: "继续推进当前实现",
+            safePointState: SupervisorSafePointExecutionState(
+                runStartedAtMs: 1_773_382_100_000,
+                flowStep: 1,
+                toolResultsCount: 0,
+                verifyRunIndex: 0,
+                finalizeOnly: false
+            )
+        )
+
+        #expect(block.contains("[pending_supervisor_guidance]"))
+        #expect(block.contains("target_role: project_chat"))
+        #expect(block.contains("effective_supervisor_tier: s4_tight_supervision"))
+        #expect(block.contains("effective_work_order_depth: step_locked_rescue"))
+        #expect(block.contains("work_order_ref: plan:plan-ui-review-safe-next-action-v1"))
+        #expect(block.contains("execution_gate: final_only_until_ack"))
+        #expect(block.contains("repair_action=repair_primary_cta_visibility"))
+        #expect(block.contains("next_safe_action=open_ui_review"))
+    }
+
+    @Test
+    func visibleStopSignalGuidanceGateStripsExecutableCallsWhenFinalIsPresent() throws {
+        let session = ChatSessionModel()
+        let root = try makeProjectRoot(named: "project-guidance-stop-signal-final-only")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-stop-signal-final-only-1",
+                reviewId: "review-stop-signal-final-only-1",
+                projectId: "proj-stop-signal-final-only-1",
+                targetRole: .projectChat,
+                deliveryMode: .stopSignal,
+                interventionMode: .stopImmediately,
+                safePointPolicy: .immediate,
+                guidanceText: "立刻停下，先返回 UI review 并重规划。",
+                ackStatus: .pending,
+                ackRequired: true,
+                ackNote: "",
+                injectedAtMs: 1_773_382_220_000,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-guidance-stop-signal-final-only-1"
+            ),
+            for: ctx
+        )
+
+        let gated = session.applyProjectSupervisorGuidanceEnvelopeGateForTesting(
+            ctx: ctx,
+            envelope: ToolActionEnvelope(
+                tool_calls: [
+                    ToolCall(
+                        id: "read-state",
+                        tool: .read_file,
+                        args: ["path": .string("README.md")]
+                    )
+                ],
+                skill_calls: [
+                    GovernedSkillCall(
+                        id: "skill-1",
+                        skill_id: "agent-browser",
+                        payload: ["action": .string("continue")]
+                    )
+                ],
+                final: "先停下当前自动化，回到 UI Review 检查缺失的 CTA。",
+                guidance_ack: ToolGuidanceAckPayload(
+                    injection_id: "guidance-stop-signal-final-only-1",
+                    status: .accepted,
+                    note: "Stopping now and switching to UI review."
+                )
+            ),
+            visiblePendingGuidanceInjectionId: "guidance-stop-signal-final-only-1"
+        )
+
+        #expect(!gated.requiresFinalOnly)
+        #expect(gated.toolCallCount == 0)
+        #expect(gated.skillCallCount == 0)
+        #expect(gated.final == "先停下当前自动化，回到 UI Review 检查缺失的 CTA。")
+    }
+
+    @Test
+    func visibleStopSignalGuidanceGateRequiresFinalOnlyWhenEnvelopeStillRequestsTools() throws {
+        let session = ChatSessionModel()
+        let root = try makeProjectRoot(named: "project-guidance-stop-signal-tool-only")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: "guidance-stop-signal-tool-only-1",
+                reviewId: "review-stop-signal-tool-only-1",
+                projectId: "proj-stop-signal-tool-only-1",
+                targetRole: .projectChat,
+                deliveryMode: .stopSignal,
+                interventionMode: .stopImmediately,
+                safePointPolicy: .immediate,
+                guidanceText: "先暂停新的工具执行，只输出停机和重规划说明。",
+                ackStatus: .pending,
+                ackRequired: true,
+                ackNote: "",
+                injectedAtMs: 1_773_382_230_000,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-guidance-stop-signal-tool-only-1"
+            ),
+            for: ctx
+        )
+
+        let gated = session.applyProjectSupervisorGuidanceEnvelopeGateForTesting(
+            ctx: ctx,
+            envelope: ToolActionEnvelope(
+                tool_calls: [
+                    ToolCall(
+                        id: "continue-read",
+                        tool: .read_file,
+                        args: ["path": .string("README.md")]
+                    )
+                ],
+                final: nil,
+                guidance_ack: ToolGuidanceAckPayload(
+                    injection_id: "guidance-stop-signal-tool-only-1",
+                    status: .accepted,
+                    note: "Will keep going."
+                )
+            ),
+            visiblePendingGuidanceInjectionId: "guidance-stop-signal-tool-only-1"
+        )
+
+        #expect(gated.requiresFinalOnly)
+        #expect(gated.guidanceInjectionId == "guidance-stop-signal-tool-only-1")
+        #expect(gated.toolCallCount == 0)
+        #expect(gated.skillCallCount == 0)
+        #expect(gated.final == nil)
+    }
+
+    @Test
+    func uiReviewRepairFinalizeOnlyInstructionsExposeStructuredRepairTemplate() throws {
+        let session = ChatSessionModel()
+        let root = try makeProjectRoot(named: "project-guidance-ui-repair-template")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        try insertPendingUIReviewRepairGuidance(
+            ctx: ctx,
+            injectionId: "guidance-ui-repair-template-1",
+            reviewId: "review-ui-repair-template-1",
+            projectId: "proj-ui-repair-template-1"
+        )
+
+        let instructions = session.projectSupervisorFinalizeOnlyResponseContractInstructionsForTesting(
+            ctx: ctx,
+            visiblePendingGuidanceInjectionId: "guidance-ui-repair-template-1"
+        )
+
+        #expect(instructions.contains("Active UI repair contract detected"))
+        #expect(instructions.contains("repair_action=repair_primary_cta_visibility"))
+        #expect(instructions.contains("repair_focus=critical_action"))
+        #expect(instructions.contains("next_safe_action=open_ui_review"))
+        #expect(instructions.contains("ui_review_ref=local://.xterminal/ui_review/agent_evidence/review-ui-repair-template-1.json"))
+        #expect(instructions.contains("instruction=Restore a visible primary CTA before rerunning UI review."))
+    }
+
+    @Test
+    func uiReviewRepairFinalNormalizationAddsStructuredRepairHandoffWhenModelOmitsAnchors() throws {
+        let session = ChatSessionModel()
+        let root = try makeProjectRoot(named: "project-guidance-ui-repair-final")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        try insertPendingUIReviewRepairGuidance(
+            ctx: ctx,
+            injectionId: "guidance-ui-repair-final-1",
+            reviewId: "review-ui-repair-final-1",
+            projectId: "proj-ui-repair-final-1"
+        )
+
+        let normalized = try #require(
+            session.normalizedProjectSupervisorFinalForTesting(
+                final: "先停下当前自动化，先回到页面检查后再继续。",
+                ctx: ctx,
+                visiblePendingGuidanceInjectionId: "guidance-ui-repair-final-1"
+            )
+        )
+
+        #expect(normalized.contains("已暂停继续自动化，先处理当前 UI 修复要求。"))
+        #expect(normalized.contains("- repair_action: repair_primary_cta_visibility"))
+        #expect(normalized.contains("- repair_focus: critical_action"))
+        #expect(normalized.contains("- next_safe_action: open_ui_review"))
+        #expect(normalized.contains("- ui_review_ref: local://.xterminal/ui_review/agent_evidence/review-ui-repair-final-1.json"))
+        #expect(normalized.contains("- instruction: Restore a visible primary CTA before rerunning UI review."))
+        #expect(normalized.contains("当前重规划："))
+        #expect(normalized.contains("先停下当前自动化，先回到页面检查后再继续。"))
+    }
+
+    @Test
+    func visibleStopSignalGuidanceGateWritesAuditRowWhenExecutableCallsAreStripped() throws {
+        let session = ChatSessionModel()
+        let root = try makeProjectRoot(named: "project-guidance-stop-signal-audit")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        try insertPendingUIReviewRepairGuidance(
+            ctx: ctx,
+            injectionId: "guidance-ui-repair-audit-1",
+            reviewId: "review-ui-repair-audit-1",
+            projectId: "proj-ui-repair-audit-1"
+        )
+
+        let gated = session.applyProjectSupervisorGuidanceEnvelopeGateForTesting(
+            ctx: ctx,
+            envelope: ToolActionEnvelope(
+                tool_calls: [
+                    ToolCall(
+                        id: "continue-read",
+                        tool: .read_file,
+                        args: ["path": .string("README.md")]
+                    )
+                ],
+                skill_calls: [
+                    GovernedSkillCall(
+                        id: "skill-continue",
+                        skill_id: "agent-browser",
+                        payload: ["action": .string("continue")]
+                    )
+                ],
+                final: "先停下，回到 UI review。",
+                guidance_ack: ToolGuidanceAckPayload(
+                    injection_id: "guidance-ui-repair-audit-1",
+                    status: .accepted,
+                    note: "Stop now."
+                )
+            ),
+            visiblePendingGuidanceInjectionId: "guidance-ui-repair-audit-1"
+        )
+
+        #expect(!gated.requiresFinalOnly)
+        #expect(gated.toolCallCount == 0)
+        #expect(gated.skillCallCount == 0)
+
+        let rawEntries = try rawLogEntries(for: ctx)
+        let gateEntry = try #require(rawEntries.last(where: { ($0["type"] as? String) == "supervisor_guidance_gate" }))
+        #expect(gateEntry["action"] as? String == "strip_executable_calls_for_final_only")
+        #expect(gateEntry["injection_id"] as? String == "guidance-ui-repair-audit-1")
+        #expect(gateEntry["original_tool_call_count"] as? Int == 1)
+        #expect(gateEntry["original_skill_call_count"] as? Int == 1)
+        #expect(gateEntry["gated_tool_call_count"] as? Int == 0)
+        #expect(gateEntry["gated_skill_call_count"] as? Int == 0)
+    }
+
+    @Test
+    func grantResolutionContractAppearsInProjectMemoryForPendingGuidance() throws {
+        let session = ChatSessionModel()
+        let root = try makeProjectRoot(named: "project-guidance-grant-contract")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        try insertPendingGrantResolutionGuidance(
+            ctx: ctx,
+            reviewId: "review-grant-contract-1",
+            injectionId: "guidance-grant-contract-1",
+            projectId: "proj-grant-contract-1"
+        )
+
+        let block = session.projectMemoryBlockForTesting(
+            ctx: ctx,
+            canonicalMemory: "goal: continue the governed workflow safely",
+            recentText: "recent",
+            userText: "继续推进当前实现",
+            safePointState: SupervisorSafePointExecutionState(
+                runStartedAtMs: 1_773_382_260_000,
+                flowStep: 1,
+                toolResultsCount: 0,
+                verifyRunIndex: 0,
+                finalizeOnly: false
+            )
+        )
+
+        #expect(block.contains("[supervisor_replan_contract]"))
+        #expect(block.contains("contract_kind: grant_resolution"))
+        #expect(block.contains("primary_blocker: grant_required"))
+        #expect(block.contains("next_safe_action: open_hub_grants"))
+        #expect(block.contains("recommended_actions: Open Hub grant approval for this project | Retry the governed step after grant approval"))
+        #expect(block.contains("work_order_ref: plan:plan-grant-contract-1"))
+    }
+
+    @Test
+    func grantResolutionFinalizeOnlyInstructionsExposeStructuredReplanTemplate() throws {
+        let session = ChatSessionModel()
+        let root = try makeProjectRoot(named: "project-guidance-grant-template")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        try insertPendingGrantResolutionGuidance(
+            ctx: ctx,
+            reviewId: "review-grant-template-1",
+            injectionId: "guidance-grant-template-1",
+            projectId: "proj-grant-template-1"
+        )
+
+        let instructions = session.projectSupervisorFinalizeOnlyResponseContractInstructionsForTesting(
+            ctx: ctx,
+            visiblePendingGuidanceInjectionId: "guidance-grant-template-1"
+        )
+
+        #expect(instructions.contains("Active supervisor replan contract detected"))
+        #expect(instructions.contains("contract_kind=grant_resolution"))
+        #expect(instructions.contains("primary_blocker=grant_required"))
+        #expect(instructions.contains("next_safe_action=open_hub_grants"))
+        #expect(instructions.contains("work_order_ref=plan:plan-grant-template-1"))
+    }
+
+    @Test
+    func grantResolutionFinalNormalizationAddsStructuredReplanHandoff() throws {
+        let session = ChatSessionModel()
+        let root = try makeProjectRoot(named: "project-guidance-grant-final")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        try insertPendingGrantResolutionGuidance(
+            ctx: ctx,
+            reviewId: "review-grant-final-1",
+            injectionId: "guidance-grant-final-1",
+            projectId: "proj-grant-final-1"
+        )
+
+        let normalized = try #require(
+            session.normalizedProjectSupervisorFinalForTesting(
+                final: "先暂停当前步骤，等待授权完成后再继续。",
+                ctx: ctx,
+                visiblePendingGuidanceInjectionId: "guidance-grant-final-1"
+            )
+        )
+
+        #expect(normalized.contains("已暂停继续执行，先处理当前 supervisor replan 合同。"))
+        #expect(normalized.contains("- contract_kind: grant_resolution"))
+        #expect(normalized.contains("- primary_blocker: grant_required"))
+        #expect(normalized.contains("- next_safe_action: open_hub_grants"))
+        #expect(normalized.contains("- work_order_ref: plan:plan-grant-final-1"))
+        #expect(normalized.contains("- recommended_actions: Open Hub grant approval for this project | Retry the governed step after grant approval"))
+        #expect(normalized.contains("当前重规划："))
+        #expect(normalized.contains("先暂停当前步骤，等待授权完成后再继续。"))
+    }
+
+    @Test
+    func incidentRecoveryContractAppearsInProjectMemoryForPendingGuidance() throws {
+        let session = ChatSessionModel()
+        let root = try makeProjectRoot(named: "project-guidance-incident-contract")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        try insertPendingIncidentRecoveryGuidance(
+            ctx: ctx,
+            reviewId: "review-incident-contract-1",
+            injectionId: "guidance-incident-contract-1",
+            projectId: "proj-incident-contract-1"
+        )
+
+        let block = session.projectMemoryBlockForTesting(
+            ctx: ctx,
+            canonicalMemory: "goal: recover the runtime safely",
+            recentText: "recent",
+            userText: "继续推进当前实现",
+            safePointState: SupervisorSafePointExecutionState(
+                runStartedAtMs: 1_773_382_280_000,
+                flowStep: 1,
+                toolResultsCount: 0,
+                verifyRunIndex: 0,
+                finalizeOnly: false
+            )
+        )
+
+        #expect(block.contains("[supervisor_replan_contract]"))
+        #expect(block.contains("contract_kind: incident_recovery"))
+        #expect(block.contains("primary_blocker: runtime_error"))
+        #expect(block.contains("next_safe_action: inspect_incident_and_replan"))
+        #expect(block.contains("recommended_actions: Inspect the runtime failure evidence | Replan the blocked step before retry"))
+    }
+
+    @Test
+    func incidentRecoveryFinalNormalizationAddsStructuredReplanHandoff() throws {
+        let session = ChatSessionModel()
+        let root = try makeProjectRoot(named: "project-guidance-incident-final")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        try insertPendingIncidentRecoveryGuidance(
+            ctx: ctx,
+            reviewId: "review-incident-final-1",
+            injectionId: "guidance-incident-final-1",
+            projectId: "proj-incident-final-1"
+        )
+
+        let normalized = try #require(
+            session.normalizedProjectSupervisorFinalForTesting(
+                final: "先停下当前执行，检查失败原因后再决定是否重试。",
+                ctx: ctx,
+                visiblePendingGuidanceInjectionId: "guidance-incident-final-1"
+            )
+        )
+
+        #expect(normalized.contains("已暂停继续执行，先处理当前 supervisor replan 合同。"))
+        #expect(normalized.contains("- contract_kind: incident_recovery"))
+        #expect(normalized.contains("- primary_blocker: runtime_error"))
+        #expect(normalized.contains("- next_safe_action: inspect_incident_and_replan"))
+        #expect(normalized.contains("- recommended_actions: Inspect the runtime failure evidence | Replan the blocked step before retry"))
+        #expect(normalized.contains("先停下当前执行，检查失败原因后再决定是否重试。"))
+    }
+
+    @Test
     func slashGuidanceShowsAndManuallyAcceptsPendingGuidance() throws {
         let session = ChatSessionModel()
         let root = try makeProjectRoot(named: "project-guidance-slash")
@@ -438,15 +894,21 @@ struct ChatSessionModelRecentContextTests {
         )
 
         let status = session.handleSlashGuidanceForTesting(args: [], ctx: ctx)
-        #expect(status.contains("pending guidance:"))
+        #expect(status.contains("待确认指导："))
         #expect(status.contains("guidance-slash-1"))
-        #expect(status.contains("lifecycle: active"))
+        #expect(status.contains("生命周期：生效中"))
+        #expect(status.contains("确认状态：待确认 · 需要确认"))
 
         let accept = session.handleSlashGuidanceForTesting(
             args: ["accept", "manual", "operator", "ok"],
             ctx: ctx
         )
-        #expect(accept.contains("已更新 guidance ack"))
+        #expect(accept.contains("已更新指导确认"))
+
+        let latestStatus = session.handleSlashGuidanceForTesting(args: [], ctx: ctx)
+        #expect(latestStatus.contains("最新指导："))
+        #expect(latestStatus.contains("确认状态：已接受 · 需要确认"))
+        #expect(latestStatus.contains("生命周期：已结束"))
 
         let updated = try #require(SupervisorGuidanceInjectionStore.latest(for: ctx))
         #expect(updated.ackStatus == .accepted)
@@ -554,6 +1016,241 @@ struct ChatSessionModelRecentContextTests {
         #expect(secondStep.contains("guidance-safe-point-window-1"))
     }
 
+    @Test
+    func projectRecentDialogueSelectionHonorsProfileFloorAndDropsPureAckNoise() throws {
+        let session = ChatSessionModel()
+        let root = try makeProjectRoot(named: "project-recent-dialogue-selection")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        for index in 1...9 {
+            let base = Double(index * 10)
+            AXRecentContextStore.appendUserMessage(
+                ctx: ctx,
+                text: "task-\(index): keep the snake game continuity intact",
+                createdAt: base
+            )
+            AXRecentContextStore.appendAssistantMessage(
+                ctx: ctx,
+                text: "assistant-step-\(index): continue from the current implementation",
+                createdAt: base + 1
+            )
+        }
+        AXRecentContextStore.appendUserMessage(ctx: ctx, text: "好", createdAt: 500)
+        AXRecentContextStore.appendAssistantMessage(ctx: ctx, text: "收到", createdAt: 501)
+
+        let selection = session.projectRecentDialogueSelectionForTesting(
+            ctx: ctx,
+            userText: "继续",
+            profile: .floor8Pairs
+        )
+
+        #expect(selection.profile == .floor8Pairs)
+        #expect(selection.source == "recent_context")
+        #expect(selection.selectedPairs == 8)
+        #expect(selection.text.contains("task-2: keep the snake game continuity intact"))
+        #expect(selection.text.contains("assistant-step-9: continue from the current implementation"))
+        #expect(!selection.text.contains("user: 好"))
+        #expect(!selection.text.contains("assistant: 收到"))
+        #expect(selection.dropped == 2)
+    }
+
+    @Test
+    func resolvedProjectMemoryServingProfileUsesDepthBaselineAndAllowsExplicitEscalation() throws {
+        let session = ChatSessionModel()
+        let root = try makeProjectRoot(named: "project-context-depth-profile")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let lean = AXProjectConfig.default(forProjectRoot: root).settingProjectContextAssembly(
+            projectContextDepthProfile: .lean
+        )
+        let full = AXProjectConfig.default(forProjectRoot: root).settingProjectContextAssembly(
+            projectContextDepthProfile: .full
+        )
+
+        #expect(
+            session.resolvedProjectMemoryServingProfileForTesting(
+                userText: "继续修当前编译错误",
+                config: lean
+            ) == .m1Execute
+        )
+        #expect(
+            session.resolvedProjectMemoryServingProfileForTesting(
+                userText: "梳理项目结构并给出重构建议",
+                config: lean
+            ) == .m2PlanReview
+        )
+        #expect(
+            session.resolvedProjectMemoryServingProfileForTesting(
+                userText: "继续修当前编译错误",
+                config: full
+            ) == .m4FullScan
+        )
+    }
+
+    @Test
+    func projectMemoryBlockIncludesDialogueWindowAndContextDepthSectionsForFullProfile() throws {
+        let session = ChatSessionModel()
+        let root = try makeProjectRoot(named: "project-context-depth-full")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+
+        AXRecentContextStore.appendUserMessage(
+            ctx: ctx,
+            text: "Keep the current snake game objective and continue the browser MVP.",
+            createdAt: 100
+        )
+        AXRecentContextStore.appendAssistantMessage(
+            ctx: ctx,
+            text: "I will continue from the active browser implementation path.",
+            createdAt: 101
+        )
+
+        try SupervisorProjectJobStore.upsert(
+            SupervisorJobRecord(
+                schemaVersion: SupervisorJobRecord.currentSchemaVersion,
+                jobId: "job-context-depth-full",
+                projectId: projectId,
+                goal: "Ship the browser snake MVP",
+                priority: .high,
+                status: .running,
+                source: .supervisor,
+                currentOwner: "coder",
+                activePlanId: "plan-context-depth-full",
+                createdAtMs: 100,
+                updatedAtMs: 200,
+                auditRef: "audit-job-context-depth-full"
+            ),
+            for: ctx
+        )
+        try SupervisorProjectPlanStore.upsert(
+            SupervisorPlanRecord(
+                schemaVersion: SupervisorPlanRecord.currentSchemaVersion,
+                planId: "plan-context-depth-full",
+                jobId: "job-context-depth-full",
+                projectId: projectId,
+                status: .active,
+                currentOwner: "coder",
+                steps: [
+                    SupervisorPlanStepRecord(
+                        schemaVersion: SupervisorPlanStepRecord.currentSchemaVersion,
+                        stepId: "step-001",
+                        title: "Scaffold the browser runtime shell",
+                        kind: .launchRun,
+                        status: .running,
+                        skillId: "",
+                        currentOwner: "coder",
+                        detail: "Create the minimal runtime shell and confirm page boot.",
+                        orderIndex: 0,
+                        updatedAtMs: 200
+                    )
+                ],
+                createdAtMs: 100,
+                updatedAtMs: 200,
+                auditRef: "audit-plan-context-depth-full"
+            ),
+            for: ctx
+        )
+        try SupervisorReviewNoteStore.upsert(
+            SupervisorReviewNoteBuilder.build(
+                reviewId: "review-context-depth-full",
+                projectId: projectId,
+                trigger: .manualRequest,
+                reviewLevel: .r2Strategic,
+                verdict: .betterPathFound,
+                targetRole: .coder,
+                deliveryMode: .priorityInsert,
+                ackRequired: true,
+                summary: "Prefer the browser MVP shell before adding polish.",
+                recommendedActions: ["Create the runtime shell first", "Verify page boot before tuning UX"],
+                anchorGoal: "Ship a browser snake MVP",
+                anchorDoneDefinition: "The game runs in-browser with movement, food, and game over.",
+                anchorConstraints: ["Keep it minimal", "Prefer a shippable first cut"],
+                currentState: "Planning the browser shell",
+                nextStep: "Build the first page shell",
+                blocker: "",
+                createdAtMs: 220,
+                auditRef: "audit-review-context-depth-full"
+            ),
+            for: ctx
+        )
+
+        let config = AXProjectConfig.default(forProjectRoot: root).settingProjectContextAssembly(
+            projectRecentDialogueProfile: .extended40Pairs,
+            projectContextDepthProfile: .full
+        )
+        let block = session.projectMemoryBlockForTesting(
+            ctx: ctx,
+            canonicalMemory: "# Goal\nShip the browser snake MVP.",
+            recentText: "[retrieved_memory]\nstatus=ok\n[/retrieved_memory]",
+            userText: "继续推进当前实现",
+            config: config,
+            toolResults: [
+                ToolResult(
+                    id: "diff-full-1",
+                    tool: .git_diff,
+                    ok: true,
+                    output: "diff --git a/main.js b/main.js"
+                )
+            ]
+        )
+
+        #expect(block.contains("[DIALOGUE_WINDOW]"))
+        #expect(block.contains("recent_project_dialogue_profile: extended_40_pairs"))
+        #expect(block.contains("[FOCUSED_PROJECT_ANCHOR_PACK]"))
+        #expect(block.contains("project_context_depth: full"))
+        #expect(block.contains("workflow_present: true"))
+        #expect(block.contains("personal_memory_excluded_reason: project_ai_default_scopes_to_project_memory_only"))
+        #expect(block.contains("[LONGTERM_OUTLINE]"))
+        #expect(block.contains("[CONTEXT_REFS]"))
+        #expect(block.contains("[EVIDENCE_PACK]"))
+        #expect(block.contains("latest_review"))
+        #expect(block.contains("recent_tool_results"))
+    }
+
+    @Test
+    func leanProjectContextDepthOmitsDeepContextSections() throws {
+        let session = ChatSessionModel()
+        let root = try makeProjectRoot(named: "project-context-depth-lean")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        AXRecentContextStore.appendUserMessage(
+            ctx: ctx,
+            text: "Continue the current implementation.",
+            createdAt: 100
+        )
+        AXRecentContextStore.appendAssistantMessage(
+            ctx: ctx,
+            text: "I will continue from the latest project state.",
+            createdAt: 101
+        )
+
+        let config = AXProjectConfig.default(forProjectRoot: root).settingProjectContextAssembly(
+            projectRecentDialogueProfile: .floor8Pairs,
+            projectContextDepthProfile: .lean
+        )
+        let block = session.projectMemoryBlockForTesting(
+            ctx: ctx,
+            canonicalMemory: "# Goal\nKeep the project moving.",
+            recentText: "recent",
+            userText: "继续推进当前实现",
+            config: config
+        )
+
+        #expect(block.contains("[DIALOGUE_WINDOW]"))
+        #expect(block.contains("[FOCUSED_PROJECT_ANCHOR_PACK]"))
+        #expect(!block.contains("[LONGTERM_OUTLINE]"))
+        #expect(!block.contains("[CONTEXT_REFS]"))
+        #expect(!block.contains("[EVIDENCE_PACK]"))
+    }
+
     private func makeTurns(count: Int) -> [AXChatMessage] {
         var out: [AXChatMessage] = []
         for index in 1...count {
@@ -569,5 +1266,199 @@ struct ChatSessionModelRecentContextTests {
             .appendingPathComponent("\(name)-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
+    }
+
+    private func insertPendingUIReviewRepairGuidance(
+        ctx: AXProjectContext,
+        injectionId: String,
+        reviewId: String,
+        projectId: String
+    ) throws {
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: injectionId,
+                reviewId: reviewId,
+                projectId: projectId,
+                targetRole: .projectChat,
+                deliveryMode: .stopSignal,
+                interventionMode: .stopImmediately,
+                safePointPolicy: .immediate,
+                guidanceText: """
+Repair primary CTA visibility before continuing browser automation.
+instruction=Restore a visible primary CTA before rerunning UI review.
+source=ui_review_repair
+request_id=req-\(injectionId)
+skill_id=browser.runtime.inspect
+status=completed
+ui_review_ref=local://.xterminal/ui_review/agent_evidence/\(reviewId).json
+ui_review_review_id=\(reviewId)
+ui_review_verdict=attention_needed
+repair_action=repair_primary_cta_visibility
+repair_focus=critical_action
+next_safe_action=open_ui_review
+ui_review_issue_codes=critical_action_not_visible,interactive_target_missing
+ui_review_summary=Primary CTA is missing from the current browser page.
+skill_result_summary=deviceBrowserControl completed: Critical CTA missing
+""",
+                ackStatus: .pending,
+                ackRequired: true,
+                effectiveSupervisorTier: .s4TightSupervision,
+                effectiveWorkOrderDepth: .stepLockedRescue,
+                workOrderRef: "plan:plan-ui-review-safe-next-action-v1",
+                ackNote: "",
+                injectedAtMs: 1_773_382_240_000,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-\(injectionId)"
+            ),
+            for: ctx
+        )
+    }
+
+    private func insertPendingGrantResolutionGuidance(
+        ctx: AXProjectContext,
+        reviewId: String,
+        injectionId: String,
+        projectId: String
+    ) throws {
+        try SupervisorReviewNoteStore.upsert(
+            SupervisorReviewNoteBuilder.build(
+                reviewId: reviewId,
+                projectId: projectId,
+                trigger: .blockerDetected,
+                reviewLevel: .r3Rescue,
+                verdict: .highRisk,
+                targetRole: .projectChat,
+                deliveryMode: .stopSignal,
+                ackRequired: true,
+                effectiveSupervisorTier: .s4TightSupervision,
+                effectiveWorkOrderDepth: .stepLockedRescue,
+                workOrderRef: "plan:plan-\(reviewId.replacingOccurrences(of: "review-", with: ""))",
+                summary: "Project is blocked on a pending Hub grant and cannot safely continue side effects.",
+                recommendedActions: [
+                    "Open Hub grant approval for this project",
+                    "Retry the governed step after grant approval"
+                ],
+                anchorGoal: "Resume the governed workflow once authorization is in place.",
+                anchorDoneDefinition: "Grant is approved and the blocked step can resume safely.",
+                anchorConstraints: ["Do not bypass fail-closed grant policy."],
+                currentState: "The project is paused behind a grant gate.",
+                nextStep: "Wait for Hub grant approval, then resume the blocked task.",
+                blocker: "grant_required",
+                createdAtMs: 1_773_382_270_000,
+                auditRef: "audit-\(reviewId)"
+            ),
+            for: ctx
+        )
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: injectionId,
+                reviewId: reviewId,
+                projectId: projectId,
+                targetRole: .projectChat,
+                deliveryMode: .stopSignal,
+                interventionMode: .stopImmediately,
+                safePointPolicy: .immediate,
+                guidanceText: """
+verdict=high_risk
+summary=Project is blocked on a pending Hub grant and cannot safely continue side effects.
+effective_supervisor_tier=s4_tight_supervision
+effective_work_order_depth=step_locked_rescue
+work_order_ref=plan:plan-\(reviewId.replacingOccurrences(of: "review-", with: ""))
+actions=Open Hub grant approval for this project | Retry the governed step after grant approval
+""",
+                ackStatus: .pending,
+                ackRequired: true,
+                effectiveSupervisorTier: .s4TightSupervision,
+                effectiveWorkOrderDepth: .stepLockedRescue,
+                workOrderRef: "plan:plan-\(reviewId.replacingOccurrences(of: "review-", with: ""))",
+                ackNote: "",
+                injectedAtMs: 1_773_382_271_000,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-\(injectionId)"
+            ),
+            for: ctx
+        )
+    }
+
+    private func insertPendingIncidentRecoveryGuidance(
+        ctx: AXProjectContext,
+        reviewId: String,
+        injectionId: String,
+        projectId: String
+    ) throws {
+        try SupervisorReviewNoteStore.upsert(
+            SupervisorReviewNoteBuilder.build(
+                reviewId: reviewId,
+                projectId: projectId,
+                trigger: .failureStreak,
+                reviewLevel: .r3Rescue,
+                verdict: .highRisk,
+                targetRole: .projectChat,
+                deliveryMode: .stopSignal,
+                ackRequired: true,
+                effectiveSupervisorTier: .s4TightSupervision,
+                effectiveWorkOrderDepth: .stepLockedRescue,
+                workOrderRef: "plan:plan-\(reviewId.replacingOccurrences(of: "review-", with: ""))",
+                summary: "Project hit a runtime failure and needs a governed incident recovery pass before retrying.",
+                recommendedActions: [
+                    "Inspect the runtime failure evidence",
+                    "Replan the blocked step before retry"
+                ],
+                anchorGoal: "Resume the workflow without repeating the same runtime failure.",
+                anchorDoneDefinition: "Failure cause is understood and the next retry path is safe.",
+                anchorConstraints: ["Do not auto-retry blindly after a runtime error."],
+                currentState: "The project is paused after a runtime failure.",
+                nextStep: "Inspect the failure evidence and update the plan before retrying.",
+                blocker: "runtime_error",
+                createdAtMs: 1_773_382_290_000,
+                auditRef: "audit-\(reviewId)"
+            ),
+            for: ctx
+        )
+        try SupervisorGuidanceInjectionStore.upsert(
+            SupervisorGuidanceInjectionBuilder.build(
+                injectionId: injectionId,
+                reviewId: reviewId,
+                projectId: projectId,
+                targetRole: .projectChat,
+                deliveryMode: .stopSignal,
+                interventionMode: .stopImmediately,
+                safePointPolicy: .immediate,
+                guidanceText: """
+verdict=high_risk
+summary=Project hit a runtime failure and needs a governed incident recovery pass before retrying.
+effective_supervisor_tier=s4_tight_supervision
+effective_work_order_depth=step_locked_rescue
+work_order_ref=plan:plan-\(reviewId.replacingOccurrences(of: "review-", with: ""))
+actions=Inspect the runtime failure evidence | Replan the blocked step before retry
+""",
+                ackStatus: .pending,
+                ackRequired: true,
+                effectiveSupervisorTier: .s4TightSupervision,
+                effectiveWorkOrderDepth: .stepLockedRescue,
+                workOrderRef: "plan:plan-\(reviewId.replacingOccurrences(of: "review-", with: ""))",
+                ackNote: "",
+                injectedAtMs: 1_773_382_291_000,
+                ackUpdatedAtMs: 0,
+                auditRef: "audit-\(injectionId)"
+            ),
+            for: ctx
+        )
+    }
+
+    private func rawLogEntries(for ctx: AXProjectContext) throws -> [[String: Any]] {
+        guard FileManager.default.fileExists(atPath: ctx.rawLogURL.path) else { return [] }
+        let data = try Data(contentsOf: ctx.rawLogURL)
+        guard let text = String(data: data, encoding: .utf8) else {
+            struct RawLogDecodeError: Error {}
+            throw RawLogDecodeError()
+        }
+        return text.split(separator: "\n", omittingEmptySubsequences: true).compactMap { line in
+            guard let lineData = String(line).data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else {
+                return nil
+            }
+            return object
+        }
     }
 }

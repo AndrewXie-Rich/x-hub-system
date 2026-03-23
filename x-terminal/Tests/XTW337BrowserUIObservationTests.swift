@@ -11,6 +11,9 @@ private actor XTW337TestGate {
 @MainActor
 struct XTW337BrowserUIObservationTests {
     private static let gate = XTW337TestGate()
+    private static func activeRuntimeSurfaceDate() -> Date {
+        Date()
+    }
 
     @Test
     func browserSnapshotProducesCapturedUIObservationBundleWhenScreenRecordingIsReady() async throws {
@@ -51,9 +54,9 @@ struct XTW337BrowserUIObservationTests {
                 deviceToolGroups: ["device.browser.control"],
                 workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
             )
-            config = config.settingAutonomyPolicy(
+            config = config.settingRuntimeSurfacePolicy(
                 mode: .trustedOpenClawMode,
-                updatedAt: Date(timeIntervalSince1970: 1_773_900_000)
+                updatedAt: Self.activeRuntimeSurfaceDate()
             )
             try AXProjectStore.saveConfig(config, for: ctx)
 
@@ -203,9 +206,9 @@ struct XTW337BrowserUIObservationTests {
                 deviceToolGroups: ["device.browser.control"],
                 workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
             )
-            config = config.settingAutonomyPolicy(
+            config = config.settingRuntimeSurfacePolicy(
                 mode: .trustedOpenClawMode,
-                updatedAt: Date(timeIntervalSince1970: 1_773_900_100)
+                updatedAt: Self.activeRuntimeSurfaceDate()
             )
             try AXProjectStore.saveConfig(config, for: ctx)
 
@@ -311,9 +314,9 @@ struct XTW337BrowserUIObservationTests {
                 deviceToolGroups: ["device.browser.control"],
                 workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
             )
-            config = config.settingAutonomyPolicy(
+            config = config.settingRuntimeSurfacePolicy(
                 mode: .trustedOpenClawMode,
-                updatedAt: Date(timeIntervalSince1970: 1_773_900_200)
+                updatedAt: Self.activeRuntimeSurfaceDate()
             )
             try AXProjectStore.saveConfig(config, for: ctx)
 

@@ -480,7 +480,8 @@ final class ProjectMaterializer {
             progressHeartbeatSeconds: governance.schedule.progressHeartbeatSeconds,
             reviewPulseSeconds: governance.schedule.reviewPulseSeconds,
             brainstormReviewSeconds: governance.schedule.brainstormReviewSeconds,
-            eventDrivenReviewEnabled: governance.schedule.eventDrivenReviewEnabled
+            eventDrivenReviewEnabled: governance.schedule.eventDrivenReviewEnabled,
+            eventReviewTriggers: governance.schedule.eventReviewTriggers
         )
     }
 

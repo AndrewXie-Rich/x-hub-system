@@ -45,13 +45,13 @@ struct StatusExplanationCard: View {
                 Spacer(minLength: 12)
             }
 
-            detailLine(title: "What happened", text: explanation.whatHappened)
-            detailLine(title: "Why", text: explanation.whyItHappened)
-            detailLine(title: "Next action", text: explanation.userAction)
+            detailLine(title: "发生了什么", text: explanation.whatHappened)
+            detailLine(title: "原因", text: explanation.whyItHappened)
+            detailLine(title: "下一步", text: explanation.userAction)
 
             if !explanation.highlights.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Signals")
+                    Text("观测信号")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                     ForEach(explanation.highlights, id: \.self) { highlight in
@@ -63,7 +63,7 @@ struct StatusExplanationCard: View {
             }
 
             if let hardLine = explanation.hardLine, !hardLine.isEmpty {
-                Text("Hard line · \(hardLine)")
+                Text("硬边界 · \(hardLine)")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(explanation.state.tint)
             }

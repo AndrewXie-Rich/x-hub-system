@@ -124,7 +124,7 @@ struct XTMemoryUsePolicyTests {
         #expect(route.denyCode == nil)
         #expect(route.servingProfile == .m2PlanReview)
         #expect(route.payload.servingProfile == XTMemoryServingProfile.m2PlanReview.rawValue)
-        #expect(route.payload.budgets?.totalTokens == 2_340)
+        #expect(route.payload.budgets?.totalTokens == 3_060)
         #expect(route.payload.canonicalText?.count == 3_000)
         #expect(route.payload.longtermOutlineText?.contains("background_memory") == true)
     }
@@ -231,5 +231,48 @@ struct XTMemoryUsePolicyTests {
         #expect(sanitized?.contains("[redacted_message_header]") == true)
         #expect(sanitized?.contains("attack") == false)
         #expect(sanitized?.contains("normal line") == true)
+    }
+
+    @Test
+    func rawEvidenceSanitizerPreservesStructuredAgentEvidenceSections() {
+        let sanitized = XTMemorySanitizer.sanitizeRawEvidenceSummary(
+            """
+            ref=local://.xterminal/ui_review/reviews/current.json
+            bundle_ref=local://.xterminal/ui_observation/bundles/current.json
+            updated_at_ms=500000
+            verdict=attention_needed
+            confidence=medium
+            sufficient_evidence=true
+            objective_ready=false
+            issue_codes=interactive_target_missing,critical_action_not_visible
+            summary=attention needed; confidence=medium; issues=interactive_target_missing,critical_action_not_visible
+            artifact_refs:
+            - screenshot_ref=local://.xterminal/ui_observation/artifacts/current/full.png
+            - thumbnail_ref=local://.xterminal/ui_observation/artifacts/current/thumb.png
+            - visible_text_ref=local://.xterminal/ui_observation/artifacts/current/visible_text.txt
+            artifact_paths:
+            - review_path=/tmp/current-review.json
+            checks:
+            - interactive_target_missing=fail :: CTA is still missing from the current page
+            trend:
+            - status=regressed
+            comparison:
+            - added_issues=critical_action_not_visible
+            recent_history:
+            - review_id=uir-current verdict=attention_needed confidence=medium objective_ready=false issues=interactive_target_missing,critical_action_not_visible updated_at_ms=500000 review_ref=local://.xterminal/ui_review/reviews/current.json
+            - review_id=uir-previous verdict=ready confidence=high objective_ready=true issues=(none) updated_at_ms=420000 review_ref=local://.xterminal/ui_review/reviews/previous.json
+            """,
+            maxChars: 1_100,
+            lineCap: 28
+        )
+
+        #expect(sanitized?.contains("artifact_refs:") == true)
+        #expect(sanitized?.contains("screenshot_ref=local://.xterminal/ui_observation/artifacts/current/full.png") == true)
+        #expect(sanitized?.contains("visible_text_ref=local://.xterminal/ui_observation/artifacts/current/visible_text.txt") == true)
+        #expect(sanitized?.contains("checks:") == true)
+        #expect(sanitized?.contains("trend:") == true)
+        #expect(sanitized?.contains("status=regressed") == true)
+        #expect(sanitized?.contains("recent_history:") == true)
+        #expect(sanitized?.contains("review_id=uir-previous") == true)
     }
 }

@@ -13,7 +13,7 @@ struct XTToolRuntimePolicyGovernanceClampTests {
             executionTier: .a4OpenClaw,
             supervisorInterventionTier: .s1MilestoneReview
         )
-        config = config.settingAutonomyPolicy(
+        config = config.settingRuntimeSurfacePolicy(
             mode: .trustedOpenClawMode,
             ttlSeconds: 600,
             updatedAt: Date()
@@ -41,14 +41,14 @@ struct XTToolRuntimePolicyGovernanceClampTests {
     }
 
     @Test
-    func autonomyClampDeniesBrowserRuntimeWithoutDowngradingGovernanceTier() {
+    func runtimeSurfaceClampDeniesBrowserRuntimeWithoutDowngradingGovernanceTier() {
         let root = makeProjectRoot(named: "runtime-governance-browser-clamp")
         var config = AXProjectConfig.default(forProjectRoot: root)
         config = config.settingProjectGovernance(
             executionTier: .a4OpenClaw,
             supervisorInterventionTier: .s2PeriodicReview
         )
-        config = config.settingAutonomyPolicy(
+        config = config.settingRuntimeSurfacePolicy(
             mode: .guided,
             allowBrowserRuntime: false,
             updatedAt: Date()
@@ -78,25 +78,25 @@ struct XTToolRuntimePolicyGovernanceClampTests {
         #expect(decision.policySource == "project_autonomy_policy")
         #expect(decision.policyReason == "surface=browser_runtime_disallowed")
         let runtimeSurface = jsonObject(summary["runtime_surface"])
-        #expect(jsonString(runtimeSurface?["configured_surface"]) == AXProjectAutonomyMode.guided.rawValue)
-        #expect(jsonString(runtimeSurface?["effective_surface"]) == AXProjectAutonomyMode.guided.rawValue)
+        #expect(jsonString(runtimeSurface?["configured_surface"]) == AXProjectRuntimeSurfaceMode.guided.rawValue)
+        #expect(jsonString(runtimeSurface?["effective_surface"]) == AXProjectRuntimeSurfaceMode.guided.rawValue)
         #expect(jsonArray(runtimeSurface?["configured_surfaces"])?.isEmpty == true)
         #expect(jsonArray(runtimeSurface?["effective_surfaces"])?.isEmpty == true)
         #expect(jsonString(summary["execution_tier"]) == AXProjectExecutionTier.a4OpenClaw.rawValue)
         #expect(jsonString(summary["effective_execution_tier"]) == AXProjectExecutionTier.a4OpenClaw.rawValue)
-        #expect(jsonString(summary["runtime_surface_effective"]) == AXProjectAutonomyMode.guided.rawValue)
-        #expect(jsonString(summary["autonomy_effective_mode"]) == AXProjectAutonomyMode.guided.rawValue)
+        #expect(jsonString(summary["runtime_surface_effective"]) == AXProjectRuntimeSurfaceMode.guided.rawValue)
+        #expect(jsonString(summary["autonomy_effective_mode"]) == AXProjectRuntimeSurfaceMode.guided.rawValue)
     }
 
     @Test
-    func governanceStillBlocksDeviceSurfaceBelowOpenClawEvenWhenAutonomyPresetIsOpenClaw() {
+    func governanceStillBlocksDeviceSurfaceBelowOpenClawEvenWhenRuntimeSurfacePresetIsOpenClaw() {
         let root = makeProjectRoot(named: "runtime-governance-device-floor")
         var config = AXProjectConfig.default(forProjectRoot: root)
         config = config.settingProjectGovernance(
             executionTier: .a3DeliverAuto,
             supervisorInterventionTier: .s3StrategicCoach
         )
-        config = config.settingAutonomyPolicy(
+        config = config.settingRuntimeSurfacePolicy(
             mode: .trustedOpenClawMode,
             ttlSeconds: 600,
             updatedAt: Date()

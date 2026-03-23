@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct ContentView: View {
     @EnvironmentObject private var appModel: AppModel
@@ -8,6 +9,9 @@ struct ContentView: View {
     @State private var showProjectSettings: Bool = false
     @State private var showHistoryPanel: Bool = false
     @State private var showCreateProject: Bool = false
+    @State private var showBuiltinGovernedSkillsPopover: Bool = false
+    @State private var projectSettingsProjectId: String? = nil
+    @State private var projectSettingsDestination: XTProjectGovernanceDestination = .overview
 
     var body: some View {
         VStack(spacing: 0) {
@@ -144,6 +148,7 @@ struct ContentView: View {
                 .help("Open current project/global skills index")
 
                 Button {
+                    projectSettingsProjectId = appModel.selectedProjectId
                     showProjectSettings = true
                 } label: {
                     Image(systemName: "slider.horizontal.3")
@@ -208,6 +213,28 @@ struct ContentView: View {
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(skillsStatusColor)
                         .help(appModel.skillsCompatibilitySnapshot.compatibilityExplain)
+                }
+
+                if !appModel.skillsCompatibilitySnapshot.builtinGovernedSkills.isEmpty {
+                    Button {
+                        showBuiltinGovernedSkillsPopover.toggle()
+                    } label: {
+                        XTBuiltinGovernedSkillsListView(
+                            items: appModel.skillsCompatibilitySnapshot.builtinGovernedSkills,
+                            style: .compact
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .help(toolbarBuiltinGovernedSkillsHelp)
+                    .popover(isPresented: $showBuiltinGovernedSkillsPopover, arrowEdge: .bottom) {
+                        ScrollView {
+                            XTBuiltinGovernedSkillsListView(
+                                items: appModel.skillsCompatibilitySnapshot.builtinGovernedSkills
+                            )
+                            .padding(12)
+                        }
+                        .frame(minWidth: 380, idealWidth: 420, maxWidth: 460, minHeight: 220, maxHeight: 420)
+                    }
                 }
 
                 if !appModel.lastImportedAgentSkillToolbarStatusLine.isEmpty {
@@ -276,6 +303,24 @@ struct ContentView: View {
         return "接上次进度：\(target.projectDisplayName) · \(target.summary.detailText)。只会在你点击后展开，不会自动塞进当前 prompt。"
     }
 
+    private var toolbarBuiltinGovernedSkillsHelp: String {
+        let items = appModel.skillsCompatibilitySnapshot.builtinGovernedSkills
+        guard !items.isEmpty else {
+            return "No XT native governed skills are currently registered."
+        }
+        let detailLines = items.map { item in
+            let summary = item.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+            let risk = normalizedToolbarToken(item.riskLevel, fallback: "unknown")
+            if summary.isEmpty {
+                return "\(item.displayName) [\(risk)]"
+            }
+            return "\(item.displayName) [\(risk)]: \(summary)"
+        }
+        return ([
+            "XT native governed skills are local to XT and remain available even when Hub-managed packages are missing."
+        ] + detailLines).joined(separator: "\n")
+    }
+
     private var mainPane: some View {
         VStack(spacing: 0) {
             // 多项目视图
@@ -313,9 +358,16 @@ struct ContentView: View {
         }
         .frame(minWidth: 720, minHeight: 520)
         .sheet(isPresented: $showProjectSettings) {
-            if let ctx = appModel.projectContext {
-                ProjectSettingsView(ctx: ctx).environmentObject(appModel)
+            if let ctx = projectSettingsSheetContext {
+                ProjectSettingsView(
+                    ctx: ctx,
+                    initialGovernanceDestination: projectSettingsDestination
+                )
+                .environmentObject(appModel)
             }
+        }
+        .onChange(of: appModel.projectSettingsFocusRequest?.nonce) { _ in
+            processProjectSettingsFocusRequest()
         }
         .sheet(isPresented: $showCreateProject) {
             CreateProjectSheet()
@@ -327,77 +379,91 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .xterminalOpenHubSetupWizard)) { _ in
             openWindow(id: "hub_setup")
         }
-        .onReceive(NotificationCenter.default.publisher(for: .xterminalOpenSupervisorWindow)) { _ in
-            openWindow(id: "supervisor")
+        .onReceive(NotificationCenter.default.publisher(for: .xterminalOpenSupervisorWindow)) { notification in
+            handleSupervisorWindowOpen(notification)
         }
+        .onChange(of: showProjectSettings) { presented in
+            if !presented {
+                projectSettingsProjectId = nil
+                projectSettingsDestination = .overview
+            }
+        }
+    }
+
+    private var projectSettingsSheetContext: AXProjectContext? {
+        if let projectSettingsProjectId,
+           let ctx = appModel.projectContext(for: projectSettingsProjectId) {
+            return ctx
+        }
+        return appModel.projectContext
+    }
+
+    private func processProjectSettingsFocusRequest() {
+        guard let request = appModel.projectSettingsFocusRequest else { return }
+        projectSettingsProjectId = request.projectId
+        projectSettingsDestination = request.destination
+        showProjectSettings = true
+    }
+
+    private func handleSupervisorWindowOpen(_ notification: Notification) {
+        let request = SupervisorConversationWindowOpenRequest(notification: notification)
+        let decision = XTSupervisorWindowPresentationPolicy.decision(
+            for: request,
+            isWindowVisible: XTSupervisorWindowVisibilityRegistry.shared.isWindowVisible
+        )
+        guard decision.shouldOpenWindow else { return }
+        openWindow(id: "supervisor")
     }
 
     private func handleDeepLink(_ url: URL) {
         guard let route = XTDeepLinkParser.parse(url) else { return }
 
-        let openSupervisor: () -> Void = {
-            openWindow(id: "supervisor")
+        let openSupervisor: (XTSupervisorWindowOpenIntent) -> Void = { intent in
+            SupervisorManager.shared.requestSupervisorWindow(
+                reason: intent.reason,
+                focusConversation: intent.focusConversation,
+                startConversation: intent.startConversation
+            )
         }
         let openSupervisorSettings: () -> Void = {
-            openWindow(id: "supervisor_settings")
+            SupervisorManager.shared.requestSupervisorWindow(
+                sheet: .supervisorSettings,
+                reason: "deep_link_supervisor_settings",
+                focusConversation: false
+            )
         }
-        let requestSupervisorFocus: (
-            _ projectId: String?,
-            _ focusTarget: XTDeepLinkFocusTarget?,
-            _ requestId: String?,
-            _ grantRequestId: String?,
-            _ capability: String?
-        ) -> Void = { projectId, focusTarget, requestId, grantRequestId, capability in
-            switch focusTarget {
-            case .grant:
-                appModel.requestSupervisorGrantFocus(
-                    projectId: projectId,
-                    grantRequestId: grantRequestId,
-                    capability: capability
-                )
-            case .approval:
-                appModel.requestSupervisorApprovalFocus(
-                    projectId: projectId,
-                    requestId: requestId
-                )
-            case .toolApproval:
-                appModel.requestProjectToolApprovalFocus(
-                    projectId: projectId,
-                    requestId: requestId
-                )
-            case .routeDiagnose:
-                appModel.requestProjectRouteDiagnoseFocus(projectId: projectId)
-            case nil:
-                break
-            }
+        let openSettingsWindow: () -> Void = {
+            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
         }
 
         switch route {
         case let .supervisor(supervisorRoute):
-            if let projectId = supervisorRoute.projectId,
-               !projectId.isEmpty {
-                appModel.selectProject(projectId)
-            }
-            if let projectId = supervisorRoute.projectId,
-               let grantRequestId = supervisorRoute.grantRequestId,
-               !projectId.isEmpty {
-                appModel.prefillGrantContext(
-                    projectId: projectId,
-                    grantRequestId: grantRequestId,
-                    capability: supervisorRoute.grantCapability,
-                    reason: supervisorRoute.grantReason
+            applyDeepLinkActionPlan(
+                XTDeepLinkActionPlanner.plan(for: supervisorRoute),
+                openSupervisor: openSupervisor
+            )
+        case let .hubSetup(hubSetupRoute):
+            if let sectionId = hubSetupRoute.sectionId {
+                appModel.requestHubSetupFocus(
+                    sectionId: sectionId,
+                    title: hubSetupRoute.title,
+                    detail: hubSetupRoute.detail,
+                    refreshAction: hubSetupRoute.refreshAction,
+                    refreshReason: hubSetupRoute.refreshReason
                 )
             }
-            openSupervisor()
-            requestSupervisorFocus(
-                supervisorRoute.projectId,
-                supervisorRoute.focusTarget,
-                supervisorRoute.requestId,
-                supervisorRoute.grantRequestId,
-                supervisorRoute.grantCapability
-            )
-        case .hubSetup:
             openWindow(id: "hub_setup")
+        case let .settings(settingsRoute):
+            if let sectionId = settingsRoute.sectionId {
+                appModel.requestSettingsFocus(
+                    sectionId: sectionId,
+                    title: settingsRoute.title,
+                    detail: settingsRoute.detail,
+                    refreshAction: settingsRoute.refreshAction,
+                    refreshReason: settingsRoute.refreshReason
+                )
+            }
+            openSettingsWindow()
         case .supervisorSettings:
             openSupervisorSettings()
         case let .resume(projectId):
@@ -407,17 +473,8 @@ struct ContentView: View {
                 appModel.presentPreferredResumeBrief()
             }
         case let .project(projectRoute):
+            let actionPlan = XTDeepLinkActionPlanner.plan(for: projectRoute)
             let projectId = projectRoute.projectId ?? ""
-
-            if !projectId.isEmpty, !projectRoute.resumeRequested {
-                appModel.selectProject(projectId)
-            }
-
-            if !projectId.isEmpty,
-               !projectRoute.resumeRequested,
-               let pane = projectRoute.pane {
-                appModel.setPane(pane, for: projectId)
-            }
 
             if projectRoute.resumeRequested {
                 if !projectId.isEmpty {
@@ -427,45 +484,34 @@ struct ContentView: View {
                 }
             }
 
-            switch projectRoute.openTarget {
-            case .supervisor:
-                openSupervisor()
-            case .supervisorSettings:
+            applyDeepLinkActionPlan(actionPlan, openSupervisor: openSupervisor)
+
+            if projectRoute.openTarget == .supervisorSettings {
                 openSupervisorSettings()
-            case nil:
-                break
             }
 
-            if projectRoute.focusTarget == .grant || projectRoute.focusTarget == .approval,
-               projectRoute.openTarget == nil {
-                openSupervisor()
-            }
-
-            if projectRoute.focusTarget == .toolApproval || projectRoute.focusTarget == .routeDiagnose {
-                if !projectId.isEmpty {
-                    appModel.setPane(.chat, for: projectId)
-                }
-                if projectRoute.openTarget == nil, !projectId.isEmpty {
-                    appModel.selectProject(projectId)
-                }
-            }
-
-            if !projectId.isEmpty, let grantRequestId = projectRoute.grantRequestId {
-                appModel.prefillGrantContext(
+            if !projectId.isEmpty, let governanceDestination = projectRoute.governanceDestination {
+                appModel.requestProjectSettingsFocus(
                     projectId: projectId,
-                    grantRequestId: grantRequestId,
-                    capability: projectRoute.grantCapability,
-                    reason: projectRoute.grantReason
+                    destination: governanceDestination
                 )
             }
-
-            requestSupervisorFocus(
-                projectRoute.projectId,
-                projectRoute.focusTarget,
-                projectRoute.requestId,
-                projectRoute.grantRequestId,
-                projectRoute.grantCapability
-            )
         }
+    }
+
+    private func applyDeepLinkActionPlan(
+        _ plan: XTDeepLinkActionPlan,
+        openSupervisor: (XTSupervisorWindowOpenIntent) -> Void
+    ) {
+        XTDeepLinkActionExecutor.execute(
+            plan,
+            appModel: appModel,
+            openSupervisor: openSupervisor
+        )
+    }
+
+    private func normalizedToolbarToken(_ value: String, fallback: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? fallback : trimmed
     }
 }

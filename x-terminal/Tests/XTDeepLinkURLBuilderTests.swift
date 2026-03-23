@@ -4,6 +4,58 @@ import Testing
 
 struct XTDeepLinkURLBuilderTests {
     @Test
+    func hubSetupURLBuildsRoundTrippableFocusLink() throws {
+        let url = try #require(
+            XTDeepLinkURLBuilder.hubSetupURL(
+                sectionId: "verify_readiness",
+                title: "Review official skills blockers",
+                detail: "Top blockers: Secondary Skill (skill.secondary) [blocked]",
+                refreshAction: .recheckOfficialSkills,
+                refreshReason: "official_skill_blocker"
+            )
+        )
+        let route = try #require(XTDeepLinkParser.parse(url))
+
+        #expect(
+            route == .hubSetup(
+                XTHubSetupRoute(
+                    sectionId: "verify_readiness",
+                    title: "Review official skills blockers",
+                    detail: "Top blockers: Secondary Skill (skill.secondary) [blocked]",
+                    refreshAction: .recheckOfficialSkills,
+                    refreshReason: "official_skill_blocker"
+                )
+            )
+        )
+    }
+
+    @Test
+    func settingsURLBuildsRoundTrippableFocusLink() throws {
+        let url = try #require(
+            XTDeepLinkURLBuilder.settingsURL(
+                sectionId: "diagnostics",
+                title: "Review official skill revocation",
+                detail: "Revoked Skill (skill.revoked) [revoked]",
+                refreshAction: .recheckOfficialSkills,
+                refreshReason: "official_skill_blocker"
+            )
+        )
+        let route = try #require(XTDeepLinkParser.parse(url))
+
+        #expect(
+            route == .settings(
+                XTSettingsRoute(
+                    sectionId: "diagnostics",
+                    title: "Review official skill revocation",
+                    detail: "Revoked Skill (skill.revoked) [revoked]",
+                    refreshAction: .recheckOfficialSkills,
+                    refreshReason: "official_skill_blocker"
+                )
+            )
+        )
+    }
+
+    @Test
     func projectResumeURLBuildsRoundTrippableResumeLink() throws {
         let url = try #require(
             XTDeepLinkURLBuilder.projectURL(
@@ -117,6 +169,36 @@ struct XTDeepLinkURLBuilderTests {
     }
 
     @Test
+    func projectSkillRecordSupervisorURLBuildsRoundTrippableFocusLink() throws {
+        let url = try #require(
+            XTDeepLinkURLBuilder.projectURL(
+                projectId: "project-record",
+                pane: .chat,
+                openTarget: .supervisor,
+                focusTarget: .skillRecord,
+                requestId: "req-record-1"
+            )
+        )
+        let route = try #require(XTDeepLinkParser.parse(url))
+
+        #expect(
+            route == .project(
+                XTDeepLinkProjectRoute(
+                    projectId: "project-record",
+                    pane: .chat,
+                    openTarget: .supervisor,
+                    focusTarget: .skillRecord,
+                    requestId: "req-record-1",
+                    grantRequestId: nil,
+                    grantCapability: nil,
+                    grantReason: nil,
+                    resumeRequested: false
+                )
+            )
+        )
+    }
+
+    @Test
     func projectToolApprovalURLBuildsRoundTrippableFocusLink() throws {
         let url = try #require(
             XTDeepLinkURLBuilder.projectURL(
@@ -168,6 +250,35 @@ struct XTDeepLinkURLBuilderTests {
                     grantCapability: nil,
                     grantReason: nil,
                     resumeRequested: false
+                )
+            )
+        )
+    }
+
+    @Test
+    func projectGovernanceURLBuildsRoundTrippableFocusLink() throws {
+        let url = try #require(
+            XTDeepLinkURLBuilder.projectURL(
+                projectId: "project-lambda",
+                pane: .chat,
+                governanceDestination: .executionTier
+            )
+        )
+        let route = try #require(XTDeepLinkParser.parse(url))
+
+        #expect(
+            route == .project(
+                XTDeepLinkProjectRoute(
+                    projectId: "project-lambda",
+                    pane: .chat,
+                    openTarget: nil,
+                    focusTarget: nil,
+                    requestId: nil,
+                    grantRequestId: nil,
+                    grantCapability: nil,
+                    grantReason: nil,
+                    resumeRequested: false,
+                    governanceDestination: .executionTier
                 )
             )
         )

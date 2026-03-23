@@ -3,9 +3,11 @@ import SwiftUI
 struct ModelSettingsView: View {
     @EnvironmentObject private var appModel: AppModel
     @StateObject private var modelManager = HubModelManager.shared
+    @StateObject private var roleModelUpdateFeedback = XTTransientUpdateFeedbackState()
     @State private var selectedRole: AXRole = .supervisor
     @State private var showRoleModelPicker = false
     @State private var activeFocusRequest: XTModelSettingsFocusRequest?
+    @State private var roleModelChangeNotice: XTSettingsChangeNotice?
     
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -37,6 +39,9 @@ struct ModelSettingsView: View {
         }
         .onChange(of: appModel.modelSettingsFocusRequest?.nonce) { _ in
             processModelSettingsFocusRequest()
+        }
+        .onDisappear {
+            resetRoleModelFeedback()
         }
     }
     
@@ -85,6 +90,7 @@ struct ModelSettingsView: View {
         if let role = request.role {
             selectedRole = role
             showRoleModelPicker = false
+            resetRoleModelFeedback()
         }
         appModel.clearModelSettingsFocusRequest(request)
         scheduleFocusContextClear(nonce: request.nonce)
@@ -118,6 +124,7 @@ struct ModelSettingsView: View {
         Button(action: {
             selectedRole = role
             showRoleModelPicker = false
+            resetRoleModelFeedback()
         }) {
             HStack(spacing: 8) {
                 roleIcon(role)
@@ -159,11 +166,30 @@ struct ModelSettingsView: View {
             Text("为 \(selectedRole.displayName) 配置默认模型")
                 .font(.headline)
 
-            if let warning = selectedRoleWarningText() {
-                Text(warning)
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
+            if roleModelUpdateFeedback.showsBadge,
+               let roleModelChangeNotice {
+                XTSettingsChangeNoticeInlineView(
+                    notice: roleModelChangeNotice,
+                    tint: .accentColor
+                )
+            }
+
+            if let issue = selectedRoleIssue {
+                HStack(alignment: .top, spacing: 10) {
+                    Text(issue.message)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 8)
+                    if let suggestedModelId = issue.suggestedModelId {
+                        Button("改用推荐") {
+                            updateRoleModelSelection(modelId: suggestedModelId)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .help("把 \(selectedRole.displayName) 直接切到 `\(suggestedModelId)`。")
+                    }
+                }
             }
             
             if sortedAvailableHubModels.isEmpty {
@@ -195,7 +221,7 @@ struct ModelSettingsView: View {
                         inheritedModelLabel: "Hub 默认",
                         automaticDescription: "当前没有为这个角色单独绑定固定模型，会继续使用 Hub 默认/自动路由。"
                     ) { modelId in
-                        modelManager.setModel(for: selectedRole, modelId: modelId)
+                        updateRoleModelSelection(modelId: modelId)
                         showRoleModelPicker = false
                     }
                     .frame(width: 460, height: 420)
@@ -223,14 +249,23 @@ struct ModelSettingsView: View {
                 }
             }
         }
+        .xtTransientUpdateCardChrome(
+            cornerRadius: 10,
+            isUpdated: roleModelUpdateFeedback.isHighlighted,
+            focusTint: .accentColor,
+            updateTint: .accentColor,
+            baseBackground: .clear
+        )
     }
     
     private func modelRow(_ model: HubModel) -> some View {
         let isSelected = currentRoleModelId == model.id
         let presentation = model.capabilityPresentationModel
+        let isSelectable = model.isSelectableForInteractiveRouting
         
         return Button(action: {
-            modelManager.setModel(for: selectedRole, modelId: model.id)
+            guard isSelectable else { return }
+            updateRoleModelSelection(modelId: model.id)
         }) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -248,6 +283,12 @@ struct ModelSettingsView: View {
                         Text(model.backend)
                             .font(.caption)
                             .foregroundStyle(.secondary)
+
+                        if model.interactiveRoutingDisabledReason != nil {
+                            Text("检索专用")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
                     }
 
                     if presentation.displayName != model.id {
@@ -270,6 +311,13 @@ struct ModelSettingsView: View {
                             .font(.body)
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
+                    }
+
+                    if let disabledReason = model.interactiveRoutingDisabledReason {
+                        Text(disabledReason)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     
                     Text("Hub 默认上下文：\(model.hubDefaultContextLength) tokens")
@@ -300,41 +348,24 @@ struct ModelSettingsView: View {
             .padding(12)
             .background(isSelected ? Color.accentColor.opacity(0.1) : Color(NSColor.controlBackgroundColor))
             .cornerRadius(8)
+            .opacity(isSelectable ? 1.0 : 0.72)
         }
         .buttonStyle(.plain)
+        .disabled(!isSelectable)
     }
 
-    private func selectedRoleWarningText() -> String? {
-        let configured = (currentRoleModelId ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    private var selectedRoleIssue: HubGlobalRoleModelIssue? {
+        let configured = currentRoleModelId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !configured.isEmpty else { return nil }
         let snapshot = ModelStateSnapshot(
             models: sortedAvailableHubModels,
             updatedAt: Date().timeIntervalSince1970
         )
-        let assessment = HubModelSelectionAdvisor.assess(requestedId: configured, snapshot: snapshot)
-        guard assessment?.isExactMatchLoaded != true else { return nil }
-
-        if let assessment, let exact = assessment.exactMatch {
-            let replacements = suggestedModelIDs(from: assessment)
-            if let first = replacements.first {
-                return "当前 \(selectedRole.displayName) 绑定的是 `\(exact.id)`，但状态是 \(HubModelSelectionAdvisor.stateLabel(exact.state))。若立刻执行，可能会回退到本地；可先改用 `\(first)`。"
-            }
-            return "当前 \(selectedRole.displayName) 绑定的是 `\(exact.id)`，但状态是 \(HubModelSelectionAdvisor.stateLabel(exact.state))。若立刻执行，可能会回退到本地。"
-        }
-
-        if let assessment {
-            let replacements = suggestedModelIDs(from: assessment)
-            if !replacements.isEmpty {
-                return "当前 \(selectedRole.displayName) 绑定的是 `\(configured)`，但 inventory 里没有精确匹配。可先试 `\(replacements.joined(separator: "`, `"))`。"
-            }
-        }
-        return "当前 \(selectedRole.displayName) 绑定的是 `\(configured)`，但现在无法确认它可执行。"
-    }
-
-    private func suggestedModelIDs(from assessment: HubModelAvailabilityAssessment) -> [String] {
-        let source = assessment.loadedCandidates.isEmpty ? assessment.inventoryCandidates : assessment.loadedCandidates
-        return source.prefix(3).map(\.id)
+        return HubModelSelectionAdvisor.globalAssignmentIssue(
+            for: selectedRole,
+            configuredModelId: configured,
+            snapshot: snapshot
+        )
     }
 
     private var currentRoleModelId: String? {
@@ -382,5 +413,33 @@ struct ModelSettingsView: View {
         case .available: return 1
         case .sleeping: return 2
         }
+    }
+
+    private func resetRoleModelFeedback() {
+        roleModelUpdateFeedback.cancel(resetState: true)
+        roleModelChangeNotice = nil
+    }
+
+    private func updateRoleModelSelection(modelId: String?) {
+        let trimmedModelId = modelId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedModelId = trimmedModelId?.isEmpty == false ? trimmedModelId : nil
+        guard normalizedModelOverrideValue(currentRoleModelId) != normalizedModelOverrideValue(normalizedModelId) else {
+            return
+        }
+
+        modelManager.setModel(for: selectedRole, modelId: normalizedModelId)
+        roleModelChangeNotice = XTSettingsChangeNoticeBuilder.globalRoleModel(
+            role: selectedRole,
+            modelId: normalizedModelId,
+            snapshot: ModelStateSnapshot(
+                models: sortedAvailableHubModels,
+                updatedAt: Date().timeIntervalSince1970
+            )
+        )
+        roleModelUpdateFeedback.trigger()
+    }
+
+    private func normalizedModelOverrideValue(_ raw: String?) -> String {
+        (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 }

@@ -65,6 +65,12 @@ struct SupervisorXTReadyIncidentBoardSection: View {
             if let hubRuntimeNextLine = presentation.hubRuntimeNextLine {
                 SupervisorXTReadyIncidentLineView(hubRuntimeNextLine)
             }
+            if let hubRuntimeInstallHintLine = presentation.hubRuntimeInstallHintLine {
+                SupervisorXTReadyIncidentLineView(hubRuntimeInstallHintLine)
+            }
+            if let hubRuntimeRecommendedActionLine = presentation.hubRuntimeRecommendedActionLine {
+                SupervisorXTReadyIncidentLineView(hubRuntimeRecommendedActionLine)
+            }
             SupervisorXTReadyIncidentLineView(presentation.memoryAssemblyLine)
             if let memoryAssemblyIssueLine = presentation.memoryAssemblyIssueLine {
                 SupervisorXTReadyIncidentLineView(memoryAssemblyIssueLine)

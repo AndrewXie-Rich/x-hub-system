@@ -154,7 +154,7 @@ struct SupervisorAuditDrillDownSheet: View {
 
     private var copyText: String {
         if let fullRecord = detail.fullRecord {
-            return SupervisorSkillActivityPresentation.fullRecordText(fullRecord)
+            return SupervisorSkillActivityPresentation.displayFullRecordText(fullRecord)
         }
 
         var lines: [String] = [
@@ -223,14 +223,18 @@ private struct SupervisorSkillRecordDetailSections: View {
             if !record.approvalFields.isEmpty {
                 ProjectSkillRecordFieldSection(
                     title: "审批状态",
-                    fields: record.approvalFields
+                    fields: SupervisorSkillActivityPresentation.displayMetadataFields(
+                        record.approvalFields
+                    )
                 )
             }
 
             if !record.governanceFields.isEmpty {
                 ProjectSkillRecordFieldSection(
                     title: "治理上下文",
-                    fields: record.governanceFields
+                    fields: SupervisorSkillActivityPresentation.displayMetadataFields(
+                        record.governanceFields
+                    )
                 )
             }
 
@@ -261,14 +265,18 @@ private struct SupervisorSkillRecordDetailSections: View {
             if !record.evidenceFields.isEmpty {
                 ProjectSkillRecordFieldSection(
                     title: "证据引用",
-                    fields: record.evidenceFields
+                    fields: SupervisorSkillActivityPresentation.displayMetadataFields(
+                        record.evidenceFields
+                    )
                 )
             }
 
             if !record.uiReviewAgentEvidenceFields.isEmpty {
                 ProjectSkillRecordFieldSection(
                     title: "UI 审查代理证据",
-                    fields: record.uiReviewAgentEvidenceFields
+                    fields: SupervisorSkillActivityPresentation.displayMetadataFields(
+                        record.uiReviewAgentEvidenceFields
+                    )
                 )
             }
 
@@ -322,7 +330,9 @@ private struct SupervisorSkillRecordResultSection: View {
 
             if !record.resultFields.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
-                    ForEach(record.resultFields) { field in
+                    ForEach(
+                        SupervisorSkillActivityPresentation.displayMetadataFields(record.resultFields)
+                    ) { field in
                         HStack(alignment: .top, spacing: 12) {
                             Text(field.label)
                                 .font(.system(.caption, design: .monospaced))

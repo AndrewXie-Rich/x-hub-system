@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct SupervisorConversationPanel: View {
     @ObservedObject var supervisor: SupervisorManager
@@ -7,7 +8,10 @@ struct SupervisorConversationPanel: View {
     var focusRequestID: Int = 0
 
     @FocusState private var isInputFocused: Bool
+    @State private var draftText: String = ""
+    @State private var lastHandledFocusRequestID: Int = 0
     @EnvironmentObject private var appModel: AppModel
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,14 +28,35 @@ struct SupervisorConversationPanel: View {
         }
         .background(Color(NSColor.windowBackgroundColor))
         .onAppear {
-            DispatchQueue.main.async {
-                isInputFocused = true
+            lastHandledFocusRequestID = focusRequestID
+            draftText = SupervisorConversationComposerSupport.syncedDraft(
+                currentDraft: draftText,
+                externalInput: inputText
+            )
+            if SupervisorConversationFocusSupport.shouldFocusOnAppear(
+                latestWindowRequest: SupervisorConversationWindowBridge.shared.latestRequest
+            ) {
+                requestInputFocus()
             }
         }
+        .onChange(of: inputText) { newValue in
+            draftText = SupervisorConversationComposerSupport.syncedDraft(
+                currentDraft: draftText,
+                externalInput: newValue
+            )
+        }
         .onChange(of: focusRequestID) { _ in
-            DispatchQueue.main.async {
-                isInputFocused = true
-            }
+            guard SupervisorConversationFocusSupport.shouldFocusForExplicitRequest(
+                lastHandledRequestID: lastHandledFocusRequestID,
+                currentRequestID: focusRequestID
+            ) else { return }
+            lastHandledFocusRequestID = focusRequestID
+            requestInputFocus()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .xterminalOpenSupervisorWindow)) { notification in
+            let request = SupervisorConversationWindowOpenRequest(notification: notification)
+            guard SupervisorConversationFocusSupport.shouldFocusForWindowOpenRequest(request) else { return }
+            requestInputFocus()
         }
     }
 
@@ -41,46 +66,44 @@ struct SupervisorConversationPanel: View {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    private var quickIntents: [SupervisorConversationQuickIntent] {
+        SupervisorConversationQuickIntentSupport.build(
+            appModel: appModel,
+            supervisor: supervisor
+        )
+    }
+
+    private func requestInputFocus() {
+        DispatchQueue.main.async {
+            isInputFocused = true
+        }
+    }
+
+    private var voiceRailPresentation: SupervisorConversationVoiceRailPresentation {
+        SupervisorConversationVoiceRailPresentationBuilder.build(
+            routeDecision: supervisor.voiceRouteDecision,
+            readinessSnapshot: supervisor.voiceReadinessSnapshot,
+            authorizationStatus: supervisor.voiceAuthorizationStatus,
+            runtimeState: supervisor.voiceRuntimeState,
+            conversationSession: supervisor.conversationSessionSnapshot,
+            playbackActivity: supervisor.voicePlaybackActivity,
+            activeHealthReasonCode: supervisor.voiceActiveHealthReasonCode,
+            latestRuntimeActivityText: supervisor.latestRuntimeActivity?.text,
+            recentVoiceDispatchAuditEntries: supervisor.voiceDispatchAuditEntries
+        )
+    }
+
     private var voiceStatusRail: some View {
-        VStack(spacing: 0) {
+        let presentation = voiceRailPresentation
+        return VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Label {
-                    Text(voicePhaseLabel)
+                    Text(presentation.phaseLabel)
                 } icon: {
-                    Image(systemName: voicePhaseIcon)
+                    Image(systemName: presentation.phaseIconName)
                 }
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(voicePhaseColor)
-
-                Text(supervisor.voiceRouteDecision.route.displayName)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Text("auth=\(supervisor.voiceAuthorizationStatus.rawValue)")
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-
-                Text("session=\(supervisor.conversationSessionSnapshot.windowState.rawValue)")
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-
-                if supervisor.conversationSessionSnapshot.remainingTTLSeconds > 0 {
-                    Text("ttl=\(supervisor.conversationSessionSnapshot.remainingTTLSeconds)s")
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                }
-
-                let readinessReason = supervisor.voiceReadinessSnapshot.primaryReasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !readinessReason.isEmpty || !supervisor.voiceActiveHealthReasonCode.isEmpty {
-                    Text(
-                        readinessReason.isEmpty
-                            ? supervisor.voiceActiveHealthReasonCode
-                            : readinessReason
-                    )
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+                .foregroundStyle(presentation.phaseState.tint)
 
                 Spacer()
 
@@ -88,18 +111,18 @@ struct SupervisorConversationPanel: View {
                     HStack(spacing: 6) {
                         ProgressView()
                             .controlSize(.small)
-                        Text("Supervisor thinking")
+                        Text("Supervisor 思考中")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 } else {
-                    Text("ready")
+                    Text("就绪")
                         .font(.caption2.monospaced())
                         .foregroundStyle(.secondary)
                 }
 
-                if supervisor.conversationSessionSnapshot.isConversing {
-                    Button("End Voice Session") {
+                if presentation.canEndSession {
+                    Button("结束语音会话") {
                         supervisor.endConversationSession()
                     }
                     .buttonStyle(.borderless)
@@ -107,7 +130,23 @@ struct SupervisorConversationPanel: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+            .padding(.top, 10)
+            .padding(.bottom, 8)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(presentation.chips) { chip in
+                        voiceRailChip(chip)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, presentation.notice == nil && pendingMemoryFollowUpQuestion == nil ? 10 : 8)
+            }
+
+            if let notice = presentation.notice {
+                Divider()
+                voiceRailNotice(notice)
+            }
 
             if let pendingMemoryFollowUpQuestion {
                 Divider()
@@ -128,14 +167,121 @@ struct SupervisorConversationPanel: View {
         .background(Color(NSColor.controlBackgroundColor).opacity(0.55))
     }
 
+    private func voiceRailChip(
+        _ chip: SupervisorConversationVoiceRailChip
+    ) -> some View {
+        Text(chip.text)
+            .font(chip.prefersMonospacedText ? .caption2.monospaced() : .caption2)
+            .foregroundStyle(chip.state.tint)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                Capsule()
+                    .fill(chip.state.tint.opacity(0.12))
+            )
+            .overlay(
+                Capsule()
+                    .stroke(chip.state.tint.opacity(0.22), lineWidth: 1)
+            )
+            .help(chip.helpText ?? chip.text)
+    }
+
+    private func voiceRailNotice(
+        _ notice: SupervisorConversationVoiceRailNotice
+    ) -> some View {
+        let repairPlan = notice.repairEntry.map { destination in
+            SupervisorConversationRepairActionPlanner.plan(
+                for: destination,
+                systemSettingsTarget: destination == .systemPermissions
+                    ? XTVoicePermissionRepairTargetResolver.resolve(
+                        microphone: supervisor.voicePermissionSnapshot.microphone,
+                        speechRecognition: supervisor.voicePermissionSnapshot.speechRecognition
+                    )
+                    : .voiceCapture
+            )
+        }
+        return HStack(alignment: .top, spacing: 10) {
+            Image(systemName: notice.iconName)
+                .foregroundStyle(notice.state.tint)
+                .font(.caption.weight(.semibold))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(notice.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Text(notice.summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let nextStep = notice.nextStep {
+                    Text("下一步：\(nextStep)")
+                        .font(.caption2)
+                        .foregroundStyle(notice.state.tint)
+                }
+                if let repairEntry = notice.repairEntry {
+                    Text("修复入口：\(repairEntry.label)")
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            if let repairPlan {
+                Button(repairPlan.buttonTitle) {
+                    performVoiceRailRepair(repairPlan, notice: notice)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(notice.state.tint.opacity(0.06))
+    }
+
+    private func performVoiceRailRepair(
+        _ plan: SupervisorConversationRepairActionPlan,
+        notice: SupervisorConversationVoiceRailNotice
+    ) {
+        let detail = [notice.summary, notice.nextStep]
+            .compactMap { value -> String? in
+                let trimmed = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
+            }
+            .joined(separator: "\n")
+        let normalizedDetail = detail.isEmpty ? nil : detail
+
+        switch plan.action {
+        case let .openXTSettings(sectionId):
+            appModel.requestSettingsFocus(
+                sectionId: sectionId,
+                title: notice.title,
+                detail: normalizedDetail
+            )
+            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        case let .openHubSetup(sectionId):
+            appModel.requestHubSetupFocus(
+                sectionId: sectionId,
+                title: notice.title,
+                detail: normalizedDetail
+            )
+            openWindow(id: "hub_setup")
+        case let .openSystemPrivacy(target):
+            XTSystemSettingsLinks.openPrivacy(target)
+        case .focusSupervisor:
+            requestInputFocus()
+        }
+    }
+
     private var messageList: some View {
         ScrollViewReader { proxy in
+            let visibleMessages = supervisor.chatTimelineMessages
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
-                    if supervisor.messages.isEmpty {
+                    if visibleMessages.isEmpty {
                         emptyState
                     } else {
-                        ForEach(supervisor.messages) { message in
+                        ForEach(visibleMessages) { message in
                             SupervisorMessageBubble(message: message)
                                 .id(message.id)
                         }
@@ -143,8 +289,8 @@ struct SupervisorConversationPanel: View {
                 }
                 .padding(16)
             }
-            .onChange(of: supervisor.messages.count) { _ in
-                if let lastMessage = supervisor.messages.last {
+            .onChange(of: visibleMessages.count) { _ in
+                if let lastMessage = visibleMessages.last {
                     withAnimation {
                         proxy.scrollTo(lastMessage.id, anchor: .bottom)
                     }
@@ -184,8 +330,12 @@ struct SupervisorConversationPanel: View {
 
     private var inputArea: some View {
         VStack(spacing: 12) {
+            if !quickIntents.isEmpty {
+                quickIntentRail
+            }
+
             HStack(alignment: .bottom, spacing: 12) {
-                TextEditor(text: $inputText)
+                TextEditor(text: $draftText)
                     .focused($isInputFocused)
                     .frame(minHeight: 60, maxHeight: 120)
                     .scrollContentBackground(.hidden)
@@ -198,9 +348,15 @@ struct SupervisorConversationPanel: View {
                     .onTapGesture {
                         isInputFocused = true
                     }
+                    .onChange(of: draftText) { newValue in
+                        inputText = SupervisorConversationComposerSupport.syncedInput(
+                            currentInput: inputText,
+                            draft: newValue
+                        )
+                    }
 
                 VStack(spacing: 8) {
-                    VoiceInputButton(text: $inputText, autoAppend: !autoSendVoice) { recognized in
+                    VoiceInputButton(text: $draftText, autoAppend: !autoSendVoice) { recognized in
                         handleVoiceRecognized(recognized)
                     }
 
@@ -210,7 +366,7 @@ struct SupervisorConversationPanel: View {
                             .foregroundColor(.accentColor)
                     }
                     .buttonStyle(.plain)
-                    .disabled(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
             .padding(.horizontal, 16)
@@ -232,63 +388,89 @@ struct SupervisorConversationPanel: View {
         .background(Color(NSColor.windowBackgroundColor))
     }
 
-    private var voicePhaseLabel: String {
-        switch supervisor.voiceRuntimeState.state {
-        case .idle:
-            return "idle"
-        case .listening:
-            return "listening"
-        case .transcribing:
-            return "transcribing"
-        case .completed:
-            return "completed"
-        case .failClosed:
-            return "fail_closed"
+    private var quickIntentRail: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(quickIntents) { intent in
+                    quickIntentChip(intent)
+                }
+            }
+            .padding(.horizontal, 16)
         }
     }
 
-    private var voicePhaseIcon: String {
-        switch supervisor.voiceRuntimeState.state {
-        case .idle:
-            return "waveform.circle"
-        case .listening:
-            return "mic.circle.fill"
-        case .transcribing:
-            return "waveform.badge.mic"
-        case .completed:
-            return "checkmark.circle.fill"
-        case .failClosed:
-            return "exclamationmark.triangle.fill"
+    private func quickIntentChip(
+        _ intent: SupervisorConversationQuickIntent
+    ) -> some View {
+        let tint = quickIntentTint(intent.tone)
+        return Button {
+            supervisor.sendMessage(intent.prompt, fromVoice: false)
+            requestInputFocus()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: intent.systemImage)
+                    .font(.caption.weight(.semibold))
+                Text(intent.title)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(tint)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                Capsule()
+                    .fill(tint.opacity(0.12))
+            )
+            .overlay(
+                Capsule()
+                    .stroke(tint.opacity(0.22), lineWidth: 1)
+            )
         }
+        .buttonStyle(.plain)
+        .help(intent.helpText)
     }
 
-    private var voicePhaseColor: Color {
-        switch supervisor.voiceRuntimeState.state {
-        case .idle:
-            return .secondary
-        case .listening, .transcribing:
+    private func quickIntentTint(
+        _ tone: SupervisorConversationQuickIntent.Tone
+    ) -> Color {
+        switch tone {
+        case .resume:
+            return .blue
+        case .focus:
             return .accentColor
-        case .completed:
-            return .green
-        case .failClosed:
+        case .caution:
             return .orange
+        case .diagnostic:
+            return .red
+        case .neutral:
+            return .secondary
         }
     }
 
     private func submitInput() {
-        let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard let transition = SupervisorConversationComposerSupport.submissionTransition(
+            draft: draftText
+        ) else {
+            return
+        }
 
-        supervisor.sendMessage(trimmed, fromVoice: false)
-        inputText = ""
+        supervisor.sendMessage(transition.payload, fromVoice: false)
+        draftText = transition.nextDraft
+        inputText = transition.nextInput
         isInputFocused = true
     }
 
     private func handleVoiceRecognized(_ recognized: String) {
-        let trimmed = recognized.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard autoSendVoice, !trimmed.isEmpty else { return }
-        supervisor.sendMessage(trimmed, fromVoice: true)
-        inputText = ""
+        guard let transition = SupervisorConversationComposerSupport.autoSendVoiceTransition(
+            recognized: recognized,
+            autoSendVoice: autoSendVoice
+        ) else {
+            return
+        }
+
+        supervisor.sendMessage(transition.payload, fromVoice: true)
+        draftText = transition.nextDraft
+        inputText = transition.nextInput
         isInputFocused = true
     }
 }

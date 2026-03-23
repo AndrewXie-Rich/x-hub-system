@@ -1,27 +1,33 @@
 import Foundation
 
-enum AXProjectAutonomyExplanationStyle: Equatable, Sendable {
+enum AXProjectGovernanceExplanationStyle: Equatable, Sendable {
     case uiChinese
     case guardrailEnglish
 }
 
-enum AXProjectAutonomyClampKind: String, Equatable, Sendable {
+typealias AXProjectAutonomyExplanationStyle = AXProjectGovernanceExplanationStyle
+
+enum AXProjectGovernanceClampKind: String, Equatable, Sendable {
     case killSwitch = "hub_override=kill_switch"
     case ttlExpired = "autonomy_ttl_expired"
     case clampManual = "hub_override=clamp_manual"
     case clampGuided = "hub_override=clamp_guided"
 }
 
-struct AXProjectAutonomyClampExplanation: Equatable, Sendable {
-    var kind: AXProjectAutonomyClampKind
+typealias AXProjectAutonomyClampKind = AXProjectGovernanceClampKind
+
+struct AXProjectGovernanceClampExplanation: Equatable, Sendable {
+    var kind: AXProjectGovernanceClampKind
     var policyReason: String
     var summary: String
     var nextStep: String
 }
 
-func xtRuntimeSurfaceExplanation(
-    mode: AXProjectAutonomyMode,
-    style: AXProjectAutonomyExplanationStyle
+typealias AXProjectAutonomyClampExplanation = AXProjectGovernanceClampExplanation
+
+func xtProjectRuntimeSurfaceExplanation(
+    mode: AXProjectRuntimeSurfaceMode,
+    style: AXProjectGovernanceExplanationStyle
 ) -> String {
     switch style {
     case .uiChinese:
@@ -45,25 +51,33 @@ func xtRuntimeSurfaceExplanation(
     }
 }
 
-func xtAutonomyClampExplanation(
-    policyReason: String,
+@available(*, deprecated, message: "Use xtProjectRuntimeSurfaceExplanation(mode:style:)")
+func xtRuntimeSurfaceExplanation(
+    mode: AXProjectAutonomyMode,
     style: AXProjectAutonomyExplanationStyle
-) -> AXProjectAutonomyClampExplanation? {
-    guard let kind = xtAutonomyClampKind(policyReason: policyReason) else {
+) -> String {
+    xtProjectRuntimeSurfaceExplanation(mode: mode, style: style)
+}
+
+func xtProjectGovernanceClampExplanation(
+    policyReason: String,
+    style: AXProjectGovernanceExplanationStyle
+) -> AXProjectGovernanceClampExplanation? {
+    guard let kind = xtProjectGovernanceClampKind(policyReason: policyReason) else {
         return nil
     }
-    return xtAutonomyClampExplanation(
+    return xtProjectGovernanceClampExplanation(
         kind: kind,
         style: style,
         sourceLabel: nil
     )
 }
 
-func xtAutonomyClampExplanation(
-    effective: AXProjectAutonomyEffectivePolicy,
-    style: AXProjectAutonomyExplanationStyle
-) -> AXProjectAutonomyClampExplanation? {
-    let kind: AXProjectAutonomyClampKind
+func xtProjectGovernanceClampExplanation(
+    effective: AXProjectRuntimeSurfaceEffectivePolicy,
+    style: AXProjectGovernanceExplanationStyle
+) -> AXProjectGovernanceClampExplanation? {
+    let kind: AXProjectGovernanceClampKind
     if effective.killSwitchEngaged {
         kind = .killSwitch
     } else if effective.expired {
@@ -78,14 +92,36 @@ func xtAutonomyClampExplanation(
         return nil
     }
 
-    return xtAutonomyClampExplanation(
+    return xtProjectGovernanceClampExplanation(
         kind: kind,
         style: style,
-        sourceLabel: xtAutonomyClampSourceLabel(for: kind, effective: effective, style: style)
+        sourceLabel: xtProjectGovernanceClampSourceLabel(for: kind, effective: effective, style: style)
     )
 }
 
-private func xtAutonomyClampKind(policyReason: String) -> AXProjectAutonomyClampKind? {
+@available(*, deprecated, message: "Use xtProjectGovernanceClampExplanation(policyReason:style:)")
+func xtAutonomyClampExplanation(
+    policyReason: String,
+    style: AXProjectAutonomyExplanationStyle
+) -> AXProjectAutonomyClampExplanation? {
+    xtProjectGovernanceClampExplanation(
+        policyReason: policyReason,
+        style: style
+    )
+}
+
+@available(*, deprecated, message: "Use xtProjectGovernanceClampExplanation(effective:style:)")
+func xtAutonomyClampExplanation(
+    effective: AXProjectAutonomyEffectivePolicy,
+    style: AXProjectAutonomyExplanationStyle
+) -> AXProjectAutonomyClampExplanation? {
+    xtProjectGovernanceClampExplanation(
+        effective: effective,
+        style: style
+    )
+}
+
+private func xtProjectGovernanceClampKind(policyReason: String) -> AXProjectGovernanceClampKind? {
     let normalized = policyReason.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     switch true {
     case normalized.contains("kill_switch"):
@@ -101,10 +137,10 @@ private func xtAutonomyClampKind(policyReason: String) -> AXProjectAutonomyClamp
     }
 }
 
-private func xtAutonomyClampSourceLabel(
-    for kind: AXProjectAutonomyClampKind,
-    effective: AXProjectAutonomyEffectivePolicy,
-    style: AXProjectAutonomyExplanationStyle
+private func xtProjectGovernanceClampSourceLabel(
+    for kind: AXProjectGovernanceClampKind,
+    effective: AXProjectRuntimeSurfaceEffectivePolicy,
+    style: AXProjectGovernanceExplanationStyle
 ) -> String? {
     switch kind {
     case .killSwitch:
@@ -125,48 +161,48 @@ private func xtAutonomyClampSourceLabel(
     return nil
 }
 
-private func xtAutonomyClampExplanation(
-    kind: AXProjectAutonomyClampKind,
-    style: AXProjectAutonomyExplanationStyle,
+private func xtProjectGovernanceClampExplanation(
+    kind: AXProjectGovernanceClampKind,
+    style: AXProjectGovernanceExplanationStyle,
     sourceLabel: String?
-) -> AXProjectAutonomyClampExplanation {
+) -> AXProjectGovernanceClampExplanation {
     switch style {
     case .uiChinese:
-        return xtChineseAutonomyClampExplanation(kind: kind, sourceLabel: sourceLabel)
+        return xtChineseProjectGovernanceClampExplanation(kind: kind, sourceLabel: sourceLabel)
     case .guardrailEnglish:
-        return xtEnglishAutonomyClampExplanation(kind: kind)
+        return xtEnglishProjectGovernanceClampExplanation(kind: kind)
     }
 }
 
-private func xtChineseAutonomyClampExplanation(
-    kind: AXProjectAutonomyClampKind,
+private func xtChineseProjectGovernanceClampExplanation(
+    kind: AXProjectGovernanceClampKind,
     sourceLabel: String?
-) -> AXProjectAutonomyClampExplanation {
+) -> AXProjectGovernanceClampExplanation {
     let sourcePrefix = sourceLabel ?? ""
     switch kind {
     case .killSwitch:
-        return AXProjectAutonomyClampExplanation(
+        return AXProjectGovernanceClampExplanation(
             kind: kind,
             policyReason: kind.rawValue,
             summary: "\(sourcePrefix)kill-switch 已生效：当前 runtime surface 已被压到最保守状态，device/browser/connector/extension 四类执行面全部被系统拦下。",
             nextStep: "清除 kill-switch 后再重试高风险动作。"
         )
     case .ttlExpired:
-        return AXProjectAutonomyClampExplanation(
+        return AXProjectGovernanceClampExplanation(
             kind: kind,
             policyReason: kind.rawValue,
             summary: "当前 runtime surface TTL 已过期，项目执行面已自动回收到最保守 surface；如需继续放开，需要重新显式授权。",
             nextStep: "重新刷新自治窗口或重新授权后再继续。"
         )
     case .clampManual:
-        return AXProjectAutonomyClampExplanation(
+        return AXProjectGovernanceClampExplanation(
             kind: kind,
             policyReason: kind.rawValue,
             summary: "当前 \(sourcePrefix)clamp_manual 已把 runtime surface 压回最保守 surface。项目里的治理档位仍会保留，但实际执行面不会放行。",
             nextStep: "清除 clamp_manual 后再重试相关动作。"
         )
     case .clampGuided:
-        return AXProjectAutonomyClampExplanation(
+        return AXProjectGovernanceClampExplanation(
             kind: kind,
             policyReason: kind.rawValue,
             summary: "当前 \(sourcePrefix)clamp_guided 已把 runtime surface 压回 Guided surface，只保留 browser runtime 这条受控执行面。",
@@ -175,33 +211,33 @@ private func xtChineseAutonomyClampExplanation(
     }
 }
 
-private func xtEnglishAutonomyClampExplanation(
-    kind: AXProjectAutonomyClampKind
-) -> AXProjectAutonomyClampExplanation {
+private func xtEnglishProjectGovernanceClampExplanation(
+    kind: AXProjectGovernanceClampKind
+) -> AXProjectGovernanceClampExplanation {
     switch kind {
     case .killSwitch:
-        return AXProjectAutonomyClampExplanation(
+        return AXProjectGovernanceClampExplanation(
             kind: kind,
             policyReason: kind.rawValue,
             summary: "Project governance has engaged the kill switch for this runtime surface.",
             nextStep: "Clear the kill switch before retrying this action."
         )
     case .ttlExpired:
-        return AXProjectAutonomyClampExplanation(
+        return AXProjectGovernanceClampExplanation(
             kind: kind,
             policyReason: kind.rawValue,
-            summary: "The trusted autonomy window expired, so higher-risk actions are paused.",
-            nextStep: "Refresh the autonomy window before retrying."
+            summary: "The trusted runtime-surface window expired, so higher-risk actions are paused.",
+            nextStep: "Refresh the runtime-surface window before retrying."
         )
     case .clampManual:
-        return AXProjectAutonomyClampExplanation(
+        return AXProjectGovernanceClampExplanation(
             kind: kind,
             policyReason: kind.rawValue,
             summary: "Project governance has clamped this project to the most conservative runtime surface.",
             nextStep: "Clear the clamp before retrying this action."
         )
     case .clampGuided:
-        return AXProjectAutonomyClampExplanation(
+        return AXProjectGovernanceClampExplanation(
             kind: kind,
             policyReason: kind.rawValue,
             summary: "Project governance has clamped this project to the guided runtime surface.",

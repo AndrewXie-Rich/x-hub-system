@@ -17,6 +17,8 @@ enum XTPendingApprovalPresentation {
             return "magnifyingglass"
         case .summarize:
             return "text.alignleft"
+        case .supervisorVoicePlayback:
+            return "speaker.wave.2.fill"
         case .run_command:
             return "terminal"
         case .process_start:
@@ -73,87 +75,89 @@ enum XTPendingApprovalPresentation {
     static func displayToolName(for tool: ToolName) -> String {
         switch tool {
         case .read_file:
-            return "read file"
+            return "读取文件"
         case .write_file:
-            return "write file"
+            return "写入文件"
         case .delete_path:
-            return "delete path"
+            return "删除路径"
         case .move_path:
-            return "move path"
+            return "移动路径"
         case .list_dir:
-            return "list directory"
+            return "查看目录"
         case .search:
-            return "search"
+            return "搜索"
         case .run_command:
-            return "run command"
+            return "运行命令"
         case .process_start:
-            return "start process"
+            return "启动进程"
         case .process_status:
-            return "process status"
+            return "进程状态"
         case .process_logs:
-            return "process logs"
+            return "进程日志"
         case .process_stop:
-            return "stop process"
+            return "停止进程"
         case .git_status:
-            return "git status"
+            return "查看 Git 状态"
         case .git_diff:
-            return "git diff"
+            return "查看 Git diff"
         case .git_commit:
-            return "git commit"
+            return "Git 提交"
         case .git_push:
-            return "git push"
+            return "Git 推送"
         case .git_apply_check:
-            return "patch validation"
+            return "补丁校验"
         case .git_apply:
-            return "apply patch"
+            return "应用补丁"
         case .pr_create:
-            return "create pull request"
+            return "创建 Pull Request"
         case .ci_read:
-            return "read CI"
+            return "读取 CI"
         case .ci_trigger:
-            return "trigger CI"
+            return "触发 CI"
         case .session_list:
-            return "session list"
+            return "会话列表"
         case .session_resume:
-            return "resume session"
+            return "恢复会话"
         case .session_compact:
-            return "compact session"
+            return "压缩会话"
         case .agentImportRecord:
-            return "agent import record"
+            return "导入代理记录"
         case .memory_snapshot:
-            return "memory snapshot"
+            return "记忆快照"
         case .project_snapshot:
-            return "project snapshot"
+            return "项目快照"
         case .deviceUIObserve:
-            return "UI observe"
+            return "UI 观察"
         case .deviceUIAct:
-            return "UI action"
+            return "UI 动作"
         case .deviceUIStep:
-            return "UI step"
+            return "UI 步进"
         case .deviceClipboardRead:
-            return "clipboard read"
+            return "读取剪贴板"
         case .deviceClipboardWrite:
-            return "clipboard write"
+            return "写入剪贴板"
         case .deviceScreenCapture:
-            return "screen capture"
+            return "屏幕截图"
         case .deviceBrowserControl:
-            return "browser control"
+            return "浏览器控制"
         case .deviceAppleScript:
             return "AppleScript"
         case .need_network:
-            return "network access"
+            return "网络访问"
         case .bridge_status:
-            return "bridge status"
+            return "桥接状态"
         case .skills_search:
-            return "skills search"
+            return "搜索技能"
         case .summarize:
-            return "summarize"
+            return "总结内容"
+        case .supervisorVoicePlayback:
+            return "Supervisor 语音"
         case .web_fetch:
-            return "web fetch"
+            return "抓取网页"
         case .web_search:
-            return "web search"
+            return "联网搜索"
         case .browser_read:
-            return "browser read"
+            return "读取浏览器页面"
         }
     }
 
@@ -162,7 +166,7 @@ enum XTPendingApprovalPresentation {
             return displayToolName(for: tool)
         }
         let cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return cleaned.isEmpty ? "tool runtime" : cleaned
+        return cleaned.isEmpty ? "工具运行时" : cleaned
     }
 
     static func approvalMessage(for toolCall: ToolCall) -> XTGuardrailMessage {
@@ -190,90 +194,95 @@ enum XTPendingApprovalPresentation {
     static func actionSummary(for toolCall: ToolCall) -> String {
         switch toolCall.tool {
         case .read_file:
-            return sentence("Read", target: previewValue(for: toolCall, keys: ["path"], includeLabel: true), fallback: "Read a file")
+            return sentence("读取", target: previewValue(for: toolCall, keys: ["path"], includeLabel: true), fallback: "读取文件")
         case .write_file:
-            return sentence("Write to", target: previewValue(for: toolCall, keys: ["path"], includeLabel: true), fallback: "Write a file")
+            return sentence("写入", target: previewValue(for: toolCall, keys: ["path"], includeLabel: true), fallback: "写入文件")
         case .delete_path:
-            return sentence("Delete", target: previewValue(for: toolCall, keys: ["path"], includeLabel: true), fallback: "Delete a path")
+            return sentence("删除", target: previewValue(for: toolCall, keys: ["path"], includeLabel: true), fallback: "删除路径")
         case .move_path:
-            return sentence("Move", target: previewValue(for: toolCall, keys: ["from", "to"], includeLabel: true), fallback: "Move a path")
+            return sentence("移动", target: previewValue(for: toolCall, keys: ["from", "to"], includeLabel: true), fallback: "移动路径")
         case .list_dir:
-            return sentence("List files in", target: previewValue(for: toolCall, keys: ["path"], includeLabel: true), fallback: "List a directory")
+            return sentence("查看目录", target: previewValue(for: toolCall, keys: ["path"], includeLabel: true), fallback: "查看目录")
         case .search:
-            return sentence("Search for", target: previewValue(for: toolCall, keys: ["pattern", "query"], includeLabel: true), fallback: "Search project files")
+            return sentence("搜索", target: previewValue(for: toolCall, keys: ["pattern", "query"], includeLabel: true), fallback: "搜索项目文件")
         case .skills_search:
-            return sentence("Search skills for", target: previewValue(for: toolCall, keys: ["query"], includeLabel: true), fallback: "Search skills")
+            return sentence("搜索技能", target: previewValue(for: toolCall, keys: ["query"], includeLabel: true), fallback: "搜索技能")
         case .run_command:
-            return sentence("Run", target: previewValue(for: toolCall, keys: ["command"], includeLabel: true), fallback: "Run a command")
+            return sentence("运行", target: previewValue(for: toolCall, keys: ["command"], includeLabel: true), fallback: "运行命令")
         case .process_start:
-            return sentence("Start process", target: previewValue(for: toolCall, keys: ["name", "process_id", "command"], includeLabel: true), fallback: "Start a managed process")
+            return sentence("启动进程", target: previewValue(for: toolCall, keys: ["name", "process_id", "command"], includeLabel: true), fallback: "启动受治理进程")
         case .process_status:
-            return sentence("Inspect process", target: previewValue(for: toolCall, keys: ["process_id"], includeLabel: true), fallback: "Inspect managed process status")
+            return sentence("查看进程", target: previewValue(for: toolCall, keys: ["process_id"], includeLabel: true), fallback: "查看受治理进程状态")
         case .process_logs:
-            return sentence("Read process logs for", target: previewValue(for: toolCall, keys: ["process_id"], includeLabel: true), fallback: "Read managed process logs")
+            return sentence("查看进程日志", target: previewValue(for: toolCall, keys: ["process_id"], includeLabel: true), fallback: "查看受治理进程日志")
         case .process_stop:
-            return sentence("Stop process", target: previewValue(for: toolCall, keys: ["process_id"], includeLabel: true), fallback: "Stop a managed process")
+            return sentence("停止进程", target: previewValue(for: toolCall, keys: ["process_id"], includeLabel: true), fallback: "停止受治理进程")
         case .git_status:
-            return "Check git status"
+            return "查看 Git 状态"
         case .git_diff:
-            return "Inspect git diff"
+            return "查看 Git diff"
         case .git_commit:
-            return sentence("Create commit", target: previewValue(for: toolCall, keys: ["message"], includeLabel: true), fallback: "Create a git commit")
+            return sentence("创建 Git 提交", target: previewValue(for: toolCall, keys: ["message"], includeLabel: true), fallback: "创建 Git 提交")
         case .git_push:
-            return sentence("Push git branch", target: previewValue(for: toolCall, keys: ["remote", "branch"], includeLabel: true), fallback: "Push git changes")
+            return sentence("推送 Git 分支", target: previewValue(for: toolCall, keys: ["remote", "branch"], includeLabel: true), fallback: "推送 Git 变更")
         case .git_apply_check:
-            return "Validate a patch before apply"
+            return "应用前校验补丁"
         case .git_apply:
-            return "Apply a patch"
+            return "应用补丁"
         case .pr_create:
-            return sentence("Create pull request", target: previewValue(for: toolCall, keys: ["title", "base", "head"], includeLabel: true), fallback: "Create a pull request")
+            return sentence("创建 Pull Request", target: previewValue(for: toolCall, keys: ["title", "base", "head"], includeLabel: true), fallback: "创建 Pull Request")
         case .ci_read:
-            return sentence("Read CI status", target: previewValue(for: toolCall, keys: ["workflow", "branch"], includeLabel: true), fallback: "Read CI status")
+            return sentence("查看 CI 状态", target: previewValue(for: toolCall, keys: ["workflow", "branch"], includeLabel: true), fallback: "查看 CI 状态")
         case .ci_trigger:
-            return sentence("Trigger CI workflow", target: previewValue(for: toolCall, keys: ["workflow", "ref"], includeLabel: true), fallback: "Trigger a CI workflow")
+            return sentence("触发 CI 流程", target: previewValue(for: toolCall, keys: ["workflow", "ref"], includeLabel: true), fallback: "触发 CI 流程")
         case .session_list:
-            return "List sessions"
+            return "查看会话列表"
         case .session_resume:
-            return sentence("Resume", target: previewValue(for: toolCall, keys: ["session_id"], includeLabel: true), fallback: "Resume a session")
+            return sentence("恢复", target: previewValue(for: toolCall, keys: ["session_id"], includeLabel: true), fallback: "恢复会话")
         case .session_compact:
-            return sentence("Compact", target: previewValue(for: toolCall, keys: ["session_id"], includeLabel: true), fallback: "Compact a session")
+            return sentence("压缩", target: previewValue(for: toolCall, keys: ["session_id"], includeLabel: true), fallback: "压缩会话")
         case .agentImportRecord:
-            return sentence("Import staged agent record", target: previewValue(for: toolCall, keys: ["staging_id"], includeLabel: true), fallback: "Import a staged agent record")
+            return sentence("导入暂存代理记录", target: previewValue(for: toolCall, keys: ["staging_id"], includeLabel: true), fallback: "导入暂存代理记录")
         case .memory_snapshot:
-            return sentence("Capture memory snapshot", target: previewValue(for: toolCall, keys: ["mode"], includeLabel: true), fallback: "Capture a memory snapshot")
+            return sentence("生成记忆快照", target: previewValue(for: toolCall, keys: ["mode"], includeLabel: true), fallback: "生成记忆快照")
         case .project_snapshot:
-            return "Capture a project snapshot"
+            return "生成项目快照"
         case .deviceUIObserve:
-            return sentence("Capture UI observation", target: previewValue(for: toolCall, keys: ["selector", "path"], includeLabel: true), fallback: "Capture a UI observation")
+            return sentence("采集 UI 观察", target: previewValue(for: toolCall, keys: ["selector", "path"], includeLabel: true), fallback: "采集 UI 观察")
         case .deviceUIAct:
             if let action = stringValue(toolCall.args["action"]) {
-                return sentence("Run UI action \(action)", target: previewValue(for: toolCall, keys: ["selector", "target", "path", "text"], includeLabel: true), fallback: "Run a UI action")
+                return sentence("执行 UI 动作 \(action)", target: previewValue(for: toolCall, keys: ["selector", "target", "path", "text"], includeLabel: true), fallback: "执行 UI 动作")
             }
-            return sentence("Run a UI action", target: previewValue(for: toolCall, keys: ["selector", "target", "path", "text"], includeLabel: true), fallback: "Run a UI action")
+            return sentence("执行 UI 动作", target: previewValue(for: toolCall, keys: ["selector", "target", "path", "text"], includeLabel: true), fallback: "执行 UI 动作")
         case .deviceUIStep:
-            return sentence("Advance UI automation", target: previewValue(for: toolCall, keys: ["step", "selector", "target"], includeLabel: true), fallback: "Advance UI automation")
+            return sentence("推进 UI 自动化", target: previewValue(for: toolCall, keys: ["step", "selector", "target"], includeLabel: true), fallback: "推进 UI 自动化")
         case .deviceClipboardRead:
-            return "Read the clipboard"
+            return "读取剪贴板"
         case .deviceClipboardWrite:
-            return sentence("Write clipboard", target: previewValue(for: toolCall, keys: ["text"], includeLabel: true), fallback: "Write the clipboard")
+            return sentence("写入剪贴板", target: previewValue(for: toolCall, keys: ["text"], includeLabel: true), fallback: "写入剪贴板")
         case .deviceScreenCapture:
-            return "Capture the screen"
+            return "屏幕截图"
         case .deviceBrowserControl:
             return browserActionSummary(for: toolCall)
         case .deviceAppleScript:
-            return sentence("Run AppleScript", target: previewValue(for: toolCall, keys: ["script", "path"], includeLabel: true), fallback: "Run AppleScript")
+            return sentence("运行 AppleScript", target: previewValue(for: toolCall, keys: ["script", "path"], includeLabel: true), fallback: "运行 AppleScript")
         case .need_network:
-            return "Request network access"
+            return "申请网络访问"
         case .bridge_status:
-            return "Check bridge status"
+            return "检查桥接状态"
         case .summarize:
-            return sentence("Summarize", target: previewValue(for: toolCall, keys: ["url", "path", "text"], includeLabel: true), fallback: "Summarize content")
+            return sentence("总结", target: previewValue(for: toolCall, keys: ["url", "path", "text"], includeLabel: true), fallback: "总结内容")
+        case .supervisorVoicePlayback:
+            if let action = stringValue(toolCall.args["action"]) {
+                return sentence("播放 Supervisor 语音 \(action)", target: previewValue(for: toolCall, keys: ["text"], includeLabel: true), fallback: "播放 Supervisor 语音")
+            }
+            return sentence("播放 Supervisor 语音", target: previewValue(for: toolCall, keys: ["text"], includeLabel: true), fallback: "播放 Supervisor 语音")
         case .web_fetch:
-            return sentence("Fetch", target: previewValue(for: toolCall, keys: ["url"], includeLabel: false), fallback: "Fetch a web page")
+            return sentence("抓取", target: previewValue(for: toolCall, keys: ["url"], includeLabel: false), fallback: "抓取网页")
         case .web_search:
-            return sentence("Search the web for", target: previewValue(for: toolCall, keys: ["query"], includeLabel: true), fallback: "Search the web")
+            return sentence("联网搜索", target: previewValue(for: toolCall, keys: ["query"], includeLabel: true), fallback: "联网搜索")
         case .browser_read:
-            return sentence("Read browser page", target: previewValue(for: toolCall, keys: ["url"], includeLabel: false), fallback: "Read the browser page")
+            return sentence("读取浏览器页面", target: previewValue(for: toolCall, keys: ["url"], includeLabel: false), fallback: "读取浏览器页面")
         }
     }
 
@@ -286,7 +295,9 @@ enum XTPendingApprovalPresentation {
 
         let normalized = cleaned.lowercased()
         if normalized == "waiting for local governed approval"
-            || normalized == "waiting for local approval" {
+            || normalized == "waiting for local approval"
+            || cleaned == "等待本地审批"
+            || cleaned == "等待本地批准" {
             return nil
         }
 
@@ -307,9 +318,9 @@ enum XTPendingApprovalPresentation {
     static func approvalFooterNote(callCount: Int) -> String {
         let normalizedCount = max(1, callCount)
         if normalizedCount == 1 {
-            return "Approve runs the queued guarded action now. Reject keeps the rest of the conversation intact."
+            return "批准后会立即执行当前这条待处理动作；拒绝只会继续拦下这次动作，不影响其它对话。"
         }
-        return "Approve runs all queued guarded actions now. Reject keeps the rest of the conversation intact."
+        return "批准后会立即执行当前这些待处理动作；拒绝只会继续拦下对应动作，不影响其它对话。"
     }
 
     private static func browserActionSummary(for toolCall: ToolCall) -> String {
@@ -322,12 +333,12 @@ enum XTPendingApprovalPresentation {
 
         if action == "open_url",
            let url = stringValue(toolCall.args["url"]) {
-            return "Open \(url) in the browser"
+            return "在浏览器中打开 \(url)"
         }
         if !action.isEmpty {
-            return sentence("Run browser action \(action)", target: target, fallback: "Run browser control")
+            return sentence("执行浏览器动作 \(action)", target: target, fallback: "执行浏览器控制")
         }
-        return sentence("Run browser control", target: target, fallback: "Run browser control")
+        return sentence("执行浏览器控制", target: target, fallback: "执行浏览器控制")
     }
 
     private static func approvalTarget(for toolCall: ToolCall) -> String? {
@@ -352,6 +363,8 @@ enum XTPendingApprovalPresentation {
             return previewValue(for: toolCall, keys: ["path", "script"], includeLabel: true)
         case .summarize:
             return previewValue(for: toolCall, keys: ["url", "path", "text"], includeLabel: true)
+        case .supervisorVoicePlayback:
+            return previewValue(for: toolCall, keys: ["action", "text"], includeLabel: true)
         case .search:
             return previewValue(for: toolCall, keys: ["pattern", "query"], includeLabel: true)
         default:
@@ -381,20 +394,20 @@ enum XTPendingApprovalPresentation {
 
         let lower = target.lowercased()
         let descriptivePrefixes = [
-            "query ",
-            "path ",
-            "selector ",
-            "command ",
-            "session ",
-            "staging ",
-            "mode ",
-            "text ",
-            "target ",
-            "process ",
-            "name "
+            "查询 ",
+            "路径 ",
+            "选择器 ",
+            "命令 ",
+            "会话 ",
+            "暂存 ",
+            "模式 ",
+            "文本 ",
+            "目标 ",
+            "进程 ",
+            "名称 "
         ]
         if descriptivePrefixes.contains(where: { lower.hasPrefix($0) }) {
-            return "\(prefix) \(target)"
+            return "\(prefix)\(target)"
         }
         return "\(prefix) \(target)"
     }
@@ -425,49 +438,49 @@ enum XTPendingApprovalPresentation {
         case "url":
             return raw
         case "query", "pattern":
-            return includeLabel ? "query '\(capped(raw, maxChars: 80))'" : capped(raw, maxChars: 80)
+            return includeLabel ? "查询 '\(capped(raw, maxChars: 80))'" : capped(raw, maxChars: 80)
         case "path":
-            return includeLabel ? "path \(raw)" : raw
+            return includeLabel ? "路径 \(raw)" : raw
         case "selector":
-            return includeLabel ? "selector \(raw)" : raw
+            return includeLabel ? "选择器 \(raw)" : raw
         case "target":
-            return includeLabel ? "target \(raw)" : raw
+            return includeLabel ? "目标 \(raw)" : raw
         case "command":
-            return includeLabel ? "command \(capped(raw, maxChars: 96))" : capped(raw, maxChars: 96)
+            return includeLabel ? "命令 \(capped(raw, maxChars: 96))" : capped(raw, maxChars: 96)
         case "process_id":
-            return includeLabel ? "process \(raw)" : raw
+            return includeLabel ? "进程 \(raw)" : raw
         case "name":
-            return includeLabel ? "name \(capped(raw, maxChars: 72))" : capped(raw, maxChars: 72)
+            return includeLabel ? "名称 \(capped(raw, maxChars: 72))" : capped(raw, maxChars: 72)
         case "message":
-            return includeLabel ? "message '\(capped(raw, maxChars: 72))'" : capped(raw, maxChars: 72)
+            return includeLabel ? "提交信息 '\(capped(raw, maxChars: 72))'" : capped(raw, maxChars: 72)
         case "session_id":
-            return includeLabel ? "session \(raw)" : raw
+            return includeLabel ? "会话 \(raw)" : raw
         case "staging_id":
-            return includeLabel ? "staging \(raw)" : raw
+            return includeLabel ? "暂存 \(raw)" : raw
         case "mode":
-            return includeLabel ? "mode \(raw)" : raw
+            return includeLabel ? "模式 \(raw)" : raw
         case "action":
-            return includeLabel ? "action \(raw)" : raw
+            return includeLabel ? "动作 \(raw)" : raw
         case "remote":
-            return includeLabel ? "remote \(raw)" : raw
+            return includeLabel ? "远端 \(raw)" : raw
         case "branch":
-            return includeLabel ? "branch \(raw)" : raw
+            return includeLabel ? "分支 \(raw)" : raw
         case "workflow":
-            return includeLabel ? "workflow \(raw)" : raw
+            return includeLabel ? "流程 \(raw)" : raw
         case "ref":
-            return includeLabel ? "ref \(raw)" : raw
+            return includeLabel ? "引用 \(raw)" : raw
         case "title":
-            return includeLabel ? "title '\(capped(raw, maxChars: 72))'" : capped(raw, maxChars: 72)
+            return includeLabel ? "标题 '\(capped(raw, maxChars: 72))'" : capped(raw, maxChars: 72)
         case "base":
-            return includeLabel ? "base \(raw)" : raw
+            return includeLabel ? "基线 \(raw)" : raw
         case "head":
-            return includeLabel ? "head \(raw)" : raw
+            return includeLabel ? "源分支 \(raw)" : raw
         case "step":
-            return includeLabel ? "step \(raw)" : raw
+            return includeLabel ? "步骤 \(raw)" : raw
         case "script":
-            return includeLabel ? "script \(capped(raw, maxChars: 64))" : capped(raw, maxChars: 64)
+            return includeLabel ? "脚本 \(capped(raw, maxChars: 64))" : capped(raw, maxChars: 64)
         case "text":
-            return includeLabel ? "text '\(capped(raw, maxChars: 72))'" : capped(raw, maxChars: 72)
+            return includeLabel ? "文本 '\(capped(raw, maxChars: 72))'" : capped(raw, maxChars: 72)
         default:
             return capped(raw, maxChars: 72)
         }

@@ -500,7 +500,81 @@ struct SupervisorSkillActivityPresentationTests {
         #expect(localized.contains(where: {
             $0.label == "路由说明" && $0.value == "浏览器入口会先收敛到受治理内建 guarded-automation 再执行"
         }))
-        #expect(localized.contains(where: { $0.label == "tool_name" && $0.value == "device.browser.control" }))
+        #expect(localized.contains(where: { $0.label == "工具" && $0.value == "device.browser.control" }))
+    }
+
+    @Test
+    func displayMetadataFieldsLocalizeCommonSupervisorFieldLabels() {
+        let fields = [
+            ProjectSkillRecordField(label: "policy_reason", value: "execution_tier_missing_browser_runtime"),
+            ProjectSkillRecordField(label: "work_order_depth", value: "execution_ready"),
+            ProjectSkillRecordField(label: "result_evidence_ref", value: "local://supervisor_skill_results/skill-1.json"),
+            ProjectSkillRecordField(label: "audit_ref", value: "audit-skill-1")
+        ]
+
+        let localized = SupervisorSkillActivityPresentation.displayMetadataFields(fields)
+
+        #expect(localized.contains(where: { $0.label == "策略原因" && $0.value == "execution_tier_missing_browser_runtime" }))
+        #expect(localized.contains(where: { $0.label == "工单深度" && $0.value == "execution_ready" }))
+        #expect(localized.contains(where: { $0.label == "结果证据引用" && $0.value == "local://supervisor_skill_results/skill-1.json" }))
+        #expect(localized.contains(where: { $0.label == "审计引用" && $0.value == "audit-skill-1" }))
+    }
+
+    @Test
+    func displayFullRecordTextUsesLocalizedRoutingSummaryAndKeepsRawRoutingAppendix() {
+        let record = SupervisorSkillFullRecord(
+            requestID: "req-routing-copy-1",
+            projectName: "Project Alpha",
+            title: "browser.open -> guarded-automation · action=open",
+            latestStatus: "completed",
+            latestStatusLabel: "已完成",
+            requestMetadata: [
+                ProjectSkillRecordField(label: "requested_skill_id", value: "browser.open"),
+                ProjectSkillRecordField(label: "skill_id", value: "guarded-automation"),
+                ProjectSkillRecordField(label: "routing_resolution", value: "browser.open -> guarded-automation"),
+                ProjectSkillRecordField(label: "routing_reason_code", value: "preferred_builtin_selected"),
+                ProjectSkillRecordField(
+                    label: "routing_explanation",
+                    value: "requested entrypoint browser.open converged to preferred builtin guarded-automation · resolved action open"
+                )
+            ],
+            approvalFields: [
+                ProjectSkillRecordField(label: "policy_reason", value: "execution_tier_missing_browser_runtime")
+            ],
+            governanceFields: [
+                ProjectSkillRecordField(label: "work_order_depth", value: "execution_ready")
+            ],
+            skillPayloadText: nil,
+            toolArgumentsText: nil,
+            resultFields: [
+                ProjectSkillRecordField(label: "result_summary", value: "Opened login page")
+            ],
+            rawOutputPreview: nil,
+            rawOutput: nil,
+            evidenceFields: [
+                ProjectSkillRecordField(label: "result_evidence_ref", value: "local://supervisor_skill_results/skill-routing-copy-1.json")
+            ],
+            approvalHistory: [],
+            timeline: [],
+            uiReviewAgentEvidenceFields: [],
+            uiReviewAgentEvidenceText: nil,
+            supervisorEvidenceJSON: nil,
+            guidanceContract: nil
+        )
+
+        let text = SupervisorSkillActivityPresentation.displayFullRecordText(record)
+
+        #expect(text.contains("请求技能=browser.open"))
+        #expect(text.contains("生效技能=guarded-automation"))
+        #expect(text.contains("路由判定=系统优先切到受治理内建"))
+        #expect(text.contains("路由说明=浏览器入口会先收敛到受治理内建 guarded-automation 再执行"))
+        #expect(text.contains("策略原因=execution_tier_missing_browser_runtime"))
+        #expect(text.contains("工单深度=execution_ready"))
+        #expect(text.contains("结果摘要=Opened login page"))
+        #expect(text.contains("结果证据引用=local://supervisor_skill_results/skill-routing-copy-1.json"))
+        #expect(text.contains("== 路由诊断原文 =="))
+        #expect(text.contains("routing_reason_code=preferred_builtin_selected"))
+        #expect(text.contains("routing_explanation=requested entrypoint browser.open converged to preferred builtin guarded-automation"))
     }
 
     @Test

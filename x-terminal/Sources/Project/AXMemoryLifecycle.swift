@@ -646,20 +646,16 @@ enum AXMemoryLifecycleStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(value)
-        try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try writeAtomic(data: data, to: target)
         try FileManager.default.createDirectory(at: latestURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try writeAtomic(data: data, to: latestURL)
-    }
-
-    private static func writeAtomic(data: Data, to url: URL) throws {
-        let temp = url.deletingLastPathComponent()
-            .appendingPathComponent(".\(url.lastPathComponent).tmp-\(UUID().uuidString)")
-        try data.write(to: temp, options: .atomic)
-        if FileManager.default.fileExists(atPath: url.path) {
-            try? FileManager.default.removeItem(at: url)
+        try XTStoreWriteSupport.writeSnapshotData(data, to: latestURL)
+        try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        do {
+            try XTStoreWriteSupport.writeSnapshotData(data, to: target)
+        } catch {
+            guard XTStoreWriteSupport.looksLikeDiskSpaceExhaustion(error) else {
+                throw error
+            }
         }
-        try FileManager.default.moveItem(at: temp, to: url)
     }
 
     private static func turnID(createdAtMs: Int64) -> String {

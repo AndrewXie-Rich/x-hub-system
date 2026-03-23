@@ -541,7 +541,7 @@ actor XTManagedProcessStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(snapshot) else { return }
-        try? data.write(to: ctx.managedProcessesSnapshotURL, options: .atomic)
+        try? XTStoreWriteSupport.writeSnapshotData(data, to: ctx.managedProcessesSnapshotURL)
     }
 
     private func normalizedProcessID(_ raw: String?) throws -> String {

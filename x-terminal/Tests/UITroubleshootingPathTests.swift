@@ -57,14 +57,14 @@ struct UITroubleshootingPathTests {
             .appendingPathComponent("x-hub/macos/RELFlowHub/Sources/RELFlowHub/UI/HubSectionCard.swift")
 
         let hubSettingsSource = try String(contentsOf: hubSettingsPath, encoding: .utf8)
-        #expect(hubSettingsSource.contains("Section(\"Setup Center\")"))
-        #expect(hubSettingsSource.contains("Section(\"First Run Path\")"))
-        #expect(hubSettingsSource.contains("Section(\"Troubleshoot In 3 Steps\")"))
-        #expect(hubSettingsSource.contains("Pair Hub"))
-        #expect(hubSettingsSource.contains("Models & Paid Access"))
-        #expect(hubSettingsSource.contains("Grants & Permissions"))
-        #expect(hubSettingsSource.contains("Security Boundary"))
-        #expect(hubSettingsSource.contains("Diagnostics & Recovery"))
+        #expect(hubSettingsSource.contains("Section(\"设置总览\")"))
+        #expect(hubSettingsSource.contains("Section(\"首次上手路径\")"))
+        #expect(hubSettingsSource.contains("Section(\"三步排障\")"))
+        #expect(hubSettingsSource.contains("配对 Hub"))
+        #expect(hubSettingsSource.contains("模型与付费访问"))
+        #expect(hubSettingsSource.contains("授权与权限"))
+        #expect(hubSettingsSource.contains("安全边界"))
+        #expect(hubSettingsSource.contains("诊断与恢复"))
         #expect(FileManager.default.fileExists(atPath: hubCardPath.path))
     }
 

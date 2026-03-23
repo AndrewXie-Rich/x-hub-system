@@ -146,6 +146,9 @@ struct ProjectGovernanceActivityPresentationTests {
         #expect(latestGuidance.workOrderRef == "plan:plan-review-1")
         #expect(latestGuidance.ackUpdatedAtText == "(none)")
         #expect(latestGuidance.guidanceText.contains("pending ack"))
+        #expect(latestGuidance.contractSummary?.kind == .supervisorReplan)
+        #expect(latestGuidance.contractSummary?.primaryBlocker == "ProjectDetailView still uses random UUID")
+        #expect(latestGuidance.contractSummary?.nextSafeAction == "apply_supervisor_replan")
 
         #expect(presentation.schedule.lastHeartbeatText.contains("2m ago"))
         #expect(presentation.schedule.nextHeartbeatText.contains("in 15m"))
@@ -300,6 +303,80 @@ struct ProjectGovernanceActivityPresentationTests {
     }
 
     @Test
+    func presentationParsesStructuredUIReviewRepairGuidanceContract() throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let nowMs = Int64(now.timeIntervalSince1970 * 1000.0)
+
+        let guidance = SupervisorGuidanceInjectionRecord(
+            schemaVersion: SupervisorGuidanceInjectionRecord.currentSchemaVersion,
+            injectionId: "guidance-ui-review-1",
+            reviewId: "review-ui-review-1",
+            projectId: "project-alpha",
+            targetRole: .coder,
+            deliveryMode: .priorityInsert,
+            interventionMode: .stopImmediately,
+            safePointPolicy: .nextToolBoundary,
+            guidanceText: """
+source=ui_review_repair
+summary=Primary CTA is missing from the current screen.
+repair_action=Expose the primary CTA
+repair_focus=Landing hero actions
+next_safe_action=repair_before_execution
+instruction=Fix the CTA before resuming browser automation.
+ui_review_ref=local://.xterminal/ui_review/reviews/project-alpha-latest.json
+ui_review_issue_codes=critical_action_not_visible
+""",
+            ackStatus: .pending,
+            ackRequired: true,
+            effectiveSupervisorTier: .s4TightSupervision,
+            effectiveWorkOrderDepth: .executionReady,
+            workOrderRef: "plan:ui-repair-1",
+            ackNote: "",
+            injectedAtMs: nowMs - 120_000,
+            ackUpdatedAtMs: 0,
+            auditRef: "audit-guidance-ui-review-1"
+        )
+
+        let presentation = ProjectGovernanceActivityPresentation(
+            reviewNotes: SupervisorReviewNoteSnapshot(
+                schemaVersion: SupervisorReviewNoteSnapshot.currentSchemaVersion,
+                updatedAtMs: 0,
+                notes: []
+            ),
+            guidance: SupervisorGuidanceInjectionSnapshot(
+                schemaVersion: SupervisorGuidanceInjectionSnapshot.currentSchemaVersion,
+                updatedAtMs: guidance.injectedAtMs,
+                items: [guidance]
+            ),
+            scheduleState: SupervisorReviewScheduleState(
+                schemaVersion: SupervisorReviewScheduleState.currentSchemaVersion,
+                projectId: "project-alpha",
+                updatedAtMs: 0,
+                lastHeartbeatAtMs: 0,
+                lastObservedProgressAtMs: 0,
+                lastPulseReviewAtMs: 0,
+                lastBrainstormReviewAtMs: 0,
+                lastTriggerReviewAtMs: [:],
+                nextHeartbeatDueAtMs: 0,
+                nextPulseReviewDueAtMs: 0,
+                nextBrainstormReviewDueAtMs: 0
+            ),
+            now: now
+        )
+
+        let pendingGuidance = try #require(presentation.pendingGuidance)
+        let contract = try #require(pendingGuidance.contractSummary)
+        let uiReview = try #require(contract.uiReviewRepair)
+
+        #expect(contract.kind == SupervisorGuidanceContractSummary.Kind.uiReviewRepair)
+        #expect(contract.summaryText == "Primary CTA is missing from the current screen.")
+        #expect(contract.nextSafeAction == "repair_before_execution")
+        #expect(uiReview.repairAction == "Expose the primary CTA")
+        #expect(uiReview.repairFocus == "Landing hero actions")
+        #expect(uiReview.instruction == "Fix the CTA before resuming browser automation.")
+    }
+
+    @Test
     func guidanceAckActionPersistsStoreAndRawLog() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("governance-ack-action-\(UUID().uuidString)", isDirectory: true)
@@ -367,6 +444,31 @@ struct ProjectGovernanceActivityPresentationTests {
         #expect(presentation.recentGuidance.isEmpty)
         #expect(presentation.schedule.lastHeartbeatText == "(none)")
         #expect(presentation.schedule.nextBrainstormReviewText == "(none)")
+    }
+
+    @Test
+    func governanceDisplayLocalizesFieldLabelsAndAckCopy() {
+        #expect(ProjectGovernanceActivityDisplay.fieldLabel("ack_status") == "确认状态")
+        #expect(ProjectGovernanceActivityDisplay.fieldLabel("retry_at_ms") == "重试时间(ms)")
+        #expect(ProjectGovernanceActivityDisplay.fieldLabel("work_order_depth") == "工单深度")
+        #expect(ProjectGovernanceActivityDisplay.fieldLabel("recommended_actions") == "建议动作")
+        #expect(ProjectGovernanceActivityDisplay.displayValue(label: "ack", value: "Pending · required") == "待确认 · 需要确认")
+        #expect(ProjectGovernanceActivityDisplay.displayValue(label: "ack_status", value: "Accepted") == "已接受")
+        #expect(ProjectGovernanceActivityDisplay.displayValue(label: "lifecycle", value: "retry due now") == "现在可重试")
+        #expect(ProjectGovernanceActivityDisplay.displayValue(label: "lifecycle", value: "settled") == "已结束")
+        #expect(ProjectGovernanceActivityDisplay.displayValue(label: "lifecycle", value: "expires in 5m") == "将在5分钟后过期")
+        #expect(ProjectGovernanceActivityDisplay.displayValue(label: "lifecycle", value: "retry in 1h 5m") == "将在1小时5分钟后重试")
+        #expect(ProjectGovernanceActivityDisplay.displayValue(label: "trigger", value: "Blocker Detected") == "发现阻塞")
+        #expect(ProjectGovernanceActivityDisplay.displayValue(label: "level", value: "R2 Strategic") == "R2 战略")
+        #expect(ProjectGovernanceActivityDisplay.displayValue(label: "verdict", value: "Better Path Found") == "发现更优路径")
+        #expect(ProjectGovernanceActivityDisplay.displayValue(label: "delivery", value: "Replan Request") == "请求重规划")
+        #expect(ProjectGovernanceActivityDisplay.displayValue(label: "intervention", value: "Replan At Safe Point") == "在安全点重规划")
+        #expect(ProjectGovernanceActivityDisplay.displayValue(label: "safe_point", value: "Next Step Boundary") == "下一步边界")
+        #expect(ProjectGovernanceActivityDisplay.displayValue(label: "supervisor_tier", value: "S3 Strategic Coach") == "S3 战略教练")
+        #expect(ProjectGovernanceActivityDisplay.displayValue(label: "work_order_depth", value: "Execution Ready") == "执行就绪")
+        #expect(ProjectGovernanceActivityDisplay.displayValue(label: "project_ai_strength", value: "Strong · conf=0.91") == "强 · 置信度=0.91")
+        #expect(ProjectGovernanceActivityDisplay.displayValue(label: "follow_up_rhythm", value: "cadence=active · blocker cooldown≈600s") == "节奏=活跃 · 阻塞冷却≈600秒")
+        #expect(ProjectGovernanceActivityDisplay.fieldLine("next_safe_action", value: "repair_before_execution") == "下一个安全动作：repair_before_execution")
     }
 }
 

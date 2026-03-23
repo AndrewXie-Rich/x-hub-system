@@ -5,6 +5,7 @@ import AppKit
 struct GlobalHomeView: View {
     @EnvironmentObject private var appModel: AppModel
     @Environment(\.openWindow) private var openWindow
+    @StateObject private var supervisorManager = SupervisorManager.shared
     @State private var decisionDrafts: [String: String] = [:]
     @State private var pendingGrantSnapshot: HubIPCClient.PendingGrantSnapshot?
     @State private var pendingGrantActionsInFlight: Set<String> = []
@@ -27,6 +28,10 @@ struct GlobalHomeView: View {
 
     private var homeResumeReminder: AXResumeReminderProjectPresentation? {
         appModel.latestResumeReminderProject()
+    }
+
+    private var routeRepairWatchItems: [AXRouteRepairProjectWatchItem] {
+        AXRouteRepairLogStore.watchItems(for: appModel.sortedProjects, limit: 3)
     }
 
     var body: some View {
@@ -67,9 +72,9 @@ struct GlobalHomeView: View {
 
         return HStack(alignment: .top, spacing: 16) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Global Home")
+                Text("全局首页（Global Home）")
                     .font(UIThemeTokens.heroFont())
-                Text("开始复杂任务、解释当前发生了什么，以及为什么只能沿 validated mainline 推进。")
+                Text("汇总每个 project 的状态、blocker、授权与下一步入口；大任务入口已收敛进 Supervisor 窗口。")
                     .foregroundStyle(.secondary)
             }
 
@@ -99,13 +104,21 @@ struct GlobalHomeView: View {
             }
 
             PrimaryActionRail(
-                title: "Primary Actions",
+                title: "快速入口",
                 actions: presentation.actions,
                 onTap: handleHomeAction
             )
 
             StatusExplanationCard(explanation: presentation.primaryStatus)
             StatusExplanationCard(explanation: presentation.releaseStatus)
+
+            if !appModel.skillsCompatibilitySnapshot.builtinGovernedSkills.isEmpty {
+                builtinGovernedSkillsCard
+            }
+
+            if !routeRepairWatchItems.isEmpty {
+                routeRepairWatchlistCard
+            }
         }
         .padding(16)
         .background(
@@ -121,19 +134,223 @@ struct GlobalHomeView: View {
     private var emptyProjectsCard: some View {
         let explanation = StatusExplanation(
             state: appModel.hubInteractive ? .ready : .blockedWaitingUpstream,
-            headline: "先从一个复杂任务开始，再让首页持续显示 blocker / next action",
-            whatHappened: "当前还没有已登记项目，但首页主入口、validated scope badge 与 fail-closed 文案已经就绪。",
-            whyItHappened: "本轮 claim 只冻结 XT-W3-27-A/B/C/D，不等待未验证 surface 或后端补齐后才开始 UI 产品化。",
-            userAction: appModel.hubInteractive ? "点击“开始大任务”，把复杂任务送入 Supervisor one-shot intake。" : "先点击“Pair Hub”，完成连接后再点击“开始大任务”。",
+            headline: "先准备第一个 project，首页只保留项目汇总与运行状态",
+            whatHappened: "当前还没有已登记项目，但首页的项目总览、发布范围提醒和阻断说明都已经就绪。",
+            whyItHappened: "大任务入口已从 Home 收敛进 Supervisor 对话窗，首页只负责项目级概览、resume 与诊断入口。",
+            userAction: appModel.hubInteractive ? "先创建一个 project；需要发起大任务时，从右上角打开 Supervisor 窗口。" : "先点击“Pair Hub”，完成连接后再创建 project。",
             machineStatusRef: "projects=0; hub_interactive=\(appModel.hubInteractive)",
             hardLine: "validated-mainline-only; no_scope_expansion",
             highlights: [
                 "badge_text=Validated mainline only",
-                "primary_cta=start_big_task"
+                "primary_cta=resume_project"
             ]
         )
 
         return StatusExplanationCard(explanation: explanation)
+    }
+
+    private var routeRepairWatchlistCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Label("路由观察清单（Route Watchlist）", systemImage: "waveform.path.ecg.rectangle")
+                    .font(.headline)
+                Spacer(minLength: 8)
+                Text("优先看最近最容易掉回本地的项目")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            ForEach(routeRepairWatchItems) { item in
+                let reminderStatus = supervisorManager.routeAttentionReminderStatus(for: item)
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 8) {
+                            Text(item.projectDisplayName)
+                                .font(.subheadline.weight(.semibold))
+                            Text(item.digest.failureCount > 0 ? "需要关注（needs_attention）" : "已观测（observed）")
+                                .font(UIThemeTokens.monoFont())
+                                .foregroundStyle(item.digest.failureCount > 0 ? UIThemeTokens.color(for: .diagnosticRequired) : .secondary)
+                        }
+                        Text(item.summary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if let reminderLine = routeReminderLine(reminderStatus) {
+                            Text(reminderLine)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    Spacer(minLength: 8)
+                    VStack(alignment: .trailing, spacing: 8) {
+                        Button("查看路由") {
+                            openProjectRouteDiagnose(item.projectId)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+
+                        if reminderStatus.quietingCurrentIssue {
+                            Button("恢复提醒") {
+                                supervisorManager.clearRouteAttentionReminderState(projectId: item.projectId)
+                            }
+                            .buttonStyle(.borderless)
+                            .controlSize(.small)
+                            .help("清掉当前静默状态；如果问题还在，下一次 timer 心跳会重新主动提醒。")
+                        }
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: UIThemeTokens.cardRadius)
+                .fill(UIThemeTokens.stateBackground(for: .diagnosticRequired))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: UIThemeTokens.cardRadius)
+                .stroke(UIThemeTokens.color(for: .diagnosticRequired).opacity(0.24), lineWidth: 1)
+        )
+    }
+
+    private var builtinGovernedSkillsCard: some View {
+        let snapshot = appModel.skillsCompatibilitySnapshot
+        let managedStatusLine = snapshot.statusLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        let extraCount = max(0, snapshot.builtinGovernedSkillCount - builtinGovernedSkillHighlights.count)
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Label("XT 内建技能（XT Native Skills）", systemImage: "bolt.shield")
+                    .font(.headline)
+
+                Spacer(minLength: 8)
+
+                Text("builtin \(snapshot.builtinGovernedSkillCount)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Color.secondary.opacity(0.08))
+                    .clipShape(Capsule())
+            }
+
+            Text(
+                "这些能力由 XT 本地内置提供，Supervisor 可以直接发现并按治理规则调用；它们不会被当成可安装、可删除的 Hub skill 包。"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+            XTBuiltinGovernedSkillsListView(
+                items: snapshot.builtinGovernedSkills,
+                style: .compact
+            )
+
+            if !managedStatusLine.isEmpty {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("托管（managed）")
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color.secondary.opacity(0.08))
+                        .clipShape(Capsule())
+
+                    Text(managedStatusLine)
+                        .font(UIThemeTokens.monoFont())
+                        .foregroundStyle(skillsStatusColor(snapshot.statusKind))
+
+                    if snapshot.installedSkillCount > 0 {
+                        Text("installed=\(snapshot.installedSkillCount)")
+                            .font(UIThemeTokens.monoFont())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(builtinGovernedSkillHighlights) { item in
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(item.displayName)
+                                .font(.caption.weight(.semibold))
+                            Text(item.skillID)
+                                .font(UIThemeTokens.monoFont())
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                            Spacer(minLength: 8)
+                            Text(normalizedRiskToken(item.riskLevel))
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(toneColor(for: item.riskLevel))
+                        }
+
+                        Text(item.summary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                if extraCount > 0 {
+                    Text("另外还有 \(extraCount) 个 XT 内建受治理技能已注册；完整清单会继续保留在 Settings / Hub Setup 诊断页。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: UIThemeTokens.cardRadius)
+                .fill(UIThemeTokens.cardBackground)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: UIThemeTokens.cardRadius)
+                .stroke(UIThemeTokens.subtleBorder, lineWidth: 1)
+        )
+    }
+
+    private var builtinGovernedSkillHighlights: [AXBuiltinGovernedSkillSummary] {
+        let items = appModel.skillsCompatibilitySnapshot.builtinGovernedSkills
+        let preferredIDs = ["guarded-automation", "supervisor-voice"]
+        let preferred = preferredIDs.compactMap { skillID in
+            items.first(where: { $0.skillID == skillID })
+        }
+        if !preferred.isEmpty {
+            return preferred
+        }
+        return Array(items.prefix(2))
+    }
+
+    private func skillsStatusColor(_ status: AXSkillsCompatibilityStatusKind) -> Color {
+        switch status {
+        case .supported:
+            return .secondary
+        case .partial:
+            return .orange
+        case .blocked, .unavailable:
+            return .red
+        }
+    }
+
+    private func toneColor(for riskLevel: String) -> Color {
+        switch riskLevel.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "high", "critical":
+            return .red
+        case "medium":
+            return .orange
+        case "low":
+            return .green
+        default:
+            return .secondary
+        }
+    }
+
+    private func normalizedRiskToken(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return trimmed.isEmpty ? "unknown" : trimmed
     }
 
     private var projectsSection: some View {
@@ -143,9 +360,9 @@ struct GlobalHomeView: View {
         }
 
         return VStack(alignment: .leading, spacing: 12) {
-            Text("Project Watchlist")
+            Text("项目总览（Project watchlist）")
                 .font(UIThemeTokens.sectionFont())
-            Text("先在产品入口理解 what happened / why / next action，再进入具体项目执行。")
+            Text("先看发生了什么 / 原因 / 下一步，再进入具体项目执行。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -185,18 +402,19 @@ struct GlobalHomeView: View {
 
     private func handleHomeAction(_ action: PrimaryActionRailAction) {
         switch action.id {
-        case "start_big_task":
-            openSupervisor()
         case "resume_project":
             if appModel.canPresentPreferredResumeBrief {
                 appModel.presentPreferredResumeBrief()
             } else {
-                openSupervisor()
+                supervisorManager.requestSupervisorWindow(reason: "home_resume_fallback")
             }
         case "pair_hub":
             openWindow(id: "hub_setup")
         case "model_status":
-            openWindow(id: "model_settings")
+            supervisorManager.requestSupervisorWindow(
+                sheet: .modelSettings,
+                reason: "home_model_status"
+            )
         default:
             break
         }
@@ -209,8 +427,43 @@ struct GlobalHomeView: View {
         )
     }
 
-    private func openSupervisor() {
-        openWindow(id: "supervisor")
+    private func routeReminderLine(
+        _ status: SupervisorManager.RouteAttentionReminderStatus
+    ) -> String? {
+        guard let lastAlertAt = status.lastAlertAt else { return nil }
+        let lastAlertText = relativeTimeText(lastAlertAt)
+        if status.quietingCurrentIssue {
+            let cooldownText = compactDurationText(status.cooldownRemainingSec)
+            return "上次提醒：\(lastAlertText)；当前静默观察中，约 \(cooldownText) 后才会再次主动提醒。"
+        }
+        return "上次提醒：\(lastAlertText)。"
+    }
+
+    private func relativeTimeText(_ ts: Double) -> String {
+        guard ts > 0 else { return "未知" }
+        let elapsedSec = max(0, Int(Date().timeIntervalSince1970 - ts))
+        if elapsedSec < 90 { return "刚刚" }
+        let mins = elapsedSec / 60
+        if mins < 60 { return "\(mins) 分钟前" }
+        let hours = mins / 60
+        if hours < 48 { return "\(hours) 小时前" }
+        return "\(hours / 24) 天前"
+    }
+
+    private func compactDurationText(_ seconds: Int) -> String {
+        let normalized = max(0, seconds)
+        if normalized < 90 { return "1 分钟内" }
+        let mins = normalized / 60
+        if mins < 60 { return "\(mins) 分钟" }
+        let hours = mins / 60
+        if hours < 48 { return "\(hours) 小时" }
+        return "\(hours / 24) 天"
+    }
+
+    private func openProjectRouteDiagnose(_ projectId: String) {
+        appModel.selectProject(projectId)
+        appModel.setPane(.chat, for: projectId)
+        appModel.requestProjectRouteDiagnoseFocus(projectId: projectId)
     }
 
     private func pendingGrants(for projectId: String) -> [HubIPCClient.PendingGrantItem] {
@@ -364,7 +617,7 @@ private struct ProjectHomeRow: View {
         let governancePresentation = ProjectGovernancePresentation(
             resolved: appModel.resolvedProjectGovernance(for: project)
         )
-        let switchboard = appModel.autonomySwitchboardPresentation(for: project)
+        let routeRepairDigest = AXRouteRepairLogStore.digest(for: projectContext, limit: 50)
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
                 Text(project.displayName)
@@ -377,7 +630,7 @@ private struct ProjectHomeRow: View {
                     appModel.presentResumeBrief(projectId: project.projectId)
                 }
                 .disabled(session.isSending)
-                Button("Open") {
+                Button("打开") {
                     appModel.selectProject(project.projectId)
                     if !pending.isEmpty {
                         appModel.setPane(.chat, for: project.projectId)
@@ -389,7 +642,14 @@ private struct ProjectHomeRow: View {
                 }
             }
 
-            ProjectGovernanceCompactSummaryView(presentation: governancePresentation)
+            ProjectGovernanceCompactSummaryView(
+                presentation: governancePresentation,
+                onExecutionTierTap: { openGovernanceSettings(.executionTier) },
+                onSupervisorTierTap: { openGovernanceSettings(.supervisorTier) },
+                onReviewCadenceTap: { openGovernanceSettings(.heartbeatReview) },
+                onStatusTap: { openGovernanceSettings(.overview) },
+                onCalloutTap: { openGovernanceSettings(.overview) }
+            )
 
             if let latestSessionSummary {
                 Text(latestSessionSummary.badgeText)
@@ -400,20 +660,55 @@ private struct ProjectHomeRow: View {
 
             if let latestUIReview {
                 ProjectUIReviewCompactSummaryView(review: latestUIReview)
-                row(title: "UI review", value: latestUIReview.updatedText, placeholder: "未生成")
+                row(title: "UI 审查", value: latestUIReview.updatedText, placeholder: "未生成")
             }
 
             let digest = (project.statusDigest ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             let stateValue = (project.currentStateSummary ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             row(title: "状态", value: stateValue.isEmpty ? digest : stateValue, placeholder: "未生成")
             row(title: "记忆", value: memoryHealthSummary(), placeholder: "未知")
-            row(title: "治理拨盘", value: governanceAxisSummary(governancePresentation, switchboard: switchboard), placeholder: "A0 / S0")
-            row(title: "治理状态", value: governancePresentation.homeStatusMessage, placeholder: "configured 与 effective 当前一致。")
-            row(title: "Review 节奏", value: governancePresentation.reviewCadenceText, placeholder: "off")
-            if let clampMessage = governancePresentation.homeClampMessage {
-                row(title: "Clamp / 收束", value: clampMessage, placeholder: "无")
+            if routeRepairDigest.totalEvents > 0 {
+                row(title: "路由修复", value: routeRepairDigest.headline, placeholder: "无")
             }
-            row(title: "执行权限", value: governedSummary(governed, switchboard: switchboard), placeholder: "人工审批")
+            row(
+                title: "治理档位",
+                value: governanceAxisSummary(governancePresentation),
+                placeholder: "A0 / S0",
+                action: { openGovernanceSettings(.overview) },
+                help: "打开 Project Governance 概览"
+            )
+            row(
+                title: "治理状态",
+                value: governancePresentation.homeStatusMessage,
+                placeholder: "预设值与生效值当前一致。",
+                action: { openGovernanceSettings(.overview) },
+                help: "查看当前治理状态和收束原因",
+                tone: governanceStatusTone(governancePresentation)
+            )
+            row(
+                title: "Review 节奏",
+                value: governancePresentation.reviewCadenceText,
+                placeholder: "off",
+                action: { openGovernanceSettings(.heartbeatReview) },
+                help: "打开 Heartbeat & Review 设置"
+            )
+            if let clampMessage = governancePresentation.homeClampMessage {
+                row(
+                    title: "Clamp / 收束",
+                    value: clampMessage,
+                    placeholder: "无",
+                    action: { openGovernanceSettings(.overview) },
+                    help: "查看当前收束原因、运行限制和治理状态",
+                    tone: governanceClampTone(governancePresentation)
+                )
+            }
+            row(
+                title: "执行权限",
+                value: governedSummary(governed),
+                placeholder: "人工审批",
+                action: { openGovernanceSettings(.overview) },
+                help: "查看当前项目的治理边界、执行权限和收束状态"
+            )
             row(title: "卡点", value: project.blockerSummary, placeholder: "无")
             row(title: "下一步", value: project.nextStepSummary, placeholder: "未生成")
 
@@ -455,7 +750,7 @@ private struct ProjectHomeRow: View {
                                     .foregroundStyle(.secondary)
                                     .lineLimit(2)
                             }
-                            Text("grant=\(grantId) · \(grantTimingText(grant.createdAtMs))")
+                            Text("授权单号：\(grantId) · \(grantTimingText(grant.createdAtMs))")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .textSelection(.enabled)
@@ -471,11 +766,11 @@ private struct ProjectHomeRow: View {
                             ProgressView()
                                 .controlSize(.small)
                         }
-                        Button("Approve") {
+                        Button("批准") {
                             onApprovePendingGrant(grant)
                         }
                         .disabled(inFlight || !appModel.hubInteractive)
-                        Button("Deny") {
+                        Button("拒绝") {
                             onDenyPendingGrant(grant)
                         }
                         .disabled(inFlight || !appModel.hubInteractive)
@@ -615,14 +910,88 @@ private struct ProjectHomeRow: View {
     }
 
     @ViewBuilder
-    private func row(title: String, value: String?, placeholder: String) -> some View {
+    private func row(
+        title: String,
+        value: String?,
+        placeholder: String,
+        action: (() -> Void)? = nil,
+        help: String? = nil,
+        tone: HomeSummaryTone? = nil
+    ) -> some View {
         let trimmed = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            Text("\(title)：\(placeholder)")
-                .foregroundStyle(.secondary)
+        let textLine = trimmed.isEmpty ? "\(title)：\(placeholder)" : "\(title)：\(trimmed)"
+        let isPlaceholder = trimmed.isEmpty
+
+        if let action {
+            Button(action: action) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(textLine)
+                        .foregroundStyle(rowTextColor(isPlaceholder: isPlaceholder, tone: tone))
+                    Spacer(minLength: 6)
+                    if let tone {
+                        Image(systemName: tone.iconName)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(tone.color)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(help ?? "Open the related project setting")
         } else {
-            Text("\(title)：\(trimmed)")
+            if isPlaceholder {
+                Text(textLine)
+                    .foregroundStyle(.secondary)
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(textLine)
+                        .foregroundStyle(rowTextColor(isPlaceholder: false, tone: tone))
+                    if let tone {
+                        Image(systemName: tone.iconName)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(tone.color)
+                    }
+                }
+            }
         }
+    }
+
+    private func rowTextColor(isPlaceholder: Bool, tone: HomeSummaryTone?) -> Color {
+        if isPlaceholder { return .secondary }
+        return tone?.color ?? .primary
+    }
+
+    private func openGovernanceSettings(_ destination: XTProjectGovernanceDestination) {
+        appModel.requestProjectSettingsFocus(
+            projectId: project.projectId,
+            destination: destination
+        )
+    }
+
+    private func governanceStatusTone(_ presentation: ProjectGovernancePresentation) -> HomeSummaryTone? {
+        if !presentation.invalidMessages.isEmpty {
+            return .invalid
+        }
+        if !presentation.warningMessages.isEmpty {
+            return .warning
+        }
+        if presentation.governanceSourceHint != nil {
+            return .info
+        }
+        return nil
+    }
+
+    private func governanceClampTone(_ presentation: ProjectGovernancePresentation) -> HomeSummaryTone {
+        if !presentation.invalidMessages.isEmpty {
+            return .invalid
+        }
+        if !presentation.warningMessages.isEmpty {
+            return .warning
+        }
+        return .info
     }
 
     private func pendingSummary(_ calls: [ToolCall]) -> String {
@@ -693,29 +1062,54 @@ private struct ProjectHomeRow: View {
         return out
     }
 
+    private enum HomeSummaryTone {
+        case info
+        case warning
+        case invalid
+
+        var color: Color {
+            switch self {
+            case .info:
+                return .blue
+            case .warning:
+                return .orange
+            case .invalid:
+                return .red
+            }
+        }
+
+        var iconName: String {
+            switch self {
+            case .info:
+                return "lock.shield"
+            case .warning:
+                return "exclamationmark.triangle.fill"
+            case .invalid:
+                return "xmark.octagon.fill"
+            }
+        }
+    }
+
     private func governanceAxisSummary(
-        _ presentation: ProjectGovernancePresentation,
-        switchboard: AXProjectAutonomySwitchboardPresentation
+        _ presentation: ProjectGovernancePresentation
     ) -> String {
-        let base = "\(presentation.effectiveExecutionLabel) / \(presentation.effectiveSupervisorLabel) · \(presentation.reviewPolicyMode.displayName)"
-        guard switchboard.hasConfiguredEffectiveDrift else { return base }
-        return "\(base) · \(switchboard.configuredProfile.displayName) -> \(switchboard.effectiveProfile.displayName)"
+        "\(presentation.effectiveExecutionLabel) / \(presentation.effectiveSupervisorLabel) · \(presentation.reviewPolicyMode.displayName)"
     }
 
     private func governedSummary(
-        _ governed: AXProjectGovernedAuthorityPresentation,
-        switchboard: AXProjectAutonomySwitchboardPresentation
+        _ governed: AXProjectGovernedAuthorityPresentation
     ) -> String {
         var parts: [String] = []
-        parts.append(switchboard.effectiveDeviceAuthorityPosture.displayName)
-        parts.append(switchboard.effectiveGrantPosture.displayName)
+        if governed.deviceAuthorityConfigured {
+            parts.append("设备绑定")
+        }
         if governed.governedReadableRootCount > 0 {
             parts.append("read+\(governed.governedReadableRootCount)")
         }
         if governed.localAutoApproveConfigured {
             parts.append("local auto")
         }
-        return parts.joined(separator: " · ")
+        return parts.isEmpty ? "人工审批" : parts.joined(separator: " · ")
     }
 
     private static let timeFormatter: DateFormatter = {
@@ -921,10 +1315,10 @@ struct GlobalHomePresentation: Codable, Equatable {
         if !input.hubInteractive {
             primaryStatus = StatusExplanation(
                 state: .blockedWaitingUpstream,
-                headline: "Hub 未连接，先 Pair Hub 再开始大任务",
-                whatHappened: "Global Home 已切成产品入口，但当前缺少 Hub truth source，因此不会把入口伪装成可直接放行。",
-                whyItHappened: "冻结契约要求 require-real、grant 与 secret 边界继续 fail-closed；未连 Hub 时不得隐藏阻塞原因。",
-                userAction: "点击“Pair Hub”，完成连接后回到“开始大任务”进入 one-shot 主链。",
+                headline: "Hub 未连接，先 Pair Hub 再进入项目总览（Project watchlist）",
+                whatHappened: "Home 已经是正式入口，但还没连上 Hub，所以不会把状态装成可直接开始。",
+                whyItHappened: "未连 Hub 时，授权、远端密钥和真实连接状态都必须直接说明，不能被首页入口遮掉。",
+                userAction: "点击“Pair Hub”，完成连接后回首页（Home）查看 project 状态；大任务从 Supervisor 窗口发起。",
                 machineStatusRef: machineStatusRef,
                 hardLine: "remote_secret_blocked / require-real remain fail-closed",
                 highlights: [
@@ -935,9 +1329,9 @@ struct GlobalHomePresentation: Codable, Equatable {
         } else if topDenyCode == "permission_denied" {
             primaryStatus = StatusExplanation(
                 state: .permissionDenied,
-                headline: "runtime deny 检出 permission_denied，首页保持 fail-closed",
-                whatHappened: "AI-2 runtime launch decision 返回 permission_denied；Global Home 不会继续把当前状态渲染为可直接开始。",
-                whyItHappened: "真实 runtime 合同要求权限拒绝必须在入口显式可见，而不是被 project list 掩盖。",
+                headline: "检测到 permission_denied，首页继续保持 fail-closed",
+                whatHappened: "运行时返回了 permission_denied，所以 Home 不会继续把当前状态显示成可直接开始。",
+                whyItHappened: "权限拒绝必须在主入口直接可见，避免被项目列表和普通状态提示掩盖。",
                 userAction: directedResumeSummary ?? "先修复权限链路，再重新发起复杂任务或恢复当前任务。",
                 machineStatusRef: machineStatusRef,
                 hardLine: "permission_denied remains explicit",
@@ -950,9 +1344,9 @@ struct GlobalHomePresentation: Codable, Equatable {
             primaryStatus = StatusExplanation(
                 state: .grantRequired,
                 headline: "存在授权待处理，主入口保持 fail-closed",
-                whatHappened: "首页检测到高风险链路需要人工授权，因此不会把当前状态渲染成已完成或可自动继续。",
-                whyItHappened: "冻结契约要求 grant_required 明示可见，未授权前不得越过 require-real、远端 secret 或副作用边界。",
-                userAction: directedResumeSummary ?? "先处理授权，再返回“开始大任务”或“继续当前项目”继续推进。",
+                whatHappened: "系统检测到这条链路还需要人工授权，所以不会显示成已完成或可自动继续。",
+                whyItHappened: "授权没完成前，首页要明确挡住高风险动作，而不是默认放行。",
+                userAction: directedResumeSummary ?? "先处理授权，再返回项目或进入 Supervisor 窗口继续推进。",
                 machineStatusRef: machineStatusRef,
                 hardLine: "grant_fail_closed must remain visible",
                 highlights: [
@@ -964,10 +1358,10 @@ struct GlobalHomePresentation: Codable, Equatable {
             let blockedItems = input.scopeFreezeBlockedExpansionItems.joined(separator: ",")
             primaryStatus = StatusExplanation(
                 state: .blockedWaitingUpstream,
-                headline: "validated scope freeze 拒绝超范围请求",
-                whatHappened: "Global Home 已读取 delivery scope freeze 的 no-go / blocked expansion 状态，因此入口不会继续暗示当前请求可放行。",
-                whyItHappened: "validated-mainline-only 是当前唯一允许范围；scope expansion 必须留在 fail-closed。",
-                userAction: input.scopeFreezeNextActions.first ?? "drop_scope_expansion",
+                headline: "已验证范围拒绝超范围请求",
+                whatHappened: "当前请求已经落在 no-go / blocked expansion，所以首页不会再暗示这条路可以放行。",
+                whyItHappened: "现在只允许已验证主链，超范围请求必须继续挡住。",
+                userAction: input.scopeFreezeNextActions.first ?? "先收回 scope expansion",
                 machineStatusRef: machineStatusRef,
                 hardLine: "scope_not_validated must remain visible",
                 highlights: [
@@ -979,9 +1373,9 @@ struct GlobalHomePresentation: Codable, Equatable {
             primaryStatus = StatusExplanation(
                 state: .diagnosticRequired,
                 headline: "replay regression 尚未通过，入口保持 explainable hold",
-                whatHappened: "AI-2 replay harness 当前未 pass，说明 fail-closed 回归还需要复核。",
-                whyItHappened: "入口不能在 replay 未绿时暗示对外 release 语义已经稳定。",
-                userAction: input.replayEvidenceRefs.first ?? "review replay regression evidence",
+                whatHappened: "回放回归还没通过，说明之前的阻断场景还需要复核。",
+                whyItHappened: "回放没变绿之前，首页不能暗示当前发布口径已经稳定。",
+                userAction: input.replayEvidenceRefs.first ?? "先查看 replay 证据",
                 machineStatusRef: machineStatusRef,
                 hardLine: "replay fail-closed remains visible",
                 highlights: [
@@ -993,8 +1387,8 @@ struct GlobalHomePresentation: Codable, Equatable {
             primaryStatus = StatusExplanation(
                 state: .inProgress,
                 headline: "已有 \(input.runningProjectCount) 个复杂任务在推进",
-                whatHappened: "Global Home 检测到当前存在运行中的复杂任务，并附带 AI-2 runtime contract 摘要。",
-                whyItHappened: "AI-3 现已直接消费 runtime policy / freeze / replay / baton，不再只停留在 mock state mapping。",
+                whatHappened: "当前有复杂任务正在推进，首页会把关键运行状态一起摘要出来。",
+                whyItHappened: "这样你在 Home 也能先看进度、阻塞和下一步，而不用先切进聊天流水。",
                 userAction: directedResumeSummary ?? "点击“继续当前项目”或进入 Supervisor 查看 planner explain / blocker / next action。",
                 machineStatusRef: machineStatusRef,
                 hardLine: "validated-mainline-only; no_unverified_claims",
@@ -1004,22 +1398,22 @@ struct GlobalHomePresentation: Codable, Equatable {
                 ].filter { !$0.isEmpty }
             )
         } else {
-            let headline = input.projectCount == 0 ? "开始一个复杂任务，直接进入 validated mainline" : "主入口已就绪，可开始新的复杂任务"
+            let headline = input.projectCount == 0 ? "项目总览（Project watchlist）已就绪，等待第一个项目" : "项目总览（Project watchlist）已同步，可继续当前项目"
             let nextAction = directedResumeSummary
                 ?? (input.projectCount == 0
-                    ? "点击“开始大任务”，让 Supervisor 从 one-shot intake 开始推进。"
-                    : "继续当前项目，或直接点击“开始大任务”发起下一条复杂任务主链。")
+                    ? "先创建一个 project；如需发起大任务，请从 Supervisor 窗口进入。"
+                    : "继续当前项目；需要新的大任务时，从 Supervisor 窗口发起。")
             primaryStatus = StatusExplanation(
                 state: .ready,
                 headline: headline,
-                whatHappened: "首页已把 Global Home、scope badge 与主 CTA 冻结为产品入口，并接入 runtime contracts 的摘要状态。",
-                whyItHappened: "XT-W3-27-C 要求首页先清楚表达 what happened / why / next action，并把复杂任务入口前置。",
+                whatHappened: "Home 现在只负责项目汇总、继续当前项目和诊断入口，主入口已经收口。",
+                whyItHappened: "新的复杂任务统一从 Supervisor 发起，Home 不再承担大任务入口。",
                 userAction: nextAction,
                 machineStatusRef: machineStatusRef,
                 hardLine: "validated-mainline-only remains the only external scope",
                 highlights: [
                     contractSummary,
-                    "primary_cta=开始大任务"
+                    "primary_cta=resume_project"
                 ].filter { !$0.isEmpty }
             )
         }
@@ -1035,12 +1429,12 @@ struct GlobalHomePresentation: Codable, Equatable {
 
         let releaseStatus = StatusExplanation(
             state: releaseState,
-            headline: "Validated scope 已冻结为 \(validatedScope.joined(separator: " → "))",
-            whatHappened: "首页显式展示“Validated mainline only”，并把 scope freeze / replay 摘要纳入 release 说明。",
-            whyItHappened: "R1 UI 产品化只消费 validated mainline，不重新把未纳入主链的功能拉回本轮范围。",
+            headline: "已验证主链当前冻结为 \(validatedScope.joined(separator: " → "))",
+            whatHappened: "首页会明确显示“Validated mainline only”，并把范围与 replay 摘要一起说明。",
+            whyItHappened: "这里现在只围绕已验证主链对外表达，不把未验证功能重新拉回本轮。",
             userAction: input.scopeFreezeNextActions.first
                 ?? input.replayEvidenceRefs.first
-                ?? "如需新 surface，请另起切片；当前只围绕 validated mainline 继续验证与交付。",
+                ?? "如需新 surface，请另起切片；当前只围绕已验证主链继续验证与交付。",
             machineStatusRef: "current_release_scope=\(badge.currentReleaseScope); validated_paths=\(validatedScope.joined(separator: ",")); decision=\(freezeDecision); allowed_public_statements=\(input.allowedPublicStatementCount); replay=\(replayStatus)",
             hardLine: "scope_not_validated must remain visible",
             highlights: [
@@ -1050,28 +1444,28 @@ struct GlobalHomePresentation: Codable, Equatable {
             ] + input.scopeFreezeBlockedExpansionItems.prefix(3).map { "blocked_item=\($0)" }
         )
 
-        let actions = [
-            PrimaryActionRailAction(
-                id: "start_big_task",
-                title: "开始大任务",
-                subtitle: directedResumeSummary ?? "进入 one-shot intake，并把复杂任务送进 validated mainline",
-                systemImage: "play.circle.fill",
-                style: .primary
-            ),
-            PrimaryActionRailAction(
-                id: "resume_project",
-                title: input.highlightedProjectName.map { "继续 \($0)" } ?? "继续当前项目",
-                subtitle: input.projectCount > 0 ? "回到最近项目，查看 blocker / next action" : "暂无项目时回到主入口，不扩 scope",
-                systemImage: "arrow.clockwise.circle",
-                style: .secondary
-            ),
-            PrimaryActionRailAction(
-                id: "pair_hub",
-                title: "Pair Hub",
-                subtitle: input.grantGateMode.map { "连接 Hub truth source；grant gate=\($0)" } ?? "连接 Hub truth source、授权链与 require-real 主入口",
-                systemImage: "cable.connector",
-                style: .secondary
-            ),
+        var actions: [PrimaryActionRailAction] = []
+        if input.projectCount > 0 {
+            actions.append(
+                PrimaryActionRailAction(
+                    id: "resume_project",
+                    title: input.highlightedProjectName.map { "继续 \($0)" } ?? "继续当前项目",
+                    subtitle: "回到最近项目，查看 blocker / next action",
+                    systemImage: "arrow.clockwise.circle",
+                    style: .primary
+                )
+            )
+        }
+        actions.append(
+                PrimaryActionRailAction(
+                    id: "pair_hub",
+                    title: "连接 Hub（Pair Hub）",
+                    subtitle: input.grantGateMode.map { "连接 Hub 真正数据源；grant gate=\($0)" } ?? "连接 Hub 真正数据源，打通授权链和主入口",
+                    systemImage: "cable.connector",
+                    style: .secondary
+            )
+        )
+        actions.append(
             PrimaryActionRailAction(
                 id: "model_status",
                 title: "模型状态",
@@ -1079,7 +1473,7 @@ struct GlobalHomePresentation: Codable, Equatable {
                 systemImage: "waveform.path.ecg",
                 style: .diagnostic
             )
-        ]
+        )
 
         return GlobalHomePresentation(
             informationArchitecture: architecture,

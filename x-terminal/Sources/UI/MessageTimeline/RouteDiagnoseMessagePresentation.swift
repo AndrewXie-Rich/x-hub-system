@@ -9,6 +9,22 @@ enum RouteDiagnoseMessagePresentation {
         case openHubConnectionLog
     }
 
+    enum RailFeedbackTrigger {
+        case inlineModelPickerOpened
+        case repairSurfaceOpened(RepairAction)
+        case modelSettingsOpened
+        case diagnosticsOpened
+        case connectivityRepairFinished(
+            action: RepairAction,
+            report: HubRemoteConnectReport?
+        )
+    }
+
+    struct RailFeedbackPlan: Equatable {
+        var notice: XTSettingsChangeNotice?
+        var shouldHighlight: Bool
+    }
+
     static let coderHeading = "Project route diagnose: coder"
 
     static func matches(_ message: AXChatMessage) -> Bool {
@@ -193,6 +209,131 @@ enum RouteDiagnoseMessagePresentation {
         ].compactMap { $0 }
         let detail = parts.isEmpty ? "连接修复没有成功，先看 XT Diagnostics 里的最新 route event 和连接状态。" : parts.joined(separator: "；")
         return XTSectionFocusContext(title: title, detail: detail)
+    }
+
+    static func connectivityRepairNotice(
+        for action: RepairAction,
+        report: HubRemoteConnectReport?
+    ) -> XTSettingsChangeNotice? {
+        switch action {
+        case .connectHubAndDiagnose, .reconnectHubAndDiagnose:
+            break
+        case .openChooseModel, .openHubRecovery, .openHubConnectionLog:
+            return nil
+        }
+
+        guard let report else {
+            let title: String
+            switch action {
+            case .connectHubAndDiagnose:
+                title = "连接流程已结束"
+            case .reconnectHubAndDiagnose:
+                title = "重连流程已结束"
+            case .openChooseModel, .openHubRecovery, .openHubConnectionLog:
+                title = "修复流程已结束"
+            }
+
+            return XTSettingsChangeNotice(
+                title: title,
+                detail: "没有拿到额外的 Hub 修复报告，但已重新对当前项目跑了一次路由诊断。"
+            )
+        }
+
+        if report.ok {
+            let title: String
+            switch action {
+            case .connectHubAndDiagnose:
+                title = "Hub 已连接并已重诊断"
+            case .reconnectHubAndDiagnose:
+                title = "Hub 已重连并已重诊断"
+            case .openChooseModel, .openHubRecovery, .openHubConnectionLog:
+                title = "修复已完成"
+            }
+
+            let summary = report.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+            let detail = summary.isEmpty
+                ? "连接修复已完成，并重新对当前项目跑了一次路由诊断。"
+                : "连接修复已完成，并重新对当前项目跑了一次路由诊断。\(summary)"
+            return XTSettingsChangeNotice(title: title, detail: detail)
+        }
+
+        let title: String
+        switch action {
+        case .connectHubAndDiagnose:
+            title = "连接修复未完成"
+        case .reconnectHubAndDiagnose:
+            title = "重连修复未完成"
+        case .openChooseModel, .openHubRecovery, .openHubConnectionLog:
+            title = "修复未完成"
+        }
+
+        let summary = report.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let detail = summary.isEmpty
+            ? "我已自动把焦点切到 XT Diagnostics，先看最新 route event、连通性和失败原因。"
+            : "我已自动把焦点切到 XT Diagnostics。\(summary)"
+        return XTSettingsChangeNotice(title: title, detail: detail)
+    }
+
+    static func actionOpenedNotice(
+        for action: RepairAction
+    ) -> XTSettingsChangeNotice? {
+        switch action {
+        case .openChooseModel:
+            return XTSettingsChangeNotice(
+                title: "已打开 Choose Model",
+                detail: "先确认目标远端是否已经 loaded；如果只是想继续推进，先切到一个已加载候选最稳。"
+            )
+        case .openHubRecovery:
+            return XTSettingsChangeNotice(
+                title: "已打开 Hub Recovery",
+                detail: "先看失败码、恢复链路和 paid route 相关提示，再决定是不是继续追 Hub 端降级原因。"
+            )
+        case .openHubConnectionLog:
+            return XTSettingsChangeNotice(
+                title: "已打开 Hub 日志",
+                detail: "先核对最近连接状态、远端请求是否被降到本地，以及对应的失败码或恢复线索。"
+            )
+        case .connectHubAndDiagnose, .reconnectHubAndDiagnose:
+            return nil
+        }
+    }
+
+    static func modelSettingsOpenedNotice() -> XTSettingsChangeNotice {
+        XTSettingsChangeNotice(
+            title: "已打开 coder 模型设置",
+            detail: "先确认当前项目 override 和全局默认是不是一致；如果目标模型没 loaded，运行时仍可能回退到本地。"
+        )
+    }
+
+    static func diagnosticsOpenedNotice() -> XTSettingsChangeNotice {
+        XTSettingsChangeNotice(
+            title: "已打开 XT Diagnostics",
+            detail: "先核对最近 route event、连通性、模型可见性和失败原因，再决定是改模型还是修 Hub。"
+        )
+    }
+
+    static func railFeedbackPlan(
+        for trigger: RailFeedbackTrigger
+    ) -> RailFeedbackPlan {
+        let notice: XTSettingsChangeNotice? = {
+            switch trigger {
+            case .inlineModelPickerOpened:
+                return nil
+            case .repairSurfaceOpened(let action):
+                return actionOpenedNotice(for: action)
+            case .modelSettingsOpened:
+                return modelSettingsOpenedNotice()
+            case .diagnosticsOpened:
+                return diagnosticsOpenedNotice()
+            case .connectivityRepairFinished(let action, let report):
+                return connectivityRepairNotice(for: action, report: report)
+            }
+        }()
+
+        return RailFeedbackPlan(
+            notice: notice,
+            shouldHighlight: notice != nil
+        )
     }
 
     static func displayLabel(

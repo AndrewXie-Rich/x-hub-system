@@ -42,8 +42,18 @@ final class HubModelManager: ObservableObject {
     func setModel(for role: AXRole, modelId: String?) {
         guard let appModel = appModel else { return }
         let settings = appModel.settingsStore.settings
+        let currentAssignment = settings.assignment(for: role)
+        guard currentAssignment.providerKind != .hub
+                || normalizedModelId(currentAssignment.model) != normalizedModelId(modelId) else {
+            return
+        }
         let newSettings = settings.setting(role: role, providerKind: ProviderKind.hub, model: modelId)
         appModel.settingsStore.settings = newSettings
         appModel.settingsStore.save()
+        objectWillChange.send()
+    }
+
+    private func normalizedModelId(_ raw: String?) -> String {
+        (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 }

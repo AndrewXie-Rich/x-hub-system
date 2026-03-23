@@ -39,7 +39,11 @@ final class HubLLMProvider: LLMProvider {
                                     actualModelId: ev.actualModelIdFromMetadata,
                                     runtimeProvider: ev.runtimeProviderFromMetadata,
                                     executionPath: ev.executionPathFromMetadata,
-                                    fallbackReasonCode: ev.fallbackReasonCodeFromMetadata
+                                    fallbackReasonCode: ev.fallbackReasonCodeFromMetadata,
+                                    remoteRetryAttempted: ev.remoteRetryAttemptedFromMetadata,
+                                    remoteRetryFromModelId: ev.remoteRetryFromModelIdFromMetadata,
+                                    remoteRetryToModelId: ev.remoteRetryToModelIdFromMetadata,
+                                    remoteRetryReasonCode: ev.remoteRetryReasonCodeFromMetadata
                                 )
                             }
                         }

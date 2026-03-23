@@ -114,7 +114,7 @@ enum AXCurationSuggestionStore {
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? enc.encode(list) else { return }
-        try? data.write(to: suggestionsURL(for: ctx), options: .atomic)
+        try? XTStoreWriteSupport.writeSnapshotData(data, to: suggestionsURL(for: ctx))
     }
 
     private static func shouldInsert(_ s: AXCurationSuggestion, existing: [AXCurationSuggestion]) -> Bool {
@@ -274,7 +274,7 @@ enum AXVaultCurator {
 ## Refs
 \(s.refs.map { "- \($0)" }.joined(separator: "\n"))
 """
-            try? body.data(using: .utf8)?.write(to: vaultMD, options: .atomic)
+            try? XTStoreWriteSupport.writeUTF8Text(body, to: vaultMD)
         }
 
         list[idx].status = "applied"

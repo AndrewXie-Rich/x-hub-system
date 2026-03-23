@@ -99,6 +99,35 @@ struct XTModelCatalogTests {
     }
 
     @Test
+    func hubModelAdapterMarksVoiceModelsAsSupervisorVoice() {
+        let hubModel = HubModel(
+            id: "hexgrad/kokoro-82m",
+            name: "Kokoro 82M",
+            backend: "transformers",
+            quant: "bf16",
+            contextLength: 8_192,
+            maxContextLength: 8_192,
+            paramsB: 0.08,
+            roles: nil,
+            state: .loaded,
+            memoryBytes: 2_000_000_000,
+            tokensPerSec: nil,
+            modelPath: "/models/kokoro-82m",
+            note: nil,
+            modelFormat: "hf_transformers",
+            defaultLoadProfile: HubLocalModelLoadProfile(contextLength: 2_048),
+            taskKinds: ["text_to_speech"],
+            inputModalities: ["text"],
+            outputModalities: ["audio"]
+        )
+
+        let presentation = XTModelCatalog.modelInfo(for: hubModel)
+
+        #expect(presentation.suitableFor.contains("Supervisor 语音"))
+        #expect(presentation.suitableFor.contains("语音合成"))
+    }
+
+    @Test
     func hubModelDecodesSnakeCaseCapabilityFields() throws {
         let json = """
         {

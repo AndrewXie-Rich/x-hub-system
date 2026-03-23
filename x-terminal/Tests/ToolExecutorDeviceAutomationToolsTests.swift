@@ -108,9 +108,9 @@ private final class DeviceAutomationLockedCounter: @unchecked Sendable {
 
 private func armTrustedOpenClawMode(
     _ config: AXProjectConfig,
-    at timestamp: TimeInterval = 1_773_400_500
+    at timestamp: TimeInterval = Date().timeIntervalSince1970
 ) -> AXProjectConfig {
-    config.settingAutonomyPolicy(
+    config.settingRuntimeSurfacePolicy(
         mode: .trustedOpenClawMode,
         updatedAt: Date(timeIntervalSince1970: timestamp)
     )
@@ -1244,7 +1244,7 @@ struct ToolExecutorDeviceAutomationToolsTests {
                 deviceToolGroups: ["device.browser.control"],
                 workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
             )
-            cfg = cfg.settingAutonomyPolicy(
+            cfg = cfg.settingRuntimeSurfacePolicy(
                 mode: .guided,
                 updatedAt: Date(timeIntervalSince1970: 1_773_350_000)
             )
@@ -1362,7 +1362,7 @@ struct ToolExecutorDeviceAutomationToolsTests {
                 deviceToolGroups: ["device.browser.control"],
                 workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
             )
-            cfg = cfg.settingAutonomyPolicy(
+            cfg = cfg.settingRuntimeSurfacePolicy(
                 mode: .trustedOpenClawMode,
                 updatedAt: Date(timeIntervalSince1970: 1_773_400_000)
             )
@@ -1409,6 +1409,10 @@ struct ToolExecutorDeviceAutomationToolsTests {
             let snapshotSummary = try #require(toolSummaryObject(snapshotted.output))
             #expect(jsonString(snapshotSummary["browser_runtime_session_id"]) == sessionID)
             #expect(jsonString(snapshotSummary["browser_runtime_current_url"]) == secondURL)
+            let latestEvidence = try #require(XTUIReviewAgentEvidenceStore.loadLatestBrowserPage(for: ctx))
+            let expectedEvidenceRef = XTUIReviewAgentEvidenceStore.reviewRef(reviewID: latestEvidence.reviewID)
+            #expect(jsonString(snapshotSummary["ui_review_agent_evidence_ref"]) == expectedEvidenceRef)
+            #expect(jsonString(snapshotSummary["browser_runtime_ui_review_agent_evidence_ref"]) == expectedEvidenceRef)
             #expect(probe.count() == 2)
             #expect(probe.last() == secondURL)
 
@@ -2014,7 +2018,8 @@ struct ToolExecutorDeviceAutomationToolsTests {
                     useToken: nil,
                     itemId: payload.itemId,
                     expiresAtMs: nil,
-                    reasonCode: "secret_vault_item_not_found"
+                    reasonCode: "secret_vault_item_not_found",
+                    detail: "secret vault item missing in local fixture"
                 )
             }
             defer {
@@ -2067,6 +2072,7 @@ struct ToolExecutorDeviceAutomationToolsTests {
             let summary = try #require(toolSummaryObject(typed.output))
             #expect(jsonString(summary["deny_code"]) == XTDeviceAutomationRejectCode.browserSecretBeginUseFailed.rawValue)
             #expect(jsonString(summary["secret_reason_code"]) == "secret_vault_item_not_found")
+            #expect(jsonString(summary["secret_detail"]) == "secret vault item missing in local fixture")
             #expect(jsonString(summary["browser_runtime_driver_state"]) == "secret_vault_resolution_failed")
             #expect(toolBody(typed.output) == "browser_secret_begin_use_failed")
             #expect(probe.count() == 1)

@@ -221,6 +221,7 @@ enum ToolExecutor {
         var body: String
         var source: String?
         var reasonCode: String?
+        var resolutionDetail: String?
         var itemId: String?
         var leaseId: String?
     }
@@ -298,7 +299,7 @@ enum ToolExecutor {
     static func execute(call: ToolCall, projectRoot: URL, stream: (@MainActor @Sendable (String) -> Void)? = nil) async throws -> ToolResult {
         let ctx = AXProjectContext(root: projectRoot)
         let config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: projectRoot)
-        let autonomyState = await xtResolveProjectAutonomyPolicy(
+        let runtimeSurfaceState = await xtResolveProjectRuntimeSurfacePolicy(
             projectRoot: projectRoot,
             config: config
         )
@@ -307,7 +308,7 @@ enum ToolExecutor {
                 call: call,
                 projectRoot: projectRoot,
                 config: config,
-                effectiveAutonomy: autonomyState.effectivePolicy
+                effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
             )
             if !runtimePolicyDecision.allowed {
                 return deniedRuntimePolicyResult(
@@ -315,7 +316,7 @@ enum ToolExecutor {
                     projectRoot: projectRoot,
                     config: config,
                     decision: runtimePolicyDecision,
-                    effectiveAutonomy: autonomyState.effectivePolicy
+                    effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
                 )
             }
         }
@@ -340,7 +341,7 @@ enum ToolExecutor {
             let allowedRoots = governedReadableRoots(
                 projectRoot: projectRoot,
                 config: config,
-                effectiveAutonomy: autonomyState.effectivePolicy
+                effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
             )
             do {
                 let s = try FileTool.readText(
@@ -512,7 +513,7 @@ enum ToolExecutor {
             let allowedRoots = governedReadableRoots(
                 projectRoot: projectRoot,
                 config: config,
-                effectiveAutonomy: autonomyState.effectivePolicy
+                effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
             )
             do {
                 let items = try FileTool.listDir(
@@ -554,7 +555,7 @@ enum ToolExecutor {
             let allowedRoots = governedReadableRoots(
                 projectRoot: projectRoot,
                 config: config,
-                effectiveAutonomy: autonomyState.effectivePolicy
+                effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
             )
             do {
                 let lines = try FileTool.search(
@@ -1014,6 +1015,9 @@ Please switch to Terminal mode (Chat/Terminal toggle) and run it there:
         case .summarize:
             return try await executeSummarize(call: call, projectRoot: projectRoot)
 
+        case .supervisorVoicePlayback:
+            return await executeSupervisorVoicePlayback(call: call)
+
         case .need_network:
             let seconds = max(60, Int(optDoubleArg(call, "seconds") ?? 900))
             let reason = optStrArg(call, "reason")
@@ -1021,6 +1025,8 @@ Please switch to Terminal mode (Chat/Terminal toggle) and run it there:
             let suffix = reasonText.isEmpty ? "" : " reason=\(reasonText)"
             let access = await HubIPCClient.requestNetworkAccess(root: projectRoot, seconds: seconds, reason: reason)
             let route = access.source.lowercased()
+            let accessDetail = (access.detail ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let accessDetailSuffix = accessDetail.isEmpty ? "" : " detail=\(accessDetail)"
             var activeGrantId: String?
             switch access.state {
             case .enabled, .autoApproved:
@@ -1079,19 +1085,30 @@ Please switch to Terminal mode (Chat/Terminal toggle) and run it there:
 
             case .denied:
                 let why = HubIPCClient.normalizedReasonCode(access.reasonCode, fallback: "denied") ?? "denied"
-                let out = why == "denied" ? "network_denied" : "network_denied (\(why))"
+                let out = why == "denied"
+                    ? "network_denied\(accessDetailSuffix)"
+                    : "network_denied (\(why))\(accessDetailSuffix)"
                 return ToolResult(id: call.id, tool: call.tool, ok: false, output: out)
 
             case .failed:
                 let why = HubIPCClient.normalizedReasonCode(access.reasonCode, fallback: "grant_failed") ?? "grant_failed"
                 if why == "hub_not_connected" {
-                    return ToolResult(id: call.id, tool: call.tool, ok: false, output: "hub_not_connected (cannot request network)")
+                    return ToolResult(
+                        id: call.id,
+                        tool: call.tool,
+                        ok: false,
+                        output: "hub_not_connected (cannot request network)\(accessDetailSuffix)"
+                    )
                 }
                 if route == "grpc" {
-                    let out = why == "grant_failed" ? "network_grpc_grant_failed" : "network_grpc_grant_failed (\(why))"
+                    let out = why == "grant_failed"
+                        ? "network_grpc_grant_failed\(accessDetailSuffix)"
+                        : "network_grpc_grant_failed (\(why))\(accessDetailSuffix)"
                     return ToolResult(id: call.id, tool: call.tool, ok: false, output: out)
                 }
-                let out = why == "grant_failed" ? "network_request_failed" : "network_request_failed (\(why))"
+                let out = why == "grant_failed"
+                    ? "network_request_failed\(accessDetailSuffix)"
+                    : "network_request_failed (\(why))\(accessDetailSuffix)"
                 return ToolResult(id: call.id, tool: call.tool, ok: false, output: out)
             }
 
@@ -1793,17 +1810,17 @@ content_type=\(res.contentType)
         let entry = registry.project(for: projectId)
         let config = try? AXProjectStore.loadOrCreateConfig(for: ctx)
         let resolvedConfig = config ?? .default(forProjectRoot: projectRoot)
-        let autonomyState = await xtResolveProjectAutonomyPolicy(
+        let runtimeSurfaceState = await xtResolveProjectRuntimeSurfacePolicy(
             projectRoot: projectRoot,
             config: resolvedConfig
         )
-        let effectiveAutonomy = autonomyState.effectivePolicy
+        let effectiveRuntimeSurface = runtimeSurfaceState.effectivePolicy
         let resolvedGovernance = xtResolveProjectGovernance(
             projectRoot: projectRoot,
             config: resolvedConfig,
-            effectiveAutonomy: effectiveAutonomy
+            effectiveRuntimeSurface: effectiveRuntimeSurface
         )
-        let configuredAutonomySurfaces = resolvedConfig.configuredAutonomySurfaceLabels
+        let configuredRuntimeSurfaces = resolvedConfig.configuredRuntimeSurfaceLabels
         let effectiveTools = ToolPolicy.sortedTools(
             ToolPolicy.effectiveAllowedTools(
                 profileRaw: resolvedConfig.toolProfile,
@@ -1846,36 +1863,36 @@ content_type=\(res.contentType)
             }
         )
         let runtimeSurfaceObject: JSONValue = .object([
-            "configured_surface": .string(resolvedConfig.autonomyMode.rawValue),
-            "effective_surface": .string(effectiveAutonomy.effectiveMode.rawValue),
-            "hub_override_surface": .string(effectiveAutonomy.hubOverrideMode.rawValue),
-            "local_override_surface": .string(effectiveAutonomy.localOverrideMode.rawValue),
-            "remote_override_surface": .string(effectiveAutonomy.remoteOverrideMode.rawValue),
-            "remote_override_source": .string(effectiveAutonomy.remoteOverrideSource),
-            "remote_override_updated_at_ms": .number(Double(effectiveAutonomy.remoteOverrideUpdatedAtMs)),
-            "ttl_sec": .number(Double(resolvedConfig.autonomyTTLSeconds)),
-            "remaining_sec": .number(Double(effectiveAutonomy.remainingSeconds)),
-            "expired": .bool(effectiveAutonomy.expired),
-            "kill_switch_engaged": .bool(effectiveAutonomy.killSwitchEngaged),
-            "configured_surfaces": .array(configuredAutonomySurfaces.map(JSONValue.string)),
-            "effective_surfaces": .array(effectiveAutonomy.allowedSurfaceLabels.map(JSONValue.string)),
-            "updated_at_ms": .number(Double(resolvedConfig.autonomyUpdatedAtMs)),
+            "configured_surface": .string(resolvedConfig.runtimeSurfaceMode.rawValue),
+            "effective_surface": .string(effectiveRuntimeSurface.effectiveMode.rawValue),
+            "hub_override_surface": .string(effectiveRuntimeSurface.hubOverrideMode.rawValue),
+            "local_override_surface": .string(effectiveRuntimeSurface.localOverrideMode.rawValue),
+            "remote_override_surface": .string(effectiveRuntimeSurface.remoteOverrideMode.rawValue),
+            "remote_override_source": .string(effectiveRuntimeSurface.remoteOverrideSource),
+            "remote_override_updated_at_ms": .number(Double(effectiveRuntimeSurface.remoteOverrideUpdatedAtMs)),
+            "ttl_sec": .number(Double(resolvedConfig.runtimeSurfaceTTLSeconds)),
+            "remaining_sec": .number(Double(effectiveRuntimeSurface.remainingSeconds)),
+            "expired": .bool(effectiveRuntimeSurface.expired),
+            "kill_switch_engaged": .bool(effectiveRuntimeSurface.killSwitchEngaged),
+            "configured_surfaces": .array(configuredRuntimeSurfaces.map(JSONValue.string)),
+            "effective_surfaces": .array(effectiveRuntimeSurface.allowedSurfaceLabels.map(JSONValue.string)),
+            "updated_at_ms": .number(Double(resolvedConfig.runtimeSurfaceUpdatedAtMs)),
         ])
         let autonomyPolicyObject: JSONValue = .object([
-            "configured_mode": .string(resolvedConfig.autonomyMode.rawValue),
-            "effective_mode": .string(effectiveAutonomy.effectiveMode.rawValue),
-            "hub_override_mode": .string(effectiveAutonomy.hubOverrideMode.rawValue),
-            "local_override_mode": .string(effectiveAutonomy.localOverrideMode.rawValue),
-            "remote_override_mode": .string(effectiveAutonomy.remoteOverrideMode.rawValue),
-            "remote_override_source": .string(effectiveAutonomy.remoteOverrideSource),
-            "remote_override_updated_at_ms": .number(Double(effectiveAutonomy.remoteOverrideUpdatedAtMs)),
-            "ttl_sec": .number(Double(resolvedConfig.autonomyTTLSeconds)),
-            "remaining_sec": .number(Double(effectiveAutonomy.remainingSeconds)),
-            "expired": .bool(effectiveAutonomy.expired),
-            "kill_switch_engaged": .bool(effectiveAutonomy.killSwitchEngaged),
-            "configured_surfaces": .array(configuredAutonomySurfaces.map(JSONValue.string)),
-            "effective_surfaces": .array(effectiveAutonomy.allowedSurfaceLabels.map(JSONValue.string)),
-            "updated_at_ms": .number(Double(resolvedConfig.autonomyUpdatedAtMs)),
+            "configured_mode": .string(resolvedConfig.runtimeSurfaceMode.rawValue),
+            "effective_mode": .string(effectiveRuntimeSurface.effectiveMode.rawValue),
+            "hub_override_mode": .string(effectiveRuntimeSurface.hubOverrideMode.rawValue),
+            "local_override_mode": .string(effectiveRuntimeSurface.localOverrideMode.rawValue),
+            "remote_override_mode": .string(effectiveRuntimeSurface.remoteOverrideMode.rawValue),
+            "remote_override_source": .string(effectiveRuntimeSurface.remoteOverrideSource),
+            "remote_override_updated_at_ms": .number(Double(effectiveRuntimeSurface.remoteOverrideUpdatedAtMs)),
+            "ttl_sec": .number(Double(resolvedConfig.runtimeSurfaceTTLSeconds)),
+            "remaining_sec": .number(Double(effectiveRuntimeSurface.remainingSeconds)),
+            "expired": .bool(effectiveRuntimeSurface.expired),
+            "kill_switch_engaged": .bool(effectiveRuntimeSurface.killSwitchEngaged),
+            "configured_surfaces": .array(configuredRuntimeSurfaces.map(JSONValue.string)),
+            "effective_surfaces": .array(effectiveRuntimeSurface.allowedSurfaceLabels.map(JSONValue.string)),
+            "updated_at_ms": .number(Double(resolvedConfig.runtimeSurfaceUpdatedAtMs)),
         ])
         let governanceObject: JSONValue = .object([
             "configured_execution_tier": .string(resolvedGovernance.configuredBundle.executionTier.rawValue),
@@ -1919,6 +1936,9 @@ content_type=\(res.contentType)
             }
             if let latestUIReview {
                 object["ui_review_ref"] = .string(latestUIReview.reviewRef)
+                object["ui_review_agent_evidence_ref"] = .string(
+                    XTUIReviewAgentEvidenceStore.reviewRef(reviewID: latestUIReview.reviewID)
+                )
                 object["ui_review_verdict"] = .string(latestUIReview.verdict.rawValue)
                 object["ui_review_confidence"] = .string(latestUIReview.confidence.rawValue)
                 object["ui_review_sufficient_evidence"] = .bool(latestUIReview.sufficientEvidence)
@@ -1934,6 +1954,9 @@ content_type=\(res.contentType)
             return .object([
                 "review_id": .string(latestUIReview.reviewID),
                 "review_ref": .string(latestUIReview.reviewRef),
+                "agent_evidence_ref": .string(
+                    XTUIReviewAgentEvidenceStore.reviewRef(reviewID: latestUIReview.reviewID)
+                ),
                 "bundle_id": .string(latestUIReview.bundleID),
                 "bundle_ref": .string(latestUIReview.bundleRef),
                 "verdict": .string(latestUIReview.verdict.rawValue),
@@ -2024,22 +2047,22 @@ content_type=\(res.contentType)
             guard let latestUIReview else { return "(none)" }
             return "ref=\(latestUIReview.reviewRef) verdict=\(latestUIReview.verdict.rawValue) confidence=\(latestUIReview.confidence.rawValue) sufficient_evidence=\(latestUIReview.sufficientEvidence) summary=\(latestUIReview.summary)"
         }()
-        let configuredAutonomySurfaceText = configuredAutonomySurfaces.isEmpty ? "(none)" : configuredAutonomySurfaces.joined(separator: ",")
-        let effectiveAutonomySurfaceText = effectiveAutonomy.allowedSurfaceLabels.isEmpty ? "(none)" : effectiveAutonomy.allowedSurfaceLabels.joined(separator: ",")
+        let configuredRuntimeSurfaceText = configuredRuntimeSurfaces.isEmpty ? "(none)" : configuredRuntimeSurfaces.joined(separator: ",")
+        let effectiveRuntimeSurfaceText = effectiveRuntimeSurface.allowedSurfaceLabels.isEmpty ? "(none)" : effectiveRuntimeSurface.allowedSurfaceLabels.joined(separator: ",")
         let governanceTriggerText = resolvedGovernance.effectiveBundle.schedule.eventReviewTriggers.isEmpty
             ? "(none)"
             : resolvedGovernance.effectiveBundle.schedule.eventReviewTriggers.map(\.rawValue).joined(separator: ",")
-        let autonomyRemainingText: String = {
-            if effectiveAutonomy.killSwitchEngaged {
+        let runtimeSurfaceRemainingText: String = {
+            if effectiveRuntimeSurface.killSwitchEngaged {
                 return "kill_switch"
             }
-            if effectiveAutonomy.expired {
+            if effectiveRuntimeSurface.expired {
                 return "expired"
             }
-            if resolvedConfig.autonomyMode == .manual {
+            if resolvedConfig.runtimeSurfaceMode == .manual {
                 return "n/a"
             }
-            return String(effectiveAutonomy.remainingSeconds)
+            return String(effectiveRuntimeSurface.remainingSeconds)
         }()
         let body = """
 project=\(projectDisplayName)
@@ -2065,15 +2088,15 @@ brainstorm_review_sec=\(resolvedGovernance.effectiveBundle.schedule.brainstormRe
 event_driven_review_enabled=\(resolvedGovernance.effectiveBundle.schedule.eventDrivenReviewEnabled)
 event_review_triggers=\(governanceTriggerText)
 governance_compat_source=\(resolvedGovernance.compatSource.rawValue)
-runtime_surface_configured=\(resolvedConfig.autonomyMode.rawValue)
-runtime_surface_effective=\(effectiveAutonomy.effectiveMode.rawValue)
-runtime_surface_hub_override=\(effectiveAutonomy.hubOverrideMode.rawValue)
-runtime_surface_local_override=\(effectiveAutonomy.localOverrideMode.rawValue)
-runtime_surface_remote_override=\(effectiveAutonomy.remoteOverrideMode.rawValue)
-runtime_surface_remote_override_source=\(effectiveAutonomy.remoteOverrideSource.isEmpty ? "(none)" : effectiveAutonomy.remoteOverrideSource)
-runtime_surface_configured_surfaces=\(configuredAutonomySurfaceText)
-runtime_surface_effective_surfaces=\(effectiveAutonomySurfaceText)
-runtime_surface_ttl_remaining=\(autonomyRemainingText)
+runtime_surface_configured=\(resolvedConfig.runtimeSurfaceMode.rawValue)
+runtime_surface_effective=\(effectiveRuntimeSurface.effectiveMode.rawValue)
+runtime_surface_hub_override=\(effectiveRuntimeSurface.hubOverrideMode.rawValue)
+runtime_surface_local_override=\(effectiveRuntimeSurface.localOverrideMode.rawValue)
+runtime_surface_remote_override=\(effectiveRuntimeSurface.remoteOverrideMode.rawValue)
+runtime_surface_remote_override_source=\(effectiveRuntimeSurface.remoteOverrideSource.isEmpty ? "(none)" : effectiveRuntimeSurface.remoteOverrideSource)
+runtime_surface_configured_surfaces=\(configuredRuntimeSurfaceText)
+runtime_surface_effective_surfaces=\(effectiveRuntimeSurfaceText)
+runtime_surface_ttl_remaining=\(runtimeSurfaceRemainingText)
 browser_runtime=\(browserRuntimeText)
 ui_review=\(uiReviewText)
 session_state=\(session?.runtime?.state.rawValue ?? AXSessionRuntimeState.idle.rawValue)
@@ -2097,7 +2120,7 @@ git=\(isGitRepo ? (gitSummary.isEmpty ? "clean" : gitSummary) : "not_git_repo")
         guard decision.allowed else {
             return deniedDeviceAutomationResult(call: call, projectRoot: projectRoot, decision: decision)
         }
-        let autonomyState = await xtResolveProjectAutonomyPolicy(
+        let runtimeSurfaceState = await xtResolveProjectRuntimeSurfacePolicy(
             projectRoot: projectRoot,
             config: config
         )
@@ -2105,7 +2128,7 @@ git=\(isGitRepo ? (gitSummary.isEmpty ? "clean" : gitSummary) : "not_git_repo")
             call: call,
             projectRoot: projectRoot,
             config: config,
-            effectiveAutonomy: autonomyState.effectivePolicy
+            effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
         )
         guard runtimePolicyDecision.allowed else {
             return deniedRuntimePolicyResult(
@@ -2113,7 +2136,7 @@ git=\(isGitRepo ? (gitSummary.isEmpty ? "clean" : gitSummary) : "not_git_repo")
                 projectRoot: projectRoot,
                 config: config,
                 decision: runtimePolicyDecision,
-                effectiveAutonomy: autonomyState.effectivePolicy
+                effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
             )
         }
 
@@ -2147,7 +2170,7 @@ git=\(isGitRepo ? (gitSummary.isEmpty ? "clean" : gitSummary) : "not_git_repo")
         guard decision.allowed else {
             return deniedDeviceAutomationResult(call: call, projectRoot: projectRoot, decision: decision)
         }
-        let autonomyState = await xtResolveProjectAutonomyPolicy(
+        let runtimeSurfaceState = await xtResolveProjectRuntimeSurfacePolicy(
             projectRoot: projectRoot,
             config: config
         )
@@ -2155,7 +2178,7 @@ git=\(isGitRepo ? (gitSummary.isEmpty ? "clean" : gitSummary) : "not_git_repo")
             call: call,
             projectRoot: projectRoot,
             config: config,
-            effectiveAutonomy: autonomyState.effectivePolicy
+            effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
         )
         guard runtimePolicyDecision.allowed else {
             return deniedRuntimePolicyResult(
@@ -2163,7 +2186,7 @@ git=\(isGitRepo ? (gitSummary.isEmpty ? "clean" : gitSummary) : "not_git_repo")
                 projectRoot: projectRoot,
                 config: config,
                 decision: runtimePolicyDecision,
-                effectiveAutonomy: autonomyState.effectivePolicy
+                effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
             )
         }
 
@@ -2326,7 +2349,7 @@ git=\(isGitRepo ? (gitSummary.isEmpty ? "clean" : gitSummary) : "not_git_repo")
         guard decision.allowed else {
             return deniedDeviceAutomationResult(call: call, projectRoot: projectRoot, decision: decision)
         }
-        let autonomyState = await xtResolveProjectAutonomyPolicy(
+        let runtimeSurfaceState = await xtResolveProjectRuntimeSurfacePolicy(
             projectRoot: projectRoot,
             config: config
         )
@@ -2334,7 +2357,7 @@ git=\(isGitRepo ? (gitSummary.isEmpty ? "clean" : gitSummary) : "not_git_repo")
             call: call,
             projectRoot: projectRoot,
             config: config,
-            effectiveAutonomy: autonomyState.effectivePolicy
+            effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
         )
         guard runtimePolicyDecision.allowed else {
             return deniedRuntimePolicyResult(
@@ -2342,7 +2365,7 @@ git=\(isGitRepo ? (gitSummary.isEmpty ? "clean" : gitSummary) : "not_git_repo")
                 projectRoot: projectRoot,
                 config: config,
                 decision: runtimePolicyDecision,
-                effectiveAutonomy: autonomyState.effectivePolicy
+                effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
             )
         }
 
@@ -2607,7 +2630,7 @@ git=\(isGitRepo ? (gitSummary.isEmpty ? "clean" : gitSummary) : "not_git_repo")
                 )
             )
         }
-        let autonomyState = await xtResolveProjectAutonomyPolicy(
+        let runtimeSurfaceState = await xtResolveProjectRuntimeSurfacePolicy(
             projectRoot: projectRoot,
             config: config
         )
@@ -2615,7 +2638,7 @@ git=\(isGitRepo ? (gitSummary.isEmpty ? "clean" : gitSummary) : "not_git_repo")
             call: call,
             projectRoot: projectRoot,
             config: config,
-            effectiveAutonomy: autonomyState.effectivePolicy
+            effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
         )
         guard runtimePolicyDecision.allowed else {
             return deniedRuntimePolicyResult(
@@ -2623,7 +2646,7 @@ git=\(isGitRepo ? (gitSummary.isEmpty ? "clean" : gitSummary) : "not_git_repo")
                 projectRoot: projectRoot,
                 config: config,
                 decision: runtimePolicyDecision,
-                effectiveAutonomy: autonomyState.effectivePolicy
+                effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
             )
         }
 
@@ -2807,7 +2830,7 @@ VERIFY
         guard decision.allowed else {
             return deniedDeviceAutomationResult(call: call, projectRoot: projectRoot, decision: decision)
         }
-        let autonomyState = await xtResolveProjectAutonomyPolicy(
+        let runtimeSurfaceState = await xtResolveProjectRuntimeSurfacePolicy(
             projectRoot: projectRoot,
             config: config
         )
@@ -2815,7 +2838,7 @@ VERIFY
             call: call,
             projectRoot: projectRoot,
             config: config,
-            effectiveAutonomy: autonomyState.effectivePolicy
+            effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
         )
         guard runtimePolicyDecision.allowed else {
             return deniedRuntimePolicyResult(
@@ -2823,7 +2846,7 @@ VERIFY
                 projectRoot: projectRoot,
                 config: config,
                 decision: runtimePolicyDecision,
-                effectiveAutonomy: autonomyState.effectivePolicy
+                effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
             )
         }
 
@@ -2888,7 +2911,7 @@ VERIFY
         guard decision.allowed else {
             return deniedDeviceAutomationResult(call: call, projectRoot: projectRoot, decision: decision)
         }
-        let autonomyState = await xtResolveProjectAutonomyPolicy(
+        let runtimeSurfaceState = await xtResolveProjectRuntimeSurfacePolicy(
             projectRoot: projectRoot,
             config: config
         )
@@ -2896,7 +2919,7 @@ VERIFY
             call: call,
             projectRoot: projectRoot,
             config: config,
-            effectiveAutonomy: autonomyState.effectivePolicy
+            effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
         )
         guard runtimePolicyDecision.allowed else {
             return deniedRuntimePolicyResult(
@@ -2904,7 +2927,7 @@ VERIFY
                 projectRoot: projectRoot,
                 config: config,
                 decision: runtimePolicyDecision,
-                effectiveAutonomy: autonomyState.effectivePolicy
+                effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
             )
         }
 
@@ -2982,7 +3005,7 @@ VERIFY
         guard decision.allowed else {
             return deniedDeviceAutomationResult(call: call, projectRoot: projectRoot, decision: decision)
         }
-        let autonomyState = await xtResolveProjectAutonomyPolicy(
+        let runtimeSurfaceState = await xtResolveProjectRuntimeSurfacePolicy(
             projectRoot: projectRoot,
             config: config
         )
@@ -2990,7 +3013,7 @@ VERIFY
             call: call,
             projectRoot: projectRoot,
             config: config,
-            effectiveAutonomy: autonomyState.effectivePolicy
+            effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
         )
         guard runtimePolicyDecision.allowed else {
             return deniedRuntimePolicyResult(
@@ -2998,7 +3021,7 @@ VERIFY
                 projectRoot: projectRoot,
                 config: config,
                 decision: runtimePolicyDecision,
-                effectiveAutonomy: autonomyState.effectivePolicy
+                effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
             )
         }
 
@@ -3216,6 +3239,7 @@ url=\(url.absoluteString)
                 var uiReviewSufficientEvidence = false
                 var uiReviewObjectiveReady = false
                 var uiReviewIssueCodes: [String] = []
+                var uiReviewAgentEvidenceRef = ""
                 var uiReviewError = ""
                 do {
                     let stored = try await XTBrowserUIObservationProbe.capture(
@@ -3242,6 +3266,9 @@ url=\(url.absoluteString)
                         uiReviewSufficientEvidence = review.review.sufficientEvidence
                         uiReviewObjectiveReady = review.review.objectiveReady
                         uiReviewIssueCodes = review.review.issueCodes
+                        uiReviewAgentEvidenceRef = XTUIReviewAgentEvidenceStore.reviewRef(
+                            reviewID: review.review.reviewID
+                        )
                     } catch {
                         uiReviewError = String(error.localizedDescription)
                     }
@@ -3277,6 +3304,9 @@ url=\(url.absoluteString)
                 summary["ui_review_sufficient_evidence"] = .bool(uiReviewSufficientEvidence)
                 summary["ui_review_objective_ready"] = .bool(uiReviewObjectiveReady)
                 summary["ui_review_issue_codes"] = .array(uiReviewIssueCodes.map(JSONValue.string))
+                if !uiReviewAgentEvidenceRef.isEmpty {
+                    summary["ui_review_agent_evidence_ref"] = .string(uiReviewAgentEvidenceRef)
+                }
                 if !uiReviewError.isEmpty {
                     summary["ui_review_error"] = .string(uiReviewError)
                 }
@@ -3295,6 +3325,7 @@ url=\(url.absoluteString)
                         "sufficient_evidence": uiReviewSufficientEvidence,
                         "objective_ready": uiReviewObjectiveReady,
                         "issue_codes": uiReviewIssueCodes,
+                        "agent_evidence_ref": uiReviewAgentEvidenceRef,
                         "summary": uiReviewSummaryText,
                         "review_error": uiReviewError,
                         "created_at": now.timeIntervalSince1970,
@@ -3616,6 +3647,7 @@ url=\(url.absoluteString)
                         itemId: failure.itemId,
                         source: failure.source,
                         reasonCode: failure.reasonCode,
+                        detail: failure.resolutionDetail,
                         into: &summary
                     )
                     summary.merge(browserRuntimeSummary(session: attemptedSession, ctx: ctx), uniquingKeysWith: { _, new in new })
@@ -3663,6 +3695,7 @@ url=\(url.absoluteString)
                             itemId: resolved.itemId,
                             source: resolved.source,
                             reasonCode: failure.reasonCode,
+                            detail: nil,
                             into: &summary
                         )
                         summary.merge(browserRuntimeSummary(session: attemptedSession, ctx: ctx), uniquingKeysWith: { _, new in new })
@@ -3717,6 +3750,7 @@ url=\(url.absoluteString)
                                 itemId: resolved.itemId,
                                 source: resolved.source,
                                 reasonCode: nil,
+                                detail: nil,
                                 into: &summary
                             )
                             if let tagName = fillOutput.tagName {
@@ -3771,6 +3805,7 @@ lease_id=\(resolved.leaseId ?? "")
                                 itemId: resolved.itemId,
                                 source: resolved.source,
                                 reasonCode: nil,
+                                detail: nil,
                                 into: &summary
                             )
                             summary.merge(browserRuntimeSummary(session: attemptedSession, ctx: ctx), uniquingKeysWith: { _, new in new })
@@ -3988,6 +4023,7 @@ lease_id=\(resolved.leaseId ?? "")
         itemId: String?,
         source: String?,
         reasonCode: String?,
+        detail: String?,
         into summary: inout [String: JSONValue]
     ) {
         if let leaseId = normalized(leaseId) {
@@ -4002,6 +4038,21 @@ lease_id=\(resolved.leaseId ?? "")
         if let reasonCode = normalized(reasonCode) {
             summary["secret_reason_code"] = .string(reasonCode)
         }
+        if let detail = normalized(detail) {
+            summary["secret_detail"] = .string(detail)
+        }
+    }
+
+    private static func browserSecretFailureDetail(
+        stage: String,
+        reasonCode: String?,
+        detail: String?
+    ) -> String {
+        let normalizedReason = normalized(reasonCode) ?? "browser_secret_\(stage)_failed"
+        if let normalizedDetail = normalized(detail) {
+            return "secret vault \(stage) failed: \(normalizedReason); \(normalizedDetail)"
+        }
+        return "secret vault \(stage) failed: \(normalizedReason)"
     }
 
     private static func resolveBrowserSecretValue(
@@ -4025,10 +4076,15 @@ lease_id=\(resolved.leaseId ?? "")
             return .failure(
                 BrowserSecretResolutionFailure(
                     rejectCode: .browserSecretBeginUseFailed,
-                    detail: "secret vault begin use failed: \(begin.reasonCode ?? "browser_secret_begin_use_failed")",
+                    detail: browserSecretFailureDetail(
+                        stage: "begin_use",
+                        reasonCode: begin.reasonCode,
+                        detail: begin.detail
+                    ),
                     body: "browser_secret_begin_use_failed",
                     source: begin.source,
                     reasonCode: begin.reasonCode,
+                    resolutionDetail: begin.detail,
                     itemId: begin.itemId,
                     leaseId: begin.leaseId
                 )
@@ -4045,10 +4101,15 @@ lease_id=\(resolved.leaseId ?? "")
             return .failure(
                 BrowserSecretResolutionFailure(
                     rejectCode: .browserSecretRedeemFailed,
-                    detail: "secret vault redeem failed: \(redeem.reasonCode ?? "browser_secret_redeem_failed")",
+                    detail: browserSecretFailureDetail(
+                        stage: "redeem",
+                        reasonCode: redeem.reasonCode,
+                        detail: redeem.detail
+                    ),
                     body: "browser_secret_redeem_failed",
                     source: redeem.source,
                     reasonCode: redeem.reasonCode,
+                    resolutionDetail: redeem.detail,
                     itemId: redeem.itemId ?? begin.itemId,
                     leaseId: redeem.leaseId ?? begin.leaseId
                 )
@@ -4296,6 +4357,9 @@ return jsResult
         }
         if let latest = XTUIReviewStore.loadLatestBrowserPageReference(for: ctx) {
             summary["browser_runtime_ui_review_ref"] = .string(latest.reviewRef)
+            summary["browser_runtime_ui_review_agent_evidence_ref"] = .string(
+                XTUIReviewAgentEvidenceStore.reviewRef(reviewID: latest.reviewID)
+            )
             summary["browser_runtime_ui_review_verdict"] = .string(latest.verdict.rawValue)
             summary["browser_runtime_ui_review_confidence"] = .string(latest.confidence.rawValue)
             summary["browser_runtime_ui_review_sufficient_evidence"] = .bool(latest.sufficientEvidence)
@@ -4404,7 +4468,7 @@ return jsResult
         guard decision.allowed else {
             return deniedDeviceAutomationResult(call: call, projectRoot: projectRoot, decision: decision)
         }
-        let autonomyState = await xtResolveProjectAutonomyPolicy(
+        let runtimeSurfaceState = await xtResolveProjectRuntimeSurfacePolicy(
             projectRoot: projectRoot,
             config: config
         )
@@ -4412,7 +4476,7 @@ return jsResult
             call: call,
             projectRoot: projectRoot,
             config: config,
-            effectiveAutonomy: autonomyState.effectivePolicy
+            effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
         )
         guard runtimePolicyDecision.allowed else {
             return deniedRuntimePolicyResult(
@@ -4420,7 +4484,7 @@ return jsResult
                 projectRoot: projectRoot,
                 config: config,
                 decision: runtimePolicyDecision,
-                effectiveAutonomy: autonomyState.effectivePolicy
+                effectiveRuntimeSurface: runtimeSurfaceState.effectivePolicy
             )
         }
 
@@ -4736,6 +4800,121 @@ return jsResult
         return ToolResult(id: call.id, tool: call.tool, ok: true, output: structuredOutput(summary: summary, body: summaryBody))
     }
 
+    private static func executeSupervisorVoicePlayback(call: ToolCall) async -> ToolResult {
+        let rawAction = firstNonEmptyString(
+            optStrArg(call, "action"),
+            optStrArg(call, "mode"),
+            optStrArg(call, "operation")
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = firstNonEmptyString(
+            optStrArg(call, "text"),
+            optStrArg(call, "content"),
+            optStrArg(call, "value")
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        let action = rawAction.isEmpty ? (text.isEmpty ? "status" : "speak") : rawAction.lowercased()
+        let supportedActions = Set(["status", "preview", "speak", "stop"])
+
+        guard supportedActions.contains(action) else {
+            let summary: [String: JSONValue] = [
+                "tool": .string(call.tool.rawValue),
+                "ok": .bool(false),
+                "action": .string(action),
+                "reason": .string("unsupported_action"),
+            ]
+            return ToolResult(
+                id: call.id,
+                tool: call.tool,
+                ok: false,
+                output: structuredOutput(summary: summary, body: "unsupported_action")
+            )
+        }
+
+        if action == "speak" {
+            guard !text.isEmpty else {
+                let summary: [String: JSONValue] = [
+                    "tool": .string(call.tool.rawValue),
+                    "ok": .bool(false),
+                    "action": .string(action),
+                    "reason": .string("missing_text"),
+                ]
+                return ToolResult(
+                    id: call.id,
+                    tool: call.tool,
+                    ok: false,
+                    output: structuredOutput(summary: summary, body: "missing_text")
+                )
+            }
+            if text.count > 320 {
+                let summary: [String: JSONValue] = [
+                    "tool": .string(call.tool.rawValue),
+                    "ok": .bool(false),
+                    "action": .string(action),
+                    "reason": .string("text_too_long"),
+                    "input_chars": .number(Double(text.count)),
+                ]
+                return ToolResult(
+                    id: call.id,
+                    tool: call.tool,
+                    ok: false,
+                    output: structuredOutput(summary: summary, body: "text_too_long")
+                )
+            }
+        }
+
+        let result = await MainActor.run {
+            SupervisorManager.shared.executeSupervisorVoiceSkillAction(
+                action: action,
+                text: action == "speak" ? text : nil
+            )
+        }
+
+        var summary: [String: JSONValue] = [
+            "tool": .string(call.tool.rawValue),
+            "ok": .bool(result.ok),
+            "action": .string(action),
+            "reason": .string(result.reasonCode),
+            "requested_playback_preference": .string(result.playbackPreference),
+            "persona": .string(result.persona),
+            "voice_timbre": .string(result.timbre),
+            "speech_rate_multiplier": .number(result.speechRateMultiplier),
+            "locale_identifier": .string(result.localeIdentifier),
+            "resolved_source": .string(result.resolution.resolvedSource.rawValue),
+            "resolution_reason": .string(result.resolution.reasonCode),
+            "activity_state": .string(result.activity.state.rawValue),
+            "activity_reason": .string(result.activity.reasonCode),
+            "provider": .string(result.activity.provider),
+            "model_id": .string(result.activity.modelID),
+            "engine_name": .string(result.activity.engineName),
+            "speaker_id": .string(result.activity.speakerId),
+            "device_backend": .string(result.activity.deviceBackend),
+            "native_tts_used": result.activity.nativeTTSUsed.map(JSONValue.bool) ?? .null,
+            "fallback_mode": .string(result.activity.fallbackMode),
+            "fallback_reason_code": .string(result.activity.fallbackReasonCode),
+            "audio_format": .string(result.activity.audioFormat),
+            "voice_name": .string(result.activity.voiceName),
+            "updated_at": .number(result.activity.updatedAt),
+        ]
+        summary["preferred_hub_voice_pack_id"] = result.resolution.preferredHubVoicePackID.isEmpty
+            ? .null
+            : .string(result.resolution.preferredHubVoicePackID)
+        summary["resolved_hub_voice_pack_id"] = result.resolution.resolvedHubVoicePackID.isEmpty
+            ? .null
+            : .string(result.resolution.resolvedHubVoicePackID)
+        summary["fallback_from"] = result.resolution.fallbackFrom.map { .string($0.rawValue) } ?? .null
+        summary["actual_source"] = result.activity.actualSource.map { .string($0.rawValue) } ?? .null
+        if action == "speak" {
+            summary["input_chars"] = .number(Double(text.count))
+        }
+
+        let body = supervisorVoicePlaybackBody(action: action, inputText: action == "speak" ? text : "", result: result)
+        return ToolResult(
+            id: call.id,
+            tool: call.tool,
+            ok: result.ok,
+            output: structuredOutput(summary: summary, body: body)
+        )
+    }
+
     private static func executeWebSearch(call: ToolCall, projectRoot: URL) async throws -> ToolResult {
         let query = (optStrArg(call, "query") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else {
@@ -5007,7 +5186,8 @@ return jsResult
             source: "local_hub_index",
             updatedAtMs: snapshot.updatedAtMs,
             results: entries,
-            reasonCode: nil
+            reasonCode: nil,
+            officialChannelStatus: nil
         )
     }
 
@@ -5222,6 +5402,61 @@ return jsResult
             return "\(host)/\(tail)"
         }
         return fallback
+    }
+
+    private static func supervisorVoicePlaybackBody(
+        action: String,
+        inputText: String,
+        result: SupervisorManager.SupervisorVoiceSkillExecutionResult
+    ) -> String {
+        var lines: [String] = []
+        switch action {
+        case "status":
+            lines.append("Supervisor 语音状态已就绪。")
+        case "preview":
+            lines.append(result.ok ? "Supervisor 语音试听已完成。" : "Supervisor 语音试听未能开始。")
+        case "speak":
+            lines.append(result.ok ? "Supervisor 语音播放已完成。" : "Supervisor 语音播放未能开始。")
+            if !inputText.isEmpty {
+                lines.append("文本：\(capped(inputText, maxChars: 120))")
+            }
+        case "stop":
+            lines.append(result.ok ? "Supervisor 语音播放已停止。" : "当前没有正在播放的 Supervisor 语音。")
+        default:
+            lines.append("Supervisor 语音动作已完成。")
+        }
+
+        lines.append("请求输出：\(VoicePlaybackPreference(rawValue: result.playbackPreference)?.displayName ?? result.playbackPreference)")
+        lines.append("实际输出：\(result.resolution.resolvedSource.displayName)")
+        if !result.resolution.resolvedHubVoicePackID.isEmpty {
+            lines.append("实际语音包：\(result.resolution.resolvedHubVoicePackID)")
+        } else if !result.resolution.preferredHubVoicePackID.isEmpty {
+            lines.append("首选语音包：\(result.resolution.preferredHubVoicePackID)")
+        }
+        lines.append("最近一次播放：\(result.activity.headline)")
+        lines.append(result.activity.summaryLine)
+        lines.append("人格：\(result.persona)  音色：\(result.timbre)  语速：\(String(format: "%.2fx", result.speechRateMultiplier))")
+        lines.append("语言：\(result.localeIdentifier)")
+        lines.append("原因：\(result.reasonCode)")
+        if !result.activity.engineDisplayName.isEmpty {
+            lines.append("引擎：\(result.activity.engineDisplayName)")
+        }
+        if !result.activity.speakerId.isEmpty {
+            lines.append("说话人：\(result.activity.speakerDisplayName)")
+        }
+        if result.activity.shouldDisplayExecutionMode {
+            lines.append("执行模式：\(result.activity.executionModeDisplayName)")
+        }
+        if !result.activity.fallbackReasonCode.isEmpty {
+            lines.append("回退原因：\(result.activity.fallbackReasonDisplayName)")
+        }
+        if !result.activity.voiceName.isEmpty {
+            lines.append("声音：\(result.activity.voiceName)")
+        }
+        if !result.activity.modelID.isEmpty {
+            lines.append("模型：\(result.activity.modelID)")
+        }
+        return lines.joined(separator: "\n")
     }
 
     private static func capped(_ text: String, maxChars: Int) -> String {
@@ -5647,13 +5882,13 @@ return jsResult
     private static func governedReadableRoots(
         projectRoot: URL,
         config: AXProjectConfig,
-        effectiveAutonomy: AXProjectAutonomyEffectivePolicy
+        effectiveRuntimeSurface: AXProjectRuntimeSurfaceEffectivePolicy
     ) -> [URL] {
         var roots: [URL] = [projectRoot]
         guard xtProjectGovernedDeviceAuthorityEnabled(
             projectRoot: projectRoot,
             config: config,
-            effectiveAutonomy: effectiveAutonomy
+            effectiveRuntimeSurface: effectiveRuntimeSurface
         ) else {
             return roots
         }
@@ -5830,14 +6065,14 @@ UI step stage failed: \(stage)
         projectRoot: URL,
         config: AXProjectConfig,
         decision: XTToolRuntimePolicyDecision,
-        effectiveAutonomy: AXProjectAutonomyEffectivePolicy? = nil
+        effectiveRuntimeSurface: AXProjectRuntimeSurfaceEffectivePolicy? = nil
     ) -> ToolResult {
         let summary = xtToolRuntimePolicyDeniedSummary(
             call: call,
             projectRoot: projectRoot,
             config: config,
             decision: decision,
-            effectiveAutonomy: effectiveAutonomy
+            effectiveRuntimeSurface: effectiveRuntimeSurface
         )
         return ToolResult(
             id: call.id,

@@ -13,7 +13,7 @@ struct HubRemoteMemorySnapshotCacheTests {
             makeSnapshot(
                 ok: true,
                 source: "hub_memory_v1_grpc",
-                canonicalEntries: ["goal: governed autonomy"],
+                canonicalEntries: ["goal: governed execution tiers"],
                 workingEntries: ["next: wire UI"]
             ),
             for: key,
@@ -22,7 +22,7 @@ struct HubRemoteMemorySnapshotCacheTests {
 
         let cachedBeforeExpiry = await cache.snapshot(for: key, now: storedAt.addingTimeInterval(14.9))
         #expect(cachedBeforeExpiry?.source == "hub_memory_v1_grpc")
-        #expect(cachedBeforeExpiry?.canonicalEntries == ["goal: governed autonomy"])
+        #expect(cachedBeforeExpiry?.canonicalEntries == ["goal: governed execution tiers"])
 
         let cachedAfterExpiry = await cache.snapshot(for: key, now: storedAt.addingTimeInterval(15.1))
         #expect(cachedAfterExpiry == nil)

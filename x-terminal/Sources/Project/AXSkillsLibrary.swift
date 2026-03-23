@@ -153,7 +153,10 @@ common_ops:
 - references/files.md
 - references/ui.md
 """
-        try? skillMD.data(using: .utf8)?.write(to: skillDir.appendingPathComponent("SKILL.md"), options: .atomic)
+        try? XTStoreWriteSupport.writeUTF8Text(
+            skillMD,
+            to: skillDir.appendingPathComponent("SKILL.md")
+        )
 
         let flow = """
 # Flow
@@ -168,9 +171,18 @@ common_ops:
 # UI
 - 待补充：相关页面与交互说明
 """
-        try? flow.data(using: .utf8)?.write(to: refsDir.appendingPathComponent("flow.md"), options: .atomic)
-        try? files.data(using: .utf8)?.write(to: refsDir.appendingPathComponent("files.md"), options: .atomic)
-        try? ui.data(using: .utf8)?.write(to: refsDir.appendingPathComponent("ui.md"), options: .atomic)
+        try? XTStoreWriteSupport.writeUTF8Text(
+            flow,
+            to: refsDir.appendingPathComponent("flow.md")
+        )
+        try? XTStoreWriteSupport.writeUTF8Text(
+            files,
+            to: refsDir.appendingPathComponent("files.md")
+        )
+        try? XTStoreWriteSupport.writeUTF8Text(
+            ui,
+            to: refsDir.appendingPathComponent("ui.md")
+        )
 
         updateProjectSkillsIndex(projectDir: projectDir, skillName: skillName, summary: desc)
         updateGlobalSkillsIndex(skillsDir: skillsDir, projectDir: projectDir, projectName: cand.projectName)
@@ -198,7 +210,7 @@ common_ops:
             // Keep existing content; append entry without forcing a new header to avoid polluting custom indexes.
             out = existing.trimmingCharacters(in: .whitespacesAndNewlines) + "\n" + entry + "\n"
         }
-        try? out.data(using: .utf8)?.write(to: indexURL, options: .atomic)
+        try? XTStoreWriteSupport.writeUTF8Text(out, to: indexURL)
     }
 
     static func updateGlobalSkillsIndex(skillsDir: URL, projectDir: URL, projectName: String) {
@@ -229,7 +241,7 @@ common_ops:
         } else {
             out = existing.trimmingCharacters(in: .whitespacesAndNewlines) + "\n\n" + header + projectSection + entry + "\n"
         }
-        try? out.data(using: .utf8)?.write(to: indexURL, options: .atomic)
+        try? XTStoreWriteSupport.writeUTF8Text(out, to: indexURL)
     }
 
     // MARK: - Helpers

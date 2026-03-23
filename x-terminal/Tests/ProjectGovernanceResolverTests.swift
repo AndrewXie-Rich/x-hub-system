@@ -69,13 +69,16 @@ struct ProjectGovernanceResolverTests {
         #expect(resolved.validation.warningReasons.count == 1)
         #expect(snapshot["execution_tier"] == .string("a3_deliver_auto"))
         #expect(snapshot["supervisor_intervention_tier"] == .string("s2_periodic_review"))
+        #expect(snapshot["runtime_surface_effective_mode"] == .string("manual"))
+        #expect(snapshot["runtime_surface_kill_switch_engaged"] == .bool(false))
+        #expect(snapshot["effective_autonomy_mode"] == snapshot["runtime_surface_effective_mode"])
         #expect(snapshot["should_fail_closed"] == .bool(false))
     }
 
     @Test
-    func autonomyModeSyncsGovernanceBundleWhileStillInCompatMode() {
-        let root = URL(fileURLWithPath: "/tmp/project-governance-autonomy-sync-\(UUID().uuidString)", isDirectory: true)
-        let config = AXProjectConfig.default(forProjectRoot: root).settingAutonomyPolicy(
+    func legacyAutonomyModeSyncsGovernanceBundleWhileStillInCompatMode() {
+        let root = URL(fileURLWithPath: "/tmp/project-governance-legacy-runtime-surface-sync-\(UUID().uuidString)", isDirectory: true)
+        let config = AXProjectConfig.default(forProjectRoot: root).settingRuntimeSurfacePolicy(
             mode: .trustedOpenClawMode,
             updatedAt: Date(timeIntervalSince1970: 1_773_900_000)
         )
@@ -87,14 +90,14 @@ struct ProjectGovernanceResolverTests {
     }
 
     @Test
-    func explicitGovernanceRemainsAuthoritativeWhenAutonomyModeChanges() {
-        let root = URL(fileURLWithPath: "/tmp/project-governance-autonomy-explicit-\(UUID().uuidString)", isDirectory: true)
+    func explicitGovernanceRemainsAuthoritativeWhenLegacyAutonomyModeChanges() {
+        let root = URL(fileURLWithPath: "/tmp/project-governance-legacy-runtime-surface-explicit-\(UUID().uuidString)", isDirectory: true)
         var config = AXProjectConfig.default(forProjectRoot: root)
         config = config.settingProjectGovernance(
             executionTier: .a4OpenClaw,
             supervisorInterventionTier: .s2PeriodicReview
         )
-        config = config.settingAutonomyPolicy(
+        config = config.settingRuntimeSurfacePolicy(
             mode: .guided,
             updatedAt: Date(timeIntervalSince1970: 1_773_900_100)
         )
@@ -114,7 +117,7 @@ struct ProjectGovernanceResolverTests {
         #expect(defaultConfig.consumesLegacyAutonomyLevelResolverInput == false)
         #expect(defaultConfig.governanceResolverLegacyAutonomyLevel(.fullAuto) == nil)
 
-        let compatConfig = defaultConfig.settingAutonomyPolicy(
+        let compatConfig = defaultConfig.settingRuntimeSurfacePolicy(
             mode: .guided,
             updatedAt: Date(timeIntervalSince1970: 1_773_900_200)
         )
@@ -190,6 +193,7 @@ struct ProjectGovernanceResolverTests {
         #expect(resolved.effectiveBundle.supervisorInterventionTier == .s4TightSupervision)
         #expect(resolved.supervisorAdaptation.recommendedWorkOrderDepth == .stepLockedRescue)
         #expect(resolved.supervisorAdaptation.effectiveWorkOrderDepth == .stepLockedRescue)
+        #expect(resolved.effectiveRuntimeSurface.effectiveMode == .manual)
         #expect(snapshot["recommended_supervisor_intervention_tier"] == .string("s4_tight_supervision"))
         #expect(snapshot["effective_supervisor_work_order_depth"] == .string("step_locked_rescue"))
     }

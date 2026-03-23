@@ -5,7 +5,7 @@ import Testing
 @MainActor
 struct TaskAssignerGovernanceTests {
     @Test
-    func evaluateCapabilityPrefersGovernanceTiersOverMisleadingLegacyAutonomyShadow() {
+    func evaluateCapabilityPrefersGovernanceTiersOverMisleadingLegacyCompatShadow() {
         let assigner = TaskAssigner()
         let task = DecomposedTask(
             description: "Ship a risky deploy pipeline change",
@@ -26,7 +26,7 @@ struct TaskAssignerGovernanceTests {
 
         let misleadingLegacy = ProjectModel(
             name: "Legacy Misleading",
-            taskDescription: "Has inflated legacy autonomy shadow",
+            taskDescription: "Has an inflated legacy compat shadow",
             modelName: "claude-sonnet-4.6",
             executionTier: .a1Plan,
             supervisorInterventionTier: .s1MilestoneReview

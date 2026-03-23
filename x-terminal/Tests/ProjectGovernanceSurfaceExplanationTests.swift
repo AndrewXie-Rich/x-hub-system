@@ -2,11 +2,11 @@ import Foundation
 import Testing
 @testable import XTerminal
 
-struct ProjectAutonomyExplanationTests {
+struct ProjectGovernanceSurfaceExplanationTests {
 
     @Test
     func effectiveClampAndRuntimePolicyReasonShareSameCanonicalExplanation() throws {
-        let effective = AXProjectAutonomyEffectivePolicy(
+        let effective = AXProjectRuntimeSurfaceEffectivePolicy(
             configuredMode: .trustedOpenClawMode,
             effectiveMode: .guided,
             hubOverrideMode: .clampGuided,
@@ -25,27 +25,27 @@ struct ProjectAutonomyExplanationTests {
         )
 
         let ui = try #require(
-            xtAutonomyClampExplanation(
+            xtProjectGovernanceClampExplanation(
                 effective: effective,
                 style: .uiChinese
             )
         )
         let guardrail = try #require(
-            xtAutonomyClampExplanation(
+            xtProjectGovernanceClampExplanation(
                 policyReason: ui.policyReason,
                 style: .guardrailEnglish
             )
         )
 
-        #expect(ui.policyReason == AXProjectAutonomyClampKind.clampGuided.rawValue)
+        #expect(ui.policyReason == AXProjectGovernanceClampKind.clampGuided.rawValue)
         #expect(ui.summary.contains("Hub clamp_guided"))
         #expect(guardrail.summary.contains("guided runtime surface"))
     }
 
     @Test
     func runtimeSurfaceExplanationUsesSurfaceLanguageInsteadOfLegacyAutonomyCopy() {
-        let manual = xtRuntimeSurfaceExplanation(mode: .manual, style: .uiChinese)
-        let guided = xtRuntimeSurfaceExplanation(mode: .guided, style: .guardrailEnglish)
+        let manual = xtProjectRuntimeSurfaceExplanation(mode: .manual, style: .uiChinese)
+        let guided = xtProjectRuntimeSurfaceExplanation(mode: .guided, style: .guardrailEnglish)
 
         #expect(manual.contains("runtime surface"))
         #expect(!manual.contains("Manual 是最保守执行面"))

@@ -3,11 +3,11 @@ import Testing
 @testable import XTerminal
 
 @MainActor
-struct XTW330AutonomyPolicySurfaceEvidenceTests {
+struct XTW330RuntimeSurfacePolicyEvidenceTests {
     private let permissionGate = TrustedAutomationPermissionTestGate.shared
 
     @Test
-    func autonomyPolicySurfaceProducesDeliveredEvidenceAndCaptureArtifactWhenRequested() async throws {
+    func runtimeSurfacePolicyProducesDeliveredEvidenceAndCaptureArtifactWhenRequested() async throws {
         try await permissionGate.run {
             let projectARoot = try makeProjectRoot(name: "xt-w3-30-d-project-a")
             let projectBRoot = try makeProjectRoot(name: "xt-w3-30-d-project-b")
@@ -20,6 +20,7 @@ struct XTW330AutonomyPolicySurfaceEvidenceTests {
             defer {
                 HubAIClient.setTransportMode(originalTransportMode)
                 HubPaths.clearPinnedBaseDirOverride()
+                HubIPCClient.resetMemoryContextResolutionOverrideForTesting()
                 AXTrustedAutomationPermissionOwnerReadiness.resetCurrentProviderForTesting()
                 DeviceAutomationTools.resetBrowserOpenProviderForTesting()
                 try? FileManager.default.removeItem(at: projectARoot)
@@ -28,12 +29,19 @@ struct XTW330AutonomyPolicySurfaceEvidenceTests {
                 ttlFixture.cleanup()
             }
 
+            HubIPCClient.installMemoryContextResolutionOverrideForTesting { route, mode, _ in
+                makeRuntimeSurfacePolicyMemoryResolution(
+                    mode: mode,
+                    profile: route.servingProfile
+                )
+            }
+
             AXTrustedAutomationPermissionOwnerReadiness.installCurrentProviderForTesting {
-                makeAutonomyPolicyEvidencePermissionReadiness(
+                makeRuntimeSurfacePolicyEvidencePermissionReadiness(
                     accessibility: .granted,
                     automation: .granted,
                     screenRecording: .missing,
-                    auditRef: "audit-xt-w3-30-d-autonomy-policy"
+                    auditRef: "audit-xt-w3-30-d-runtime-surface-policy"
                 )
             }
             DeviceAutomationTools.installBrowserOpenProviderForTesting { _ in true }
@@ -74,31 +82,31 @@ struct XTW330AutonomyPolicySurfaceEvidenceTests {
                     && auditAppModel.projectConfig != nil
             }
 
-            auditAppModel.setProjectAutonomyPolicy(
+            auditAppModel.setProjectRuntimeSurfacePolicy(
                 mode: .trustedOpenClawMode,
                 ttlSeconds: 600
             )
-            auditAppModel.setProjectAutonomyPolicy(hubOverrideMode: .clampGuided)
+            auditAppModel.setProjectRuntimeSurfacePolicy(hubOverrideMode: .clampGuided)
             let localClampConfig = try AXProjectStore.loadOrCreateConfig(for: projectACtx)
             let localClampRawLog = try rawLogEntries(for: projectACtx)
             let localClampAuditRow = try #require(
                 localClampRawLog.last(where: {
                     ($0["type"] as? String) == "project_autonomy_policy"
                         && ($0["project_id"] as? String) == projectAEntry.projectId
-                        && ($0["hub_override_mode"] as? String) == AXProjectAutonomyHubOverrideMode.clampGuided.rawValue
+                        && ($0["hub_override_mode"] as? String) == AXProjectRuntimeSurfaceHubOverrideMode.clampGuided.rawValue
                 })
             )
 
-            auditAppModel.setProjectAutonomyPolicy(hubOverrideMode: AXProjectAutonomyHubOverrideMode.none)
+            auditAppModel.setProjectRuntimeSurfacePolicy(hubOverrideMode: AXProjectRuntimeSurfaceHubOverrideMode.none)
             let clearedLocalConfig = try AXProjectStore.loadOrCreateConfig(for: projectACtx)
             #expect(clearedLocalConfig.autonomyHubOverrideMode == .none)
             appModel = nil
 
-            try writeHubAutonomyPolicyOverrides(
+            try writeHubRuntimeSurfaceOverrides(
                 to: hubBase,
                 items: [[
                     "project_id": projectAEntry.projectId,
-                    "override_mode": AXProjectAutonomyHubOverrideMode.clampGuided.rawValue,
+                    "override_mode": AXProjectRuntimeSurfaceHubOverrideMode.clampGuided.rawValue,
                     "updated_at_ms": 1_773_700_120_000,
                     "reason": "hub_browser_only",
                     "audit_ref": "audit-hub-xt-w3-30-d-clamp-guided",
@@ -106,7 +114,7 @@ struct XTW330AutonomyPolicySurfaceEvidenceTests {
             )
             HubPaths.setPinnedBaseDirOverride(hubBase)
             let clampRemoteOverride = try #require(
-                await HubIPCClient.requestProjectAutonomyPolicyOverride(
+                await HubIPCClient.requestProjectRuntimeSurfaceOverride(
                     projectId: projectAEntry.projectId,
                     bypassCache: true
                 )
@@ -136,11 +144,11 @@ struct XTW330AutonomyPolicySurfaceEvidenceTests {
             let clampDeviceSummary = try #require(toolSummaryObject(clampDevice.output))
             let clampDeniedRuntimeSurface = try #require(jsonObject(clampDeviceSummary["runtime_surface"]))
 
-            try writeHubAutonomyPolicyOverrides(
+            try writeHubRuntimeSurfaceOverrides(
                 to: hubBase,
                 items: [[
                     "project_id": projectAEntry.projectId,
-                    "override_mode": AXProjectAutonomyHubOverrideMode.killSwitch.rawValue,
+                    "override_mode": AXProjectRuntimeSurfaceHubOverrideMode.killSwitch.rawValue,
                     "updated_at_ms": 1_773_700_180_000,
                     "reason": "hub_emergency_stop",
                     "audit_ref": "audit-hub-xt-w3-30-d-kill-switch",
@@ -148,7 +156,7 @@ struct XTW330AutonomyPolicySurfaceEvidenceTests {
             )
             HubPaths.setPinnedBaseDirOverride(hubBase)
             let killSwitchRemoteOverride = try #require(
-                await HubIPCClient.requestProjectAutonomyPolicyOverride(
+                await HubIPCClient.requestProjectRuntimeSurfaceOverride(
                     projectId: projectAEntry.projectId,
                     bypassCache: true
                 )
@@ -174,7 +182,7 @@ struct XTW330AutonomyPolicySurfaceEvidenceTests {
             let killSwitchDeniedRuntimeSurface = try #require(jsonObject(killSwitchBrowserSummary["runtime_surface"]))
 
             HubPaths.setPinnedBaseDirOverride(hubBase)
-            let projectBRemoteOverride = await HubIPCClient.requestProjectAutonomyPolicyOverride(
+            let projectBRemoteOverride = await HubIPCClient.requestProjectRuntimeSurfaceOverride(
                 projectId: projectBEntry.projectId,
                 bypassCache: true
             )
@@ -192,7 +200,7 @@ struct XTW330AutonomyPolicySurfaceEvidenceTests {
                 deviceToolGroups: ["device.clipboard.read"],
                 workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: ttlFixture.root)
             )
-            ttlConfig = ttlConfig.settingAutonomyPolicy(
+            ttlConfig = ttlConfig.settingRuntimeSurfacePolicy(
                 mode: .trustedOpenClawMode,
                 ttlSeconds: 60,
                 updatedAt: Date(timeIntervalSince1970: 1)
@@ -216,28 +224,28 @@ struct XTW330AutonomyPolicySurfaceEvidenceTests {
             let terminalClampAuditPass =
                 localClampConfig.autonomyMode == .trustedOpenClawMode
                 && localClampConfig.autonomyHubOverrideMode == .clampGuided
-                && (localClampAuditRow["runtime_surface_configured"] as? String) == AXProjectAutonomyMode.trustedOpenClawMode.rawValue
-                && (localClampAuditRow["effective_runtime_surface"] as? String) == AXProjectAutonomyMode.guided.rawValue
-                && (localClampAuditRow["previous_effective_runtime_surface"] as? String) == AXProjectAutonomyMode.trustedOpenClawMode.rawValue
-                && (localClampAuditRow["runtime_surface_hub_override"] as? String) == AXProjectAutonomyHubOverrideMode.clampGuided.rawValue
-                && (localClampAuditRow["runtime_surface_local_override"] as? String) == AXProjectAutonomyHubOverrideMode.clampGuided.rawValue
-                && (localClampAuditRow["runtime_surface_remote_override"] as? String) == AXProjectAutonomyHubOverrideMode.none.rawValue
+                && (localClampAuditRow["runtime_surface_configured"] as? String) == AXProjectRuntimeSurfaceMode.trustedOpenClawMode.rawValue
+                && (localClampAuditRow["effective_runtime_surface"] as? String) == AXProjectRuntimeSurfaceMode.guided.rawValue
+                && (localClampAuditRow["previous_effective_runtime_surface"] as? String) == AXProjectRuntimeSurfaceMode.trustedOpenClawMode.rawValue
+                && (localClampAuditRow["runtime_surface_hub_override"] as? String) == AXProjectRuntimeSurfaceHubOverrideMode.clampGuided.rawValue
+                && (localClampAuditRow["runtime_surface_local_override"] as? String) == AXProjectRuntimeSurfaceHubOverrideMode.clampGuided.rawValue
+                && (localClampAuditRow["runtime_surface_remote_override"] as? String) == AXProjectRuntimeSurfaceHubOverrideMode.none.rawValue
                 && (localClampAuditRow["runtime_surface_expired"] as? Bool) == false
-                && (localClampAuditRow["effective_mode"] as? String) == AXProjectAutonomyMode.guided.rawValue
-                && (localClampAuditRow["previous_effective_mode"] as? String) == AXProjectAutonomyMode.trustedOpenClawMode.rawValue
+                && (localClampAuditRow["effective_mode"] as? String) == AXProjectRuntimeSurfaceMode.guided.rawValue
+                && (localClampAuditRow["previous_effective_mode"] as? String) == AXProjectRuntimeSurfaceMode.trustedOpenClawMode.rawValue
                 && (localClampAuditRow["project_id"] as? String) == projectAEntry.projectId
-                && (localClampAuditRow["effective_hub_override_mode"] as? String) == AXProjectAutonomyHubOverrideMode.clampGuided.rawValue
+                && (localClampAuditRow["effective_hub_override_mode"] as? String) == AXProjectRuntimeSurfaceHubOverrideMode.clampGuided.rawValue
 
             let projectSnapshotClampPass =
-                jsonString(clampRuntimeSurface["configured_surface"]) == AXProjectAutonomyMode.trustedOpenClawMode.rawValue
-                && jsonString(clampRuntimeSurface["effective_surface"]) == AXProjectAutonomyMode.guided.rawValue
-                && jsonString(clampRuntimeSurface["remote_override_surface"]) == AXProjectAutonomyHubOverrideMode.clampGuided.rawValue
+                jsonString(clampRuntimeSurface["configured_surface"]) == AXProjectRuntimeSurfaceMode.trustedOpenClawMode.rawValue
+                && jsonString(clampRuntimeSurface["effective_surface"]) == AXProjectRuntimeSurfaceMode.guided.rawValue
+                && jsonString(clampRuntimeSurface["remote_override_surface"]) == AXProjectRuntimeSurfaceHubOverrideMode.clampGuided.rawValue
                 && jsonString(clampRuntimeSurface["remote_override_source"]) == "hub_autonomy_policy_overrides_file"
-                && jsonString(clampAutonomy["configured_mode"]) == AXProjectAutonomyMode.trustedOpenClawMode.rawValue
-                && jsonString(clampAutonomy["effective_mode"]) == AXProjectAutonomyMode.guided.rawValue
-                && jsonString(clampAutonomy["hub_override_mode"]) == AXProjectAutonomyHubOverrideMode.clampGuided.rawValue
-                && jsonString(clampAutonomy["local_override_mode"]) == AXProjectAutonomyHubOverrideMode.none.rawValue
-                && jsonString(clampAutonomy["remote_override_mode"]) == AXProjectAutonomyHubOverrideMode.clampGuided.rawValue
+                && jsonString(clampAutonomy["configured_mode"]) == AXProjectRuntimeSurfaceMode.trustedOpenClawMode.rawValue
+                && jsonString(clampAutonomy["effective_mode"]) == AXProjectRuntimeSurfaceMode.guided.rawValue
+                && jsonString(clampAutonomy["hub_override_mode"]) == AXProjectRuntimeSurfaceHubOverrideMode.clampGuided.rawValue
+                && jsonString(clampAutonomy["local_override_mode"]) == AXProjectRuntimeSurfaceHubOverrideMode.none.rawValue
+                && jsonString(clampAutonomy["remote_override_mode"]) == AXProjectRuntimeSurfaceHubOverrideMode.clampGuided.rawValue
                 && jsonString(clampAutonomy["remote_override_source"]) == "hub_autonomy_policy_overrides_file"
                 && clampConfiguredSurfaces.count == 4
                 && clampConfiguredSurfaces.contains(where: { jsonString($0) == "browser" })
@@ -253,111 +261,111 @@ struct XTW330AutonomyPolicySurfaceEvidenceTests {
                 && jsonString(clampDeviceSummary["deny_code"]) == "autonomy_policy_denied"
                 && jsonString(clampDeviceSummary["policy_reason"]) == "hub_override=clamp_guided"
                 && jsonString(clampDeviceSummary["runtime_surface_policy_reason"]) == "hub_override=clamp_guided"
-                && jsonString(clampDeniedRuntimeSurface["effective_surface"]) == AXProjectAutonomyMode.guided.rawValue
-                && jsonString(clampDeniedRuntimeSurface["remote_override_surface"]) == AXProjectAutonomyHubOverrideMode.clampGuided.rawValue
-                && jsonString(clampDeviceSummary["autonomy_effective_mode"]) == AXProjectAutonomyMode.guided.rawValue
-                && jsonString(clampDeviceSummary["autonomy_local_override_mode"]) == AXProjectAutonomyHubOverrideMode.none.rawValue
-                && jsonString(clampDeviceSummary["autonomy_remote_override_mode"]) == AXProjectAutonomyHubOverrideMode.clampGuided.rawValue
+                && jsonString(clampDeniedRuntimeSurface["effective_surface"]) == AXProjectRuntimeSurfaceMode.guided.rawValue
+                && jsonString(clampDeniedRuntimeSurface["remote_override_surface"]) == AXProjectRuntimeSurfaceHubOverrideMode.clampGuided.rawValue
+                && jsonString(clampDeviceSummary["autonomy_effective_mode"]) == AXProjectRuntimeSurfaceMode.guided.rawValue
+                && jsonString(clampDeviceSummary["autonomy_local_override_mode"]) == AXProjectRuntimeSurfaceHubOverrideMode.none.rawValue
+                && jsonString(clampDeviceSummary["autonomy_remote_override_mode"]) == AXProjectRuntimeSurfaceHubOverrideMode.clampGuided.rawValue
 
             let killSwitchPass =
-                jsonString(killSwitchRuntimeSurface["effective_surface"]) == AXProjectAutonomyMode.manual.rawValue
+                jsonString(killSwitchRuntimeSurface["effective_surface"]) == AXProjectRuntimeSurfaceMode.manual.rawValue
                 && jsonBool(killSwitchRuntimeSurface["kill_switch_engaged"]) == true
-                && jsonString(killSwitchAutonomy["effective_mode"]) == AXProjectAutonomyMode.manual.rawValue
-                && jsonString(killSwitchAutonomy["hub_override_mode"]) == AXProjectAutonomyHubOverrideMode.killSwitch.rawValue
-                && jsonString(killSwitchAutonomy["local_override_mode"]) == AXProjectAutonomyHubOverrideMode.none.rawValue
-                && jsonString(killSwitchAutonomy["remote_override_mode"]) == AXProjectAutonomyHubOverrideMode.killSwitch.rawValue
+                && jsonString(killSwitchAutonomy["effective_mode"]) == AXProjectRuntimeSurfaceMode.manual.rawValue
+                && jsonString(killSwitchAutonomy["hub_override_mode"]) == AXProjectRuntimeSurfaceHubOverrideMode.killSwitch.rawValue
+                && jsonString(killSwitchAutonomy["local_override_mode"]) == AXProjectRuntimeSurfaceHubOverrideMode.none.rawValue
+                && jsonString(killSwitchAutonomy["remote_override_mode"]) == AXProjectRuntimeSurfaceHubOverrideMode.killSwitch.rawValue
                 && jsonBool(killSwitchAutonomy["kill_switch_engaged"]) == true
                 && killSwitchEffectiveSurfaces.isEmpty
                 && !killSwitchBrowser.ok
                 && jsonString(killSwitchBrowserSummary["deny_code"]) == "autonomy_policy_denied"
                 && jsonString(killSwitchBrowserSummary["policy_reason"]) == "hub_override=kill_switch"
                 && jsonString(killSwitchBrowserSummary["runtime_surface_policy_reason"]) == "hub_override=kill_switch"
-                && jsonString(killSwitchDeniedRuntimeSurface["effective_surface"]) == AXProjectAutonomyMode.manual.rawValue
+                && jsonString(killSwitchDeniedRuntimeSurface["effective_surface"]) == AXProjectRuntimeSurfaceMode.manual.rawValue
                 && jsonBool(killSwitchDeniedRuntimeSurface["kill_switch_engaged"]) == true
-                && jsonString(killSwitchBrowserSummary["autonomy_effective_mode"]) == AXProjectAutonomyMode.manual.rawValue
-                && jsonString(killSwitchBrowserSummary["autonomy_remote_override_mode"]) == AXProjectAutonomyHubOverrideMode.killSwitch.rawValue
+                && jsonString(killSwitchBrowserSummary["autonomy_effective_mode"]) == AXProjectRuntimeSurfaceMode.manual.rawValue
+                && jsonString(killSwitchBrowserSummary["autonomy_remote_override_mode"]) == AXProjectRuntimeSurfaceHubOverrideMode.killSwitch.rawValue
 
             let ttlExpiryPass =
-                jsonString(ttlRuntimeSurface["configured_surface"]) == AXProjectAutonomyMode.trustedOpenClawMode.rawValue
-                && jsonString(ttlRuntimeSurface["effective_surface"]) == AXProjectAutonomyMode.manual.rawValue
+                jsonString(ttlRuntimeSurface["configured_surface"]) == AXProjectRuntimeSurfaceMode.trustedOpenClawMode.rawValue
+                && jsonString(ttlRuntimeSurface["effective_surface"]) == AXProjectRuntimeSurfaceMode.manual.rawValue
                 && jsonBool(ttlRuntimeSurface["expired"]) == true
-                && jsonString(ttlAutonomy["configured_mode"]) == AXProjectAutonomyMode.trustedOpenClawMode.rawValue
-                && jsonString(ttlAutonomy["effective_mode"]) == AXProjectAutonomyMode.manual.rawValue
+                && jsonString(ttlAutonomy["configured_mode"]) == AXProjectRuntimeSurfaceMode.trustedOpenClawMode.rawValue
+                && jsonString(ttlAutonomy["effective_mode"]) == AXProjectRuntimeSurfaceMode.manual.rawValue
                 && jsonBool(ttlAutonomy["expired"]) == true
                 && !ttlDevice.ok
                 && jsonString(ttlDeviceSummary["deny_code"]) == "autonomy_policy_denied"
                 && jsonString(ttlDeviceSummary["policy_reason"]) == "autonomy_ttl_expired"
                 && jsonString(ttlDeviceSummary["runtime_surface_policy_reason"]) == "runtime_surface_ttl_expired"
-                && jsonString(ttlDeniedRuntimeSurface["effective_surface"]) == AXProjectAutonomyMode.manual.rawValue
+                && jsonString(ttlDeniedRuntimeSurface["effective_surface"]) == AXProjectRuntimeSurfaceMode.manual.rawValue
                 && jsonBool(ttlDeniedRuntimeSurface["expired"]) == true
 
             let projectIsolationPass =
-                jsonString(projectBRuntimeSurface["configured_surface"]) == AXProjectAutonomyMode.manual.rawValue
-                && jsonString(projectBRuntimeSurface["effective_surface"]) == AXProjectAutonomyMode.manual.rawValue
-                && jsonString(projectBAutonomy["configured_mode"]) == AXProjectAutonomyMode.manual.rawValue
-                && jsonString(projectBAutonomy["effective_mode"]) == AXProjectAutonomyMode.manual.rawValue
-                && jsonString(projectBAutonomy["hub_override_mode"]) == AXProjectAutonomyHubOverrideMode.none.rawValue
-                && jsonString(projectBAutonomy["remote_override_mode"]) == AXProjectAutonomyHubOverrideMode.none.rawValue
+                jsonString(projectBRuntimeSurface["configured_surface"]) == AXProjectRuntimeSurfaceMode.manual.rawValue
+                && jsonString(projectBRuntimeSurface["effective_surface"]) == AXProjectRuntimeSurfaceMode.manual.rawValue
+                && jsonString(projectBAutonomy["configured_mode"]) == AXProjectRuntimeSurfaceMode.manual.rawValue
+                && jsonString(projectBAutonomy["effective_mode"]) == AXProjectRuntimeSurfaceMode.manual.rawValue
+                && jsonString(projectBAutonomy["hub_override_mode"]) == AXProjectRuntimeSurfaceHubOverrideMode.none.rawValue
+                && jsonString(projectBAutonomy["remote_override_mode"]) == AXProjectRuntimeSurfaceHubOverrideMode.none.rawValue
                 && projectBConfiguredSurfaces.isEmpty
                 && projectBRemoteOverride == nil
                 && !projectBRawLog.contains(where: { ($0["type"] as? String) == "project_autonomy_policy" })
 
-            let evidence = XTW330DAutonomyPolicySurfaceEvidence(
-                schemaVersion: "xt_w3_30_d_autonomy_policy_surface_evidence.v1",
+            let evidence = XTW330DRuntimeSurfacePolicyEvidence(
+                schemaVersion: "xt_w3_30_d_runtime_surface_policy_evidence.v1",
                 generatedAt: ISO8601DateFormatter().string(from: Date()),
                 status: "delivered",
                 claimScope: ["XT-W3-30-D", "XT-OC-G4"],
-                claim: "XT now exposes a project-scoped autonomy policy surface with explicit presets, terminal clamp audit rows, Hub-published per-project override ingestion, TTL reclaim, runtime kill-switch/clamp enforcement, and project snapshot visibility.",
+                claim: "XT now exposes a project-scoped runtime-surface policy with explicit presets, terminal clamp audit rows, Hub-published per-project override ingestion, TTL reclaim, runtime kill-switch/clamp enforcement, and project snapshot visibility.",
                 policySurface: [
-                    AutonomyPolicySurfaceEvidence(
-                        surface: "xt_project_autonomy_picker",
+                    RuntimeSurfacePolicyEvidenceItem(
+                        surface: "xt_project_runtime_surface_picker",
                         state: "live_terminal_clamp_surface",
                         exercised: true,
-                        configuredMode: AXProjectAutonomyMode.trustedOpenClawMode.rawValue,
-                        effectiveMode: AXProjectAutonomyMode.guided.rawValue,
+                        configuredMode: AXProjectRuntimeSurfaceMode.trustedOpenClawMode.rawValue,
+                        effectiveMode: AXProjectRuntimeSurfaceMode.guided.rawValue,
                         policyReason: "terminal_clamp=clamp_guided"
                     ),
-                    AutonomyPolicySurfaceEvidence(
-                        surface: "hub_published_autonomy_override",
+                    RuntimeSurfacePolicyEvidenceItem(
+                        surface: "hub_published_runtime_surface_override",
                         state: "live_hub_truth_source",
                         exercised: true,
-                        configuredMode: AXProjectAutonomyMode.trustedOpenClawMode.rawValue,
-                        effectiveMode: AXProjectAutonomyMode.guided.rawValue,
+                        configuredMode: AXProjectRuntimeSurfaceMode.trustedOpenClawMode.rawValue,
+                        effectiveMode: AXProjectRuntimeSurfaceMode.guided.rawValue,
                         policyReason: "hub_override=clamp_guided"
                     ),
-                    AutonomyPolicySurfaceEvidence(
-                        surface: "project_snapshot_autonomy_policy",
+                    RuntimeSurfacePolicyEvidenceItem(
+                        surface: "project_snapshot_runtime_surface",
                         state: "live_snapshot_visibility",
                         exercised: true,
                         configuredMode: jsonString(clampAutonomy["configured_mode"]) ?? "",
                         effectiveMode: jsonString(clampAutonomy["effective_mode"]) ?? "",
                         policyReason: jsonString(clampAutonomy["hub_override_mode"])
                     ),
-                    AutonomyPolicySurfaceEvidence(
+                    RuntimeSurfacePolicyEvidenceItem(
                         surface: "runtime_guided_browser_only",
                         state: clampBrowser.ok ? "delivered" : "fail",
                         exercised: true,
-                        configuredMode: AXProjectAutonomyMode.trustedOpenClawMode.rawValue,
-                        effectiveMode: AXProjectAutonomyMode.guided.rawValue,
+                        configuredMode: AXProjectRuntimeSurfaceMode.trustedOpenClawMode.rawValue,
+                        effectiveMode: AXProjectRuntimeSurfaceMode.guided.rawValue,
                         policyReason: "hub_override=clamp_guided"
                     ),
-                    AutonomyPolicySurfaceEvidence(
+                    RuntimeSurfacePolicyEvidenceItem(
                         surface: "runtime_kill_switch_fail_closed",
                         state: killSwitchPass ? "fail_closed" : "drifted",
                         exercised: true,
-                        configuredMode: AXProjectAutonomyMode.trustedOpenClawMode.rawValue,
-                        effectiveMode: AXProjectAutonomyMode.manual.rawValue,
+                        configuredMode: AXProjectRuntimeSurfaceMode.trustedOpenClawMode.rawValue,
+                        effectiveMode: AXProjectRuntimeSurfaceMode.manual.rawValue,
                         policyReason: "hub_override=kill_switch"
                     ),
-                    AutonomyPolicySurfaceEvidence(
+                    RuntimeSurfacePolicyEvidenceItem(
                         surface: "ttl_expiry_reclaim",
                         state: ttlExpiryPass ? "reclaimed_to_manual" : "drifted",
                         exercised: true,
-                        configuredMode: AXProjectAutonomyMode.trustedOpenClawMode.rawValue,
-                        effectiveMode: AXProjectAutonomyMode.manual.rawValue,
-                        policyReason: "autonomy_ttl_expired"
+                        configuredMode: AXProjectRuntimeSurfaceMode.trustedOpenClawMode.rawValue,
+                        effectiveMode: AXProjectRuntimeSurfaceMode.manual.rawValue,
+                        policyReason: "runtime_surface_ttl_expired"
                     ),
-                    AutonomyPolicySurfaceEvidence(
+                    RuntimeSurfacePolicyEvidenceItem(
                         surface: "project_scope_isolation",
                         state: projectIsolationPass ? "isolated" : "drifted",
                         exercised: true,
@@ -367,35 +375,35 @@ struct XTW330AutonomyPolicySurfaceEvidenceTests {
                     )
                 ],
                 verificationResults: [
-                    AutonomyPolicyVerificationResult(
+                    RuntimeSurfacePolicyVerificationResult(
                         name: "terminal_clamp_selection_audited",
                         status: terminalClampAuditPass ? "pass" : "fail",
                         detail: terminalClampAuditPass ? "AppModel path persists project_autonomy_policy rows with effective_mode transitions and terminal clamp metadata for project A only" : "terminal clamp audit path drifted"
                     ),
-                    AutonomyPolicyVerificationResult(
+                    RuntimeSurfacePolicyVerificationResult(
                         name: "project_snapshot_exposes_local_and_hub_override_state",
                         status: projectSnapshotClampPass ? "pass" : "fail",
-                        detail: projectSnapshotClampPass ? "project_snapshot exposes configured/effective autonomy modes, local override, and Hub-published override state" : "project_snapshot autonomy policy surface incomplete"
+                        detail: projectSnapshotClampPass ? "project_snapshot exposes configured/effective runtime surface, compat policy aliases, local override, and Hub-published override state" : "project_snapshot runtime-surface policy evidence incomplete"
                     ),
-                    AutonomyPolicyVerificationResult(
+                    RuntimeSurfacePolicyVerificationResult(
                         name: "hub_remote_clamp_guided_preserves_browser_only",
                         status: guidedRuntimePass ? "pass" : "fail",
                         detail: guidedRuntimePass ? "Hub-published clamp_guided still allows browser runtime while device tools fail closed" : "guided browser-only runtime contract drifted"
                     ),
-                    AutonomyPolicyVerificationResult(
+                    RuntimeSurfacePolicyVerificationResult(
                         name: "hub_remote_kill_switch_fail_closes_all_surfaces",
                         status: killSwitchPass ? "pass" : "fail",
                         detail: killSwitchPass ? "Hub-published kill_switch reclaims effective mode to manual and blocks browser runtime" : "kill-switch deny contract drifted"
                     ),
-                    AutonomyPolicyVerificationResult(
+                    RuntimeSurfacePolicyVerificationResult(
                         name: "ttl_expiry_reclaims_to_manual",
                         status: ttlExpiryPass ? "pass" : "fail",
-                        detail: ttlExpiryPass ? "expired autonomy snapshots as manual and runtime returns autonomy_ttl_expired" : "TTL reclaim contract drifted"
+                        detail: ttlExpiryPass ? "expired runtime-surface windows fail closed to manual and runtime returns runtime_surface_ttl_expired" : "TTL reclaim contract drifted"
                     ),
-                    AutonomyPolicyVerificationResult(
+                    RuntimeSurfacePolicyVerificationResult(
                         name: "cross_project_policy_isolation",
                         status: projectIsolationPass ? "pass" : "fail",
-                        detail: projectIsolationPass ? "changing project A autonomy leaves project B in manual with no policy audit rows" : "project autonomy leaked across project boundary"
+                        detail: projectIsolationPass ? "changing project A runtime surface leaves project B in manual with no policy audit rows" : "project runtime surface leaked across project boundary"
                     )
                 ],
                 boundedGaps: [],
@@ -406,12 +414,12 @@ struct XTW330AutonomyPolicySurfaceEvidenceTests {
                     "x-terminal/Sources/AppModel.swift:1122",
                     "x-terminal/Sources/Hub/HubIPCClient.swift:2177",
                     "x-terminal/Sources/Hub/HubPairingCoordinator.swift:2730",
-                    "x-terminal/Sources/Project/AXProjectAutonomyPolicy.swift:1",
+                    "x-terminal/Sources/Project/AXProjectRuntimeSurfacePolicy.swift:1",
                     "x-terminal/Sources/Tools/ToolExecutor.swift:754",
                     "x-terminal/Sources/Tools/XTToolRuntimePolicy.swift:1",
                     "x-terminal/Sources/UI/ProjectSettingsView.swift:284",
                     "x-terminal/Tests/ToolExecutorRuntimePolicyTests.swift:1",
-                    "x-terminal/Tests/XTW330AutonomyPolicySurfaceEvidenceTests.swift:1"
+                    "x-terminal/Tests/XTW330RuntimeSurfacePolicyEvidenceTests.swift:1"
                 ]
             )
 
@@ -424,7 +432,7 @@ struct XTW330AutonomyPolicySurfaceEvidenceTests {
             }
 
             let destination = URL(fileURLWithPath: captureDir)
-                .appendingPathComponent("xt_w3_30_d_autonomy_policy_surface_evidence.v1.json")
+                .appendingPathComponent("xt_w3_30_d_runtime_surface_policy_evidence.v1.json")
             try writeJSON(evidence, to: destination)
             #expect(FileManager.default.fileExists(atPath: destination.path))
         }
@@ -503,7 +511,7 @@ struct XTW330AutonomyPolicySurfaceEvidenceTests {
         try data.write(to: url)
     }
 
-    private func writeHubAutonomyPolicyOverrides(
+    private func writeHubRuntimeSurfaceOverrides(
         to base: URL,
         items: [[String: Any]]
     ) throws {
@@ -519,7 +527,7 @@ struct XTW330AutonomyPolicySurfaceEvidenceTests {
     }
 }
 
-private func makeAutonomyPolicyEvidencePermissionReadiness(
+private func makeRuntimeSurfacePolicyEvidencePermissionReadiness(
     accessibility: AXTrustedAutomationPermissionStatus,
     automation: AXTrustedAutomationPermissionStatus,
     screenRecording: AXTrustedAutomationPermissionStatus,
@@ -545,15 +553,51 @@ private func makeAutonomyPolicyEvidencePermissionReadiness(
     )
 }
 
-private struct XTW330DAutonomyPolicySurfaceEvidence: Codable, Equatable {
+private func makeRuntimeSurfacePolicyMemoryResolution(
+    mode: XTMemoryUseMode,
+    profile: XTMemoryServingProfile
+) -> HubIPCClient.MemoryContextResolutionResult {
+    let response = HubIPCClient.MemoryContextResponsePayload(
+        text: "profile=\(profile.rawValue)",
+        source: "test_override",
+        resolvedMode: mode.rawValue,
+        resolvedProfile: profile.rawValue,
+        budgetTotalTokens: 2_048,
+        usedTotalTokens: 512,
+        layerUsage: [
+            HubIPCClient.MemoryContextLayerUsage(
+                layer: "l1_canonical",
+                usedTokens: 256,
+                budgetTokens: 2_048
+            )
+        ],
+        truncatedLayers: [],
+        redactedItems: 0,
+        privateDrops: 0
+    )
+    return HubIPCClient.MemoryContextResolutionResult(
+        response: response,
+        source: "test_override",
+        resolvedMode: mode,
+        requestedProfile: profile.rawValue,
+        attemptedProfiles: [profile.rawValue],
+        freshness: "fresh_local_ipc",
+        cacheHit: false,
+        denyCode: nil,
+        downgradeCode: nil,
+        reasonCode: nil
+    )
+}
+
+private struct XTW330DRuntimeSurfacePolicyEvidence: Codable, Equatable {
     var schemaVersion: String
     var generatedAt: String
     var status: String
     var claimScope: [String]
     var claim: String
-    var policySurface: [AutonomyPolicySurfaceEvidence]
-    var verificationResults: [AutonomyPolicyVerificationResult]
-    var boundedGaps: [AutonomyPolicyGapEvidence]
+    var policySurface: [RuntimeSurfacePolicyEvidenceItem]
+    var verificationResults: [RuntimeSurfacePolicyVerificationResult]
+    var boundedGaps: [RuntimeSurfacePolicyGapEvidence]
     var sourceRefs: [String]
 
     enum CodingKeys: String, CodingKey {
@@ -569,7 +613,7 @@ private struct XTW330DAutonomyPolicySurfaceEvidence: Codable, Equatable {
     }
 }
 
-private struct AutonomyPolicySurfaceEvidence: Codable, Equatable {
+private struct RuntimeSurfacePolicyEvidenceItem: Codable, Equatable {
     var surface: String
     var state: String
     var exercised: Bool
@@ -587,13 +631,13 @@ private struct AutonomyPolicySurfaceEvidence: Codable, Equatable {
     }
 }
 
-private struct AutonomyPolicyVerificationResult: Codable, Equatable {
+private struct RuntimeSurfacePolicyVerificationResult: Codable, Equatable {
     var name: String
     var status: String
     var detail: String
 }
 
-private struct AutonomyPolicyGapEvidence: Codable, Equatable {
+private struct RuntimeSurfacePolicyGapEvidence: Codable, Equatable {
     var id: String
     var severity: String
     var currentBehavior: String

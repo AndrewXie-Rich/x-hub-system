@@ -28,6 +28,10 @@ struct LLMUsage: Codable, Equatable {
     var runtimeProvider: String?
     var executionPath: String?
     var fallbackReasonCode: String?
+    var remoteRetryAttempted: Bool?
+    var remoteRetryFromModelId: String?
+    var remoteRetryToModelId: String?
+    var remoteRetryReasonCode: String?
 
     init(
         promptTokens: Int,
@@ -36,7 +40,11 @@ struct LLMUsage: Codable, Equatable {
         actualModelId: String? = nil,
         runtimeProvider: String? = nil,
         executionPath: String? = nil,
-        fallbackReasonCode: String? = nil
+        fallbackReasonCode: String? = nil,
+        remoteRetryAttempted: Bool? = nil,
+        remoteRetryFromModelId: String? = nil,
+        remoteRetryToModelId: String? = nil,
+        remoteRetryReasonCode: String? = nil
     ) {
         self.promptTokens = promptTokens
         self.completionTokens = completionTokens
@@ -45,6 +53,10 @@ struct LLMUsage: Codable, Equatable {
         self.runtimeProvider = runtimeProvider
         self.executionPath = executionPath
         self.fallbackReasonCode = fallbackReasonCode
+        self.remoteRetryAttempted = remoteRetryAttempted
+        self.remoteRetryFromModelId = remoteRetryFromModelId
+        self.remoteRetryToModelId = remoteRetryToModelId
+        self.remoteRetryReasonCode = remoteRetryReasonCode
     }
 
     var totalTokens: Int {

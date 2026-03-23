@@ -107,7 +107,7 @@ struct ProjectGovernancePresentationSummaryTests {
             deviceToolGroups: ["device.browser.control"],
             workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: root)
         )
-        config = config.settingAutonomyPolicy(
+        config = config.settingRuntimeSurfacePolicy(
             mode: .trustedOpenClawMode,
             ttlSeconds: 600,
             updatedAt: Date()
@@ -165,7 +165,7 @@ struct ProjectGovernancePresentationSummaryTests {
             deviceToolGroups: ["device.browser.control"],
             workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: root)
         )
-        config = config.settingAutonomyPolicy(
+        config = config.settingRuntimeSurfacePolicy(
             mode: .trustedOpenClawMode,
             ttlSeconds: 600,
             updatedAt: Date()

@@ -340,7 +340,7 @@ final class VoiceWakeProfileStore: ObservableObject {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let data = try? encoder.encode(copy) {
-            try? data.write(to: url, options: .atomic)
+            try? XTStoreWriteSupport.writeSnapshotData(data, to: url)
         }
     }
 }

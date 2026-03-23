@@ -76,13 +76,15 @@ struct OneShotAutonomyPolicyEngine {
         project: ProjectModel,
         lanes: [MaterializedLane],
         splitPlanID: String,
+        workMode: XTSupervisorWorkMode = .governedAutomation,
         now: Date = Date()
     ) -> OneShotAutonomyPolicy {
         let highestRisk = lanes.map(\.plan.riskTier).max() ?? .medium
         let autoConfirmPolicy: OneShotAutoConfirmPolicy = highestRisk >= .critical ? .safeOnly : .safePlusLowRisk
-        let autoLaunchPolicy: OneShotAutoLaunchPolicy = project.executionTier >= .a3DeliverAuto
+        let baseAutoLaunchPolicy: OneShotAutoLaunchPolicy = project.executionTier >= .a3DeliverAuto
             ? .mainlineOnly
             : .directedSafeOnly
+        let autoLaunchPolicy = workMode.clamped(baseAutoLaunchPolicy)
 
         return OneShotAutonomyPolicy(
             schemaVersion: "xt.one_shot_autonomy_policy.v1",

@@ -156,7 +156,7 @@ struct XTAutomationRunExecutorTests {
                 deviceToolGroups: ["device.browser.control"],
                 workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: root)
             )
-            config = config.settingAutonomyPolicy(
+            config = config.settingRuntimeSurfacePolicy(
                 mode: .trustedOpenClawMode,
                 updatedAt: Date(timeIntervalSince1970: 1_773_300_002)
             )
@@ -711,7 +711,7 @@ struct XTAutomationRunExecutorTests {
                 deviceToolGroups: ["device.ui.observe"],
                 workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: root)
             )
-            config = config.settingAutonomyPolicy(
+            config = config.settingRuntimeSurfacePolicy(
                 mode: .trustedOpenClawMode,
                 updatedAt: Date(timeIntervalSince1970: 1_773_300_015)
             )
@@ -976,7 +976,7 @@ struct XTAutomationRunExecutorTests {
             deviceToolGroups: ["device.ui.observe"],
             workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: root)
         )
-        config = config.settingAutonomyPolicy(
+        config = config.settingRuntimeSurfacePolicy(
             mode: .trustedOpenClawMode,
             updatedAt: Date(timeIntervalSince1970: 1_773_300_019)
         )
@@ -1063,7 +1063,7 @@ struct XTAutomationRunExecutorTests {
                 deviceToolGroups: ["device.ui.observe"],
                 workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: root)
             )
-            config = config.settingAutonomyPolicy(
+            config = config.settingRuntimeSurfacePolicy(
                 mode: .trustedOpenClawMode,
                 updatedAt: Date(timeIntervalSince1970: 1_773_300_020)
             )
@@ -1150,7 +1150,7 @@ struct XTAutomationRunExecutorTests {
                 deviceToolGroups: ["device.ui.observe"],
                 workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: root)
             )
-            config = config.settingAutonomyPolicy(
+            config = config.settingRuntimeSurfacePolicy(
                 mode: .trustedOpenClawMode,
                 updatedAt: Date(timeIntervalSince1970: 1_773_300_021)
             )

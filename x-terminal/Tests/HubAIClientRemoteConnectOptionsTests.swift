@@ -46,6 +46,30 @@ struct HubAIClientRemoteConnectOptionsTests {
         }
     }
 
+    @Test
+    func remoteConnectOptionsDoNotPromoteCorporateLanIpToInternetHostWhenHubIdentityWasDiscovered() throws {
+        let tempDir = try makeTempStateDir()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try writePairingEnv(
+            at: tempDir,
+            contents: """
+            AXHUB_HUB_HOST='17.81.12.12'
+            AXHUB_HUB_INSTANCE_ID='hub_deadbeefcafefeed00'
+            AXHUB_LAN_DISCOVERY_NAME='axhub-edge-bj'
+            AXHUB_PAIRING_PORT='50053'
+            AXHUB_GRPC_PORT='50052'
+            """
+        )
+
+        try withHubRemoteDefaultsCleared {
+            let options = HubAIClient.remoteConnectOptionsFromDefaults(stateDir: tempDir)
+            #expect(options.internetHost.isEmpty)
+            #expect(options.pairingPort == 50053)
+            #expect(options.grpcPort == 50052)
+        }
+    }
+
     private func makeTempStateDir() throws -> URL {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("hub_ai_client_remote_options_tests", isDirectory: true)

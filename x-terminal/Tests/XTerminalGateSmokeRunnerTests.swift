@@ -3,6 +3,100 @@ import Testing
 @testable import XTerminal
 
 struct XTerminalGateSmokeRunnerTests {
+    @Test
+    func unifiedDoctorExportWritesGenericBundleAndReturnsReadyExitCode() throws {
+        let workspace = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("xt_unified_doctor_export_test_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: workspace)
+        }
+
+        let sourceURL = XTUnifiedDoctorStore.defaultReportURL(workspaceRoot: workspace)
+        let outputURL = workspace
+            .appendingPathComponent(".axcoder/reports", isDirectory: true)
+            .appendingPathComponent("doctor_export.runtime.json")
+        let report = XTUnifiedDoctorReport(
+            schemaVersion: XTUnifiedDoctorReport.currentSchemaVersion,
+            generatedAtMs: 1_741_300_123,
+            overallState: .ready,
+            overallSummary: "Ready for first task",
+            readyForFirstTask: true,
+            currentFailureCode: "",
+            currentFailureIssue: nil,
+            configuredModelRoles: 4,
+            availableModelCount: 1,
+            loadedModelCount: 1,
+            currentSessionID: "session-ready",
+            currentRoute: XTUnifiedDoctorRouteSnapshot(
+                transportMode: "local",
+                routeLabel: "paired-local",
+                pairingPort: 50052,
+                grpcPort: 50051,
+                internetHost: "127.0.0.1"
+            ),
+            sections: [
+                XTUnifiedDoctorSection(
+                    kind: .hubReachability,
+                    state: .ready,
+                    headline: "Hub reachability is ready",
+                    summary: "Hub pairing and gRPC are reachable.",
+                    nextStep: "Start the first task.",
+                    repairEntry: .homeSupervisor,
+                    detailLines: ["route=paired-local"]
+                )
+            ],
+            consumedContracts: ["xt.ui_surface_state_contract.v1", XTUnifiedDoctorReportContract.frozen.schemaVersion],
+            reportPath: sourceURL.path
+        )
+        XTUnifiedDoctorStore.writeReport(report, to: sourceURL)
+
+        let args = [
+            "XTerminal",
+            XTerminalGateSmokeRunner.unifiedDoctorExportFlag,
+            XTerminalGateSmokeRunner.projectRootFlag,
+            workspace.path,
+            XTerminalGateSmokeRunner.outJSONFlag,
+            outputURL.path,
+        ]
+
+        let code = XTerminalGateSmokeRunner.runIfRequested(arguments: args)
+        #expect(code == 0)
+        #expect(FileManager.default.fileExists(atPath: outputURL.path))
+
+        let data = try Data(contentsOf: outputURL)
+        let decoded = try JSONDecoder().decode(XHubDoctorOutputReport.self, from: data)
+        #expect(decoded.surface == .xtExport)
+        #expect(decoded.reportPath == outputURL.path)
+        #expect(decoded.sourceReportPath == sourceURL.path)
+        #expect(decoded.summary.failed == 0)
+        #expect(decoded.readyForFirstTask == true)
+    }
+
+    @Test
+    func unifiedDoctorExportReturnsMissingSourceExitCode() throws {
+        let workspace = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("xt_unified_doctor_export_missing_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: workspace)
+        }
+
+        let args = [
+            "XTerminal",
+            XTerminalGateSmokeRunner.unifiedDoctorExportFlag,
+            XTerminalGateSmokeRunner.projectRootFlag,
+            workspace.path,
+        ]
+
+        let code = XTerminalGateSmokeRunner.runIfRequested(arguments: args)
+        #expect(code == 2)
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: XHubDoctorOutputStore.defaultXTReportURL(workspaceRoot: workspace).path
+            )
+        )
+    }
 
     @Test
     func releaseEvidenceSmokeWritesRuntimeAndSecretsArtifacts() throws {

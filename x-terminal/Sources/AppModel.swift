@@ -35,9 +35,10 @@ final class AppModel: ObservableObject {
     @Published var memory: AXMemory? = nil
     @Published var usageSummary: AXUsageSummary = .empty()
     @Published var projectConfig: AXProjectConfig? = nil
-    @Published var projectRemoteAutonomyOverride: AXProjectAutonomyRemoteOverrideSnapshot? = nil
+    @Published var projectRemoteRuntimeSurfaceOverride: AXProjectRuntimeSurfaceRemoteOverrideSnapshot? = nil
     @Published var skillsCompatibilitySnapshot: AXSkillsDoctorSnapshot = .empty
     @Published var unifiedDoctorReport: XTUnifiedDoctorReport = .empty
+    @Published private(set) var officialSkillsRecheckStatusLine: String = ""
     @Published var lastImportedAgentSkillDirectory: URL? = nil
     @Published var lastImportedAgentSkillName: String = ""
     @Published var lastImportedAgentSkillStage: HubIPCClient.AgentImportStageResult? = nil
@@ -64,6 +65,7 @@ final class AppModel: ObservableObject {
     @Published var hubSetupFailureCode: String = ""
     @Published var hubPortAutoDetectRunning: Bool = false
     @Published var hubPortAutoDetectMessage: String = ""
+    @Published var hubDiscoveredCandidates: [HubDiscoveredHubCandidateSummary] = []
     @Published var hubPairingPort: Int = 50052
     @Published var hubGrpcPort: Int = 50051
     @Published var hubInternetHost: String = ""
@@ -71,6 +73,12 @@ final class AppModel: ObservableObject {
 
     var hubInteractive: Bool {
         hubConnected || hubRemoteConnected
+    }
+
+    @available(*, deprecated, message: "Use projectRemoteRuntimeSurfaceOverride")
+    var projectRemoteAutonomyOverride: AXProjectAutonomyRemoteOverrideSnapshot? {
+        get { projectRemoteRuntimeSurfaceOverride }
+        set { projectRemoteRuntimeSurfaceOverride = newValue }
     }
 
     var canReviewLastImportedAgentSkill: Bool {
@@ -116,11 +124,28 @@ final class AppModel: ObservableObject {
         return String(line[..<idx]) + "..."
     }
 
+    var officialSkillChannelSummaryLine: String {
+        skillsCompatibilitySnapshot.officialChannelSummaryLine
+    }
+
+    var officialSkillChannelDetailLine: String {
+        skillsCompatibilitySnapshot.officialChannelDetailLine
+    }
+
+    var officialSkillChannelTopBlockersLine: String {
+        skillsCompatibilitySnapshot.officialChannelTopBlockersLine
+    }
+
+    var officialSkillChannelTopBlockerSummaries: [AXOfficialSkillBlockerSummaryItem] {
+        skillsCompatibilitySnapshot.officialPackageLifecycleTopBlockerSummaries
+    }
+
     @Published var memoryCoarseRunning: Bool = false
     @Published var memoryRefineRunning: Bool = false
 
     @Published var bridgeEnabled: Bool = false
     @Published var bridgeAlive: Bool = false
+    @Published var bridgeLastEnsureError: String = ""
 
     @Published var serverRunning: Bool = false
     @Published var localServerEnabled: Bool = false
@@ -131,6 +156,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var settingsFocusRequest: XTSettingsFocusRequest? = nil
     @Published private(set) var hubSetupFocusRequest: XTHubSetupFocusRequest? = nil
     @Published private(set) var modelSettingsFocusRequest: XTModelSettingsFocusRequest? = nil
+    @Published private(set) var projectDetailFocusRequest: XTProjectDetailFocusRequest? = nil
+    @Published private(set) var projectSettingsFocusRequest: XTProjectSettingsFocusRequest? = nil
     @Published private var resumeReminderAcknowledgedSummaryMsByProjectId: [String: Int64] = [:]
 
     private var chatSessions: [String: ChatSessionModel] = [:]
@@ -163,7 +190,9 @@ final class AppModel: ObservableObject {
     private let sessionManager = AXSessionManager.shared
     private let serverManager = AXServerManager.shared
     private let eventBus = AXEventBus.shared
+    private let supervisorCalendarReminderScheduler: SupervisorCalendarReminderScheduler
     private var hubReconnectLastAttemptAt: Date = .distantPast
+    private var hubSetupAutofillLastAttemptAt: Date = .distantPast
     private var bridgeAlwaysOn: Bool = true
     private var bridgeEnsureInFlight: Bool = false
     private var bridgeEnsureLastAttemptAt: Date = .distantPast
@@ -172,17 +201,22 @@ final class AppModel: ObservableObject {
     private var nextSettingsFocusRequestNonce: Int = 0
     private var nextHubSetupFocusRequestNonce: Int = 0
     private var nextModelSettingsFocusRequestNonce: Int = 0
+    private var nextProjectDetailFocusRequestNonce: Int = 0
+    private var nextProjectSettingsFocusRequestNonce: Int = 0
     private var nextProjectSnapshotRefreshAt: Date = .distantPast
-    private var nextProjectAutonomyOverrideRefreshAt: Date = .distantPast
+    private var nextProjectRuntimeSurfaceOverrideRefreshAt: Date = .distantPast
     private var nextSkillsCompatibilityRefreshAt: Date = .distantPast
     private var nextUnifiedDoctorRefreshAt: Date = .distantPast
+    private var pairedSurfaceHeartbeatBaseDir: URL? = nil
     private var remoteSkillsCompatibilityOverlayInFlight: Bool = false
     private var lastObservedModelAssignments: [AXRole: RoleProviderAssignment]
 
     init() {
         let ss = SettingsStore()
+        let calendarReminderScheduler = SupervisorCalendarReminderScheduler()
         settingsStore = ss
         llmRouter = LLMRouter(settingsStore: ss)
+        supervisorCalendarReminderScheduler = calendarReminderScheduler
         lastObservedModelAssignments = Self.modelAssignmentMap(for: ss.settings)
 
         // Memory pipeline status (coarse/refine) for toolbar indicators.
@@ -218,6 +252,9 @@ final class AppModel: ObservableObject {
         refreshUnifiedDoctorReport(force: true)
         loadBridgePrefs()
         loadLocalServerPrefs()
+        if SupervisorCalendarReminderScheduler.shouldAutoStartInCurrentProcess {
+            supervisorCalendarReminderScheduler.bind(settingsStore: ss)
+        }
 
         // Auto-connect if Hub is already running.
         Task { @MainActor in
@@ -312,6 +349,18 @@ final class AppModel: ObservableObject {
     func autoFillHubSetupPathAndPorts() {
         Task { @MainActor in
             await autoFillHubSetupPathAndPortsNow()
+        }
+    }
+
+    func maybeAutoFillHubSetupPathAndPorts(force: Bool = false) {
+        Task { @MainActor in
+            await maybeAutoFillHubSetupPathAndPortsNow(force: force)
+        }
+    }
+
+    func selectDiscoveredHubCandidate(_ candidate: HubDiscoveredHubCandidateSummary) {
+        Task { @MainActor in
+            await applySelectedHubCandidateNow(candidate)
         }
     }
 
@@ -599,6 +648,22 @@ final class AppModel: ObservableObject {
         )
     }
 
+    func requestSupervisorBoardFocus(
+        anchorID: String?,
+        projectId: String? = nil
+    ) {
+        let normalizedProjectId = normalizedDeepLinkToken(projectId)
+        let normalizedAnchorID = normalizedDeepLinkToken(anchorID)
+        guard let normalizedAnchorID else { return }
+
+        nextSupervisorFocusRequestNonce += 1
+        supervisorFocusRequest = AXSupervisorFocusRequest(
+            nonce: nextSupervisorFocusRequestNonce,
+            projectId: normalizedProjectId,
+            subject: .board(anchorID: normalizedAnchorID)
+        )
+    }
+
     func requestSupervisorApprovalFocus(
         projectId: String?,
         requestId: String?
@@ -612,6 +677,22 @@ final class AppModel: ObservableObject {
             nonce: nextSupervisorFocusRequestNonce,
             projectId: normalizedProjectId,
             subject: .approval(requestId: normalizedRequestId)
+        )
+    }
+
+    func requestSupervisorSkillRecordFocus(
+        projectId: String?,
+        requestId: String?
+    ) {
+        let normalizedProjectId = normalizedDeepLinkToken(projectId)
+        let normalizedRequestId = normalizedDeepLinkToken(requestId)
+        guard let normalizedRequestId else { return }
+
+        nextSupervisorFocusRequestNonce += 1
+        supervisorFocusRequest = AXSupervisorFocusRequest(
+            nonce: nextSupervisorFocusRequestNonce,
+            projectId: normalizedProjectId,
+            subject: .skillRecord(requestId: normalizedRequestId)
         )
     }
 
@@ -651,13 +732,49 @@ final class AppModel: ObservableObject {
         supervisorFocusRequest = nil
     }
 
-    func requestSettingsFocus(
-        sectionId: String?,
+    func requestProjectDetailFocus(
+        projectId: String?,
+        section: XTProjectDetailSection = .overview,
         title: String? = nil,
         detail: String? = nil
     ) {
+        guard let normalizedProjectId = normalizedDeepLinkToken(projectId) else { return }
+        let sectionContext = section.focusContext
+        let context = normalizedFocusContext(
+            title: title ?? sectionContext.title,
+            detail: detail ?? sectionContext.detail
+        )
+
+        nextProjectDetailFocusRequestNonce += 1
+        projectDetailFocusRequest = XTProjectDetailFocusRequest(
+            nonce: nextProjectDetailFocusRequestNonce,
+            projectId: normalizedProjectId,
+            section: section,
+            context: context
+        )
+        setPane(.chat, for: normalizedProjectId)
+        selectProject(normalizedProjectId)
+    }
+
+    func clearProjectDetailFocusRequest(_ request: XTProjectDetailFocusRequest) {
+        guard projectDetailFocusRequest?.nonce == request.nonce else { return }
+        projectDetailFocusRequest = nil
+    }
+
+    func requestSettingsFocus(
+        sectionId: String?,
+        title: String? = nil,
+        detail: String? = nil,
+        refreshAction: XTSectionRefreshAction? = nil,
+        refreshReason: String? = nil
+    ) {
         guard let normalizedSectionId = normalizedDeepLinkToken(sectionId) else { return }
-        let context = normalizedFocusContext(title: title, detail: detail)
+        let context = normalizedFocusContext(
+            title: title,
+            detail: detail,
+            refreshAction: refreshAction,
+            refreshReason: refreshReason
+        )
 
         nextSettingsFocusRequestNonce += 1
         settingsFocusRequest = XTSettingsFocusRequest(
@@ -672,13 +789,84 @@ final class AppModel: ObservableObject {
         settingsFocusRequest = nil
     }
 
-    func requestHubSetupFocus(
-        sectionId: String?,
+    func requestProjectSettingsFocus(
+        projectId: String?,
+        destination: XTProjectGovernanceDestination?,
+        preserveCurrentPane: Bool = false,
         title: String? = nil,
         detail: String? = nil
     ) {
+        guard let normalizedProjectId = normalizedDeepLinkToken(projectId),
+              let destination else {
+            return
+        }
+        let destinationContext = destination.focusContext
+        let context = normalizedFocusContext(
+            title: title ?? destinationContext.title,
+            detail: detail ?? destinationContext.detail
+        )
+
+        nextProjectSettingsFocusRequestNonce += 1
+        projectSettingsFocusRequest = XTProjectSettingsFocusRequest(
+            nonce: nextProjectSettingsFocusRequestNonce,
+            projectId: normalizedProjectId,
+            destination: destination,
+            context: context
+        )
+        if !preserveCurrentPane {
+            setPane(.chat, for: normalizedProjectId)
+        }
+        selectProject(normalizedProjectId)
+    }
+
+    func requestProjectSettingsFocus(
+        projectId: String?,
+        sectionId: String?,
+        preserveCurrentPane: Bool = false,
+        title: String? = nil,
+        detail: String? = nil
+    ) {
+        requestProjectSettingsFocus(
+            projectId: projectId,
+            destination: XTProjectGovernanceDestination.parse(sectionId),
+            preserveCurrentPane: preserveCurrentPane,
+            title: title,
+            detail: detail
+        )
+    }
+
+    func clearProjectSettingsFocusRequest(_ request: XTProjectSettingsFocusRequest) {
+        guard projectSettingsFocusRequest?.nonce == request.nonce else { return }
+        projectSettingsFocusRequest = nil
+    }
+
+    func requestProjectUIReviewFocus(
+        projectId: String?,
+        title: String? = nil,
+        detail: String? = nil
+    ) {
+        requestProjectSettingsFocus(
+            projectId: projectId,
+            destination: .uiReview,
+            title: title ?? "Latest UI Review",
+            detail: detail ?? "Project UI review workspace"
+        )
+    }
+
+    func requestHubSetupFocus(
+        sectionId: String?,
+        title: String? = nil,
+        detail: String? = nil,
+        refreshAction: XTSectionRefreshAction? = nil,
+        refreshReason: String? = nil
+    ) {
         guard let normalizedSectionId = normalizedDeepLinkToken(sectionId) else { return }
-        let context = normalizedFocusContext(title: title, detail: detail)
+        let context = normalizedFocusContext(
+            title: title,
+            detail: detail,
+            refreshAction: refreshAction,
+            refreshReason: refreshReason
+        )
 
         nextHubSetupFocusRequestNonce += 1
         hubSetupFocusRequest = XTHubSetupFocusRequest(
@@ -733,14 +921,16 @@ final class AppModel: ObservableObject {
             modelId: ""
         )
         let reasonText = (reason ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        var message = "请先处理 Hub 授权请求（grant_request_id=\(grantId)"
+        var lines = ["请先处理这笔 Hub 授权。"]
+        lines.append("授权单号：\(grantId)")
         if !capabilityToken.isEmpty {
-            message += "，capability=\(capabilityLabel)"
+            lines.append("授权类型：\(capabilityLabel)")
         }
-        message += "），确认后继续推进当前项目。"
+        lines.append("确认后继续推进当前项目。")
         if !reasonText.isEmpty {
-            message += "\n授权原因：\(reasonText)"
+            lines.append("授权原因：\(reasonText)")
         }
+        let message = lines.joined(separator: "\n")
 
         let currentDraft = s.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         if currentDraft.isEmpty {
@@ -758,16 +948,71 @@ final class AppModel: ObservableObject {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    func performSectionRefreshAction(
+        _ action: XTSectionRefreshAction,
+        reason: String? = nil
+    ) {
+        switch action {
+        case .recheckOfficialSkills:
+            recheckOfficialSkills(reason: reason)
+        }
+    }
+
+    func recheckOfficialSkills(reason: String? = nil) {
+        let normalizedReason = normalizedDeepLinkToken(reason) ?? "manual"
+        let previousDigest = [
+            normalizedDeepLinkToken(officialSkillChannelSummaryLine),
+            normalizedDeepLinkToken(officialSkillChannelTopBlockersLine)
+        ]
+        .compactMap { $0 }
+        .joined(separator: " | ")
+
+        officialSkillsRecheckStatusLine = "official_skills_recheck=running reason=\(normalizedReason)"
+        refreshSkillsCompatibilitySnapshot(force: true)
+        refreshResolvedSkillsCacheForCurrentSelection()
+        refreshUnifiedDoctorReport(force: true)
+
+        let snapshotLine = normalizedDeepLinkToken(officialSkillChannelSummaryLine)
+            ?? normalizedDeepLinkToken(skillsCompatibilitySnapshot.statusLine)
+            ?? "skills?"
+        let blockersLine = normalizedDeepLinkToken(officialSkillChannelTopBlockersLine)
+        let currentDigest = [snapshotLine, blockersLine].compactMap { $0 }.joined(separator: " | ")
+        let changeState = previousDigest.isEmpty ? "captured" : (previousDigest == currentDigest ? "unchanged" : "updated")
+
+        var parts = [
+            "official_skills_recheck=\(changeState)",
+            "reason=\(normalizedReason)",
+            "snapshot=\(snapshotLine)"
+        ]
+        if let blockersLine {
+            parts.append(blockersLine)
+        }
+        officialSkillsRecheckStatusLine = parts.joined(separator: " ")
+    }
+
     private func normalizedFocusContext(
         title: String?,
-        detail: String?
+        detail: String?,
+        refreshAction: XTSectionRefreshAction? = nil,
+        refreshReason: String? = nil
     ) -> XTSectionFocusContext? {
         let normalizedTitle = normalizedDeepLinkToken(title)
         let normalizedDetail = normalizedDeepLinkToken(detail)
-        guard let normalizedTitle else { return nil }
+        let normalizedRefreshReason = normalizedDeepLinkToken(refreshReason)
+        guard let normalizedTitle else {
+            guard refreshAction != nil else { return nil }
+            return XTSectionFocusContext(
+                title: "Refresh requested",
+                detail: normalizedDetail,
+                refreshAction: refreshAction,
+                refreshReason: normalizedRefreshReason
+            )
+        }
         return XTSectionFocusContext(
             title: normalizedTitle,
-            detail: normalizedDetail
+            detail: normalizedDetail,
+            refreshAction: refreshAction,
+            refreshReason: normalizedRefreshReason
         )
     }
 
@@ -991,7 +1236,7 @@ final class AppModel: ObservableObject {
         } else {
             out = existing.trimmingCharacters(in: .whitespacesAndNewlines) + "\n\n" + header + entry + "\n"
         }
-        try? out.data(using: .utf8)?.write(to: indexURL, options: .atomic)
+        try? XTStoreWriteSupport.writeUTF8Text(out, to: indexURL)
     }
 
     private func updateGlobalSkillsIndex(skillsDir: URL, projectDir: URL, projectName: String) {
@@ -1016,7 +1261,7 @@ final class AppModel: ObservableObject {
         } else {
             out = existing.trimmingCharacters(in: .whitespacesAndNewlines) + "\n\n" + header + projectSection + entry + "\n"
         }
-        try? out.data(using: .utf8)?.write(to: indexURL, options: .atomic)
+        try? XTStoreWriteSupport.writeUTF8Text(out, to: indexURL)
     }
 
     private func updateGlobalSkillsIndexForGlobalSkill(skillsDir: URL, skillName: String, summary: String) {
@@ -1041,7 +1286,7 @@ final class AppModel: ObservableObject {
         } else {
             out = existing.trimmingCharacters(in: .whitespacesAndNewlines) + "\n\n" + header + section + entry + "\n"
         }
-        try? out.data(using: .utf8)?.write(to: indexURL, options: .atomic)
+        try? XTStoreWriteSupport.writeUTF8Text(out, to: indexURL)
     }
 
     private func writeMigrationReport(
@@ -1058,7 +1303,7 @@ final class AppModel: ObservableObject {
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted]) else { return }
         let url = skillsDir.appendingPathComponent("_migration_report.json")
-        try? data.write(to: url, options: .atomic)
+        try? XTStoreWriteSupport.writeSnapshotData(data, to: url)
     }
 
     private func projectSkillsDir(projectId: String, projectName: String, skillsDir: URL) -> URL? {
@@ -1801,9 +2046,8 @@ final class AppModel: ObservableObject {
     func setProjectRoleModel(role: AXRole, modelId: String?) {
         guard let ctx = projectContext else { return }
         guard var cfg = projectConfig else { return }
-        if projectModelSwitchChanged(current: cfg.modelOverride(for: role), next: modelId) {
-            _ = AXMemoryLifecycleStore.writeSessionSummaryCapsule(ctx: ctx, reason: "ai_switch")
-        }
+        guard projectModelSwitchChanged(current: cfg.modelOverride(for: role), next: modelId) else { return }
+        _ = AXMemoryLifecycleStore.writeSessionSummaryCapsule(ctx: ctx, reason: "ai_switch")
         cfg = cfg.settingModelOverride(role: role, modelId: modelId)
         projectConfig = cfg
         try? AXProjectStore.saveConfig(cfg, for: ctx)
@@ -1812,9 +2056,8 @@ final class AppModel: ObservableObject {
     func setProjectRoleModelOverride(projectId: String, role: AXRole, modelId: String?) {
         guard let ctx = projectContext(for: projectId) else { return }
         guard var cfg = try? AXProjectStore.loadOrCreateConfig(for: ctx) else { return }
-        if projectModelSwitchChanged(current: cfg.modelOverride(for: role), next: modelId) {
-            _ = AXMemoryLifecycleStore.writeSessionSummaryCapsule(ctx: ctx, reason: "ai_switch")
-        }
+        guard projectModelSwitchChanged(current: cfg.modelOverride(for: role), next: modelId) else { return }
+        _ = AXMemoryLifecycleStore.writeSessionSummaryCapsule(ctx: ctx, reason: "ai_switch")
         cfg.setModelOverride(role: role, modelId: modelId)
         try? AXProjectStore.saveConfig(cfg, for: ctx)
 
@@ -1848,6 +2091,111 @@ final class AppModel: ObservableObject {
         cfg = cfg.settingHubMemoryPreference(enabled: enabled)
         projectConfig = cfg
         try? AXProjectStore.saveConfig(cfg, for: ctx)
+    }
+
+    func setSupervisorRecentRawContextProfile(_ profile: XTSupervisorRecentRawContextProfile) {
+        let current = settingsStore.settings.supervisorRecentRawContextProfile
+        guard current != profile else { return }
+        settingsStore.settings = settingsStore.settings.setting(
+            supervisorRecentRawContextProfile: profile
+        )
+        settingsStore.save()
+        announceSupervisorSettingsNotice(
+            XTSettingsChangeNoticeBuilder.supervisorRecentRawContext(
+                profile: profile,
+                privacyMode: settingsStore.settings.supervisorPrivacyMode
+            )
+        )
+    }
+
+    func setSupervisorWorkMode(_ mode: XTSupervisorWorkMode) {
+        let current = settingsStore.settings.supervisorWorkMode
+        guard current != mode else { return }
+        settingsStore.settings = settingsStore.settings.setting(
+            supervisorWorkMode: mode
+        )
+        settingsStore.save()
+        announceSupervisorSettingsNotice(
+            XTSettingsChangeNoticeBuilder.supervisorWorkMode(mode)
+        )
+    }
+
+    func setSupervisorPrivacyMode(_ mode: XTPrivacyMode) {
+        let current = settingsStore.settings.supervisorPrivacyMode
+        guard current != mode else { return }
+        settingsStore.settings = settingsStore.settings.setting(
+            supervisorPrivacyMode: mode
+        )
+        settingsStore.save()
+        announceSupervisorSettingsNotice(
+            XTSettingsChangeNoticeBuilder.supervisorPrivacyMode(
+                mode,
+                configuredProfile: settingsStore.settings.supervisorRecentRawContextProfile
+            )
+        )
+    }
+
+    func setDefaultToolSandboxMode(_ mode: ToolSandboxMode) {
+        let current = ToolExecutor.sandboxMode()
+        guard current != mode else { return }
+        ToolExecutor.setSandboxMode(mode)
+        announceCurrentProjectSettingsNotice(
+            XTSettingsChangeNoticeBuilder.defaultToolSandboxMode(mode)
+        )
+    }
+
+    func setSupervisorCalendarReminderPreferences(
+        _ preferences: SupervisorCalendarReminderPreferences
+    ) {
+        settingsStore.settings = settingsStore.settings.setting(
+            supervisorCalendarReminders: preferences
+        )
+        settingsStore.save()
+    }
+
+    func setProjectContextAssembly(
+        projectRecentDialogueProfile: AXProjectRecentDialogueProfile? = nil,
+        projectContextDepthProfile: AXProjectContextDepthProfile? = nil
+    ) {
+        guard let ctx = projectContext else { return }
+        guard var cfg = projectConfig else { return }
+
+        cfg = cfg.settingProjectContextAssembly(
+            projectRecentDialogueProfile: projectRecentDialogueProfile,
+            projectContextDepthProfile: projectContextDepthProfile
+        )
+        projectConfig = cfg
+        try? AXProjectStore.saveConfig(cfg, for: ctx)
+        AXProjectStore.appendRawLog(
+            [
+                "type": "project_context_assembly",
+                "action": "update",
+                "created_at": Date().timeIntervalSince1970,
+                "project_id": AXProjectRegistryStore.projectId(forRoot: ctx.root),
+                "project_recent_dialogue_profile": cfg.projectRecentDialogueProfile.rawValue,
+                "project_context_depth_profile": cfg.projectContextDepthProfile.rawValue,
+            ],
+            for: ctx
+        )
+    }
+
+    private func announceSupervisorSettingsNotice(_ notice: XTSettingsChangeNotice) {
+        _ = SupervisorManager.shared.appendLocalAssistantNotice(
+            "Supervisor 设置已更新：\(notice.detail)"
+        )
+    }
+
+    private func announceCurrentProjectSettingsNotice(_ notice: XTSettingsChangeNotice) {
+        guard let selectedProjectId,
+              selectedProjectId != AXProjectRegistry.globalHomeId,
+              let ctx = projectContext(for: selectedProjectId),
+              let session = sessionForProjectId(selectedProjectId) else {
+            return
+        }
+        _ = session.appendLocalAssistantNotice(
+            "XT Runtime 设置已更新：\(notice.detail)",
+            ctx: ctx
+        )
     }
 
     func setProjectGovernedReadableRoots(paths: [String]) {
@@ -1887,60 +2235,67 @@ final class AppModel: ObservableObject {
         )
     }
 
-    func applyProjectAutonomyProfile(_ profile: AXProjectAutonomyProfile) {
-        guard profile != .custom else { return }
+    func applyProjectGovernanceTemplate(_ template: AXProjectGovernanceTemplate) {
+        guard template != .custom else { return }
         guard let ctx = projectContext else { return }
         guard var cfg = projectConfig else { return }
 
         let now = Date()
-        cfg = cfg.settingAutonomySwitchboardProfile(
-            profile,
+        cfg = cfg.settingGovernanceTemplate(
+            template,
             projectRoot: ctx.root,
             now: now
         )
         let resolved = xtResolveProjectGovernance(
             projectRoot: ctx.root,
             config: cfg,
-            remoteOverride: projectRemoteAutonomyOverride
+            remoteOverride: projectRemoteRuntimeSurfaceOverride
         )
 
         projectConfig = cfg
         try? AXProjectStore.saveConfig(cfg, for: ctx)
         AXProjectStore.appendRawLog(
             [
-                "type": "project_autonomy_profile",
+                "type": "project_governance_template",
+                "legacy_type": "project_autonomy_profile",
                 "action": "apply",
                 "created_at": now.timeIntervalSince1970,
                 "project_id": AXProjectRegistryStore.projectId(forRoot: ctx.root),
-                "profile": profile.rawValue,
+                "template": template.rawValue,
+                "profile": template.rawValue,
                 "execution_tier": cfg.executionTier.rawValue,
                 "supervisor_intervention_tier": cfg.supervisorInterventionTier.rawValue,
                 "review_policy_mode": cfg.reviewPolicyMode.rawValue,
-                "runtime_surface_configured": cfg.autonomyMode.rawValue,
-                "runtime_surface_preset": cfg.autonomyMode.rawValue,
-                "surface_preset": cfg.autonomyMode.rawValue,
+                "runtime_surface_configured": cfg.runtimeSurfaceMode.rawValue,
+                "runtime_surface_preset": cfg.runtimeSurfaceMode.rawValue,
+                "surface_preset": cfg.runtimeSurfaceMode.rawValue,
                 "local_auto_approve": cfg.governedAutoApproveLocalToolCalls,
                 "prefer_hub_memory": cfg.preferHubMemory,
-                "runtime_surface_effective": resolved.effectiveAutonomy.effectiveMode.rawValue,
-                "runtime_surface_hub_override": resolved.effectiveAutonomy.hubOverrideMode.rawValue,
-                "runtime_surface_local_override": resolved.effectiveAutonomy.localOverrideMode.rawValue,
-                "runtime_surface_remote_override": resolved.effectiveAutonomy.remoteOverrideMode.rawValue,
-                "runtime_surface_remote_override_source": resolved.effectiveAutonomy.remoteOverrideSource,
-                "runtime_surface_remote_override_updated_at_ms": resolved.effectiveAutonomy.remoteOverrideUpdatedAtMs,
-                "runtime_surface_ttl_sec": cfg.autonomyTTLSeconds,
-                "runtime_surface_remaining_sec": resolved.effectiveAutonomy.remainingSeconds,
-                "runtime_surface_expired": resolved.effectiveAutonomy.expired,
-                "runtime_surface_kill_switch_engaged": resolved.effectiveAutonomy.killSwitchEngaged,
-                "effective_runtime_surface": resolved.effectiveAutonomy.effectiveMode.rawValue,
-                "effective_runtime_surface_hub_override": resolved.effectiveAutonomy.hubOverrideMode.rawValue,
-                "effective_mode": resolved.effectiveAutonomy.effectiveMode.rawValue,
-                "effective_hub_override_mode": resolved.effectiveAutonomy.hubOverrideMode.rawValue,
+                "runtime_surface_effective": resolved.effectiveRuntimeSurface.effectiveMode.rawValue,
+                "runtime_surface_hub_override": resolved.effectiveRuntimeSurface.hubOverrideMode.rawValue,
+                "runtime_surface_local_override": resolved.effectiveRuntimeSurface.localOverrideMode.rawValue,
+                "runtime_surface_remote_override": resolved.effectiveRuntimeSurface.remoteOverrideMode.rawValue,
+                "runtime_surface_remote_override_source": resolved.effectiveRuntimeSurface.remoteOverrideSource,
+                "runtime_surface_remote_override_updated_at_ms": resolved.effectiveRuntimeSurface.remoteOverrideUpdatedAtMs,
+                "runtime_surface_ttl_sec": cfg.runtimeSurfaceTTLSeconds,
+                "runtime_surface_remaining_sec": resolved.effectiveRuntimeSurface.remainingSeconds,
+                "runtime_surface_expired": resolved.effectiveRuntimeSurface.expired,
+                "runtime_surface_kill_switch_engaged": resolved.effectiveRuntimeSurface.killSwitchEngaged,
+                "effective_runtime_surface": resolved.effectiveRuntimeSurface.effectiveMode.rawValue,
+                "effective_runtime_surface_hub_override": resolved.effectiveRuntimeSurface.hubOverrideMode.rawValue,
+                "effective_mode": resolved.effectiveRuntimeSurface.effectiveMode.rawValue,
+                "effective_hub_override_mode": resolved.effectiveRuntimeSurface.hubOverrideMode.rawValue,
                 "trusted_automation_state": resolved.trustedAutomationStatus.state.rawValue,
                 "invalid_reasons": resolved.validation.invalidReasons,
                 "warning_reasons": resolved.validation.warningReasons,
             ],
             for: ctx
         )
+    }
+
+    @available(*, deprecated, message: "Use applyProjectGovernanceTemplate(_:)")
+    func applyProjectAutonomyProfile(_ profile: AXProjectGovernanceTemplate) {
+        applyProjectGovernanceTemplate(profile)
     }
 
     func setProjectAutomationSelfIteration(
@@ -1957,24 +2312,24 @@ final class AppModel: ObservableObject {
         try? AXProjectStore.saveConfig(cfg, for: ctx)
     }
 
-    func setProjectAutonomyPolicy(
-        mode: AXProjectAutonomyMode? = nil,
+    func setProjectRuntimeSurfacePolicy(
+        mode: AXProjectRuntimeSurfaceMode? = nil,
         allowDeviceTools: Bool? = nil,
         allowBrowserRuntime: Bool? = nil,
         allowConnectorActions: Bool? = nil,
         allowExtensions: Bool? = nil,
         ttlSeconds: Int? = nil,
-        hubOverrideMode: AXProjectAutonomyHubOverrideMode? = nil
+        hubOverrideMode: AXProjectRuntimeSurfaceHubOverrideMode? = nil
     ) {
         guard let ctx = projectContext else { return }
         guard var cfg = projectConfig else { return }
 
         let now = Date()
-        let previous = cfg.effectiveAutonomyPolicy(
+        let previous = cfg.effectiveRuntimeSurfacePolicy(
             now: now,
-            remoteOverride: projectRemoteAutonomyOverride
+            remoteOverride: projectRemoteRuntimeSurfaceOverride
         )
-        cfg = cfg.settingAutonomyPolicy(
+        cfg = cfg.settingRuntimeSurfacePolicy(
             mode: mode,
             allowDeviceTools: allowDeviceTools,
             allowBrowserRuntime: allowBrowserRuntime,
@@ -1984,9 +2339,9 @@ final class AppModel: ObservableObject {
             hubOverrideMode: hubOverrideMode,
             updatedAt: now
         )
-        let effective = cfg.effectiveAutonomyPolicy(
+        let effective = cfg.effectiveRuntimeSurfacePolicy(
             now: now,
-            remoteOverride: projectRemoteAutonomyOverride
+            remoteOverride: projectRemoteRuntimeSurfaceOverride
         )
 
         projectConfig = cfg
@@ -1997,8 +2352,8 @@ final class AppModel: ObservableObject {
                 "action": "update",
                 "created_at": now.timeIntervalSince1970,
                 "project_id": AXProjectRegistryStore.projectId(forRoot: ctx.root),
-                "runtime_surface": cfg.autonomyMode.rawValue,
-                "runtime_surface_configured": cfg.autonomyMode.rawValue,
+                "runtime_surface": cfg.runtimeSurfaceMode.rawValue,
+                "runtime_surface_configured": cfg.runtimeSurfaceMode.rawValue,
                 "effective_runtime_surface": effective.effectiveMode.rawValue,
                 "previous_effective_runtime_surface": previous.effectiveMode.rawValue,
                 "runtime_surface_hub_override": effective.hubOverrideMode.rawValue,
@@ -2006,37 +2361,69 @@ final class AppModel: ObservableObject {
                 "runtime_surface_remote_override": effective.remoteOverrideMode.rawValue,
                 "runtime_surface_remote_override_source": effective.remoteOverrideSource,
                 "runtime_surface_remote_override_updated_at_ms": effective.remoteOverrideUpdatedAtMs,
-                "runtime_surface_ttl_sec": cfg.autonomyTTLSeconds,
+                "runtime_surface_ttl_sec": cfg.runtimeSurfaceTTLSeconds,
                 "runtime_surface_remaining_sec": effective.remainingSeconds,
                 "runtime_surface_expired": effective.expired,
                 "runtime_surface_kill_switch_engaged": effective.killSwitchEngaged,
-                "mode": cfg.autonomyMode.rawValue,
+                "mode": cfg.runtimeSurfaceMode.rawValue,
                 "effective_mode": effective.effectiveMode.rawValue,
                 "previous_effective_mode": previous.effectiveMode.rawValue,
-                "allow_device_tools": cfg.autonomyAllowDeviceTools,
-                "allow_browser_runtime": cfg.autonomyAllowBrowserRuntime,
-                "allow_connector_actions": cfg.autonomyAllowConnectorActions,
-                "allow_extensions": cfg.autonomyAllowExtensions,
-                "ttl_sec": cfg.autonomyTTLSeconds,
+                "allow_device_tools": cfg.runtimeSurfaceAllowDeviceTools,
+                "allow_browser_runtime": cfg.runtimeSurfaceAllowBrowserRuntime,
+                "allow_connector_actions": cfg.runtimeSurfaceAllowConnectorActions,
+                "allow_extensions": cfg.runtimeSurfaceAllowExtensions,
+                "ttl_sec": cfg.runtimeSurfaceTTLSeconds,
                 "remaining_sec": effective.remainingSeconds,
-                "hub_override_mode": cfg.autonomyHubOverrideMode.rawValue,
+                "hub_override_mode": cfg.runtimeSurfaceHubOverrideMode.rawValue,
                 "effective_hub_override_mode": effective.hubOverrideMode.rawValue,
                 "remote_override_mode": effective.remoteOverrideMode.rawValue,
                 "remote_override_source": effective.remoteOverrideSource,
-                "audit_ref": "audit-xt-autonomy-policy-\(Int(now.timeIntervalSince1970))"
+                "audit_ref": "audit-xt-runtime-surface-policy-\(Int(now.timeIntervalSince1970))"
             ],
             for: ctx
         )
     }
 
+    @available(*, deprecated, message: "Use setProjectRuntimeSurfacePolicy(mode:allowDeviceTools:allowBrowserRuntime:allowConnectorActions:allowExtensions:ttlSeconds:hubOverrideMode:)")
+    func setProjectAutonomyPolicy(
+        mode: AXProjectRuntimeSurfaceMode? = nil,
+        allowDeviceTools: Bool? = nil,
+        allowBrowserRuntime: Bool? = nil,
+        allowConnectorActions: Bool? = nil,
+        allowExtensions: Bool? = nil,
+        ttlSeconds: Int? = nil,
+        hubOverrideMode: AXProjectRuntimeSurfaceHubOverrideMode? = nil
+    ) {
+        setProjectRuntimeSurfacePolicy(
+            mode: mode,
+            allowDeviceTools: allowDeviceTools,
+            allowBrowserRuntime: allowBrowserRuntime,
+            allowConnectorActions: allowConnectorActions,
+            allowExtensions: allowExtensions,
+            ttlSeconds: ttlSeconds,
+            hubOverrideMode: hubOverrideMode
+        )
+    }
+
+    func resolvedProjectRuntimeSurfacePolicy(
+        config: AXProjectConfig? = nil,
+        now: Date = Date()
+    ) -> AXProjectRuntimeSurfaceEffectivePolicy {
+        let resolvedConfig = config ?? projectConfig ?? .default(forProjectRoot: projectContext?.root ?? URL(fileURLWithPath: "/"))
+        return resolvedConfig.effectiveRuntimeSurfacePolicy(
+            now: now,
+            remoteOverride: projectRemoteRuntimeSurfaceOverride
+        )
+    }
+
+    @available(*, deprecated, message: "Use resolvedProjectRuntimeSurfacePolicy(config:now:)")
     func resolvedProjectAutonomyPolicy(
         config: AXProjectConfig? = nil,
         now: Date = Date()
-    ) -> AXProjectAutonomyEffectivePolicy {
-        let resolvedConfig = config ?? projectConfig ?? .default(forProjectRoot: projectContext?.root ?? URL(fileURLWithPath: "/"))
-        return resolvedConfig.effectiveAutonomyPolicy(
-            now: now,
-            remoteOverride: projectRemoteAutonomyOverride
+    ) -> AXProjectRuntimeSurfaceEffectivePolicy {
+        resolvedProjectRuntimeSurfacePolicy(
+            config: config,
+            now: now
         )
     }
 
@@ -2064,15 +2451,15 @@ final class AppModel: ObservableObject {
             eventReviewTriggers: eventReviewTriggers
         )
         if let executionTier {
-            cfg = cfg.settingAutonomyPolicy(
-                mode: executionTier.defaultSurfacePreset,
+            cfg = cfg.settingRuntimeSurfacePolicy(
+                mode: executionTier.defaultRuntimeSurfacePreset,
                 updatedAt: Date()
             )
         }
         let resolved = xtResolveProjectGovernance(
             projectRoot: ctx.root,
             config: cfg,
-            remoteOverride: projectRemoteAutonomyOverride
+            remoteOverride: projectRemoteRuntimeSurfaceOverride
         )
 
         projectConfig = cfg
@@ -2092,19 +2479,19 @@ final class AppModel: ObservableObject {
                 "event_driven_review_enabled": cfg.eventDrivenReviewEnabled,
                 "event_review_triggers": cfg.eventReviewTriggers.map(\.rawValue),
                 "compat_source": cfg.governanceCompatSource.rawValue,
-                "runtime_surface_configured": cfg.autonomyMode.rawValue,
-                "runtime_surface_preset": cfg.autonomyMode.rawValue,
-                "effective_runtime_surface": resolved.effectiveAutonomy.effectiveMode.rawValue,
-                "runtime_surface_hub_override": resolved.effectiveAutonomy.hubOverrideMode.rawValue,
-                "runtime_surface_local_override": resolved.effectiveAutonomy.localOverrideMode.rawValue,
-                "runtime_surface_remote_override": resolved.effectiveAutonomy.remoteOverrideMode.rawValue,
-                "runtime_surface_remote_override_source": resolved.effectiveAutonomy.remoteOverrideSource,
-                "runtime_surface_remote_override_updated_at_ms": resolved.effectiveAutonomy.remoteOverrideUpdatedAtMs,
-                "runtime_surface_ttl_sec": cfg.autonomyTTLSeconds,
-                "runtime_surface_remaining_sec": resolved.effectiveAutonomy.remainingSeconds,
-                "runtime_surface_expired": resolved.effectiveAutonomy.expired,
-                "runtime_surface_kill_switch_engaged": resolved.effectiveAutonomy.killSwitchEngaged,
-                "surface_preset": cfg.autonomyMode.rawValue,
+                "runtime_surface_configured": cfg.runtimeSurfaceMode.rawValue,
+                "runtime_surface_preset": cfg.runtimeSurfaceMode.rawValue,
+                "effective_runtime_surface": resolved.effectiveRuntimeSurface.effectiveMode.rawValue,
+                "runtime_surface_hub_override": resolved.effectiveRuntimeSurface.hubOverrideMode.rawValue,
+                "runtime_surface_local_override": resolved.effectiveRuntimeSurface.localOverrideMode.rawValue,
+                "runtime_surface_remote_override": resolved.effectiveRuntimeSurface.remoteOverrideMode.rawValue,
+                "runtime_surface_remote_override_source": resolved.effectiveRuntimeSurface.remoteOverrideSource,
+                "runtime_surface_remote_override_updated_at_ms": resolved.effectiveRuntimeSurface.remoteOverrideUpdatedAtMs,
+                "runtime_surface_ttl_sec": cfg.runtimeSurfaceTTLSeconds,
+                "runtime_surface_remaining_sec": resolved.effectiveRuntimeSurface.remainingSeconds,
+                "runtime_surface_expired": resolved.effectiveRuntimeSurface.expired,
+                "runtime_surface_kill_switch_engaged": resolved.effectiveRuntimeSurface.killSwitchEngaged,
+                "surface_preset": cfg.runtimeSurfaceMode.rawValue,
                 "invalid_reasons": resolved.validation.invalidReasons,
                 "warning_reasons": resolved.validation.warningReasons,
                 "should_fail_closed": resolved.validation.shouldFailClosed
@@ -2123,18 +2510,18 @@ final class AppModel: ObservableObject {
             ctx: AXProjectContext(root: root),
             config: resolvedConfig,
             legacyAutonomyLevel: legacyAutonomyLevel,
-            remoteOverride: projectRemoteAutonomyOverride
+            remoteOverride: projectRemoteRuntimeSurfaceOverride
         )
     }
 
     func resolvedProjectGovernance(for project: AXProjectEntry) -> AXProjectResolvedGovernanceState {
         let root = URL(fileURLWithPath: project.rootPath, isDirectory: true)
         let config: AXProjectConfig
-        let remoteOverride: AXProjectAutonomyRemoteOverrideSnapshot?
+        let remoteOverride: AXProjectRuntimeSurfaceRemoteOverrideSnapshot?
 
         if selectedProjectId == project.projectId, let projectConfig {
             config = projectConfig
-            remoteOverride = projectRemoteAutonomyOverride
+            remoteOverride = projectRemoteRuntimeSurfaceOverride
         } else {
             let ctx = AXProjectContext(root: root)
             config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: root)
@@ -2156,14 +2543,14 @@ final class AppModel: ObservableObject {
         let bindingProjectId = project.registeredProjectBinding?.projectId
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let config: AXProjectConfig
-        let remoteOverride: AXProjectAutonomyRemoteOverrideSnapshot?
+        let remoteOverride: AXProjectRuntimeSurfaceRemoteOverrideSnapshot?
 
         if !bindingProjectId.isEmpty,
            selectedProjectId == bindingProjectId,
            projectContext?.root.standardizedFileURL == ctx.root.standardizedFileURL,
            let projectConfig {
             config = projectConfig
-            remoteOverride = projectRemoteAutonomyOverride
+            remoteOverride = projectRemoteRuntimeSurfaceOverride
         } else {
             config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: ctx.root)
             remoteOverride = nil
@@ -2172,19 +2559,19 @@ final class AppModel: ObservableObject {
         return resolvedProjectGovernance(
             ctx: ctx,
             config: config,
-            legacyAutonomyLevel: project.autonomyLevel,
+            legacyAutonomyLevel: governanceResolverLegacyAutonomyLevel(for: project, config: config),
             remoteOverride: remoteOverride
         )
     }
 
-    func autonomySwitchboardPresentation(for project: AXProjectEntry) -> AXProjectAutonomySwitchboardPresentation {
+    func governanceTemplatePreview(for project: AXProjectEntry) -> AXProjectGovernanceTemplatePreview {
         let root = URL(fileURLWithPath: project.rootPath, isDirectory: true)
         let config: AXProjectConfig
-        let remoteOverride: AXProjectAutonomyRemoteOverrideSnapshot?
+        let remoteOverride: AXProjectRuntimeSurfaceRemoteOverrideSnapshot?
 
         if selectedProjectId == project.projectId, let projectConfig {
             config = projectConfig
-            remoteOverride = projectRemoteAutonomyOverride
+            remoteOverride = projectRemoteRuntimeSurfaceOverride
         } else {
             let ctx = AXProjectContext(root: root)
             config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: root)
@@ -2196,26 +2583,31 @@ final class AppModel: ObservableObject {
             config: config,
             remoteOverride: remoteOverride
         )
-        return xtProjectAutonomySwitchboardPresentation(
+        return xtProjectGovernanceTemplatePresentation(
             projectRoot: root,
             config: config,
             resolved: resolved
         )
     }
 
-    func autonomySwitchboardPresentation(for project: ProjectModel) -> AXProjectAutonomySwitchboardPresentation {
+    @available(*, deprecated, message: "Use governanceTemplatePreview(for:)")
+    func autonomySwitchboardPresentation(for project: AXProjectEntry) -> AXProjectGovernanceTemplatePreview {
+        governanceTemplatePreview(for: project)
+    }
+
+    func governanceTemplatePreview(for project: ProjectModel) -> AXProjectGovernanceTemplatePreview {
         if let ctx = project.governanceActivityContext(resolveProjectContext: projectContext(for:)) {
             let bindingProjectId = project.registeredProjectBinding?.projectId
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let config: AXProjectConfig
-            let remoteOverride: AXProjectAutonomyRemoteOverrideSnapshot?
+            let remoteOverride: AXProjectRuntimeSurfaceRemoteOverrideSnapshot?
 
             if !bindingProjectId.isEmpty,
                selectedProjectId == bindingProjectId,
                projectContext?.root.standardizedFileURL == ctx.root.standardizedFileURL,
                let projectConfig {
                 config = projectConfig
-                remoteOverride = projectRemoteAutonomyOverride
+                remoteOverride = projectRemoteRuntimeSurfaceOverride
             } else {
                 config = (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: ctx.root)
                 remoteOverride = nil
@@ -2224,37 +2616,43 @@ final class AppModel: ObservableObject {
             let resolved = resolvedProjectGovernance(
                 ctx: ctx,
                 config: config,
-                legacyAutonomyLevel: project.autonomyLevel,
+                legacyAutonomyLevel: governanceResolverLegacyAutonomyLevel(for: project, config: config),
                 remoteOverride: remoteOverride
             )
-            return xtProjectAutonomySwitchboardPresentation(
+            return xtProjectGovernanceTemplatePresentation(
                 projectRoot: ctx.root,
                 config: config,
                 resolved: resolved
             )
         }
 
-        let root = fallbackAutonomyProjectRoot(for: project)
-        let config = xtAutonomySwitchboardDraftConfig(
+        let root = fallbackGovernanceTemplateProjectRoot(for: project)
+        let config = xtGovernanceTemplateDraftConfig(
             projectRoot: root,
-            baselineProfile: xtAutonomyBaselineProfile(for: project.executionTier),
+            template: xtGovernanceTemplateBaseline(for: project.executionTier),
             executionTier: project.executionTier,
             supervisorInterventionTier: project.supervisorInterventionTier,
             reviewPolicyMode: project.reviewPolicyMode,
             progressHeartbeatSeconds: project.progressHeartbeatSeconds,
             reviewPulseSeconds: project.reviewPulseSeconds,
             brainstormReviewSeconds: project.brainstormReviewSeconds,
-            eventDrivenReviewEnabled: project.eventDrivenReviewEnabled
+            eventDrivenReviewEnabled: project.eventDrivenReviewEnabled,
+            eventReviewTriggers: project.eventReviewTriggers
         )
         let resolved = resolvedProjectGovernance(
             ctx: AXProjectContext(root: root),
             config: config
         )
-        return xtProjectAutonomySwitchboardPresentation(
+        return xtProjectGovernanceTemplatePresentation(
             projectRoot: root,
             config: config,
             resolved: resolved
         )
+    }
+
+    @available(*, deprecated, message: "Use governanceTemplatePreview(for:)")
+    func autonomySwitchboardPresentation(for project: ProjectModel) -> AXProjectGovernanceTemplatePreview {
+        governanceTemplatePreview(for: project)
     }
 
     func governedAuthorityPresentation(for project: AXProjectEntry) -> AXProjectGovernedAuthorityPresentation {
@@ -2272,7 +2670,7 @@ final class AppModel: ObservableObject {
         )
     }
 
-    private func fallbackAutonomyProjectRoot(for project: ProjectModel) -> URL {
+    private func fallbackGovernanceTemplateProjectRoot(for project: ProjectModel) -> URL {
         if let rootPath = project.registeredProjectRootPath?
             .trimmingCharacters(in: .whitespacesAndNewlines),
            !rootPath.isEmpty {
@@ -2284,28 +2682,28 @@ final class AppModel: ObservableObject {
         return URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
     }
 
-    private func refreshProjectRemoteAutonomyOverride(force: Bool) async {
+    private func refreshProjectRemoteRuntimeSurfaceOverride(force: Bool) async {
         guard let ctx = projectContext else {
-            projectRemoteAutonomyOverride = nil
-            nextProjectAutonomyOverrideRefreshAt = .distantPast
+            projectRemoteRuntimeSurfaceOverride = nil
+            nextProjectRuntimeSurfaceOverrideRefreshAt = .distantPast
             return
         }
 
         let now = Date()
-        if !force, now < nextProjectAutonomyOverrideRefreshAt {
+        if !force, now < nextProjectRuntimeSurfaceOverrideRefreshAt {
             return
         }
 
         let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
-        let remoteOverride = await HubIPCClient.requestProjectAutonomyPolicyOverride(
+        let remoteOverride = await HubIPCClient.requestProjectRuntimeSurfaceOverride(
             projectId: projectId,
             bypassCache: force
         )
         guard projectContext?.root.standardizedFileURL == ctx.root.standardizedFileURL else {
             return
         }
-        projectRemoteAutonomyOverride = remoteOverride
-        nextProjectAutonomyOverrideRefreshAt = now.addingTimeInterval(force ? 1.0 : 2.0)
+        projectRemoteRuntimeSurfaceOverride = remoteOverride
+        nextProjectRuntimeSurfaceOverrideRefreshAt = now.addingTimeInterval(force ? 1.0 : 2.0)
     }
 
     func moveProjects(from offsets: IndexSet, to destination: Int) {
@@ -2337,7 +2735,7 @@ final class AppModel: ObservableObject {
         ctx: AXProjectContext,
         config: AXProjectConfig,
         legacyAutonomyLevel: AutonomyLevel? = nil,
-        remoteOverride: AXProjectAutonomyRemoteOverrideSnapshot? = nil
+        remoteOverride: AXProjectRuntimeSurfaceRemoteOverrideSnapshot? = nil
     ) -> AXProjectResolvedGovernanceState {
         let adaptationPolicy = AXProjectSupervisorAdaptationPolicy.default
         let strengthProfile = AXProjectAIStrengthAssessor.assess(
@@ -2356,22 +2754,29 @@ final class AppModel: ObservableObject {
         )
     }
 
+    private func governanceResolverLegacyAutonomyLevel(
+        for project: ProjectModel,
+        config: AXProjectConfig
+    ) -> AutonomyLevel? {
+        config.governanceResolverLegacyAutonomyLevel(project.autonomyLevel)
+    }
+
     private func loadSelectedProject() async {
         guard let root = projectRoot else {
             projectContext = nil
             memory = nil
             usageSummary = .empty()
             projectConfig = nil
-            projectRemoteAutonomyOverride = nil
+            projectRemoteRuntimeSurfaceOverride = nil
             nextProjectSnapshotRefreshAt = .distantPast
-            nextProjectAutonomyOverrideRefreshAt = .distantPast
+            nextProjectRuntimeSurfaceOverrideRefreshAt = .distantPast
             refreshSkillsCompatibilitySnapshot(force: true)
             return
         }
         let ctx = AXProjectContext(root: root)
         projectContext = ctx
         nextProjectSnapshotRefreshAt = .distantPast
-        nextProjectAutonomyOverrideRefreshAt = .distantPast
+        nextProjectRuntimeSurfaceOverrideRefreshAt = .distantPast
         do {
             memory = try AXProjectStore.loadOrCreateMemory(for: ctx)
             usageSummary = AXProjectStore.usageSummary(for: ctx)
@@ -2381,7 +2786,7 @@ final class AppModel: ObservableObject {
             usageSummary = .empty()
             projectConfig = nil
         }
-        await refreshProjectRemoteAutonomyOverride(force: true)
+        await refreshProjectRemoteRuntimeSurfaceOverride(force: true)
         refreshSkillsCompatibilitySnapshot(force: true)
     }
 
@@ -2758,11 +3163,28 @@ final class AppModel: ObservableObject {
             progressHandler = nil
         }
 
-        let report = await HubPairingCoordinator.shared.ensureConnected(
+        var effectiveAllowBootstrap = allowBootstrap
+        var report = await HubPairingCoordinator.shared.ensureConnected(
             options: opts,
-            allowBootstrap: allowBootstrap,
+            allowBootstrap: effectiveAllowBootstrap,
             onProgress: progressHandler
         )
+
+        if !report.ok,
+           !allowBootstrap,
+           showAlertOnFinish,
+           report.reasonCode == "mtls_client_certificate_required" {
+            effectiveAllowBootstrap = true
+            if updateSetupProgress {
+                hubRemoteSummary = "mTLS profile refresh required ..."
+                resetHubSetupProgress(allowBootstrap: true)
+            }
+            report = await HubPairingCoordinator.shared.ensureConnected(
+                options: opts,
+                allowBootstrap: effectiveAllowBootstrap,
+                onProgress: progressHandler
+            )
+        }
 
         hubRemoteLinking = false
         hubRemoteLog = report.logText
@@ -2829,6 +3251,49 @@ final class AppModel: ObservableObject {
         }.first
     }
 
+    private func currentDoctorProjectContext(session: AXSessionInfo?) -> AXProjectContext? {
+        if let selectedProjectId,
+           selectedProjectId != AXProjectRegistry.globalHomeId,
+           let projectContext {
+            return projectContext
+        }
+
+        if let session {
+            let sessionDirectory = session.directory.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !sessionDirectory.isEmpty {
+                let root = URL(fileURLWithPath: sessionDirectory, isDirectory: true)
+                var isDirectory: ObjCBool = false
+                if FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory),
+                   isDirectory.boolValue {
+                    return AXProjectContext(root: root)
+                }
+            }
+
+            if let entry = registry.project(for: session.projectId),
+               let root = resolvedProjectRootURL(for: entry) {
+                return AXProjectContext(root: root)
+            }
+        }
+
+        return nil
+    }
+
+    private func currentDoctorProjectConfig(
+        context: AXProjectContext?
+    ) -> AXProjectConfig? {
+        guard let context else { return nil }
+        if let projectContext, projectContext.root.path == context.root.path {
+            return projectConfig
+        }
+        guard FileManager.default.fileExists(atPath: context.configURL.path),
+              let data = try? Data(contentsOf: context.configURL),
+              var config = try? JSONDecoder().decode(AXProjectConfig.self, from: data) else {
+            return nil
+        }
+        config.schemaVersion = AXProjectConfig.currentSchemaVersion
+        return config
+    }
+
     private func refreshUnifiedDoctorReport(force: Bool = false) {
         let now = Date()
         if !force, now < nextUnifiedDoctorRefreshAt {
@@ -2836,8 +3301,35 @@ final class AppModel: ObservableObject {
         }
 
         let session = currentDoctorSession()
+        let doctorProjectContext = currentDoctorProjectContext(session: session)
+        let doctorProjectConfig = currentDoctorProjectConfig(
+            context: doctorProjectContext
+        )
         let reportURL = XTUnifiedDoctorStore.defaultReportURL()
         let supervisor = SupervisorManager.shared
+        let calendarReminderPreferences = settingsStore.settings.supervisorCalendarReminders.normalized()
+        let calendarAccessController = XTCalendarAccessController.shared
+        calendarAccessController.refreshAuthorizationStatus()
+        let calendarEventStore = XTCalendarEventStore.shared
+        let calendarReminderSnapshot = XTUnifiedDoctorCalendarReminderSnapshot(
+            enabled: calendarReminderPreferences.enabled,
+            headsUpMinutes: calendarReminderPreferences.headsUpMinutes,
+            finalCallMinutes: calendarReminderPreferences.finalCallMinutes,
+            notificationFallbackEnabled: calendarReminderPreferences.notificationFallbackEnabled,
+            authorizationStatus: calendarAccessController.authorizationStatus,
+            authorizationGuidanceText: calendarAccessController.authorizationStatus.guidanceText,
+            schedulerStatusLine: supervisorCalendarReminderScheduler.statusLine,
+            schedulerLastRunAtMs: Int64(supervisorCalendarReminderScheduler.lastRunAt * 1000),
+            eventStoreStatusLine: calendarEventStore.statusLine,
+            eventStoreLastRefreshedAtMs: Int64(calendarEventStore.lastRefreshedAt * 1000),
+            upcomingMeetingCount: calendarEventStore.upcomingMeetings.count,
+            upcomingMeetingPreviewLines: Array(calendarEventStore.upcomingMeetings.prefix(3)).map { meeting in
+                let title = meeting.title
+                    .replacingOccurrences(of: "\n", with: " ")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return "\(title) | \(meeting.relativeStartText(now: now))"
+            }
+        )
         let input = XTUnifiedDoctorInput(
             generatedAt: now,
             localConnected: hubConnected,
@@ -2855,25 +3347,40 @@ final class AppModel: ObservableObject {
             modelsState: modelsState,
             bridgeAlive: bridgeAlive,
             bridgeEnabled: bridgeEnabled,
+            bridgeLastError: bridgeLastEnsureError,
             sessionID: session?.id,
             sessionTitle: session?.title,
             sessionRuntime: session?.runtime,
             voiceRouteDecision: supervisor.voiceRouteDecision,
             voiceRuntimeState: supervisor.voiceRuntimeState,
             voiceAuthorizationStatus: supervisor.voiceAuthorizationStatus,
+            voicePermissionSnapshot: supervisor.voicePermissionSnapshot,
             voiceActiveHealthReasonCode: supervisor.voiceActiveHealthReasonCode,
             voiceSidecarHealth: supervisor.voiceFunASRSidecarHealth,
             wakeProfileSnapshot: supervisor.voiceWakeProfileSnapshot,
             conversationSession: supervisor.conversationSessionSnapshot,
+            voicePreferences: supervisor.effectiveVoicePreferencesForDiagnostics(),
+            calendarReminderSnapshot: calendarReminderSnapshot,
             skillsSnapshot: skillsCompatibilitySnapshot,
             reportPath: reportURL.path,
             modelRouteDiagnostics: AXModelRouteDiagnosticsStore.doctorSummary(
                 for: sortedProjects,
                 now: now
-            )
+            ),
+            projectContextDiagnostics: AXProjectContextAssemblyDiagnosticsStore.doctorSummary(
+                for: doctorProjectContext,
+                config: doctorProjectConfig
+            ),
+            supervisorMemoryAssemblySnapshot: supervisor.supervisorMemoryAssemblySnapshot
         )
         let report = XTUnifiedDoctorBuilder.build(input: input)
         XTUnifiedDoctorStore.writeReport(report, to: reportURL)
+        let genericDoctorURL = XHubDoctorOutputStore.defaultXTReportURL()
+        let genericDoctorReport = XHubDoctorOutputReport.xtReadinessBundle(
+            from: report,
+            outputPath: genericDoctorURL.path
+        )
+        XHubDoctorOutputStore.writeReport(genericDoctorReport, to: genericDoctorURL)
         unifiedDoctorReport = report
         nextUnifiedDoctorRefreshAt = now.addingTimeInterval(2.0)
     }
@@ -2899,15 +3406,85 @@ final class AppModel: ObservableObject {
         let selectedProject = selectedProjectId == AXProjectRegistry.globalHomeId ? nil : selectedProjectId
         let projectName = selectedProject.flatMap { registry.project(for: $0)?.displayName }
         let skillsDir = AXSkillsLibrary.resolveSkillsDirectory()
+        let previousOfficialChannelID = skillsCompatibilitySnapshot.officialChannelID
+        let previousOfficialChannelStatus = skillsCompatibilitySnapshot.officialChannelStatus
+        let previousOfficialChannelUpdatedAtMs = skillsCompatibilitySnapshot.officialChannelUpdatedAtMs
+        let previousOfficialChannelLastSuccessAtMs = skillsCompatibilitySnapshot.officialChannelLastSuccessAtMs
+        let previousOfficialChannelSkillCount = skillsCompatibilitySnapshot.officialChannelSkillCount
+        let previousOfficialChannelErrorCode = skillsCompatibilitySnapshot.officialChannelErrorCode
+        let previousOfficialChannelMaintenanceEnabled = skillsCompatibilitySnapshot.officialChannelMaintenanceEnabled
+        let previousOfficialChannelMaintenanceIntervalMs = skillsCompatibilitySnapshot.officialChannelMaintenanceIntervalMs
+        let previousOfficialChannelMaintenanceLastRunAtMs = skillsCompatibilitySnapshot.officialChannelMaintenanceLastRunAtMs
+        let previousOfficialChannelMaintenanceSourceKind = skillsCompatibilitySnapshot.officialChannelMaintenanceSourceKind
+        let previousOfficialChannelLastTransitionAtMs = skillsCompatibilitySnapshot.officialChannelLastTransitionAtMs
+        let previousOfficialChannelLastTransitionKind = skillsCompatibilitySnapshot.officialChannelLastTransitionKind
+        let previousOfficialChannelLastTransitionSummary = skillsCompatibilitySnapshot.officialChannelLastTransitionSummary
         skillsCompatibilitySnapshot = AXSkillsLibrary.compatibilityDoctorSnapshot(
             projectId: selectedProject,
             projectName: projectName,
             skillsDir: skillsDir,
             hubBaseDir: hubBaseDir
         )
+        let previousSnapshot = AXSkillsDoctorSnapshot(
+            hubIndexAvailable: skillsCompatibilitySnapshot.hubIndexAvailable,
+            installedSkillCount: skillsCompatibilitySnapshot.installedSkillCount,
+            compatibleSkillCount: skillsCompatibilitySnapshot.compatibleSkillCount,
+            partialCompatibilityCount: skillsCompatibilitySnapshot.partialCompatibilityCount,
+            revokedMatchCount: skillsCompatibilitySnapshot.revokedMatchCount,
+            trustEnabledPublisherCount: skillsCompatibilitySnapshot.trustEnabledPublisherCount,
+            baselineRecommendedSkills: skillsCompatibilitySnapshot.baselineRecommendedSkills,
+            missingBaselineSkillIDs: skillsCompatibilitySnapshot.missingBaselineSkillIDs,
+            builtinGovernedSkills: skillsCompatibilitySnapshot.builtinGovernedSkills,
+            projectIndexEntries: skillsCompatibilitySnapshot.projectIndexEntries,
+            globalIndexEntries: skillsCompatibilitySnapshot.globalIndexEntries,
+            conflictWarnings: skillsCompatibilitySnapshot.conflictWarnings,
+            installedSkills: skillsCompatibilitySnapshot.installedSkills,
+            statusKind: skillsCompatibilitySnapshot.statusKind,
+            statusLine: skillsCompatibilitySnapshot.statusLine,
+            compatibilityExplain: skillsCompatibilitySnapshot.compatibilityExplain,
+            officialChannelID: previousOfficialChannelID,
+            officialChannelStatus: previousOfficialChannelStatus,
+            officialChannelUpdatedAtMs: previousOfficialChannelUpdatedAtMs,
+            officialChannelLastSuccessAtMs: previousOfficialChannelLastSuccessAtMs,
+            officialChannelSkillCount: previousOfficialChannelSkillCount,
+            officialChannelErrorCode: previousOfficialChannelErrorCode,
+            officialChannelMaintenanceEnabled: previousOfficialChannelMaintenanceEnabled,
+            officialChannelMaintenanceIntervalMs: previousOfficialChannelMaintenanceIntervalMs,
+            officialChannelMaintenanceLastRunAtMs: previousOfficialChannelMaintenanceLastRunAtMs,
+            officialChannelMaintenanceSourceKind: previousOfficialChannelMaintenanceSourceKind,
+            officialChannelLastTransitionAtMs: previousOfficialChannelLastTransitionAtMs,
+            officialChannelLastTransitionKind: previousOfficialChannelLastTransitionKind,
+            officialChannelLastTransitionSummary: previousOfficialChannelLastTransitionSummary
+        )
+        mergeOfficialSkillChannelStatusFallback(previousSnapshot)
         nextSkillsCompatibilityRefreshAt = now.addingTimeInterval(5.0)
         refreshUnifiedDoctorReport(force: force)
         refreshRemoteSkillsCompatibilityOverlayIfNeeded(projectId: selectedProject)
+    }
+
+    private func mergeOfficialSkillChannelStatusFallback(_ previous: AXSkillsDoctorSnapshot) {
+        let currentStatus = skillsCompatibilitySnapshot.officialChannelStatus.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previousStatus = previous.officialChannelStatus.trimmingCharacters(in: .whitespacesAndNewlines)
+        let currentUpdatedAt = max(0, skillsCompatibilitySnapshot.officialChannelUpdatedAtMs)
+        let previousUpdatedAt = max(0, previous.officialChannelUpdatedAtMs)
+        let shouldUsePrevious = (!previousStatus.isEmpty && currentStatus.isEmpty)
+            || (previousUpdatedAt > currentUpdatedAt)
+
+        guard shouldUsePrevious else { return }
+
+        skillsCompatibilitySnapshot.officialChannelID = previous.officialChannelID
+        skillsCompatibilitySnapshot.officialChannelStatus = previous.officialChannelStatus
+        skillsCompatibilitySnapshot.officialChannelUpdatedAtMs = previous.officialChannelUpdatedAtMs
+        skillsCompatibilitySnapshot.officialChannelLastSuccessAtMs = previous.officialChannelLastSuccessAtMs
+        skillsCompatibilitySnapshot.officialChannelSkillCount = previous.officialChannelSkillCount
+        skillsCompatibilitySnapshot.officialChannelErrorCode = previous.officialChannelErrorCode
+        skillsCompatibilitySnapshot.officialChannelMaintenanceEnabled = previous.officialChannelMaintenanceEnabled
+        skillsCompatibilitySnapshot.officialChannelMaintenanceIntervalMs = previous.officialChannelMaintenanceIntervalMs
+        skillsCompatibilitySnapshot.officialChannelMaintenanceLastRunAtMs = previous.officialChannelMaintenanceLastRunAtMs
+        skillsCompatibilitySnapshot.officialChannelMaintenanceSourceKind = previous.officialChannelMaintenanceSourceKind
+        skillsCompatibilitySnapshot.officialChannelLastTransitionAtMs = previous.officialChannelLastTransitionAtMs
+        skillsCompatibilitySnapshot.officialChannelLastTransitionKind = previous.officialChannelLastTransitionKind
+        skillsCompatibilitySnapshot.officialChannelLastTransitionSummary = previous.officialChannelLastTransitionSummary
     }
 
     private func refreshRemoteSkillsCompatibilityOverlayIfNeeded(projectId: String?) {
@@ -2922,11 +3499,25 @@ final class AppModel: ObservableObject {
         remoteSkillsCompatibilityOverlayInFlight = true
         Task { @MainActor in
             defer { remoteSkillsCompatibilityOverlayInFlight = false }
-            let resolved = await HubIPCClient.listResolvedSkills(projectId: projectId)
-            guard resolved.ok else { return }
+            async let resolvedRequest = HubIPCClient.listResolvedSkills(projectId: projectId)
+            async let searchRequest = HubIPCClient.searchSkills(
+                query: "",
+                sourceFilter: "builtin:catalog",
+                projectId: projectId,
+                limit: 1
+            )
+            let resolved = await resolvedRequest
+            let search = await searchRequest
 
             let currentDisplayedProjectId = selectedProjectId == AXProjectRegistry.globalHomeId ? nil : selectedProjectId
             guard currentDisplayedProjectId == projectId else { return }
+            let statusChanged = applyOfficialSkillChannelStatusOverlay(search.officialChannelStatus)
+            guard resolved.ok else {
+                if statusChanged {
+                    refreshUnifiedDoctorReport(force: true)
+                }
+                return
+            }
 
             let resolvedIDs = Set(
                 resolved.skills.map { $0.skill.skillID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
@@ -2935,7 +3526,12 @@ final class AppModel: ObservableObject {
                 .map(\.skillID)
                 .filter { !resolvedIDs.contains($0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }
 
-            guard missingBaselineSkillIDs != skillsCompatibilitySnapshot.missingBaselineSkillIDs else { return }
+            guard missingBaselineSkillIDs != skillsCompatibilitySnapshot.missingBaselineSkillIDs else {
+                if statusChanged {
+                    refreshUnifiedDoctorReport(force: true)
+                }
+                return
+            }
 
             skillsCompatibilitySnapshot.missingBaselineSkillIDs = missingBaselineSkillIDs
             skillsCompatibilitySnapshot.statusKind = overlaySkillsStatusKind(
@@ -2954,6 +3550,56 @@ final class AppModel: ObservableObject {
             )
             refreshUnifiedDoctorReport(force: true)
         }
+    }
+
+    private func applyOfficialSkillChannelStatusOverlay(
+        _ status: HubIPCClient.OfficialSkillChannelStatus?
+    ) -> Bool {
+        guard let status else { return false }
+        let normalizedChannelID = status.channelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedState = status.status.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedError = status.errorCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let nextUpdatedAtMs = max(0, status.updatedAtMs)
+        let nextLastSuccessAtMs = max(0, status.lastSuccessAtMs)
+        let nextSkillCount = max(0, status.skillCount)
+        let nextMaintenanceEnabled = status.maintenanceEnabled
+        let nextMaintenanceIntervalMs = max(0, status.maintenanceIntervalMs)
+        let nextMaintenanceLastRunAtMs = max(0, status.maintenanceLastRunAtMs)
+        let nextMaintenanceSourceKind = status.maintenanceSourceKind.trimmingCharacters(in: .whitespacesAndNewlines)
+        let nextLastTransitionAtMs = max(0, status.lastTransitionAtMs)
+        let nextLastTransitionKind = status.lastTransitionKind.trimmingCharacters(in: .whitespacesAndNewlines)
+        let nextLastTransitionSummary = status.lastTransitionSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if skillsCompatibilitySnapshot.officialChannelID == normalizedChannelID,
+           skillsCompatibilitySnapshot.officialChannelStatus == normalizedState,
+           skillsCompatibilitySnapshot.officialChannelUpdatedAtMs == nextUpdatedAtMs,
+           skillsCompatibilitySnapshot.officialChannelLastSuccessAtMs == nextLastSuccessAtMs,
+           skillsCompatibilitySnapshot.officialChannelSkillCount == nextSkillCount,
+           skillsCompatibilitySnapshot.officialChannelErrorCode == normalizedError,
+           skillsCompatibilitySnapshot.officialChannelMaintenanceEnabled == nextMaintenanceEnabled,
+           skillsCompatibilitySnapshot.officialChannelMaintenanceIntervalMs == nextMaintenanceIntervalMs,
+           skillsCompatibilitySnapshot.officialChannelMaintenanceLastRunAtMs == nextMaintenanceLastRunAtMs,
+           skillsCompatibilitySnapshot.officialChannelMaintenanceSourceKind == nextMaintenanceSourceKind,
+           skillsCompatibilitySnapshot.officialChannelLastTransitionAtMs == nextLastTransitionAtMs,
+           skillsCompatibilitySnapshot.officialChannelLastTransitionKind == nextLastTransitionKind,
+           skillsCompatibilitySnapshot.officialChannelLastTransitionSummary == nextLastTransitionSummary {
+            return false
+        }
+
+        skillsCompatibilitySnapshot.officialChannelID = normalizedChannelID
+        skillsCompatibilitySnapshot.officialChannelStatus = normalizedState
+        skillsCompatibilitySnapshot.officialChannelUpdatedAtMs = nextUpdatedAtMs
+        skillsCompatibilitySnapshot.officialChannelLastSuccessAtMs = nextLastSuccessAtMs
+        skillsCompatibilitySnapshot.officialChannelSkillCount = nextSkillCount
+        skillsCompatibilitySnapshot.officialChannelErrorCode = normalizedError
+        skillsCompatibilitySnapshot.officialChannelMaintenanceEnabled = nextMaintenanceEnabled
+        skillsCompatibilitySnapshot.officialChannelMaintenanceIntervalMs = nextMaintenanceIntervalMs
+        skillsCompatibilitySnapshot.officialChannelMaintenanceLastRunAtMs = nextMaintenanceLastRunAtMs
+        skillsCompatibilitySnapshot.officialChannelMaintenanceSourceKind = nextMaintenanceSourceKind
+        skillsCompatibilitySnapshot.officialChannelLastTransitionAtMs = nextLastTransitionAtMs
+        skillsCompatibilitySnapshot.officialChannelLastTransitionKind = nextLastTransitionKind
+        skillsCompatibilitySnapshot.officialChannelLastTransitionSummary = nextLastTransitionSummary
+        return true
     }
 
     private func overlaySkillsStatusKind(
@@ -3037,11 +3683,15 @@ final class AppModel: ObservableObject {
 
             runtimeStatus = await HubAIClient.shared.loadRuntimeStatus()
             modelsState = await HubAIClient.shared.loadModelsState()
+            updatePairedSurfaceHeartbeat()
             refreshSkillsCompatibilitySnapshot()
 
             let bst = HubBridgeClient.status()
             bridgeAlive = bst.alive
             bridgeEnabled = bst.enabled
+            if bst.alive && bst.enabled {
+                bridgeLastEnsureError = ""
+            }
             maybeEnsureBridgeAlwaysOn(currentStatus: bst)
             let now = Date()
             if let ctx = projectContext, now >= nextProjectSnapshotRefreshAt {
@@ -3057,7 +3707,7 @@ final class AppModel: ObservableObject {
                 nextProjectSnapshotRefreshAt = now.addingTimeInterval(3.0)
             }
             if projectContext != nil {
-                await refreshProjectRemoteAutonomyOverride(force: false)
+                await refreshProjectRemoteRuntimeSurfaceOverride(force: false)
             }
             refreshUnifiedDoctorReport()
             try? await Task.sleep(nanoseconds: 800_000_000)
@@ -3127,6 +3777,10 @@ final class AppModel: ObservableObject {
             self.bridgeEnsureInFlight = false
             self.bridgeAlive = st.alive
             self.bridgeEnabled = st.enabled
+            self.bridgeLastEnsureError = st.requestError.trimmingCharacters(in: .whitespacesAndNewlines)
+            if st.alive && st.enabled {
+                self.bridgeLastEnsureError = ""
+            }
             self.refreshUnifiedDoctorReport(force: true)
         }
     }
@@ -3135,6 +3789,7 @@ final class AppModel: ObservableObject {
         if hubPortAutoDetectRunning { return }
         hubPortAutoDetectRunning = true
         hubPortAutoDetectMessage = "probing 50052/50053..."
+        hubDiscoveredCandidates = []
 
         let opts = HubRemoteConnectOptions(
             grpcPort: hubGrpcPort,
@@ -3147,23 +3802,83 @@ final class AppModel: ObservableObject {
 
         let probe = await HubPairingCoordinator.shared.detectPorts(options: opts)
         hubPortAutoDetectRunning = false
+        hubDiscoveredCandidates = probe.candidates
 
         if probe.ok {
             hubPairingPort = probe.pairingPort
             hubGrpcPort = probe.grpcPort
+            let cachedProfile = HubAIClient.cachedRemoteProfile(stateDir: nil)
+            if hubInternetHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               let discoveredInternetHost = cachedProfile.internetHost,
+               !discoveredInternetHost.isEmpty {
+                hubInternetHost = discoveredInternetHost
+            }
             saveHubRemotePrefs()
-            hubPortAutoDetectMessage = "detected pairing=\(probe.pairingPort), grpc=\(probe.grpcPort)"
+            let detectedHost = (cachedProfile.host ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let detectedInternetHost = (cachedProfile.internetHost ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let detectedService = (cachedProfile.lanDiscoveryName ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            var details: [String] = []
+            if !detectedService.isEmpty {
+                details.append("service=\(detectedService)")
+            }
+            if !detectedHost.isEmpty {
+                details.append("hub=\(detectedHost)")
+            }
+            if !detectedInternetHost.isEmpty {
+                details.append("internet=\(detectedInternetHost)")
+            }
+            details.append("pairing=\(probe.pairingPort)")
+            details.append("grpc=\(probe.grpcPort)")
+            if detectedInternetHost.isEmpty {
+                details.append("remote_host=missing")
+            }
+            hubPortAutoDetectMessage = "detected " + details.joined(separator: " · ")
             hubSetupFailureCode = ""
             refreshUnifiedDoctorReport(force: true)
         } else {
             let reason = probe.reasonCode ?? "port_probe_failed"
-            hubPortAutoDetectMessage = "detect failed (\(reason))"
+            if reason == "bonjour_multiple_hubs_ambiguous" || reason == "lan_multiple_hubs_ambiguous" {
+                hubPortAutoDetectMessage = "detect blocked: multiple LAN hubs found; pin one explicitly before auto-connect"
+            } else {
+                hubPortAutoDetectMessage = "detect failed (\(reason))"
+            }
             hubSetupFailureCode = reason
             refreshUnifiedDoctorReport(force: true)
         }
 
         if !probe.logText.isEmpty {
             hubRemoteLog = probe.logText
+        }
+    }
+
+    private func applySelectedHubCandidateNow(_ candidate: HubDiscoveredHubCandidateSummary) async {
+        let opts = HubRemoteConnectOptions(
+            grpcPort: hubGrpcPort,
+            pairingPort: hubPairingPort,
+            deviceName: Host.current().localizedName ?? "X-Terminal",
+            internetHost: hubInternetHost,
+            axhubctlPath: hubAxhubctlPath,
+            stateDir: nil
+        )
+
+        do {
+            try await HubPairingCoordinator.shared.pinDiscoveredHubCandidate(candidate, options: opts)
+            hubPairingPort = candidate.pairingPort
+            hubGrpcPort = candidate.grpcPort
+            if let internetHost = candidate.internetHost?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !internetHost.isEmpty {
+                hubInternetHost = internetHost
+            }
+            saveHubRemotePrefs()
+            hubPortAutoDetectMessage = "selected \(candidate.displayName) · hub=\(candidate.host) · pairing=\(candidate.pairingPort) · grpc=\(candidate.grpcPort)"
+            hubSetupFailureCode = ""
+            hubDiscoveredCandidates = [candidate]
+        } catch {
+            hubPortAutoDetectMessage = "selection failed (\(error.localizedDescription))"
+            hubSetupFailureCode = "hub_candidate_pin_failed"
         }
     }
 
@@ -3179,10 +3894,33 @@ final class AppModel: ObservableObject {
         await autoDetectHubPortsNow()
     }
 
+    private func maybeAutoFillHubSetupPathAndPortsNow(force: Bool) async {
+        if hubRemoteLinking || hubPortAutoDetectRunning { return }
+
+        let now = Date()
+        if !force, now.timeIntervalSince(hubSetupAutofillLastAttemptAt) < 20.0 {
+            return
+        }
+
+        let trimmedAxhubctlPath = hubAxhubctlPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedInternetHost = hubInternetHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedDetectMessage = hubPortAutoDetectMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !force,
+           !trimmedAxhubctlPath.isEmpty,
+           !trimmedInternetHost.isEmpty,
+           !trimmedDetectMessage.isEmpty {
+            return
+        }
+
+        hubSetupAutofillLastAttemptAt = now
+        await autoFillHubSetupPathAndPortsNow()
+    }
+
     private func resetPairingAndSetupNow() async {
         if hubRemoteLinking || hubPortAutoDetectRunning { return }
 
         hubPortAutoDetectMessage = "resetting local pairing state..."
+        hubDiscoveredCandidates = []
         let reset = await HubPairingCoordinator.shared.resetLocalPairingState(stateDir: nil)
         hubRemoteLog = reset.logText
         if !reset.ok {
@@ -3201,9 +3939,46 @@ final class AppModel: ObservableObject {
         hubRemoteRoute = .none
         hubPairingPort = 50052
         hubGrpcPort = 50051
+        hubInternetHost = ""
         saveHubRemotePrefs()
         hubPortAutoDetectMessage = "pairing state reset; probing ports..."
         await autoDetectHubPortsNow()
         _ = await runRemoteConnectFlow(allowBootstrap: true, showAlertOnFinish: true, updateSetupProgress: true)
+    }
+
+    func cleanupPairedSurfaceHeartbeat() {
+        HubPairedSurfaceHeartbeat.remove(baseDir: pairedSurfaceHeartbeatBaseDir)
+        pairedSurfaceHeartbeatBaseDir = nil
+    }
+
+    private func updatePairedSurfaceHeartbeat() {
+        let nextBaseDir = hubConnected ? (hubBaseDir ?? HubPaths.baseDir()) : nil
+        if let previous = pairedSurfaceHeartbeatBaseDir,
+           previous.standardizedFileURL != nextBaseDir?.standardizedFileURL {
+            HubPairedSurfaceHeartbeat.remove(baseDir: previous)
+        }
+
+        guard let baseDir = nextBaseDir else {
+            pairedSurfaceHeartbeatBaseDir = nil
+            return
+        }
+
+        HubPairedSurfaceHeartbeat.write(
+            baseDir: baseDir,
+            active: pairedSurfaceIsBusy(),
+            aiEnabled: hubInteractive,
+            modelMemoryBytes: nil
+        )
+        pairedSurfaceHeartbeatBaseDir = baseDir
+    }
+
+    private func pairedSurfaceIsBusy() -> Bool {
+        if chatSessions.values.contains(where: { $0.isSending || !$0.pendingToolCalls.isEmpty }) {
+            return true
+        }
+        if terminalSessions.values.contains(where: \.isRunning) {
+            return true
+        }
+        return false
     }
 }

@@ -63,7 +63,8 @@ extension AppModel {
         progressHeartbeatSeconds: Int? = nil,
         reviewPulseSeconds: Int? = nil,
         brainstormReviewSeconds: Int? = nil,
-        eventDrivenReviewEnabled: Bool? = nil
+        eventDrivenReviewEnabled: Bool? = nil,
+        eventReviewTriggers: [AXProjectReviewTrigger]? = nil
     ) async -> ProjectModel {
         let binding = registeredProjectId
             .flatMap { registry.project(for: $0) }
@@ -85,7 +86,8 @@ extension AppModel {
             progressHeartbeatSeconds: progressHeartbeatSeconds,
             reviewPulseSeconds: reviewPulseSeconds,
             brainstormReviewSeconds: brainstormReviewSeconds,
-            eventDrivenReviewEnabled: eventDrivenReviewEnabled
+            eventDrivenReviewEnabled: eventDrivenReviewEnabled,
+            eventReviewTriggers: eventReviewTriggers
         )
 
         return await multiProjectManager.createProject(config)

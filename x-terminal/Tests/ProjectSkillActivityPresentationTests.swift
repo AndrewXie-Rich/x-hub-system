@@ -5,6 +5,27 @@ import Foundation
 struct ProjectSkillActivityPresentationTests {
 
     @Test
+    func titleStatusAndToolBadgeUseLocalizedCopy() {
+        let item = ProjectSkillActivityItem(
+            requestID: "skill-localized-1",
+            skillID: "agent-browser",
+            toolName: ToolName.deviceBrowserControl.rawValue,
+            status: "awaiting_approval",
+            createdAt: 1.0,
+            resolutionSource: "",
+            toolArgs: [:],
+            resultSummary: "",
+            detail: "",
+            denyCode: "",
+            authorizationDisposition: ""
+        )
+
+        #expect(ProjectSkillActivityPresentation.title(for: item) == "待审批")
+        #expect(ProjectSkillActivityPresentation.statusLabel(for: item) == "待审批")
+        #expect(ProjectSkillActivityPresentation.toolBadge(for: item) == "浏览器控制")
+    }
+
+    @Test
     func parseRecentActivitiesKeepsLatestEventPerRequest() {
         let raw = """
         {"type":"project_skill_call","created_at":1.0,"status":"resolved","request_id":"skill-1","skill_id":"find-skills","tool_name":"skills.search","tool_args":{"query":"browser automation"}}
@@ -43,7 +64,7 @@ struct ProjectSkillActivityPresentationTests {
 
         let body = ProjectSkillActivityPresentation.body(for: item)
 
-        #expect(body.contains("Waiting for local approval"))
+        #expect(body.contains("本地审批"))
         #expect(body.contains("https://example.com"))
     }
 
@@ -95,8 +116,9 @@ struct ProjectSkillActivityPresentationTests {
 
         let body = ProjectSkillActivityPresentation.body(for: item)
 
-        #expect(body.contains("does not allow browser automation"))
-        #expect(body.contains("Raise the execution tier"))
+        #expect(body.contains("不允许浏览器自动化"))
+        #expect(body.contains("打开项目设置 -> 执行档位"))
+        #expect(body.contains("A4 Agent"))
     }
 
     @Test
@@ -147,10 +169,11 @@ struct ProjectSkillActivityPresentationTests {
             requestID: "skill-5"
         )
 
-        #expect(text.contains("== Event Timeline =="))
+        #expect(text.contains("请求单号：skill-5"))
+        #expect(text.contains("== 事件时间线 =="))
         #expect(text.contains("status=resolved"))
         #expect(text.contains("status=completed"))
-        #expect(text.contains("== Raw JSON Events =="))
+        #expect(text.contains("== 原始 JSON 事件 =="))
         #expect(text.contains("\"request_id\""))
     }
 
@@ -216,7 +239,7 @@ struct ProjectSkillActivityPresentationTests {
         )
 
         #expect(record.title == "agent-browser")
-        #expect(record.latestStatusLabel == "Completed")
+        #expect(record.latestStatusLabel == "已完成")
         #expect(record.requestMetadata.contains(where: { $0.label == "project_id" && $0.value == "project-alpha" }))
         #expect(record.approvalFields.contains(where: { $0.label == "policy_source" && $0.value == "project_governance" }))
         #expect(record.approvalFields.contains(where: { $0.label == "policy_reason" && $0.value == "execution_tier_missing_browser_runtime" }))
@@ -228,5 +251,83 @@ struct ProjectSkillActivityPresentationTests {
         #expect(record.approvalHistory.count == 1)
         #expect(record.timeline.count == 2)
         #expect(record.supervisorEvidenceJSON?.contains("\"trigger_source\"") == true)
+    }
+
+    @Test
+    func displayTimelineDetailLocalizesKnownEngineeringFields() {
+        let detail = ProjectSkillActivityPresentation.displayTimelineDetail(
+            """
+            policy_reason=execution_tier_missing_browser_runtime
+            authorization_disposition=ask
+            resolution_source=manual_retry
+            """
+        )
+
+        #expect(detail?.contains("策略说明：execution_tier_missing_browser_runtime") == true)
+        #expect(detail?.contains("审批结论：ask") == true)
+        #expect(detail?.contains("处理来源：manual_retry") == true)
+    }
+
+    @Test
+    func displayFullRecordTextUsesLocalizedLabelsForCopy() {
+        let record = ProjectSkillFullRecord(
+            requestID: "skill-display-1",
+            title: "agent-browser",
+            latestStatus: "awaiting_approval",
+            latestStatusLabel: "待审批",
+            requestMetadata: [
+                ProjectSkillRecordField(label: "skill_id", value: "agent-browser"),
+                ProjectSkillRecordField(label: "tool_name", value: "device.browser.control")
+            ],
+            approvalFields: [
+                ProjectSkillRecordField(label: "policy_reason", value: "execution_tier_missing_browser_runtime")
+            ],
+            toolArgumentsText: """
+            {
+              "url" : "https://example.com"
+            }
+            """,
+            resultFields: [
+                ProjectSkillRecordField(label: "result_summary", value: "Waiting for approval")
+            ],
+            rawOutputPreview: nil,
+            rawOutput: nil,
+            evidenceFields: [
+                ProjectSkillRecordField(label: "audit_ref", value: "audit-skill-display-1")
+            ],
+            approvalHistory: [
+                ProjectSkillRecordTimelineEntry(
+                    id: "timeline-1",
+                    status: "awaiting_approval",
+                    statusLabel: "待审批",
+                    timestamp: "2026-03-23T10:00:00.000Z",
+                    summary: "等待本地审批",
+                    detail: "policy_reason=execution_tier_missing_browser_runtime",
+                    rawJSON: #"{"status":"awaiting_approval"}"#
+                )
+            ],
+            timeline: [
+                ProjectSkillRecordTimelineEntry(
+                    id: "timeline-2",
+                    status: "awaiting_approval",
+                    statusLabel: "待审批",
+                    timestamp: "2026-03-23T10:00:00.000Z",
+                    summary: "等待本地审批",
+                    detail: "resolution_source=manual_retry",
+                    rawJSON: #"{"status":"awaiting_approval"}"#
+                )
+            ],
+            supervisorEvidenceJSON: nil
+        )
+
+        let text = ProjectSkillActivityPresentation.displayFullRecordText(record)
+
+        #expect(text.contains("最新状态：待审批"))
+        #expect(text.contains("技能 ID：agent-browser"))
+        #expect(text.contains("工具：device.browser.control"))
+        #expect(text.contains("策略说明：execution_tier_missing_browser_runtime"))
+        #expect(text.contains("状态：待审批"))
+        #expect(text.contains("处理来源：manual_retry"))
+        #expect(text.contains("== 原始 JSON 事件 =="))
     }
 }

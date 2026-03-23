@@ -207,6 +207,14 @@ enum XTUIReviewStore {
         let latestData = try encoder.encode(latest)
         try writeAtomic(data: latestData, to: ctx.uiReviewLatestBrowserPageURL)
 
+        if let evidence = XTUIReviewPromptDigest.agentEvidenceSnapshot(
+            for: ctx,
+            maxChecks: 8,
+            maxHistoryItems: 5
+        ) {
+            try? XTUIReviewAgentEvidenceStore.write(evidence, for: ctx)
+        }
+
         return XTUIReviewStoredRecord(review: review, reviewRef: latest.reviewRef)
     }
 
@@ -214,15 +222,11 @@ enum XTUIReviewStore {
         try ctx.ensureDirs()
         try FileManager.default.createDirectory(at: ctx.uiReviewDir, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: ctx.uiReviewRecordsDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: ctx.uiReviewAgentEvidenceDir, withIntermediateDirectories: true)
     }
 
     private static func writeAtomic(data: Data, to url: URL) throws {
-        let tmp = url.deletingLastPathComponent().appendingPathComponent(".\(url.lastPathComponent).tmp")
-        try data.write(to: tmp, options: .atomic)
-        if FileManager.default.fileExists(atPath: url.path) {
-            try FileManager.default.removeItem(at: url)
-        }
-        try FileManager.default.moveItem(at: tmp, to: url)
+        try XTStoreWriteSupport.writeSnapshotData(data, to: url)
     }
 }
 
@@ -553,7 +557,30 @@ enum XTUIReviewPromptDigest {
         guard let latest = XTUIReviewStore.loadLatestBrowserPageReference(for: ctx) else {
             return ""
         }
-        return """
+        let review = XTUIReviewStore.loadLatestBrowserPageReview(for: ctx)
+        let presentation = XTUIReviewPresentation.loadLatestBrowserPage(for: ctx)
+        let checksText = formatEvidenceList(
+            review?.checks.prefix(3).map { check in
+                evidenceEntry(
+                    check.code,
+                    "\(check.status.rawValue) :: \(cappedReviewText(check.detail, maxChars: 120))"
+                )
+            } ?? []
+        )
+        let trendText = formatEvidenceList(
+            presentation.map {
+                [
+                    evidenceEntry("status", trendStatusText($0.trend?.status)),
+                    evidenceEntry("headline", $0.trend?.headline),
+                    evidenceEntry("detail", $0.trend?.detail)
+                ]
+            } ?? []
+        )
+        let recentHistoryText = formatEvidenceList(
+            recentHistoryEntries(for: presentation, maxItems: 3)
+        )
+        var lines = [
+            """
 [latest_ui_review]
 review_ref: \(normalizedReviewValue(latest.reviewRef, fallback: "(none)"))
 bundle_ref: \(normalizedReviewValue(latest.bundleRef, fallback: "(none)"))
@@ -563,39 +590,277 @@ sufficient_evidence: \(latest.sufficientEvidence)
 objective_ready: \(latest.objectiveReady)
 issue_codes: \(issueCodesText(latest.issueCodes))
 summary: \(cappedReviewText(latest.summary, maxChars: 220))
-[/latest_ui_review]
 """
+        ]
+        if review?.checks.isEmpty == false {
+            lines.append("checks:\n\(checksText)")
+        }
+        if presentation?.trend != nil {
+            lines.append("trend:\n\(trendText)")
+        }
+        if !(presentation?.recentHistory.isEmpty ?? true) {
+            lines.append("recent_history:\n\(recentHistoryText)")
+        }
+        lines.append("[/latest_ui_review]")
+        return lines.joined(separator: "\n")
     }
 
-    static func evidenceBlock(for ctx: AXProjectContext, maxChecks: Int = 4) -> String {
+    static func agentEvidenceSnapshot(
+        for ctx: AXProjectContext,
+        maxChecks: Int = 4,
+        maxHistoryItems: Int = 3
+    ) -> XTUIReviewAgentEvidenceSnapshot? {
         guard let latest = XTUIReviewStore.loadLatestBrowserPageReference(for: ctx),
               let review = XTUIReviewStore.loadLatestBrowserPageReview(for: ctx) else {
-            return ""
+            return nil
         }
+        let presentation = XTUIReviewPresentation.loadLatestBrowserPage(for: ctx)
+        let bundle = XTUIObservationStore.loadBundle(ref: latest.bundleRef, for: ctx)
         let checks = review.checks
             .prefix(max(1, maxChecks))
             .map { check in
-                "- \(check.code)=\(check.status.rawValue) :: \(cappedReviewText(check.detail, maxChars: 140))"
+                "\(check.code)=\(check.status.rawValue) :: \(cappedReviewText(check.detail, maxChars: 140))"
             }
-        let checksText = checks.isEmpty ? "- (none)" : checks.joined(separator: "\n")
+
+        return XTUIReviewAgentEvidenceSnapshot(
+            schemaVersion: XTUIReviewAgentEvidenceSnapshot.currentSchemaVersion,
+            reviewID: review.reviewID,
+            projectID: review.projectID,
+            bundleID: review.bundleID,
+            auditRef: review.auditRef,
+            reviewRef: normalizedReviewValue(latest.reviewRef, fallback: "(none)"),
+            bundleRef: normalizedReviewValue(latest.bundleRef, fallback: "(none)"),
+            updatedAtMs: latest.updatedAtMs,
+            verdict: latest.verdict,
+            confidence: latest.confidence,
+            sufficientEvidence: latest.sufficientEvidence,
+            objectiveReady: latest.objectiveReady,
+            issueCodes: review.issueCodes,
+            summary: cappedReviewText(latest.summary, maxChars: 220),
+            artifactRefs: [
+                evidenceEntry("screenshot_ref", bundle?.pixelLayer.fullRef),
+                evidenceEntry("thumbnail_ref", bundle?.pixelLayer.thumbnailRef),
+                evidenceEntry("visible_text_ref", bundle?.textLayer.visibleTextRef),
+                evidenceEntry("ocr_ref", bundle?.textLayer.ocrRef),
+                evidenceEntry("runtime_log_ref", bundle?.runtimeLayer.runtimeLogRef),
+                evidenceEntry("layout_metrics_ref", bundle?.layoutLayer.layoutMetricsRef),
+                evidenceEntry("role_snapshot_ref", bundle?.structureLayer.roleSnapshotRef),
+                evidenceEntry("ax_tree_ref", bundle?.structureLayer.axTreeRef)
+            ].compactMap { $0 },
+            artifactPaths: [
+                evidenceEntry("review_path", presentation?.reviewFileURL?.path),
+                evidenceEntry("bundle_path", presentation?.bundleFileURL?.path),
+                evidenceEntry("screenshot_path", presentation?.screenshotFileURL?.path),
+                evidenceEntry("visible_text_path", presentation?.visibleTextFileURL?.path)
+            ].compactMap { $0 },
+            checks: checks,
+            trend: (presentation.map {
+                [
+                    evidenceEntry("status", trendStatusText($0.trend?.status)),
+                    evidenceEntry("headline", $0.trend?.headline),
+                    evidenceEntry("detail", $0.trend?.detail)
+                ]
+            } ?? []).compactMap { $0 },
+            comparison: comparisonEntries(for: presentation).compactMap { $0 },
+            recentHistory: recentHistoryEntries(for: presentation, maxItems: maxHistoryItems).compactMap { $0 }
+        )
+    }
+
+    static func evidenceBlock(for ctx: AXProjectContext, maxChecks: Int = 4) -> String {
+        agentEvidenceSnapshot(for: ctx, maxChecks: maxChecks)?.renderedText() ?? ""
+    }
+}
+
+struct XTUIReviewAgentEvidenceSnapshot: Codable, Equatable, Sendable {
+    static let currentSchemaVersion = "xt.ui_review_agent_evidence.v1"
+
+    var schemaVersion: String
+    var reviewID: String
+    var projectID: String
+    var bundleID: String
+    var auditRef: String
+    var reviewRef: String
+    var bundleRef: String
+    var updatedAtMs: Int64
+    var verdict: XTUIReviewVerdict
+    var confidence: XTUIReviewConfidence
+    var sufficientEvidence: Bool
+    var objectiveReady: Bool
+    var issueCodes: [String]
+    var summary: String
+    var artifactRefs: [String]
+    var artifactPaths: [String]
+    var checks: [String]
+    var trend: [String]
+    var comparison: [String]
+    var recentHistory: [String]
+
+    func renderedText() -> String {
+        let checksText = checks.isEmpty ? "- (none)" : checks.map { "- \($0)" }.joined(separator: "\n")
         return """
-ref=\(normalizedReviewValue(latest.reviewRef, fallback: "(none)"))
-bundle_ref=\(normalizedReviewValue(latest.bundleRef, fallback: "(none)"))
-verdict=\(latest.verdict.rawValue)
-confidence=\(latest.confidence.rawValue)
-sufficient_evidence=\(latest.sufficientEvidence)
-objective_ready=\(latest.objectiveReady)
-issue_codes=\(issueCodesText(latest.issueCodes))
-summary=\(cappedReviewText(latest.summary, maxChars: 220))
+ref=\(reviewRef)
+bundle_ref=\(bundleRef)
+updated_at_ms=\(updatedAtMs)
+verdict=\(verdict.rawValue)
+confidence=\(confidence.rawValue)
+sufficient_evidence=\(sufficientEvidence)
+objective_ready=\(objectiveReady)
+issue_codes=\(issueCodesText(issueCodes))
+summary=\(summary)
+artifact_refs:
+\(formatEvidenceList(artifactRefs))
+artifact_paths:
+\(formatEvidenceList(artifactPaths))
 checks:
 \(checksText)
+trend:
+\(formatEvidenceList(trend))
+comparison:
+\(formatEvidenceList(comparison))
+recent_history:
+\(formatEvidenceList(recentHistory))
 """
+    }
+}
+
+enum XTUIReviewAgentEvidenceStore {
+    static let latestBrowserPageRef = "local://.xterminal/ui_review/agent_evidence/latest_browser_page.json"
+
+    static func reviewRef(reviewID: String) -> String {
+        let safe = sanitizedReviewAgentEvidenceToken(reviewID)
+        return "local://.xterminal/ui_review/agent_evidence/\(safe).json"
+    }
+
+    static func write(
+        _ snapshot: XTUIReviewAgentEvidenceSnapshot,
+        for ctx: AXProjectContext
+    ) throws {
+        try ctx.ensureDirs()
+        try FileManager.default.createDirectory(at: ctx.uiReviewDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: ctx.uiReviewAgentEvidenceDir, withIntermediateDirectories: true)
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(snapshot)
+        try XTStoreWriteSupport.writeSnapshotData(data, to: ctx.uiReviewAgentEvidenceURL(reviewID: snapshot.reviewID))
+        try XTStoreWriteSupport.writeSnapshotData(data, to: ctx.uiReviewLatestBrowserPageAgentEvidenceURL)
+    }
+
+    static func loadLatestBrowserPage(for ctx: AXProjectContext) -> XTUIReviewAgentEvidenceSnapshot? {
+        guard let data = try? Data(contentsOf: ctx.uiReviewLatestBrowserPageAgentEvidenceURL) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(XTUIReviewAgentEvidenceSnapshot.self, from: data)
+    }
+
+    static func load(reviewID: String, for ctx: AXProjectContext) -> XTUIReviewAgentEvidenceSnapshot? {
+        guard let data = try? Data(contentsOf: ctx.uiReviewAgentEvidenceURL(reviewID: reviewID)) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(XTUIReviewAgentEvidenceSnapshot.self, from: data)
+    }
+
+    static func load(ref: String, for ctx: AXProjectContext) -> XTUIReviewAgentEvidenceSnapshot? {
+        let normalized = ref.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
+        if normalized == latestBrowserPageRef {
+            return loadLatestBrowserPage(for: ctx)
+        }
+
+        let prefix = "local://.xterminal/ui_review/agent_evidence/"
+        guard normalized.hasPrefix(prefix) else { return nil }
+        let token = String(normalized.dropFirst(prefix.count))
+        guard token.hasSuffix(".json") else { return nil }
+        let reviewID = String(token.dropLast(".json".count))
+        guard !reviewID.isEmpty else { return nil }
+        return load(reviewID: reviewID, for: ctx)
+    }
+}
+
+private func evidenceEntry(_ label: String, _ value: String?) -> String? {
+    let trimmed = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    return "\(label)=\(trimmed)"
+}
+
+private func formatEvidenceList(_ items: [String?]) -> String {
+    let lines = items.compactMap { $0 }
+    guard !lines.isEmpty else { return "- (none)" }
+    return lines.map { "- \($0)" }.joined(separator: "\n")
+}
+
+private func trendStatusText(_ status: XTUIReviewTrendStatus?) -> String? {
+    switch status {
+    case .improved:
+        return "improved"
+    case .stable:
+        return "stable"
+    case .regressed:
+        return "regressed"
+    case nil:
+        return nil
+    }
+}
+
+private func comparisonEntries(
+    for presentation: XTUIReviewPresentation?
+) -> [String?] {
+    guard let comparison = presentation?.comparison else {
+        return []
+    }
+
+    var entries: [String?] = [
+        evidenceEntry(
+            "added_issues",
+            comparison.addedIssueLabels.isEmpty ? "(none)" : comparison.addedIssueLabels.joined(separator: ", ")
+        ),
+        evidenceEntry(
+            "resolved_issues",
+            comparison.resolvedIssueLabels.isEmpty ? "(none)" : comparison.resolvedIssueLabels.joined(separator: ", ")
+        )
+    ]
+
+    entries.append(
+        contentsOf: comparison.metrics.prefix(4).map { metric in
+            Optional("metric=\(metric.label) | \(comparisonToneText(metric.tone)) | \(metric.detail)")
+        }
+    )
+    return entries
+}
+
+private func recentHistoryEntries(
+    for presentation: XTUIReviewPresentation?,
+    maxItems: Int
+) -> [String?] {
+    guard let presentation else { return [] }
+    return presentation.recentHistory.prefix(max(1, maxItems)).map { item in
+        let issues = item.issueCodes.isEmpty ? "(none)" : item.issueCodes.joined(separator: ",")
+        return "review_id=\(item.reviewID) verdict=\(item.verdict.rawValue) confidence=\(item.confidence.rawValue) objective_ready=\(item.objectiveReady) issues=\(issues) updated_at_ms=\(item.updatedAtMs) review_ref=\(item.reviewRef)"
+    }
+}
+
+private func comparisonToneText(_ tone: XTUIReviewDiffTone) -> String {
+    switch tone {
+    case .improved:
+        return "improved"
+    case .stable:
+        return "stable"
+    case .regressed:
+        return "regressed"
     }
 }
 
 private func normalizedReviewValue(_ raw: String, fallback: String) -> String {
     let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
     return trimmed.isEmpty ? fallback : trimmed
+}
+
+private func sanitizedReviewAgentEvidenceToken(_ raw: String) -> String {
+    let base = raw
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .replacingOccurrences(of: "/", with: "_")
+        .replacingOccurrences(of: ":", with: "_")
+    return base.isEmpty ? UUID().uuidString.lowercased() : base
 }
 
 private func issueCodesText(_ issueCodes: [String]) -> String {

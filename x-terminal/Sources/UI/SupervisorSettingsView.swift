@@ -1,22 +1,41 @@
+import Foundation
 import SwiftUI
 
 struct SupervisorSettingsView: View {
     @EnvironmentObject private var appModel: AppModel
     @StateObject private var modelManager = HubModelManager.shared
     @StateObject private var supervisorManager = SupervisorManager.shared
+    @StateObject private var calendarAccessController = XTCalendarAccessController.shared
+    @StateObject private var calendarEventStore = XTCalendarEventStore.shared
+    @StateObject private var workModeUpdateFeedback = XTTransientUpdateFeedbackState()
+    @StateObject private var privacyModeUpdateFeedback = XTTransientUpdateFeedbackState()
+    @StateObject private var recentRawContextUpdateFeedback = XTTransientUpdateFeedbackState()
+    @StateObject private var projectModelAssignmentUpdateFeedback = XTTransientUpdateFeedbackState()
     @State private var selectedProjectId: String?
     @State private var selectedRole: AXRole = .coder
     @State private var showProjectModelPicker = false
     @State private var wakeTriggerWordsDraft: String = ""
-    @State private var supervisorPromptDraft: SupervisorPromptPreferences = .default()
+    @State private var calendarReminderPreviewPhase: SupervisorCalendarReminderPhase = .headsUp
+    @State private var calendarReminderSmokeStatus: String = ""
     @State private var voiceDiagnosticsExpanded: Bool = false
+    @State private var workModeChangeNotice: XTSettingsChangeNotice?
+    @State private var privacyModeChangeNotice: XTSettingsChangeNotice?
+    @State private var recentRawContextChangeNotice: XTSettingsChangeNotice?
+    @State private var projectModelAssignmentChangeNotice: XTSettingsChangeNotice?
     
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 header
-                promptPersonalitySection
+                supervisorWorkModeSection
+                supervisorPrivacyModeSection
+                SupervisorPersonaCenterView()
+                SupervisorPersonalMemoryCenterView()
+                recentRawContextSection
+                SupervisorFollowUpQueueView()
+                SupervisorPersonalReviewCenterView()
                 heartbeatPolicySection
+                supervisorCalendarReminderSection
                 voiceRuntimeSection
 
                 Divider()
@@ -38,18 +57,25 @@ struct SupervisorSettingsView: View {
         .onAppear {
             modelManager.setAppModel(appModel)
             syncWakeTriggerWordsDraft()
-            syncSupervisorPromptDraft()
+            refreshSupervisorCalendarReminderSurface(forceUpcomingRefresh: true)
             Task {
                 await modelManager.fetchModels()
             }
-        }
-        .onChange(of: appModel.settingsStore.settings.supervisorPrompt) { _ in
-            syncSupervisorPromptDraft()
         }
         .onChange(of: supervisorManager.voiceWakeProfileSnapshot.generatedAtMs) { _ in
             if wakeTriggerWordsDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 syncWakeTriggerWordsDraft()
             }
+        }
+        .onDisappear {
+            workModeUpdateFeedback.cancel(resetState: true)
+            privacyModeUpdateFeedback.cancel(resetState: true)
+            recentRawContextUpdateFeedback.cancel(resetState: true)
+            projectModelAssignmentUpdateFeedback.cancel(resetState: true)
+            workModeChangeNotice = nil
+            privacyModeChangeNotice = nil
+            recentRawContextChangeNotice = nil
+            projectModelAssignmentChangeNotice = nil
         }
     }
     
@@ -58,6 +84,11 @@ struct SupervisorSettingsView: View {
             HStack {
                 Text("Supervisor 设置")
                     .font(.title2)
+
+                Text(supervisorManager.supervisorPersonaStatusLine)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+
                 Spacer()
                 
                 Button("刷新模型列表") {
@@ -68,11 +99,11 @@ struct SupervisorSettingsView: View {
                 .buttonStyle(.bordered)
             }
             
-            Text("在这里可以为各个项目分配不同的 AI 模型。Supervisor 可以根据项目需求为不同角色（编程助手、代码审查等）指定合适的模型。")
+            Text("这里统一管理 Supervisor 的人格、心跳 / 语音运行时，以及各个项目的模型分配。")
                 .font(.body)
                 .foregroundStyle(.secondary)
 
-            Text("如果某台 paired Terminal 需要更大的或更小的本地 context length，请在 Hub 的设备编辑页调整该设备的 local model override；这里显示的是 Hub catalog 默认值。")
+            Text("如果某台已配对终端需要更大的或更小的本地上下文长度，请在 Hub 的设备编辑页调整该设备的本地模型覆盖；这里显示的是 Hub 模型目录的默认值。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -88,9 +119,145 @@ struct SupervisorSettingsView: View {
         }
     }
 
+    private var supervisorWorkModeSection: some View {
+        let mode = appModel.settingsStore.settings.supervisorWorkMode
+
+        return VStack(alignment: .leading, spacing: 12) {
+            Text("工作模式")
+                .font(.headline)
+
+            Text("A-tier 决定权限上限，S-tier 决定监督深度；这里决定 Supervisor 是只回答、会帮你推进，还是允许在治理边界内自动执行。切换模式不会自动抬高任何项目的 A-tier。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if workModeUpdateFeedback.showsBadge,
+               let workModeChangeNotice {
+                XTSettingsChangeNoticeInlineView(
+                    notice: workModeChangeNotice,
+                    tint: .accentColor
+                )
+            }
+
+            Picker("工作模式", selection: Binding(
+                get: { appModel.settingsStore.settings.supervisorWorkMode },
+                set: { updateSupervisorWorkMode($0) }
+            )) {
+                ForEach(XTSupervisorWorkMode.allCases) { option in
+                    Text(option.shortLabel).tag(option)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("当前档位：\(mode.displayName)")
+                    .font(.caption.weight(.semibold))
+
+                Text(mode.summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text("生效规则：\(mode.runtimeBehaviorSummary)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text("硬边界：项目治理、授权状态、runtime readiness 和 fail-closed gate 只会继续收紧，不会因为切到这个模式就自动放大权限。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            DisclosureGroup("快速判断") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("对话模式：只回答你明确提出的问题，不主动推进，也不自动执行。")
+                    Text("推进模式：会给计划、提醒和下一步建议，但先给方案，不直接自己开跑。")
+                    Text("自动执行模式：只有在 A-tier、S-tier、授权和 runtime 都允许时，才会继续自动推进和执行。")
+                    Text("隐私模式是另一条轴：它不会切断 Hub 长期记忆，只会决定最近原始对话保留多少、以及是否更偏向摘要。")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.top, 4)
+            }
+        }
+        .padding(12)
+        .xtTransientUpdateCardChrome(
+            cornerRadius: 10,
+            isUpdated: workModeUpdateFeedback.isHighlighted,
+            focusTint: .accentColor,
+            updateTint: .accentColor,
+            baseBackground: Color(NSColor.controlBackgroundColor)
+        )
+    }
+
+    private var supervisorPrivacyModeSection: some View {
+        let mode = appModel.settingsStore.settings.supervisorPrivacyMode
+        let configuredProfile = appModel.settingsStore.settings.supervisorRecentRawContextProfile
+        let effectiveProfile = mode.effectiveRecentRawContextProfile(configuredProfile)
+
+        return VStack(alignment: .leading, spacing: 12) {
+            Text("隐私模式")
+                .font(.headline)
+
+            Text("这个开关不会关闭 Hub 记忆，也不会影响 session handoff / session_summary_capsule。它只控制 Supervisor 最近原始对话暴露得有多直接。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if privacyModeUpdateFeedback.showsBadge,
+               let privacyModeChangeNotice {
+                XTSettingsChangeNoticeInlineView(
+                    notice: privacyModeChangeNotice,
+                    tint: .accentColor
+                )
+            }
+
+            Picker("隐私模式", selection: Binding(
+                get: { appModel.settingsStore.settings.supervisorPrivacyMode },
+                set: { updateSupervisorPrivacyMode($0) }
+            )) {
+                ForEach(XTPrivacyMode.allCases) { option in
+                    Text(option.shortLabel).tag(option)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("当前档位：\(mode.displayName)")
+                    .font(.caption.weight(.semibold))
+
+                Text(mode.summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text("生效规则：\(mode.runtimeBehaviorSummary)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if effectiveProfile != configuredProfile {
+                    Text("当前效果：\(mode.recentRawContextEffectSummary(configuredProfile: configuredProfile))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(12)
+        .xtTransientUpdateCardChrome(
+            cornerRadius: 10,
+            isUpdated: privacyModeUpdateFeedback.isHighlighted,
+            focusTint: .accentColor,
+            updateTint: .accentColor,
+            baseBackground: Color(NSColor.controlBackgroundColor)
+        )
+    }
+
     private var heartbeatPolicySection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Heartbeat 升级策略")
+            Text("心跳升级策略")
                 .font(.headline)
 
             Stepper(
@@ -129,80 +296,170 @@ struct SupervisorSettingsView: View {
         .cornerRadius(10)
     }
 
-    private var promptPersonalitySection: some View {
-        VStack(alignment: .leading, spacing: 12) {
+    private var supervisorCalendarReminderSection: some View {
+        let preferences = appModel.settingsStore.settings.supervisorCalendarReminders
+        let authorizationStatus = calendarAccessController.authorizationStatus
+        let upcomingMeetings = calendarEventStore.upcomingMeetings.prefix(3)
+
+        return VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Prompt Personality")
+                Text("日历提醒")
                     .font(.headline)
                 Spacer()
-                Button("保存人格设置") {
-                    saveSupervisorPromptDraft()
-                }
-                .buttonStyle(.borderedProminent)
-
-                Button("恢复默认") {
-                    resetSupervisorPromptDefaults()
+                Button("刷新会议") {
+                    refreshSupervisorCalendarReminderSurface(forceUpcomingRefresh: true)
                 }
                 .buttonStyle(.bordered)
+                .disabled(!preferences.enabled)
             }
 
-            Text("这里控制 Supervisor 的身份名、角色描述、语气补充和附加 system prompt。身份名会影响本地直答；语气补充和附加 prompt 会进入远端推理系统提示词。不要在这里写入密钥或敏感信息。")
+            Text("个人日历权限现在只留在这台 X-Terminal 设备上。Hub 不再读取你的日历；会议临近时，本机 Supervisor 会直接播报，必要时再退到本地通知。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Identity Name")
-                        .font(.caption.weight(.semibold))
-                    TextField("Supervisor", text: $supervisorPromptDraft.identityName)
-                        .textFieldStyle(.roundedBorder)
-                }
+            Toggle(
+                "启用日历提醒",
+                isOn: Binding(
+                    get: { preferences.enabled },
+                    set: { enabled in
+                        updateSupervisorCalendarReminderSettings { $0.enabled = enabled }
+                        refreshSupervisorCalendarReminderSurface(forceUpcomingRefresh: enabled)
+                    }
+                )
+            )
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Role Summary")
-                        .font(.caption.weight(.semibold))
-                    TextField(
-                        "Supervisor AI for project orchestration, model routing, and execution coordination.",
-                        text: $supervisorPromptDraft.roleSummary
-                    )
-                    .textFieldStyle(.roundedBorder)
-                }
+            HStack(spacing: 16) {
+                voiceInfoRow("授权状态", value: authorizationStatus.displayName, secondary: !authorizationStatus.canReadEvents)
+                voiceInfoRow("当前快照", value: calendarEventStore.statusLine, secondary: calendarEventStore.upcomingMeetings.isEmpty)
             }
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Tone Directives")
-                    .font(.caption.weight(.semibold))
-                Text("每行一条，补充你希望 Supervisor 保持的说话风格，例如“直接回答，不绕弯”“必要时指出风险，不要太像客服”。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                TextEditor(text: $supervisorPromptDraft.toneDirectives)
-                    .font(.system(size: 12, design: .monospaced))
-                    .frame(minHeight: 76)
-                    .padding(6)
-                    .background(Color(NSColor.windowBackgroundColor))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
+            if preferences.enabled {
+                HStack(spacing: 10) {
+                    if authorizationStatus == .notDetermined {
+                        Button("授予日历权限") {
+                            Task { @MainActor in
+                                _ = await calendarAccessController.requestAccessIfNeeded()
+                                refreshSupervisorCalendarReminderSurface(forceUpcomingRefresh: true)
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                    } else if !authorizationStatus.canReadEvents {
+                        Button("打开日历设置") {
+                            XTSystemSettingsLinks.openCalendarPrivacy()
+                        }
+                        .buttonStyle(.bordered)
+                    }
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Extra System Prompt")
-                    .font(.caption.weight(.semibold))
-                Text("附加到 system prompt 末尾，适合放高层行为约束或团队内部风格要求。")
+                    Button("试听提醒播报") {
+                        previewCalendarReminderVoice()
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("测试通知回退") {
+                        testCalendarReminderNotificationFallback()
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("模拟真实投递") {
+                        simulateCalendarReminderLiveDelivery()
+                    }
+                    .buttonStyle(.bordered)
+
+                    Spacer()
+                }
+
+                Picker("预览阶段", selection: $calendarReminderPreviewPhase) {
+                    ForEach(SupervisorCalendarReminderPhase.allCases, id: \.self) { phase in
+                        Text(phase.calendarPreviewDisplayName).tag(phase)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text("预览会直接使用当前阶段和当前语音链路下的真实播报文案，即使现在还没有真正临近的会议。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Text("模拟真实投递会按当前 XT 运行时的真实路由决策执行：语音、静默时段、通知回退和对话延后都会一起生效。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if !calendarReminderSmokeStatus.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(calendarReminderSmokeStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if authorizationStatus.canReadEvents {
+                    HStack(spacing: 12) {
+                        Stepper(
+                            "提前提醒：\(preferences.headsUpMinutes) 分钟",
+                            value: Binding(
+                                get: { preferences.headsUpMinutes },
+                                set: { value in
+                                    updateSupervisorCalendarReminderSettings { $0.headsUpMinutes = value }
+                                }
+                            ),
+                            in: 5...120
+                        )
+
+                        Stepper(
+                            "临近提醒：\(preferences.finalCallMinutes) 分钟",
+                            value: Binding(
+                                get: { preferences.finalCallMinutes },
+                                set: { value in
+                                    updateSupervisorCalendarReminderSettings { $0.finalCallMinutes = value }
+                                }
+                            ),
+                            in: 1...30
+                        )
+                    }
+
+                    Toggle(
+                        "使用本地通知回退",
+                        isOn: Binding(
+                            get: { preferences.notificationFallbackEnabled },
+                            set: { value in
+                                updateSupervisorCalendarReminderSettings { $0.notificationFallbackEnabled = value }
+                            }
+                        )
+                    )
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("即将开始的会议")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+
+                        if upcomingMeetings.isEmpty {
+                            Text("未来 12 小时内没有即将开始的会议。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(Array(upcomingMeetings)) { meeting in
+                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                    Text(meeting.startTimeText)
+                                        .font(.caption.monospacedDigit())
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 52, alignment: .leading)
+                                    Text(meeting.title)
+                                        .font(.caption)
+                                        .lineLimit(1)
+                                    Spacer()
+                                    Text(meeting.relativeStartText())
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    Text(authorizationStatus.guidanceText)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Text("常驻家里的设备建议保持关闭。只有在这里启用后，这台 XT 才会成为你的个人日历宿主，并在本机本地驱动提醒。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                TextEditor(text: $supervisorPromptDraft.extraSystemPrompt)
-                    .font(.system(size: 12, design: .monospaced))
-                    .frame(minHeight: 110)
-                    .padding(6)
-                    .background(Color(NSColor.windowBackgroundColor))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
             }
         }
         .padding(12)
@@ -210,106 +467,343 @@ struct SupervisorSettingsView: View {
         .cornerRadius(10)
     }
 
+    private var recentRawContextSection: some View {
+        let selectedProfile = appModel.settingsStore.settings.supervisorRecentRawContextProfile
+        let privacyMode = appModel.settingsStore.settings.supervisorPrivacyMode
+        let effectiveProfile = privacyMode.effectiveRecentRawContextProfile(selectedProfile)
+
+        return VStack(alignment: .leading, spacing: 12) {
+            Text("最近原始上下文")
+                .font(.headline)
+
+            Text("这里控制 Supervisor 最近原始对话保留多少。硬底线固定是 8 个来回；这个设置调的是 ceiling，不会替代 long-term memory，也不会改动 5 层记忆内核。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if recentRawContextUpdateFeedback.showsBadge,
+               let recentRawContextChangeNotice {
+                XTSettingsChangeNoticeInlineView(
+                    notice: recentRawContextChangeNotice,
+                    tint: .accentColor
+                )
+            }
+
+            Picker("最近原始上下文", selection: Binding(
+                get: { appModel.settingsStore.settings.supervisorRecentRawContextProfile },
+                set: { updateSupervisorRecentRawContextProfile($0) }
+            )) {
+                ForEach(XTSupervisorRecentRawContextProfile.allCases) { profile in
+                    Text("\(profile.displayName) · \(profile.shortLabel)").tag(profile)
+                }
+            }
+            .pickerStyle(.menu)
+            .frame(width: 280, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("当前档位：\(selectedProfile.displayName) · \(selectedProfile.shortLabel)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.primary)
+
+                Text(selectedProfile.summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text("说明：serving profile 继续决定背景厚度；最近原始上下文只负责保证“刚才到底在说什么”不会被过早压扁。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if effectiveProfile != selectedProfile {
+                    Text("注意：当前隐私模式会把这个档位临时收束到 \(effectiveProfile.displayName) · \(effectiveProfile.shortLabel)。如果你要恢复更深 recent raw dialogue，先把隐私模式切回平衡。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(12)
+        .xtTransientUpdateCardChrome(
+            cornerRadius: 10,
+            isUpdated: recentRawContextUpdateFeedback.isHighlighted,
+            focusTint: .accentColor,
+            updateTint: .accentColor,
+            baseBackground: Color(NSColor.controlBackgroundColor)
+        )
+    }
+
+    private func updateSupervisorWorkMode(_ mode: XTSupervisorWorkMode) {
+        guard appModel.settingsStore.settings.supervisorWorkMode != mode else { return }
+        appModel.setSupervisorWorkMode(mode)
+        workModeChangeNotice = XTSettingsChangeNoticeBuilder.supervisorWorkMode(mode)
+        workModeUpdateFeedback.trigger()
+    }
+
+    private func updateSupervisorPrivacyMode(_ mode: XTPrivacyMode) {
+        let currentMode = appModel.settingsStore.settings.supervisorPrivacyMode
+        guard currentMode != mode else { return }
+        appModel.setSupervisorPrivacyMode(mode)
+        privacyModeChangeNotice = XTSettingsChangeNoticeBuilder.supervisorPrivacyMode(
+            mode,
+            configuredProfile: appModel.settingsStore.settings.supervisorRecentRawContextProfile
+        )
+        privacyModeUpdateFeedback.trigger()
+    }
+
+    private func updateSupervisorRecentRawContextProfile(
+        _ profile: XTSupervisorRecentRawContextProfile
+    ) {
+        guard appModel.settingsStore.settings.supervisorRecentRawContextProfile != profile else { return }
+        appModel.setSupervisorRecentRawContextProfile(profile)
+        recentRawContextChangeNotice = XTSettingsChangeNoticeBuilder.supervisorRecentRawContext(
+            profile: profile,
+            privacyMode: appModel.settingsStore.settings.supervisorPrivacyMode
+        )
+        recentRawContextUpdateFeedback.trigger()
+    }
+
     private var voiceRuntimeSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Voice Runtime")
+                Text("语音运行时")
                     .font(.headline)
                 Spacer()
-                Button("Refresh Voice Runtime") {
+                Button("刷新语音运行时") {
                     supervisorManager.refreshVoiceRuntimeStatus()
                 }
                 .buttonStyle(.bordered)
             }
 
-            Text("Configure the local voice route, FunASR sidecar endpoint, and current runtime readiness. High-risk authorization still remains fail-closed on the Hub path.")
+            Text("这里配置本地语音链路、FunASR Sidecar 和当前运行时就绪状态。语音人格现在跟当前激活的人格对齐；如果要改非激活槽位的语音覆盖，请回到上面的 Persona Center。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+            Text("输入链路负责“听见你说话”；播放来源负责“Supervisor 用什么声音说出来”。这两条链路现在已经拆开，后续 Hub 语音包也会接到播放来源，不再混在系统语音兼容链路里。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            voicePlaybackOverviewGrid
+
+            HStack(spacing: 10) {
+                Button("试听语音") {
+                    supervisorManager.previewSupervisorVoicePlayback()
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button("停止播放") {
+                    _ = supervisorManager.stopSupervisorVoicePlayback()
+                }
+                .buttonStyle(.bordered)
+
+                Spacer()
+
+                Text("试听会忽略静默时段和自动播报静音，但会使用当前的输出后端、语言、音色和语速。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
+            }
+
             HStack(spacing: 12) {
-                Picker("Preferred Route", selection: voicePreferredRouteBinding) {
+                Picker("首选链路", selection: voicePreferredRouteBinding) {
                     ForEach(VoicePreferredRoute.allCases) { route in
-                        Text(route.id).tag(route)
+                        Text(route.displayName).tag(route)
                     }
                 }
                 .pickerStyle(.menu)
 
-                Picker("Wake Mode", selection: voiceWakeModeBinding) {
+                Picker("唤醒模式", selection: voiceWakeModeBinding) {
                     ForEach(VoiceWakeMode.allCases) { mode in
-                        Text(mode.id).tag(mode)
+                        Text(mode.displayName).tag(mode)
                     }
                 }
                 .pickerStyle(.menu)
 
-                Picker("Auto Report", selection: voiceAutoReportModeBinding) {
+                Picker("自动播报", selection: voiceAutoReportModeBinding) {
                     ForEach(VoiceAutoReportMode.allCases) { mode in
-                        Text(mode.id).tag(mode)
+                        Text(mode.displayName).tag(mode)
                     }
                 }
                 .pickerStyle(.menu)
             }
 
             HStack(spacing: 12) {
-                Picker("Voice Persona", selection: voicePersonaBinding) {
+                Picker("播放来源", selection: voicePlaybackPreferenceBinding) {
+                    ForEach(VoicePlaybackPreference.allCases) { preference in
+                        Text(preference.displayName).tag(preference)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                Picker("当前人格语音", selection: voicePersonaBinding) {
                     ForEach(VoicePersonaPreset.allCases) { persona in
                         Text(persona.displayName).tag(persona)
                     }
                 }
                 .pickerStyle(.menu)
 
-                Toggle("Interrupt On Speech", isOn: voiceInterruptOnSpeechBinding)
+                Picker("语音语言", selection: voiceLocaleBinding) {
+                    ForEach(VoiceSupportedLocale.allCases) { locale in
+                        Text(locale.displayName).tag(locale)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                Toggle("说话时打断", isOn: voiceInterruptOnSpeechBinding)
                     .toggleStyle(.switch)
             }
 
-            Toggle("Enable FunASR Sidecar", isOn: funASREnabledBinding)
+            HStack(spacing: 12) {
+                Picker("音色", selection: voiceTimbreBinding) {
+                    ForEach(VoiceTimbrePreset.allCases) { timbre in
+                        Text(timbre.displayName).tag(timbre)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("语速")
+                            .font(.caption.weight(.semibold))
+                        Spacer()
+                        Text(voiceSpeechRateText(appModel.settingsStore.settings.voice.speechRateMultiplier))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    Slider(value: voiceSpeechRateBinding, in: 0.6...1.8, step: 0.05)
+                    Text("范围：0.60x - 1.80x。XT 会把同一组数值同时发给 Hub 语音包播放和本地系统语音回退。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Text("语音语言会同时影响系统语音识别 locale 和系统朗读回退的语言；音色 / 语速先作用在本地回退，后续也会作为 Hub 语音包的默认路由提示。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            if shouldShowHubVoicePackSelector {
+                VStack(alignment: .leading, spacing: 6) {
+                    Picker("首选 Hub 语音包", selection: voiceHubVoicePackIDBinding) {
+                        ForEach(voiceHubVoicePackPickerOptions) { option in
+                            Text(option.menuLabel).tag(option.id)
+                        }
+                    }
+                    .pickerStyle(.menu)
+
+                    if let detail = voiceHubVoicePackSelectionDetail {
+                        Text(detail)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+
+                    if let automaticPickTitle = voiceAutomaticHubVoicePackTitle {
+                        Text("当前自动选择：\(automaticPickTitle)。")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        if let automaticPickDetail = voiceAutomaticHubVoicePackDetail {
+                            Text(automaticPickDetail)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                    }
+
+                    Text(voiceHubVoicePackAvailabilityLine)
+                        .font(.caption2)
+                        .foregroundStyle(voiceHubVoicePackStatusColor)
+
+                    if availableHubVoicePackModels.isEmpty {
+                        Text("Hub 当前还没有暴露本地 TTS 模型。你可以继续使用系统语音回退，或先在 Hub 模型市场下载并启用一个 `text_to_speech` 模型。")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            Toggle("启用 FunASR Sidecar", isOn: funASREnabledBinding)
                 .toggleStyle(.switch)
 
             HStack(spacing: 12) {
                 TextField("FunASR WebSocket URL", text: funASRWebSocketURLBinding)
                     .textFieldStyle(.roundedBorder)
-                TextField("Healthcheck URL (optional)", text: funASRHealthcheckURLBinding)
+                TextField("Healthcheck URL（可选）", text: funASRHealthcheckURLBinding)
                     .textFieldStyle(.roundedBorder)
             }
 
             HStack(spacing: 12) {
-                Toggle("Wake Events Enabled", isOn: funASRWakeEnabledBinding)
+                Toggle("启用唤醒事件", isOn: funASRWakeEnabledBinding)
                     .toggleStyle(.switch)
-                Toggle("Partial Transcript Enabled", isOn: funASRPartialsEnabledBinding)
+                Toggle("启用局部转写", isOn: funASRPartialsEnabledBinding)
                     .toggleStyle(.switch)
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Wake Trigger Words")
+                Text("唤醒词")
                     .font(.caption.weight(.semibold))
-                Text("Hub owns one normalized trigger list for paired devices, while local enable/disable and permissions stay device-specific. XT can edit a local override, then push or resync against the Hub pair-sync truth source.")
+                Text("Hub 维护一份面向已配对设备的标准化唤醒词列表，而本机是否启用和本机权限仍然按设备单独处理。XT 可以先改本地覆盖，再推送到 Hub，或从 Hub 真相源重新同步。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text("如果某个唤醒词直接等于某个人格的名字或别名，例如 atlas，唤醒后会把当前会话切到那个人格。像 x hub / supervisor 这类通用唤醒词只负责唤醒，不会强行改人格。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 TextField("x hub, supervisor", text: $wakeTriggerWordsDraft)
                     .textFieldStyle(.roundedBorder)
+                if !personaRuntimePresentation.wakeSuggestions.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("人格唤醒建议")
+                            .font(.caption.weight(.semibold))
+                        Text("点一下会先加入草稿；需要生效时再点“应用本机覆盖”。")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(personaRuntimePresentation.wakeSuggestions) { suggestion in
+                                    Button {
+                                        addWakeTriggerSuggestion(suggestion.token)
+                                    } label: {
+                                        HStack(spacing: 6) {
+                                            Text("+ \(suggestion.token)")
+                                            if !suggestion.isPrimaryName {
+                                                Text(suggestion.personaDisplayName)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                        }
+                                        .font(.caption.weight(.semibold))
+                                    }
+                                    .buttonStyle(.bordered)
+                                }
+                            }
+                            .padding(.vertical, 1)
+                        }
+                    }
+                    .padding(10)
+                    .background(Color(NSColor.controlBackgroundColor).opacity(0.65))
+                    .cornerRadius(8)
+                }
                 HStack(spacing: 10) {
-                    Button("Apply Local Override") {
+                    Button("应用本机覆盖") {
                         supervisorManager.updateVoiceWakeTriggerWords(wakeTriggerWordsDraft)
                         syncWakeTriggerWordsDraft()
                     }
                     .buttonStyle(.bordered)
 
-                    Button("Restore Defaults") {
+                    Button("恢复默认") {
                         supervisorManager.restoreDefaultVoiceWakeTriggerWords()
                         syncWakeTriggerWordsDraft()
                     }
                     .buttonStyle(.bordered)
 
-                    Button("Push To Hub") {
+                    Button("推送到 Hub") {
                         supervisorManager.pushVoiceWakeProfileToHub()
                     }
                     .buttonStyle(.borderedProminent)
 
-                    Button("Resync From Hub") {
+                    Button("从 Hub 重新同步") {
                         supervisorManager.resyncVoiceWakeProfile()
                     }
                     .buttonStyle(.bordered)
                 }
-                Text("Normalization: trim + dedupe, empty falls back to defaults, max \(VoiceWakeProfile.maxTriggerCount) triggers, max \(VoiceWakeProfile.maxTriggerLength) chars each.")
+                Text("规范化规则：去首尾空格 + 去重；留空会回退到默认值；最多 \(VoiceWakeProfile.maxTriggerCount) 个唤醒词，每个最多 \(VoiceWakeProfile.maxTriggerLength) 个字符。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -324,50 +818,64 @@ struct SupervisorSettingsView: View {
                 )
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(supervisorManager.voiceReadinessSnapshot.overallState.tint)
-                Text("Readiness State: \(supervisorManager.voiceReadinessSnapshot.overallState.rawValue)")
+                Text("就绪状态：\(supervisorManager.voiceReadinessSnapshot.overallState.rawValue)")
+                    .font(.caption)
+                Text("首任务可用：\(supervisorManager.voiceReadinessSnapshot.readyForFirstTask ? "是" : "否")")
                     .font(.caption)
                 if !supervisorManager.voiceReadinessSnapshot.primaryReasonCode.isEmpty {
-                    Text("Primary Reason: \(supervisorManager.voiceReadinessSnapshot.primaryReasonCode)")
+                    Text("主原因：\(supervisorManager.voiceReadinessSnapshot.primaryReasonCode)")
                         .font(.caption)
                 }
-                Text("Current Route: \(supervisorManager.voiceRouteDecision.route.rawValue)")
+                Text("当前链路：\(supervisorManager.voiceRouteDecision.route.rawValue)")
                     .font(.caption)
-                Text("Voice Persona: \(appModel.settingsStore.settings.voice.persona.displayName)")
+                Text("当前人格：\(personaRuntimePresentation.persistedActivePersonaName)")
                     .font(.caption)
-                Text("Reason: \(supervisorManager.voiceRouteDecision.reasonCode)")
+                Text("实际语音人格：\(effectiveVoicePreferences.persona.displayName)")
                     .font(.caption)
-                Text("Authorization: \(supervisorManager.voiceAuthorizationStatus.rawValue)")
+                Text("语音包覆盖：\(activePersonaVoicePackOverlaySummary)")
                     .font(.caption)
-                Text("Session State: \(supervisorManager.voiceRuntimeState.state.rawValue)")
+                Text("语音语言：\(voiceLocaleSelection.rawValue)")
                     .font(.caption)
-                Text("Interrupt On Speech: \(appModel.settingsStore.settings.voice.interruptOnSpeech ? "enabled" : "disabled")")
+                Text("音色：\(effectiveVoicePreferences.timbre.rawValue)")
                     .font(.caption)
-                Text("Wake Profile Sync: \(supervisorManager.voiceWakeProfileSnapshot.syncState.rawValue)")
+                Text("语速：\(voiceSpeechRateText(effectiveVoicePreferences.speechRateMultiplier))")
                     .font(.caption)
-                Text("Desired Wake Mode: \(supervisorManager.voiceWakeProfileSnapshot.desiredWakeMode.rawValue)")
+                Text("当前覆盖：\(personaRuntimePresentation.persistedActiveVoiceSummary)")
                     .font(.caption)
-                Text("Effective Wake Mode: \(supervisorManager.voiceWakeProfileSnapshot.effectiveWakeMode.rawValue)")
+                Text("原因：\(supervisorManager.voiceRouteDecision.reasonCode)")
                     .font(.caption)
-                Text("Wake Profile Source: \(supervisorManager.voiceWakeProfileSnapshot.profileSource?.rawValue ?? "none")")
+                Text("授权：\(supervisorManager.voiceAuthorizationStatus.rawValue)")
                     .font(.caption)
-                Text("Wake Profile Reason: \(supervisorManager.voiceWakeProfileSnapshot.reasonCode)")
+                Text("会话状态：\(supervisorManager.voiceRuntimeState.state.rawValue)")
+                    .font(.caption)
+                Text("说话时打断：\(appModel.settingsStore.settings.voice.interruptOnSpeech ? "开启" : "关闭")")
+                    .font(.caption)
+                Text("唤醒词同步：\(supervisorManager.voiceWakeProfileSnapshot.syncState.rawValue)")
+                    .font(.caption)
+                Text("目标唤醒模式：\(supervisorManager.voiceWakeProfileSnapshot.desiredWakeMode.rawValue)")
+                    .font(.caption)
+                Text("实际唤醒模式：\(supervisorManager.voiceWakeProfileSnapshot.effectiveWakeMode.rawValue)")
+                    .font(.caption)
+                Text("唤醒词来源：\(supervisorManager.voiceWakeProfileSnapshot.profileSource?.rawValue ?? "无")")
+                    .font(.caption)
+                Text("唤醒词原因：\(supervisorManager.voiceWakeProfileSnapshot.reasonCode)")
                     .font(.caption)
                 if !supervisorManager.voiceWakeProfileSnapshot.triggerWords.isEmpty {
-                    Text("Wake Trigger Words: \(supervisorManager.voiceWakeProfileSnapshot.triggerWords.joined(separator: ", "))")
+                    Text("唤醒词列表：\(supervisorManager.voiceWakeProfileSnapshot.triggerWords.joined(separator: ", "))")
                         .font(.caption)
                 }
                 if let remoteReason = supervisorManager.voiceWakeProfileSnapshot.lastRemoteReasonCode, !remoteReason.isEmpty {
-                    Text("Wake Sync Remote Reason: \(remoteReason)")
+                    Text("远端同步原因：\(remoteReason)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Text("Wake Capability: \(supervisorManager.voiceRouteDecision.wakeCapability)")
+                Text("唤醒能力：\(supervisorManager.voiceRouteDecision.wakeCapability)")
                     .font(.caption)
-                Text("Engine Health: funasr=\(supervisorManager.voiceRouteDecision.funasrHealth.rawValue), whisperkit=\(supervisorManager.voiceRouteDecision.whisperKitHealth.rawValue), system=\(supervisorManager.voiceRouteDecision.systemSpeechHealth.rawValue)")
+                Text("引擎健康：funasr=\(supervisorManager.voiceRouteDecision.funasrHealth.rawValue), whisperkit=\(supervisorManager.voiceRouteDecision.whisperKitHealth.rawValue), system=\(supervisorManager.voiceRouteDecision.systemSpeechHealth.rawValue)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if !supervisorManager.voiceActiveHealthReasonCode.isEmpty {
-                    Text("Engine Reason: \(supervisorManager.voiceActiveHealthReasonCode)")
+                    Text("引擎原因：\(supervisorManager.voiceActiveHealthReasonCode)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -378,7 +886,7 @@ struct SupervisorSettingsView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     if !supervisorManager.voiceReadinessSnapshot.orderedFixes.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Ordered Fixes")
+                            Text("建议修复顺序")
                                 .font(.caption.weight(.semibold))
                             ForEach(supervisorManager.voiceReadinessSnapshot.orderedFixes, id: \.self) { fix in
                                 Text("• \(fix)")
@@ -393,7 +901,7 @@ struct SupervisorSettingsView: View {
 
                     if !supervisorManager.voiceReadinessSnapshot.checks.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("Voice Readiness Checks")
+                            Text("语音就绪检查")
                                 .font(.caption.weight(.semibold))
                             ForEach(supervisorManager.voiceReadinessSnapshot.checks) { check in
                                 VStack(alignment: .leading, spacing: 2) {
@@ -407,7 +915,7 @@ struct SupervisorSettingsView: View {
                                     }
                                     Text(check.headline)
                                         .font(.caption)
-                                    Text("reason=\(check.reasonCode)")
+                                    Text("原因代码=\(check.reasonCode)")
                                         .font(.caption2.monospaced())
                                         .foregroundStyle(.secondary)
                                 }
@@ -422,18 +930,18 @@ struct SupervisorSettingsView: View {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("FunASR Sidecar")
                                 .font(.caption.weight(.semibold))
-                            Text("Status: \(snapshot.status.rawValue)")
+                            Text("状态：\(snapshot.status.rawValue)")
                                 .font(.caption)
-                            Text("Endpoint: \(snapshot.endpoint)")
+                            Text("地址：\(snapshot.endpoint)")
                                 .font(.caption)
-                            Text("Capabilities: vad=\(readinessToken(snapshot.vadReady)), wake=\(readinessToken(snapshot.wakeReady)), partial=\(readinessToken(snapshot.partialReady))")
+                            Text("能力：vad=\(readinessToken(snapshot.vadReady)), wake=\(readinessToken(snapshot.wakeReady)), partial=\(readinessToken(snapshot.partialReady))")
                                 .font(.caption)
                             if let lastError = snapshot.lastError, !lastError.isEmpty {
-                                Text("Last Error: \(lastError)")
+                                Text("最近错误：\(lastError)")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
-                            Text("Next Action: \(voiceRuntimeOperatorGuidance(snapshot: snapshot))")
+                            Text("下一步：\(voiceRuntimeOperatorGuidance(snapshot: snapshot))")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -445,7 +953,7 @@ struct SupervisorSettingsView: View {
                 .padding(.top, 6)
             } label: {
                 HStack {
-                    Text("Detailed Voice Diagnostics")
+                    Text("详细语音诊断")
                         .font(.caption.weight(.semibold))
                     Spacer()
                     Text(voiceDiagnosticsExpanded ? "展开中" : "已折叠")
@@ -462,8 +970,148 @@ struct SupervisorSettingsView: View {
         .cornerRadius(10)
     }
 
+    private var voicePlaybackOverviewGrid: some View {
+        LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: 260), spacing: 12, alignment: .top)],
+            alignment: .leading,
+            spacing: 12
+        ) {
+            voiceConfiguredOutputCard
+            voiceLastPlaybackCard
+        }
+    }
+
+    private var voiceConfiguredOutputCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("当前语音配置", systemImage: "slider.horizontal.3")
+                .font(.caption.weight(.semibold))
+
+            Text(voicePlaybackResolution.resolvedSource.displayName)
+                .font(.title3.weight(.semibold))
+
+            Text(voiceConfiguredPlaybackSummary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Divider()
+
+            voiceInfoRow("请求输出", value: appModel.settingsStore.settings.voice.playbackPreference.displayName)
+            voiceInfoRow("实际输出", value: voicePlaybackResolution.resolvedSource.displayName)
+            voiceInfoRow("首选链路", value: appModel.settingsStore.settings.voice.preferredRoute.displayName)
+            voiceInfoRow("当前槽位", value: personaRuntimePresentation.persistedActivePersonaName)
+            voiceInfoRow("语音覆盖", value: personaRuntimePresentation.persistedActiveVoiceSummary)
+            voiceInfoRow("语音包覆盖", value: activePersonaVoicePackOverlaySummary)
+            voiceInfoRow("语言", value: voiceLocaleSelection.displayName)
+            voiceInfoRow("音色", value: effectiveVoicePreferences.timbre.displayName)
+            voiceInfoRow("语速", value: voiceSpeechRateText(effectiveVoicePreferences.speechRateMultiplier))
+            if shouldShowHubVoicePackSelector {
+                voiceInfoRow("请求的 Hub 语音包", value: voiceHubVoicePackSelectionTitle)
+                if let detail = voiceHubVoicePackSelectionDetail {
+                    voiceInfoRow("语音包详情", value: detail, secondary: true)
+                }
+                voiceInfoRow("实际 Hub 语音包", value: effectiveVoiceHubVoicePackSelectionTitle)
+                if let detail = effectiveVoiceHubVoicePackSelectionDetail {
+                    voiceInfoRow("实际语音包详情", value: detail, secondary: true)
+                }
+                if let automaticPickTitle = voiceAutomaticHubVoicePackTitle {
+                    voiceInfoRow("自动选择", value: automaticPickTitle)
+                }
+                voiceInfoRow("Hub 语音包状态", value: voiceHubVoicePackAvailabilityLine)
+            }
+            voiceInfoRow("解析原因", value: voicePlaybackResolution.reasonCode, secondary: true)
+        }
+        .padding(12)
+        .background(Color(NSColor.windowBackgroundColor))
+        .cornerRadius(8)
+    }
+
+    private var voiceLastPlaybackCard: some View {
+        let activity = supervisorManager.voicePlaybackActivity
+        return VStack(alignment: .leading, spacing: 8) {
+            Label(activity.state.displayName, systemImage: activity.state.iconName)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(voicePlaybackStateColor(activity.state))
+
+            Text(activity.headline)
+                .font(.title3.weight(.semibold))
+
+            Text(activity.summaryLine)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Divider()
+
+            voiceInfoRow("实际播放输出", value: activity.actualSourceDisplayName)
+            voiceInfoRow("引擎", value: activity.engineDisplayName)
+            if activity.shouldDisplayExecutionMode {
+                voiceInfoRow("执行模式", value: activity.executionModeDisplayName)
+            }
+            if !activity.provider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                voiceInfoRow("提供方", value: activity.provider)
+            }
+            if !activity.modelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                voiceInfoRow("模型 ID", value: activity.modelID)
+            }
+            if !activity.speakerId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                voiceInfoRow("说话人", value: activity.speakerDisplayName)
+            }
+            if !activity.voiceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                voiceInfoRow("音色名称", value: activity.voiceName)
+            }
+            if !activity.audioFormat.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                voiceInfoRow("音频格式", value: activity.audioFormat)
+            }
+            if !activity.fallbackReasonCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                voiceInfoRow("回退原因", value: activity.fallbackReasonDisplayName, secondary: true)
+            }
+            if activity.updatedAt > 0 {
+                voiceInfoRow("更新时间", value: voicePlaybackTimestamp(activity.updatedAt))
+            }
+            voiceInfoRow("原因", value: activity.reasonCode, secondary: true)
+            if !activity.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(activity.detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(12)
+        .background(Color(NSColor.windowBackgroundColor))
+        .cornerRadius(8)
+    }
+
+    @ViewBuilder
+    private func voiceInfoRow(_ label: String, value: String, secondary: Bool = false) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            Text(value)
+                .font(.caption)
+                .foregroundStyle(secondary ? .secondary : .primary)
+                .multilineTextAlignment(.trailing)
+                .textSelection(.enabled)
+        }
+    }
+
     private func readinessToken(_ ready: Bool) -> String {
-        ready ? "ready" : "blocked"
+        ready ? "就绪" : "阻塞"
+    }
+
+    private func voicePlaybackStateColor(_ state: VoicePlaybackActivityState) -> Color {
+        switch state {
+        case .idle:
+            return .secondary
+        case .played:
+            return .green
+        case .fallbackPlayed:
+            return .orange
+        case .suppressed:
+            return .secondary
+        case .failed:
+            return .red
+        }
     }
 
     private func voiceRuntimeOperatorGuidance(
@@ -471,22 +1119,25 @@ struct SupervisorSettingsView: View {
     ) -> String {
         if supervisorManager.voiceAuthorizationStatus == .denied ||
             supervisorManager.voiceAuthorizationStatus == .restricted {
-            return "Grant microphone and speech-recognition permission in macOS Settings before retrying voice capture."
+            return VoicePermissionRepairGuidance.build(
+                snapshot: supervisorManager.voicePermissionSnapshot,
+                fallbackAuthorizationStatus: supervisorManager.voiceAuthorizationStatus
+            ).settingsGuidance
         }
 
         switch snapshot.status {
         case .ready:
             if supervisorManager.voiceRouteDecision.route == .funasrStreaming {
-                return "FunASR streaming is healthy. You can verify push-to-talk now."
+                return "FunASR 流式链路健康，可以直接验证按住说话。"
             }
-            return "FunASR is healthy, but another route is currently preferred. Check the preferred route setting if that is unexpected."
+            return "FunASR 状态正常，但当前有别的链路优先级更高；如果这不符合预期，请检查首选链路设置。"
         case .disabled:
-            return "Enable the local FunASR sidecar only if you want streaming / wake support. Otherwise the runtime will keep using safer fallbacks."
+            return "只有在你需要流式识别 / 唤醒支持时，才建议启用本地 FunASR Sidecar；否则运行时会继续使用更稳妥的回退链路。"
         case .degraded:
             if snapshot.lastError == "funasr_healthcheck_not_configured" {
-                return "Configure a local healthcheck URL or disable FunASR until the sidecar is fully wired."
+                return "请补上本地 healthcheck URL，或者先关闭 FunASR，等 sidecar 完整接好后再启用。"
             }
-            return "The sidecar answered partially. Inspect the last error and re-run Refresh Voice Runtime after fixing the local sidecar."
+            return "Sidecar 只返回了部分结果。先看最近错误，修好本地 sidecar 后再重新刷新语音运行时。"
         case .unreachable:
             return "Keep FunASR on a local endpoint only, start the sidecar, then refresh runtime readiness."
         }
@@ -513,6 +1164,7 @@ struct SupervisorSettingsView: View {
         Button(action: {
             selectedProjectId = project.projectId
             showProjectModelPicker = false
+            resetProjectModelAssignmentFeedback()
         }) {
             HStack(alignment: .top, spacing: 8) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -577,6 +1229,7 @@ struct SupervisorSettingsView: View {
         Button(action: {
             selectedRole = role
             showProjectModelPicker = false
+            resetProjectModelAssignmentFeedback()
         }) {
             HStack(spacing: 8) {
                 roleIcon(role)
@@ -627,6 +1280,14 @@ struct SupervisorSettingsView: View {
                     .help("将当前角色模型批量应用到所有项目")
                 }
             }
+
+            if projectModelAssignmentUpdateFeedback.showsBadge,
+               let projectModelAssignmentChangeNotice {
+                XTSettingsChangeNoticeInlineView(
+                    notice: projectModelAssignmentChangeNotice,
+                    tint: .accentColor
+                )
+            }
             
             if sortedAvailableHubModels.isEmpty {
                 Text("没有可用的模型。请确保 X-Hub 已启动并加载了模型。")
@@ -671,7 +1332,11 @@ struct SupervisorSettingsView: View {
                         recommendedModelId: recommendation?.modelId,
                         recommendationMessage: recommendation?.message,
                         onSelect: { modelId in
-                            appModel.setProjectRoleModelOverride(projectId: projectId, role: selectedRole, modelId: modelId)
+                            updateProjectRoleModelAssignment(
+                                projectId: projectId,
+                                role: selectedRole,
+                                modelId: modelId
+                            )
                             showProjectModelPicker = false
                         }
                     )
@@ -686,6 +1351,14 @@ struct SupervisorSettingsView: View {
                 }
             }
         }
+        .padding(12)
+        .xtTransientUpdateCardChrome(
+            cornerRadius: 10,
+            isUpdated: projectModelAssignmentUpdateFeedback.isHighlighted,
+            focusTint: .accentColor,
+            updateTint: .accentColor,
+            baseBackground: Color(NSColor.controlBackgroundColor)
+        )
     }
 
     private func currentProjectModelOverrideId(for projectId: String, role: AXRole) -> String? {
@@ -812,6 +1485,13 @@ struct SupervisorSettingsView: View {
             return nil
         }
 
+        if let blocked = assessment.nonInteractiveExactMatch {
+            return (
+                candidate,
+                "`\(blocked.id)` 是检索专用模型，Supervisor 会按需调用它做 retrieval；当前对话先切到 `\(candidate)` 更稳。"
+            )
+        }
+
         if let exact = assessment.exactMatch {
             return (
                 candidate,
@@ -843,6 +1523,16 @@ struct SupervisorSettingsView: View {
             snapshot: modelInventorySnapshot()
         )
         guard assessment?.isExactMatchLoaded != true else { return nil }
+
+        if let assessment,
+           let blocked = assessment.nonInteractiveExactMatch,
+           let reason = assessment.interactiveRoutingBlockedReason {
+            let candidates = suggestedModelIDs(from: assessment)
+            if let first = candidates.first {
+                return "\(configuredBinding.subject) `\(blocked.id)`，但它是检索专用模型。\(reason) 可先切到 `\(first)`。"
+            }
+            return "\(configuredBinding.subject) `\(blocked.id)`，但它是检索专用模型。\(reason)"
+        }
 
         if let assessment, let exact = assessment.exactMatch {
             let candidates = suggestedModelIDs(from: assessment)
@@ -900,14 +1590,56 @@ struct SupervisorSettingsView: View {
         }
     }
 
-    private func assignModelToProject(projectId: String, role: AXRole, modelId: String) {
-        appModel.setProjectRoleModelOverride(projectId: projectId, role: role, modelId: modelId)
+    private func resetProjectModelAssignmentFeedback() {
+        projectModelAssignmentUpdateFeedback.cancel(resetState: true)
+        projectModelAssignmentChangeNotice = nil
+    }
+
+    private func updateProjectRoleModelAssignment(projectId: String, role: AXRole, modelId: String?) {
+        let trimmedModelId = modelId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedModelId = trimmedModelId?.isEmpty == false ? trimmedModelId : nil
+        let currentModelId = currentProjectModelOverrideId(for: projectId, role: role)
+        guard normalizedModelOverrideValue(currentModelId) != normalizedModelOverrideValue(normalizedModelId) else {
+            return
+        }
+
+        appModel.setProjectRoleModelOverride(projectId: projectId, role: role, modelId: normalizedModelId)
+        let projectName = appModel.registry.project(for: projectId)?.displayName ?? ""
+        projectModelAssignmentChangeNotice = XTSettingsChangeNoticeBuilder.projectRoleModel(
+            projectName: projectName,
+            role: role,
+            modelId: normalizedModelId,
+            inheritedModelId: globalModelId(role),
+            snapshot: modelInventorySnapshot()
+        )
+        projectModelAssignmentUpdateFeedback.trigger()
     }
 
     private func assignModelToAllProjects(role: AXRole, modelId: String) {
-        for project in appModel.sortedProjects {
-            appModel.setProjectRoleModelOverride(projectId: project.projectId, role: role, modelId: modelId)
+        let trimmedModelId = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedModelId.isEmpty else { return }
+
+        let changedProjectCount = appModel.sortedProjects.reduce(into: 0) { partialResult, project in
+            let currentModelId = currentProjectModelOverrideId(for: project.projectId, role: role)
+            guard normalizedModelOverrideValue(currentModelId) != normalizedModelOverrideValue(trimmedModelId) else {
+                return
+            }
+            appModel.setProjectRoleModelOverride(projectId: project.projectId, role: role, modelId: trimmedModelId)
+            partialResult += 1
         }
+
+        projectModelAssignmentChangeNotice = XTSettingsChangeNoticeBuilder.projectRoleModelBatch(
+            role: role,
+            modelId: trimmedModelId,
+            changedProjectCount: changedProjectCount,
+            totalProjectCount: appModel.sortedProjects.count,
+            snapshot: modelInventorySnapshot()
+        )
+        projectModelAssignmentUpdateFeedback.trigger()
+    }
+
+    private func normalizedModelOverrideValue(_ raw: String?) -> String {
+        (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     private var voicePreferredRouteBinding: Binding<VoicePreferredRoute> {
@@ -937,6 +1669,15 @@ struct SupervisorSettingsView: View {
         )
     }
 
+    private var voicePlaybackPreferenceBinding: Binding<VoicePlaybackPreference> {
+        Binding(
+            get: { appModel.settingsStore.settings.voice.playbackPreference },
+            set: { value in
+                updateVoiceSettings { $0.playbackPreference = value }
+            }
+        )
+    }
+
     private var voicePersonaBinding: Binding<VoicePersonaPreset> {
         Binding(
             get: { appModel.settingsStore.settings.voice.persona },
@@ -946,11 +1687,50 @@ struct SupervisorSettingsView: View {
         )
     }
 
+    private var voiceLocaleBinding: Binding<VoiceSupportedLocale> {
+        Binding(
+            get: {
+                VoiceSupportedLocale(rawValue: appModel.settingsStore.settings.voice.localeIdentifier)
+                    ?? .chineseMainland
+            },
+            set: { value in
+                updateVoiceSettings { $0.localeIdentifier = value.rawValue }
+            }
+        )
+    }
+
+    private var voiceTimbreBinding: Binding<VoiceTimbrePreset> {
+        Binding(
+            get: { appModel.settingsStore.settings.voice.timbre },
+            set: { value in
+                updateVoiceSettings { $0.timbre = value }
+            }
+        )
+    }
+
     private var voiceInterruptOnSpeechBinding: Binding<Bool> {
         Binding(
             get: { appModel.settingsStore.settings.voice.interruptOnSpeech },
             set: { value in
                 updateVoiceSettings { $0.interruptOnSpeech = value }
+            }
+        )
+    }
+
+    private var voiceSpeechRateBinding: Binding<Double> {
+        Binding(
+            get: { Double(appModel.settingsStore.settings.voice.speechRateMultiplier) },
+            set: { value in
+                updateVoiceSettings { $0.speechRateMultiplier = Float(value) }
+            }
+        )
+    }
+
+    private var voiceHubVoicePackIDBinding: Binding<String> {
+        Binding(
+            get: { appModel.settingsStore.settings.voice.preferredHubVoicePackID },
+            set: { value in
+                updateVoiceSettings { $0.preferredHubVoicePackID = value.trimmingCharacters(in: .whitespacesAndNewlines) }
             }
         )
     }
@@ -1012,6 +1792,116 @@ struct SupervisorSettingsView: View {
         appModel.settingsStore.save()
     }
 
+    private func updateSupervisorCalendarReminderSettings(
+        _ mutate: (inout SupervisorCalendarReminderPreferences) -> Void
+    ) {
+        var preferences = appModel.settingsStore.settings.supervisorCalendarReminders
+        mutate(&preferences)
+        appModel.setSupervisorCalendarReminderPreferences(preferences.normalized())
+    }
+
+    private func refreshSupervisorCalendarReminderSurface(forceUpcomingRefresh: Bool) {
+        calendarAccessController.refreshAuthorizationStatus()
+
+        guard appModel.settingsStore.settings.supervisorCalendarReminders.enabled else {
+            calendarEventStore.clearSnapshot()
+            return
+        }
+
+        guard forceUpcomingRefresh else {
+            return
+        }
+
+        if calendarAccessController.authorizationStatus.canReadEvents {
+            calendarEventStore.refreshUpcomingMeetings()
+        } else {
+            calendarEventStore.clearSnapshot(
+                reason: calendarAccessController.authorizationStatus.guidanceText
+            )
+        }
+    }
+
+    private func previewCalendarReminderVoice() {
+        let settings = appModel.settingsStore.settings
+        let title = calendarReminderPreviewTitle(settings: settings)
+        let bridge = SupervisorCalendarVoiceBridge(
+            speechSink: { _ in .suppressed("preview_only") },
+            notificationSink: { _, _, _ in false },
+            conversationActiveProvider: { false }
+        )
+        let script = bridge.previewSpeechText(
+            phase: calendarReminderPreviewPhase,
+            eventTitle: title,
+            settings: settings
+        )
+
+        let outcome = supervisorManager.speakSupervisorVoiceText(script)
+        switch outcome {
+        case .spoken:
+            calendarReminderSmokeStatus = "已发送“\(calendarReminderPreviewPhase.calendarPreviewDisplayName)”阶段的语音试听。"
+        case .suppressed(let reason):
+            calendarReminderSmokeStatus = "语音试听被抑制：\(reason)"
+        }
+    }
+
+    private func testCalendarReminderNotificationFallback() {
+        let settings = appModel.settingsStore.settings
+        let sent = SupervisorCalendarVoiceBridge.live().sendPreviewNotification(
+            phase: calendarReminderPreviewPhase,
+            eventTitle: calendarReminderPreviewTitle(settings: settings),
+            settings: settings
+        )
+        if sent {
+            calendarReminderSmokeStatus = "已在本机排队“\(calendarReminderPreviewPhase.calendarPreviewDisplayName)”阶段的通知回退。"
+        } else {
+            calendarReminderSmokeStatus = "当前运行时无法排队通知回退。"
+        }
+    }
+
+    private func simulateCalendarReminderLiveDelivery() {
+        let settings = appModel.settingsStore.settings
+        let outcome = SupervisorCalendarVoiceBridge.live().simulatePreviewDelivery(
+            phase: calendarReminderPreviewPhase,
+            eventTitle: calendarReminderPreviewTitle(settings: settings),
+            settings: settings
+        )
+
+        if outcome.spoken {
+            calendarReminderSmokeStatus = "“\(calendarReminderPreviewPhase.calendarPreviewDisplayName)”阶段已通过当前 XT 语音链路完成真实播报。"
+            return
+        }
+        if outcome.notificationFallbackSent {
+            calendarReminderSmokeStatus = "“\(calendarReminderPreviewPhase.calendarPreviewDisplayName)”阶段已走本地通知回退（\(outcome.reasonCode)）。"
+            return
+        }
+        if outcome.reasonCode == "inline_conversation_deferred" {
+            calendarReminderSmokeStatus = "由于当前有 Supervisor 对话正在进行，“\(calendarReminderPreviewPhase.calendarPreviewDisplayName)”阶段的真实投递已延后。"
+            return
+        }
+        calendarReminderSmokeStatus = "“\(calendarReminderPreviewPhase.calendarPreviewDisplayName)”阶段的真实投递被暂缓：\(outcome.reasonCode)。"
+    }
+
+    private func calendarReminderPreviewTitle(settings: XTerminalSettings) -> String {
+        let candidateTitle = calendarEventStore.upcomingMeetings.first?.title
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let locale = VoiceSupportedLocale(rawValue: settings.voice.localeIdentifier) ?? .chineseMainland
+        if !candidateTitle.isEmpty {
+            return candidateTitle
+        }
+        return locale == .englishUS ? "Project sync" : "项目同步会"
+    }
+
+    private func voiceSpeechRateText(_ value: Float) -> String {
+        String(format: "%.2fx", value)
+    }
+
+    private func voicePlaybackTimestamp(_ value: TimeInterval) -> String {
+        guard value > 0 else { return "暂无" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter.localizedString(for: Date(timeIntervalSince1970: value), relativeTo: Date())
+    }
+
     private func syncWakeTriggerWordsDraft() {
         let triggers = supervisorManager.voiceWakeProfileSnapshot.triggerWords
         wakeTriggerWordsDraft = VoiceWakeProfile.formatTriggerWords(
@@ -1019,19 +1909,234 @@ struct SupervisorSettingsView: View {
         )
     }
 
-    private func syncSupervisorPromptDraft() {
-        supervisorPromptDraft = appModel.settingsStore.settings.supervisorPrompt.normalized()
+    private var personaRuntimePresentation: SupervisorPersonaCenterPresentation {
+        let registry = appModel.settingsStore.settings.supervisorPersonaRegistry
+        return SupervisorPersonaCenterPresentation(
+            draftRegistry: registry,
+            persistedRegistry: registry,
+            selectedPersonaID: registry.activePersonaID,
+            defaultVoicePersona: appModel.settingsStore.settings.voice.persona,
+            existingWakeTriggerWords: VoiceWakeProfile.parseTriggerWordsText(wakeTriggerWordsDraft)
+        )
     }
 
-    private func saveSupervisorPromptDraft() {
-        let normalized = supervisorPromptDraft.normalized()
-        appModel.settingsStore.settings = appModel.settingsStore.settings.setting(supervisorPrompt: normalized)
-        appModel.settingsStore.save()
-        supervisorPromptDraft = normalized
+    private var voiceLocaleSelection: VoiceSupportedLocale {
+        VoiceSupportedLocale(rawValue: effectiveVoicePreferences.localeIdentifier)
+            ?? .chineseMainland
     }
 
-    private func resetSupervisorPromptDefaults() {
-        supervisorPromptDraft = .default()
-        saveSupervisorPromptDraft()
+    private var activePersonaSlot: SupervisorPersonaSlot {
+        appModel.settingsStore.settings.supervisorPersonaRegistry
+            .normalized(defaultVoicePersona: appModel.settingsStore.settings.voice.persona)
+            .activePersona
+    }
+
+    private var effectiveVoicePreferences: VoiceRuntimePreferences {
+        xtVoicePreferencesApplyingPersonaOverlay(
+            appModel.settingsStore.settings.voice,
+            personaSlot: activePersonaSlot
+        )
+    }
+
+    private var voicePlaybackResolution: VoicePlaybackResolution {
+        SupervisorSpeechPlaybackRouting.resolve(
+            preferences: effectiveVoicePreferences,
+            availableModels: availableHubModels(),
+            voicePackReadyEvaluator: { modelID in
+                HubIPCClient.isLocalHubVoicePackPlaybackAvailable(
+                    preferredModelID: modelID
+                )
+            }
+        )
+    }
+
+    private var voiceConfiguredPlaybackSummary: String {
+        let requested = appModel.settingsStore.settings.voice.playbackPreference.displayName
+        let effective = voicePlaybackResolution.resolvedSource.displayName
+        let resolvedModelTitle = voiceResolvedHubVoicePackModel?.capabilityPresentationModel.displayName
+        let effectivePreferredHubVoicePackID = effectiveVoicePreferences.preferredHubVoicePackID
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let activePersonaVoicePackOverrideID = activePersonaSlot.voicePackOverrideID
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !activePersonaVoicePackOverrideID.isEmpty {
+            if HubVoicePackCatalog.selectedModel(
+                preferredModelID: activePersonaVoicePackOverrideID,
+                models: availableHubModels()
+            ) == nil {
+                return "请求输出为 \(requested)。当前实际解析为 \(effective)，因为当前人格 \(personaRuntimePresentation.persistedActivePersonaName) 指向的 Hub 语音包已经不再由 Hub 暴露。"
+            }
+            if let fallbackFrom = voicePlaybackResolution.fallbackFrom {
+                return "请求输出为 \(requested)。当前实际解析为 \(effective)，因为当前人格 \(personaRuntimePresentation.persistedActivePersonaName) 覆盖了 Hub 语音包，但 \(fallbackFrom.displayName) 在这台设备上还没准备好。"
+            }
+            return "请求输出为 \(requested)。当前实际解析为 \(effective)，因为当前人格 \(personaRuntimePresentation.persistedActivePersonaName) 覆盖了 Hub 语音包。"
+        }
+        if !appModel.settingsStore.settings.voice.preferredHubVoicePackID
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty,
+           HubVoicePackCatalog.selectedModel(
+                preferredModelID: appModel.settingsStore.settings.voice.preferredHubVoicePackID,
+                models: availableHubModels()
+           ) == nil {
+            return "请求输出为 \(requested)。当前实际解析为 \(effective)，因为所选 Hub 语音包已经不再由 Hub 暴露。"
+        }
+        if appModel.settingsStore.settings.voice.playbackPreference == .automatic,
+           effectivePreferredHubVoicePackID.isEmpty,
+           let resolvedModelTitle,
+           !resolvedModelTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if voicePlaybackResolution.resolvedSource == .hubVoicePack {
+                return "请求输出为 \(requested)。当前实际解析为 \(effective)，并使用推荐语音包 \(resolvedModelTitle)。"
+            }
+            return "请求输出为 \(requested)。当前实际解析为 \(effective)，因为推荐语音包 \(resolvedModelTitle) 在这台设备上还没准备好。"
+        }
+        if appModel.settingsStore.settings.voice.playbackPreference == .hubVoicePack,
+           effectivePreferredHubVoicePackID.isEmpty {
+            return "请求输出为 \(requested)。当前实际解析为 \(effective)，因为你还没有选择 Hub 语音包。"
+        }
+        if let fallbackFrom = voicePlaybackResolution.fallbackFrom {
+            return "请求输出为 \(requested)。当前实际解析为 \(effective)，因为 \(fallbackFrom.displayName) 在这台设备上还没准备好。"
+        }
+        return "请求输出为 \(requested)。当前实际解析为 \(effective)。"
+    }
+
+    private var availableHubVoicePackModels: [HubModel] {
+        HubVoicePackCatalog.eligibleModels(from: availableHubModels())
+    }
+
+    private var shouldShowHubVoicePackSelector: Bool {
+        let selectedVoicePackID = effectiveVoicePreferences.preferredHubVoicePackID
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return appModel.settingsStore.settings.voice.playbackPreference == .hubVoicePack ||
+            !selectedVoicePackID.isEmpty ||
+            !availableHubVoicePackModels.isEmpty
+    }
+
+    private var voiceHubVoicePackPickerOptions: [HubVoicePackPickerOption] {
+        HubVoicePackCatalog.pickerOptions(
+            models: availableHubModels(),
+            selectedModelID: appModel.settingsStore.settings.voice.preferredHubVoicePackID
+        )
+    }
+
+    private var voiceHubVoicePackSelectionTitle: String {
+        HubVoicePackCatalog.selectionTitle(
+            preferredModelID: appModel.settingsStore.settings.voice.preferredHubVoicePackID,
+            models: availableHubModels()
+        )
+    }
+
+    private var voiceHubVoicePackSelectionDetail: String? {
+        HubVoicePackCatalog.selectionDetail(
+            preferredModelID: appModel.settingsStore.settings.voice.preferredHubVoicePackID,
+            models: availableHubModels()
+        )
+    }
+
+    private var voiceResolvedHubVoicePackModel: HubModel? {
+        HubVoicePackCatalog.model(
+            modelID: voicePlaybackResolution.resolvedHubVoicePackID,
+            models: availableHubModels()
+        )
+    }
+
+    private var activePersonaVoicePackOverlaySummary: String {
+        let preferredModelID = activePersonaSlot.voicePackOverrideID
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !preferredModelID.isEmpty else { return "跟随运行时默认" }
+        return HubVoicePackCatalog.selectionTitle(
+            preferredModelID: preferredModelID,
+            models: availableHubModels()
+        )
+    }
+
+    private var effectiveVoiceHubVoicePackSelectionTitle: String {
+        HubVoicePackCatalog.selectionTitle(
+            preferredModelID: effectiveVoicePreferences.preferredHubVoicePackID,
+            models: availableHubModels()
+        )
+    }
+
+    private var effectiveVoiceHubVoicePackSelectionDetail: String? {
+        HubVoicePackCatalog.selectionDetail(
+            preferredModelID: effectiveVoicePreferences.preferredHubVoicePackID,
+            models: availableHubModels()
+        )
+    }
+
+    private var voiceAutomaticHubVoicePackTitle: String? {
+        guard appModel.settingsStore.settings.voice.playbackPreference == .automatic else { return nil }
+        guard activePersonaSlot.voicePackOverrideID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        guard appModel.settingsStore.settings.voice.preferredHubVoicePackID
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty else { return nil }
+        let displayName = voiceResolvedHubVoicePackModel?.capabilityPresentationModel.displayName
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return displayName.isEmpty ? nil : displayName
+    }
+
+    private var voiceAutomaticHubVoicePackDetail: String? {
+        guard voiceAutomaticHubVoicePackTitle != nil else { return nil }
+        return HubVoicePackCatalog.selectionDetail(
+            preferredModelID: voicePlaybackResolution.resolvedHubVoicePackID,
+            models: availableHubModels()
+        )
+    }
+
+    private var voiceHubVoicePackAvailabilityLine: String {
+        if voicePlaybackResolution.preferredHubVoicePackID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if appModel.settingsStore.settings.voice.playbackPreference == .automatic,
+               let resolvedModel = voiceResolvedHubVoicePackModel {
+                let title = resolvedModel.capabilityPresentationModel.displayName
+                return HubIPCClient.isLocalHubVoicePackPlaybackAvailable(
+                    preferredModelID: resolvedModel.id
+                ) ? "自动选择：\(title) · 本机 Hub IPC 可用"
+                    : "自动选择：\(title) · 本机 Hub IPC 未就绪"
+            }
+            return availableHubVoicePackModels.isEmpty
+                ? "Hub 当前没有暴露可用的本地语音包"
+                : "尚未选择首选语音包"
+        }
+        if HubVoicePackCatalog.selectedModel(
+            preferredModelID: voicePlaybackResolution.preferredHubVoicePackID,
+            models: availableHubModels()
+        ) == nil {
+            return "所选语音包已不再由 Hub 暴露"
+        }
+        return HubIPCClient.isLocalHubVoicePackPlaybackAvailable(
+            preferredModelID: voicePlaybackResolution.preferredHubVoicePackID
+        ) ? "本机 Hub IPC 可用" : "本机 Hub IPC 未就绪"
+    }
+
+    private var voiceHubVoicePackStatusColor: Color {
+        let readinessModelID = !voicePlaybackResolution.preferredHubVoicePackID
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty
+            ? voicePlaybackResolution.preferredHubVoicePackID
+            : voicePlaybackResolution.resolvedHubVoicePackID
+        if HubIPCClient.isLocalHubVoicePackPlaybackAvailable(
+            preferredModelID: readinessModelID
+        ) {
+            return .green
+        }
+        return availableHubVoicePackModels.isEmpty ? .secondary : .orange
+    }
+
+    private func addWakeTriggerSuggestion(_ token: String) {
+        wakeTriggerWordsDraft = SupervisorWakePhraseSuggestionBuilder.appendingSuggestionToken(
+            token,
+            to: wakeTriggerWordsDraft
+        )
+    }
+}
+
+private extension SupervisorCalendarReminderPhase {
+    var calendarPreviewDisplayName: String {
+        switch self {
+        case .headsUp:
+            return "提前提醒"
+        case .finalCall:
+            return "临近提醒"
+        case .startNow:
+            return "立即开始"
+        }
     }
 }

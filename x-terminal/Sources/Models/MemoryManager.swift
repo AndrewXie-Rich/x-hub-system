@@ -93,7 +93,7 @@ class MemoryManager: ObservableObject {
             let data = try encoder.encode(memory)
 
             // 原子写入
-            try data.write(to: fileURL, options: .atomic)
+            try XTStoreWriteSupport.writeSnapshotData(data, to: fileURL)
 
         } catch {
             lastError = error

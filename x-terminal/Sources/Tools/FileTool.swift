@@ -68,7 +68,7 @@ enum FileTool {
                 userInfo: [NSLocalizedDescriptionKey: "Failed to encode file content as UTF-8"]
             )
         }
-        try data.write(to: url, options: .atomic)
+        try XTStoreWriteSupport.writeSnapshotData(data, to: url)
     }
 
     static func deletePath(

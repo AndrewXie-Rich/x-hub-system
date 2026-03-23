@@ -8,6 +8,7 @@ final class VoiceSessionCoordinator: ObservableObject {
     @Published private(set) var recognizedText: String = ""
     @Published private(set) var isAuthorized: Bool = false
     @Published private(set) var authorizationStatus: VoiceTranscriberAuthorizationStatus = .undetermined
+    @Published private(set) var permissionSnapshot: VoicePermissionSnapshot = VoicePermissionSnapshotInspector.current()
     @Published private(set) var runtimeState: SupervisorVoiceRuntimeState
     @Published private(set) var routeDecision: VoiceRouteDecision
     @Published private(set) var activeHealthReasonCode: String?
@@ -50,6 +51,7 @@ final class VoiceSessionCoordinator: ObservableObject {
         )
         let initialAuthorizationStatus = resolvedAuthorizationStatus(for: initialDecision.route)
         self.authorizationStatus = initialAuthorizationStatus
+        self.permissionSnapshot = VoicePermissionSnapshotInspector.current()
         self.isAuthorized = initialAuthorizationStatus.isAuthorized
         refreshRuntimeDiagnostics()
 
@@ -64,6 +66,10 @@ final class VoiceSessionCoordinator: ObservableObject {
         if let funASRTranscriber = transcribers[.funasrStreaming] as? FunASRStreamingClient {
             funASRTranscriber.updateConfig(preferences.funASR)
         }
+        if let systemSpeechTranscriber = transcribers[.systemSpeechCompatibility] as? SystemSpeechCompatibilityTranscriber,
+           !systemSpeechTranscriber.isRunning {
+            systemSpeechTranscriber.updateLocaleIdentifier(preferences.localeIdentifier)
+        }
         refreshRouteDecision()
     }
 
@@ -71,6 +77,7 @@ final class VoiceSessionCoordinator: ObservableObject {
         for transcriber in transcribers.values {
             _ = await transcriber.refreshEngineHealth()
         }
+        permissionSnapshot = VoicePermissionSnapshotInspector.current()
         refreshRouteDecision()
     }
 
@@ -88,6 +95,7 @@ final class VoiceSessionCoordinator: ObservableObject {
         } else {
             status = activeTranscriber.authorizationStatus
         }
+        permissionSnapshot = VoicePermissionSnapshotInspector.current()
         authorizationStatus = status
         isAuthorized = status.isAuthorized
         refreshRouteDecision()
@@ -106,6 +114,10 @@ final class VoiceSessionCoordinator: ObservableObject {
     private func beginCapture(markReason: String?) async -> Bool {
         guard !isRecording else { return true }
         await refreshRouteAvailability()
+        if let systemSpeechTranscriber = transcribers[.systemSpeechCompatibility] as? SystemSpeechCompatibilityTranscriber,
+           !systemSpeechTranscriber.isRunning {
+            systemSpeechTranscriber.updateLocaleIdentifier(preferences.localeIdentifier)
+        }
         guard let activeTranscriber = activeTranscriber(for: routeDecision.route) else {
             runtimeState = SupervisorVoiceRuntimeState(
                 state: .failClosed,
@@ -117,6 +129,7 @@ final class VoiceSessionCoordinator: ObservableObject {
         }
 
         let status = await activeTranscriber.requestAuthorization()
+        permissionSnapshot = VoicePermissionSnapshotInspector.current()
         isAuthorized = status.isAuthorized
         refreshRouteDecision()
 

@@ -108,6 +108,210 @@ struct AXModelRouteDiagnosticsSummary: Equatable, Sendable {
     var detailLines: [String]
 }
 
+struct AXModelRouteTruthProjection: Codable, Equatable, Sendable {
+    var projectionSource: String
+    var completeness: String
+    var requestSnapshot: AXModelRouteTruthRequestSnapshot
+    var resolutionChain: [AXModelRouteTruthResolutionNode]
+    var winningProfile: AXModelRouteTruthWinningProfile
+    var winningBinding: AXModelRouteTruthWinningBinding
+    var routeResult: AXModelRouteTruthRouteResult
+    var constraintSnapshot: AXModelRouteTruthConstraintSnapshot
+}
+
+struct AXModelRouteTruthRequestSnapshot: Codable, Equatable, Sendable {
+    var jobType: String
+    var mode: String
+    var projectIDPresent: String
+    var sensitivity: String
+    var trustLevel: String
+    var budgetClass: String
+    var remoteAllowedByPolicy: String
+    var killSwitchState: String
+}
+
+struct AXModelRouteTruthResolutionNode: Codable, Equatable, Sendable {
+    var scopeKind: String
+    var scopeRefRedacted: String
+    var matched: String
+    var profileID: String
+    var selectionStrategy: String
+    var skipReason: String
+}
+
+struct AXModelRouteTruthWinningProfile: Codable, Equatable, Sendable {
+    var resolvedProfileID: String
+    var scopeKind: String
+    var scopeRefRedacted: String
+    var selectionStrategy: String
+    var policyVersion: String
+    var disabled: String
+}
+
+struct AXModelRouteTruthWinningBinding: Codable, Equatable, Sendable {
+    var bindingKind: String
+    var bindingKey: String
+    var provider: String
+    var modelID: String
+    var selectedByUser: String
+}
+
+struct AXModelRouteTruthRouteResult: Codable, Equatable, Sendable {
+    var routeSource: String
+    var routeReasonCode: String
+    var fallbackApplied: String
+    var fallbackReason: String
+    var remoteAllowed: String
+    var auditRef: String
+    var denyCode: String
+}
+
+struct AXModelRouteTruthConstraintSnapshot: Codable, Equatable, Sendable {
+    var remoteAllowedAfterUserPref: String
+    var remoteAllowedAfterPolicy: String
+    var budgetClass: String
+    var budgetBlocked: String
+    var policyBlockedRemote: String
+}
+
+private struct AXModelRouteObservedDiagnosticLine {
+    var auditRef: String
+    var projectPresent: Bool
+    var executionPath: String
+    var requestedModelID: String
+    var actualModelID: String
+    var provider: String
+    var fallbackReasonCode: String
+    var remoteRetryTargetModelID: String
+    var remoteRetryReasonCode: String
+}
+
+extension AXModelRouteDiagnosticsSummary {
+    var truthProjection: AXModelRouteTruthProjection? {
+        AXModelRouteTruthProjection(summary: self)
+    }
+}
+
+extension AXModelRouteTruthProjection {
+    init?(summary: AXModelRouteDiagnosticsSummary) {
+        guard summary.recentEventCount > 0 || summary.recentFailureCount > 0 || summary.recentRemoteRetryRecoveryCount > 0 else {
+            return nil
+        }
+
+        let latestObservedEvent = summary.latestEvent.map { event in
+            AXModelRouteObservedDiagnosticLine(
+                auditRef: event.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "latest_event" : event.id,
+                projectPresent: !event.projectId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || !event.projectDisplayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                executionPath: event.executionPath,
+                requestedModelID: event.requestedModelId,
+                actualModelID: event.actualModelId,
+                provider: event.runtimeProvider,
+                fallbackReasonCode: event.fallbackReasonCode,
+                remoteRetryTargetModelID: event.remoteRetryToModelId,
+                remoteRetryReasonCode: event.remoteRetryReasonCode
+            )
+        }
+        self = AXModelRouteTruthProjection.make(latestObservedEvent: latestObservedEvent, projectionSource: "xt_model_route_diagnostics_summary")
+    }
+
+    init?(doctorDetailLines: [String]) {
+        let detailMap = axModelRouteDetailLineMap(from: doctorDetailLines)
+        let routeEventEntries = axModelRouteOrderedRouteEventEntries(detailMap)
+        guard !routeEventEntries.isEmpty
+                || detailMap["recent_route_events_24h"] != nil
+                || detailMap["recent_route_failures_24h"] != nil
+                || detailMap["recent_remote_retry_recoveries_24h"] != nil else {
+            return nil
+        }
+
+        let latestObservedEvent = routeEventEntries.first.map { entry in
+            AXModelRouteObservedDiagnosticLine(
+                auditRef: entry.key,
+                projectPresent: entry.value.contains("project="),
+                executionPath: axModelRouteTokenValue("path", in: entry.value) ?? "",
+                requestedModelID: axModelRouteTokenValue("requested", in: entry.value) ?? "",
+                actualModelID: axModelRouteTokenValue("actual", in: entry.value) ?? "",
+                provider: axModelRouteTokenValue("provider", in: entry.value) ?? "",
+                fallbackReasonCode: axModelRouteTokenValue("reason", in: entry.value) ?? "",
+                remoteRetryTargetModelID: axModelRouteRemoteRetryTarget(from: entry.value) ?? "",
+                remoteRetryReasonCode: axModelRouteTokenValue("retry_reason", in: entry.value) ?? ""
+            )
+        }
+        self = AXModelRouteTruthProjection.make(
+            latestObservedEvent: latestObservedEvent,
+            projectionSource: "xt_model_route_diagnostics_detail_lines"
+        )
+    }
+
+    private static func make(
+        latestObservedEvent: AXModelRouteObservedDiagnosticLine?,
+        projectionSource: String
+    ) -> AXModelRouteTruthProjection {
+        let fallbackApplied = axModelRouteFallbackAppliedState(for: latestObservedEvent?.executionPath)
+        let fallbackReason = axModelRouteFallbackReason(
+            fallbackApplied: fallbackApplied,
+            event: latestObservedEvent
+        )
+        let routeReasonCode = axModelRouteFirstNonEmpty(
+            latestObservedEvent?.fallbackReasonCode,
+            latestObservedEvent?.remoteRetryReasonCode
+        ) ?? "unknown"
+        let bindingModelID = axModelRouteFirstNonEmpty(
+            latestObservedEvent?.actualModelID,
+            latestObservedEvent?.requestedModelID,
+            latestObservedEvent?.remoteRetryTargetModelID
+        ) ?? "unknown"
+
+        return AXModelRouteTruthProjection(
+            projectionSource: projectionSource,
+            completeness: latestObservedEvent == nil ? "partial_counts_only" : "partial_xt_projection",
+            requestSnapshot: AXModelRouteTruthRequestSnapshot(
+                jobType: "unknown",
+                mode: "unknown",
+                projectIDPresent: axModelRouteProjectPresenceState(for: latestObservedEvent),
+                sensitivity: "unknown",
+                trustLevel: "unknown",
+                budgetClass: "unknown",
+                remoteAllowedByPolicy: "unknown",
+                killSwitchState: "unknown"
+            ),
+            resolutionChain: axModelRoutePartialResolutionChain(),
+            winningProfile: AXModelRouteTruthWinningProfile(
+                resolvedProfileID: "unknown",
+                scopeKind: "unknown",
+                scopeRefRedacted: "unknown",
+                selectionStrategy: "unknown",
+                policyVersion: "unknown",
+                disabled: "unknown"
+            ),
+            winningBinding: AXModelRouteTruthWinningBinding(
+                bindingKind: "unknown",
+                bindingKey: "unknown",
+                provider: axModelRouteFallbackString(latestObservedEvent?.provider),
+                modelID: bindingModelID,
+                selectedByUser: "unknown"
+            ),
+            routeResult: AXModelRouteTruthRouteResult(
+                routeSource: axModelRouteFallbackString(latestObservedEvent?.executionPath),
+                routeReasonCode: routeReasonCode,
+                fallbackApplied: fallbackApplied,
+                fallbackReason: fallbackReason,
+                remoteAllowed: "unknown",
+                auditRef: latestObservedEvent?.auditRef ?? "unknown",
+                denyCode: "unknown"
+            ),
+            constraintSnapshot: AXModelRouteTruthConstraintSnapshot(
+                remoteAllowedAfterUserPref: "unknown",
+                remoteAllowedAfterPolicy: "unknown",
+                budgetClass: "unknown",
+                budgetBlocked: "unknown",
+                policyBlockedRemote: "unknown"
+            )
+        )
+    }
+}
+
 enum AXModelRouteDiagnosticsStore {
     static func appendUsageIfNeeded(_ entry: [String: Any], for ctx: AXProjectContext) {
         guard let event = event(from: entry, ctx: ctx) else { return }
@@ -313,7 +517,7 @@ enum AXModelRouteDiagnosticsStore {
         var line = json
         line.append(0x0A)
         if !FileManager.default.fileExists(atPath: url.path) {
-            try? line.write(to: url, options: .atomic)
+            try? XTStoreWriteSupport.writeSnapshotData(line, to: url)
             return
         }
         do {
@@ -325,4 +529,106 @@ enum AXModelRouteDiagnosticsStore {
             // Best-effort only.
         }
     }
+}
+
+private func axModelRoutePartialResolutionChain() -> [AXModelRouteTruthResolutionNode] {
+    [
+        "project_mode",
+        "project",
+        "mode",
+        "user_default",
+        "system_fallback"
+    ].map { scope in
+        AXModelRouteTruthResolutionNode(
+            scopeKind: scope,
+            scopeRefRedacted: "unknown",
+            matched: "unknown",
+            profileID: "unknown",
+            selectionStrategy: "unknown",
+            skipReason: "upstream_route_truth_unavailable_in_xt_export"
+        )
+    }
+}
+
+private func axModelRouteDetailLineMap(from detailLines: [String]) -> [String: String] {
+    detailLines.reduce(into: [String: String]()) { partial, line in
+        guard let separator = line.firstIndex(of: "=") else { return }
+        let key = String(line[..<separator]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = String(line[line.index(after: separator)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return }
+        partial[key] = value
+    }
+}
+
+private func axModelRouteOrderedRouteEventEntries(_ detailMap: [String: String]) -> [(key: String, value: String)] {
+    detailMap
+        .filter { $0.key.hasPrefix("route_event_") }
+        .sorted { lhs, rhs in
+            let lhsIndex = Int(lhs.key.replacingOccurrences(of: "route_event_", with: "")) ?? .max
+            let rhsIndex = Int(rhs.key.replacingOccurrences(of: "route_event_", with: "")) ?? .max
+            if lhsIndex != rhsIndex { return lhsIndex < rhsIndex }
+            return lhs.key < rhs.key
+        }
+}
+
+private func axModelRouteTokenValue(_ key: String, in line: String) -> String? {
+    line
+        .split(separator: " ", omittingEmptySubsequences: true)
+        .first { $0.hasPrefix("\(key)=") }
+        .map { String($0.dropFirst(key.count + 1)) }
+}
+
+private func axModelRouteRemoteRetryTarget(from line: String) -> String? {
+    guard let remoteRetry = axModelRouteTokenValue("remote_retry", in: line),
+          let separator = remoteRetry.firstIndex(of: ">") else {
+        return nil
+    }
+    let rawTarget = String(remoteRetry[remoteRetry.index(after: separator)...])
+    let target = rawTarget.trimmingCharacters(in: CharacterSet(charactersIn: "- "))
+    return target.isEmpty ? nil : target
+}
+
+private func axModelRouteFallbackAppliedState(for executionPath: String?) -> String {
+    switch executionPath {
+    case "hub_downgraded_to_local", "local_fallback_after_remote_error":
+        return "true"
+    case "remote_model", "remote_error":
+        return "false"
+    case .none:
+        return "unknown"
+    case .some(let value) where value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty:
+        return "unknown"
+    default:
+        return "unknown"
+    }
+}
+
+private func axModelRouteFallbackReason(
+    fallbackApplied: String,
+    event: AXModelRouteObservedDiagnosticLine?
+) -> String {
+    guard fallbackApplied == "true" else {
+        return fallbackApplied == "false" ? "none" : "unknown"
+    }
+    return axModelRouteFirstNonEmpty(event?.fallbackReasonCode, event?.remoteRetryReasonCode) ?? "unknown"
+}
+
+private func axModelRouteProjectPresenceState(for event: AXModelRouteObservedDiagnosticLine?) -> String {
+    guard let event else { return "unknown" }
+    return event.projectPresent ? "true" : "false"
+}
+
+private func axModelRouteFirstNonEmpty(_ values: String?...) -> String? {
+    for value in values {
+        guard let value else { continue }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            return trimmed
+        }
+    }
+    return nil
+}
+
+private func axModelRouteFallbackString(_ value: String?) -> String {
+    axModelRouteFirstNonEmpty(value) ?? "unknown"
 }

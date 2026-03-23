@@ -378,6 +378,42 @@ struct AppModelSessionSummaryLifecycleTests {
     }
 
     @Test
+    func supervisorBoardFocusRequestPersistsUntilCleared() throws {
+        let appModel = AppModel()
+
+        appModel.requestSupervisorBoardFocus(
+            anchorID: SupervisorFocusPresentation.laneHealthBoardAnchorID,
+            projectId: "project-board"
+        )
+
+        let request = try #require(appModel.supervisorFocusRequest)
+        #expect(request.projectId == "project-board")
+        #expect(
+            request.subject == .board(anchorID: SupervisorFocusPresentation.laneHealthBoardAnchorID)
+        )
+
+        appModel.clearSupervisorFocusRequest(request)
+        #expect(appModel.supervisorFocusRequest == nil)
+    }
+
+    @Test
+    func supervisorSkillRecordFocusRequestPersistsUntilCleared() throws {
+        let appModel = AppModel()
+
+        appModel.requestSupervisorSkillRecordFocus(
+            projectId: "project-record",
+            requestId: "request-record-1"
+        )
+
+        let request = try #require(appModel.supervisorFocusRequest)
+        #expect(request.projectId == "project-record")
+        #expect(request.subject == .skillRecord(requestId: "request-record-1"))
+
+        appModel.clearSupervisorFocusRequest(request)
+        #expect(appModel.supervisorFocusRequest == nil)
+    }
+
+    @Test
     func projectToolApprovalFocusRequestPersistsUntilCleared() throws {
         let appModel = AppModel()
 

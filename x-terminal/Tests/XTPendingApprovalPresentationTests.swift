@@ -18,10 +18,10 @@ struct XTPendingApprovalPresentationTests {
         let message = XTPendingApprovalPresentation.approvalMessage(for: toolCall)
         let summary = XTPendingApprovalPresentation.actionSummary(for: toolCall)
 
-        #expect(message.summary.contains("Waiting for local approval"))
+        #expect(message.summary.contains("本地审批"))
         #expect(message.summary.contains("https://example.com"))
-        #expect(summary == "Open https://example.com in the browser")
-        #expect(message.nextStep?.contains("Approve it in X-Terminal") == true)
+        #expect(summary == "在浏览器中打开 https://example.com")
+        #expect(message.nextStep?.contains("先在 X-Terminal 里批准") == true)
     }
 
     @Test
@@ -37,16 +37,16 @@ struct XTPendingApprovalPresentationTests {
         let summary = XTPendingApprovalPresentation.actionSummary(for: toolCall)
         let message = XTPendingApprovalPresentation.approvalMessage(for: toolCall)
 
-        #expect(summary.contains("Run command"))
+        #expect(summary.contains("运行命令"))
         #expect(summary.contains("swift test --filter XTToolAuthorizationTests"))
-        #expect(message.summary.contains("command swift test --filter XTToolAuthorizationTests"))
+        #expect(message.summary.contains("命令 swift test --filter XTToolAuthorizationTests"))
     }
 
     @Test
     func supplementaryReasonDropsGenericApprovalCopy() {
         let message = XTGuardrailMessage(
-            summary: "Waiting for local approval before running run command for command swift test.",
-            nextStep: "Approve it in X-Terminal to let the guarded tool run."
+            summary: "运行命令（命令 swift test）前，还需要先通过本地审批。",
+            nextStep: "先在 X-Terminal 里批准，让受治理工具继续执行。"
         )
 
         let reason = XTPendingApprovalPresentation.supplementaryReason(
@@ -60,8 +60,8 @@ struct XTPendingApprovalPresentationTests {
     @Test
     func supplementaryReasonKeepsUsefulOperatorContext() {
         let message = XTGuardrailMessage(
-            summary: "Waiting for local approval before running browser control on https://example.com.",
-            nextStep: "Approve it in X-Terminal to let the guarded tool run."
+            summary: "运行浏览器控制（https://example.com）前，还需要先通过本地审批。",
+            nextStep: "先在 X-Terminal 里批准，让受治理工具继续执行。"
         )
 
         let reason = XTPendingApprovalPresentation.supplementaryReason(

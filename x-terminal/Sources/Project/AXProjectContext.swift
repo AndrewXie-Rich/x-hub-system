@@ -135,6 +135,14 @@ struct AXProjectContext: Equatable {
         uiReviewDir.appendingPathComponent("latest_browser_page.json")
     }
 
+    var uiReviewAgentEvidenceDir: URL {
+        uiReviewDir.appendingPathComponent("agent_evidence", isDirectory: true)
+    }
+
+    var uiReviewLatestBrowserPageAgentEvidenceURL: URL {
+        uiReviewAgentEvidenceDir.appendingPathComponent("latest_browser_page.json")
+    }
+
     var managedProcessesDir: URL {
         xterminalDir.appendingPathComponent("managed_processes", isDirectory: true)
     }
@@ -155,7 +163,7 @@ struct AXProjectContext: Equatable {
         let gi = xterminalDir.appendingPathComponent(".gitignore")
         if !FileManager.default.fileExists(atPath: gi.path) {
             let s = "*\n!.gitignore\n"
-            try? s.data(using: .utf8)?.write(to: gi, options: .atomic)
+            try? XTStoreWriteSupport.writeUTF8Text(s, to: gi)
         }
 
         // Create a default config on first run.
@@ -164,7 +172,7 @@ struct AXProjectContext: Equatable {
             let enc = JSONEncoder()
             enc.outputFormatting = [.prettyPrinted, .sortedKeys]
             if let data = try? enc.encode(cfg) {
-                try? data.write(to: configURL, options: .atomic)
+                try? XTStoreWriteSupport.writeSnapshotData(data, to: configURL)
             }
         }
     }
@@ -215,6 +223,11 @@ struct AXProjectContext: Equatable {
     func uiReviewRecordURL(reviewID: String) -> URL {
         let safe = sanitizedObservationToken(reviewID)
         return uiReviewRecordsDir.appendingPathComponent("\(safe).json")
+    }
+
+    func uiReviewAgentEvidenceURL(reviewID: String) -> URL {
+        let safe = sanitizedObservationToken(reviewID)
+        return uiReviewAgentEvidenceDir.appendingPathComponent("\(safe).json")
     }
 
     private func sanitizedObservationToken(_ raw: String) -> String {

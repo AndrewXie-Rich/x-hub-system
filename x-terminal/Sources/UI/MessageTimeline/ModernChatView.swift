@@ -36,6 +36,12 @@ struct ModernChatView: View {
                     onRetrySkillActivity: { item in
                         session.retryProjectSkillActivity(item, router: appModel.llmRouter)
                     },
+                    onOpenGovernance: { destination in
+                        appModel.requestProjectSettingsFocus(
+                            projectId: projectId,
+                            destination: destination
+                        )
+                    },
                     focusedSkillActivityRequestId: highlightedSkillActivityRequestId,
                     focusedSkillActivityNonce: highlightedSkillActivityFocusNonce,
                     bottomPadding: session.pendingToolCalls.isEmpty ? 24 : 160
@@ -161,6 +167,9 @@ struct ModernChatView: View {
         let snapshots = AXRoleExecutionSnapshots.latestSnapshots(for: ctx)
         let coderSnapshot = snapshots[.coder] ?? .empty(role: .coder)
         let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+        let governancePresentation = ProjectGovernancePresentation(
+            resolved: appModel.resolvedProjectGovernance(config: config)
+        )
         let configuredModelId = AXRoleExecutionSnapshots.configuredModelId(
             for: .coder,
             projectConfig: config,
@@ -200,6 +209,15 @@ struct ModernChatView: View {
                     .clipShape(Capsule())
                     .help(tooltip)
             }
+
+            ProjectGovernanceCompactSummaryView(
+                presentation: governancePresentation,
+                onExecutionTierTap: { openGovernance(.executionTier) },
+                onSupervisorTierTap: { openGovernance(.supervisorTier) },
+                onReviewCadenceTap: { openGovernance(.heartbeatReview) },
+                onStatusTap: { openGovernance(.overview) },
+                onCalloutTap: { openGovernance(.overview) }
+            )
 
             HStack(spacing: 8) {
                 Button {
@@ -277,6 +295,12 @@ struct ModernChatView: View {
         )
     }
 
+    private func openGovernance(_ destination: XTProjectGovernanceDestination) {
+        appModel.requestProjectSettingsFocus(
+            projectId: projectId,
+            destination: destination
+        )
+    }
 }
 
 /// 预览

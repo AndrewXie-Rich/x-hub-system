@@ -10,8 +10,11 @@ import SwiftUI
 /// 以网格形式展示所有项目
 struct ProjectsGridView: View {
     @ObservedObject var projectsManager: MultiProjectManager
+    @EnvironmentObject private var appModel: AppModel
     @State private var selectedProject: ProjectModel?
     @State private var showProjectDetail = false
+    @State private var projectDetailFocusSection: XTProjectDetailSection = .overview
+    @State private var projectDetailFocusContext: XTSectionFocusContext?
 
     let columns = [
         GridItem(.adaptive(minimum: 250, maximum: 300), spacing: 16)
@@ -23,6 +26,8 @@ struct ProjectsGridView: View {
                 ForEach(projectsManager.projects) { project in
                     ProjectCard(project: project)
                         .onTapGesture {
+                            projectDetailFocusSection = .overview
+                            projectDetailFocusContext = nil
                             selectedProject = project
                             showProjectDetail = true
                         }
@@ -32,9 +37,52 @@ struct ProjectsGridView: View {
         }
         .sheet(isPresented: $showProjectDetail) {
             if let project = selectedProject {
-                ProjectDetailView(project: project)
+                ProjectDetailView(
+                    project: project,
+                    initialFocusSection: projectDetailFocusSection,
+                    initialFocusContext: projectDetailFocusContext
+                )
+                .environmentObject(appModel)
             }
         }
+        .onAppear {
+            processProjectDetailFocusRequest()
+        }
+        .onChange(of: appModel.projectDetailFocusRequest?.nonce) { _ in
+            processProjectDetailFocusRequest()
+        }
+        .onChange(of: showProjectDetail) { presented in
+            if !presented {
+                projectDetailFocusSection = .overview
+                projectDetailFocusContext = nil
+            }
+        }
+    }
+
+    private func processProjectDetailFocusRequest() {
+        guard let request = appModel.projectDetailFocusRequest else { return }
+        guard let project = resolveProject(for: request.projectId) else { return }
+        projectDetailFocusSection = request.section
+        projectDetailFocusContext = request.context
+        selectedProject = project
+        projectsManager.selectProject(project)
+        showProjectDetail = true
+        appModel.clearProjectDetailFocusRequest(request)
+    }
+
+    private func resolveProject(for projectId: String) -> ProjectModel? {
+        let normalizedProjectId = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedProjectId.isEmpty else { return nil }
+
+        if let project = projectsManager.projects.first(where: {
+            ($0.registeredProjectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "") == normalizedProjectId
+        }) {
+            return project
+        }
+
+        return projectsManager.projects.first(where: {
+            $0.id.uuidString.lowercased() == normalizedProjectId.lowercased()
+        })
     }
 }
 
@@ -50,6 +98,8 @@ struct ProjectCard: View {
 
             // 任务描述
             taskInfo
+
+            governanceInfo
 
             Divider()
 
@@ -123,6 +173,36 @@ struct ProjectCard: View {
                 .font(.subheadline)
                 .foregroundColor(.secondary)
                 .lineLimit(2)
+        }
+    }
+
+    private var governanceInfo: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "lock.shield")
+                    .foregroundColor(.secondary)
+                    .font(.caption)
+
+                Text("Governance")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            ProjectGovernanceCompactSummaryView(
+                presentation: governancePresentation,
+                onExecutionTierTap: governanceProjectId == nil ? nil : { openGovernance(.executionTier) },
+                onSupervisorTierTap: governanceProjectId == nil ? nil : { openGovernance(.supervisorTier) },
+                onReviewCadenceTap: governanceProjectId == nil ? nil : { openGovernance(.heartbeatReview) },
+                onStatusTap: governanceProjectId == nil ? nil : { openGovernance(.overview) },
+                onCalloutTap: governanceProjectId == nil ? nil : { openGovernance(.overview) }
+            )
+
+            if governanceProjectId == nil {
+                Text("未绑定真实 project 时，这里先显示治理草稿；打开卡片后再进入完整治理面。")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -220,6 +300,35 @@ struct ProjectCard: View {
         return projectId.isEmpty ? nil : projectId
     }
 
+    private var governanceProjectId: String? {
+        if let registeredProjectId {
+            return registeredProjectId
+        }
+        guard let ctx = project.governanceActivityContext(resolveProjectContext: appModel.projectContext(for:)) else {
+            return nil
+        }
+        let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return projectId.isEmpty ? nil : projectId
+    }
+
+    private var governancePresentation: ProjectGovernancePresentation {
+        if let resolved = appModel.resolvedProjectGovernance(for: project) {
+            return ProjectGovernancePresentation(resolved: resolved)
+        }
+        return ProjectGovernancePresentation(
+            executionTier: project.executionTier,
+            supervisorInterventionTier: project.supervisorInterventionTier,
+            reviewPolicyMode: project.reviewPolicyMode,
+            progressHeartbeatSeconds: project.progressHeartbeatSeconds,
+            reviewPulseSeconds: project.reviewPulseSeconds,
+            brainstormReviewSeconds: project.brainstormReviewSeconds,
+            eventDrivenReviewEnabled: project.eventDrivenReviewEnabled,
+            eventReviewTriggers: project.eventReviewTriggers,
+            compatSource: "multi_project_draft"
+        )
+    }
+
     private var latestSessionSummary: AXSessionSummaryCapsulePresentation? {
         guard let rootPath = project.registeredProjectRootPath?.trimmingCharacters(in: .whitespacesAndNewlines),
               !rootPath.isEmpty else {
@@ -227,6 +336,14 @@ struct ProjectCard: View {
         }
         let ctx = AXProjectContext(root: URL(fileURLWithPath: rootPath, isDirectory: true))
         return AXSessionSummaryCapsulePresentation.load(for: ctx)
+    }
+
+    private func openGovernance(_ destination: XTProjectGovernanceDestination) {
+        guard let governanceProjectId else { return }
+        appModel.requestProjectSettingsFocus(
+            projectId: governanceProjectId,
+            destination: destination
+        )
     }
 }
 

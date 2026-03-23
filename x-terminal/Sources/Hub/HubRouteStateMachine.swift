@@ -55,6 +55,12 @@ enum HubRouteStateMachine {
         if token == "hub_env_missing" || token == "grpc_route_unavailable" {
             return true
         }
+        if token.contains("grpc_unavailable")
+            || token.contains("14_unavailable")
+            || token.contains("no_connection_established")
+            || token.contains("failed_to_connect_to_all_addresses") {
+            return true
+        }
         if token.contains("client_kit_missing") || token.contains("node_missing") {
             return true
         }

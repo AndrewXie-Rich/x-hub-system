@@ -91,7 +91,7 @@ enum AXProjectRegistryStore {
         if !fm.fileExists(atPath: preferredFile.path),
            fm.fileExists(atPath: legacyFile.path),
            let data = try? Data(contentsOf: legacyFile) {
-            try? data.write(to: preferredFile, options: .atomic)
+            try? XTStoreWriteSupport.writeSnapshotData(data, to: preferredFile)
         }
 
         return base
@@ -518,12 +518,7 @@ enum AXProjectRegistryStore {
     }
 
     private static func writeAtomic(data: Data, to url: URL) throws {
-        let tmp = url.deletingLastPathComponent().appendingPathComponent(".\(url.lastPathComponent).tmp")
-        try data.write(to: tmp, options: .atomic)
-        if FileManager.default.fileExists(atPath: url.path) {
-            try FileManager.default.removeItem(at: url)
-        }
-        try FileManager.default.moveItem(at: tmp, to: url)
+        try XTStoreWriteSupport.writeSnapshotData(data, to: url)
     }
 }
 

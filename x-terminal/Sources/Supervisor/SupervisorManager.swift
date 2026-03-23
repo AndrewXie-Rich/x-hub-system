@@ -2336,17 +2336,17 @@ final class SupervisorManager: ObservableObject {
     ) -> String {
         switch resolution.state {
         case .pending:
-            return "Voice authorization challenge issued. Challenge \(challengeToken)."
+            return "已发出语音授权挑战（Voice authorization challenge issued）。Challenge \(challengeToken)。"
         case .escalatedToMobile:
-            return "Voice authorization requires mobile confirmation. Challenge \(challengeToken)."
+            return "语音授权需要移动端确认（Voice authorization requires mobile confirmation）。Challenge \(challengeToken)。"
         case .verified:
-            return "Voice authorization verified. Challenge \(challengeToken)."
+            return "语音授权已验证通过（Voice authorization verified）。Challenge \(challengeToken)。"
         case .denied:
             let deny = resolution.denyCode ?? "denied"
-            return "Voice authorization denied. Reason \(deny)."
+            return "语音授权已拒绝（Voice authorization denied）。Reason \(deny)。"
         case .failClosed:
             let reason = resolution.reasonCode ?? "unknown"
-            return "Voice authorization failed closed. Reason \(reason)."
+            return "语音授权已进入失败闭锁（Voice authorization failed closed）。Reason \(reason)。"
         }
     }
 
@@ -22901,6 +22901,12 @@ Coder 下一步建议：
         var headline: String
         var detailLines: [String]
         var nextStep: String
+        var actionCategory: String = ""
+        var installHint: String = ""
+        var recommendedAction: String = ""
+        var supportFAQSummary: String = ""
+        var repairDestinationRef: String = ""
+        var generatedAtMs: Int64 = 0
 
         var strictIssueCode: String? {
             guard overallState == XHubDoctorOverallState.blocked.rawValue else { return nil }
@@ -26942,15 +26948,20 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
     ) -> XTHubRuntimeDiagnosisSnapshot? {
         let report = XHubDoctorOutputStore.loadHubReport(baseDir: baseDir)
         let localServiceSnapshot = XHubDoctorOutputStore.loadHubLocalServiceSnapshot(baseDir: baseDir)
+        let recoveryGuidance = XHubDoctorOutputStore.loadHubLocalServiceRecoveryGuidance(baseDir: baseDir)
 
         let reportDiagnosis = report.flatMap { xtReadyHubRuntimeDiagnosisSnapshot(from: $0) }
         let snapshotDiagnosis = localServiceSnapshot.flatMap { xtReadyHubRuntimeDiagnosisSnapshot(from: $0) }
+        let guidanceDiagnosis = recoveryGuidance.flatMap { xtReadyHubRuntimeDiagnosisSnapshot(from: $0) }
 
+        let baseDiagnosis: XTHubRuntimeDiagnosisSnapshot?
         if let report, let localServiceSnapshot,
            localServiceSnapshot.generatedAtMs > report.generatedAtMs {
-            return snapshotDiagnosis ?? reportDiagnosis
+            baseDiagnosis = snapshotDiagnosis ?? reportDiagnosis
+        } else {
+            baseDiagnosis = reportDiagnosis ?? snapshotDiagnosis
         }
-        return reportDiagnosis ?? snapshotDiagnosis
+        return xtReadyMergedHubRuntimeDiagnosis(baseDiagnosis, guidance: guidanceDiagnosis)
     }
 
     private static func xtReadyHubRuntimeDiagnosisSnapshot(
@@ -26978,7 +26989,13 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
             failureCode: failureCode,
             headline: headline,
             detailLines: xtReadyHubRuntimeDetailLines(primaryCheck),
-            nextStep: nextStep
+            nextStep: nextStep,
+            repairDestinationRef: (
+                primaryCheck?.repairDestinationRef?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                    ? primaryCheck?.repairDestinationRef
+                    : report.nextSteps.first?.destinationRef
+            )?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+            generatedAtMs: report.generatedAtMs
         )
     }
 
@@ -27011,8 +27028,128 @@ hotspots=\(hotspots.isEmpty ? "none" : hotspots)
             failureCode: failureCode,
             headline: headline,
             detailLines: snapshot.preferredDetailLines(),
-            nextStep: nextStep
+            nextStep: nextStep,
+            repairDestinationRef: projection?.repairDestinationRef.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+            generatedAtMs: snapshot.generatedAtMs
         )
+    }
+
+    private static func xtReadyHubRuntimeDiagnosisSnapshot(
+        from guidance: XHubLocalServiceRecoveryGuidanceReport
+    ) -> XTHubRuntimeDiagnosisSnapshot? {
+        let failureCode = guidance.primaryFailureCode
+        let actionCategory = guidance.actionCategory.trimmingCharacters(in: .whitespacesAndNewlines)
+        let installHint = guidance.installHint.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard guidance.guidancePresent
+                || guidance.primaryIssue != nil
+                || !failureCode.isEmpty
+                || !actionCategory.isEmpty
+                || !installHint.isEmpty else {
+            return nil
+        }
+
+        let providerCheckStatus = XHubDoctorCheckStatus(
+            rawValue: guidance.providerCheckStatus.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        let overallState: String
+        if guidance.providerCheckBlocking {
+            overallState = XHubDoctorOverallState.blocked.rawValue
+        } else {
+            switch providerCheckStatus {
+            case .pass:
+                overallState = failureCode.isEmpty ? XHubDoctorOverallState.ready.rawValue : XHubDoctorOverallState.degraded.rawValue
+            case .warn, .fail:
+                overallState = XHubDoctorOverallState.degraded.rawValue
+            case .skip, .none:
+                overallState = guidance.runtimeAlive
+                    ? XHubDoctorOverallState.degraded.rawValue
+                    : XHubDoctorOverallState.blocked.rawValue
+            }
+        }
+
+        let primaryIssue = guidance.primaryIssue
+        let headline = (
+            primaryIssue?.headline.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                ? primaryIssue?.headline
+                : installHint
+        )?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let primaryNextStep = primaryIssue?.nextStep.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let recommendedAction = guidance.topRecommendedActionSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let nextStep = !primaryNextStep.isEmpty
+            ? primaryNextStep
+            : (!recommendedAction.isEmpty ? recommendedAction : installHint)
+        let readyForFirstTask = !guidance.providerCheckBlocking
+            && failureCode.isEmpty
+            && providerCheckStatus == .pass
+            && guidance.readyProviderCount > 0
+
+        return XTHubRuntimeDiagnosisSnapshot(
+            overallState: overallState,
+            readyForFirstTask: readyForFirstTask,
+            failureCode: failureCode,
+            headline: headline,
+            detailLines: guidance.preferredDetailLines(),
+            nextStep: nextStep,
+            actionCategory: actionCategory,
+            installHint: installHint,
+            recommendedAction: recommendedAction,
+            supportFAQSummary: guidance.topSupportFAQSummary,
+            repairDestinationRef: guidance.repairDestinationRef.trimmingCharacters(in: .whitespacesAndNewlines),
+            generatedAtMs: guidance.generatedAtMs
+        )
+    }
+
+    private static func xtReadyMergedHubRuntimeDiagnosis(
+        _ base: XTHubRuntimeDiagnosisSnapshot?,
+        guidance: XTHubRuntimeDiagnosisSnapshot?
+    ) -> XTHubRuntimeDiagnosisSnapshot? {
+        guard let guidance else { return base }
+        guard var merged = base else { return guidance }
+
+        let mergedFailureCode = merged.failureCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let guidanceFailureCode = guidance.failureCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let codesMatch = !guidanceFailureCode.isEmpty
+            && (mergedFailureCode.isEmpty || mergedFailureCode == guidanceFailureCode)
+        let guidanceIsNewerOrSame = guidance.generatedAtMs >= merged.generatedAtMs
+        let shouldApplyGuidance = guidanceIsNewerOrSame || codesMatch || mergedFailureCode.isEmpty
+        guard shouldApplyGuidance else { return merged }
+
+        if mergedFailureCode.isEmpty, !guidanceFailureCode.isEmpty {
+            merged.failureCode = guidanceFailureCode
+        }
+        if merged.headline.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !guidance.headline.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            merged.headline = guidance.headline
+        }
+        if merged.nextStep.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !guidance.nextStep.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            merged.nextStep = guidance.nextStep
+        }
+        if merged.detailLines.isEmpty, !guidance.detailLines.isEmpty {
+            merged.detailLines = guidance.detailLines
+        }
+        if merged.actionCategory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !guidance.actionCategory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            merged.actionCategory = guidance.actionCategory
+        }
+        if merged.installHint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !guidance.installHint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            merged.installHint = guidance.installHint
+        }
+        if merged.recommendedAction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !guidance.recommendedAction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            merged.recommendedAction = guidance.recommendedAction
+        }
+        if merged.supportFAQSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !guidance.supportFAQSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            merged.supportFAQSummary = guidance.supportFAQSummary
+        }
+        if merged.repairDestinationRef.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !guidance.repairDestinationRef.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            merged.repairDestinationRef = guidance.repairDestinationRef
+        }
+        merged.generatedAtMs = max(merged.generatedAtMs, guidance.generatedAtMs)
+        return merged
     }
 
     private static func xtReadyHubRuntimePrimaryCheck(
@@ -34572,7 +34709,16 @@ retry_depth: \(retryDepth)
 
     private func automationProjectEntry(for ctx: AXProjectContext) -> AXProjectEntry {
         let projectId = AXProjectRegistryStore.projectId(forRoot: ctx.root)
-        if let project = knownProjects().first(where: { $0.projectId == projectId }) {
+        let normalizedRootPath = AXProjectRegistryStore.normalizedRootPath(ctx.root)
+        let projects = knownProjects()
+        if let project = projects.first(where: { $0.projectId == projectId }) {
+            return project
+        }
+        if let project = projects.first(where: {
+            let rootPath = $0.rootPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !rootPath.isEmpty else { return false }
+            return AXProjectRegistryStore.normalizedRootPath(URL(fileURLWithPath: rootPath)) == normalizedRootPath
+        }) {
             return project
         }
         return AXProjectEntry(
@@ -35077,7 +35223,7 @@ retry_depth: \(retryDepth)
     }
 
     private func renderAutomationExecutionSummary(
-        projectName: String,
+        project: AXProjectEntry,
         report: XTAutomationRunExecutionReport
     ) -> String {
         let holdReason = report.holdReason.isEmpty ? "none" : report.holdReason
@@ -35100,18 +35246,19 @@ retry_depth: \(retryDepth)
             let verifyHoldReason = verification.holdReason.isEmpty ? "none" : verification.holdReason
             return "verify: \(verification.passedCommandCount)/\(verification.commandCount) (\(verifyHoldReason))"
         }()
-        return """
-⚙️ automation 自动执行完成
-项目: \(projectName)
-run_id: \(report.runID)
-state: \(report.finalState.rawValue)
-executed_actions: \(report.executedActionCount)/\(report.totalActionCount)
-\(handoffText)
-\(diffText)
-\(verificationText)
-hold_reason: \(holdReason)
-detail: \(report.detail)
-"""
+        var lines: [String] = []
+        prependAutomationProjectGovernanceBriefIfAvailable(for: project, to: &lines)
+        lines.append("⚙️ automation 自动执行完成")
+        lines.append("项目: \(project.displayName)")
+        lines.append("run_id: \(report.runID)")
+        lines.append("state: \(report.finalState.rawValue)")
+        lines.append("executed_actions: \(report.executedActionCount)/\(report.totalActionCount)")
+        lines.append(handoffText)
+        lines.append(diffText)
+        lines.append(verificationText)
+        lines.append("hold_reason: \(holdReason)")
+        lines.append("detail: \(report.detail)")
+        return lines.joined(separator: "\n")
     }
 
     private func renderAutomationRuntimeError(_ error: Error) -> String {
@@ -35502,6 +35649,22 @@ skipped：\(skippedText)
                hubRuntime.overallState != XHubDoctorOverallState.ready.rawValue {
                 lines.append("hub_runtime_next：\(hubRuntime.nextStep)")
             }
+            if !hubRuntime.actionCategory.isEmpty,
+               hubRuntime.overallState != XHubDoctorOverallState.ready.rawValue {
+                lines.append("hub_runtime_action_category：\(hubRuntime.actionCategory)")
+            }
+            if !hubRuntime.installHint.isEmpty,
+               hubRuntime.overallState != XHubDoctorOverallState.ready.rawValue {
+                lines.append("hub_runtime_install_hint：\(hubRuntime.installHint)")
+            }
+            if !hubRuntime.recommendedAction.isEmpty,
+               hubRuntime.overallState != XHubDoctorOverallState.ready.rawValue {
+                lines.append("hub_runtime_recommended_action：\(hubRuntime.recommendedAction)")
+            }
+            if !hubRuntime.supportFAQSummary.isEmpty,
+               hubRuntime.overallState != XHubDoctorOverallState.ready.rawValue {
+                lines.append("hub_runtime_support_faq：\(hubRuntime.supportFAQSummary)")
+            }
         }
         if !result.missingIncidentCodes.isEmpty {
             lines.append("缺失必需 incident_code：\(result.missingIncidentCodes.joined(separator: ","))")
@@ -35568,6 +35731,22 @@ skipped：\(skippedText)
             if !hubRuntime.nextStep.isEmpty,
                hubRuntime.overallState != XHubDoctorOverallState.ready.rawValue {
                 lines.append("hub_runtime_next：\(hubRuntime.nextStep)")
+            }
+            if !hubRuntime.actionCategory.isEmpty,
+               hubRuntime.overallState != XHubDoctorOverallState.ready.rawValue {
+                lines.append("hub_runtime_action_category：\(hubRuntime.actionCategory)")
+            }
+            if !hubRuntime.installHint.isEmpty,
+               hubRuntime.overallState != XHubDoctorOverallState.ready.rawValue {
+                lines.append("hub_runtime_install_hint：\(hubRuntime.installHint)")
+            }
+            if !hubRuntime.recommendedAction.isEmpty,
+               hubRuntime.overallState != XHubDoctorOverallState.ready.rawValue {
+                lines.append("hub_runtime_recommended_action：\(hubRuntime.recommendedAction)")
+            }
+            if !hubRuntime.supportFAQSummary.isEmpty,
+               hubRuntime.overallState != XHubDoctorOverallState.ready.rawValue {
+                lines.append("hub_runtime_support_faq：\(hubRuntime.supportFAQSummary)")
             }
         }
         if snapshot.missingIncidentCodes.isEmpty {
@@ -36371,7 +36550,12 @@ extension SupervisorManager {
             if !heldAtSafePoint {
                 appendRecentEvent("automation executed: \(projectDisplayName) -> \(report.detail)")
                 if emitSystemMessage {
-                    addSystemMessage(renderAutomationExecutionSummary(projectName: projectDisplayName, report: report))
+                    addSystemMessage(
+                        renderAutomationExecutionSummary(
+                            project: automationProjectEntry(for: ctx),
+                            report: report
+                        )
+                    )
                 }
                 scheduleAutomaticSelfIterationIfNeeded(
                     prepared: prepared,

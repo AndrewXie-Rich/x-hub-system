@@ -10,11 +10,11 @@ struct XTSettingsSectionDescriptor: Identifiable, Codable, Equatable, Sendable {
 enum XTSettingsCenterManifest {
     static let releaseScope = "XT-W3-23 -> XT-W3-24 -> XT-W3-25 mainline only"
     static let sections: [XTSettingsSectionDescriptor] = [
-        XTSettingsSectionDescriptor(id: "pair_hub", title: "Pair Hub", summary: "配对、Pairing Port / gRPC Port / Internet Host 与 reconnect smoke 都从这里开始。", repairEntry: "XT Settings → Pair Hub"),
-        XTSettingsSectionDescriptor(id: "choose_model", title: "Choose Model", summary: "为首个任务选择 Hub 模型，避免把模型缺失误判成 grant 问题。", repairEntry: "XT Settings → Choose Model"),
-        XTSettingsSectionDescriptor(id: "grant_permissions", title: "Grant & Permissions", summary: "集中处理 grant_required / permission_denied / hub_unreachable。", repairEntry: "XT Settings → Grant & Repair"),
-        XTSettingsSectionDescriptor(id: "security_runtime", title: "Security & Runtime", summary: "保留本地 HTTP server 与安全边界相关开关。", repairEntry: "XT Settings → Security & Runtime"),
-        XTSettingsSectionDescriptor(id: "diagnostics", title: "Diagnostics", summary: "统一查看当前连接摘要、verify readiness、日志与修复线索。", repairEntry: "XT Settings → Diagnostics")
+        XTSettingsSectionDescriptor(id: "pair_hub", title: "连接 Hub（Pair Hub）", summary: "配对、端口、公网地址和重连 smoke 都从这里开始。", repairEntry: "XT Settings → 连接 Hub（Pair Hub）"),
+        XTSettingsSectionDescriptor(id: "choose_model", title: "选择模型（Choose Model）", summary: "先为首个任务选好 Hub 模型，避免把模型缺失误判成授权问题。", repairEntry: "XT Settings → 选择模型（Choose Model）"),
+        XTSettingsSectionDescriptor(id: "grant_permissions", title: "授权与权限（Grant & Permissions）", summary: "集中处理授权、系统权限和 Hub 不可达。", repairEntry: "XT Settings → 授权修复（Grant & Repair）"),
+        XTSettingsSectionDescriptor(id: "security_runtime", title: "安全与运行时（Security & Runtime）", summary: "管理本地 HTTP 服务、工具执行路径和安全边界。", repairEntry: "XT Settings → 安全与运行时（Security & Runtime）"),
+        XTSettingsSectionDescriptor(id: "diagnostics", title: "诊断（Diagnostics）", summary: "统一查看当前链路、运行时核对、日志与修复线索。", repairEntry: "XT Settings → 诊断（Diagnostics）")
     ]
 
     static let consumedFrozenFields: [String] = [
@@ -82,9 +82,9 @@ enum XTSettingsSurfacePlanner {
         if let issue {
             return StatusExplanation(
                 state: issue == .grantRequired ? .grantRequired : issue == .permissionDenied ? .permissionDenied : .diagnosticRequired,
-                headline: "XT Settings 当前优先处理：\(issue.title)",
-                whatHappened: "AI-4 已把高频问题收敛到 Pair Hub / Grant & Repair / Diagnostics 三个入口；本轮还把 denyCode / replay / baton 一并贴到同一状态卡。",
-                whyItHappened: "本轮直接消费 AI-3 冻结的 state semantics 与 AI-2 的 runtime 合同，使 XT / Home / Cockpit / Settings 的状态口径一致。",
+                headline: "设置中心当前优先处理：\(issue.title)",
+                whatHappened: "常见阻塞已经收口到连接 Hub（Pair Hub）、授权修复（Grant & Repair）和诊断（Diagnostics）三个入口；denyCode、replay 和恢复线索也会一起显示。",
+                whyItHappened: "这样你不用在多个页面来回猜，XT / Home / Cockpit / Settings 看到的是同一套运行时状态。",
                 userAction: state.runtime.nextRepairAction ?? UITroubleshootKnowledgeBase.guide(for: issue).steps.first?.instruction ?? "先按排障主链继续。",
                 machineStatusRef: machineStatusRef,
                 hardLine: "badge 文案与 action IDs 不再漂移",
@@ -97,10 +97,10 @@ enum XTSettingsSurfacePlanner {
         if state.runtime.scopeDecision == DeliveryScopeFreezeDecision.noGo.rawValue {
             return StatusExplanation(
                 state: .blockedWaitingUpstream,
-                headline: "XT Settings 检测到 scope freeze=NO_GO",
-                whatHappened: "当前请求已碰到 release freeze 的 fail-closed 边界，因此 settings 只继续展示 validated mainline 所允许的入口。",
-                whyItHappened: "AI-4 直接消费 xt.delivery_scope_freeze.v1.decision / blocked_expansion_items，避免 UI 把超范围能力说成可用。",
-                userAction: state.runtime.scopeNextActions.first ?? "先 drop scope expansion，再回 validated mainline。",
+                headline: "当前请求超出已验证主链",
+                whatHappened: "这次请求碰到了 release freeze 的 fail-closed 边界，所以这里只继续显示已验证主链允许的入口。",
+                whyItHappened: "界面会明确收口超范围能力，避免把还没验证的路径说成可用。",
+                userAction: state.runtime.scopeNextActions.first ?? "先收回 scope expansion，再回到已验证主链。",
                 machineStatusRef: machineStatusRef,
                 hardLine: ValidatedScopePresentation.validatedMainlineOnly.hardLine,
                 highlights: mergedHighlights([
@@ -112,10 +112,10 @@ enum XTSettingsSurfacePlanner {
         if state.runtime.replayBlocked {
             return StatusExplanation(
                 state: .diagnosticRequired,
-                headline: "XT Settings 当前优先处理：Replay Regression",
-                whatHappened: "配对与设置入口已经齐备，但 replay harness 仍未通过，当前不能把 smoke 或首个任务伪装成 green。",
-                whyItHappened: "xt.one_shot_replay_regression.v1.pass / scenarios 已接入 settings 状态层，并保持 fail-closed。",
-                userAction: state.runtime.nextRepairAction ?? "先到 Diagnostics 查看 replay denyCode / scenario，再重跑 smoke。",
+                headline: "当前优先处理：重放回归未通过",
+                whatHappened: "配对和设置入口都已具备，但 replay harness 还没通过，现在不能把 smoke 或首个任务误判成绿色。",
+                whyItHappened: "系统会继续把 replay 当作硬门槛，先修复 denyCode 和失败场景，再往下走。",
+                userAction: state.runtime.nextRepairAction ?? "先到诊断（Diagnostics）查看 replay denyCode / 场景，再重跑 smoke。",
                 machineStatusRef: machineStatusRef,
                 hardLine: ValidatedScopePresentation.validatedMainlineOnly.hardLine,
                 highlights: mergedHighlights([
@@ -126,10 +126,10 @@ enum XTSettingsSurfacePlanner {
 
         return StatusExplanation(
             state: state.hubInteractive ? .ready : .blockedWaitingUpstream,
-            headline: state.hubInteractive ? "XT Settings 已对齐 validated mainline 主链" : "XT Settings 已就绪，但 Hub 仍待接入",
-            whatHappened: "设置中心不再堆叠底层工程选项，而是先回答 pair / model / grant / diagnostics 四个主问题。",
-            whyItHappened: "本轮目标是让新用户能完成首用路径，老用户能在 3 步内定位 grant / permission / unreachable 修复入口。",
-            userAction: state.hubInteractive ? "继续 Reconnect Smoke 或返回 Home / Supervisor 开始首个任务。" : "先完成 Pair Hub，再回来选择模型和处理授权。",
+            headline: state.hubInteractive ? "设置中心已对齐当前已验证主链" : "设置中心已就绪，但 Hub 还没接入",
+            whatHappened: "这里先回答四件事：配对、模型、授权、诊断，而不是把底层工程开关都堆给你。",
+            whyItHappened: "目标是让新用户走完首用路径，老用户也能在 3 步内找到授权、权限或连通性修复入口。",
+            userAction: state.hubInteractive ? "继续重连自检（Reconnect Smoke），或返回 Home / Supervisor 开始首个任务。" : "先完成 Pair Hub，再回来选择模型和处理授权。",
             machineStatusRef: machineStatusRef,
             hardLine: ValidatedScopePresentation.validatedMainlineOnly.hardLine,
             highlights: mergedHighlights([
@@ -143,21 +143,21 @@ enum XTSettingsSurfacePlanner {
         [
             PrimaryActionRailAction(
                 id: "pair_hub",
-                title: "Pair Hub",
+                title: "连接 Hub（Pair Hub）",
                 subtitle: "从 One-Click Setup 开始首用路径",
                 systemImage: "link.badge.plus",
                 style: .primary
             ),
             PrimaryActionRailAction(
                 id: "run_smoke",
-                title: "Run Reconnect Smoke",
+                title: "重连自检（Run Reconnect Smoke）",
                 subtitle: runSmokeSubtitle(runtime: state.runtime),
                 systemImage: "bolt.horizontal.circle",
                 style: .secondary
             ),
             PrimaryActionRailAction(
                 id: "review_grants",
-                title: "Review Grants",
+                title: "查看授权（Review Grants）",
                 subtitle: reviewSubtitle(issue: issue(for: state), runtime: state.runtime),
                 systemImage: "checkmark.shield",
                 style: .diagnostic
@@ -219,7 +219,13 @@ enum XTSettingsSurfacePlanner {
 
 struct SettingsView: View {
     @EnvironmentObject private var appModel: AppModel
+    @StateObject private var supervisorManager = SupervisorManager.shared
+    @StateObject private var chooseModelUpdateFeedback = XTTransientUpdateFeedbackState()
+    @StateObject private var securityRuntimeUpdateFeedback = XTTransientUpdateFeedbackState()
     @State private var activeFocusRequest: XTSettingsFocusRequest?
+    @State private var defaultToolSandboxMode: ToolSandboxMode = ToolExecutor.sandboxMode()
+    @State private var chooseModelChangeNotice: XTSettingsChangeNotice?
+    @State private var securityRuntimeChangeNotice: XTSettingsChangeNotice?
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -245,9 +251,17 @@ struct SettingsView: View {
             }
             .onAppear {
                 processSettingsFocusRequest(proxy)
+                appModel.maybeAutoFillHubSetupPathAndPorts(force: false)
+                defaultToolSandboxMode = ToolExecutor.sandboxMode()
             }
             .onChange(of: appModel.settingsFocusRequest?.nonce) { _ in
                 processSettingsFocusRequest(proxy)
+            }
+            .onDisappear {
+                chooseModelUpdateFeedback.cancel(resetState: true)
+                chooseModelChangeNotice = nil
+                securityRuntimeUpdateFeedback.cancel(resetState: true)
+                securityRuntimeChangeNotice = nil
             }
         }
         .frame(minWidth: 820, idealWidth: 860, minHeight: 760)
@@ -255,9 +269,9 @@ struct SettingsView: View {
 
     private var headerSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("XT Settings Center")
+            Text("XT 设置中心")
                 .font(UIThemeTokens.sectionFont())
-            Text("AI-4 已切换到 AI-3 冻结的 surface state / badge / action semantics，不再单独发散 badge 文案和 action IDs。")
+            Text("把连接、模型、授权、安全和诊断收口到同一页；常见问题优先直接给修复入口。")
                 .font(UIThemeTokens.bodyFont())
                 .foregroundStyle(.secondary)
             Text("consumed_frozen_fields=\(XTSettingsCenterManifest.consumedFrozenFields.joined(separator: ", "))")
@@ -279,51 +293,63 @@ struct SettingsView: View {
     }
 
     private var pairHubSection: some View {
-        GroupBox("1) Pair Hub") {
+        GroupBox("1) 连接 Hub") {
             VStack(alignment: .leading, spacing: 10) {
-                Text("首用路径从 Hub 配对开始：discover → bootstrap → connect → reconnect smoke。")
+                Text("首用路径从 Hub 配对开始：发现 → 配对 → 连接 → 重连 smoke。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                 Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
                     GridRow {
-                        Text("Pairing Port")
+                        Text("配对端口")
                             .frame(width: 140, alignment: .leading)
                         TextField("50052", value: pairingPortBinding, format: .number)
                             .textFieldStyle(.roundedBorder)
                             .frame(width: 120)
                     }
                     GridRow {
-                        Text("gRPC Port")
+                        Text("gRPC 端口")
                             .frame(width: 140, alignment: .leading)
                         TextField("50051", value: grpcPortBinding, format: .number)
                             .textFieldStyle(.roundedBorder)
                             .frame(width: 120)
                     }
                     GridRow {
-                        Text("Internet Host")
+                        Text("公网地址")
                             .frame(width: 140, alignment: .leading)
                         TextField("hub.example.com", text: internetHostBinding)
                             .textFieldStyle(.roundedBorder)
                     }
                     GridRow {
-                        Text("axhubctl Path")
+                        Text("axhubctl 路径")
                             .frame(width: 140, alignment: .leading)
-                        TextField("auto detect", text: axhubctlPathBinding)
+                        TextField("自动探测", text: axhubctlPathBinding)
                             .textFieldStyle(.roundedBorder)
                     }
                 }
 
                 HStack(spacing: 10) {
-                    Button(appModel.hubRemoteLinking ? "Linking..." : "One-Click Setup") {
+                    Button(appModel.hubPortAutoDetectRunning ? "探测中..." : "自动探测") {
+                        appModel.maybeAutoFillHubSetupPathAndPorts(force: true)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(appModel.hubRemoteLinking)
+
+                    Button(appModel.hubRemoteLinking ? "连接中..." : "一键连接") {
                         appModel.startHubOneClickSetup()
                     }
                     .buttonStyle(.borderedProminent)
 
-                    Button("Reconnect Smoke") {
+                    Button("重连 Smoke") {
                         appModel.startHubReconnectOnly()
                     }
                     .buttonStyle(.bordered)
+
+                    Button(appModel.hubRemoteLinking ? "重置中..." : "清除配对后重连") {
+                        appModel.resetPairingStateAndOneClickSetup()
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(appModel.hubRemoteLinking || appModel.hubPortAutoDetectRunning)
 
                     Spacer()
 
@@ -332,18 +358,33 @@ struct SettingsView: View {
                         .foregroundStyle(connectionStateColor)
                 }
 
+                if !appModel.hubPortAutoDetectMessage.isEmpty {
+                    Text(appModel.hubPortAutoDetectMessage)
+                        .font(UIThemeTokens.monoFont())
+                        .foregroundStyle(.secondary)
+                }
                 if !appModel.hubRemoteSummary.isEmpty {
-                    Text("Summary: \(appModel.hubRemoteSummary)")
+                    Text("摘要：\(appModel.hubRemoteSummary)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+
+                HubDiscoveryCandidatesView(appModel: appModel)
             }
             .padding(8)
         }
     }
 
     private var chooseModelSection: some View {
-        GroupBox("2) Choose Model") {
+        let guidance = XTModelGuidancePresentation.build(
+            settings: appModel.settingsStore.settings,
+            snapshot: appModel.modelsState,
+            currentProjectName: selectedProjectDisplayName,
+            currentProjectContext: appModel.projectContext,
+            currentProjectCoderModelId: appModel.projectConfig?.modelOverride(for: .coder)
+        )
+
+        return GroupBox("2) 选择模型") {
             VStack(alignment: .leading, spacing: 10) {
                 if let context = focusContext(for: "choose_model") {
                     XTFocusContextCard(context: context)
@@ -352,11 +393,50 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
+                if chooseModelUpdateFeedback.showsBadge,
+                   let chooseModelChangeNotice {
+                    XTSettingsChangeNoticeInlineView(
+                        notice: chooseModelChangeNotice,
+                        tint: .accentColor
+                    )
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("选型提示")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    Text(guidance.inventorySummary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    ForEach(guidance.items) { item in
+                        Text("• \(item.title)：\(item.detail)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if let routeMemoryHint = guidance.routeMemoryHint {
+                        Text(routeMemoryHint)
+                            .font(.caption)
+                            .foregroundStyle(UIThemeTokens.color(for: .diagnosticRequired))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color(NSColor.controlBackgroundColor))
+                )
+
                 Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
                     GridRow {
-                        Text("Role")
+                        Text("角色")
                             .foregroundStyle(.secondary)
-                        Text("Model (Hub)")
+                        Text("Hub 模型")
                             .foregroundStyle(.secondary)
                     }
                     .font(UIThemeTokens.monoFont())
@@ -367,14 +447,52 @@ struct SettingsView: View {
                                 .font(UIThemeTokens.monoFont())
                                 .frame(width: 120, alignment: .leading)
 
-                            TextField("model id", text: bindingModel(role))
+                            TextField("模型 ID", text: bindingModel(role))
                                 .font(UIThemeTokens.monoFont())
                                 .frame(width: 360)
                         }
                     }
                 }
 
-                Text("建议至少先配置 coder 与 supervisor；如果 paid model 被 grant 拦住，可直接去下一分区修复。")
+                if !chooseModelIssues.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("即时提示")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(UIThemeTokens.color(for: .diagnosticRequired))
+                        ForEach(chooseModelIssues) { issue in
+                            HStack(alignment: .top, spacing: 10) {
+                                Text(issue.message)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Spacer(minLength: 8)
+                                if let suggestedModelId = issue.suggestedModelId {
+                                    Button("改用推荐") {
+                                        applySuggestedGlobalModel(
+                                            role: issue.role,
+                                            modelId: suggestedModelId
+                                        )
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                    .help("把 \(issue.role.displayName) 直接切到 `\(suggestedModelId)`。")
+                                }
+                            }
+                        }
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(UIThemeTokens.stateBackground(for: .diagnosticRequired))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(UIThemeTokens.color(for: .diagnosticRequired).opacity(0.2), lineWidth: 1)
+                    )
+                }
+
+                Text("建议至少先配置 coder 与 supervisor；如果付费模型被 grant 拦住，可直接去下一分区修复。")
                     .foregroundStyle(.secondary)
                     .font(.caption)
             }
@@ -383,7 +501,7 @@ struct SettingsView: View {
     }
 
     private var grantAndRepairSection: some View {
-        GroupBox("3) Grant & Repair") {
+        GroupBox("3) 授权与修复") {
             VStack(alignment: .leading, spacing: 10) {
                 TroubleshootPanel(title: "3 步内定位修复入口", issues: [.grantRequired, .permissionDenied, .hubUnreachable])
             }
@@ -392,23 +510,67 @@ struct SettingsView: View {
     }
 
     private var securityRuntimeSection: some View {
-        GroupBox("4) Security & Runtime") {
+        let guidance = XTSecurityRuntimeGuidancePresentation.build(
+            sandboxMode: defaultToolSandboxMode,
+            workMode: appModel.settingsStore.settings.supervisorWorkMode,
+            privacyMode: appModel.settingsStore.settings.supervisorPrivacyMode
+        )
+
+        return GroupBox("4) 安全与运行时") {
             VStack(alignment: .leading, spacing: 10) {
-                Toggle("Enable local HTTP server", isOn: localServerEnabledBinding)
+                if let context = focusContext(for: "security_runtime") {
+                    XTFocusContextCard(context: context)
+                }
+
+                if securityRuntimeUpdateFeedback.showsBadge,
+                   let securityRuntimeChangeNotice {
+                    XTSettingsChangeNoticeInlineView(
+                        notice: securityRuntimeChangeNotice,
+                        tint: .accentColor
+                    )
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("安全说明")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    ForEach(guidance.items) { item in
+                        Text("• \(item.title)：\(item.detail)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color(NSColor.controlBackgroundColor))
+                )
+
+                Toggle("启用本地 HTTP 服务", isOn: localServerEnabledBinding)
+
+                Picker("默认工具执行路径", selection: defaultToolSandboxModeBinding) {
+                    ForEach(ToolSandboxMode.allCases, id: \.rawValue) { mode in
+                        Text(mode == .host ? "宿主机" : "沙箱").tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
 
                 HStack(spacing: 8) {
                     Circle()
                         .fill(appModel.serverRunning ? UIThemeTokens.color(for: .ready) : Color.secondary)
                         .frame(width: 8, height: 8)
                     if appModel.serverRunning {
-                        Text("Running on port \(appModel.localServerPort)")
+                        Text("运行中：端口 \(appModel.localServerPort)")
                             .font(UIThemeTokens.monoFont())
                     } else if appModel.localServerEnabled {
-                        Text("Enabled but not running")
+                        Text("已启用，但未运行")
                             .font(UIThemeTokens.monoFont())
                             .foregroundStyle(UIThemeTokens.color(for: .inProgress))
                     } else {
-                        Text("Disabled")
+                        Text("已关闭")
                             .font(UIThemeTokens.monoFont())
                             .foregroundStyle(.secondary)
                     }
@@ -421,7 +583,7 @@ struct SettingsView: View {
                         .textSelection(.enabled)
                 }
 
-                Button("Restart Server") {
+                Button("重启服务") {
                     appModel.restartLocalServer()
                 }
                 .buttonStyle(.bordered)
@@ -429,31 +591,80 @@ struct SettingsView: View {
             }
             .padding(8)
         }
+        .xtTransientUpdateCardChrome(
+            cornerRadius: 12,
+            isUpdated: securityRuntimeUpdateFeedback.isHighlighted,
+            focusTint: .accentColor,
+            updateTint: .accentColor,
+            baseBackground: Color(NSColor.controlBackgroundColor).opacity(0.35)
+        )
     }
 
     private var diagnosticsSection: some View {
-        GroupBox("5) Diagnostics & Verify") {
+        GroupBox("5) 诊断与核对") {
             VStack(alignment: .leading, spacing: 10) {
                 if let context = focusContext(for: "diagnostics") {
                     XTFocusContextCard(context: context)
                 }
+                officialSkillsRecheckStatus
                 HStack {
-                    Text("Current route")
+                    Text("当前链路")
                     Spacer()
                     Text(connectionStateLabel)
                         .font(UIThemeTokens.monoFont())
                         .foregroundStyle(connectionStateColor)
                 }
 
-                Text("在同一分区核对当前 transport、Pairing Port / gRPC Port / Internet Host、模型可见性、tool route、session runtime 与 skills compatibility。")
+                Text("在同一分区核对当前传输方式、配对端口 / gRPC 端口 / 公网地址、模型可见性、工具路由、会话运行时与技能兼容性。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                 XTUnifiedDoctorSummaryView(report: doctorReport)
 
+                if !appModel.officialSkillChannelSummaryLine.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("官方技能通道")
+                            Spacer()
+                            Button("重查") {
+                                appModel.recheckOfficialSkills(reason: "settings_diagnostics_manual")
+                            }
+                            .buttonStyle(.borderless)
+                            Text(appModel.officialSkillChannelSummaryLine)
+                                .font(UIThemeTokens.monoFont())
+                                .foregroundStyle(officialSkillChannelStatusColor)
+                                .textSelection(.enabled)
+                        }
+                        if !appModel.officialSkillChannelDetailLine.isEmpty {
+                            Text(appModel.officialSkillChannelDetailLine)
+                                .font(UIThemeTokens.monoFont())
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                        if !appModel.officialSkillChannelTopBlockersLine.isEmpty {
+                            if !appModel.officialSkillChannelTopBlockerSummaries.isEmpty {
+                                XTOfficialSkillsBlockerListView(
+                                    items: appModel.officialSkillChannelTopBlockerSummaries
+                                )
+                            } else {
+                                Text(appModel.officialSkillChannelTopBlockersLine)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.orange)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    }
+                }
+
+                if !appModel.skillsCompatibilitySnapshot.builtinGovernedSkills.isEmpty {
+                    XTBuiltinGovernedSkillsListView(
+                        items: appModel.skillsCompatibilitySnapshot.builtinGovernedSkills
+                    )
+                }
+
                 if !XTSettingsSurfacePlanner.diagnosticsLines(for: settingsState).isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("AI-2 runtime contracts")
+                        Text("运行时状态线索")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
                         ForEach(XTSettingsSurfacePlanner.diagnosticsLines(for: settingsState), id: \.self) { line in
@@ -467,7 +678,55 @@ struct SettingsView: View {
 
                 if !routeRepairLogLines.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Recent route repair log")
+                        if routeRepairLogDigest.totalEvents > 0 {
+                            Text("路由修复摘要")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Text(routeRepairLogDigest.headline)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            ForEach(routeRepairLogDigest.detailLines, id: \.self) { line in
+                                Text("• \(line)")
+                                    .font(UIThemeTokens.monoFont())
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                            }
+                        }
+
+                        if let reminderStatus = currentProjectRouteReminderStatus {
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Text("路由修复提醒")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                Spacer(minLength: 8)
+                                if appModel.selectedProjectId != nil {
+                                    Button("查看路由") {
+                                        openCurrentProjectRouteDiagnose()
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .controlSize(.small)
+                                    .help("切回当前项目聊天，并自动展开 route diagnose。")
+                                }
+                                if reminderStatus.quietingCurrentIssue,
+                                   let projectId = appModel.selectedProjectId {
+                                    Button("恢复提醒") {
+                                        supervisorManager.clearRouteAttentionReminderState(projectId: projectId)
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .controlSize(.small)
+                                    .help("清掉当前静默状态；如果问题还在，下一次 timer 心跳会重新主动提醒。")
+                                }
+                            }
+                            if let line = routeReminderLine(reminderStatus) {
+                                Text(line)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+
+                        Text("最近路由修复记录")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
                         ForEach(routeRepairLogLines, id: \.self) { line in
@@ -480,7 +739,7 @@ struct SettingsView: View {
                 }
 
                 ScrollView {
-                    Text(appModel.hubRemoteLog.isEmpty ? "No remote link log yet." : appModel.hubRemoteLog)
+                    Text(appModel.hubRemoteLog.isEmpty ? "还没有远端连接日志。" : appModel.hubRemoteLog)
                         .font(UIThemeTokens.monoFont())
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -534,7 +793,105 @@ struct SettingsView: View {
 
     private var routeRepairLogLines: [String] {
         guard let ctx = appModel.projectContext else { return [] }
-        return AXRouteRepairLogStore.summaryLines(for: ctx, limit: 5)
+        return AXRouteRepairLogStore.userFacingSummaryLines(for: ctx, limit: 5)
+    }
+
+    private var routeRepairLogDigest: AXRouteRepairLogDigest {
+        guard let ctx = appModel.projectContext else { return .empty }
+        return AXRouteRepairLogStore.digest(for: ctx, limit: 50)
+    }
+
+    private var chooseModelIssues: [HubGlobalRoleModelIssue] {
+        let snapshot = ModelStateSnapshot(
+            models: appModel.modelsState.models,
+            updatedAt: appModel.modelsState.updatedAt
+        )
+        return Array(
+            AXRole.allCases.compactMap { role in
+                HubModelSelectionAdvisor.globalAssignmentIssue(
+                    for: role,
+                    configuredModelId: appModel.settingsStore.settings.assignment(for: role).model,
+                    snapshot: snapshot
+                )
+            }
+            .prefix(3)
+        )
+    }
+
+    private var selectedProjectDisplayName: String? {
+        guard let selectedProjectId = appModel.selectedProjectId,
+              selectedProjectId != AXProjectRegistry.globalHomeId else {
+            return nil
+        }
+        return appModel.registry.project(for: selectedProjectId)?.displayName
+    }
+
+    private var currentProjectRouteReminderStatus: SupervisorManager.RouteAttentionReminderStatus? {
+        guard let projectId = appModel.selectedProjectId,
+              projectId != AXProjectRegistry.globalHomeId,
+              let project = appModel.registry.project(for: projectId),
+              let watchItem = AXRouteRepairLogStore.watchItems(for: [project], limit: 1).first else {
+            return nil
+        }
+        return supervisorManager.routeAttentionReminderStatus(for: watchItem)
+    }
+
+    private func routeReminderLine(
+        _ status: SupervisorManager.RouteAttentionReminderStatus
+    ) -> String? {
+        guard let lastAlertAt = status.lastAlertAt else { return nil }
+        let lastAlertText = relativeTimeText(lastAlertAt)
+        if status.quietingCurrentIssue {
+            let cooldownText = compactDurationText(status.cooldownRemainingSec)
+            return "上次提醒：\(lastAlertText)；当前静默观察中，约 \(cooldownText) 后才会再次主动提醒。"
+        }
+        return "上次提醒：\(lastAlertText)。"
+    }
+
+    private func relativeTimeText(_ ts: Double) -> String {
+        guard ts > 0 else { return "未知" }
+        let elapsedSec = max(0, Int(Date().timeIntervalSince1970 - ts))
+        if elapsedSec < 90 { return "刚刚" }
+        let mins = elapsedSec / 60
+        if mins < 60 { return "\(mins) 分钟前" }
+        let hours = mins / 60
+        if hours < 48 { return "\(hours) 小时前" }
+        return "\(hours / 24) 天前"
+    }
+
+    private func compactDurationText(_ seconds: Int) -> String {
+        let normalized = max(0, seconds)
+        if normalized < 90 { return "1 分钟内" }
+        let mins = normalized / 60
+        if mins < 60 { return "\(mins) 分钟" }
+        let hours = mins / 60
+        if hours < 48 { return "\(hours) 小时" }
+        return "\(hours / 24) 天"
+    }
+
+    private func openCurrentProjectRouteDiagnose() {
+        guard let projectId = appModel.selectedProjectId,
+              projectId != AXProjectRegistry.globalHomeId else { return }
+        appModel.selectProject(projectId)
+        appModel.setPane(.chat, for: projectId)
+        appModel.requestProjectRouteDiagnoseFocus(projectId: projectId)
+    }
+
+    private func applySuggestedGlobalModel(role: AXRole, modelId: String) {
+        updateGlobalModelAssignment(role: role, rawModelId: modelId)
+    }
+
+    private var officialSkillChannelStatusColor: Color {
+        switch appModel.skillsCompatibilitySnapshot.officialChannelStatus.trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "healthy":
+            return UIThemeTokens.color(for: .ready)
+        case "stale":
+            return UIThemeTokens.color(for: .inProgress)
+        case "failed", "missing":
+            return UIThemeTokens.color(for: .diagnosticRequired)
+        default:
+            return .secondary
+        }
     }
 
     private func handleAction(_ action: PrimaryActionRailAction) {
@@ -554,11 +911,29 @@ struct SettingsView: View {
         Binding(
             get: { appModel.settingsStore.settings.assignment(for: role).model ?? "" },
             set: { s in
-                let value = s.trimmingCharacters(in: .whitespacesAndNewlines)
-                appModel.settingsStore.settings = appModel.settingsStore.settings.setting(role: role, providerKind: .hub, model: value.isEmpty ? nil : value)
-                appModel.settingsStore.save()
+                updateGlobalModelAssignment(role: role, rawModelId: s)
             }
         )
+    }
+
+    private func updateGlobalModelAssignment(role: AXRole, rawModelId: String) {
+        let value = rawModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let current = appModel.settingsStore.settings.assignment(for: role).model?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard current != value else { return }
+
+        appModel.settingsStore.settings = appModel.settingsStore.settings.setting(
+            role: role,
+            providerKind: .hub,
+            model: value.isEmpty ? nil : value
+        )
+        appModel.settingsStore.save()
+        chooseModelChangeNotice = XTSettingsChangeNoticeBuilder.globalRoleModel(
+            role: role,
+            modelId: value.isEmpty ? nil : value,
+            snapshot: appModel.modelsState
+        )
+        chooseModelUpdateFeedback.trigger()
     }
 
     private var pairingPortBinding: Binding<Int> {
@@ -576,6 +951,19 @@ struct SettingsView: View {
             get: { appModel.localServerEnabled },
             set: { value in
                 appModel.setLocalServerEnabled(value)
+            }
+        )
+    }
+
+    private var defaultToolSandboxModeBinding: Binding<ToolSandboxMode> {
+        Binding(
+            get: { defaultToolSandboxMode },
+            set: { value in
+                defaultToolSandboxMode = value
+                guard ToolExecutor.sandboxMode() != value else { return }
+                appModel.setDefaultToolSandboxMode(value)
+                securityRuntimeChangeNotice = XTSettingsChangeNoticeBuilder.defaultToolSandboxMode(value)
+                securityRuntimeUpdateFeedback.trigger()
             }
         )
     }
@@ -612,24 +1000,24 @@ struct SettingsView: View {
 
     private var connectionStateLabel: String {
         if appModel.hubConnected {
-            return "local"
+            return "本地已连"
         }
         if appModel.hubRemoteLinking {
-            return "linking"
+            return "连接中"
         }
         if appModel.hubRemoteConnected {
             switch appModel.hubRemoteRoute {
             case .lan:
-                return "remote:lan"
+                return "远端已连（局域网）"
             case .internet:
-                return "remote:internet"
+                return "远端已连（公网）"
             case .internetTunnel:
-                return "remote:tunnel"
+                return "远端已连（隧道）"
             case .none:
-                return "remote"
+                return "远端已连"
             }
         }
-        return "disconnected"
+        return "未连接"
     }
 
     private var connectionStateColor: Color {
@@ -642,6 +1030,12 @@ struct SettingsView: View {
     private func processSettingsFocusRequest(_ proxy: ScrollViewProxy) {
         guard let request = appModel.settingsFocusRequest else { return }
         activeFocusRequest = request
+        if let refreshAction = request.context?.refreshAction {
+            appModel.performSectionRefreshAction(
+                refreshAction,
+                reason: request.context?.refreshReason ?? "settings_focus_request"
+            )
+        }
         withAnimation(.easeInOut(duration: 0.2)) {
             proxy.scrollTo(request.sectionId, anchor: .top)
         }
@@ -659,6 +1053,17 @@ struct SettingsView: View {
             if activeFocusRequest?.nonce == nonce {
                 activeFocusRequest = nil
             }
+        }
+    }
+
+    @ViewBuilder
+    private var officialSkillsRecheckStatus: some View {
+        let statusLine = appModel.officialSkillsRecheckStatusLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !statusLine.isEmpty {
+            Text(statusLine)
+                .font(UIThemeTokens.monoFont())
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
         }
     }
 }
@@ -679,7 +1084,7 @@ private struct XTSettingsFocusCard: View {
             Text(section.summary)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text("Repair entry: \(section.repairEntry)")
+            Text("修复入口：\(section.repairEntry)")
                 .font(UIThemeTokens.monoFont())
                 .foregroundStyle(.secondary)
         }

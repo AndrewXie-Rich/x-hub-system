@@ -491,12 +491,21 @@ enum HubAIError: Error, LocalizedError {
             return "AI response timed out"
         case .responseDoneNotOk(let failure):
             let r = failure.reason.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalizedReason = HubRouteStateMachine.normalizedReasonToken(r) ?? ""
             if let resolution = XTPaidModelAccessExplainability.resolve(
                 rawReasonCode: r,
                 deviceName: failure.deviceName,
                 modelId: failure.modelId ?? "unknown_model"
             ) {
                 return resolution.renderedExplanation
+            }
+            if normalizedReason.contains("grpc_unavailable")
+                || normalizedReason.contains("14_unavailable")
+                || normalizedReason.contains("no_connection_established")
+                || normalizedReason.contains("connection_refused")
+                || normalizedReason.contains("hub_unreachable")
+                || normalizedReason.contains("failed_to_connect_to_all_addresses") {
+                return "Hub gRPC is unavailable. If you want to keep using local models, switch XT to `/hub route auto` or `/hub route file`. Otherwise reopen Hub and confirm Hub gRPC is running."
             }
             if r == "model_path_missing" {
                 return "Hub could not auto-load a model (model_path_missing). Open Hub -> Models, register a model with a valid modelPath, then try again."
@@ -548,6 +557,48 @@ actor HubAIClient {
     private static let legacyHubInternetHostKey = "xterminal_hub_internet_host"
     private static let hubAxhubctlPathKey = "xterminal_hub_axhubctl_path"
     private static let legacyHubAxhubctlPathKey = "xterminal_hub_axhubctl_path"
+    private static let testingOverrideLock = NSLock()
+    private static var remoteGenerateOverrideForTesting: (@Sendable (RemoteGenerateInvocation) async -> HubRemoteGenerateResult)?
+    private static var cancelWriteOverrideForTesting: (@Sendable (Data, URL, URL) throws -> Void)?
+
+    struct CachedRemoteProfile: Equatable, Sendable {
+        var host: String?
+        var internetHost: String?
+        var pairingPort: Int?
+        var grpcPort: Int?
+        var hubInstanceID: String?
+        var lanDiscoveryName: String?
+    }
+
+    struct RemoteGenerateInvocation: Equatable, Sendable {
+        var requestId: String
+        var modelId: String?
+        var prompt: String
+        var maxTokens: Int
+        var temperature: Double
+        var topP: Double
+        var taskType: String
+        var appId: String
+        var projectId: String?
+        var sessionId: String?
+        var failClosedOnDowngrade: Bool
+    }
+
+    struct RemoteRetryResolutionForTesting: Equatable, Sendable {
+        var requestedModelId: String
+        var actualModelId: String
+        var ok: Bool
+        var reasonCode: String?
+        var remoteRetryAttempted: Bool
+        var remoteRetryFromModelId: String?
+        var remoteRetryToModelId: String?
+        var remoteRetryReasonCode: String?
+    }
+
+    struct CancelRequestStatus: Equatable, Sendable {
+        var requestQueued: Bool? = nil
+        var requestError: String = ""
+    }
 
     private let jsonEncoder: JSONEncoder = {
         let e = JSONEncoder()
@@ -556,6 +607,27 @@ actor HubAIClient {
     }()
 
     private let jsonDecoder = JSONDecoder()
+
+    private struct RemoteRetryMetadata {
+        var attempted: Bool
+        var fromModelId: String?
+        var toModelId: String?
+        var reasonCode: String?
+
+        static let none = RemoteRetryMetadata(
+            attempted: false,
+            fromModelId: nil,
+            toModelId: nil,
+            reasonCode: nil
+        )
+    }
+
+    private struct RemoteAttemptResolution {
+        var requestedModelId: String
+        var report: HubRemoteGenerateResult
+        var retryMetadata: RemoteRetryMetadata
+    }
+
     private struct PendingRemoteGenerate {
         var prompt: String
         var preferredModelId: String?
@@ -569,6 +641,7 @@ actor HubAIClient {
         var sessionId: String?
         var autoLoad: Bool
         var transportMode: HubTransportMode
+        var remoteBackupModelId: String?
     }
 
     private struct PendingGenerateContext {
@@ -578,6 +651,10 @@ actor HubAIClient {
         var runtimeProvider: String
         var executionPath: String
         var fallbackReasonCode: String?
+        var remoteRetryAttempted: Bool
+        var remoteRetryFromModelId: String?
+        var remoteRetryToModelId: String?
+        var remoteRetryReasonCode: String?
 
         var resolvedModelId: String {
             if let explicitModelId, !explicitModelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -594,6 +671,25 @@ actor HubAIClient {
     private var pendingGenerateContexts: [String: PendingGenerateContext] = [:]
     private var remoteModelsCache: ModelStateSnapshot = .empty()
     private var remoteModelsLastFetchAt: Date = .distantPast
+
+    private static func withTestingOverrideLock<T>(_ body: () -> T) -> T {
+        testingOverrideLock.lock()
+        defer { testingOverrideLock.unlock() }
+        return body()
+    }
+
+    private static func writeCancelData(_ data: Data, tmp: URL, out: URL) throws {
+        if let override = withTestingOverrideLock({ cancelWriteOverrideForTesting }) {
+            try override(data, tmp, out)
+            return
+        }
+        try data.write(to: tmp, options: .atomic)
+        try FileManager.default.moveItem(at: tmp, to: out)
+    }
+
+    private static func summarized(_ error: Error) -> String {
+        "\(type(of: error)):\(error.localizedDescription)"
+    }
 
     static func transportMode() -> HubTransportMode {
         let d = UserDefaults.standard
@@ -625,14 +721,28 @@ actor HubAIClient {
 
     static func remoteConnectOptionsFromDefaults(stateDir: URL? = nil) -> HubRemoteConnectOptions {
         let d = UserDefaults.standard
+        let effectiveStateDir = stateDir ?? defaultAxhubStateDir()
+        let cached = cachedRemoteProfile(stateDir: effectiveStateDir)
         let pairing = d.object(forKey: hubPairingPortKey) as? Int
             ?? d.object(forKey: legacyHubPairingPortKey) as? Int
+            ?? cached.pairingPort
             ?? 50052
         let grpc = d.object(forKey: hubGrpcPortKey) as? Int
             ?? d.object(forKey: legacyHubGrpcPortKey) as? Int
+            ?? cached.grpcPort
             ?? 50051
-        let internetHost = d.string(forKey: hubInternetHostKey)
-            ?? d.string(forKey: legacyHubInternetHostKey)
+        let explicitInternetHost = normalizedNonEmpty(
+            d.string(forKey: hubInternetHostKey)
+                ?? d.string(forKey: legacyHubInternetHostKey)
+                ?? ""
+        )
+        let internetHost = explicitInternetHost
+            ?? cached.internetHost
+            ?? inferredReusableInternetHost(
+                from: cached.host,
+                hubInstanceID: cached.hubInstanceID,
+                lanDiscoveryName: cached.lanDiscoveryName
+            )
             ?? ""
         let axhubctlPath = d.string(forKey: hubAxhubctlPathKey)
             ?? d.string(forKey: legacyHubAxhubctlPathKey)
@@ -644,8 +754,113 @@ actor HubAIClient {
             deviceName: Host.current().localizedName ?? "X-Terminal",
             internetHost: internetHost,
             axhubctlPath: axhubctlPath,
-            stateDir: stateDir
+            stateDir: effectiveStateDir
         )
+    }
+
+    static func cachedRemoteProfile(stateDir: URL? = nil) -> CachedRemoteProfile {
+        let base = stateDir ?? defaultAxhubStateDir()
+        let pairingEnv = base.appendingPathComponent("pairing.env")
+        let hubEnv = base.appendingPathComponent("hub.env")
+
+        let hostFromPairing = normalizedNonEmpty(readEnvValue(from: pairingEnv, key: "AXHUB_HUB_HOST"))
+        let hostFromHub = normalizedNonEmpty(readEnvValue(from: hubEnv, key: "HUB_HOST"))
+        let internetFromPairing = normalizedNonEmpty(readEnvValue(from: pairingEnv, key: "AXHUB_INTERNET_HOST"))
+        let hubInstanceID = normalizedNonEmpty(readEnvValue(from: pairingEnv, key: "AXHUB_HUB_INSTANCE_ID"))
+        let lanDiscoveryName = normalizedNonEmpty(readEnvValue(from: pairingEnv, key: "AXHUB_LAN_DISCOVERY_NAME"))
+        let host = hostFromPairing ?? hostFromHub
+        let pairingPort = normalizePort(readEnvValue(from: pairingEnv, key: "AXHUB_PAIRING_PORT"))
+        let grpcFromPairing = normalizePort(readEnvValue(from: pairingEnv, key: "AXHUB_GRPC_PORT"))
+        let grpcPort = grpcFromPairing ?? normalizePort(readEnvValue(from: hubEnv, key: "HUB_PORT"))
+        let reusableInternetHost = internetFromPairing ?? inferredReusableInternetHost(
+            from: host,
+            hubInstanceID: hubInstanceID,
+            lanDiscoveryName: lanDiscoveryName
+        )
+
+        return CachedRemoteProfile(
+            host: host,
+            internetHost: reusableInternetHost,
+            pairingPort: pairingPort,
+            grpcPort: grpcPort,
+            hubInstanceID: hubInstanceID,
+            lanDiscoveryName: lanDiscoveryName
+        )
+    }
+
+    private static func defaultAxhubStateDir() -> URL {
+        XTProcessPaths.defaultAxhubStateDir()
+    }
+
+    private static func readEnvValue(from fileURL: URL, key: String) -> String? {
+        guard let raw = try? String(contentsOf: fileURL, encoding: .utf8) else { return nil }
+        for line in raw.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+            guard let idx = trimmed.firstIndex(of: "=") else { continue }
+            let lhs = trimmed[..<idx].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard lhs == key else { continue }
+            let rhs = trimmed[trimmed.index(after: idx)...].trimmingCharacters(in: .whitespacesAndNewlines)
+            if rhs.hasPrefix("'"), rhs.hasSuffix("'"), rhs.count >= 2 {
+                return String(rhs.dropFirst().dropLast())
+            }
+            return String(rhs)
+        }
+        return nil
+    }
+
+    private static func normalizePort(_ raw: String?) -> Int? {
+        guard let value = normalizedNonEmpty(raw), let port = Int(value), (1...65_535).contains(port) else {
+            return nil
+        }
+        return port
+    }
+
+    private static func normalizedNonEmpty(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func inferredReusableInternetHost(
+        from host: String?,
+        hubInstanceID: String? = nil,
+        lanDiscoveryName: String? = nil
+    ) -> String? {
+        guard let host = normalizedNonEmpty(host) else { return nil }
+        let lowered = host.lowercased()
+        if lowered == "localhost" || lowered == "127.0.0.1" || lowered.hasSuffix(".local") {
+            return nil
+        }
+        if isPrivateIPv4Host(lowered) {
+            return nil
+        }
+        if isIPv4Host(lowered),
+           normalizedNonEmpty(hubInstanceID) != nil || normalizedNonEmpty(lanDiscoveryName) != nil {
+            return nil
+        }
+        return host
+    }
+
+    private static func isIPv4Host(_ host: String) -> Bool {
+        let parts = host.split(separator: ".")
+        guard parts.count == 4 else { return false }
+        let octets = parts.compactMap { Int($0) }
+        guard octets.count == 4 else { return false }
+        return octets.allSatisfy { (0...255).contains($0) }
+    }
+
+    private static func isPrivateIPv4Host(_ host: String) -> Bool {
+        guard isIPv4Host(host) else { return false }
+        let octets = host.split(separator: ".").compactMap { Int($0) }
+        let a = octets[0]
+        let b = octets[1]
+        if a == 10 { return true }
+        if a == 127 { return true }
+        if a == 169, b == 254 { return true }
+        if a == 172, b >= 16, b <= 31 { return true }
+        if a == 192, b == 168 { return true }
+        return false
     }
 
     func loadRuntimeStatus() -> AIRuntimeStatus? {
@@ -698,13 +913,22 @@ actor HubAIClient {
         let decision = HubRouteStateMachine.resolve(mode: mode, hasRemoteProfile: hasRemote)
         let runtimeAlive = (loadRuntimeStatus()?.isAlive(ttl: 3.0) == true)
         let modelSnapshot = await loadModelsState(transportOverride: transportOverride)
-        let resolvedPreferredModelId = Self.normalizeConfiguredModelID(
+        let resolvedPreferredModelId = Self.sanitizedInteractiveGenerateModelID(
             preferredModelId,
-            availableModels: modelSnapshot.models
+            snapshot: modelSnapshot,
+            taskType: taskType
         )
-        let resolvedExplicitModelId = Self.normalizeConfiguredModelID(
+        let resolvedExplicitModelId = Self.sanitizedInteractiveGenerateModelID(
             explicitModelId,
-            availableModels: modelSnapshot.models
+            snapshot: modelSnapshot,
+            taskType: taskType
+        )
+        let effectiveRemoteModelId = resolvedExplicitModelId ?? resolvedPreferredModelId
+        let remoteBackupModelId = Self.preferredRemoteRetryBackupModelID(
+            requestedModelId: effectiveRemoteModelId,
+            snapshot: modelSnapshot,
+            transportMode: decision.mode,
+            projectId: projectId
         )
 
         if decision.preferRemote {
@@ -720,7 +944,8 @@ actor HubAIClient {
                 projectId: projectId,
                 sessionId: sessionId,
                 autoLoad: autoLoad,
-                transportMode: decision.mode
+                transportMode: decision.mode,
+                remoteBackupModelId: remoteBackupModelId
             )
         }
 
@@ -728,7 +953,7 @@ actor HubAIClient {
             throw HubAIError.grpcRouteUnavailable
         }
 
-        guard runtimeAlive else {
+        guard runtimeAlive || autoLoad else {
             throw HubAIError.runtimeNotRunning
         }
 
@@ -800,7 +1025,11 @@ actor HubAIClient {
             explicitModelId: explicitModelId,
             runtimeProvider: "Hub (Local)",
             executionPath: "local_runtime",
-            fallbackReasonCode: nil
+            fallbackReasonCode: nil,
+            remoteRetryAttempted: false,
+            remoteRetryFromModelId: nil,
+            remoteRetryToModelId: nil,
+            remoteRetryReasonCode: nil
         )
 
         return rid
@@ -818,7 +1047,8 @@ actor HubAIClient {
         projectId: String?,
         sessionId: String?,
         autoLoad: Bool,
-        transportMode: HubTransportMode
+        transportMode: HubTransportMode,
+        remoteBackupModelId: String?
     ) -> String {
         let rid = UUID().uuidString
         pendingRemoteGenerates[rid] = PendingRemoteGenerate(
@@ -833,7 +1063,8 @@ actor HubAIClient {
             projectId: projectId?.trimmingCharacters(in: .whitespacesAndNewlines),
             sessionId: sessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
             autoLoad: autoLoad,
-            transportMode: transportMode
+            transportMode: transportMode,
+            remoteBackupModelId: remoteBackupModelId
         )
         pendingGenerateContexts[rid] = PendingGenerateContext(
             deviceName: loadRemoteConnectOptions().deviceName,
@@ -841,7 +1072,11 @@ actor HubAIClient {
             explicitModelId: explicitModelId,
             runtimeProvider: "Hub (Remote)",
             executionPath: "remote_model",
-            fallbackReasonCode: nil
+            fallbackReasonCode: nil,
+            remoteRetryAttempted: false,
+            remoteRetryFromModelId: nil,
+            remoteRetryToModelId: nil,
+            remoteRetryReasonCode: nil
         )
         return rid
     }
@@ -875,18 +1110,34 @@ actor HubAIClient {
         return nil
     }
 
-    func cancel(reqId: String) {
+    func cancel(reqId: String) -> CancelRequestStatus {
         pendingRemoteGenerates.removeValue(forKey: reqId)
         pendingGenerateContexts.removeValue(forKey: reqId)
+
+        var requestQueued: Bool? = nil
+        var requestErrors: [String] = []
         let cancelDir = HubPaths.cancelDir()
-        try? FileManager.default.createDirectory(at: cancelDir, withIntermediateDirectories: true)
+        do {
+            try FileManager.default.createDirectory(at: cancelDir, withIntermediateDirectories: true)
+        } catch {
+            requestErrors.append("cancel_dir_create_failed=\(Self.summarized(error))")
+        }
         let url = cancelDir.appendingPathComponent("cancel_\(reqId).json")
         let tmp = cancelDir.appendingPathComponent(".cancel_\(reqId).tmp")
         let obj: [String: Any] = ["req_id": reqId, "created_at": Date().timeIntervalSince1970]
-        if let data = try? JSONSerialization.data(withJSONObject: obj, options: []) {
-            try? data.write(to: tmp, options: .atomic)
-            try? FileManager.default.moveItem(at: tmp, to: url)
+        do {
+            let data = try JSONSerialization.data(withJSONObject: obj, options: [])
+            try Self.writeCancelData(data, tmp: tmp, out: url)
+            requestQueued = true
+        } catch {
+            requestQueued = false
+            requestErrors.append("cancel_command_write_failed=\(Self.summarized(error))")
         }
+
+        return CancelRequestStatus(
+            requestQueued: requestQueued,
+            requestError: requestErrors.joined(separator: " | ")
+        )
     }
 
     func streamResponse(
@@ -906,7 +1157,11 @@ actor HubAIClient {
         actualModelId: String,
         runtimeProvider: String,
         executionPath: String,
-        fallbackReasonCode: String
+        fallbackReasonCode: String,
+        remoteRetryAttempted: Bool = false,
+        remoteRetryFromModelId: String? = nil,
+        remoteRetryToModelId: String? = nil,
+        remoteRetryReasonCode: String? = nil
     ) -> [String: JSONValue] {
         var raw: [String: JSONValue] = [:]
         if !requestedModelId.isEmpty {
@@ -924,6 +1179,21 @@ actor HubAIClient {
         if !fallbackReasonCode.isEmpty {
             raw["fallback_reason_code"] = .string(fallbackReasonCode)
         }
+        if remoteRetryAttempted {
+            raw["remote_retry_attempted"] = .bool(true)
+        }
+        if let from = remoteRetryFromModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !from.isEmpty {
+            raw["remote_retry_from_model_id"] = .string(from)
+        }
+        if let to = remoteRetryToModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !to.isEmpty {
+            raw["remote_retry_to_model_id"] = .string(to)
+        }
+        if let reason = remoteRetryReasonCode?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !reason.isEmpty {
+            raw["remote_retry_reason_code"] = .string(reason)
+        }
         return raw
     }
 
@@ -933,7 +1203,11 @@ actor HubAIClient {
         actualModelId: String,
         runtimeProvider: String,
         executionPath: String,
-        fallbackReasonCode: String
+        fallbackReasonCode: String,
+        remoteRetryAttempted: Bool = false,
+        remoteRetryFromModelId: String? = nil,
+        remoteRetryToModelId: String? = nil,
+        remoteRetryReasonCode: String? = nil
     ) -> HubAIResponseEvent {
         var merged = event
         let metadata = Self.responseMetadata(
@@ -941,7 +1215,11 @@ actor HubAIClient {
             actualModelId: actualModelId,
             runtimeProvider: runtimeProvider,
             executionPath: executionPath,
-            fallbackReasonCode: fallbackReasonCode
+            fallbackReasonCode: fallbackReasonCode,
+            remoteRetryAttempted: remoteRetryAttempted,
+            remoteRetryFromModelId: remoteRetryFromModelId,
+            remoteRetryToModelId: remoteRetryToModelId,
+            remoteRetryReasonCode: remoteRetryReasonCode
         )
         if metadata.isEmpty {
             return merged
@@ -1008,7 +1286,11 @@ actor HubAIClient {
                                     actualModelId: actualModelId,
                                     runtimeProvider: runtimeProvider,
                                     executionPath: executionPath,
-                                    fallbackReasonCode: fallbackReasonCode
+                                    fallbackReasonCode: fallbackReasonCode,
+                                    remoteRetryAttempted: context?.remoteRetryAttempted == true,
+                                    remoteRetryFromModelId: context?.remoteRetryFromModelId,
+                                    remoteRetryToModelId: context?.remoteRetryToModelId,
+                                    remoteRetryReasonCode: context?.remoteRetryReasonCode
                                 )
                                 continuation.yield(ev)
                                 if ev.type == "done" {
@@ -1080,25 +1362,21 @@ actor HubAIClient {
                     ? pending.explicitModelId
                     : pending.preferredModelId
 
-                let report = await HubPairingCoordinator.shared.generateRemoteText(
-                    options: loadRemoteConnectOptions(),
-                    modelId: preferred,
-                    prompt: pending.prompt,
-                    maxTokens: pending.maxTokens,
-                    temperature: pending.temperature,
-                    topP: pending.topP,
-                    taskType: pending.taskType,
-                    appId: pending.appId,
-                    projectId: pending.projectId,
-                    sessionId: pending.sessionId,
-                    failClosedOnDowngrade: false,
-                    requestId: reqId
+                let resolution = await resolveRemoteGenerateWithRetry(
+                    reqId: reqId,
+                    pending: pending,
+                    preferredModelId: preferred
                 )
+                let report = resolution.report
 
                 if report.ok {
-                    let requestedModelId = report.requestedModelId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-                        ? report.requestedModelId!.trimmingCharacters(in: .whitespacesAndNewlines)
-                        : (preferred?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
+                    let requestedModelId = resolution.requestedModelId.isEmpty
+                        ? (
+                            report.requestedModelId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                                ? report.requestedModelId!.trimmingCharacters(in: .whitespacesAndNewlines)
+                                : (preferred?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
+                        )
+                        : resolution.requestedModelId
                     let actualModelId = report.actualModelId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
                         ? report.actualModelId!.trimmingCharacters(in: .whitespacesAndNewlines)
                         : (report.modelId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? requestedModelId)
@@ -1114,7 +1392,11 @@ actor HubAIClient {
                         actualModelId: actualModelId,
                         runtimeProvider: runtimeProvider,
                         executionPath: executionPath,
-                        fallbackReasonCode: fallbackReasonCode
+                        fallbackReasonCode: fallbackReasonCode,
+                        remoteRetryAttempted: resolution.retryMetadata.attempted,
+                        remoteRetryFromModelId: resolution.retryMetadata.fromModelId,
+                        remoteRetryToModelId: resolution.retryMetadata.toModelId,
+                        remoteRetryReasonCode: resolution.retryMetadata.reasonCode
                     )
                     continuation.yield(
                         HubAIResponseEvent(
@@ -1163,6 +1445,10 @@ actor HubAIClient {
                             if fallbackContext != nil {
                                 fallbackContext?.fallbackReasonCode = reason
                                 fallbackContext?.executionPath = "local_fallback_after_remote_error"
+                                fallbackContext?.remoteRetryAttempted = resolution.retryMetadata.attempted
+                                fallbackContext?.remoteRetryFromModelId = resolution.retryMetadata.fromModelId
+                                fallbackContext?.remoteRetryToModelId = resolution.retryMetadata.toModelId
+                                fallbackContext?.remoteRetryReasonCode = resolution.retryMetadata.reasonCode
                             }
                             for try await event in localFileStreamResponse(
                                 reqId: localReqId,
@@ -1201,6 +1487,83 @@ actor HubAIClient {
         Self.remoteConnectOptionsFromDefaults(stateDir: nil)
     }
 
+    private func performRemoteGenerate(
+        reqId: String,
+        pending: PendingRemoteGenerate,
+        modelId: String?
+    ) async -> HubRemoteGenerateResult {
+        let invocation = RemoteGenerateInvocation(
+            requestId: reqId,
+            modelId: modelId,
+            prompt: pending.prompt,
+            maxTokens: pending.maxTokens,
+            temperature: pending.temperature,
+            topP: pending.topP,
+            taskType: pending.taskType,
+            appId: pending.appId,
+            projectId: pending.projectId,
+            sessionId: pending.sessionId,
+            failClosedOnDowngrade: false
+        )
+        if let override = Self.withTestingOverrideLock({ Self.remoteGenerateOverrideForTesting }) {
+            return await override(invocation)
+        }
+        return await HubPairingCoordinator.shared.generateRemoteText(
+            options: loadRemoteConnectOptions(),
+            modelId: modelId,
+            prompt: pending.prompt,
+            maxTokens: pending.maxTokens,
+            temperature: pending.temperature,
+            topP: pending.topP,
+            taskType: pending.taskType,
+            appId: pending.appId,
+            projectId: pending.projectId,
+            sessionId: pending.sessionId,
+            failClosedOnDowngrade: false,
+            requestId: reqId
+        )
+    }
+
+    private func resolveRemoteGenerateWithRetry(
+        reqId: String,
+        pending: PendingRemoteGenerate,
+        preferredModelId: String?
+    ) async -> RemoteAttemptResolution {
+        let requestedModelId = preferredModelId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let initialReport = await performRemoteGenerate(
+            reqId: reqId,
+            pending: pending,
+            modelId: preferredModelId
+        )
+        let backupModelId = pending.remoteBackupModelId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let retryReasonCode = Self.retryableRemoteBackupReasonCode(
+            report: initialReport,
+            backupModelId: backupModelId
+        ) else {
+            return RemoteAttemptResolution(
+                requestedModelId: requestedModelId,
+                report: initialReport,
+                retryMetadata: .none
+            )
+        }
+
+        let retriedReport = await performRemoteGenerate(
+            reqId: reqId,
+            pending: pending,
+            modelId: backupModelId
+        )
+        return RemoteAttemptResolution(
+            requestedModelId: requestedModelId,
+            report: retriedReport,
+            retryMetadata: RemoteRetryMetadata(
+                attempted: true,
+                fromModelId: requestedModelId,
+                toModelId: backupModelId,
+                reasonCode: retryReasonCode
+            )
+        )
+    }
+
     static func normalizeConfiguredModelID(
         _ raw: String?,
         availableModels: [HubModel]
@@ -1230,6 +1593,132 @@ actor HubAIClient {
         }
 
         return trimmed
+    }
+
+    static func sanitizedInteractiveGenerateModelID(
+        _ raw: String?,
+        snapshot: ModelStateSnapshot,
+        taskType: String
+    ) -> String? {
+        let normalized = normalizeConfiguredModelID(
+            raw,
+            availableModels: snapshot.models
+        )
+        guard shouldGuardInteractiveGenerateModel(taskType: taskType),
+              let normalized,
+              !normalized.isEmpty else {
+            return normalized
+        }
+
+        guard let assessment = HubModelSelectionAdvisor.assess(
+            requestedId: normalized,
+            snapshot: snapshot
+        ),
+        assessment.nonInteractiveExactMatch != nil else {
+            return normalized
+        }
+
+        if let fallback = assessment.loadedCandidates.first?.id.trimmingCharacters(in: .whitespacesAndNewlines),
+           !fallback.isEmpty {
+            return fallback
+        }
+        return nil
+    }
+
+    private static func shouldGuardInteractiveGenerateModel(taskType: String) -> Bool {
+        let normalized = taskType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return true }
+        switch normalized {
+        case "embedding", "embed", "retrieval_embedding":
+            return false
+        default:
+            return true
+        }
+    }
+
+    static func preferredRemoteRetryBackupModelID(
+        requestedModelId rawRequestedModelId: String?,
+        snapshot: ModelStateSnapshot,
+        transportMode: HubTransportMode,
+        projectId: String?
+    ) -> String? {
+        guard transportMode == .auto else { return nil }
+        let trimmedProjectId = projectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmedProjectId.isEmpty else { return nil }
+
+        let requestedModelId = normalizeConfiguredModelID(
+            rawRequestedModelId,
+            availableModels: snapshot.models
+        ) ?? rawRequestedModelId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !requestedModelId.isEmpty else { return nil }
+
+        return HubModelSelectionAdvisor.remoteLoadedFallbackCandidates(
+            requestedId: requestedModelId,
+            snapshot: snapshot,
+            excludingModelIDs: [requestedModelId],
+            candidateLimit: 1
+        ).first?.id.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func shouldRetryRemoteWithBackup(
+        afterRemoteReasonCode rawReason: String?,
+        backupModelId: String?
+    ) -> Bool {
+        let backup = backupModelId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !backup.isEmpty else { return false }
+        guard let token = HubRouteStateMachine.normalizedReasonToken(rawReason) else { return false }
+
+        if token == "model_not_found" || token == "requested_model_not_found" {
+            return true
+        }
+        if token.contains("model") && token.contains("not_found") {
+            return true
+        }
+        if token.contains("model") && token.contains("missing") {
+            return true
+        }
+        if token.contains("model") && token.contains("unavailable") {
+            return true
+        }
+        if token.contains("model") && token.contains("not_loaded") {
+            return true
+        }
+        if token.contains("model") && token.contains("unloaded") {
+            return true
+        }
+        if token.contains("model") && token.contains("sleep") {
+            return true
+        }
+        if token == "downgrade_to_local" {
+            return true
+        }
+        if token.contains("downgrade") && token.contains("local") {
+            return true
+        }
+        return false
+    }
+
+    private static func retryableRemoteBackupReasonCode(
+        report: HubRemoteGenerateResult,
+        backupModelId: String?
+    ) -> String? {
+        if !report.ok {
+            let reason = report.reasonCode ?? "remote_chat_failed"
+            return shouldRetryRemoteWithBackup(
+                afterRemoteReasonCode: reason,
+                backupModelId: backupModelId
+            ) ? reason : nil
+        }
+
+        let executionPath = report.executionPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard executionPath == "hub_downgraded_to_local" else { return nil }
+
+        let fallbackReason = report.fallbackReasonCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let reason = fallbackReason.isEmpty ? "downgrade_to_local" : fallbackReason
+        return shouldRetryRemoteWithBackup(
+            afterRemoteReasonCode: reason,
+            backupModelId: backupModelId
+        ) ? reason : nil
     }
 
     func generateText(
@@ -1311,11 +1800,88 @@ actor HubAIClient {
                         actualModelId: ev.actualModelIdFromMetadata,
                         runtimeProvider: ev.runtimeProviderFromMetadata,
                         executionPath: ev.executionPathFromMetadata,
-                        fallbackReasonCode: ev.fallbackReasonCodeFromMetadata
+                        fallbackReasonCode: ev.fallbackReasonCodeFromMetadata,
+                        remoteRetryAttempted: ev.remoteRetryAttemptedFromMetadata,
+                        remoteRetryFromModelId: ev.remoteRetryFromModelIdFromMetadata,
+                        remoteRetryToModelId: ev.remoteRetryToModelIdFromMetadata,
+                        remoteRetryReasonCode: ev.remoteRetryReasonCodeFromMetadata
                     )
                 }
             }
         }
         return (rid, out, usage)
+    }
+
+    func remoteRetryResolutionForTesting(
+        reqId: String = "test-request",
+        prompt: String = "test prompt",
+        preferredModelId: String?,
+        explicitModelId: String? = nil,
+        remoteBackupModelId: String?,
+        projectId: String? = "test-project",
+        sessionId: String? = nil,
+        transportMode: HubTransportMode = .auto
+    ) async -> RemoteRetryResolutionForTesting {
+        let pending = PendingRemoteGenerate(
+            prompt: prompt,
+            preferredModelId: preferredModelId,
+            explicitModelId: explicitModelId,
+            maxTokens: 128,
+            temperature: 0.2,
+            topP: 0.95,
+            taskType: "chat_plan",
+            appId: "x_terminal",
+            projectId: projectId,
+            sessionId: sessionId,
+            autoLoad: true,
+            transportMode: transportMode,
+            remoteBackupModelId: remoteBackupModelId
+        )
+        let preferred = explicitModelId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? explicitModelId
+            : preferredModelId
+        let resolution = await resolveRemoteGenerateWithRetry(
+            reqId: reqId,
+            pending: pending,
+            preferredModelId: preferred
+        )
+        return RemoteRetryResolutionForTesting(
+            requestedModelId: resolution.requestedModelId,
+            actualModelId: resolution.report.actualModelId ?? resolution.report.modelId ?? "",
+            ok: resolution.report.ok,
+            reasonCode: resolution.report.reasonCode,
+            remoteRetryAttempted: resolution.retryMetadata.attempted,
+            remoteRetryFromModelId: resolution.retryMetadata.fromModelId,
+            remoteRetryToModelId: resolution.retryMetadata.toModelId,
+            remoteRetryReasonCode: resolution.retryMetadata.reasonCode
+        )
+    }
+
+    static func installRemoteGenerateOverrideForTesting(
+        _ override: (@Sendable (RemoteGenerateInvocation) async -> HubRemoteGenerateResult)?
+    ) {
+        withTestingOverrideLock {
+            remoteGenerateOverrideForTesting = override
+        }
+    }
+
+    static func resetRemoteGenerateOverrideForTesting() {
+        withTestingOverrideLock {
+            remoteGenerateOverrideForTesting = nil
+        }
+    }
+
+    static func installCancelWriteOverrideForTesting(
+        _ override: (@Sendable (Data, URL, URL) throws -> Void)?
+    ) {
+        withTestingOverrideLock {
+            cancelWriteOverrideForTesting = override
+        }
+    }
+
+    static func resetCancelWriteOverrideForTesting() {
+        withTestingOverrideLock {
+            cancelWriteOverrideForTesting = nil
+        }
     }
 }

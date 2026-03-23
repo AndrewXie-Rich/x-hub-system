@@ -12,10 +12,10 @@ struct XTGuardrailMessagePresentationTests {
             denyCode: "grant_required"
         )
 
-        #expect(message.summary.contains("Waiting for Hub grant approval"))
+        #expect(message.summary.contains("Hub 授权"))
         #expect(message.summary.contains("联网访问"))
         #expect(!message.summary.contains("web.fetch"))
-        #expect(message.nextStep?.contains("Approve the grant in Hub or Supervisor") == true)
+        #expect(message.nextStep?.contains("Hub 或 Supervisor") == true)
     }
 
     @Test
@@ -31,10 +31,10 @@ struct XTGuardrailMessagePresentationTests {
             fallbackDetail: ""
         )
 
-        #expect(body.contains("Hub grant approval"))
+        #expect(body.contains("Hub 授权"))
         #expect(body.contains("付费模型调用"))
         #expect(!body.contains("ai.generate.paid"))
-        #expect(body.contains("approve a new grant before retrying"))
+        #expect(body.contains("批准新的授权"))
     }
 
     @Test
@@ -50,12 +50,12 @@ struct XTGuardrailMessagePresentationTests {
             fallbackDetail: ""
         )
 
-        #expect(body.contains("build and test commands"))
-        #expect(body.contains("Approve this command locally"))
+        #expect(body.contains("构建/测试命令"))
+        #expect(body.contains("先在本地批准这个命令"))
     }
 
     @Test
-    func blockedBodyUsesSharedKillSwitchExplanationForAutonomyClamp() {
+    func blockedBodyUsesSharedKillSwitchExplanationForRuntimeSurfaceClamp() {
         let body = XTGuardrailMessagePresentation.blockedBody(
             tool: .browser_read,
             toolLabel: "browser navigate",
@@ -67,8 +67,8 @@ struct XTGuardrailMessagePresentationTests {
             fallbackDetail: ""
         )
 
-        #expect(body.contains("kill switch"))
-        #expect(body.contains("Clear the kill switch"))
+        #expect(body.contains("kill-switch"))
+        #expect(body.contains("清除 kill-switch"))
     }
 
     @Test
@@ -84,8 +84,8 @@ struct XTGuardrailMessagePresentationTests {
             fallbackDetail: ""
         )
 
-        #expect(body.contains("runtime surface"))
-        #expect(body.contains("device-level actions"))
+        #expect(body.contains("运行面"))
+        #expect(body.contains("设备级动作"))
         #expect(!body.contains("autonomy policy"))
     }
 
@@ -102,8 +102,8 @@ struct XTGuardrailMessagePresentationTests {
             fallbackDetail: ""
         )
 
-        #expect(body.contains("runtime surface"))
-        #expect(body.contains("device-level actions"))
+        #expect(body.contains("运行面"))
+        #expect(body.contains("设备级动作"))
     }
 
     @Test
@@ -116,10 +116,36 @@ struct XTGuardrailMessagePresentationTests {
                 "policy_reason": .string("autonomy_mode=guided"),
                 "runtime_surface_policy_reason": .string("runtime_surface_effective=guided"),
             ],
-            detail: "runtime surface policy blocks device.browser.control on surface device_tools"
+            detail: "运行面 policy blocks device.browser.control on surface device_tools"
         )
 
-        #expect(body?.contains("runtime surface") == true)
-        #expect(body?.contains("device-level actions") == true)
+        #expect(body?.contains("运行面") == true)
+        #expect(body?.contains("设备级动作") == true)
+    }
+
+    @Test
+    func repairHintRoutesGovernanceDenialToExecutionTier() {
+        let hint = XTGuardrailMessagePresentation.repairHint(
+            denyCode: "governance_capability_denied",
+            policySource: "project_governance",
+            policyReason: "execution_tier_missing_managed_processes"
+        )
+
+        #expect(hint?.destination == .executionTier)
+        #expect(hint?.buttonTitle == "打开执行档位")
+        #expect(hint?.helpText.contains("A2 Repo Auto") == true)
+    }
+
+    @Test
+    func repairHintRoutesRuntimeClampToGovernanceOverview() {
+        let hint = XTGuardrailMessagePresentation.repairHint(
+            denyCode: "autonomy_policy_denied",
+            policySource: "project_autonomy_policy",
+            policyReason: "runtime_surface_effective=guided"
+        )
+
+        #expect(hint?.destination == .overview)
+        #expect(hint?.buttonTitle == "打开治理设置")
+        #expect(hint?.helpText.contains("项目治理") == true)
     }
 }

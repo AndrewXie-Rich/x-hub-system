@@ -62,14 +62,14 @@ private struct RoleExecutionStatusCard: View {
                     .clipShape(Capsule())
             }
 
-            executionLine(label: "Configured", value: configuredDisplayValue)
-            executionLine(label: "Requested", value: displayValue(snapshot.requestedModelId))
-            executionLine(label: "Actual", value: displayValue(snapshot.actualModelId))
-            executionLine(label: "Provider", value: displayValue(snapshot.runtimeProvider))
-            executionLine(label: "Path", value: displayValue(snapshot.executionPath == "no_record" ? "" : snapshot.executionPath))
+            executionLine(label: "配置", value: configuredDisplayValue)
+            executionLine(label: "请求", value: displayValue(snapshot.requestedModelId))
+            executionLine(label: "实际", value: displayValue(snapshot.actualModelId))
+            executionLine(label: "提供方", value: displayValue(snapshot.runtimeProvider))
+            executionLine(label: "路径", value: displayValue(snapshot.executionPath == "no_record" ? "" : snapshot.executionPath))
 
             if !snapshot.fallbackReasonCode.isEmpty {
-                executionLine(label: "Fallback", value: snapshot.fallbackReasonCode)
+                executionLine(label: "回退", value: snapshot.fallbackReasonCode)
             }
         }
         .padding(10)
@@ -98,12 +98,12 @@ private struct RoleExecutionStatusCard: View {
 
     private var configuredDisplayValue: String {
         let trimmed = configuredModelId.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "auto" : trimmed
+        return trimmed.isEmpty ? "自动" : trimmed
     }
 
     private func displayValue(_ raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "none" : trimmed
+        return trimmed.isEmpty ? "无" : trimmed
     }
 
     private var statusColor: Color {

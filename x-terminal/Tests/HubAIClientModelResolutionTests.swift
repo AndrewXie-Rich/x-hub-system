@@ -148,6 +148,84 @@ struct HubAIClientModelResolutionTests {
     }
 
     @Test
+    func interactiveGenerateSanitizerDropsEmbeddingOnlyModelToLoadedChatFallback() {
+        let snapshot = ModelStateSnapshot(
+            models: [
+                HubModel(
+                    id: "mlx-community/qwen3-embedding-0.6b-4bit",
+                    name: "Qwen3 Embedding 0.6B",
+                    backend: "mlx",
+                    quant: "4bit",
+                    contextLength: 32_768,
+                    paramsB: 0.6,
+                    roles: nil,
+                    state: .loaded,
+                    memoryBytes: nil,
+                    tokensPerSec: nil,
+                    modelPath: "/models/qwen3-embedding",
+                    note: nil,
+                    taskKinds: ["embedding"]
+                ),
+                HubModel(
+                    id: "mlx-community/qwen3-8b-4bit",
+                    name: "Qwen3 8B",
+                    backend: "mlx",
+                    quant: "4bit",
+                    contextLength: 32_768,
+                    paramsB: 8.0,
+                    roles: nil,
+                    state: .loaded,
+                    memoryBytes: nil,
+                    tokensPerSec: nil,
+                    modelPath: "/models/qwen3-8b",
+                    note: nil
+                ),
+            ],
+            updatedAt: 1_776_200_450
+        )
+
+        let resolved = HubAIClient.sanitizedInteractiveGenerateModelID(
+            "mlx-community/qwen3-embedding-0.6b-4bit",
+            snapshot: snapshot,
+            taskType: "assist"
+        )
+
+        #expect(resolved == "mlx-community/qwen3-8b-4bit")
+    }
+
+    @Test
+    func interactiveGenerateSanitizerKeepsEmbeddingModelForEmbeddingTask() {
+        let snapshot = ModelStateSnapshot(
+            models: [
+                HubModel(
+                    id: "mlx-community/qwen3-embedding-0.6b-4bit",
+                    name: "Qwen3 Embedding 0.6B",
+                    backend: "mlx",
+                    quant: "4bit",
+                    contextLength: 32_768,
+                    paramsB: 0.6,
+                    roles: nil,
+                    state: .loaded,
+                    memoryBytes: nil,
+                    tokensPerSec: nil,
+                    modelPath: "/models/qwen3-embedding",
+                    note: nil,
+                    taskKinds: ["embedding"]
+                )
+            ],
+            updatedAt: 1_776_200_460
+        )
+
+        let resolved = HubAIClient.sanitizedInteractiveGenerateModelID(
+            "mlx-community/qwen3-embedding-0.6b-4bit",
+            snapshot: snapshot,
+            taskType: "embedding"
+        )
+
+        #expect(resolved == "mlx-community/qwen3-embedding-0.6b-4bit")
+    }
+
+    @Test
     func remoteRetryResolutionUsesBackupModelAfterRetryableModelFailure() async {
         HubAIClient.installRemoteGenerateOverrideForTesting { invocation in
             if invocation.modelId == "openai/gpt-5.4" {

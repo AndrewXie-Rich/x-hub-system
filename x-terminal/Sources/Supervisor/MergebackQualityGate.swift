@@ -156,3 +156,291 @@ final class MergebackQualityGateEvaluator {
         return Double(numerator) / Double(denominator)
     }
 }
+
+/// XT-W3-11: build machine-readable mergeback run audits from runtime state.
+struct MergebackRunSnapshotBuilder {
+    func build(
+        lanes: [MaterializedLane],
+        promptCompilationResult: PromptCompilationResult?,
+        taskStates: [UUID: TaskExecutionState],
+        laneStates: [String: LaneRuntimeState],
+        rollbackPoints: [LaneMergebackRollbackPoint],
+        incidents: [SupervisorLaneIncident],
+        conflicts: [AssemblyConflict] = []
+    ) -> [MergebackRunSnapshot] {
+        let contractsByLaneID = Dictionary(
+            uniqueKeysWithValues: (promptCompilationResult?.contracts ?? []).map { ($0.laneId, $0) }
+        )
+        let rollbackByLaneID = Dictionary(uniqueKeysWithValues: rollbackPoints.map { ($0.laneID, $0) })
+        let incidentsByLaneID = Dictionary(grouping: incidents, by: \.laneID)
+        let conflictsByLaneID = Dictionary(grouping: conflicts, by: \.laneID)
+        let taskStateByLaneID = latestTaskStateByLaneID(taskStates)
+
+        return lanes
+            .sorted { $0.plan.laneID < $1.plan.laneID }
+            .map { lane in
+                let laneID = lane.plan.laneID
+                let taskState = taskStateByLaneID[laneID]
+                let runtimeState = laneStates[laneID]
+                let rollbackPoint = rollbackByLaneID[laneID]
+                let laneIncidents = incidentsByLaneID[laneID] ?? []
+                let metadata = mergedMetadata(base: lane.task.metadata, override: taskState?.task.metadata ?? [:])
+                let stablePointID = firstNonEmpty(
+                    metadata["stable_point_id"],
+                    rollbackPoint?.stablePointID
+                )
+                let rollbackAnchorID = firstNonEmpty(
+                    metadata["rollback_anchor_id"],
+                    metadata["rollback_ref"],
+                    stablePointID.isEmpty ? nil : "rollback-anchor-for-\(stablePointID)"
+                )
+
+                let precheckPassed = boolMetadata(metadata, keys: ["precheck_passed"]) ?? inferPrecheckPassed(
+                    laneID: laneID,
+                    runtimeState: runtimeState,
+                    taskState: taskState,
+                    hasPromptContract: contractsByLaneID[laneID] != nil
+                )
+                let mergeSucceeded = boolMetadata(metadata, keys: ["merge_succeeded"]) ?? inferMergeSucceeded(
+                    runtimeState: runtimeState,
+                    taskState: taskState
+                )
+                let verifyPassed = boolMetadata(metadata, keys: ["verify_passed"]) ?? inferVerifyPassed(
+                    runtimeState: runtimeState,
+                    taskState: taskState,
+                    incidents: laneIncidents
+                )
+                let rolledBackToStablePoint = boolMetadata(
+                    metadata,
+                    keys: ["rolled_back_to_stable_point", "rolled_back", "auto_rollback_executed"]
+                ) ?? inferRolledBackToStablePoint(
+                    runtimeState: runtimeState,
+                    taskState: taskState,
+                    stablePointID: stablePointID,
+                    rollbackAnchorID: rollbackAnchorID,
+                    mergeSucceeded: mergeSucceeded,
+                    verifyPassed: verifyPassed
+                )
+                let committed = boolMetadata(metadata, keys: ["mergeback_committed", "committed"]) ?? (
+                    runtimeState?.status == .completed && !rolledBackToStablePoint
+                )
+                let qualityGateBlockedOnFailure = boolMetadata(
+                    metadata,
+                    keys: ["quality_gate_block_on_failure", "quality_gate_blocked_on_failure"]
+                ) ?? inferQualityGateBlockedOnFailure(
+                    runtimeState: runtimeState,
+                    taskState: taskState,
+                    committed: committed,
+                    rolledBackToStablePoint: rolledBackToStablePoint,
+                    stablePointID: stablePointID,
+                    rollbackAnchorID: rollbackAnchorID
+                )
+
+                return MergebackRunSnapshot(
+                    runID: firstNonEmpty(
+                        metadata["mergeback_run_id"],
+                        metadata["run_id"],
+                        "mergeback-run-\(laneID)"
+                    ),
+                    laneID: laneID,
+                    poolID: firstNonEmpty(
+                        metadata["pool_id"],
+                        lane.targetProject.map { "project-\($0.id.uuidString.lowercased())" },
+                        "pool-default"
+                    ),
+                    precheckPassed: precheckPassed,
+                    mergeSucceeded: mergeSucceeded,
+                    verifyPassed: verifyPassed,
+                    committed: committed,
+                    stablePointID: stablePointID,
+                    rollbackAnchorID: rollbackAnchorID,
+                    qualityGateBlockedOnFailure: qualityGateBlockedOnFailure,
+                    rolledBackToStablePoint: rolledBackToStablePoint,
+                    conflicts: (conflictsByLaneID[laneID] ?? []).map { conflict in
+                        makeConflictRecord(conflict, poolID: firstNonEmpty(
+                            metadata["pool_id"],
+                            lane.targetProject.map { "project-\($0.id.uuidString.lowercased())" },
+                            "pool-default"
+                        ))
+                    }
+                )
+            }
+    }
+
+    private func latestTaskStateByLaneID(_ taskStates: [UUID: TaskExecutionState]) -> [String: TaskExecutionState] {
+        var result: [String: TaskExecutionState] = [:]
+        for state in taskStates.values {
+            guard let laneID = laneID(from: state.task.metadata) else { continue }
+            if let existing = result[laneID], existing.lastUpdateAt >= state.lastUpdateAt {
+                continue
+            }
+            result[laneID] = state
+        }
+        return result
+    }
+
+    private func laneID(from metadata: [String: String]) -> String? {
+        let value = metadata["lane_id"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? nil : value
+    }
+
+    private func mergedMetadata(base: [String: String], override: [String: String]) -> [String: String] {
+        base.merging(override) { _, new in new }
+    }
+
+    private func boolMetadata(_ metadata: [String: String], keys: [String]) -> Bool? {
+        for key in keys {
+            guard let raw = metadata[key]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                  !raw.isEmpty else {
+                continue
+            }
+            switch raw {
+            case "1", "true", "yes", "pass", "passed", "ready", "committed":
+                return true
+            case "0", "false", "no", "fail", "failed", "blocked", "rollback":
+                return false
+            default:
+                continue
+            }
+        }
+        return nil
+    }
+
+    private func inferPrecheckPassed(
+        laneID: String,
+        runtimeState: LaneRuntimeState?,
+        taskState: TaskExecutionState?,
+        hasPromptContract: Bool
+    ) -> Bool {
+        guard hasPromptContract else { return false }
+        if runtimeState?.blockedReason == .skillPreflightFailed {
+            return false
+        }
+        if taskState?.task.failureReason?.localizedCaseInsensitiveContains("precheck") == true {
+            return false
+        }
+        if taskState?.errors.contains(where: { error in
+            error.message.localizedCaseInsensitiveContains("precheck")
+                || (error.code?.localizedCaseInsensitiveContains("precheck") == true)
+        }) == true {
+            return false
+        }
+        return !laneID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func inferMergeSucceeded(
+        runtimeState: LaneRuntimeState?,
+        taskState: TaskExecutionState?
+    ) -> Bool {
+        if runtimeState?.status == .completed {
+            return true
+        }
+        if taskState?.currentStatus == .completed {
+            return true
+        }
+        return false
+    }
+
+    private func inferVerifyPassed(
+        runtimeState: LaneRuntimeState?,
+        taskState: TaskExecutionState?,
+        incidents: [SupervisorLaneIncident]
+    ) -> Bool {
+        guard inferMergeSucceeded(runtimeState: runtimeState, taskState: taskState) else { return false }
+        let hasRuntimeFailure = incidents.contains { incident in
+            incident.incidentCode == LaneBlockedReason.runtimeError.rawValue
+                && incident.status == .handled
+        }
+        if hasRuntimeFailure {
+            return false
+        }
+        if taskState?.errors.isEmpty == false {
+            return false
+        }
+        return true
+    }
+
+    private func inferRolledBackToStablePoint(
+        runtimeState: LaneRuntimeState?,
+        taskState: TaskExecutionState?,
+        stablePointID: String,
+        rollbackAnchorID: String,
+        mergeSucceeded: Bool,
+        verifyPassed: Bool
+    ) -> Bool {
+        guard !stablePointID.isEmpty, !rollbackAnchorID.isEmpty else { return false }
+        if mergeSucceeded && verifyPassed && runtimeState?.status == .completed {
+            return false
+        }
+        if taskState?.currentStatus == .failed || runtimeState?.status == .failed || runtimeState?.status == .blocked {
+            return true
+        }
+        return !verifyPassed
+    }
+
+    private func inferQualityGateBlockedOnFailure(
+        runtimeState: LaneRuntimeState?,
+        taskState: TaskExecutionState?,
+        committed: Bool,
+        rolledBackToStablePoint: Bool,
+        stablePointID: String,
+        rollbackAnchorID: String
+    ) -> Bool {
+        if committed {
+            return true
+        }
+        if rolledBackToStablePoint {
+            return !stablePointID.isEmpty && !rollbackAnchorID.isEmpty
+        }
+        if runtimeState?.status == .blocked || runtimeState?.status == .failed {
+            return true
+        }
+        return taskState?.currentStatus == .blocked || taskState?.currentStatus == .failed
+    }
+
+    private func makeConflictRecord(_ conflict: AssemblyConflict, poolID: String) -> MergebackConflictTriageRecord {
+        let autoTriaged = conflict.kind == .semantic && conflict.routeTarget == .lane
+            || conflict.kind == .structural && conflict.routeTarget == .pool
+        return MergebackConflictTriageRecord(
+            id: conflict.id,
+            laneID: conflict.laneID,
+            poolID: poolID,
+            kind: conflict.kind,
+            routeTarget: conflict.routeTarget,
+            autoTriaged: autoTriaged,
+            fixSuggestion: fixSuggestion(for: conflict)
+        )
+    }
+
+    private func fixSuggestion(for conflict: AssemblyConflict) -> String {
+        var suggestion: String
+        switch (conflict.kind, conflict.routeTarget) {
+        case (.semantic, .lane):
+            suggestion = "apply suggested lane patch and rerun semantic lane checks before commit"
+        case (.semantic, .pool):
+            suggestion = "route semantic drift to pool review, refresh merge inputs, and rerun lane verification before commit"
+        case (.structural, .lane):
+            suggestion = "split structural conflict into a dedicated lane repair patch before retrying mergeback"
+        case (.structural, .pool):
+            suggestion = "route structural conflict back to pool integration and regenerate merge plan"
+        }
+
+        if conflict.crossPool {
+            suggestion += "; include cross-pool contract drift check"
+        }
+        if conflict.reopened {
+            suggestion += "; require supervisor review before next commit"
+        }
+        return suggestion
+    }
+
+    private func firstNonEmpty(_ values: String?...) -> String {
+        for value in values {
+            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !trimmed.isEmpty {
+                return trimmed
+            }
+        }
+        return ""
+    }
+}

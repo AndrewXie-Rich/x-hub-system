@@ -68,6 +68,27 @@ struct AXSkillsCompatibilityTests {
         #expect(snapshot.statusKind == .blocked)
         #expect(snapshot.conflictWarnings.contains(where: { $0.contains("skill.demo") }))
         #expect(snapshot.compatibilityExplain.contains("compatible skill installed"))
+        #expect(snapshot.officialChannelStatus == "healthy")
+        #expect(snapshot.officialChannelMaintenanceEnabled)
+        #expect(snapshot.officialChannelMaintenanceSourceKind == "persisted")
+        #expect(snapshot.officialPackageLifecyclePackagesTotal == 2)
+        #expect(snapshot.officialPackageLifecycleReadyTotal == 1)
+        #expect(snapshot.officialPackageLifecycleBlockedTotal == 1)
+        #expect(snapshot.officialPackageLifecycleActiveTotal == 1)
+        #expect(snapshot.officialChannelSummaryLine.contains("pkg=2"))
+        #expect(snapshot.officialChannelSummaryLine.contains("blocked=1"))
+        #expect(snapshot.officialChannelDetailLine.contains("problem_skills=skill.secondary"))
+        #expect(snapshot.officialChannelDetailLine.contains("Top blockers: Secondary Skill (skill.secondary) [blocked]"))
+        #expect(snapshot.officialChannelTopBlockersLine == "Top blockers: Secondary Skill (skill.secondary) [blocked]")
+        #expect(snapshot.officialPackageLifecycleTopBlockerSummaries.count == 1)
+        #expect(snapshot.officialPackageLifecycleTopBlockerSummaries[0].title == "Secondary Skill")
+        #expect(snapshot.officialPackageLifecycleTopBlockerSummaries[0].subtitle == "skill.secondary")
+        #expect(snapshot.officialPackageLifecycleTopBlockerSummaries[0].stateLabel == "blocked")
+        #expect(snapshot.officialPackageLifecycleTopBlockerSummaries[0].summaryLine.contains("version=2.0.0"))
+        #expect(snapshot.officialPackageLifecycleTopBlockerSummaries[0].summaryLine.contains("risk=medium"))
+        #expect(snapshot.officialPackageLifecycleTopBlockerSummaries[0].summaryLine.contains("grant=none"))
+        #expect(snapshot.officialPackageLifecycleTopBlockerSummaries[0].timelineLine.contains("last_blocked="))
+        #expect(snapshot.compatibilityExplain.contains("official_channel=official healthy"))
 
         let primary = snapshot.installedSkills.first { $0.skillID == "skill.demo" }
         #expect(primary != nil)
@@ -92,6 +113,121 @@ struct AXSkillsCompatibilityTests {
         #expect(snapshot.installedSkillCount == 0)
         #expect(snapshot.statusKind == .unavailable)
         #expect(snapshot.statusLine == "skills?")
+        #expect(snapshot.builtinGovernedSkillCount > 0)
+        #expect(snapshot.builtinSupervisorVoiceAvailable)
+        #expect(snapshot.compatibilityExplain.contains("xt_builtin_supervisor_voice=available"))
+    }
+
+    @Test
+    func compatibilityDoctorSnapshotRanksTopBlockersByActionabilityRiskAndFailures() throws {
+        let fixture = SkillsCompatibilityFixture()
+        defer { fixture.cleanup() }
+
+        try fixture.writeHubSkillsStore()
+        try fixture.writeOfficialLifecycleSnapshot(
+            """
+            {
+              "schema_version": "xhub.official_skill_package_lifecycle_snapshot.v1",
+              "updated_at_ms": 9,
+              "totals": {
+                "packages_total": 4,
+                "ready_total": 1,
+                "degraded_total": 0,
+                "blocked_total": 2,
+                "not_installed_total": 0,
+                "not_supported_total": 0,
+                "revoked_total": 1,
+                "active_total": 1
+              },
+              "packages": [
+                {
+                  "package_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "skill_id": "skill.demo",
+                  "name": "Demo Skill",
+                  "version": "1.0.0",
+                  "risk_level": "low",
+                  "requires_grant": false,
+                  "package_state": "active",
+                  "overall_state": "ready",
+                  "blocking_failures": 0,
+                  "transition_count": 1,
+                  "updated_at_ms": 7,
+                  "last_transition_at_ms": 7,
+                  "last_ready_at_ms": 7,
+                  "last_blocked_at_ms": 0
+                },
+                {
+                  "package_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                  "skill_id": "skill.secondary",
+                  "name": "Secondary Skill",
+                  "version": "2.0.0",
+                  "risk_level": "medium",
+                  "requires_grant": false,
+                  "package_state": "discovered",
+                  "overall_state": "blocked",
+                  "blocking_failures": 1,
+                  "transition_count": 2,
+                  "updated_at_ms": 7,
+                  "last_transition_at_ms": 7,
+                  "last_ready_at_ms": 0,
+                  "last_blocked_at_ms": 7
+                },
+                {
+                  "package_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                  "skill_id": "agent-browser",
+                  "name": "Agent Browser",
+                  "version": "3.0.0",
+                  "risk_level": "high",
+                  "requires_grant": true,
+                  "package_state": "ready",
+                  "overall_state": "blocked",
+                  "blocking_failures": 2,
+                  "transition_count": 5,
+                  "updated_at_ms": 9,
+                  "last_transition_at_ms": 9,
+                  "last_ready_at_ms": 0,
+                  "last_blocked_at_ms": 9
+                },
+                {
+                  "package_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
+                  "skill_id": "calendar-sync",
+                  "name": "Calendar Skill",
+                  "version": "1.5.0",
+                  "risk_level": "high",
+                  "requires_grant": false,
+                  "package_state": "revoked",
+                  "overall_state": "blocked",
+                  "blocking_failures": 1,
+                  "transition_count": 4,
+                  "updated_at_ms": 8,
+                  "last_transition_at_ms": 8,
+                  "last_ready_at_ms": 0,
+                  "last_blocked_at_ms": 8
+                }
+              ]
+            }
+            """
+        )
+
+        let snapshot = AXSkillsLibrary.compatibilityDoctorSnapshot(
+            projectId: fixture.projectID,
+            projectName: fixture.projectName,
+            skillsDir: fixture.skillsDir,
+            hubBaseDir: fixture.hubBaseDir
+        )
+
+        #expect(snapshot.officialChannelDetailLine.contains("problem_skills=agent-browser,calendar-sync,skill.secondary"))
+        #expect(snapshot.officialChannelTopBlockersLine == "Top blockers: Agent Browser (agent-browser) [blocked]; Calendar Skill (calendar-sync) [revoked]; Secondary Skill (skill.secondary) [blocked]")
+        #expect(snapshot.officialPackageLifecycleTopBlockerSummaries.prefix(3).map(\.title) == [
+            "Agent Browser",
+            "Calendar Skill",
+            "Secondary Skill"
+        ])
+        #expect(snapshot.officialPackageLifecycleTopBlockerSummaries.prefix(3).map(\.stateLabel) == [
+            "blocked",
+            "revoked",
+            "blocked"
+        ])
     }
 
     @Test
@@ -114,7 +250,7 @@ struct AXSkillsCompatibilityTests {
         #expect(snapshot.projectName == fixture.projectName)
         #expect(snapshot.updatedAtMs == 42)
         #expect(snapshot.memorySource == "hub_skill_registry+xt_builtin")
-        #expect(snapshot.items.count == 14)
+        #expect(snapshot.items.count == 16)
         #expect(!snapshot.items.contains(where: { $0.skillId == "email.send.auto" }))
 
         let git = try #require(snapshot.items.first(where: { $0.skillId == "repo.git.status" }))
@@ -161,6 +297,33 @@ struct AXSkillsCompatibilityTests {
         #expect(builtinProcessStart.capabilitiesRequired == ["process.manage", "process.autorestart"])
         #expect(builtinProcessStart.governedDispatch?.tool == ToolName.process_start.rawValue)
         #expect(builtinProcessStart.governedDispatchNotes.contains(where: { $0.contains("restart_on_exit") }))
+
+        let builtinVoice = try #require(snapshot.items.first(where: { $0.skillId == "supervisor-voice" }))
+        #expect(builtinVoice.policyScope == "xt_builtin")
+        #expect(builtinVoice.capabilitiesRequired == ["supervisor.voice.playback"])
+        #expect(builtinVoice.governedDispatch?.tool == ToolName.supervisorVoicePlayback.rawValue)
+        #expect(builtinVoice.sideEffectClass == "local_side_effect")
+        #expect(builtinVoice.riskLevel == .low)
+        #expect(!builtinVoice.requiresGrant)
+        #expect(builtinVoice.governedDispatchNotes.contains(where: { $0.contains("text/content/value") }))
+
+        let builtinGuardedAutomation = try #require(snapshot.items.first(where: { $0.skillId == "guarded-automation" }))
+        #expect(builtinGuardedAutomation.policyScope == "xt_builtin")
+        #expect(builtinGuardedAutomation.capabilitiesRequired == ["project.snapshot", "browser.read", "device.browser.control"])
+        #expect(builtinGuardedAutomation.governedDispatch?.tool == ToolName.project_snapshot.rawValue)
+        #expect(builtinGuardedAutomation.governedDispatchVariants.count == 7)
+        #expect(builtinGuardedAutomation.riskLevel == .high)
+        #expect(builtinGuardedAutomation.requiresGrant)
+        #expect(builtinGuardedAutomation.sideEffectClass == "external_side_effect")
+        let guardedOpenVariant = try #require(
+            builtinGuardedAutomation.governedDispatchVariants.first(where: { $0.actions.contains("open") })
+        )
+        #expect(guardedOpenVariant.dispatch.tool == ToolName.deviceBrowserControl.rawValue)
+        #expect(
+            builtinGuardedAutomation.governedDispatchNotes.contains(where: {
+                $0.localizedCaseInsensitiveContains("trusted automation")
+            })
+        )
 
         let builtinGitCommit = try #require(snapshot.items.first(where: { $0.skillId == "repo.git.commit" }))
         #expect(builtinGitCommit.policyScope == "xt_builtin")
@@ -220,6 +383,10 @@ struct AXSkillsCompatibilityTests {
         #expect(memory.contains("grant=yes"))
         #expect(memory.contains("caps: repo.read.status"))
         #expect(memory.contains("caps: web.navigate"))
+        #expect(memory.contains("guarded-automation"))
+        #expect(memory.contains("supervisor-voice"))
+        #expect(memory.contains("preferred_for: trusted_automation_readiness, governed_browser_actions"))
+        #expect(memory.contains("preferred_for: supervisor_playback_status, preview, speak, stop"))
         #expect(memory.contains("dispatch=git_status"))
         #expect(memory.contains("dispatch=device.browser.control"))
         #expect(memory.contains("payload: fixed=action=open_url"))
@@ -227,9 +394,12 @@ struct AXSkillsCompatibilityTests {
         #expect(memory.contains("args=url"))
         #expect(memory.contains("variant: actions=open/open_url/navigate/goto/visit -> device.browser.control"))
         #expect(memory.contains("variant: actions=snapshot/inspect/extract -> device.browser.control"))
-        #expect(!memory.contains("dispatch_note: actions=open/navigate/snapshot/extract/click/type/upload -> device.browser.control"))
-        #expect(registrySnapshot?.items.count == 14)
-        #expect(resolvedCache?.items.count == 14)
+        #expect(registrySnapshot?.items.count == 16)
+        #expect(registrySnapshot?.items.contains(where: { $0.skillId == "supervisor-voice" }) == true)
+        #expect(registrySnapshot?.items.contains(where: { $0.skillId == "guarded-automation" }) == true)
+        #expect(resolvedCache?.items.count == 16)
+        #expect(resolvedCache?.items.contains(where: { $0.skillId == "supervisor-voice" }) == true)
+        #expect(resolvedCache?.items.contains(where: { $0.skillId == "guarded-automation" }) == true)
     }
 
     @Test
@@ -258,7 +428,7 @@ struct AXSkillsCompatibilityTests {
         #expect(snapshot.hubIndexUpdatedAtMs == 42)
         #expect(snapshot.auditRef == "audit-xt-w3-34-i-resolved-skills-12345678")
         #expect(snapshot.grantSnapshotRef == "grant-chain:12345678:refresh_required")
-        #expect(snapshot.items.count == 14)
+        #expect(snapshot.items.count == 16)
         #expect(!snapshot.items.contains(where: { $0.skillId == "email.send.auto" }))
 
         let repo = try #require(snapshot.items.first(where: { $0.skillId == "repo.git.status" }))
@@ -285,6 +455,20 @@ struct AXSkillsCompatibilityTests {
         #expect(builtinProcessLogs.sourceId == "xt_builtin")
         #expect(builtinProcessLogs.riskLevel == "low")
         #expect(!builtinProcessLogs.requiresGrant)
+
+        let builtinVoice = try #require(snapshot.items.first(where: { $0.skillId == "supervisor-voice" }))
+        #expect(builtinVoice.pinScope == "xt_builtin")
+        #expect(builtinVoice.sourceId == "xt_builtin")
+        #expect(builtinVoice.riskLevel == "low")
+        #expect(!builtinVoice.requiresGrant)
+        #expect(builtinVoice.sideEffectClass == "local_side_effect")
+
+        let builtinGuardedAutomation = try #require(snapshot.items.first(where: { $0.skillId == "guarded-automation" }))
+        #expect(builtinGuardedAutomation.pinScope == "xt_builtin")
+        #expect(builtinGuardedAutomation.sourceId == "xt_builtin")
+        #expect(builtinGuardedAutomation.riskLevel == "high")
+        #expect(builtinGuardedAutomation.requiresGrant)
+        #expect(builtinGuardedAutomation.sideEffectClass == "external_side_effect")
 
         let builtinPR = try #require(snapshot.items.first(where: { $0.skillId == "repo.pr.create" }))
         #expect(builtinPR.pinScope == "xt_builtin")
@@ -388,6 +572,98 @@ struct AXSkillsCompatibilityTests {
     }
 
     @Test
+    func projectSkillRouterMapsBuiltinGuardedAutomationVariantToToolCall() throws {
+        let fixture = SkillsCompatibilityFixture()
+        defer { fixture.cleanup() }
+        try fixture.writeHubSkillsStoreForSupervisorRegistry()
+
+        let snapshot = try #require(
+            AXSkillsLibrary.supervisorSkillRegistrySnapshot(
+                projectId: fixture.projectID,
+                projectName: fixture.projectName,
+                hubBaseDir: fixture.hubBaseDir
+            )
+        )
+
+        let result = XTProjectSkillRouter.map(
+            call: GovernedSkillCall(
+                id: "skill-guarded-automation-1",
+                skill_id: "guarded-automation",
+                payload: [
+                    "action": .string("open"),
+                    "url": .string("https://example.com/dashboard"),
+                    "grant_id": .string("grant-guarded-1"),
+                ]
+            ),
+            projectId: fixture.projectID,
+            projectName: fixture.projectName,
+            registrySnapshot: snapshot
+        )
+
+        let mapped: XTProjectMappedSkillDispatch
+        switch result {
+        case .success(let dispatch):
+            mapped = dispatch
+        case .failure(let failure):
+            Issue.record("unexpected failure: \(failure.reasonCode)")
+            throw failure
+        }
+
+        #expect(mapped.skillId == "guarded-automation")
+        #expect(mapped.toolCall.tool == .deviceBrowserControl)
+        #expect(mapped.toolCall.args["action"]?.stringValue == "open_url")
+        #expect(mapped.toolCall.args["url"]?.stringValue == "https://example.com/dashboard")
+        #expect(mapped.toolCall.args["grant_id"]?.stringValue == "grant-guarded-1")
+    }
+
+    @Test
+    func projectSkillRouterCanonicalizesBuiltinGuardedAutomationAlias() throws {
+        let fixture = SkillsCompatibilityFixture()
+        defer { fixture.cleanup() }
+        try fixture.writeHubSkillsStoreForSupervisorRegistry()
+
+        let snapshot = try #require(
+            AXSkillsLibrary.supervisorSkillRegistrySnapshot(
+                projectId: fixture.projectID,
+                projectName: fixture.projectName,
+                hubBaseDir: fixture.hubBaseDir
+            )
+        )
+
+        let result = XTProjectSkillRouter.map(
+            call: GovernedSkillCall(
+                id: "skill-guarded-automation-alias-1",
+                skill_id: "trusted-automation",
+                payload: [
+                    "action": .string("open"),
+                    "url": .string("https://example.com/alias"),
+                    "grant_id": .string("grant-guarded-alias-1"),
+                ]
+            ),
+            projectId: fixture.projectID,
+            projectName: fixture.projectName,
+            registrySnapshot: snapshot
+        )
+
+        let mapped: XTProjectMappedSkillDispatch
+        switch result {
+        case .success(let dispatch):
+            mapped = dispatch
+        case .failure(let failure):
+            Issue.record("unexpected failure: \(failure.reasonCode)")
+            throw failure
+        }
+
+        #expect(AXSkillsLibrary.canonicalSupervisorSkillID("trusted-automation") == "guarded-automation")
+        #expect(AXSkillsLibrary.canonicalSupervisorSkillID("supervisor.voice") == "supervisor-voice")
+        #expect(mapped.skillId == "guarded-automation")
+        #expect(mapped.toolCall.tool == .deviceBrowserControl)
+        #expect(mapped.toolCall.args["action"]?.stringValue == "open_url")
+        #expect(mapped.toolCall.args["url"]?.stringValue == "https://example.com/alias")
+        #expect(mapped.toolCall.args["grant_id"]?.stringValue == "grant-guarded-alias-1")
+    }
+
+    @Test
     func projectSkillRouterFailsClosedForUnregisteredSkill() throws {
         let fixture = SkillsCompatibilityFixture()
         defer { fixture.cleanup() }
@@ -441,6 +717,10 @@ struct AXSkillsCompatibilityTests {
 
         #expect(guidance.contains("prefer `skill_calls` over raw `tool_calls`"))
         #expect(guidance.contains("skills_registry:"))
+        #expect(guidance.contains("routing, and payload hints to shape `payload` and choose a stable `skill_id`"))
+        #expect(guidance.contains("Treat `routing: prefers_builtin=...` and `routing: entrypoints=...` as skill-family metadata."))
+        #expect(guidance.contains("If the user explicitly names a registered wrapper or entrypoint skill_id, keep that exact registered `skill_id` in `skill_calls`"))
+        #expect(guidance.contains("If the user asks only for a capability and the family advertises `routing: prefers_builtin=...`, choose the preferred builtin"))
         #expect(guidance.contains("repo.git.status"))
         #expect(guidance.contains("agent-browser"))
         #expect(guidance.contains("grant=yes"))
@@ -464,6 +744,20 @@ struct AXSkillsCompatibilityTests {
 
         #expect(line.contains("agent-browser"))
         #expect(line.contains("读取网页内容"))
+    }
+
+    @MainActor
+    @Test
+    func projectToolLoopResponseRulesMentionRoutedSkillFamilies() {
+        let session = ChatSessionModel()
+        let rules = session.projectToolLoopResponseRulesForTesting()
+
+        #expect(rules.contains("Prefer `skill_calls` when the work matches an installed governed skill in `skills_registry`."))
+        #expect(rules.contains("Only use `skill_id` values that appear in the current project's `skills_registry` snapshot."))
+        #expect(rules.contains("Treat `routing: prefers_builtin=...` and `routing: entrypoints=...` as skill-family metadata when choosing `skill_id`."))
+        #expect(rules.contains("If the user explicitly names a registered wrapper or entrypoint skill, keep that exact registered `skill_id`"))
+        #expect(rules.contains("If the user asks only for a capability and the family marks a preferred builtin, choose the preferred builtin"))
+        #expect(rules.contains("Do not emit duplicate sibling `skill_calls` for one intent"))
     }
 
     @Test
@@ -587,6 +881,16 @@ private struct SkillsCompatibilityFixture {
         try? FileManager.default.removeItem(at: root)
     }
 
+    func writeOfficialLifecycleSnapshot(_ snapshot: String) throws {
+        let storeDir = hubBaseDir.appendingPathComponent("skills_store", isDirectory: true)
+        try FileManager.default.createDirectory(at: storeDir, withIntermediateDirectories: true)
+        try snapshot.write(
+            to: storeDir.appendingPathComponent("official_skill_package_lifecycle.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
     func writeHubSkillsStore() throws {
         let storeDir = hubBaseDir.appendingPathComponent("skills_store", isDirectory: true)
         try FileManager.default.createDirectory(at: storeDir, withIntermediateDirectories: true)
@@ -673,6 +977,91 @@ private struct SkillsCompatibilityFixture {
         }
         """
         try revocations.write(to: storeDir.appendingPathComponent("skill_revocations.json"), atomically: true, encoding: .utf8)
+
+        let officialChannelDir = storeDir
+            .appendingPathComponent("official_channels", isDirectory: true)
+            .appendingPathComponent("official-stable", isDirectory: true)
+        try FileManager.default.createDirectory(at: officialChannelDir, withIntermediateDirectories: true)
+
+        let channelState = """
+        {
+          "schema_version": "xhub.official_skill_channel_state.v1",
+          "channel_id": "official-stable",
+          "status": "healthy",
+          "updated_at_ms": 5,
+          "last_success_at_ms": 4,
+          "skill_count": 2,
+          "error_code": ""
+        }
+        """
+        try channelState.write(to: officialChannelDir.appendingPathComponent("channel_state.json"), atomically: true, encoding: .utf8)
+
+        let maintenance = """
+        {
+          "schema_version": "xhub.official_skill_channel_maintenance_status.v1",
+          "channel_id": "official-stable",
+          "maintenance_enabled": true,
+          "maintenance_interval_ms": 300000,
+          "maintenance_last_run_at_ms": 6,
+          "maintenance_source_kind": "persisted",
+          "last_transition_at_ms": 6,
+          "last_transition_kind": "current_snapshot_repaired",
+          "last_transition_summary": "current snapshot restored via persisted"
+        }
+        """
+        try maintenance.write(to: officialChannelDir.appendingPathComponent("maintenance_status.json"), atomically: true, encoding: .utf8)
+
+        let lifecycle = """
+        {
+          "schema_version": "xhub.official_skill_package_lifecycle_snapshot.v1",
+          "updated_at_ms": 7,
+          "totals": {
+            "packages_total": 2,
+            "ready_total": 1,
+            "degraded_total": 0,
+            "blocked_total": 1,
+            "not_installed_total": 0,
+            "not_supported_total": 0,
+            "revoked_total": 0,
+            "active_total": 1
+          },
+          "packages": [
+            {
+              "package_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "skill_id": "skill.demo",
+              "name": "Demo Skill",
+              "version": "1.0.0",
+              "risk_level": "low",
+              "requires_grant": false,
+              "package_state": "active",
+              "overall_state": "ready",
+              "blocking_failures": 0,
+              "transition_count": 1,
+              "updated_at_ms": 7,
+              "last_transition_at_ms": 7,
+              "last_ready_at_ms": 7,
+              "last_blocked_at_ms": 0
+            },
+            {
+              "package_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "skill_id": "skill.secondary",
+              "name": "Secondary Skill",
+              "version": "2.0.0",
+              "risk_level": "medium",
+              "requires_grant": false,
+              "package_state": "discovered",
+              "overall_state": "blocked",
+              "blocking_failures": 1,
+              "transition_count": 2,
+              "updated_at_ms": 7,
+              "last_transition_at_ms": 7,
+              "last_ready_at_ms": 0,
+              "last_blocked_at_ms": 7
+            }
+          ]
+        }
+        """
+        try lifecycle.write(to: storeDir.appendingPathComponent("official_skill_package_lifecycle.json"), atomically: true, encoding: .utf8)
     }
 
     func writeLocalIndexes() throws {

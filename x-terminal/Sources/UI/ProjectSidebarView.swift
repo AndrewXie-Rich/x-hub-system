@@ -89,7 +89,39 @@ private struct ProjectRowView: View {
                     .help("\(latestUIReview.compactStatusText)\n\(latestUIReview.updatedText)")
             }
 
-            ProjectGovernanceCompactSummaryView(presentation: governancePresentation)
+            ProjectGovernanceCompactSummaryView(
+                presentation: governancePresentation,
+                onExecutionTierTap: {
+                    appModel.requestProjectSettingsFocus(
+                        projectId: project.projectId,
+                        destination: .executionTier
+                    )
+                },
+                onSupervisorTierTap: {
+                    appModel.requestProjectSettingsFocus(
+                        projectId: project.projectId,
+                        destination: .supervisorTier
+                    )
+                },
+                onReviewCadenceTap: {
+                    appModel.requestProjectSettingsFocus(
+                        projectId: project.projectId,
+                        destination: .heartbeatReview
+                    )
+                },
+                onStatusTap: {
+                    appModel.requestProjectSettingsFocus(
+                        projectId: project.projectId,
+                        destination: .overview
+                    )
+                },
+                onCalloutTap: {
+                    appModel.requestProjectSettingsFocus(
+                        projectId: project.projectId,
+                        destination: .overview
+                    )
+                }
+            )
 
             if governed.hasAnyVisibleSignal {
                 HStack(spacing: 4) {

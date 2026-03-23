@@ -4,6 +4,7 @@ import SwiftUI
 struct ProjectTerminalView: View {
     let ctx: AXProjectContext
     @ObservedObject var session: TerminalSessionModel
+    @EnvironmentObject private var appModel: AppModel
 
     var body: some View {
         VStack(spacing: 0) {
@@ -20,38 +21,50 @@ struct ProjectTerminalView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 10) {
-            Text("Terminal")
-                .font(.system(.body, design: .monospaced))
-            Text(ctx.displayName())
-                .font(.system(.body, design: .monospaced))
-                .foregroundStyle(.secondary)
-
-            Spacer(minLength: 0)
-
-            if let code = session.lastExitCode {
-                Text("exit=\(code)")
-                    .font(.system(.caption, design: .monospaced))
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Text("Terminal")
+                    .font(.system(.body, design: .monospaced))
+                Text(ctx.displayName())
+                    .font(.system(.body, design: .monospaced))
                     .foregroundStyle(.secondary)
+
+                Spacer(minLength: 0)
+
+                if let code = session.lastExitCode {
+                    terminalStatusChip("exit=\(code)", color: .secondary)
+                }
+
+                terminalStatusChip(
+                    session.isRunning ? "running" : "stopped",
+                    color: session.isRunning ? .green : .secondary
+                )
             }
 
-            if session.isRunning {
-                Text("running")
+            ProjectGovernanceCompactSummaryView(
+                presentation: governancePresentation,
+                onExecutionTierTap: { openGovernance(.executionTier) },
+                onSupervisorTierTap: { openGovernance(.supervisorTier) },
+                onReviewCadenceTap: { openGovernance(.heartbeatReview) },
+                onStatusTap: { openGovernance(.overview) },
+                onCalloutTap: { openGovernance(.overview) }
+            )
+
+            HStack(spacing: 10) {
+                Text("Project-bound shell")
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
-            } else {
-                Text("stopped")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
 
-            Button("Restart") {
-                session.stop()
-                session.ensureStarted()
-            }
+                Spacer(minLength: 0)
 
-            Button("Clear") {
-                session.clearOutput()
+                Button("Restart") {
+                    session.stop()
+                    session.ensureStarted()
+                }
+
+                Button("Clear") {
+                    session.clearOutput()
+                }
             }
         }
         .padding(10)
@@ -104,5 +117,41 @@ struct ProjectTerminalView: View {
                 .foregroundColor: NSColor.labelColor,
             ]
         )
+    }
+
+    private var projectId: String {
+        AXProjectRegistryStore.projectId(forRoot: ctx.root)
+    }
+
+    private var projectConfig: AXProjectConfig {
+        if appModel.projectContext?.root.standardizedFileURL == ctx.root.standardizedFileURL,
+           let config = appModel.projectConfig {
+            return config
+        }
+        return (try? AXProjectStore.loadOrCreateConfig(for: ctx)) ?? .default(forProjectRoot: ctx.root)
+    }
+
+    private var governancePresentation: ProjectGovernancePresentation {
+        ProjectGovernancePresentation(
+            resolved: appModel.resolvedProjectGovernance(config: projectConfig)
+        )
+    }
+
+    private func openGovernance(_ destination: XTProjectGovernanceDestination) {
+        appModel.requestProjectSettingsFocus(
+            projectId: projectId,
+            destination: destination,
+            preserveCurrentPane: true
+        )
+    }
+
+    private func terminalStatusChip(_ label: String, color: Color) -> some View {
+        Text(label)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(color)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(color.opacity(0.10))
+            .clipShape(Capsule())
     }
 }

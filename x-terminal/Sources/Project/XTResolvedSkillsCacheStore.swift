@@ -71,6 +71,6 @@ enum XTResolvedSkillsCacheStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(snapshot) else { return }
-        try? data.write(to: url(for: ctx), options: .atomic)
+        try? XTStoreWriteSupport.writeSnapshotData(data, to: url(for: ctx))
     }
 }

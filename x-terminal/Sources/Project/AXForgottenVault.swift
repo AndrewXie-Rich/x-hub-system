@@ -52,7 +52,7 @@ enum AXForgottenVault {
             delta: delta
         )
         do {
-            try content.data(using: .utf8)?.write(to: entryURL, options: .atomic)
+            try XTStoreWriteSupport.writeUTF8Text(content, to: entryURL)
         } catch {
             return
         }
@@ -74,35 +74,35 @@ enum AXForgottenVault {
         let skillMDURL = vaultDir.appendingPathComponent("SKILL.md")
         if !FileManager.default.fileExists(atPath: skillMDURL.path) {
             let md = """
----
-name: forgotten-vault
-description: 本项目的遗忘内容库（冷存）。保存完整上下文但默认不加载；需要回溯时通过索引精准打开对应记录。
-scope: system
-touches_paths:
-  - <skills_dir>/_projects/<project>/forgotten-vault/**
-entrypoints:
-  - <skills_dir>/_projects/<project>/forgotten-vault/references/index.md
-  - <skills_dir>/_projects/<project>/forgotten-vault/references/_deep/index.md
-common_ops:
-  inspect:
-    - Open references/index.md; if needed open references/_deep/index.md
----
+            ---
+            name: forgotten-vault
+            description: 本项目的遗忘内容库（冷存）。保存完整上下文但默认不加载；需要回溯时通过索引精准打开对应记录。
+            scope: system
+            touches_paths:
+              - <skills_dir>/_projects/<project>/forgotten-vault/**
+            entrypoints:
+              - <skills_dir>/_projects/<project>/forgotten-vault/references/index.md
+              - <skills_dir>/_projects/<project>/forgotten-vault/references/_deep/index.md
+            common_ops:
+              inspect:
+                - Open references/index.md; if needed open references/_deep/index.md
+            ---
 
-# Forgotten Vault（项目级）
+            # Forgotten Vault（项目级）
 
-## 默认原则
-- Vault 默认全自动写入：非平凡对话会自动归档到 L0；你有空再整理与下沉。
-- 默认不进入主上下文；仅当“回溯触发词”出现时才按索引精准打开。
+            ## 默认原则
+            - Vault 默认全自动写入：非平凡对话会自动归档到 L0；你有空再整理与下沉。
+            - 默认不进入主上下文；仅当“回溯触发词”出现时才按索引精准打开。
 
-## 分层结构
-- L0：`references/index.md` + `references/<...>.md`
-- L1：`references/_deep/index.md` + `references/_deep/<...>.md`
+            ## 分层结构
+            - L0：`references/index.md` + `references/<...>.md`
+            - L1：`references/_deep/index.md` + `references/_deep/<...>.md`
 
-## 入口
-- L0 索引：`references/index.md`
-- L1 索引：`references/_deep/index.md`
-"""
-            try? md.data(using: .utf8)?.write(to: skillMDURL, options: .atomic)
+            ## 入口
+            - L0 索引：`references/index.md`
+            - L1 索引：`references/_deep/index.md`
+            """
+            try? XTStoreWriteSupport.writeUTF8Text(md, to: skillMDURL)
         }
 
         let refsDir = vaultDir.appendingPathComponent("references", isDirectory: true)
@@ -112,37 +112,37 @@ common_ops:
         let idx0 = refsDir.appendingPathComponent("index.md")
         if !FileManager.default.fileExists(atPath: idx0.path) {
             let s = """
-# Forgotten Vault Index（项目级）
+            # Forgotten Vault Index（项目级）
 
-深层入口：
-- L1：`references/_deep/index.md`
+            深层入口：
+            - L1：`references/_deep/index.md`
 
-每条 1 行，格式建议：
-- `<YYYYMMDD>-<topic> — <一句话摘要>（关键词：module:hub,a,b,c）（文件：references/<YYYYMMDD>-<topic>.md）`
+            每条 1 行，格式建议：
+            - `<YYYYMMDD>-<topic> — <一句话摘要>（关键词：module:hub,a,b,c）（文件：references/<YYYYMMDD>-<topic>.md）`
 
-建议：
-- `module:hub|coder|system|shared` 作为第 1 个关键词，便于后续按模块回收/晋升。
+            建议：
+            - `module:hub|coder|system|shared` 作为第 1 个关键词，便于后续按模块回收/晋升。
 
-"""
-            try? s.data(using: .utf8)?.write(to: idx0, options: .atomic)
+            """
+            try? XTStoreWriteSupport.writeUTF8Text(s, to: idx0)
         }
 
         let idx1 = deepDir.appendingPathComponent("index.md")
         if !FileManager.default.fileExists(atPath: idx1.path) {
             let s = """
-# Forgotten Vault Deep Index（L1）
+            # Forgotten Vault Deep Index（L1）
 
-上层入口：
-- L0：`../index.md`
+            上层入口：
+            - L0：`../index.md`
 
-每条 1 行，格式建议：
-- `<YYYYMMDD>-<topic> — <一句话摘要>（关键词：module:hub,a,b,c）（文件：references/_deep/<YYYYMMDD>-<topic>.md）`
+            每条 1 行，格式建议：
+            - `<YYYYMMDD>-<topic> — <一句话摘要>（关键词：module:hub,a,b,c）（文件：references/_deep/<YYYYMMDD>-<topic>.md）`
 
-建议：
-- `module:hub|coder|system|shared` 作为第 1 个关键词，便于后续按模块回收/晋升。
+            建议：
+            - `module:hub|coder|system|shared` 作为第 1 个关键词，便于后续按模块回收/晋升。
 
-"""
-            try? s.data(using: .utf8)?.write(to: idx1, options: .atomic)
+            """
+            try? XTStoreWriteSupport.writeUTF8Text(s, to: idx1)
         }
 
         // Ensure project skills-index contains forgotten-vault.
@@ -161,7 +161,7 @@ common_ops:
         } else {
             out = existing.trimmingCharacters(in: .whitespacesAndNewlines) + "\n" + line + "\n"
         }
-        try? out.data(using: .utf8)?.write(to: indexURL, options: .atomic)
+        try? XTStoreWriteSupport.writeUTF8Text(out, to: indexURL)
     }
 
     private static func maybeSinkL0ToDeep(refsDir: URL) {
@@ -204,7 +204,7 @@ common_ops:
 
         // Rewrite L0 index.
         let out0 = (header + entries).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines) + "\n"
-        try? out0.data(using: .utf8)?.write(to: idx0, options: .atomic)
+        try? XTStoreWriteSupport.writeUTF8Text(out0, to: idx0)
 
         // Append to L1 index.
         let existing1 = (try? String(contentsOf: idx1, encoding: .utf8)) ?? ""
@@ -214,7 +214,7 @@ common_ops:
         } else {
             out1 = existing1.trimmingCharacters(in: .whitespacesAndNewlines) + "\n" + deepAppend.joined(separator: "\n") + "\n"
         }
-        try? out1.data(using: .utf8)?.write(to: idx1, options: .atomic)
+        try? XTStoreWriteSupport.writeUTF8Text(out1, to: idx1)
     }
 
     private static func extractRelPath(fromIndexLine line: String) -> String? {

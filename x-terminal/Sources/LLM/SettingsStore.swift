@@ -17,20 +17,25 @@ final class SettingsStore: ObservableObject {
     private let url: URL
 
     convenience init() {
-        self.init(voiceWakeProfileStore: VoiceWakeProfileStore.shared)
+        self.init(url: nil, voiceWakeProfileStore: VoiceWakeProfileStore.shared)
     }
 
-    init(voiceWakeProfileStore: VoiceWakeProfileStore) {
+    init(url: URL? = nil, voiceWakeProfileStore: VoiceWakeProfileStore) {
         self.voiceWakeProfileStore = voiceWakeProfileStore
         let fm = FileManager.default
-        let supportBase = fm.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library", isDirectory: true)
-            .appendingPathComponent("Application Support", isDirectory: true)
-        let base = supportBase.appendingPathComponent("X-Terminal", isDirectory: true)
+        let resolvedURL: URL = {
+            if let url { return url }
+            let supportBase = fm.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library", isDirectory: true)
+                .appendingPathComponent("Application Support", isDirectory: true)
+            let base = supportBase.appendingPathComponent("X-Terminal", isDirectory: true)
+            return base.appendingPathComponent("settings.json")
+        }()
+        let base = resolvedURL.deletingLastPathComponent()
         try? fm.createDirectory(at: base, withIntermediateDirectories: true)
 
-        url = base.appendingPathComponent("settings.json")
-        if let data = try? Data(contentsOf: url),
+        self.url = resolvedURL
+        if let data = try? Data(contentsOf: resolvedURL),
            let s = try? JSONDecoder().decode(XTerminalSettings.self, from: data) {
             settings = SettingsStore.enforceHubOnly(s)
         } else {
@@ -46,12 +51,11 @@ final class SettingsStore: ObservableObject {
     }
 
     func save() {
-        var s = settings
-        s.schemaVersion = XTerminalSettings.currentSchemaVersion
+        let s = settings.normalizedForPersistence()
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let data = try? enc.encode(s) {
-            try? data.write(to: url, options: .atomic)
+            try? XTStoreWriteSupport.writeSnapshotData(data, to: url)
         }
     }
 

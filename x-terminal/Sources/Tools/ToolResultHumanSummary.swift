@@ -68,78 +68,80 @@ enum ToolResultHumanSummary {
         switch result.tool {
         case .git_status:
             if lower.contains("not a git repository") {
-                return "Current folder is not a git repository, so git status cannot run here."
+                return "当前目录不是 Git 仓库，无法在这里查看 Git 状态。"
             }
-            return detail.isEmpty ? "Git status could not be read." : "Git status could not be read: \(detail)"
+            return detail.isEmpty ? "无法读取 Git 状态。" : "无法读取 Git 状态：\(detail)"
         case .git_diff:
             if lower.contains("not a git repository") {
-                return "Current folder is not a git repository, so git diff cannot run here."
+                return "当前目录不是 Git 仓库，无法在这里生成 Git diff。"
             }
-            return detail.isEmpty ? "Git diff could not be generated." : "Git diff could not be generated: \(detail)"
+            return detail.isEmpty ? "无法生成 Git diff。" : "无法生成 Git diff：\(detail)"
         case .run_command:
-            return detail.isEmpty ? "The command did not finish successfully." : "The command did not finish successfully: \(detail)"
+            return detail.isEmpty ? "命令未能成功完成。" : "命令未能成功完成：\(detail)"
         case .read_file:
             if lower.contains("no such file") {
-                return "The target file could not be found."
+                return "找不到目标文件。"
             }
-            return detail.isEmpty ? "The file could not be read." : "The file could not be read: \(detail)"
+            return detail.isEmpty ? "无法读取该文件。" : "无法读取该文件：\(detail)"
         case .write_file, .delete_path, .move_path, .git_apply, .git_apply_check:
             if lower.contains("permission denied") {
-                return "The change was blocked because this path is not writable."
+                return "当前路径不可写，此次改动已被阻止。"
             }
-            return detail.isEmpty ? "The requested change could not be applied." : "The requested change could not be applied: \(detail)"
+            return detail.isEmpty ? "请求的改动未能应用。" : "请求的改动未能应用：\(detail)"
         case .git_commit:
             if let preferred = gitFailureBody(summary: summary, tool: .git_commit) {
                 return preferred
             }
-            return detail.isEmpty ? "The git commit could not be created." : "The git commit could not be created: \(detail)"
+            return detail.isEmpty ? "无法创建 Git 提交。" : "无法创建 Git 提交：\(detail)"
         case .git_push:
             if let preferred = gitFailureBody(summary: summary, tool: .git_push) {
                 return preferred
             }
-            return detail.isEmpty ? "The git push could not be completed." : "The git push could not be completed: \(detail)"
+            return detail.isEmpty ? "无法完成 Git 推送。" : "无法完成 Git 推送：\(detail)"
         case .process_start:
-            return detail.isEmpty ? "The managed process could not be started." : "The managed process could not be started: \(detail)"
+            return detail.isEmpty ? "无法启动托管进程。" : "无法启动托管进程：\(detail)"
         case .process_status, .process_logs:
-            return detail.isEmpty ? "The managed process state could not be read." : "The managed process state could not be read: \(detail)"
+            return detail.isEmpty ? "无法读取托管进程状态。" : "无法读取托管进程状态：\(detail)"
         case .process_stop:
-            return detail.isEmpty ? "The managed process could not be stopped." : "The managed process could not be stopped: \(detail)"
+            return detail.isEmpty ? "无法停止托管进程。" : "无法停止托管进程：\(detail)"
         case .pr_create:
-            if let preferred = githubDeliveryFailureBody(summary: summary, toolLabel: "pull request") {
+            if let preferred = githubDeliveryFailureBody(summary: summary, toolLabel: "Pull Request") {
                 return preferred
             }
-            return detail.isEmpty ? "The pull request could not be created." : "The pull request could not be created: \(detail)"
+            return detail.isEmpty ? "无法创建 Pull Request。" : "无法创建 Pull Request：\(detail)"
         case .ci_read:
-            if let preferred = githubDeliveryFailureBody(summary: summary, toolLabel: "CI status") {
+            if let preferred = githubDeliveryFailureBody(summary: summary, toolLabel: "CI 状态") {
                 return preferred
             }
-            return detail.isEmpty ? "The CI state could not be read." : "The CI state could not be read: \(detail)"
+            return detail.isEmpty ? "无法读取 CI 状态。" : "无法读取 CI 状态：\(detail)"
         case .ci_trigger:
-            if let preferred = githubDeliveryFailureBody(summary: summary, toolLabel: "CI workflow") {
+            if let preferred = githubDeliveryFailureBody(summary: summary, toolLabel: "CI 工作流") {
                 return preferred
             }
-            return detail.isEmpty ? "The CI workflow could not be triggered." : "The CI workflow could not be triggered: \(detail)"
+            return detail.isEmpty ? "无法触发 CI 工作流。" : "无法触发 CI 工作流：\(detail)"
         case .agentImportRecord:
             if lower.contains("missing_agent_staging_id") || lower.contains("missing_agent_import_locator") {
-                return "The Hub import review needs a staging id or a selector such as the latest project import."
+                return "Hub 导入审查需要 staging id，或需要像“最新项目导入”这样的选择器。"
             }
             if lower.contains("missing_agent_project_id") {
-                return "This Hub import review selector needs a project id, and XT could not infer one from the active project."
+                return "这次 Hub 导入审查需要 project id，但 XT 无法从当前活动项目中自动推断。"
             }
             if lower.contains("missing_agent_skill_id") {
-                return "This Hub import review selector needs a skill id before it can resolve the latest matching import."
+                return "这次 Hub 导入审查需要 skill id，才能定位到最近一次匹配的导入记录。"
             }
             if lower.contains("skills_record_file_ipc_not_supported") {
-                return "Hub import review requires an active Hub runtime connection on this device."
+                return "Hub 导入审查需要当前设备上有可用的 Hub 运行时连接。"
             }
-            return detail.isEmpty ? "The Hub import record could not be loaded." : "The Hub import record could not be loaded: \(detail)"
+            return detail.isEmpty ? "无法加载 Hub 导入记录。" : "无法加载 Hub 导入记录：\(detail)"
         case .need_network, .web_fetch, .web_search, .browser_read, .bridge_status:
             if lower.contains("grant") || lower.contains("denied") || lower.contains("blocked") {
-                return "Network access is currently blocked by the active policy or grant gate."
+                return "当前网络访问被现行策略或授权闸门拦截。"
             }
-            return detail.isEmpty ? "The network action could not be completed." : "The network action could not be completed: \(detail)"
+            return detail.isEmpty ? "网络操作未能完成。" : "网络操作未能完成：\(detail)"
+        case .supervisorVoicePlayback:
+            return detail.isEmpty ? "Supervisor 语音播放未能完成。" : "Supervisor 语音播放未能完成：\(detail)"
         default:
-            return detail.isEmpty ? "This tool call failed. Open Diagnostics for the raw output." : detail
+            return detail.isEmpty ? "这次工具调用失败了。可打开诊断查看原始输出。" : detail
         }
     }
 
@@ -149,9 +151,9 @@ enum ToolResultHumanSummary {
         let tagName = string(summary["browser_fill_tag_name"])
         let target = selector ?? (tagName.map { "<\($0)>" })
         if let target {
-            return "The active browser field \(target) was filled using a Secret Vault credential."
+            return "已使用 Secret Vault 凭据填充浏览器中的 \(target) 字段。"
         }
-        return "The active browser field was filled using a Secret Vault credential."
+        return "已使用 Secret Vault 凭据填充当前浏览器输入框。"
     }
 
     private static func browserUIObservationSuccessBody(for result: ToolResult) -> String {
@@ -166,34 +168,34 @@ enum ToolResultHumanSummary {
         let prefix: String
         switch status {
         case XTUIObservationBundleStatus.captured.rawValue:
-            prefix = "A browser UI observation bundle was captured"
+            prefix = "已采集浏览器 UI 观察包"
         default:
-            prefix = "A partial browser UI observation bundle was captured"
+            prefix = "已采集部分浏览器 UI 观察包"
         }
 
         if let url, !url.isEmpty {
-            var body = "\(prefix) for \(url) using the \(probeDepth) probe (\(capturedLayers) layers)."
+            var body = "\(prefix)：\(url)，使用 \(probeDepth) 探测（\(capturedLayers) 层）。"
             if let reviewVerdict {
-                body += " Review verdict: \(reviewVerdict)."
+                body += "审查结论：\(reviewVerdict)。"
             }
             if let reviewSummary {
-                body += " \(reviewSummary)."
+                body += "审查摘要：\(reviewSummary)。"
             }
             return body
         }
-        var body = "\(prefix) using the \(probeDepth) probe (\(capturedLayers) layers)."
+        var body = "\(prefix)，使用 \(probeDepth) 探测（\(capturedLayers) 层）。"
         if let reviewVerdict {
-            body += " Review verdict: \(reviewVerdict)."
+            body += "审查结论：\(reviewVerdict)。"
         }
         if let reviewSummary {
-            body += " \(reviewSummary)."
+            body += "审查摘要：\(reviewSummary)。"
         }
         return body
     }
 
     private static func browserControlFailureBody(summary: [String: JSONValue]?, detail: String) -> String? {
         guard let summary else {
-            return detail.isEmpty ? "The browser action could not be completed." : detail
+            return detail.isEmpty ? "浏览器操作未能完成。" : "浏览器操作未能完成：\(detail)"
         }
 
         let denyCode = string(summary["deny_code"]) ?? ""
@@ -206,44 +208,44 @@ enum ToolResultHumanSummary {
         if hasSecretRef {
             switch denyCode {
             case XTDeviceAutomationRejectCode.browserSecretReferenceInvalid.rawValue:
-                return "The browser fill was blocked because the Secret Vault reference is incomplete. Provide `secret_item_id` or `secret_scope + secret_name`."
+                return "由于 Secret Vault 引用不完整，浏览器填充已被阻止。请提供 `secret_item_id`，或同时提供 `secret_scope` 和 `secret_name`。"
             case XTDeviceAutomationRejectCode.browserSecretSelectorMissing.rawValue:
-                return "The browser fill was blocked because Secret Vault-backed typing requires a DOM selector."
+                return "使用 Secret Vault 填充浏览器字段时，必须提供 DOM selector。"
             case XTDeviceAutomationRejectCode.browserSecretBeginUseFailed.rawValue:
                 if let reason = secretVaultReasonText(secretReason) {
-                    return "Hub did not authorize this credential use. \(reason)"
+                    return "Hub 未授权此次凭据使用。\(reason)"
                 }
-                return "Hub did not authorize this credential use."
+                return "Hub 未授权此次凭据使用。"
             case XTDeviceAutomationRejectCode.browserSecretRedeemFailed.rawValue:
                 if let reason = secretVaultReasonText(secretReason) {
-                    return "XT could not redeem the credential lease. \(reason)"
+                    return "XT 无法兑换这次凭据租约。\(reason)"
                 }
-                return "XT could not redeem the credential lease."
+                return "XT 无法兑换这次凭据租约。"
             case XTDeviceAutomationRejectCode.browserSecretFillUnavailable.rawValue:
-                return "The credential was resolved, but XT could not control the current browser window."
+                return "凭据已解析，但 XT 当前无法控制这个浏览器窗口。"
             case XTDeviceAutomationRejectCode.browserSecretFillFailed.rawValue:
                 if secretReason == "selector_not_found", let selector {
-                    return "The credential was resolved, but the page does not contain the target field \(selector)."
+                    return "凭据已解析，但当前页面里找不到目标字段 \(selector)。"
                 }
                 if let reason = secretVaultReasonText(secretReason) {
-                    return "The credential was resolved, but XT could not fill the browser field. \(reason)"
+                    return "凭据已解析，但 XT 无法填充浏览器字段。\(reason)"
                 }
-                return "The credential was resolved, but XT could not fill the browser field."
+                return "凭据已解析，但 XT 无法填充浏览器字段。"
             case XTDeviceAutomationRejectCode.browserSecretPlaintextForbidden.rawValue:
-                return "Sensitive browser fields must use a Secret Vault reference instead of plaintext input."
+                return "敏感浏览器字段必须使用 Secret Vault 引用，不能直接输入明文。"
             default:
                 break
             }
         }
 
         if denyCode == XTDeviceAutomationRejectCode.browserManagedDriverUnavailable.rawValue {
-            return "XT can open the page, but managed browser click/type automation is not available for this path yet."
+            return "XT 可以打开页面，但这条路径暂时还不支持托管浏览器点击/输入自动化。"
         }
         if denyCode == XTDeviceAutomationRejectCode.browserSessionNoActiveURL.rawValue {
-            return "XT has no active browser URL for this session, so the browser action was blocked."
+            return "当前会话没有可用的浏览器 URL，因此浏览器操作已被阻止。"
         }
         if denyCode == XTDeviceAutomationRejectCode.browserSessionMissing.rawValue {
-            return "The browser session is missing, so XT could not continue the browser action."
+            return "浏览器会话已丢失，XT 无法继续执行该操作。"
         }
         if let guardrailBody = XTGuardrailMessagePresentation.toolResultBody(
             tool: .deviceBrowserControl,
@@ -254,7 +256,7 @@ enum ToolResultHumanSummary {
         }
 
         if !denyCode.isEmpty || !detail.isEmpty {
-            return detail.isEmpty ? "The browser action could not be completed." : detail
+            return detail.isEmpty ? "浏览器操作未能完成。" : "浏览器操作未能完成：\(detail)"
         }
         return nil
     }
@@ -266,24 +268,24 @@ enum ToolResultHumanSummary {
 
         switch reasonCode {
         case "not_git_repository":
-            return "Current folder is not a git repository, so \(toolLabel) actions cannot run here."
+            return "当前目录不是 Git 仓库，无法在这里执行\(toolLabel)。"
         case "github_cli_missing":
-            return "GitHub delivery actions require GitHub CLI (`gh`) on this machine."
+            return "当前设备还没有安装 GitHub CLI（`gh`），因此无法执行 GitHub 交付动作。"
         case "github_auth_missing":
-            return "GitHub CLI is installed, but this machine is not authenticated for GitHub actions yet."
+            return "已安装 GitHub CLI（`gh`），但当前设备还没有完成 GitHub 登录授权。"
         case "github_repo_context_unavailable":
             if let repo = string(summary["repo"]), !repo.isEmpty {
-                return "XT could not resolve GitHub delivery access for \(repo)."
+                return "XT 无法为 \(repo) 解析 GitHub 交付上下文。"
             }
-            return "XT could not resolve a GitHub repository from the current folder."
+            return "XT 无法从当前目录解析出 GitHub 仓库。"
         case "github_cli_execution_failed":
-            return "GitHub CLI could not be started from this project."
+            return "XT 无法从当前项目启动 GitHub CLI。"
         default:
             break
         }
 
         if provider == "github", !reasonCode.isEmpty {
-            return "GitHub delivery action failed before the \(toolLabel) step could run."
+            return "GitHub 交付动作在执行\(toolLabel)前就失败了。"
         }
         return nil
     }
@@ -295,40 +297,40 @@ enum ToolResultHumanSummary {
         case "not_git_repository":
             switch tool {
             case .git_commit:
-                return "Current folder is not a git repository, so git commit cannot run here."
+                return "当前目录不是 Git 仓库，无法在这里执行 Git 提交。"
             case .git_push:
-                return "Current folder is not a git repository, so git push cannot run here."
+                return "当前目录不是 Git 仓库，无法在这里执行 Git 推送。"
             default:
                 return nil
             }
         case "git_identity_missing":
-            return "Git user identity is not configured yet. Set `user.name` and `user.email` before committing."
+            return "Git 身份尚未配置。提交前请先设置 `user.name` 和 `user.email`。"
         case "git_commit_no_changes":
             if let paths = array(summary["paths"]), !paths.isEmpty {
-                return "The requested commit paths do not have tracked changes ready to commit."
+                return "指定的提交路径下没有可提交的已跟踪改动。"
             }
             if bool(summary["all"]) == true {
-                return "There are no tracked changes ready to commit."
+                return "当前没有可提交的已跟踪改动。"
             }
-            return "There are no staged changes ready to commit."
+            return "当前没有可提交的暂存改动。"
         case "git_commit_pathspec_invalid":
-            return "One or more commit paths are not tracked by git in this repository."
+            return "一个或多个提交路径不在这个仓库的 Git 跟踪范围内。"
         case "git_commit_paths_with_all_unsupported":
-            return "Git commit cannot combine `all=true` with explicit `paths`. Choose one mode."
+            return "Git commit 不能同时传 `all=true` 和显式 `paths`，请选择一种方式。"
         case "git_push_detached_head":
-            return "Git push needs an explicit branch because the repository is in detached HEAD state."
+            return "仓库当前处于 detached HEAD 状态，Git push 需要显式指定分支。"
         case "git_push_remote_missing":
-            return "Git push needs a configured remote before it can continue."
+            return "Git push 需要先配置远端仓库。"
         case "git_push_remote_ambiguous":
-            return "Multiple git remotes are configured, so git push needs an explicit remote."
+            return "当前配置了多个远端仓库，Git push 需要显式指定 remote。"
         case "git_push_branch_missing":
-            return "The local branch to push does not exist yet."
+            return "要推送的本地分支还不存在。"
         case "git_push_remote_unreachable":
-            return "XT could not reach the configured git remote."
+            return "XT 无法连接到已配置的 Git 远端。"
         case "git_push_non_fast_forward":
-            return "The push was rejected because the remote branch has diverged."
+            return "远端分支已发生分叉，这次推送被拒绝。"
         case "git_push_remote_rejected":
-            return "The remote rejected this push."
+            return "远端拒绝了这次推送。"
         default:
             return nil
         }
@@ -342,15 +344,15 @@ enum ToolResultHumanSummary {
 
         switch token {
         case "secret_vault_item_not_found":
-            return "The referenced credential is no longer available in Hub."
+            return "引用的凭据已不在 Hub 中。"
         case "secret_vault_use_token_not_found":
-            return "The one-time credential lease expired or was already consumed."
+            return "一次性凭据租约已过期，或已被使用。"
         case "secret_vault_decrypt_failed":
-            return "Hub could not decrypt the stored credential."
+            return "Hub 无法解密这条已存储的凭据。"
         case "selector_not_found":
-            return "The target field could not be found in the current page."
+            return "当前页面里找不到目标字段。"
         default:
-            return "Reason: \(token)."
+            return "原因：\(token)。"
         }
     }
 

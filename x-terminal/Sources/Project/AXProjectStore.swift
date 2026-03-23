@@ -378,7 +378,7 @@ enum AXProjectStore {
         var line = json
         line.append(0x0A)
         if !FileManager.default.fileExists(atPath: url.path) {
-            try? line.write(to: url, options: .atomic)
+            try? XTStoreWriteSupport.writeSnapshotData(line, to: url)
             return
         }
         do {
@@ -428,11 +428,6 @@ enum AXProjectStore {
     }
 
     private static func writeAtomic(data: Data, to url: URL) throws {
-        let tmp = url.deletingLastPathComponent().appendingPathComponent(".\(url.lastPathComponent).tmp")
-        try data.write(to: tmp, options: .atomic)
-        if FileManager.default.fileExists(atPath: url.path) {
-            try FileManager.default.removeItem(at: url)
-        }
-        try FileManager.default.moveItem(at: tmp, to: url)
+        try XTStoreWriteSupport.writeSnapshotData(data, to: url)
     }
 }

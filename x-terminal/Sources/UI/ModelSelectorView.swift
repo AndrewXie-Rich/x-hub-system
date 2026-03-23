@@ -5,6 +5,7 @@ struct ModelSelectorView: View {
     var focusContext: XTSectionFocusContext? = nil
 
     @EnvironmentObject private var appModel: AppModel
+    @StateObject private var updateFeedback = XTTransientUpdateFeedbackState()
     @State private var showPopover: Bool = false
 
     var body: some View {
@@ -18,6 +19,12 @@ struct ModelSelectorView: View {
                             Text(routingSelectionState.sourceLabel)
                                 .font(.caption2.weight(.semibold))
                                 .foregroundStyle(.secondary)
+                            if updateFeedback.showsBadge {
+                                XTTransientUpdateBadge(
+                                    tint: .accentColor,
+                                    title: "已更新"
+                                )
+                            }
                             if let presentation = selectedPresentationModel {
                                 ModelCapabilityStrip(model: presentation, limit: 3, compact: true)
                             } else {
@@ -31,13 +38,21 @@ struct ModelSelectorView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
-                .background(Color(NSColor.controlBackgroundColor))
-                .cornerRadius(6)
+                .xtTransientUpdateCardChrome(
+                    cornerRadius: 6,
+                    isUpdated: updateFeedback.isHighlighted,
+                    focusTint: .accentColor,
+                    updateTint: .accentColor,
+                    baseBackground: Color(NSColor.controlBackgroundColor)
+                )
             }
             .buttonStyle(.plain)
             .popover(isPresented: $showPopover) {
                 modelList
             }
+        }
+        .onDisappear {
+            updateFeedback.cancel(resetState: true)
         }
     }
 
@@ -67,17 +82,17 @@ struct ModelSelectorView: View {
                     recommendedModelId: selectedModelRecommendation?.modelId,
                     recommendationMessage: selectedModelRecommendation?.message,
                     showContextDetails: false,
-                    automaticTitle: "Auto (使用全局/Hub 路由)",
+                    automaticTitle: "自动（使用全局 / Hub 路由）",
                     automaticSelectedBadge: "当前生效",
                     automaticRestoreBadge: "恢复继承",
                     inheritedModelLabel: inheritedModelId == nil ? "自动路由" : "全局模型",
                     automaticDescription: "让 Hub 或全局配置自行路由当前 coder 模型。"
                 ) { modelId in
-                    appModel.setProjectRoleModel(role: .coder, modelId: modelId)
+                    updateProjectCoderModelSelection(modelId: modelId)
                     showPopover = false
                 }
             } else {
-                Text("Hub not connected")
+                Text("Hub 未连接")
                     .foregroundStyle(.secondary)
                     .padding(12)
             }
@@ -85,8 +100,12 @@ struct ModelSelectorView: View {
         .frame(width: 420)
     }
 
+    private var effectiveConfig: AXProjectConfig? {
+        appModel.projectConfig ?? config
+    }
+
     private var explicitModelId: String? {
-        let raw = config?.modelOverride(for: .coder)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let raw = effectiveConfig?.modelOverride(for: .coder)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return raw.isEmpty ? nil : raw
     }
 
@@ -102,12 +121,12 @@ struct ModelSelectorView: View {
             models: selectableModels,
             explicitSourceLabel: "项目覆盖",
             inheritedSourceLabel: inheritedModelId == nil ? "自动路由" : "继承全局",
-            automaticTitle: "Auto"
+            automaticTitle: "自动"
         )
     }
 
     private var selectorTitle: String {
-        "Coder: \(routingSelectionState.title)"
+        "Coder：\(routingSelectionState.title)"
     }
 
     private var selectedPresentationModel: ModelInfo? {
@@ -174,6 +193,13 @@ struct ModelSelectorView: View {
             return nil
         }
 
+        if let blocked = assessment.nonInteractiveExactMatch {
+            return (
+                candidate,
+                "`\(blocked.id)` 是检索专用模型，Supervisor 会按需调用它做 retrieval；当前对话先切到 `\(candidate)` 更稳。"
+            )
+        }
+
         if let exact = assessment.exactMatch {
             return (
                 candidate,
@@ -203,6 +229,15 @@ struct ModelSelectorView: View {
         guard let assessment = selectedModelAssessment else { return "当前无法确认\(sourceLabel) `\(selectedModelId)` 是否可用。" }
         guard !assessment.isExactMatchLoaded else { return nil }
 
+        if let blocked = assessment.nonInteractiveExactMatch,
+           let reason = assessment.interactiveRoutingBlockedReason {
+            let suggestions = suggestedCandidates(from: assessment)
+            if let first = suggestions.first {
+                return "\(sourceLabel) `\(blocked.id)` 当前是检索专用模型。\(reason) 可先改用 `\(first)`，或恢复 Auto。"
+            }
+            return "\(sourceLabel) `\(blocked.id)` 当前是检索专用模型。\(reason)"
+        }
+
         if let exact = assessment.exactMatch {
             let suggestions = suggestedCandidates(from: assessment)
             if let first = suggestions.first {
@@ -229,5 +264,20 @@ struct ModelSelectorView: View {
         case .available: return 1
         case .sleeping: return 2
         }
+    }
+
+    private func updateProjectCoderModelSelection(modelId: String?) {
+        let trimmedModelId = modelId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedModelId = trimmedModelId?.isEmpty == false ? trimmedModelId : nil
+        guard normalizedModelOverrideValue(explicitModelId) != normalizedModelOverrideValue(normalizedModelId) else {
+            return
+        }
+
+        appModel.setProjectRoleModel(role: .coder, modelId: normalizedModelId)
+        updateFeedback.trigger()
+    }
+
+    private func normalizedModelOverrideValue(_ raw: String?) -> String {
+        (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 }

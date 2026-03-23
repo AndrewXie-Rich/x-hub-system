@@ -200,6 +200,17 @@ struct XTUIReviewPresentation: Equatable {
         "UI review · \(verdictLabel) · \(issueSummary)"
     }
 
+    var transientUpdateSignature: String {
+        [
+            reviewRef,
+            verdict.rawValue,
+            confidence.rawValue,
+            summary,
+            issueCodes.joined(separator: ","),
+            String(updatedAtMs)
+        ].joined(separator: "|")
+    }
+
     var hasAnyOpenableArtifact: Bool {
         reviewFileURL != nil || bundleFileURL != nil || screenshotFileURL != nil || visibleTextFileURL != nil
     }

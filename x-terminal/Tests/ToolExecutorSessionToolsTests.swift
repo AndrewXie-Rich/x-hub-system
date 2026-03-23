@@ -114,15 +114,15 @@ struct ToolExecutorSessionToolsTests {
             #expect(jsonString(governance?["review_policy_mode"]) == AXProjectReviewPolicyMode.milestoneOnly.rawValue)
             #expect(jsonArray(governance?["event_review_triggers"])?.contains(where: { jsonString($0) == AXProjectReviewTrigger.manualRequest.rawValue }) == true)
             let runtimeSurface = jsonObject(snapshotSummary["runtime_surface"])
-            #expect(jsonString(runtimeSurface?["configured_surface"]) == AXProjectAutonomyMode.manual.rawValue)
-            #expect(jsonString(runtimeSurface?["effective_surface"]) == AXProjectAutonomyMode.manual.rawValue)
-            #expect(jsonString(runtimeSurface?["hub_override_surface"]) == AXProjectAutonomyHubOverrideMode.none.rawValue)
+            #expect(jsonString(runtimeSurface?["configured_surface"]) == AXProjectRuntimeSurfaceMode.manual.rawValue)
+            #expect(jsonString(runtimeSurface?["effective_surface"]) == AXProjectRuntimeSurfaceMode.manual.rawValue)
+            #expect(jsonString(runtimeSurface?["hub_override_surface"]) == AXProjectRuntimeSurfaceHubOverrideMode.none.rawValue)
             #expect(jsonArray(runtimeSurface?["configured_surfaces"])?.isEmpty == true)
             #expect(jsonArray(runtimeSurface?["effective_surfaces"])?.isEmpty == true)
             let autonomy = jsonObject(snapshotSummary["autonomy_policy"])
-            #expect(jsonString(autonomy?["configured_mode"]) == AXProjectAutonomyMode.manual.rawValue)
-            #expect(jsonString(autonomy?["effective_mode"]) == AXProjectAutonomyMode.manual.rawValue)
-            #expect(jsonString(autonomy?["hub_override_mode"]) == AXProjectAutonomyHubOverrideMode.none.rawValue)
+            #expect(jsonString(autonomy?["configured_mode"]) == AXProjectRuntimeSurfaceMode.manual.rawValue)
+            #expect(jsonString(autonomy?["effective_mode"]) == AXProjectRuntimeSurfaceMode.manual.rawValue)
+            #expect(jsonString(autonomy?["hub_override_mode"]) == AXProjectRuntimeSurfaceHubOverrideMode.none.rawValue)
             #expect(jsonArray(autonomy?["configured_surfaces"])?.isEmpty == true)
             #expect(jsonArray(autonomy?["effective_surfaces"])?.isEmpty == true)
         }
@@ -169,7 +169,7 @@ struct ToolExecutorSessionToolsTests {
                 deviceToolGroups: ["device.browser.control"],
                 workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
             )
-            cfg = cfg.settingAutonomyPolicy(
+            cfg = cfg.settingRuntimeSurfacePolicy(
                 mode: .trustedOpenClawMode,
                 updatedAt: Date()
             )

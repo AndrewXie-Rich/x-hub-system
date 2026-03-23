@@ -1,16 +1,18 @@
 import Foundation
 
-enum AXProjectAutonomyProfile: String, CaseIterable, Sendable, Identifiable {
+enum AXProjectGovernanceTemplate: String, CaseIterable, Sendable, Identifiable {
     case conservative
     case safe
-    case fullAutonomy = "full_autonomy"
+    case agent = "full_autonomy"
     case custom
 
-    static let selectableProfiles: [AXProjectAutonomyProfile] = [
+    static let selectableTemplates: [Self] = [
         .conservative,
         .safe,
-        .fullAutonomy,
+        .agent,
     ]
+
+    static let selectableProfiles: [Self] = selectableTemplates
 
     var id: String { rawValue }
 
@@ -20,8 +22,8 @@ enum AXProjectAutonomyProfile: String, CaseIterable, Sendable, Identifiable {
             return "保守"
         case .safe:
             return "安全"
-        case .fullAutonomy:
-            return "完全自治"
+        case .agent:
+            return "Agent"
         case .custom:
             return "自定义"
         }
@@ -30,16 +32,18 @@ enum AXProjectAutonomyProfile: String, CaseIterable, Sendable, Identifiable {
     var shortDescription: String {
         switch self {
         case .conservative:
-            return "以理解、规划和审阅为主，默认走人工审批。"
+            return "默认映射 A1 + S2，以理解、规划和审阅为主。"
         case .safe:
-            return "推荐默认档，project 内持续推进，高风险仍走治理。"
-        case .fullAutonomy:
-            return "允许完整执行面，但继续受 Hub grant、宪章和 kill-switch 约束。"
+            return "默认映射 A3 + S3，推荐默认档，project 内持续推进。"
+        case .agent:
+            return "默认映射 A4 Agent + S3，允许更大执行面，但仍受治理约束。"
         case .custom:
             return "当前高级治理项已偏离默认映射。"
         }
     }
 }
+
+typealias AXProjectAutonomyProfile = AXProjectGovernanceTemplate
 
 enum AXProjectDeviceAuthorityPosture: String, Sendable {
     case off
@@ -92,9 +96,9 @@ enum AXProjectGrantPosture: String, Sendable {
     }
 }
 
-struct AXProjectAutonomySwitchboardPresentation: Equatable, Sendable {
-    var configuredProfile: AXProjectAutonomyProfile
-    var effectiveProfile: AXProjectAutonomyProfile
+struct AXProjectGovernanceTemplatePreview: Equatable, Sendable {
+    var configuredProfile: AXProjectGovernanceTemplate
+    var effectiveProfile: AXProjectGovernanceTemplate
     var configuredDeviceAuthorityPosture: AXProjectDeviceAuthorityPosture
     var effectiveDeviceAuthorityPosture: AXProjectDeviceAuthorityPosture
     var configuredSupervisorScope: AXProjectSupervisorScope
@@ -121,8 +125,10 @@ struct AXProjectAutonomySwitchboardPresentation: Equatable, Sendable {
     }
 }
 
-private struct AXProjectAutonomyProfileSpec {
-    var profile: AXProjectAutonomyProfile
+typealias AXProjectAutonomySwitchboardPresentation = AXProjectGovernanceTemplatePreview
+
+private struct AXProjectGovernanceTemplateSpec {
+    var template: AXProjectGovernanceTemplate
     var executionTier: AXProjectExecutionTier
     var supervisorTier: AXProjectSupervisorInterventionTier
     var reviewPolicyMode: AXProjectReviewPolicyMode
@@ -131,21 +137,21 @@ private struct AXProjectAutonomyProfileSpec {
     var brainstormReviewSeconds: Int
     var eventDrivenReviewEnabled: Bool
     var eventReviewTriggers: [AXProjectReviewTrigger]
-    var autonomyMode: AXProjectAutonomyMode
+    var runtimeSurfaceMode: AXProjectRuntimeSurfaceMode
     var localAutoApproveConfigured: Bool
     var requiresHubMemory: Bool
     var deviceAuthorityPosture: AXProjectDeviceAuthorityPosture
     var supervisorScope: AXProjectSupervisorScope
     var grantPosture: AXProjectGrantPosture
 
-    init?(profile: AXProjectAutonomyProfile) {
-        switch profile {
+    init?(template: AXProjectGovernanceTemplate) {
+        switch template {
         case .conservative:
             let bundle = AXProjectGovernanceBundle.recommended(
                 for: .a1Plan,
                 supervisorInterventionTier: .s2PeriodicReview
             )
-            self.profile = profile
+            self.template = template
             executionTier = .a1Plan
             supervisorTier = .s2PeriodicReview
             reviewPolicyMode = bundle.reviewPolicyMode
@@ -154,7 +160,7 @@ private struct AXProjectAutonomyProfileSpec {
             brainstormReviewSeconds = bundle.schedule.brainstormReviewSeconds
             eventDrivenReviewEnabled = bundle.schedule.eventDrivenReviewEnabled
             eventReviewTriggers = bundle.schedule.eventReviewTriggers
-            autonomyMode = .manual
+            runtimeSurfaceMode = .manual
             localAutoApproveConfigured = false
             requiresHubMemory = false
             deviceAuthorityPosture = .off
@@ -165,7 +171,7 @@ private struct AXProjectAutonomyProfileSpec {
                 for: .a3DeliverAuto,
                 supervisorInterventionTier: .s3StrategicCoach
             )
-            self.profile = profile
+            self.template = template
             executionTier = .a3DeliverAuto
             supervisorTier = .s3StrategicCoach
             reviewPolicyMode = bundle.reviewPolicyMode
@@ -174,18 +180,18 @@ private struct AXProjectAutonomyProfileSpec {
             brainstormReviewSeconds = bundle.schedule.brainstormReviewSeconds
             eventDrivenReviewEnabled = bundle.schedule.eventDrivenReviewEnabled
             eventReviewTriggers = bundle.schedule.eventReviewTriggers
-            autonomyMode = .guided
+            runtimeSurfaceMode = .guided
             localAutoApproveConfigured = false
             requiresHubMemory = false
             deviceAuthorityPosture = .projectBound
             supervisorScope = .portfolio
             grantPosture = .guidedAuto
-        case .fullAutonomy:
+        case .agent:
             let bundle = AXProjectGovernanceBundle.recommended(
                 for: .a4OpenClaw,
                 supervisorInterventionTier: .s3StrategicCoach
             )
-            self.profile = profile
+            self.template = template
             executionTier = .a4OpenClaw
             supervisorTier = .s3StrategicCoach
             reviewPolicyMode = bundle.reviewPolicyMode
@@ -194,7 +200,7 @@ private struct AXProjectAutonomyProfileSpec {
             brainstormReviewSeconds = bundle.schedule.brainstormReviewSeconds
             eventDrivenReviewEnabled = bundle.schedule.eventDrivenReviewEnabled
             eventReviewTriggers = bundle.schedule.eventReviewTriggers
-            autonomyMode = .trustedOpenClawMode
+            runtimeSurfaceMode = .trustedOpenClawMode
             localAutoApproveConfigured = true
             requiresHubMemory = true
             deviceAuthorityPosture = .deviceGoverned
@@ -206,7 +212,7 @@ private struct AXProjectAutonomyProfileSpec {
     }
 }
 
-private struct AXProjectAutonomyProfileSnapshot {
+private struct AXProjectGovernanceTemplateSnapshot {
     var executionTier: AXProjectExecutionTier
     var supervisorTier: AXProjectSupervisorInterventionTier
     var reviewPolicyMode: AXProjectReviewPolicyMode
@@ -215,19 +221,19 @@ private struct AXProjectAutonomyProfileSnapshot {
     var brainstormReviewSeconds: Int
     var eventDrivenReviewEnabled: Bool
     var eventReviewTriggers: [AXProjectReviewTrigger]
-    var autonomyMode: AXProjectAutonomyMode
+    var runtimeSurfaceMode: AXProjectRuntimeSurfaceMode
     var localAutoApproveConfigured: Bool
     var hubMemoryEnabled: Bool
-    var terminalClamp: AXProjectAutonomyHubOverrideMode
+    var runtimeSurfaceClamp: AXProjectRuntimeSurfaceHubOverrideMode
 }
 
 extension AXProjectConfig {
-    func settingAutonomySwitchboardProfile(
-        _ profile: AXProjectAutonomyProfile,
+    func settingGovernanceTemplate(
+        _ template: AXProjectGovernanceTemplate,
         projectRoot _: URL,
         now: Date = Date()
     ) -> AXProjectConfig {
-        guard let spec = AXProjectAutonomyProfileSpec(profile: profile) else { return self }
+        guard let spec = AXProjectGovernanceTemplateSpec(template: template) else { return self }
 
         var out = self
         out = out.settingProjectGovernance(
@@ -241,10 +247,10 @@ extension AXProjectConfig {
             eventReviewTriggers: spec.eventReviewTriggers,
             governanceCompatSource: .explicitDualDial
         )
-        out = out.settingAutonomyPolicy(
-            mode: spec.autonomyMode,
+        out = out.settingRuntimeSurfacePolicy(
+            mode: spec.runtimeSurfaceMode,
             ttlSeconds: 3600,
-            hubOverrideMode: AXProjectAutonomyHubOverrideMode.none,
+            hubOverrideMode: AXProjectRuntimeSurfaceHubOverrideMode.none,
             updatedAt: now
         )
         out = out.settingGovernedAutoApproveLocalToolCalls(enabled: spec.localAutoApproveConfigured)
@@ -253,19 +259,73 @@ extension AXProjectConfig {
         }
         return out
     }
+
+    @available(*, deprecated, message: "Use settingGovernanceTemplate(_:projectRoot:now:)")
+    func settingAutonomySwitchboardProfile(
+        _ profile: AXProjectAutonomyProfile,
+        projectRoot: URL,
+        now: Date = Date()
+    ) -> AXProjectConfig {
+        settingGovernanceTemplate(
+            profile,
+            projectRoot: projectRoot,
+            now: now
+        )
+    }
 }
 
-func xtAutonomyBaselineProfile(for executionTier: AXProjectExecutionTier) -> AXProjectAutonomyProfile {
+func xtGovernanceTemplateBaseline(for executionTier: AXProjectExecutionTier) -> AXProjectGovernanceTemplate {
     switch executionTier {
     case .a0Observe, .a1Plan:
         return .conservative
     case .a2RepoAuto, .a3DeliverAuto:
         return .safe
     case .a4OpenClaw:
-        return .fullAutonomy
+            return .agent
     }
 }
 
+@available(*, deprecated, message: "Use xtGovernanceTemplateBaseline(for:)")
+func xtAutonomyBaselineProfile(for executionTier: AXProjectExecutionTier) -> AXProjectAutonomyProfile {
+    xtGovernanceTemplateBaseline(for: executionTier)
+}
+
+func xtGovernanceTemplateDraftConfig(
+    projectRoot: URL,
+    template: AXProjectGovernanceTemplate,
+    executionTier: AXProjectExecutionTier,
+    supervisorInterventionTier: AXProjectSupervisorInterventionTier,
+    reviewPolicyMode: AXProjectReviewPolicyMode,
+    progressHeartbeatSeconds: Int,
+    reviewPulseSeconds: Int,
+    brainstormReviewSeconds: Int,
+    eventDrivenReviewEnabled: Bool,
+    eventReviewTriggers: [AXProjectReviewTrigger]? = nil
+) -> AXProjectConfig {
+    let normalizedTemplate = AXProjectGovernanceTemplate.selectableTemplates.contains(template)
+        ? template
+        : xtGovernanceTemplateBaseline(for: executionTier)
+
+    return AXProjectConfig
+        .default(forProjectRoot: projectRoot)
+        .settingGovernanceTemplate(
+            normalizedTemplate,
+            projectRoot: projectRoot
+        )
+        .settingProjectGovernance(
+            executionTier: executionTier,
+            supervisorInterventionTier: supervisorInterventionTier,
+            reviewPolicyMode: reviewPolicyMode,
+            progressHeartbeatSeconds: progressHeartbeatSeconds,
+            reviewPulseSeconds: reviewPulseSeconds,
+            brainstormReviewSeconds: brainstormReviewSeconds,
+            eventDrivenReviewEnabled: eventDrivenReviewEnabled,
+            eventReviewTriggers: eventReviewTriggers ?? executionTier.defaultEventReviewTriggers,
+            governanceCompatSource: .explicitDualDial
+        )
+}
+
+@available(*, deprecated, message: "Use xtGovernanceTemplateDraftConfig(projectRoot:template:executionTier:supervisorInterventionTier:reviewPolicyMode:progressHeartbeatSeconds:reviewPulseSeconds:brainstormReviewSeconds:eventDrivenReviewEnabled:)")
 func xtAutonomySwitchboardDraftConfig(
     projectRoot: URL,
     baselineProfile: AXProjectAutonomyProfile,
@@ -277,44 +337,34 @@ func xtAutonomySwitchboardDraftConfig(
     brainstormReviewSeconds: Int,
     eventDrivenReviewEnabled: Bool
 ) -> AXProjectConfig {
-    let normalizedBaseline = AXProjectAutonomyProfile.selectableProfiles.contains(baselineProfile)
-        ? baselineProfile
-        : xtAutonomyBaselineProfile(for: executionTier)
-
-    return AXProjectConfig
-        .default(forProjectRoot: projectRoot)
-        .settingAutonomySwitchboardProfile(
-            normalizedBaseline,
-            projectRoot: projectRoot
-        )
-        .settingProjectGovernance(
-            executionTier: executionTier,
-            supervisorInterventionTier: supervisorInterventionTier,
-            reviewPolicyMode: reviewPolicyMode,
-            progressHeartbeatSeconds: progressHeartbeatSeconds,
-            reviewPulseSeconds: reviewPulseSeconds,
-            brainstormReviewSeconds: brainstormReviewSeconds,
-            eventDrivenReviewEnabled: eventDrivenReviewEnabled,
-            eventReviewTriggers: executionTier.defaultEventReviewTriggers,
-            governanceCompatSource: .explicitDualDial
-        )
+    xtGovernanceTemplateDraftConfig(
+        projectRoot: projectRoot,
+        template: baselineProfile,
+        executionTier: executionTier,
+        supervisorInterventionTier: supervisorInterventionTier,
+        reviewPolicyMode: reviewPolicyMode,
+        progressHeartbeatSeconds: progressHeartbeatSeconds,
+        reviewPulseSeconds: reviewPulseSeconds,
+        brainstormReviewSeconds: brainstormReviewSeconds,
+        eventDrivenReviewEnabled: eventDrivenReviewEnabled
+    )
 }
 
-func xtProjectAutonomySwitchboardPresentation(
+func xtProjectGovernanceTemplatePresentation(
     projectRoot: URL,
     config: AXProjectConfig,
     resolved: AXProjectResolvedGovernanceState
-) -> AXProjectAutonomySwitchboardPresentation {
-    let configuredProfile = xtConfiguredAutonomyProfile(for: config)
+) -> AXProjectGovernanceTemplatePreview {
+    let configuredProfile = xtConfiguredGovernanceTemplate(for: config)
     let configuredAuthority = xtProjectGovernedAuthorityPresentation(
         projectRoot: projectRoot,
         config: config
     )
     let effectiveCapability = resolved.effectiveBundle.executionTier.baseCapabilityBundle.applying(
-        effectiveAutonomy: resolved.effectiveAutonomy,
+        effectiveRuntimeSurface: resolved.effectiveRuntimeSurface,
         trustedAutomationStatus: resolved.trustedAutomationStatus
     )
-    let effectiveProfile = xtEffectiveAutonomyProfile(
+    let effectiveProfile = xtEffectiveGovernanceTemplate(
         config: config,
         resolved: resolved,
         effectiveCapability: effectiveCapability
@@ -348,7 +398,7 @@ func xtProjectAutonomySwitchboardPresentation(
         resolved: resolved
     )
 
-    return AXProjectAutonomySwitchboardPresentation(
+    return AXProjectGovernanceTemplatePreview(
         configuredProfile: configuredProfile,
         effectiveProfile: effectiveProfile,
         configuredDeviceAuthorityPosture: configuredDeviceAuthority,
@@ -358,8 +408,8 @@ func xtProjectAutonomySwitchboardPresentation(
         configuredGrantPosture: configuredGrantPosture,
         effectiveGrantPosture: effectiveGrantPosture,
         configuredProfileSummary: configuredProfile.shortDescription,
-        effectiveProfileSummary: xtEffectiveProfileSummary(
-            profile: effectiveProfile,
+        effectiveProfileSummary: xtEffectiveTemplateSummary(
+            template: effectiveProfile,
             resolved: resolved,
             effectiveCapability: effectiveCapability
         ),
@@ -391,8 +441,8 @@ func xtProjectAutonomySwitchboardPresentation(
             posture: effectiveGrantPosture,
             effective: true
         ),
-        configuredDeviationReasons: xtConfiguredDeviationReasons(config),
-        effectiveDeviationReasons: xtEffectiveDeviationReasons(
+        configuredDeviationReasons: xtConfiguredTemplateDeviationReasons(config),
+        effectiveDeviationReasons: xtEffectiveTemplateDeviationReasons(
             config: config,
             resolved: resolved,
             effectiveCapability: effectiveCapability
@@ -401,25 +451,38 @@ func xtProjectAutonomySwitchboardPresentation(
     )
 }
 
-private func xtConfiguredAutonomyProfile(for config: AXProjectConfig) -> AXProjectAutonomyProfile {
-    if xtMatchesLegacyConservativeProfile(config) || xtMatchesProfile(config, profile: .conservative) {
+@available(*, deprecated, message: "Use xtProjectGovernanceTemplatePresentation(projectRoot:config:resolved:)")
+func xtProjectAutonomySwitchboardPresentation(
+    projectRoot: URL,
+    config: AXProjectConfig,
+    resolved: AXProjectResolvedGovernanceState
+) -> AXProjectAutonomySwitchboardPresentation {
+    xtProjectGovernanceTemplatePresentation(
+        projectRoot: projectRoot,
+        config: config,
+        resolved: resolved
+    )
+}
+
+private func xtConfiguredGovernanceTemplate(for config: AXProjectConfig) -> AXProjectGovernanceTemplate {
+    if xtMatchesLegacyConservativeTemplate(config) || xtMatchesTemplate(config, template: .conservative) {
         return .conservative
     }
-    if xtMatchesProfile(config, profile: .safe) {
+    if xtMatchesTemplate(config, template: .safe) {
         return .safe
     }
-    if xtMatchesProfile(config, profile: .fullAutonomy) {
-        return .fullAutonomy
+    if xtMatchesTemplate(config, template: .agent) {
+        return .agent
     }
     return .custom
 }
 
-private func xtEffectiveAutonomyProfile(
+private func xtEffectiveGovernanceTemplate(
     config: AXProjectConfig,
     resolved: AXProjectResolvedGovernanceState,
     effectiveCapability: AXProjectCapabilityBundle
-) -> AXProjectAutonomyProfile {
-    let snapshot = AXProjectAutonomyProfileSnapshot(
+) -> AXProjectGovernanceTemplate {
+    let snapshot = AXProjectGovernanceTemplateSnapshot(
         executionTier: resolved.effectiveBundle.executionTier,
         supervisorTier: resolved.effectiveBundle.supervisorInterventionTier,
         reviewPolicyMode: resolved.effectiveBundle.reviewPolicyMode,
@@ -428,29 +491,29 @@ private func xtEffectiveAutonomyProfile(
         brainstormReviewSeconds: resolved.effectiveBundle.schedule.brainstormReviewSeconds,
         eventDrivenReviewEnabled: resolved.effectiveBundle.schedule.eventDrivenReviewEnabled,
         eventReviewTriggers: resolved.effectiveBundle.schedule.eventReviewTriggers,
-        autonomyMode: resolved.effectiveAutonomy.effectiveMode,
+        runtimeSurfaceMode: resolved.effectiveRuntimeSurface.effectiveMode,
         localAutoApproveConfigured: effectiveCapability.allowAutoLocalApproval,
         hubMemoryEnabled: config.preferHubMemory,
-        terminalClamp: resolved.effectiveAutonomy.hubOverrideMode
+        runtimeSurfaceClamp: resolved.effectiveRuntimeSurface.hubOverrideMode
     )
 
-    if xtMatchesLegacyConservativeProfile(snapshot) || xtMatchesProfile(snapshot, profile: .conservative) {
+    if xtMatchesLegacyConservativeTemplate(snapshot) || xtMatchesTemplate(snapshot, template: .conservative) {
         return .conservative
     }
-    if xtMatchesProfile(snapshot, profile: .safe) {
+    if xtMatchesTemplate(snapshot, template: .safe) {
         return .safe
     }
-    if xtMatchesProfile(snapshot, profile: .fullAutonomy) {
-        return .fullAutonomy
+    if xtMatchesTemplate(snapshot, template: .agent) {
+        return .agent
     }
     return .custom
 }
 
-private func xtMatchesProfile(
+private func xtMatchesTemplate(
     _ config: AXProjectConfig,
-    profile: AXProjectAutonomyProfile
+    template: AXProjectGovernanceTemplate
 ) -> Bool {
-    let snapshot = AXProjectAutonomyProfileSnapshot(
+    let snapshot = AXProjectGovernanceTemplateSnapshot(
         executionTier: config.executionTier,
         supervisorTier: config.supervisorInterventionTier,
         reviewPolicyMode: config.reviewPolicyMode,
@@ -459,19 +522,19 @@ private func xtMatchesProfile(
         brainstormReviewSeconds: config.brainstormReviewSeconds,
         eventDrivenReviewEnabled: config.eventDrivenReviewEnabled,
         eventReviewTriggers: config.eventReviewTriggers,
-        autonomyMode: config.autonomyMode,
+        runtimeSurfaceMode: config.runtimeSurfaceMode,
         localAutoApproveConfigured: config.governedAutoApproveLocalToolCalls,
         hubMemoryEnabled: config.preferHubMemory,
-        terminalClamp: config.autonomyHubOverrideMode
+        runtimeSurfaceClamp: config.runtimeSurfaceHubOverrideMode
     )
-    return xtMatchesProfile(snapshot, profile: profile)
+    return xtMatchesTemplate(snapshot, template: template)
 }
 
-private func xtMatchesProfile(
-    _ snapshot: AXProjectAutonomyProfileSnapshot,
-    profile: AXProjectAutonomyProfile
+private func xtMatchesTemplate(
+    _ snapshot: AXProjectGovernanceTemplateSnapshot,
+    template: AXProjectGovernanceTemplate
 ) -> Bool {
-    guard let spec = AXProjectAutonomyProfileSpec(profile: profile) else { return false }
+    guard let spec = AXProjectGovernanceTemplateSpec(template: template) else { return false }
     if snapshot.executionTier != spec.executionTier { return false }
     if snapshot.supervisorTier != spec.supervisorTier { return false }
     if snapshot.reviewPolicyMode != spec.reviewPolicyMode { return false }
@@ -480,15 +543,15 @@ private func xtMatchesProfile(
     if snapshot.brainstormReviewSeconds != spec.brainstormReviewSeconds { return false }
     if snapshot.eventDrivenReviewEnabled != spec.eventDrivenReviewEnabled { return false }
     if snapshot.eventReviewTriggers != spec.eventReviewTriggers { return false }
-    if snapshot.autonomyMode != spec.autonomyMode { return false }
+    if snapshot.runtimeSurfaceMode != spec.runtimeSurfaceMode { return false }
     if snapshot.localAutoApproveConfigured != spec.localAutoApproveConfigured { return false }
-    if snapshot.terminalClamp != .none { return false }
+    if snapshot.runtimeSurfaceClamp != .none { return false }
     if spec.requiresHubMemory && !snapshot.hubMemoryEnabled { return false }
     return true
 }
 
-private func xtMatchesLegacyConservativeProfile(_ config: AXProjectConfig) -> Bool {
-    let snapshot = AXProjectAutonomyProfileSnapshot(
+private func xtMatchesLegacyConservativeTemplate(_ config: AXProjectConfig) -> Bool {
+    let snapshot = AXProjectGovernanceTemplateSnapshot(
         executionTier: config.executionTier,
         supervisorTier: config.supervisorInterventionTier,
         reviewPolicyMode: config.reviewPolicyMode,
@@ -497,15 +560,15 @@ private func xtMatchesLegacyConservativeProfile(_ config: AXProjectConfig) -> Bo
         brainstormReviewSeconds: config.brainstormReviewSeconds,
         eventDrivenReviewEnabled: config.eventDrivenReviewEnabled,
         eventReviewTriggers: config.eventReviewTriggers,
-        autonomyMode: config.autonomyMode,
+        runtimeSurfaceMode: config.runtimeSurfaceMode,
         localAutoApproveConfigured: config.governedAutoApproveLocalToolCalls,
         hubMemoryEnabled: config.preferHubMemory,
-        terminalClamp: config.autonomyHubOverrideMode
+        runtimeSurfaceClamp: config.runtimeSurfaceHubOverrideMode
     )
-    return xtMatchesLegacyConservativeProfile(snapshot)
+    return xtMatchesLegacyConservativeTemplate(snapshot)
 }
 
-private func xtMatchesLegacyConservativeProfile(_ snapshot: AXProjectAutonomyProfileSnapshot) -> Bool {
+private func xtMatchesLegacyConservativeTemplate(_ snapshot: AXProjectGovernanceTemplateSnapshot) -> Bool {
     snapshot.executionTier == .a0Observe
         && snapshot.supervisorTier == .s0SilentAudit
         && snapshot.reviewPolicyMode == .milestoneOnly
@@ -514,23 +577,23 @@ private func xtMatchesLegacyConservativeProfile(_ snapshot: AXProjectAutonomyPro
         && snapshot.brainstormReviewSeconds == 0
         && snapshot.eventDrivenReviewEnabled == false
         && snapshot.eventReviewTriggers == [.manualRequest]
-        && snapshot.autonomyMode == .manual
+        && snapshot.runtimeSurfaceMode == .manual
         && snapshot.localAutoApproveConfigured == false
-        && snapshot.terminalClamp == .none
+        && snapshot.runtimeSurfaceClamp == .none
 }
 
 private func xtConfiguredDeviceAuthorityPosture(
     config: AXProjectConfig,
-    profile: AXProjectAutonomyProfile
+    profile: AXProjectGovernanceTemplate
 ) -> AXProjectDeviceAuthorityPosture {
-    if let spec = AXProjectAutonomyProfileSpec(profile: profile) {
+    if let spec = AXProjectGovernanceTemplateSpec(template: profile) {
         return spec.deviceAuthorityPosture
     }
     if config.executionTier == .a4OpenClaw {
         return .deviceGoverned
     }
     if config.executionTier == .a2RepoAuto || config.executionTier == .a3DeliverAuto {
-        if config.autonomyMode == .trustedOpenClawMode
+        if config.runtimeSurfaceMode == .trustedOpenClawMode
             || config.automationMode == .trustedAutomation
             || !config.trustedAutomationDeviceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return .projectBound
@@ -549,9 +612,9 @@ private func xtEffectiveDeviceAuthorityPosture(
 
 private func xtConfiguredSupervisorScope(
     config: AXProjectConfig,
-    profile: AXProjectAutonomyProfile
+    profile: AXProjectGovernanceTemplate
 ) -> AXProjectSupervisorScope {
-    if let spec = AXProjectAutonomyProfileSpec(profile: profile) {
+    if let spec = AXProjectGovernanceTemplateSpec(template: profile) {
         return spec.supervisorScope
     }
     switch config.executionTier {
@@ -575,18 +638,18 @@ private func xtEffectiveSupervisorScope(
     case .a2RepoAuto, .a3DeliverAuto:
         return .portfolio
     case .a4OpenClaw:
-        return resolved.effectiveAutonomy.effectiveMode == .trustedOpenClawMode ? .deviceGoverned : .portfolio
+        return resolved.effectiveRuntimeSurface.effectiveMode == .trustedOpenClawMode ? .deviceGoverned : .portfolio
     }
 }
 
 private func xtConfiguredGrantPosture(
     config: AXProjectConfig,
-    profile: AXProjectAutonomyProfile
+    profile: AXProjectGovernanceTemplate
 ) -> AXProjectGrantPosture {
-    if let spec = AXProjectAutonomyProfileSpec(profile: profile) {
+    if let spec = AXProjectGovernanceTemplateSpec(template: profile) {
         return spec.grantPosture
     }
-    if config.executionTier == .a4OpenClaw && config.autonomyMode == .trustedOpenClawMode {
+    if config.executionTier == .a4OpenClaw && config.runtimeSurfaceMode == .trustedOpenClawMode {
         return .envelopeAuto
     }
     if config.executionTier == .a2RepoAuto || config.executionTier == .a3DeliverAuto {
@@ -600,12 +663,12 @@ private func xtEffectiveGrantPosture(
     effectiveCapability _: AXProjectCapabilityBundle
 ) -> AXProjectGrantPosture {
     if resolved.validation.shouldFailClosed
-        || resolved.effectiveAutonomy.killSwitchEngaged
-        || resolved.effectiveAutonomy.effectiveMode == .manual {
+        || resolved.effectiveRuntimeSurface.killSwitchEngaged
+        || resolved.effectiveRuntimeSurface.effectiveMode == .manual {
         return .manualReview
     }
     if resolved.effectiveBundle.executionTier == .a4OpenClaw
-        && resolved.effectiveAutonomy.effectiveMode == .trustedOpenClawMode {
+        && resolved.effectiveRuntimeSurface.effectiveMode == .trustedOpenClawMode {
         return .envelopeAuto
     }
     return .guidedAuto
@@ -631,7 +694,7 @@ private func xtConfiguredDeviceAuthorityDetail(
     case .deviceGoverned:
         if authority.deviceAuthorityConfigured {
             let device = trustedAutomationStatus.boundDeviceID.isEmpty ? authority.pairedDeviceId : trustedAutomationStatus.boundDeviceID
-            return "当前档位允许完整执行面，但仍继续受 Hub grant、kill-switch、审计链和 readable roots 约束。\(device.isEmpty ? "" : "当前已绑定 \(device)。")"
+            return "当前档位允许完整执行面，但仍继续受 Hub 授权、kill-switch、审计链和可读目录白名单约束。\(device.isEmpty ? "" : "当前已绑定 \(device)。")"
         }
         return "当前档位允许完整执行面；真正生效仍需要 trusted automation 绑定与权限就绪。"
     }
@@ -644,13 +707,13 @@ private func xtEffectiveDeviceAuthorityDetail(
 ) -> String {
     switch posture {
     case .off:
-        if resolved.effectiveAutonomy.killSwitchEngaged {
+        if resolved.effectiveRuntimeSurface.killSwitchEngaged {
             return "Hub kill-switch 已生效，设备面当前 fail-closed。"
         }
-        if resolved.effectiveAutonomy.expired {
+        if resolved.effectiveRuntimeSurface.expired {
             return "runtime surface TTL 已过期，设备面已自动回收。"
         }
-        if resolved.effectiveAutonomy.effectiveMode != .trustedOpenClawMode {
+        if resolved.effectiveRuntimeSurface.effectiveMode != .trustedOpenClawMode {
             return "当前 effective surface 不是 full surface，设备面保持关闭。"
         }
         if !resolved.trustedAutomationStatus.trustedAutomationReady {
@@ -707,11 +770,11 @@ private func xtGrantDetail(
     }
 }
 
-private func xtConfiguredDeviationReasons(_ config: AXProjectConfig) -> [String] {
-    let profile = xtConfiguredAutonomyProfile(for: config)
-    guard profile == .custom else { return [] }
-    let baseline = xtAutonomyBaselineProfile(for: config.executionTier)
-    guard let spec = AXProjectAutonomyProfileSpec(profile: baseline) else { return [] }
+private func xtConfiguredTemplateDeviationReasons(_ config: AXProjectConfig) -> [String] {
+    let template = xtConfiguredGovernanceTemplate(for: config)
+    guard template == .custom else { return [] }
+    let baseline = xtGovernanceTemplateBaseline(for: config.executionTier)
+    guard let spec = AXProjectGovernanceTemplateSpec(template: baseline) else { return [] }
 
     var reasons: [String] = []
     if config.executionTier != spec.executionTier {
@@ -728,13 +791,13 @@ private func xtConfiguredDeviationReasons(_ config: AXProjectConfig) -> [String]
         || config.eventReviewTriggers != spec.eventReviewTriggers {
         reasons.append("review cadence / trigger 已偏离默认映射。")
     }
-    if config.autonomyMode != spec.autonomyMode {
+    if config.runtimeSurfaceMode != spec.runtimeSurfaceMode {
         reasons.append("runtime surface preset 已被单独改动。")
     }
     if config.governedAutoApproveLocalToolCalls != spec.localAutoApproveConfigured {
         reasons.append("local auto-approve 已被单独改动。")
     }
-    if config.autonomyHubOverrideMode != .none {
+    if config.runtimeSurfaceHubOverrideMode != .none {
         reasons.append("Terminal clamp 当前不为 none。")
     }
     if spec.requiresHubMemory && !config.preferHubMemory {
@@ -743,7 +806,7 @@ private func xtConfiguredDeviationReasons(_ config: AXProjectConfig) -> [String]
     return Array(reasons.prefix(4))
 }
 
-private func xtEffectiveDeviationReasons(
+private func xtEffectiveTemplateDeviationReasons(
     config: AXProjectConfig,
     resolved: AXProjectResolvedGovernanceState,
     effectiveCapability: AXProjectCapabilityBundle
@@ -752,12 +815,12 @@ private func xtEffectiveDeviationReasons(
     if resolved.validation.shouldFailClosed {
         reasons.append("当前治理组合无效，runtime 已 fail-closed 到保守基线。")
     }
-    if resolved.effectiveAutonomy.killSwitchEngaged {
+    if resolved.effectiveRuntimeSurface.killSwitchEngaged {
         reasons.append("Hub kill-switch 已回收高风险执行面。")
-    } else if resolved.effectiveAutonomy.expired {
+    } else if resolved.effectiveRuntimeSurface.expired {
         reasons.append("runtime surface TTL 已过期，执行面已自动回收。")
-    } else if resolved.effectiveAutonomy.hubOverrideMode != .none {
-        reasons.append("当前存在 clamp：\(resolved.effectiveAutonomy.hubOverrideMode.displayName)。")
+    } else if resolved.effectiveRuntimeSurface.hubOverrideMode != .none {
+        reasons.append("当前存在 clamp：\(resolved.effectiveRuntimeSurface.hubOverrideMode.displayName)。")
     }
     if config.executionTier == .a4OpenClaw && !resolved.trustedAutomationStatus.trustedAutomationReady {
         reasons.append("trusted automation 未就绪，完整设备面尚未真正放行。")
@@ -773,39 +836,39 @@ private func xtRuntimeSummary(
     resolved: AXProjectResolvedGovernanceState
 ) -> String {
     let ttl: String
-    if resolved.effectiveAutonomy.killSwitchEngaged {
+    if resolved.effectiveRuntimeSurface.killSwitchEngaged {
         ttl = "kill_switch"
-    } else if resolved.effectiveAutonomy.expired {
+    } else if resolved.effectiveRuntimeSurface.expired {
         ttl = "expired"
-    } else if config.autonomyMode == .manual {
+    } else if config.runtimeSurfaceMode == .manual {
         ttl = "n/a"
     } else {
-        ttl = "\(max(1, (resolved.effectiveAutonomy.remainingSeconds + 59) / 60))m"
+        ttl = "\(max(1, (resolved.effectiveRuntimeSurface.remainingSeconds + 59) / 60))m"
     }
-    let clamp = resolved.effectiveAutonomy.hubOverrideMode.displayName
+    let clamp = resolved.effectiveRuntimeSurface.hubOverrideMode.displayName
     let hubMemory = config.preferHubMemory ? "Hub" : "Local"
-    return "记忆来源: \(hubMemory) · surface TTL 剩余: \(ttl) · 本地 clamp: \(config.autonomyHubOverrideMode.displayName) · 生效 clamp: \(clamp)"
+    return "记忆来源: \(hubMemory) · surface TTL 剩余: \(ttl) · 本地 clamp: \(config.runtimeSurfaceHubOverrideMode.displayName) · 生效 clamp: \(clamp)"
 }
 
-private func xtEffectiveProfileSummary(
-    profile: AXProjectAutonomyProfile,
+private func xtEffectiveTemplateSummary(
+    template: AXProjectGovernanceTemplate,
     resolved: AXProjectResolvedGovernanceState,
     effectiveCapability _: AXProjectCapabilityBundle
 ) -> String {
-    if profile == .custom {
+    if template == .custom {
         if resolved.validation.shouldFailClosed {
             return "当前生效状态已因无效组合进入保守 fail-closed。"
         }
-        if resolved.effectiveAutonomy.killSwitchEngaged {
+        if resolved.effectiveRuntimeSurface.killSwitchEngaged {
             return "当前生效状态已被 kill-switch 回收。"
         }
-        if resolved.effectiveAutonomy.expired {
+        if resolved.effectiveRuntimeSurface.expired {
             return "当前生效状态已因 runtime surface TTL 到期被回收。"
         }
-        if resolved.effectiveAutonomy.hubOverrideMode != .none {
+        if resolved.effectiveRuntimeSurface.hubOverrideMode != .none {
             return "当前生效状态已被 runtime clamp 收窄。"
         }
         return "当前生效状态仍受 readiness、grant 和治理细项共同影响。"
     }
-    return profile.shortDescription
+    return template.shortDescription
 }

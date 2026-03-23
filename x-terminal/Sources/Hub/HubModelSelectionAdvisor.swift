@@ -3,6 +3,7 @@ import Foundation
 struct HubModelAvailabilityAssessment: Equatable {
     var requestedId: String
     var exactMatch: HubModel?
+    var nonInteractiveExactMatch: HubModel?
     var loadedCandidates: [HubModel]
     var inventoryCandidates: [HubModel]
 
@@ -16,8 +17,21 @@ struct HubModelAvailabilityAssessment: Equatable {
     }
 
     var isMissingFromInventory: Bool {
-        exactMatch == nil
+        exactMatch == nil && nonInteractiveExactMatch == nil
     }
+
+    var interactiveRoutingBlockedReason: String? {
+        nonInteractiveExactMatch?.interactiveRoutingDisabledReason
+    }
+}
+
+struct HubGlobalRoleModelIssue: Equatable, Identifiable {
+    var role: AXRole
+    var configuredModelId: String
+    var message: String
+    var suggestedModelId: String?
+
+    var id: String { role.rawValue }
 }
 
 enum HubModelSelectionAdvisor {
@@ -38,21 +52,149 @@ enum HubModelSelectionAdvisor {
         guard !requestedId.isEmpty else { return nil }
 
         let allModels = allModels(in: snapshot)
-        let exactMatch = exactModelMatch(for: requestedId, in: allModels)
-        let ranked = rankedCandidates(for: requestedId, in: allModels)
+        let resolvedExactMatch = exactModelMatch(for: requestedId, in: allModels)
+        let exactMatch = resolvedExactMatch?.isSelectableForInteractiveRouting == true ? resolvedExactMatch : nil
+        let nonInteractiveExactMatch = resolvedExactMatch?.isSelectableForInteractiveRouting == false
+            ? resolvedExactMatch
+            : nil
+        let ranked = rankedCandidates(
+            for: requestedId,
+            in: allModels.filter(\.isSelectableForInteractiveRouting)
+        )
             .filter { candidate in
-                guard let exactMatch else { return true }
-                return normalizedModelID(candidate.id) != normalizedModelID(exactMatch.id)
+                guard let resolvedExactMatch else { return true }
+                return normalizedModelID(candidate.id) != normalizedModelID(resolvedExactMatch.id)
             }
 
-        let loadedCandidates = Array(ranked.filter { $0.state == .loaded }.prefix(candidateLimit))
+        let loadedCandidates = preferredLoadedCandidates(
+            requestedId: requestedId,
+            ranked: ranked,
+            allModels: allModels,
+            resolvedExactMatch: resolvedExactMatch,
+            limit: candidateLimit
+        )
         let inventoryCandidates = Array(ranked.prefix(candidateLimit))
 
         return HubModelAvailabilityAssessment(
             requestedId: requestedId,
             exactMatch: exactMatch,
+            nonInteractiveExactMatch: nonInteractiveExactMatch,
             loadedCandidates: loadedCandidates,
             inventoryCandidates: inventoryCandidates
+        )
+    }
+
+    static func globalAssignmentIssue(
+        for role: AXRole,
+        configuredModelId rawConfiguredModelId: String?,
+        snapshot: ModelStateSnapshot
+    ) -> HubGlobalRoleModelIssue? {
+        let configuredModelId = normalize(rawConfiguredModelId)
+        guard !configuredModelId.isEmpty,
+              let assessment = assess(
+                requestedId: configuredModelId,
+                snapshot: snapshot
+              ),
+              !assessment.isExactMatchLoaded else {
+            return nil
+        }
+
+        let suggestions = suggestedModelIDs(from: assessment)
+        let suggestedModelId = suggestions.first
+
+        if let blocked = assessment.nonInteractiveExactMatch {
+            let reason = assessment.interactiveRoutingBlockedReason
+                ?? "这个模型属于非对话能力，不适合作为当前角色的工作模型。"
+            let message: String
+            if let suggestedModelId {
+                message = "\(role.displayName) 当前配的是 `\(blocked.id)`，但它不能直接用于对话执行。\(reason) 可先改用 `\(suggestedModelId)`。"
+            } else {
+                message = "\(role.displayName) 当前配的是 `\(blocked.id)`，但它不能直接用于对话执行。\(reason)"
+            }
+            return HubGlobalRoleModelIssue(
+                role: role,
+                configuredModelId: configuredModelId,
+                message: message,
+                suggestedModelId: suggestedModelId
+            )
+        }
+
+        if let exact = assessment.exactMatch {
+            let message: String
+            if let suggestedModelId {
+                message = "\(role.displayName) 当前配的是 `\(exact.id)`，但它现在是 \(stateLabel(exact.state))；继续用可能会回退到本地，可先改用 `\(suggestedModelId)`。"
+            } else {
+                message = "\(role.displayName) 当前配的是 `\(exact.id)`，但它现在是 \(stateLabel(exact.state))；继续用可能会回退到本地。"
+            }
+            return HubGlobalRoleModelIssue(
+                role: role,
+                configuredModelId: configuredModelId,
+                message: message,
+                suggestedModelId: suggestedModelId
+            )
+        }
+
+        let message: String
+        if let suggestedModelId {
+            message = "\(role.displayName) 当前配的是 `\(configuredModelId)`，但当前 inventory 里没有精确匹配；可先改用 `\(suggestedModelId)`。"
+        } else {
+            message = "\(role.displayName) 当前配的是 `\(configuredModelId)`，但当前 inventory 里没有精确匹配。"
+        }
+        return HubGlobalRoleModelIssue(
+            role: role,
+            configuredModelId: configuredModelId,
+            message: message,
+            suggestedModelId: suggestedModelId
+        )
+    }
+
+    private static func preferredLoadedCandidates(
+        requestedId: String,
+        ranked: [HubModel],
+        allModels: [HubModel],
+        resolvedExactMatch: HubModel?,
+        limit: Int
+    ) -> [HubModel] {
+        if shouldPreferRemoteLoadedFallback(
+            requestedId: requestedId,
+            resolvedExactMatch: resolvedExactMatch
+        ) {
+            let remotePreferred = remoteLoadedFallbackCandidates(
+                requestedId: requestedId,
+                snapshot: ModelStateSnapshot(models: allModels, updatedAt: 0),
+                excludingModelIDs: [resolvedExactMatch?.id ?? ""],
+                candidateLimit: limit
+            )
+            if !remotePreferred.isEmpty {
+                return remotePreferred
+            }
+        }
+
+        let rankedLoaded = Array(ranked.filter { $0.state == .loaded }.prefix(limit))
+        guard !rankedLoaded.isEmpty else {
+            return genericLoadedFallbackCandidates(
+                allModels: allModels,
+                excluding: resolvedExactMatch,
+                limit: limit
+            )
+        }
+        return rankedLoaded
+    }
+
+    private static func genericLoadedFallbackCandidates(
+        allModels: [HubModel],
+        excluding resolvedExactMatch: HubModel?,
+        limit: Int
+    ) -> [HubModel] {
+        Array(
+            allModels
+                .filter { model in
+                    model.state == .loaded
+                        && model.isSelectableForInteractiveRouting
+                        && normalizedModelID(model.id)
+                            != normalizedModelID(resolvedExactMatch?.id ?? "")
+                }
+                .prefix(limit)
         )
     }
 
@@ -81,6 +223,49 @@ enum HubModelSelectionAdvisor {
             return model.id
         }
         return "\(name) · \(model.id)"
+    }
+
+    static func suggestedModelIDs(
+        from assessment: HubModelAvailabilityAssessment,
+        limit: Int = 3
+    ) -> [String] {
+        let source = assessment.loadedCandidates.isEmpty ? assessment.inventoryCandidates : assessment.loadedCandidates
+        var seen: Set<String> = []
+        var result: [String] = []
+        for model in source {
+            let id = normalize(model.id)
+            guard !id.isEmpty,
+                  seen.insert(normalizedModelID(id)).inserted else { continue }
+            result.append(id)
+            if result.count >= limit { break }
+        }
+        return result
+    }
+
+    static func remoteLoadedFallbackCandidates(
+        requestedId rawRequestedId: String?,
+        snapshot: ModelStateSnapshot,
+        excludingModelIDs rawExcludedModelIDs: [String] = [],
+        candidateLimit: Int = 3
+    ) -> [HubModel] {
+        let requestedId = normalize(rawRequestedId)
+        guard !requestedId.isEmpty else { return [] }
+
+        let excluded = Set(rawExcludedModelIDs.map(normalizedModelID))
+        let rankedRemote = rankedCandidates(for: requestedId, in: allModels(in: snapshot))
+            .filter { model in
+                model.state == .loaded
+                    && isRemoteModel(model)
+                    && model.isSelectableForInteractiveRouting
+                    && normalizedModelID(model.id) != normalizedModelID(requestedId)
+                    && !excluded.contains(normalizedModelID(model.id))
+            }
+
+        let sameProvider = rankedRemote.filter { candidate in
+            sameProviderNamespace(candidate.id, requestedId)
+        }
+        let ordered = sameProvider.isEmpty ? rankedRemote : sameProvider
+        return Array(ordered.prefix(candidateLimit))
     }
 
     private static func exactModelMatch(
@@ -206,6 +391,41 @@ enum HubModelSelectionAdvisor {
     private static func normalizedSortName(_ model: HubModel) -> String {
         let name = normalize(model.name)
         return (name.isEmpty ? model.id : name).lowercased()
+    }
+
+    private static func shouldPreferRemoteLoadedFallback(
+        requestedId: String,
+        resolvedExactMatch: HubModel?
+    ) -> Bool {
+        if let resolvedExactMatch {
+            return isRemoteModel(resolvedExactMatch)
+        }
+
+        let provider = providerNamespace(for: requestedId)
+        if provider.isEmpty {
+            return false
+        }
+        return provider != "mlx"
+    }
+
+    private static func isRemoteModel(_ model: HubModel) -> Bool {
+        let path = normalize(model.modelPath)
+        if !path.isEmpty {
+            return false
+        }
+        return normalize(model.backend).lowercased() != "mlx"
+    }
+
+    private static func sameProviderNamespace(_ candidateID: String, _ requestedId: String) -> Bool {
+        let candidateProvider = providerNamespace(for: candidateID)
+        let requestedProvider = providerNamespace(for: requestedId)
+        guard !candidateProvider.isEmpty, !requestedProvider.isEmpty else { return false }
+        return candidateProvider == requestedProvider
+    }
+
+    private static func providerNamespace(for raw: String) -> String {
+        let normalized = normalizedModelID(raw)
+        return normalized.split(separator: "/").first.map(String.init) ?? ""
     }
 
     private static func stateRank(_ state: HubModelState) -> Int {

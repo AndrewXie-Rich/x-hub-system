@@ -18,8 +18,103 @@ enum AXProjectExecutionTier: String, Codable, CaseIterable, Sendable {
         case .a3DeliverAuto:
             return "A3 Deliver Auto"
         case .a4OpenClaw:
-            return "A4 Full Surface"
+            return "A4 Agent"
         }
+    }
+
+    var oneLineSummary: String {
+        switch self {
+        case .a0Observe:
+            return "只读项目记忆和状态，给建议，但不自动落任务。"
+        case .a1Plan:
+            return "可以把目标整理成 job / plan，并回写 project memory，但不直接执行 repo 或设备动作。"
+        case .a2RepoAuto:
+            return "可在 project root 内自主改文件、跑 build/test 并更新计划，仍不碰高风险执行面。"
+        case .a3DeliverAuto:
+            return "围绕单个 project 连续推进到交付完成，可自动收口并回写总结。"
+        case .a4OpenClaw:
+            return "在受治理前提下使用完整 Agent 执行面，包含 browser / device / connector / extension。"
+        }
+    }
+
+    var allowedHighlights: [String] {
+        switch self {
+        case .a0Observe:
+            return [
+                "读项目记忆",
+                "读项目状态",
+                "给建议"
+            ]
+        case .a1Plan:
+            return [
+                "创建 job / plan",
+                "回写 project memory",
+                "整理执行方案"
+            ]
+        case .a2RepoAuto:
+            return [
+                "改 project root 文件",
+                "跑 build / test",
+                "做 patch 并更新计划"
+            ]
+        case .a3DeliverAuto:
+            return [
+                "连续推进多 step",
+                "自动收口与汇总",
+                "commit / PR 级交付"
+            ]
+        case .a4OpenClaw:
+            return [
+                "browser runtime",
+                "device tools",
+                "connector / extension",
+                "预批准的低风险本地动作"
+            ]
+        }
+    }
+
+    var blockedHighlights: [String] {
+        switch self {
+        case .a0Observe:
+            return [
+                "不能创建 job / plan",
+                "不能改 repo",
+                "不能跑 build / test",
+                "不能触发 browser / device side effect"
+            ]
+        case .a1Plan:
+            return [
+                "不能改 repo 文件",
+                "不能跑 build / test",
+                "不能触发 browser / device / connector side effect"
+            ]
+        case .a2RepoAuto:
+            return [
+                "不能 push 远端分支",
+                "不能触发 CI",
+                "不能碰 browser / device / connector 执行"
+            ]
+        case .a3DeliverAuto:
+            return [
+                "不能 push 远端分支",
+                "不能触发 CI",
+                "不能碰 device / browser / connector / extension 执行"
+            ]
+        case .a4OpenClaw:
+            return [
+                "不能绕过 trusted automation readiness",
+                "不能绕过 Hub 授权 / allowlist",
+                "不能绕过 TTL / kill-switch / audit trail"
+            ]
+        }
+    }
+
+    var defaultBudgetSummary: String {
+        let budget = defaultExecutionBudget
+        let cost = budget.maxCostUSDSoft.rounded(.towardZero) == budget.maxCostUSDSoft
+            ? String(Int(budget.maxCostUSDSoft))
+            : String(format: "%.1f", budget.maxCostUSDSoft)
+        return "\(budget.maxContinuousRunMinutes)m run · \(budget.maxToolCallsPerRun) tools · retry x\(budget.maxRetryDepth) · soft $\(cost)"
     }
 
     var defaultProjectMemoryCeiling: XTMemoryServingProfile {
@@ -114,6 +209,19 @@ enum AXProjectExecutionTier: String, Codable, CaseIterable, Sendable {
         }
     }
 
+    var mandatoryReviewTriggers: [AXProjectReviewTrigger] {
+        switch self {
+        case .a0Observe, .a1Plan:
+            return [.preDoneSummary]
+        case .a2RepoAuto:
+            return [.blockerDetected, .preDoneSummary]
+        case .a3DeliverAuto:
+            return [.blockerDetected, .planDrift, .preDoneSummary]
+        case .a4OpenClaw:
+            return [.blockerDetected, .preHighRiskAction, .preDoneSummary]
+        }
+    }
+
     var defaultEventReviewTriggers: [AXProjectReviewTrigger] {
         switch self {
         case .a0Observe:
@@ -129,7 +237,7 @@ enum AXProjectExecutionTier: String, Codable, CaseIterable, Sendable {
         }
     }
 
-    var defaultSurfacePreset: AXProjectAutonomyMode {
+    var defaultRuntimeSurfacePreset: AXProjectRuntimeSurfaceMode {
         switch self {
         case .a0Observe:
             return .manual
@@ -138,6 +246,11 @@ enum AXProjectExecutionTier: String, Codable, CaseIterable, Sendable {
         case .a4OpenClaw:
             return .trustedOpenClawMode
         }
+    }
+
+    @available(*, deprecated, message: "Use defaultRuntimeSurfacePreset")
+    var defaultSurfacePreset: AXProjectAutonomyMode {
+        defaultRuntimeSurfacePreset
     }
 
     var baseCapabilityBundle: AXProjectCapabilityBundle {
@@ -281,7 +394,7 @@ enum AXProjectExecutionTier: String, Codable, CaseIterable, Sendable {
         }
     }
 
-    static func fromLegacyAutonomyMode(_ mode: AXProjectAutonomyMode) -> AXProjectExecutionTier {
+    static func fromRuntimeSurfaceMode(_ mode: AXProjectRuntimeSurfaceMode) -> AXProjectExecutionTier {
         switch mode {
         case .manual:
             return .a0Observe
@@ -290,6 +403,11 @@ enum AXProjectExecutionTier: String, Codable, CaseIterable, Sendable {
         case .trustedOpenClawMode:
             return .a4OpenClaw
         }
+    }
+
+    @available(*, deprecated, message: "Use fromRuntimeSurfaceMode(_:)")
+    static func fromLegacyAutonomyMode(_ mode: AXProjectAutonomyMode) -> AXProjectExecutionTier {
+        fromRuntimeSurfaceMode(mode)
     }
 
     static func fromLegacyAutonomyLevel(_ level: AutonomyLevel) -> AXProjectExecutionTier {

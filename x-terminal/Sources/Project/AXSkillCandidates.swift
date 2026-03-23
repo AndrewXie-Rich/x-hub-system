@@ -148,7 +148,7 @@ enum AXSkillCandidateStore {
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? enc.encode(candidates) else { return }
-        try? data.write(to: candidatesURL(for: ctx), options: .atomic)
+        try? XTStoreWriteSupport.writeSnapshotData(data, to: candidatesURL(for: ctx))
     }
 
     private static func shouldInsert(_ cand: AXSkillCandidate, existing: [AXSkillCandidate]) -> Bool {

@@ -39,6 +39,26 @@ struct VoiceReadinessAggregatorTests {
     }
 
     @Test
+    func bridgeDiagnosticCarriesLastEnableDeliveryFailure() {
+        let model = voiceReadinessModel(id: "hub.model.coder")
+        let snapshot = VoiceReadinessAggregator.build(
+            input: makeVoiceReadinessInput(
+                localConnected: true,
+                remoteConnected: false,
+                configuredModelIDs: [model.id],
+                models: [model],
+                bridgeAlive: false,
+                bridgeEnabled: false,
+                bridgeLastError: "bridge_enable_command_write_failed=POSIXError: No space left on device"
+            )
+        )
+
+        let check = snapshot.check(.bridgeToolReadiness)
+        #expect(check?.summary.contains("上一次 bridge enable 请求也在链路恢复前失败了") == true)
+        #expect(check?.detailLines.contains(where: { $0.contains("bridge_last_error=") }) == true)
+    }
+
+    @Test
     func marksWakeAndTalkLoopPermissionDeniedWhenSpeechPermissionMissing() {
         let model = voiceReadinessModel(id: "hub.model.supervisor")
         let snapshot = VoiceReadinessAggregator.build(
@@ -50,6 +70,10 @@ struct VoiceReadinessAggregatorTests {
                 bridgeAlive: true,
                 bridgeEnabled: true,
                 voiceAuthorizationStatus: .denied,
+                voicePermissionSnapshot: VoicePermissionSnapshot(
+                    microphone: .authorized,
+                    speechRecognition: .denied
+                ),
                 voiceRouteDecision: VoiceRouteDecision(
                     route: .systemSpeechCompatibility,
                     reasonCode: "system_speech_authorization_denied",
@@ -63,6 +87,9 @@ struct VoiceReadinessAggregatorTests {
 
         #expect(snapshot.check(.wakeProfileReadiness)?.state == .permissionDenied)
         #expect(snapshot.check(.talkLoopReadiness)?.state == .permissionDenied)
+        #expect(snapshot.check(.wakeProfileReadiness)?.headline == "唤醒配置被语音识别权限阻塞")
+        #expect(snapshot.check(.talkLoopReadiness)?.headline == "对话链路被语音识别权限阻塞")
+        #expect(snapshot.check(.talkLoopReadiness)?.nextStep == "请先在 macOS 系统设置中授予语音识别权限，然后刷新语音运行时。")
         #expect(snapshot.primaryReasonCode == "speech_authorization_denied")
     }
 
@@ -131,6 +158,119 @@ struct VoiceReadinessAggregatorTests {
         #expect(snapshot.check(.wakeProfileReadiness)?.state == .diagnosticRequired)
         #expect(snapshot.check(.wakeProfileReadiness)?.reasonCode == "wake_profile_stale")
     }
+
+    @Test
+    func marksHubVoicePackPlaybackReadyWhenPreferredPackExists() {
+        let voicePack = voiceReadinessModel(
+            id: "hub.voice.zh.warm",
+            taskKinds: ["text_to_speech"],
+            outputModalities: ["audio"]
+        )
+        var preferences = VoiceRuntimePreferences.default()
+        preferences.playbackPreference = .hubVoicePack
+        preferences.preferredHubVoicePackID = voicePack.id
+
+        let snapshot = VoiceReadinessAggregator.build(
+            input: makeVoiceReadinessInput(
+                localConnected: true,
+                remoteConnected: false,
+                models: [voicePack],
+                voicePreferences: preferences
+            )
+        )
+
+        #expect(snapshot.check(.ttsReadiness)?.state == .ready)
+        #expect(snapshot.check(.ttsReadiness)?.reasonCode == "preferred_hub_voice_pack_ready")
+        #expect(snapshot.check(.ttsReadiness)?.detailLines.contains(where: { $0.contains("resolved_playback_source=hub_voice_pack") }) == true)
+    }
+
+    @Test
+    func marksExplicitHubVoicePackPreferenceAsFallbackWhenPackMissing() {
+        var preferences = VoiceRuntimePreferences.default()
+        preferences.playbackPreference = .hubVoicePack
+        preferences.preferredHubVoicePackID = "hub.voice.zh.warm"
+
+        let snapshot = VoiceReadinessAggregator.build(
+            input: makeVoiceReadinessInput(
+                localConnected: true,
+                remoteConnected: false,
+                models: [],
+                voicePreferences: preferences
+            )
+        )
+
+        #expect(snapshot.check(.ttsReadiness)?.state == .inProgress)
+        #expect(snapshot.check(.ttsReadiness)?.reasonCode == "preferred_hub_voice_pack_unavailable")
+        #expect(snapshot.check(.ttsReadiness)?.summary.contains("回退到了系统语音") == true)
+    }
+
+    @Test
+    func marksAutomaticVoicePackAsInProgressWhenRecommendedPackIsExposedButRuntimeIsUnavailable() {
+        let voicePack = voiceReadinessModel(
+            id: "hub.voice.zh.warm",
+            taskKinds: ["text_to_speech"],
+            outputModalities: ["audio"]
+        )
+        var preferences = VoiceRuntimePreferences.default()
+        preferences.playbackPreference = .automatic
+        preferences.localeIdentifier = "zh-CN"
+        preferences.timbre = .warm
+
+        let snapshot = VoiceReadinessAggregator.build(
+            input: makeVoiceReadinessInput(
+                localConnected: true,
+                remoteConnected: false,
+                models: [voicePack],
+                voicePreferences: preferences,
+                voicePackReadyEvaluator: { _ in false }
+            )
+        )
+
+        #expect(snapshot.check(.ttsReadiness)?.state == .inProgress)
+        #expect(snapshot.check(.ttsReadiness)?.reasonCode == "automatic_hub_voice_pack_recommended_unavailable")
+        #expect(snapshot.check(.ttsReadiness)?.summary.contains("推荐语音包") == true)
+        #expect(snapshot.check(.ttsReadiness)?.summary.contains("还不能执行") == true)
+    }
+
+    @Test
+    func overallSummaryKeepsFirstTaskReadyWhenOnlyPairingBootstrapNeedsRepair() {
+        let model = voiceReadinessModel(id: "hub.model.supervisor")
+        let snapshot = VoiceReadinessAggregator.build(
+            input: makeVoiceReadinessInput(
+                localConnected: true,
+                remoteConnected: false,
+                internetHost: "",
+                configuredModelIDs: [model.id],
+                models: [model],
+                bridgeAlive: true,
+                bridgeEnabled: true
+            )
+        )
+
+        #expect(snapshot.readyForFirstTask)
+        #expect(snapshot.firstTaskBlockingCheck == nil)
+        #expect(snapshot.firstAdvisoryCheck?.kind == .pairingValidity)
+        #expect(snapshot.overallSummary == "首个任务已可启动，但配对有效性仍需修复：本机链路可用，但远端引导参数还不完整")
+    }
+
+    @Test
+    func overallSummaryFailsClosedWhenBridgePathBlocksFirstTask() {
+        let model = voiceReadinessModel(id: "hub.model.supervisor")
+        let snapshot = VoiceReadinessAggregator.build(
+            input: makeVoiceReadinessInput(
+                localConnected: true,
+                remoteConnected: false,
+                configuredModelIDs: [model.id],
+                models: [model],
+                bridgeAlive: false,
+                bridgeEnabled: false
+            )
+        )
+
+        #expect(!snapshot.readyForFirstTask)
+        #expect(snapshot.firstTaskBlockingCheck?.kind == .bridgeToolReadiness)
+        #expect(snapshot.overallSummary == "当前为 fail-closed：桥接 / 工具就绪 仍未就绪：模型路由已通，但桥接 / 工具链路不可用")
+    }
 }
 
 private func makeVoiceReadinessInput(
@@ -141,7 +281,9 @@ private func makeVoiceReadinessInput(
     models: [HubModel] = [],
     bridgeAlive: Bool = true,
     bridgeEnabled: Bool = true,
+    bridgeLastError: String = "",
     voiceAuthorizationStatus: VoiceTranscriberAuthorizationStatus = .authorized,
+    voicePermissionSnapshot: VoicePermissionSnapshot = .unknown,
     wakeProfileSnapshot: VoiceWakeProfileSnapshot = VoiceWakeProfileSnapshot(
         schemaVersion: VoiceWakeProfileSnapshot.currentSchemaVersion,
         generatedAtMs: 1_741_300_000_000,
@@ -164,6 +306,8 @@ private func makeVoiceReadinessInput(
         lastSyncAtMs: 1_741_300_000_000,
         lastRemoteReasonCode: nil
     ),
+    voicePreferences: VoiceRuntimePreferences = .default(),
+    voicePackReadyEvaluator: (@Sendable (String) -> Bool)? = nil,
     voiceRouteDecision: VoiceRouteDecision = VoiceRouteDecision(
         route: .funasrStreaming,
         reasonCode: "preferred_streaming_ready",
@@ -197,12 +341,14 @@ private func makeVoiceReadinessInput(
         modelsState: ModelStateSnapshot(models: models, updatedAt: Date().timeIntervalSince1970),
         bridgeAlive: bridgeAlive,
         bridgeEnabled: bridgeEnabled,
+        bridgeLastError: bridgeLastError,
         sessionID: nil,
         sessionTitle: nil,
         sessionRuntime: nil,
         voiceRouteDecision: voiceRouteDecision,
         voiceRuntimeState: .idle,
         voiceAuthorizationStatus: voiceAuthorizationStatus,
+        voicePermissionSnapshot: voicePermissionSnapshot,
         voiceActiveHealthReasonCode: "",
         voiceSidecarHealth: nil,
         wakeProfileSnapshot: wakeProfileSnapshot,
@@ -210,11 +356,17 @@ private func makeVoiceReadinessInput(
             policy: .default(),
             wakeMode: .wakePhrase,
             route: voiceRouteDecision.route
-        )
+        ),
+        voicePreferences: voicePreferences,
+        voicePackReadyEvaluator: voicePackReadyEvaluator
     )
 }
 
-private func voiceReadinessModel(id: String) -> HubModel {
+private func voiceReadinessModel(
+    id: String,
+    taskKinds: [String] = ["text_generate"],
+    outputModalities: [String] = ["text"]
+) -> HubModel {
     HubModel(
         id: id,
         name: id,
@@ -227,6 +379,8 @@ private func voiceReadinessModel(id: String) -> HubModel {
         memoryBytes: 1_024,
         tokensPerSec: 42,
         modelPath: "/models/\(id)",
-        note: nil
+        note: nil,
+        taskKinds: taskKinds,
+        outputModalities: outputModalities
     )
 }

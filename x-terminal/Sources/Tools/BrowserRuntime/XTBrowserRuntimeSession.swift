@@ -331,26 +331,30 @@ enum XTBrowserRuntimeStore {
         guard let data = try? JSONSerialization.data(withJSONObject: row, options: []) else { return }
         var line = data
         line.append(0x0A)
-        if !FileManager.default.fileExists(atPath: url.path) {
-            try? line.write(to: url, options: .atomic)
-            return
-        }
         do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if !FileManager.default.fileExists(atPath: url.path) {
+                try XTStoreWriteSupport.writeSnapshotData(line, to: url)
+                return
+            }
             let fh = try FileHandle(forWritingTo: url)
             defer { try? fh.close() }
             try fh.seekToEnd()
             try fh.write(contentsOf: line)
         } catch {
-            try? line.write(to: url, options: .atomic)
+            guard !XTStoreWriteSupport.looksLikeDiskSpaceExhaustion(error) else {
+                return
+            }
+            var merged = (try? Data(contentsOf: url)) ?? Data()
+            if !merged.isEmpty, merged.last != 0x0A {
+                merged.append(0x0A)
+            }
+            merged.append(line)
+            try? XTStoreWriteSupport.writeSnapshotData(merged, to: url)
         }
     }
 
     private static func writeAtomic(data: Data, to url: URL) throws {
-        let tmp = url.deletingLastPathComponent().appendingPathComponent(".\(url.lastPathComponent).tmp")
-        try data.write(to: tmp, options: .atomic)
-        if FileManager.default.fileExists(atPath: url.path) {
-            try FileManager.default.removeItem(at: url)
-        }
-        try FileManager.default.moveItem(at: tmp, to: url)
+        try XTStoreWriteSupport.writeSnapshotData(data, to: url)
     }
 }

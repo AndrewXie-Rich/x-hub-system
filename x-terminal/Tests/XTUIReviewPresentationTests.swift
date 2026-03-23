@@ -137,6 +137,9 @@ struct XTUIReviewPresentationTests {
         _ = try XTUIReviewStore.writeReview(review, for: ctx)
 
         let presentation = try #require(XTUIReviewPresentation.loadLatestBrowserPage(for: ctx))
+        let agentEvidence = try #require(
+            XTUIReviewPromptDigest.agentEvidenceSnapshot(for: ctx, maxChecks: 2, maxHistoryItems: 2)
+        )
         #expect(presentation.verdictLabel == "需关注")
         #expect(presentation.confidenceLabel == "中")
         #expect(presentation.evidenceLabel == "证据充分")
@@ -174,6 +177,17 @@ struct XTUIReviewPresentationTests {
         #expect(presentation.comparison?.metrics.contains(where: {
             $0.label == "可执行性" && $0.detail == "由可直接执行变为暂不建议直接执行" && $0.tone == .regressed
         }) == true)
+        #expect(agentEvidence.reviewRef == "local://.xterminal/ui_review/reviews/uir-presentation-test.json")
+        #expect(agentEvidence.reviewID == "uir-presentation-test")
+        #expect(agentEvidence.projectID == AXProjectRegistryStore.projectId(forRoot: root))
+        #expect(agentEvidence.auditRef == "audit-ui-review-presentation")
+        #expect(agentEvidence.checks.count == 1)
+        #expect(agentEvidence.artifactRefs.contains("screenshot_ref=local://.xterminal/ui_observation/artifacts/bundle-presentation-test/full.png"))
+        #expect(agentEvidence.artifactRefs.contains("visible_text_ref=local://.xterminal/ui_observation/artifacts/bundle-presentation-test/visible_text.txt"))
+        #expect(agentEvidence.trend.contains("status=regressed"))
+        #expect(agentEvidence.recentHistory.contains(where: { $0.contains("review_id=uir-presentation-older") }))
+        #expect(agentEvidence.renderedText().contains("recent_history:"))
+        #expect(agentEvidence.renderedText().contains("comparison:"))
 
         let history = XTUIReviewPresentation.loadHistory(for: ctx, limit: 5)
         #expect(history.count == 2)

@@ -103,6 +103,7 @@ class ProjectModel: ObservableObject, Identifiable {
     @Published var reviewPulseSeconds: Int
     @Published var brainstormReviewSeconds: Int
     @Published var eventDrivenReviewEnabled: Bool
+    @Published var eventReviewTriggers: [AXProjectReviewTrigger]
     @Published var priority: Int = 0
 
     // MARK: - Budget & Cost
@@ -206,7 +207,7 @@ class ProjectModel: ObservableObject, Identifiable {
         status: ProjectStatus = .pending,
         modelName: String,
         isLocalModel: Bool = false,
-        autonomyLevel: AutonomyLevel = .assisted,
+        autonomyLevel: AutonomyLevel = .manual,
         registeredProjectBinding: ProjectRegistryBinding? = nil,
         executionTier: AXProjectExecutionTier? = nil,
         supervisorInterventionTier: AXProjectSupervisorInterventionTier? = nil,
@@ -215,6 +216,7 @@ class ProjectModel: ObservableObject, Identifiable {
         reviewPulseSeconds: Int? = nil,
         brainstormReviewSeconds: Int? = nil,
         eventDrivenReviewEnabled: Bool? = nil,
+        eventReviewTriggers: [AXProjectReviewTrigger]? = nil,
         budget: Budget = Budget(daily: 10.0, monthly: 300.0)
     ) {
         let resolvedExecutionTier = executionTier ?? AXProjectExecutionTier.fromLegacyAutonomyLevel(autonomyLevel)
@@ -241,6 +243,9 @@ class ProjectModel: ObservableObject, Identifiable {
         self.reviewPulseSeconds = reviewPulseSeconds ?? recommendedGovernance.schedule.reviewPulseSeconds
         self.brainstormReviewSeconds = brainstormReviewSeconds ?? recommendedGovernance.schedule.brainstormReviewSeconds
         self.eventDrivenReviewEnabled = eventDrivenReviewEnabled ?? recommendedGovernance.schedule.eventDrivenReviewEnabled
+        self.eventReviewTriggers = AXProjectReviewTrigger.normalizedList(
+            eventReviewTriggers ?? recommendedGovernance.schedule.eventReviewTriggers
+        )
         self.budget = budget
         self.costTracker = CostTracker()
         self.session = ChatSessionModel()
@@ -309,7 +314,8 @@ class ProjectModel: ObservableObject, Identifiable {
         progressHeartbeatSeconds: Int,
         reviewPulseSeconds: Int,
         brainstormReviewSeconds: Int,
-        eventDrivenReviewEnabled: Bool
+        eventDrivenReviewEnabled: Bool,
+        eventReviewTriggers: [AXProjectReviewTrigger]
     ) {
         self.executionTier = executionTier
         self.supervisorInterventionTier = supervisorInterventionTier
@@ -318,6 +324,7 @@ class ProjectModel: ObservableObject, Identifiable {
         self.reviewPulseSeconds = reviewPulseSeconds
         self.brainstormReviewSeconds = brainstormReviewSeconds
         self.eventDrivenReviewEnabled = eventDrivenReviewEnabled
+        self.eventReviewTriggers = AXProjectReviewTrigger.normalizedList(eventReviewTriggers)
         self.autonomyLevel = .fromExecutionTier(executionTier)
     }
 

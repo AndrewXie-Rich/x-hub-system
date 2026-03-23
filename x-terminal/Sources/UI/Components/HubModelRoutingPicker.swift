@@ -89,6 +89,13 @@ struct HubModelPickerRecommendationState: Equatable {
             return nil
         }
 
+        if let blocked = assessment.nonInteractiveExactMatch {
+            return HubModelPickerRecommendationState(
+                modelId: fallbackModelId,
+                message: "`\(blocked.id)` 是检索专用模型，Supervisor 会按需调用它做 retrieval；当前对话先切到 `\(fallbackModelId)` 更稳。"
+            )
+        }
+
         if let exact = assessment.exactMatch {
             return HubModelPickerRecommendationState(
                 modelId: fallbackModelId,
@@ -366,8 +373,11 @@ struct HubModelPickerPopover: View {
         let presentation = model.capabilityPresentationModel
         let isSelected = selectedModelId == model.id
         let isRecommended = normalizedRecommendedModelId == model.id && !isSelected
+        let disabledReason = model.interactiveRoutingDisabledReason
+        let isSelectable = model.isSelectableForInteractiveRouting
 
         return Button {
+            guard isSelectable else { return }
             onSelect(model.id)
         } label: {
             HStack(alignment: .top, spacing: 10) {
@@ -393,6 +403,12 @@ struct HubModelPickerPopover: View {
                                     .foregroundStyle(.orange)
                             }
 
+                            if disabledReason != nil {
+                                Text("检索专用")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+
                             Text(HubModelSelectionAdvisor.stateLabel(model.state))
                                 .font(.caption2.weight(.semibold))
                                 .foregroundStyle(model.state == .loaded ? .green : .secondary)
@@ -413,6 +429,13 @@ struct HubModelPickerPopover: View {
                         Text(capabilitySummary)
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if let disabledReason {
+                        Text(disabledReason)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
@@ -446,8 +469,10 @@ struct HubModelPickerPopover: View {
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(cardBackground(selected: isSelected))
+            .opacity(isSelectable ? 1.0 : 0.72)
         }
         .buttonStyle(.plain)
+        .disabled(!isSelectable)
     }
 
     private func cardBackground(selected: Bool) -> some View {

@@ -790,6 +790,78 @@ struct SupervisorIncidentExportTests {
 
     @MainActor
     @Test
+    func xtReadyIncidentExportSnapshotSurfacesHubRuntimeRecoveryGuidance() async throws {
+        try await Self.gate.runOnMainActor { @MainActor in
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xt_ready_hub_runtime_guidance_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            HubPaths.setBaseDirOverride(base)
+            defer {
+                HubPaths.setBaseDirOverride(nil)
+                try? FileManager.default.removeItem(at: base)
+            }
+
+            try writeHubDoctorReport(
+                sampleHubDoctorOutputReport(outputPath: XHubDoctorOutputStore.defaultHubReportURL(baseDir: base).path),
+                in: base
+            )
+            try writeHubLocalServiceRecoveryGuidance(sampleHubLocalServiceRecoveryGuidanceReport(), in: base)
+
+            let manager = SupervisorManager.makeForTesting()
+            manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+            manager.setSupervisorMemoryAssemblySnapshotForTesting(makeMemorySnapshot())
+
+            let snapshot = manager.xtReadyIncidentExportSnapshot(limit: 20)
+
+            #expect(snapshot.hubRuntimeDiagnosis?.failureCode == "xhub_local_service_unreachable")
+            #expect(snapshot.hubRuntimeDiagnosis?.actionCategory == "inspect_health_payload")
+            #expect(
+                snapshot.hubRuntimeDiagnosis?.installHint ==
+                    "Inspect the local /health payload and stderr log to confirm why xhub_local_service never reached ready."
+            )
+            #expect(
+                snapshot.hubRuntimeDiagnosis?.recommendedAction ==
+                    "Inspect the local /health payload | Open Hub Diagnostics and compare /health with stderr."
+            )
+            #expect(snapshot.hubRuntimeDiagnosis?.supportFAQSummary.contains("Why does XT stay blocked after pairing succeeds?") == true)
+        }
+    }
+
+    @MainActor
+    @Test
+    func xtReadyIncidentExportSnapshotFallsBackToHubLocalServiceRecoveryGuidanceWhenDoctorArtifactsMissing() async throws {
+        try await Self.gate.runOnMainActor { @MainActor in
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xt_ready_hub_runtime_guidance_only_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            HubPaths.setBaseDirOverride(base)
+            defer {
+                HubPaths.setBaseDirOverride(nil)
+                try? FileManager.default.removeItem(at: base)
+            }
+
+            try writeHubLocalServiceRecoveryGuidance(sampleHubLocalServiceRecoveryGuidanceReport(), in: base)
+
+            let manager = SupervisorManager.makeForTesting()
+            manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+            manager.setSupervisorMemoryAssemblySnapshotForTesting(makeMemorySnapshot())
+
+            let snapshot = manager.xtReadyIncidentExportSnapshot(limit: 20)
+
+            #expect(snapshot.strictE2EReady == false)
+            #expect(snapshot.strictE2EIssues.contains("hub_runtime:xhub_local_service_unreachable"))
+            #expect(snapshot.hubRuntimeDiagnosis?.overallState == XHubDoctorOverallState.blocked.rawValue)
+            #expect(snapshot.hubRuntimeDiagnosis?.headline == "Hub-managed local service is unreachable")
+            #expect(
+                snapshot.hubRuntimeDiagnosis?.detailLines.contains(where: {
+                    $0.contains("service_base_url=http://127.0.0.1:50171")
+                }) == true
+            )
+        }
+    }
+
+    @MainActor
+    @Test
     func xtReadyIncidentStatusTextIncludesHubRuntimeDiagnosis() async throws {
         try await Self.gate.runOnMainActor { @MainActor in
             let base = FileManager.default.temporaryDirectory
@@ -815,6 +887,77 @@ struct SupervisorIncidentExportTests {
             #expect(text.contains("hub_runtime：blocked · xhub_local_service_unreachable"))
             #expect(text.contains("hub_runtime_issue：Hub-managed local service is unreachable"))
             #expect(text.contains("hub_runtime_next：Start xhub_local_service or fix the configured endpoint, then refresh diagnostics."))
+        }
+    }
+
+    @MainActor
+    @Test
+    func xtReadyIncidentStatusTextIncludesHubRuntimeRecoveryGuidance() async throws {
+        try await Self.gate.runOnMainActor { @MainActor in
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xt_ready_hub_runtime_guidance_status_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            HubPaths.setBaseDirOverride(base)
+            defer {
+                HubPaths.setBaseDirOverride(nil)
+                try? FileManager.default.removeItem(at: base)
+            }
+
+            try writeHubDoctorReport(
+                sampleHubDoctorOutputReport(outputPath: XHubDoctorOutputStore.defaultHubReportURL(baseDir: base).path),
+                in: base
+            )
+            try writeHubLocalServiceRecoveryGuidance(sampleHubLocalServiceRecoveryGuidanceReport(), in: base)
+
+            let manager = SupervisorManager.makeForTesting()
+            manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+            manager.setSupervisorMemoryAssemblySnapshotForTesting(makeMemorySnapshot())
+
+            let text = manager.renderXTReadyIncidentEventsStatusForTesting()
+
+            #expect(text.contains("hub_runtime_action_category：inspect_health_payload"))
+            #expect(text.contains("hub_runtime_install_hint：Inspect the local /health payload and stderr log to confirm why xhub_local_service never reached ready."))
+            #expect(text.contains("hub_runtime_recommended_action：Inspect the local /health payload | Open Hub Diagnostics and compare /health with stderr."))
+            #expect(text.contains("hub_runtime_support_faq：Q: Why does XT stay blocked after pairing succeeds?"))
+        }
+    }
+
+    @MainActor
+    @Test
+    func xtReadyIncidentExportSummaryIncludesHubRuntimeRecoveryGuidance() async throws {
+        try await Self.gate.runOnMainActor { @MainActor in
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xt_ready_hub_runtime_guidance_summary_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            HubPaths.setBaseDirOverride(base)
+            defer {
+                HubPaths.setBaseDirOverride(nil)
+                try? FileManager.default.removeItem(at: base)
+            }
+
+            try writeHubDoctorReport(
+                sampleHubDoctorOutputReport(outputPath: XHubDoctorOutputStore.defaultHubReportURL(baseDir: base).path),
+                in: base
+            )
+            try writeHubLocalServiceRecoveryGuidance(sampleHubLocalServiceRecoveryGuidanceReport(), in: base)
+
+            let manager = SupervisorManager.makeForTesting()
+            manager.setSupervisorIncidentLedgerForTesting(makeReadyIncidentLedger())
+            manager.setSupervisorMemoryAssemblySnapshotForTesting(makeMemorySnapshot())
+
+            let summary = manager.renderXTReadyIncidentExportSummaryForTesting(
+                .init(
+                    ok: true,
+                    outputPath: "/tmp/xt-ready.json",
+                    exportedEventCount: 3,
+                    missingIncidentCodes: [],
+                    reason: "ok"
+                )
+            )
+
+            #expect(summary.contains("hub_runtime_action_category：inspect_health_payload"))
+            #expect(summary.contains("hub_runtime_install_hint：Inspect the local /health payload and stderr log to confirm why xhub_local_service never reached ready."))
+            #expect(summary.contains("hub_runtime_recommended_action：Inspect the local /health payload | Open Hub Diagnostics and compare /health with stderr."))
         }
     }
 
@@ -968,6 +1111,17 @@ struct SupervisorIncidentExportTests {
         let data = try JSONEncoder().encode(snapshot)
         try data.write(
             to: XHubDoctorOutputStore.defaultHubLocalServiceSnapshotURL(baseDir: base),
+            options: .atomic
+        )
+    }
+
+    private func writeHubLocalServiceRecoveryGuidance(
+        _ guidance: XHubLocalServiceRecoveryGuidanceReport,
+        in base: URL
+    ) throws {
+        let data = try JSONEncoder().encode(guidance)
+        try data.write(
+            to: XHubDoctorOutputStore.defaultHubLocalServiceRecoveryGuidanceURL(baseDir: base),
             options: .atomic
         )
     }
@@ -1133,6 +1287,54 @@ struct SupervisorIncidentExportTests {
                     queuedTaskCount: 1,
                     ready: false
                 )
+            ]
+        )
+    }
+
+    private func sampleHubLocalServiceRecoveryGuidanceReport() -> XHubLocalServiceRecoveryGuidanceReport {
+        XHubLocalServiceRecoveryGuidanceReport(
+            schemaVersion: "xhub_local_service_recovery_guidance_export.v1",
+            generatedAtMs: 1_741_300_200,
+            statusSource: "/tmp/ai_runtime_status.json",
+            runtimeAlive: true,
+            guidancePresent: true,
+            providerCount: 1,
+            readyProviderCount: 0,
+            currentFailureCode: "xhub_local_service_unreachable",
+            currentFailureIssue: "provider_readiness",
+            providerCheckStatus: XHubDoctorCheckStatus.fail.rawValue,
+            providerCheckBlocking: true,
+            actionCategory: "inspect_health_payload",
+            severity: "high",
+            installHint: "Inspect the local /health payload and stderr log to confirm why xhub_local_service never reached ready.",
+            repairDestinationRef: "hub://settings/diagnostics",
+            serviceBaseURL: "http://127.0.0.1:50171",
+            managedProcessState: "running",
+            managedStartAttemptCount: 3,
+            managedLastStartError: "",
+            managedLastProbeError: "connect ECONNREFUSED 127.0.0.1:50171",
+            blockedCapabilities: ["ai.embed.local"],
+            primaryIssue: XHubLocalServiceSnapshotPrimaryIssue(
+                reasonCode: "xhub_local_service_unreachable",
+                headline: "Hub-managed local service is unreachable",
+                message: "Providers are pinned to xhub_local_service, but Hub cannot reach /health.",
+                nextStep: "Inspect the managed service snapshot and stderr log, fix the launch error, then refresh diagnostics."
+            ),
+            recommendedActions: [
+                XHubLocalServiceRecoveryGuidanceAction(
+                    rank: 1,
+                    actionID: "inspect_health_payload",
+                    title: "Inspect the local /health payload",
+                    why: "The service process exists but never reported a ready health payload.",
+                    commandOrReference: "Open Hub Diagnostics and compare /health with stderr."
+                ),
+            ],
+            supportFAQ: [
+                XHubLocalServiceRecoveryGuidanceFAQItem(
+                    faqID: "faq-1",
+                    question: "Why does XT stay blocked after pairing succeeds?",
+                    answer: "Pairing only proves the surfaces can talk. Hub still blocks first-task readiness until the managed local runtime reaches ready."
+                ),
             ]
         )
     }

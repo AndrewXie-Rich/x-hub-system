@@ -4,6 +4,81 @@ import Testing
 
 struct AXProjectRegistryStoreTests {
     @Test
+    func saveFallsBackToDirectOverwriteWhenAtomicWriteRunsOutOfSpace() throws {
+        let url = AXProjectRegistryStore.url()
+        let baseDir = AXProjectRegistryStore.baseDir()
+        let backup = try? Data(contentsOf: url)
+        defer {
+            XTStoreWriteSupport.resetWriteBehaviorForTesting()
+            if let backup {
+                try? backup.write(to: url, options: .atomic)
+            } else {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xt-registry-fallback-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let projectId = AXProjectRegistryStore.projectId(forRoot: root)
+        let initial = AXProjectRegistry(
+            version: AXProjectRegistry.currentVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            sortPolicy: "manual_then_last_opened",
+            globalHomeVisible: false,
+            lastSelectedProjectId: projectId,
+            projects: [
+                AXProjectEntry(
+                    projectId: projectId,
+                    rootPath: root.path,
+                    displayName: "Old Name",
+                    lastOpenedAt: 1,
+                    manualOrderIndex: 0,
+                    pinned: false,
+                    statusDigest: "old-digest",
+                    currentStateSummary: "old-state",
+                    nextStepSummary: "old-next",
+                    blockerSummary: nil,
+                    lastSummaryAt: 1,
+                    lastEventAt: 1
+                )
+            ]
+        )
+        AXProjectRegistryStore.save(initial)
+
+        let capture = AXProjectRegistryWriteCapture()
+        XTStoreWriteSupport.installWriteAttemptOverrideForTesting { data, writeURL, options in
+            if !Self.normalizedPath(writeURL).hasPrefix(Self.normalizedPath(baseDir)) {
+                try data.write(to: writeURL, options: options)
+                return
+            }
+            capture.appendWriteOption(options)
+            if options.contains(.atomic) {
+                throw NSError(domain: NSPOSIXErrorDomain, code: 28)
+            }
+            try data.write(to: writeURL, options: options)
+        }
+
+        var updated = initial
+        updated.globalHomeVisible = true
+        updated.projects[0].displayName = "New Name"
+        updated.projects[0].statusDigest = "new-digest"
+        AXProjectRegistryStore.save(updated)
+
+        let loaded = AXProjectRegistryStore.load()
+        #expect(loaded.globalHomeVisible == true)
+        #expect(loaded.projects.first?.displayName == "New Name")
+        #expect(loaded.projects.first?.statusDigest == "new-digest")
+
+        let options = capture.writeOptionsSnapshot()
+        #expect(options.count == 2)
+        #expect(options.filter { $0.contains(.atomic) }.count == 1)
+        #expect(options.filter(\.isEmpty).count == 1)
+    }
+
+    @Test
     func upsertProjectPreservesFriendlyDisplayNameForExistingEntry() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("xt-registry-friendly-name-\(UUID().uuidString)", isDirectory: true)
@@ -39,6 +114,14 @@ struct AXProjectRegistryStoreTests {
 
         #expect(updated.1.displayName == "亮亮")
         #expect(updated.0.projects.first?.displayName == "亮亮")
+    }
+
+    private static func normalizedPath(_ url: URL) -> String {
+        url.standardizedFileURL.path.replacingOccurrences(
+            of: "/private",
+            with: "",
+            options: [.anchored]
+        )
     }
 
     @Test
@@ -242,5 +325,22 @@ struct AXProjectRegistryStoreTests {
         #expect(sanitized.registry.projects.count == 1)
         #expect(sanitized.registry.projects.first?.displayName == "stable-project")
         #expect(sanitized.registry.lastSelectedProjectId == sanitized.registry.projects.first?.projectId)
+    }
+}
+
+private final class AXProjectRegistryWriteCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var writeOptions: [Data.WritingOptions] = []
+
+    func appendWriteOption(_ option: Data.WritingOptions) {
+        lock.lock()
+        defer { lock.unlock() }
+        writeOptions.append(option)
+    }
+
+    func writeOptionsSnapshot() -> [Data.WritingOptions] {
+        lock.lock()
+        defer { lock.unlock() }
+        return writeOptions
     }
 }

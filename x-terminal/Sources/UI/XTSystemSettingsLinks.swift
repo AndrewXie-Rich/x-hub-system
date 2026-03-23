@@ -1,6 +1,56 @@
 import Foundation
 import AppKit
 
+enum XTSystemSettingsPrivacyTarget: Equatable {
+    case calendar
+    case microphone
+    case speechRecognition
+    case voiceCapture
+
+    var urlCandidates: [String] {
+        switch self {
+        case .calendar:
+            return privacyCandidates(token: "Privacy_Calendars")
+        case .microphone:
+            return privacyCandidates(token: "Privacy_Microphone")
+        case .speechRecognition:
+            return privacyCandidates(token: "Privacy_SpeechRecognition")
+        case .voiceCapture:
+            return privacyCandidates(token: "Privacy_SpeechRecognition")
+                + privacyCandidates(token: "Privacy_Microphone")
+        }
+    }
+
+    private func privacyCandidates(token: String) -> [String] {
+        [
+            "x-apple.systempreferences:com.apple.preference.security?\(token)",
+            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?\(token)",
+            "x-apple.systempreferences:com.apple.PrivacySecurity.extension?\(token)",
+        ]
+    }
+}
+
+enum XTVoicePermissionRepairTargetResolver {
+    static func resolve(
+        microphone: VoiceTranscriberAuthorizationStatus,
+        speechRecognition: VoiceTranscriberAuthorizationStatus
+    ) -> XTSystemSettingsPrivacyTarget {
+        let microphoneBlocked = microphone == .denied || microphone == .restricted
+        let speechBlocked = speechRecognition == .denied || speechRecognition == .restricted
+
+        if microphoneBlocked && speechBlocked {
+            return .voiceCapture
+        }
+        if microphoneBlocked {
+            return .microphone
+        }
+        if speechBlocked {
+            return .speechRecognition
+        }
+        return .voiceCapture
+    }
+}
+
 enum XTSystemSettingsLinks {
     static func openAccessibilityPrivacy() {
         openFirst([
@@ -40,6 +90,43 @@ enum XTSystemSettingsLinks {
             "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ListenEvent",
             "x-apple.systempreferences:com.apple.PrivacySecurity.extension?Privacy_ListenEvent",
         ])
+    }
+
+    static func openMicrophonePrivacy() {
+        openPrivacy(.microphone)
+    }
+
+    static func openCalendarPrivacy() {
+        openPrivacy(.calendar)
+    }
+
+    static func openSpeechRecognitionPrivacy() {
+        openPrivacy(.speechRecognition)
+    }
+
+    static func openVoiceCapturePrivacy() {
+        openPrivacy(.voiceCapture)
+    }
+
+    static func recommendedVoiceCaptureTarget() -> XTSystemSettingsPrivacyTarget {
+        let snapshot = VoicePermissionSnapshotInspector.current()
+        return XTVoicePermissionRepairTargetResolver.resolve(
+            microphone: snapshot.microphone,
+            speechRecognition: snapshot.speechRecognition
+        )
+    }
+
+    static func buttonLabel(for target: XTSystemSettingsPrivacyTarget) -> String {
+        switch target {
+        case .calendar:
+            return "打开日历权限"
+        case .microphone:
+            return "打开麦克风权限"
+        case .speechRecognition:
+            return "打开语音识别权限"
+        case .voiceCapture:
+            return "打开语音权限"
+        }
     }
 
     static func openPrivacyAction(_ action: String) {
@@ -90,6 +177,10 @@ enum XTSystemSettingsLinks {
         if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.systempreferences") {
             NSWorkspace.shared.open(app)
         }
+    }
+
+    static func openPrivacy(_ target: XTSystemSettingsPrivacyTarget) {
+        openFirst(target.urlCandidates)
     }
 
     private static func openFirst(_ candidates: [String]) {

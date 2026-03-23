@@ -155,8 +155,7 @@ final class PoolIntegrationOrchestrator {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(report)
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try data.write(to: url, options: .atomic)
+        try SupervisorStoreWriteSupport.writeSnapshotData(data, to: url)
     }
 
     private func failingPoolRootCause(from report: LaneMergebackGateReport) -> String {

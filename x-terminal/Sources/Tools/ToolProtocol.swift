@@ -44,6 +44,7 @@ enum ToolName: String, Codable, CaseIterable, Sendable {
     case bridge_status
     case skills_search = "skills.search"
     case summarize
+    case supervisorVoicePlayback = "supervisor.voice.playback"
     case web_fetch
     case web_search
     case browser_read
@@ -182,6 +183,7 @@ enum ToolPolicy {
                 .bridge_status,
                 .skills_search,
                 .summarize,
+                .supervisorVoicePlayback,
             ]
         case .coding:
             return [
@@ -210,6 +212,7 @@ enum ToolPolicy {
                 .bridge_status,
                 .skills_search,
                 .summarize,
+                .supervisorVoicePlayback,
             ]
         case .full:
             return [
@@ -243,6 +246,7 @@ enum ToolPolicy {
                 .bridge_status,
                 .skills_search,
                 .summarize,
+                .supervisorVoicePlayback,
                 .web_fetch,
                 .web_search,
                 .browser_read,
@@ -377,6 +381,8 @@ enum ToolPolicy {
             return "- skills.search {query, source_filter?, project_id?, limit?}"
         case .summarize:
             return "- summarize {url?|path?|text|content|value, focus?, format?, max_chars?, grant_id?, timeout_sec?, max_bytes?}"
+        case .supervisorVoicePlayback:
+            return "- supervisor.voice.playback {action?=status|preview|speak|stop, text|content|value?}"
         case .web_fetch:
             return "- web_fetch {url, grant_id, timeout_sec?, max_bytes?}"
         case .web_search:
@@ -406,6 +412,7 @@ enum ToolPolicy {
                     .bridge_status,
                     .skills_search,
                     .summarize,
+                    .supervisorVoicePlayback,
                 ])
             case "group:fs":
                 out.formUnion([.read_file, .write_file, .delete_path, .move_path, .list_dir, .search])
@@ -474,7 +481,7 @@ enum ToolPolicy {
             return .safe
         case .need_network:
             return .safe
-        case .skills_search, .summarize:
+        case .skills_search, .summarize, .supervisorVoicePlayback:
             return .safe
         case .web_fetch, .web_search, .browser_read:
             // Network approvals are handled in Hub; avoid local confirmations.

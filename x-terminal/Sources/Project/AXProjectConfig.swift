@@ -1,7 +1,7 @@
 import Foundation
 
 struct AXProjectConfig: Codable, Equatable {
-    static let currentSchemaVersion = 10
+    static let currentSchemaVersion = 11
 
     var schemaVersion: Int
 
@@ -26,6 +26,8 @@ struct AXProjectConfig: Codable, Equatable {
     // If true, project prompt memory prefers Hub memory context and falls back to local layers when unavailable.
     // If false, prompt memory stays local-only on the X-Terminal side.
     var preferHubMemory: Bool
+    var projectRecentDialogueProfile: AXProjectRecentDialogueProfile
+    var projectContextDepthProfile: AXProjectContextDepthProfile
 
     // Tool policy: profile + additive allow/deny tokens.
     // profile: minimal|coding|full
@@ -49,14 +51,14 @@ struct AXProjectConfig: Codable, Equatable {
     var governedAutoApproveLocalToolCalls: Bool
 
     // User-visible autonomy policy preset + hub clamp slot for highest-surface execution.
-    var autonomyMode: AXProjectAutonomyMode
+    var autonomyMode: AXProjectRuntimeSurfaceMode
     var autonomyAllowDeviceTools: Bool
     var autonomyAllowBrowserRuntime: Bool
     var autonomyAllowConnectorActions: Bool
     var autonomyAllowExtensions: Bool
     var autonomyTTLSeconds: Int
     var autonomyUpdatedAtMs: Int64
-    var autonomyHubOverrideMode: AXProjectAutonomyHubOverrideMode
+    var autonomyHubOverrideMode: AXProjectRuntimeSurfaceHubOverrideMode
 
     // New project governance contract. Legacy autonomy fields remain as compatibility inputs only.
     var executionTier: AXProjectExecutionTier
@@ -86,6 +88,8 @@ struct AXProjectConfig: Codable, Equatable {
             automationSelfIterateEnabled: false,
             automationMaxAutoRetryDepth: 2,
             preferHubMemory: true,
+            projectRecentDialogueProfile: .defaultProfile,
+            projectContextDepthProfile: .defaultProfile,
             toolProfile: ToolPolicy.defaultProfile.rawValue,
             toolAllow: [],
             toolDeny: [],
@@ -169,6 +173,20 @@ struct AXProjectConfig: Codable, Equatable {
     func settingHubMemoryPreference(enabled: Bool) -> AXProjectConfig {
         var out = self
         out.preferHubMemory = enabled
+        return out.normalizedAutomationState()
+    }
+
+    func settingProjectContextAssembly(
+        projectRecentDialogueProfile: AXProjectRecentDialogueProfile? = nil,
+        projectContextDepthProfile: AXProjectContextDepthProfile? = nil
+    ) -> AXProjectConfig {
+        var out = self
+        if let projectRecentDialogueProfile {
+            out.projectRecentDialogueProfile = projectRecentDialogueProfile
+        }
+        if let projectContextDepthProfile {
+            out.projectContextDepthProfile = projectContextDepthProfile
+        }
         return out.normalizedAutomationState()
     }
 
@@ -421,6 +439,8 @@ struct AXProjectConfig: Codable, Equatable {
         case automationSelfIterateEnabled
         case automationMaxAutoRetryDepth
         case preferHubMemory
+        case projectRecentDialogueProfile
+        case projectContextDepthProfile
         case toolProfile
         case toolAllow
         case toolDeny
@@ -460,6 +480,8 @@ struct AXProjectConfig: Codable, Equatable {
         automationSelfIterateEnabled: Bool,
         automationMaxAutoRetryDepth: Int,
         preferHubMemory: Bool,
+        projectRecentDialogueProfile: AXProjectRecentDialogueProfile,
+        projectContextDepthProfile: AXProjectContextDepthProfile,
         toolProfile: String,
         toolAllow: [String],
         toolDeny: [String],
@@ -469,14 +491,14 @@ struct AXProjectConfig: Codable, Equatable {
         workspaceBindingHash: String,
         governedReadableRoots: [String],
         governedAutoApproveLocalToolCalls: Bool,
-        autonomyMode: AXProjectAutonomyMode,
+        autonomyMode: AXProjectRuntimeSurfaceMode,
         autonomyAllowDeviceTools: Bool,
         autonomyAllowBrowserRuntime: Bool,
         autonomyAllowConnectorActions: Bool,
         autonomyAllowExtensions: Bool,
         autonomyTTLSeconds: Int,
         autonomyUpdatedAtMs: Int64,
-        autonomyHubOverrideMode: AXProjectAutonomyHubOverrideMode,
+        autonomyHubOverrideMode: AXProjectRuntimeSurfaceHubOverrideMode,
         executionTier: AXProjectExecutionTier,
         supervisorInterventionTier: AXProjectSupervisorInterventionTier,
         reviewPolicyMode: AXProjectReviewPolicyMode,
@@ -497,6 +519,8 @@ struct AXProjectConfig: Codable, Equatable {
         self.automationSelfIterateEnabled = automationSelfIterateEnabled
         self.automationMaxAutoRetryDepth = max(1, automationMaxAutoRetryDepth)
         self.preferHubMemory = preferHubMemory
+        self.projectRecentDialogueProfile = projectRecentDialogueProfile
+        self.projectContextDepthProfile = projectContextDepthProfile
         self.toolProfile = ToolPolicy.parseProfile(toolProfile).rawValue
         self.toolAllow = ToolPolicy.normalizePolicyTokens(toolAllow)
         self.toolDeny = ToolPolicy.normalizePolicyTokens(toolDeny)
@@ -539,6 +563,14 @@ struct AXProjectConfig: Codable, Equatable {
         automationSelfIterateEnabled = (try? c.decode(Bool.self, forKey: .automationSelfIterateEnabled)) ?? false
         automationMaxAutoRetryDepth = max(1, (try? c.decode(Int.self, forKey: .automationMaxAutoRetryDepth)) ?? 2)
         preferHubMemory = (try? c.decode(Bool.self, forKey: .preferHubMemory)) ?? true
+        projectRecentDialogueProfile = (try? c.decode(
+            AXProjectRecentDialogueProfile.self,
+            forKey: .projectRecentDialogueProfile
+        )) ?? .defaultProfile
+        projectContextDepthProfile = (try? c.decode(
+            AXProjectContextDepthProfile.self,
+            forKey: .projectContextDepthProfile
+        )) ?? .defaultProfile
         let rawProfile = (try? c.decode(String.self, forKey: .toolProfile)) ?? ToolPolicy.defaultProfile.rawValue
         toolProfile = ToolPolicy.parseProfile(rawProfile).rawValue
         toolAllow = ToolPolicy.normalizePolicyTokens((try? c.decode([String].self, forKey: .toolAllow)) ?? [])
@@ -549,14 +581,14 @@ struct AXProjectConfig: Codable, Equatable {
         workspaceBindingHash = (try? c.decode(String.self, forKey: .workspaceBindingHash)) ?? ""
         governedReadableRoots = (try? c.decode([String].self, forKey: .governedReadableRoots)) ?? []
         governedAutoApproveLocalToolCalls = (try? c.decode(Bool.self, forKey: .governedAutoApproveLocalToolCalls)) ?? false
-        autonomyMode = (try? c.decode(AXProjectAutonomyMode.self, forKey: .autonomyMode)) ?? .manual
+        autonomyMode = (try? c.decode(AXProjectRuntimeSurfaceMode.self, forKey: .autonomyMode)) ?? .manual
         autonomyAllowDeviceTools = (try? c.decode(Bool.self, forKey: .autonomyAllowDeviceTools)) ?? false
         autonomyAllowBrowserRuntime = (try? c.decode(Bool.self, forKey: .autonomyAllowBrowserRuntime)) ?? false
         autonomyAllowConnectorActions = (try? c.decode(Bool.self, forKey: .autonomyAllowConnectorActions)) ?? false
         autonomyAllowExtensions = (try? c.decode(Bool.self, forKey: .autonomyAllowExtensions)) ?? false
         autonomyTTLSeconds = max(60, (try? c.decode(Int.self, forKey: .autonomyTTLSeconds)) ?? 3600)
         autonomyUpdatedAtMs = max(0, (try? c.decode(Int64.self, forKey: .autonomyUpdatedAtMs)) ?? 0)
-        autonomyHubOverrideMode = (try? c.decode(AXProjectAutonomyHubOverrideMode.self, forKey: .autonomyHubOverrideMode)) ?? .none
+        autonomyHubOverrideMode = (try? c.decode(AXProjectRuntimeSurfaceHubOverrideMode.self, forKey: .autonomyHubOverrideMode)) ?? .none
 
         let hasExplicitGovernance =
             c.contains(.executionTier)
@@ -568,7 +600,7 @@ struct AXProjectConfig: Codable, Equatable {
             || c.contains(.eventDrivenReviewEnabled)
             || c.contains(.eventReviewTriggers)
         let legacyBundle = AXProjectGovernanceBundle.recommended(
-            for: AXProjectExecutionTier.fromLegacyAutonomyMode(autonomyMode)
+            for: AXProjectExecutionTier.fromRuntimeSurfaceMode(autonomyMode)
         )
         executionTier = (try? c.decode(AXProjectExecutionTier.self, forKey: .executionTier))
             ?? legacyBundle.executionTier

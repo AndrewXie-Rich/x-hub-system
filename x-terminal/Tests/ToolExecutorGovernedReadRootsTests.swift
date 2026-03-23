@@ -53,7 +53,7 @@ struct ToolExecutorGovernedReadRootsTests {
             deviceId: "device_xt_001",
             workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
         )
-        config = config.settingAutonomyPolicy(
+        config = config.settingRuntimeSurfacePolicy(
             mode: .trustedOpenClawMode,
             updatedAt: Date(timeIntervalSince1970: 1_773_700_000)
         )
@@ -96,7 +96,7 @@ struct ToolExecutorGovernedReadRootsTests {
             deviceId: "device_xt_001",
             workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
         )
-        config = config.settingAutonomyPolicy(
+        config = config.settingRuntimeSurfacePolicy(
             mode: .trustedOpenClawMode,
             updatedAt: Date(timeIntervalSince1970: 1_773_700_100)
         )
@@ -141,7 +141,7 @@ struct ToolExecutorGovernedReadRootsTests {
             deviceId: "device_xt_001",
             workspaceBindingHash: xtTrustedAutomationWorkspaceHash(forProjectRoot: fixture.root)
         )
-        config = config.settingAutonomyPolicy(
+        config = config.settingRuntimeSurfacePolicy(
             mode: .trustedOpenClawMode,
             updatedAt: Date(timeIntervalSince1970: 1_773_700_200)
         )

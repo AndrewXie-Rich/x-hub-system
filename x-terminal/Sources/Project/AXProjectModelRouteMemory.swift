@@ -146,6 +146,18 @@ enum AXProjectModelRouteMemoryStore {
             )
         }
 
+        if configuredAssessment?.nonInteractiveExactMatch != nil {
+            return AXProjectPreferredModelRouteDecision(
+                preferredModelId: nil,
+                configuredModelId: configuredModelId,
+                rememberedRemoteModelId: rememberedRemoteModelId,
+                preferredLocalModelId: nil,
+                usedRememberedRemoteModel: false,
+                forceLocalExecution: false,
+                reasonCode: "project_configured_model_retrieval_only"
+            )
+        }
+
         if let localLock = resolveLocalLock(
             routeMemory: routeMemory,
             configuredAssessment: configuredAssessment,
@@ -301,6 +313,27 @@ enum AXProjectModelRouteMemoryStore {
                 warningText: "当前配置的 `\(configured)` 还不能直接执行；XT 下次会先试这个项目上次稳定的远端 `\(remembered)`，避免直接掉到本地。",
                 recommendedModelId: remembered,
                 recommendationText: "这个项目上次稳定跑通的是 `\(remembered)`。如果你想立刻恢复远端，直接切到它最稳。"
+            )
+        }
+
+        if let blocked = configuredAssessment?.nonInteractiveExactMatch,
+           let configured = configuredModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !configured.isEmpty {
+            let suggestedRemote: String? = {
+                guard let raw = configuredAssessment?.loadedCandidates.first?.id else { return nil }
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
+            }()
+            let reason = blocked.interactiveRoutingDisabledReason
+                ?? "这个模型属于非对话能力，会由 Supervisor 按需调用，不作为当前角色的对话模型。"
+            let recommendationText: String? = {
+                guard let suggestedRemote, !suggestedRemote.isEmpty else { return nil }
+                return "把当前角色切到 `\(suggestedRemote)` 最稳；`\(blocked.id)` 仍会继续留给对应的 Supervisor 能力链路按需使用。"
+            }()
+            return AXProjectModelSelectionGuidance(
+                warningText: "当前配置的 `\(configured)` 是非对话模型。\(reason)",
+                recommendedModelId: suggestedRemote,
+                recommendationText: recommendationText
             )
         }
 

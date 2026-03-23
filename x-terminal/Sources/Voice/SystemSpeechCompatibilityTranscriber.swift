@@ -11,8 +11,8 @@ final class SystemSpeechCompatibilityTranscriber: NSObject, VoiceStreamingTransc
     private(set) var healthReasonCode: String?
     private(set) var isRunning: Bool = false
 
-    private let localeIdentifier: String
-    private let speechRecognizer: SFSpeechRecognizer?
+    private(set) var localeIdentifier: String
+    private var speechRecognizer: SFSpeechRecognizer?
     private var audioEngine: AVAudioEngine?
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
@@ -20,12 +20,28 @@ final class SystemSpeechCompatibilityTranscriber: NSObject, VoiceStreamingTransc
     private var onFailure: ((String) -> Void)?
 
     init(localeIdentifier: String = "zh-CN") {
-        self.localeIdentifier = localeIdentifier
-        self.speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: localeIdentifier))
+        let normalizedLocaleIdentifier = Self.normalizedLocaleIdentifier(localeIdentifier)
+        self.localeIdentifier = normalizedLocaleIdentifier
+        self.speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: normalizedLocaleIdentifier))
         self.authorizationStatus = Self.mapAuthorizationStatus(SFSpeechRecognizer.authorizationStatus())
         self.engineHealth = Self.mapEngineHealth(Self.mapAuthorizationStatus(SFSpeechRecognizer.authorizationStatus()))
         self.healthReasonCode = Self.mapHealthReason(Self.mapAuthorizationStatus(SFSpeechRecognizer.authorizationStatus()))
         super.init()
+    }
+
+    func updateLocaleIdentifier(_ localeIdentifier: String) {
+        let normalizedLocaleIdentifier = Self.normalizedLocaleIdentifier(localeIdentifier)
+        guard normalizedLocaleIdentifier.caseInsensitiveCompare(self.localeIdentifier) != .orderedSame else {
+            return
+        }
+        guard !isRunning else { return }
+
+        self.localeIdentifier = normalizedLocaleIdentifier
+        self.speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: normalizedLocaleIdentifier))
+        let currentAuthorization = Self.mapAuthorizationStatus(SFSpeechRecognizer.authorizationStatus())
+        authorizationStatus = currentAuthorization
+        engineHealth = Self.mapEngineHealth(currentAuthorization)
+        healthReasonCode = Self.mapHealthReason(currentAuthorization)
     }
 
     func requestAuthorization() async -> VoiceTranscriberAuthorizationStatus {
@@ -110,7 +126,7 @@ final class SystemSpeechCompatibilityTranscriber: NSObject, VoiceStreamingTransc
         }
 
         audioEngine.prepare()
-            do {
+        do {
             try audioEngine.start()
             isRunning = true
             engineHealth = .ready
@@ -187,5 +203,10 @@ final class SystemSpeechCompatibilityTranscriber: NSObject, VoiceStreamingTransc
         @unknown default:
             return .unavailable
         }
+    }
+
+    private static func normalizedLocaleIdentifier(_ localeIdentifier: String) -> String {
+        let trimmed = localeIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "zh-CN" : trimmed
     }
 }

@@ -617,7 +617,7 @@ final class XTAutomationRunExecutor {
 
             let verificationAction = XTAutomationRecipeAction(
                 actionID: "verify_\(index + 1)",
-                title: "Verify command \(index + 1)",
+                title: "校验命令 \(index + 1)",
                 tool: .run_command,
                 args: [
                     "command": .string(command),
@@ -939,11 +939,7 @@ final class XTAutomationRunExecutor {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(artifact) else { return nil }
         do {
-            try FileManager.default.createDirectory(
-                at: targetURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try data.write(to: targetURL, options: .atomic)
+            try SupervisorStoreWriteSupport.writeSnapshotData(data, to: targetURL)
             return relativePath
         } catch {
             return nil

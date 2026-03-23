@@ -7,7 +7,7 @@ struct GlobalHomeViewModelTests {
     func frozenContractsAndActionsMatchXTW327AB() {
         let architecture = XTUIInformationArchitectureContract.frozen
         #expect(architecture.surfaces.contains("xt.global_home"))
-        #expect(architecture.primaryActions["xt.global_home"] == ["start_big_task", "resume_project", "pair_hub"])
+        #expect(architecture.primaryActions["xt.global_home"] == ["resume_project", "pair_hub", "model_status"])
         #expect(architecture.diagnosticEntrypoints.contains("model_status"))
 
         let tokens = XTUIDesignTokenBundleContract.frozen
@@ -25,7 +25,7 @@ struct GlobalHomeViewModelTests {
     }
 
     @Test
-    func globalHomePresentationPrioritizesStartBigTaskAndFailClosedStates() {
+    func globalHomePresentationPrioritizesProjectSummaryAndFailClosedStates() {
         let disconnected = GlobalHomePresentation.map(
             input: GlobalHomePresentationInput(
                 hubInteractive: false,
@@ -37,7 +37,7 @@ struct GlobalHomeViewModelTests {
         )
         #expect(disconnected.primaryStatus.state == .blockedWaitingUpstream)
         #expect(disconnected.primaryStatus.userAction.contains("Pair Hub"))
-        #expect(disconnected.actions.first?.id == "start_big_task")
+        #expect(disconnected.actions.first?.id == "pair_hub")
         #expect(disconnected.badge.badgeText == "Validated mainline only")
 
         let grantRequired = GlobalHomePresentation.map(
@@ -51,7 +51,7 @@ struct GlobalHomeViewModelTests {
         )
         #expect(grantRequired.primaryStatus.state == .grantRequired)
         #expect(grantRequired.primaryStatus.hardLine == "grant_fail_closed must remain visible")
-        #expect(grantRequired.actions[1].id == "resume_project")
+        #expect(grantRequired.actions.first?.id == "resume_project")
 
         let ready = GlobalHomePresentation.map(
             input: GlobalHomePresentationInput(
@@ -63,7 +63,8 @@ struct GlobalHomeViewModelTests {
             )
         )
         #expect(ready.primaryStatus.state == .ready)
-        #expect(ready.primaryStatus.headline.contains("主入口已就绪") || ready.primaryStatus.headline.contains("开始一个复杂任务"))
+        #expect(ready.primaryStatus.headline.contains("Project watchlist"))
+        #expect(ready.actions.first?.id == "resume_project")
         #expect(ready.releaseStatus.state == .releaseFrozen)
         #expect(ready.consumedFrozenFields.contains("xt.ui_release_scope_badge.v1.badge_text"))
     }
