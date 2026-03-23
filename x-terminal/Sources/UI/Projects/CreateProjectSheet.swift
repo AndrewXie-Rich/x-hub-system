@@ -654,7 +654,7 @@ struct CreateProjectSheet: View {
             governanceInlineMessageIsError = false
             selectedGovernanceDestination = .executionTier
         case .safe:
-            governanceInlineMessage = "已切到推荐治理模板（默认 A3 + S3）。project 会优先持续推进，但高风险动作仍继续受 grant 与 clamp 约束。"
+            governanceInlineMessage = "已切到推荐治理模板（默认 A3 + S3）。项目会优先持续推进，但高风险动作仍继续受 grant 与收束规则约束。"
             governanceInlineMessageIsError = false
         case .conservative:
             governanceInlineMessage = "已切到保守治理模板（默认 A1 + S2）。当前更偏向理解、规划与审阅，不主动放大执行面。"

@@ -81,7 +81,7 @@ struct ProjectSettingsGovernanceUITests {
 
         #expect(!presentation.invalidMessages.isEmpty)
         #expect(presentation.statusSummary.contains("当前组合无效"))
-        #expect(presentation.clampSummary.contains("未连接 runtime clamp"))
+        #expect(presentation.clampSummary.contains("未连接运行时收束"))
     }
 
     @Test
