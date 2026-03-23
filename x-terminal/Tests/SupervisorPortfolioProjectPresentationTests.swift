@@ -180,7 +180,7 @@ struct SupervisorPortfolioProjectPresentationTests {
                 kind: .specGap,
                 priority: .now,
                 reasonSummary: "formal_spec_missing: goal / milestones",
-                recommendedNextAction: "Fill formal spec fields for Project Spec: goal / milestones.",
+                recommendedNextAction: "补齐 Project Spec 的正式规格字段：goal / milestones。",
                 whyItMatters: "Spec gaps keep routing unstable.",
                 staleAgeHours: 1
             )
@@ -249,8 +249,8 @@ struct SupervisorPortfolioProjectPresentationTests {
                 projectName: "Project Rail Action",
                 kind: .decisionRail,
                 priority: .today,
-                reasonSummary: "1 shadowed background note",
-                recommendedNextAction: "Review the shadowed background note and keep it non-binding.",
+                reasonSummary: "1 条被遮蔽背景说明",
+                recommendedNextAction: "检查 Project Rail Action 的1 条被遮蔽背景说明，确认它在已批准决策下继续保持非约束。",
                 whyItMatters: "Decision precedence needs cleanup.",
                 staleAgeHours: 1
             )
@@ -290,8 +290,8 @@ struct SupervisorPortfolioProjectPresentationTests {
                 kind: .decisionAssist,
                 priority: .now,
                 reasonSummary: "test_stack proposal_with_timeout_escalation: swift_testing_contract_default",
-                recommendedNextAction: "Review decision assist for Project Assist Action: swift_testing_contract_default. If no decision arrives, escalate after 15m.",
-                whyItMatters: "A reversible low-risk default is ready.",
+                recommendedNextAction: "检查 Project Assist Action 的决策辅助：swift_testing_contract_default。如果一直没有决定，15m 后升级处理。",
+                whyItMatters: "已经有一个可逆的低风险默认方案。",
                 staleAgeHours: 1
             )
         ]

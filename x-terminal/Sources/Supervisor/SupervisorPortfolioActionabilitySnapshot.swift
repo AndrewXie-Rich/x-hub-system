@@ -449,9 +449,9 @@ enum SupervisorPortfolioActionabilitySnapshotBuilder {
             return card.nextStep
         }
         if card.projectState == .awaitingAuthorization {
-            return "Review the pending approval and record a decision before asking the project to continue."
+            return "先审查待批事项并记录决定，再让项目继续。"
         }
-        return "Resolve the decision blocker or choose an explicit lower-risk fallback."
+        return "先解除这个决策阻塞，或选择一个明确的低风险兜底方案。"
     }
 
     private static func recommendedActionForDecisionAssist(
@@ -463,15 +463,15 @@ enum SupervisorPortfolioActionabilitySnapshotBuilder {
 
         let option = decisionAssistOption(assist)
         if let timeoutMs = assist.timeoutEscalationAfterMs, timeoutMs > 0 {
-            return "Review decision assist for \(card.displayName): \(option). If no decision arrives, escalate after \(decisionAssistTimeoutText(timeoutMs))."
+            return "检查 \(card.displayName) 的决策辅助：\(option)。如果一直没有决定，\(decisionAssistTimeoutText(timeoutMs)) 后升级处理。"
         }
         if assist.failClosed || assist.requiresUserDecision {
-            return "Review decision assist for \(card.displayName): \(option), then record an explicit decision before work continues."
+            return "检查 \(card.displayName) 的决策辅助：\(option)，并在继续工作前记录明确决定。"
         }
         if assist.autoAdoptAllowed {
-            return "Review decision assist for \(card.displayName): \(option). If policy still allows, Supervisor can auto-adopt it on the governed path."
+            return "检查 \(card.displayName) 的决策辅助：\(option)。如果策略仍允许，Supervisor 可以在受治理路径上自动采纳。"
         }
-        return "Review decision assist for \(card.displayName): \(option), then approve it or choose another explicit fallback."
+        return "检查 \(card.displayName) 的决策辅助：\(option)，然后批准它，或选择另一个明确兜底方案。"
     }
 
     private static func recommendedActionForSpecGap(
@@ -479,9 +479,9 @@ enum SupervisorPortfolioActionabilitySnapshotBuilder {
     ) -> String {
         let fieldList = specGapFieldList(card.missingSpecFields)
         guard !fieldList.isEmpty else {
-            return "Complete the formal spec capsule before routing more work."
+            return "先补齐正式规格卡片，再继续分发工作。"
         }
-        return "Fill formal spec fields for \(card.displayName): \(fieldList)."
+        return "补齐 \(card.displayName) 的正式规格字段：\(fieldList)。"
     }
 
     private static func recommendedActionForDecisionRail(
@@ -511,18 +511,18 @@ enum SupervisorPortfolioActionabilitySnapshotBuilder {
 
     private static func decisionAssistWhyItMatters(_ card: SupervisorPortfolioProjectCard) -> String {
         guard let assist = card.decisionAssist else {
-            return "A concrete default proposal is ready, so this blocker should move to an explicit governed decision instead of staying open-ended."
+            return "已经有一个明确的默认方案，这个阻塞不该继续悬空，而应进入明确的受治理决策。"
         }
         if assist.failClosed {
-            return "Supervisor already has a reusable default proposal, but this blocker stays fail-closed until an explicit governed decision is recorded."
+            return "Supervisor 已有可复用的默认方案，但在记录明确的受治理决定前，这个阻塞仍保持 fail-closed。"
         }
         switch assist.governanceMode {
         case .proposalOnly:
-            return "A concrete default proposal is ready, so this blocker can move to a governed accept-or-reject decision."
+            return "已经有一个明确的默认方案，这个阻塞可以进入受治理的接受 / 拒绝决策。"
         case .proposalWithTimeoutEscalation:
-            return "A reversible low-risk default is ready, so the blocker should move to an explicit decision instead of open-ended debate."
+            return "已经有一个可逆的低风险默认方案，这个阻塞应转成明确决定，而不是继续无限讨论。"
         case .autoAdoptIfPolicyAllows:
-            return "A low-risk reversible default is ready and may auto-adopt on the governed path if policy still permits it."
+            return "已经有一个低风险、可逆的默认方案；如果策略仍允许，它可以在受治理路径上自动采纳。"
         }
     }
 
@@ -548,7 +548,7 @@ enum SupervisorPortfolioActionabilitySnapshotBuilder {
             return normalizedReason(card.currentAction)
         }
         let days = max(1, hours / 24)
-        return "\(days)d without a meaningful portfolio update."
+        return "\(days) 天没有实质性的项目集更新。"
     }
 
     private static func stalledReason(
@@ -558,7 +558,7 @@ enum SupervisorPortfolioActionabilitySnapshotBuilder {
         guard let hours = ageHours(for: card, now: now) else {
             return normalizedReason(card.currentAction)
         }
-        return "\(hours)h since the last meaningful update."
+        return "\(hours) 小时没有实质性更新。"
     }
 
     private static func hasConcreteNextStep(_ nextStep: String) -> Bool {
@@ -579,9 +579,9 @@ enum SupervisorPortfolioActionabilitySnapshotBuilder {
 
     private static func normalizedReason(_ text: String) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return "Portfolio state updated." }
+        if trimmed.isEmpty { return "项目集状态已更新。" }
         if trimmed == "(无)" || trimmed == "(暂无)" {
-            return "Portfolio state updated."
+            return "项目集状态已更新。"
         }
         guard trimmed.count > 96 else { return trimmed }
         let end = trimmed.index(trimmed.startIndex, offsetBy: 96)
@@ -606,6 +606,8 @@ enum SupervisorPortfolioActionabilitySnapshotBuilder {
         let phraseCues = [
             "grant_required",
             "review_required",
+            "proposal_pending",
+            "default_proposal_pending",
             "needs review",
             "needs approval",
             "sign off",
@@ -637,6 +639,7 @@ enum SupervisorPortfolioActionabilitySnapshotBuilder {
             "决策",
             "审批",
             "授权",
+            "待确认",
             "拍板",
             "定案",
             "选择",

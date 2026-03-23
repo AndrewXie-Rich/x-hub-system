@@ -91,8 +91,8 @@ struct SupervisorRhythmRecommendationTests {
 
         #expect(!recommendationA.isSubstantiveChange)
         #expect(recommendationA.recommendationType == .steadyState)
-        #expect(recommendationA.recommendedNextAction.contains("Wait for the next material change") == true)
-        #expect(recommendationA.nextUpdateEta == "only when the recommendation changes")
+        #expect(recommendationA.recommendedNextAction.contains("等待下一次实质变化") == true)
+        #expect(recommendationA.nextUpdateEta == "仅当建议发生变化时")
         #expect(recommendationA.dedupeKey == recommendationB.dedupeKey)
         #expect(fingerprintA == fingerprintB)
         #expect(decision.channel == .silentLog)
@@ -156,11 +156,11 @@ struct SupervisorRhythmRecommendationTests {
 
         #expect(event.eventType == .progressed)
         #expect(event.severity == .briefCard)
-        #expect(event.actionSummary == "Decision rail cleanup: 2 shadowed background notes + 1 weak-only preference")
+        #expect(event.actionSummary == "决策护栏清理：2 条被遮蔽背景说明 + 1 条弱约束偏好")
         #expect(recommendation.isSubstantiveChange)
         #expect(recommendation.recommendationType == .decisionRailCleanup)
-        #expect(recommendation.waitingOn == "decision/background precedence cleanup")
-        #expect(recommendation.recommendedNextAction.contains("either formalize them or keep them explicitly non-binding"))
+        #expect(recommendation.waitingOn == "决策 / 背景优先级清理")
+        #expect(recommendation.recommendedNextAction.contains("转成正式决策") == true)
         #expect(decision.channel == .briefCard)
         #expect(decision.recommendation.recommendationType == .decisionRailCleanup)
     }

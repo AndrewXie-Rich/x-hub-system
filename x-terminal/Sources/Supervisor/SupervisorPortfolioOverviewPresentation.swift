@@ -341,12 +341,17 @@ enum SupervisorPortfolioOverviewPresentationMapper {
         _ card: SupervisorPortfolioProjectCard,
         signal: SupervisorMemoryCompactionSignal
     ) -> String {
+        if signal.archiveCandidate {
+            if let nextStep = normalizedCloseOutStep(card.nextStep),
+               looksLikeCloseOutStep(nextStep),
+               nextStep.contains("归档") {
+                return nextStep
+            }
+            return "审阅收口证据并确认归档；如无新增范围，归档该项目。"
+        }
         if let nextStep = normalizedCloseOutStep(card.nextStep),
            looksLikeCloseOutStep(nextStep) {
             return nextStep
-        }
-        if signal.archiveCandidate {
-            return "审阅收口证据并确认归档；如无新增范围，归档该项目。"
         }
         return "审阅收口摘要，确认是否归档或保留少量关键跟踪项。"
     }

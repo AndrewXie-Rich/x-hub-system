@@ -247,8 +247,8 @@ struct SupervisorPortfolioSnapshotTests {
         #expect(event.eventType == .progressed)
         #expect(event.severity == .briefCard)
         #expect(event.actionTitle.contains("决策边界待清理"))
-        #expect(event.actionSummary == "Decision rail cleanup: 2 shadowed background notes + 1 weak-only preference")
-        #expect(event.nextAction.contains("either formalize them or keep them explicitly non-binding"))
+        #expect(event.actionSummary == "决策护栏清理：2 条被遮蔽背景说明 + 1 条弱约束偏好")
+        #expect(event.nextAction.contains("转成正式决策") == true)
     }
 
     @Test

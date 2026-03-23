@@ -190,8 +190,8 @@ struct SupervisorPortfolioActionabilitySnapshotTests {
         #expect(actionability.actionableToday == 2)
         #expect(actionability.recommendedActions.map(\.projectId) == ["p-rails", "p-active"])
         #expect(actionability.recommendedActions.first?.kind == .decisionRail)
-        #expect(actionability.recommendedActions.first?.reasonSummary == "2 shadowed background notes + 1 weak-only preference")
-        #expect(actionability.recommendedActions.first?.recommendedNextAction.contains("formalize") == true)
+        #expect(actionability.recommendedActions.first?.reasonSummary == "2 条被遮蔽背景说明 + 1 条弱约束偏好")
+        #expect(actionability.recommendedActions.first?.recommendedNextAction.contains("转成正式决策") == true)
     }
 
     @Test
@@ -243,8 +243,8 @@ struct SupervisorPortfolioActionabilitySnapshotTests {
         #expect(actionability.recommendedActions.map(\.projectId) == ["p-assist", "p-blocked"])
         #expect(actionability.recommendedActions.first?.kind == .decisionAssist)
         #expect(actionability.recommendedActions.first?.reasonSummary == "test_stack proposal_with_timeout_escalation: swift_testing_contract_default")
-        #expect(actionability.recommendedActions.first?.recommendedNextAction == "Review decision assist for Assist Project: swift_testing_contract_default. If no decision arrives, escalate after 15m.")
-        #expect(actionability.recommendedActions.first?.whyItMatters.contains("reversible low-risk default") == true)
+        #expect(actionability.recommendedActions.first?.recommendedNextAction == "检查 Assist Project 的决策辅助：swift_testing_contract_default。如果一直没有决定，15m 后升级处理。")
+        #expect(actionability.recommendedActions.first?.whyItMatters.contains("可逆的低风险默认方案") == true)
     }
 
     @Test

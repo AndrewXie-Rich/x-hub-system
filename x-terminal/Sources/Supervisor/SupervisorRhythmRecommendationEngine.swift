@@ -178,9 +178,9 @@ enum SupervisorRhythmRecommendationEngine {
                 if looksLikeArchiveReviewAction(eventNextAction) {
                     return eventNextAction
                 }
-                return "Review completion evidence, then archive or close out the project."
+                return "先核对完成证据，再归档或正式关闭项目。"
             case .archived:
-                return "Keep the project archived unless new scope is explicitly approved."
+                return "除非明确重新开启 scope，否则保持归档。"
             default:
                 return eventNextAction
             }
@@ -188,27 +188,27 @@ enum SupervisorRhythmRecommendationEngine {
 
         switch event.eventType {
         case .awaitingAuthorization:
-            return "Review the pending approval and record a decision before asking the project to continue."
+            return "先审查待批事项并记录决定，再让项目继续。"
         case .blocked:
             if looksDecisionShaped(event.actionSummary + " " + event.whyItMatters) {
-                return "Choose or approve the next safe path before routing more work."
+                return "先选择或批准下一条安全路径，再继续分发工作。"
             }
-            return "Resolve the blocker or choose an explicit fallback before the next checkpoint."
+            return "先解除阻塞，或在下一个检查点前选择一个明确兜底方案。"
         case .created:
-            return "Review the new project and confirm one concrete next step."
+            return "先审查新项目，并确认一个明确的下一步。"
         case .progressed:
             if looksLikeDecisionRailCleanup(event.actionSummary + " " + event.whyItMatters + " " + event.nextAction) {
                 let eventNextAction = normalizedDisplayText(event.nextAction, fallback: "")
                 if !eventNextAction.isEmpty, !looksLikeMissingNextStep(eventNextAction) {
                     return eventNextAction
                 }
-                return "Review the decision/background boundary and either formalize the preference or keep it explicitly non-binding."
+                return "检查决策 / 背景边界，决定是转成正式规则，还是继续明确保持非约束。"
             }
-            return "Wait for the next material change; do not interrupt on status churn."
+            return "等待下一次实质变化；不要因为状态噪音打断。"
         case .completed:
-            return "Review completion evidence, then archive or close out the project."
+            return "先核对完成证据，再归档或正式关闭项目。"
         case .archived:
-            return "Keep the project archived unless new scope is explicitly approved."
+            return "除非明确重新开启 scope，否则保持归档。"
         }
     }
 
@@ -218,39 +218,39 @@ enum SupervisorRhythmRecommendationEngine {
     ) -> String {
         switch event.eventType {
         case .awaitingAuthorization:
-            return "after the authorization decision is recorded"
+            return "在授权决定记录后"
         case .blocked:
-            return "after blocker resolution or the next checkpoint"
+            return "在阻塞解除或下一个检查点后"
         case .created:
-            return "after the first portfolio check-in"
+            return "在第一次项目集检视后"
         case .completed:
-            return "after archive or close-out is confirmed"
+            return "在确认归档或正式收尾后"
         case .archived:
-            return "only if new scope is explicitly reopened"
+            return "仅当 scope 被明确重新开启时"
         case .progressed:
             return substantiveChange
-                ? "at the next checkpoint or when the recommendation changes"
-                : "only when the recommendation changes"
+                ? "在下一个检查点或建议变化时"
+                : "仅当建议发生变化时"
         }
     }
 
     private static func defaultWhyItMatters(for event: SupervisorProjectActionEvent) -> String {
         switch event.eventType {
         case .awaitingAuthorization:
-            return "The project cannot continue until the authorization decision is made."
+            return "项目在授权决定落地前不能继续。"
         case .blocked:
-            return "The blocker is preventing forward progress."
+            return "这个阻塞正在阻止项目继续前进。"
         case .created:
-            return "New portfolio entries need a concrete first move, not another status broadcast."
+            return "新项目需要一个明确的第一步，而不是再来一条状态广播。"
         case .completed:
-            return "Completed work should leave the active queue so the homepage stays action-first."
+            return "已完成工作应该离开活跃队列，让首页继续保持行动优先。"
         case .archived:
-            return "Archived work should stay quiet unless scope is explicitly reopened."
+            return "已归档工作应保持安静，除非 scope 被明确重新开启。"
         case .progressed:
             if looksLikeDecisionRailCleanup(event.actionSummary + " " + event.whyItMatters + " " + event.nextAction) {
-                return "Decision/background precedence drift should be cleaned up before weak preferences leak back into execution."
+                return "决策 / 背景优先级漂移应先清理，避免弱偏好重新渗回执行。"
             }
-            return "Only recommendation-changing progress should interrupt the supervisor."
+            return "只有会改变建议的进展，才值得打断 Supervisor。"
         }
     }
 
@@ -318,6 +318,12 @@ enum SupervisorRhythmRecommendationEngine {
             "non-binding",
             "background-only",
             "precedence boundary",
+            "决策护栏",
+            "被遮蔽背景",
+            "弱约束偏好",
+            "非约束",
+            "只作为背景",
+            "优先级边界",
         ]
         return tokens.contains { lowered.contains($0) }
     }
@@ -349,6 +355,7 @@ enum SupervisorRhythmRecommendationEngine {
             "continue_current_task",
             "wait_for_the_next_material_change;_do_not_interrupt_on_status_churn.",
             "wait_for_the_next_material_change;_do_not_interrupt_on_status_churn",
+            "等待下一次实质变化；不要因为状态噪音打断。",
             "unknown",
             "n/a",
         ]
