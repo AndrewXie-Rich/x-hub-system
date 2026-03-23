@@ -75,7 +75,7 @@ struct SupervisorFailureFormattingTests {
     }
 
     @Test
-    func legacyGrantFailureRendersConciseChineseFallbackCard() throws {
+    func legacyGrantFailureKeepsBriefFailClosedForStatusQueries() throws {
         let manager = SupervisorManager.makeForTesting()
         let root = try makeProjectRoot(named: "supervisor-failure-formatting")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -110,9 +110,11 @@ struct SupervisorFailureFormattingTests {
         #expect(rendered.contains("临时放行：到 Hub Settings -> Grants & Permissions 完成一次 legacy grant。"))
         #expect(rendered.contains("长期修复：到 Hub Settings -> Pairing & Device Trust 把这台设备升级到新 trust profile。"))
         #expect(rendered.contains("以下为本地直答结果："))
-        #expect(rendered.contains("xterminal-supervisor-manager-automation"))
-        #expect(rendered.contains("等待 paid model 授权"))
-        #expect(rendered.contains("完成授权后继续执行"))
+        #expect(rendered.contains("⚠️ Hub Brief 暂不可用 · xterminal-supervisor-manager-automation"))
+        #expect(rendered.contains("按当前 fail-closed 规则，我先不在 XT 本地即兴拼接 Supervisor brief。"))
+        #expect(rendered.contains("等 Hub brief 投影查询链接上后再问一次状态"))
+        #expect(!rendered.contains("等待 paid model 授权"))
+        #expect(!rendered.contains("完成授权后继续执行"))
         #expect(!rendered.contains("access_state="))
         #expect(!rendered.contains("policy_ref="))
         #expect(!rendered.contains("why_it_happened="))

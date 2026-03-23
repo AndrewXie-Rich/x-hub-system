@@ -232,13 +232,18 @@ struct SupervisorPersonalReviewCenterView: View {
         reviewStore.syncDerivedNotes(
             policy: activePersona.personalPolicy,
             personalMemory: personalMemoryStore.snapshot,
-            now: now
+            now: now,
+            intent: .derivedRefresh
         )
     }
 
     private func markCompleted(_ type: SupervisorPersonalReviewType) {
         let now = Date()
-        reviewStore.markCompleted(type: type, at: now)
+        reviewStore.markCompleted(
+            type: type,
+            at: now,
+            intent: .completionMark
+        )
         refreshDerivedNotes(now: now)
     }
 }

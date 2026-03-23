@@ -386,7 +386,10 @@ struct SupervisorPersonalMemoryCenterView: View {
 
     private func saveDraft() {
         let normalized = draftSnapshot.normalized()
-        store.replaceSnapshot(normalized)
+        store.replaceSnapshot(
+            normalized,
+            intent: .manualEditBufferCommit
+        )
         draftSnapshot = normalized
         if normalized.item(for: selectedMemoryID) == nil {
             selectedMemoryID = normalized.items.first?.memoryId ?? ""

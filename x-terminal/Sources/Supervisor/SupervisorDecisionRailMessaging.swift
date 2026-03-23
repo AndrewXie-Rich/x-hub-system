@@ -1,7 +1,7 @@
 import Foundation
 
 enum SupervisorDecisionRailMessaging {
-    static let waitingOnText = "decision/background precedence cleanup"
+    static let waitingOnText = "决策 / 背景优先级清理"
 
     static func hasSignal(
         shadowedBackgroundNoteCount: Int,
@@ -14,7 +14,7 @@ enum SupervisorDecisionRailMessaging {
         shadowedBackgroundNoteCount: Int,
         weakOnlyBackgroundNoteCount: Int
     ) -> String {
-        "Decision rail cleanup: \(reasonSummary(shadowedBackgroundNoteCount: shadowedBackgroundNoteCount, weakOnlyBackgroundNoteCount: weakOnlyBackgroundNoteCount))"
+        "决策护栏清理：\(reasonSummary(shadowedBackgroundNoteCount: shadowedBackgroundNoteCount, weakOnlyBackgroundNoteCount: weakOnlyBackgroundNoteCount))"
     }
 
     static func reasonSummary(
@@ -28,16 +28,16 @@ enum SupervisorDecisionRailMessaging {
             shadowedBackgroundNoteCount: shadowed,
             weakOnlyBackgroundNoteCount: weakOnly
         ) else {
-            return "decision/background signal"
+            return "决策 / 背景信号"
         }
 
         if shadowed > 0 && weakOnly > 0 {
-            return "\(countText(shadowed, singular: "shadowed background note", plural: "shadowed background notes")) + \(countText(weakOnly, singular: "weak-only preference", plural: "weak-only preferences"))"
+            return "\(countText(shadowed, label: "被遮蔽背景说明")) + \(countText(weakOnly, label: "弱约束偏好"))"
         }
         if shadowed > 0 {
-            return countText(shadowed, singular: "shadowed background note", plural: "shadowed background notes")
+            return countText(shadowed, label: "被遮蔽背景说明")
         }
-        return countText(weakOnly, singular: "weak-only preference", plural: "weak-only preferences")
+        return countText(weakOnly, label: "弱约束偏好")
     }
 
     static func recommendedNextAction(
@@ -49,12 +49,12 @@ enum SupervisorDecisionRailMessaging {
         let weakOnly = max(0, weakOnlyBackgroundNoteCount)
 
         if shadowed > 0 && weakOnly > 0 {
-            return "Review \(countText(shadowed, singular: "shadowed background note", plural: "shadowed background notes")) and \(countText(weakOnly, singular: "weak-only preference", plural: "weak-only preferences")) for \(projectName); either formalize them or keep them explicitly non-binding."
+            return "检查 \(projectName) 的\(countText(shadowed, label: "被遮蔽背景说明"))和\(countText(weakOnly, label: "弱约束偏好"))，决定是转成正式决策，还是继续明确保持非约束。"
         }
         if shadowed > 0 {
-            return "Review \(countText(shadowed, singular: "shadowed background note", plural: "shadowed background notes")) for \(projectName) and confirm they stay non-binding under the approved decision."
+            return "检查 \(projectName) 的\(countText(shadowed, label: "被遮蔽背景说明"))，确认它们在已批准决策下继续保持非约束。"
         }
-        return "Decide whether to formalize \(countText(weakOnly, singular: "weak-only preference", plural: "weak-only preferences")) for \(projectName) or keep them explicitly background-only."
+        return "判断是否要把 \(projectName) 的\(countText(weakOnly, label: "弱约束偏好"))转成正式决策；如果不需要，就继续明确只作为背景。"
     }
 
     static func whyItMatters(
@@ -65,21 +65,19 @@ enum SupervisorDecisionRailMessaging {
         let weakOnly = max(0, weakOnlyBackgroundNoteCount)
 
         if shadowed > 0 && weakOnly > 0 {
-            return "Formal decisions already exist, but shadowed notes and weak-only preferences can still leak back into execution unless Supervisor cleans up the precedence boundary."
+            return "正式决策已经存在，但被遮蔽的背景说明和弱约束偏好仍可能重新渗回执行，除非 Supervisor 清理优先级边界。"
         }
         if shadowed > 0 {
-            return "Shadowed background notes should stay visibly non-binding so the approved decision remains the only hard constraint."
+            return "被遮蔽的背景说明应继续明确保持非约束状态，避免盖过已批准决策。"
         }
-        return "Weak-only preferences remain helpful context, but they should not keep masquerading as formal project requirements."
+        return "弱约束偏好可以保留为参考，但不应继续伪装成正式项目要求。"
     }
 
     private static func countText(
         _ count: Int,
-        singular: String,
-        plural: String
+        label: String
     ) -> String {
         let normalized = max(0, count)
-        let label = normalized == 1 ? singular : plural
-        return "\(normalized) \(label)"
+        return "\(normalized) 条\(label)"
     }
 }

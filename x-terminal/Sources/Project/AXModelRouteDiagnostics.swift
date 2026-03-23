@@ -14,6 +14,8 @@ struct AXModelRouteDiagnosticEvent: Codable, Equatable, Identifiable, Sendable {
     var runtimeProvider: String
     var executionPath: String
     var fallbackReasonCode: String
+    var auditRef: String? = nil
+    var denyCode: String? = nil
     var remoteRetryAttempted: Bool
     var remoteRetryFromModelId: String
     var remoteRetryToModelId: String
@@ -85,8 +87,16 @@ struct AXModelRouteDiagnosticEvent: Codable, Equatable, Identifiable, Sendable {
         if !fallbackReasonCode.isEmpty {
             parts.append("reason=\(fallbackReasonCode)")
         }
+        if let denyCode = denyCode?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !denyCode.isEmpty {
+            parts.append("deny_code=\(denyCode)")
+        }
         if !runtimeProvider.isEmpty {
             parts.append("provider=\(runtimeProvider)")
+        }
+        if let auditRef = auditRef?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !auditRef.isEmpty {
+            parts.append("audit_ref=\(auditRef)")
         }
         return parts.joined(separator: " ")
     }
@@ -182,6 +192,7 @@ private struct AXModelRouteObservedDiagnosticLine {
     var actualModelID: String
     var provider: String
     var fallbackReasonCode: String
+    var denyCode: String
     var remoteRetryTargetModelID: String
     var remoteRetryReasonCode: String
 }
@@ -200,7 +211,7 @@ extension AXModelRouteTruthProjection {
 
         let latestObservedEvent = summary.latestEvent.map { event in
             AXModelRouteObservedDiagnosticLine(
-                auditRef: event.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "latest_event" : event.id,
+                auditRef: axModelRouteFirstNonEmpty(event.auditRef, event.id) ?? "latest_event",
                 projectPresent: !event.projectId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     || !event.projectDisplayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                 executionPath: event.executionPath,
@@ -208,6 +219,7 @@ extension AXModelRouteTruthProjection {
                 actualModelID: event.actualModelId,
                 provider: event.runtimeProvider,
                 fallbackReasonCode: event.fallbackReasonCode,
+                denyCode: event.denyCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
                 remoteRetryTargetModelID: event.remoteRetryToModelId,
                 remoteRetryReasonCode: event.remoteRetryReasonCode
             )
@@ -227,13 +239,14 @@ extension AXModelRouteTruthProjection {
 
         let latestObservedEvent = routeEventEntries.first.map { entry in
             AXModelRouteObservedDiagnosticLine(
-                auditRef: entry.key,
+                auditRef: axModelRouteTokenValue("audit_ref", in: entry.value) ?? entry.key,
                 projectPresent: entry.value.contains("project="),
                 executionPath: axModelRouteTokenValue("path", in: entry.value) ?? "",
                 requestedModelID: axModelRouteTokenValue("requested", in: entry.value) ?? "",
                 actualModelID: axModelRouteTokenValue("actual", in: entry.value) ?? "",
                 provider: axModelRouteTokenValue("provider", in: entry.value) ?? "",
                 fallbackReasonCode: axModelRouteTokenValue("reason", in: entry.value) ?? "",
+                denyCode: axModelRouteTokenValue("deny_code", in: entry.value) ?? "",
                 remoteRetryTargetModelID: axModelRouteRemoteRetryTarget(from: entry.value) ?? "",
                 remoteRetryReasonCode: axModelRouteTokenValue("retry_reason", in: entry.value) ?? ""
             )
@@ -255,6 +268,7 @@ extension AXModelRouteTruthProjection {
         )
         let routeReasonCode = axModelRouteFirstNonEmpty(
             latestObservedEvent?.fallbackReasonCode,
+            latestObservedEvent?.denyCode,
             latestObservedEvent?.remoteRetryReasonCode
         ) ?? "unknown"
         let bindingModelID = axModelRouteFirstNonEmpty(
@@ -299,7 +313,7 @@ extension AXModelRouteTruthProjection {
                 fallbackReason: fallbackReason,
                 remoteAllowed: "unknown",
                 auditRef: latestObservedEvent?.auditRef ?? "unknown",
-                denyCode: "unknown"
+                denyCode: axModelRouteFirstNonEmpty(latestObservedEvent?.denyCode, latestObservedEvent?.fallbackReasonCode) ?? "unknown"
             ),
             constraintSnapshot: AXModelRouteTruthConstraintSnapshot(
                 remoteAllowedAfterUserPref: "unknown",
@@ -456,6 +470,8 @@ enum AXModelRouteDiagnosticsStore {
             runtimeProvider: text(obj["runtime_provider"]),
             executionPath: executionPath,
             fallbackReasonCode: text(obj["fallback_reason_code"]),
+            auditRef: text(obj["audit_ref"]),
+            denyCode: text(obj["deny_code"]),
             remoteRetryAttempted: remoteRetryAttempted,
             remoteRetryFromModelId: text(obj["remote_retry_from_model_id"]),
             remoteRetryToModelId: text(obj["remote_retry_to_model_id"]),

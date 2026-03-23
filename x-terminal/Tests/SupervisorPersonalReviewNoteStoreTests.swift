@@ -33,6 +33,11 @@ struct SupervisorPersonalReviewNoteStoreTests {
 
         let preview = SupervisorPersonalReviewNoteBuilder.preview(
             snapshot: .empty,
+            lastWriteObservation: SupervisorLocalMemoryWriteObservation(
+                surface: .personalReview,
+                intent: SupervisorPersonalReviewNoteStoreWriteIntent.derivedRefresh.rawValue,
+                updatedAtMs: 99
+            ),
             policy: SupervisorPersonalPolicy(
                 relationshipMode: .chiefOfStaff,
                 briefingStyle: .proactive,
@@ -50,9 +55,15 @@ struct SupervisorPersonalReviewNoteStoreTests {
         )
 
         #expect(preview.dueCount == 1)
+        #expect(preview.localStoreRole == SupervisorLocalMemoryStoreRole.rawValue)
+        #expect(preview.lastLocalWriteIntent == SupervisorPersonalReviewNoteStoreWriteIntent.derivedRefresh.rawValue)
+        #expect(preview.statusLine.contains("XT local personal review cache"))
         #expect(preview.dueNotes.map(\.reviewType) == [.morningBrief])
         #expect(preview.dueNotes[0].summary.contains("overdue follow-ups"))
         #expect(preview.dueNotes[0].recommendedActions.contains(where: { $0.contains("Reply to Alex") }))
+        #expect(preview.promptContext.contains("XT local store role: \(SupervisorLocalMemoryStoreRole.rawValue)"))
+        #expect(preview.promptContext.contains("Latest XT local write intent: \(SupervisorPersonalReviewNoteStoreWriteIntent.derivedRefresh.rawValue)"))
+        #expect(preview.promptContext.contains("not treat it as the durable source of truth"))
         #expect(preview.promptContext.contains("Due personal reviews: Morning Brief"))
     }
 
@@ -84,12 +95,21 @@ struct SupervisorPersonalReviewNoteStoreTests {
             personalMemory: personalMemory,
             now: now,
             timeZone: timeZone,
-            locale: Locale(identifier: "en_US_POSIX")
+            locale: Locale(identifier: "en_US_POSIX"),
+            intent: .testSeed
         )
         #expect(store.preview(policy: .default(), personalMemory: personalMemory, now: now, timeZone: timeZone).dueCount == 1)
         #expect(store.snapshot.notes.count == 1)
+        #expect(store.lastWriteObservation?.surface == .personalReview)
+        #expect(store.lastWriteObservation?.intent == SupervisorPersonalReviewNoteStoreWriteIntent.testSeed.rawValue)
 
-        store.markCompleted(type: .morningBrief, at: now, timeZone: timeZone)
+        store.markCompleted(
+            type: .morningBrief,
+            at: now,
+            timeZone: timeZone,
+            intent: .completionMark
+        )
+        #expect(store.lastWriteObservation?.intent == SupervisorPersonalReviewNoteStoreWriteIntent.completionMark.rawValue)
 
         let afterComplete = store.preview(
             policy: .default(),

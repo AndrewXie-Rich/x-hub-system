@@ -111,7 +111,8 @@ struct SupervisorPersonalAssistantSummaryBoard: View {
     private func refreshReviewNotes() {
         reviewStore.syncDerivedNotes(
             policy: activePersona.personalPolicy,
-            personalMemory: personalMemoryStore.snapshot
+            personalMemory: personalMemoryStore.snapshot,
+            intent: .derivedRefresh
         )
     }
 }

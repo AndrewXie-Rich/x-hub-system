@@ -123,6 +123,28 @@ struct AXRouteRepairLogStoreTests {
     }
 
     @Test
+    func unifiedSupervisorControlCenterLabelIsUsedForModelSettingsRepairAction() throws {
+        let root = try makeProjectRoot(named: "route-repair-supervisor-control-center")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        AXRouteRepairLogStore.record(
+            actionId: "open_model_settings",
+            outcome: "opened",
+            latestEvent: makeEvent(fallbackReasonCode: "model_not_found"),
+            createdAt: 100,
+            for: ctx
+        )
+
+        let lines = AXRouteRepairLogStore.userFacingSummaryLines(for: ctx, limit: 10)
+        #expect(lines.count == 1)
+        #expect(lines[0].contains("打开 Supervisor 控制中心 · AI 模型（已打开）"))
+        #expect(lines[0].contains("目标模型未加载（model_not_found）"))
+    }
+
+    @Test
     func userFacingSummaryLineHumanizesInternalSourceAndTargetModelNotes() throws {
         let root = try makeProjectRoot(named: "route-repair-user-facing-notes")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -154,6 +176,11 @@ struct AXRouteRepairLogStoreTests {
         #expect(lines[0].contains("目标模型未加载（remote_model_not_found）"))
         #expect(lines[1].contains("打开 XT Diagnostics（已自动打开）"))
         #expect(lines[1].contains("来源 连接 Hub 失败后自动打开"))
+    }
+
+    @Test
+    func userFacingActionLabelUsesXTAIModelNamingForChooseModelEntry() {
+        #expect(AXRouteRepairLogStore.userFacingActionLabel("open_choose_model") == "打开 XT AI 模型")
     }
 
     @Test

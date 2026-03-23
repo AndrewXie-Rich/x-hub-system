@@ -803,6 +803,7 @@ messages:
                     recordProjectSkillAuthorizationOutcome(
                         ctx: flow.ctx,
                         dispatch: dispatch,
+                        config: resolvedConfig,
                         decision: blocked.decision
                     )
                 }
@@ -884,6 +885,7 @@ messages:
                     recordProjectSkillAuthorizationOutcome(
                         ctx: flow.ctx,
                         dispatch: dispatch,
+                        config: resolvedConfig,
                         decision: blocked.decision
                     )
                 }
@@ -1142,6 +1144,7 @@ messages:
                 recordProjectSkillAuthorizationOutcome(
                     ctx: ctx,
                     dispatch: dispatch,
+                    config: resolvedConfig,
                     decision: authorization
                 )
                 appendBlockedToolResult(
@@ -1478,7 +1481,7 @@ messages:
                 )
                 flow.lastPromptVisibleGuidanceInjectionId = promptBuild.visiblePendingGuidanceInjectionId
                 let prompt = promptBuild.prompt
-                let (out, usage) = try await llmGenerateWithUsage(
+                let (out, usage, routeDecision) = try await llmGenerateWithUsage(
                     role: .coder,
                     prompt: prompt,
                     router: router,
@@ -1528,6 +1531,12 @@ messages:
                 if let reason = usage?.fallbackReasonCode, !reason.isEmpty {
                     usageEntry["fallback_reason_code"] = reason
                 }
+                if let auditRef = usage?.auditRef, !auditRef.isEmpty {
+                    usageEntry["audit_ref"] = auditRef
+                }
+                if let denyCode = usage?.denyCode, !denyCode.isEmpty {
+                    usageEntry["deny_code"] = denyCode
+                }
                 if let projectExplainability = promptBuild.memory.projectExplainability {
                     for (key, value) in projectExplainability.usageFields {
                         usageEntry[key] = value
@@ -1546,6 +1555,22 @@ messages:
                     usageEntry["remote_retry_reason_code"] = retryReason
                 }
                 AXProjectStore.appendUsage(usageEntry, for: ctx)
+
+                let configuredModelId = routeDecision.configuredModelId
+                    ?? configuredProjectModelID(for: .coder, config: flow.config, router: router)
+                if let strictFailure = strictProjectRemoteModelMismatchResponse(
+                    configuredModelId: configuredModelId,
+                    routeDecision: routeDecision,
+                    usage: usage
+                ) {
+                    finalizeTurn(
+                        ctx: ctx,
+                        userText: userText,
+                        assistantText: strictFailure,
+                        assistantIndex: assistantIndex
+                    )
+                    return
+                }
 
                 var env: ToolActionEnvelope
                 let parsedOutput = parseToolActionEnvelope(from: out)
@@ -1725,6 +1750,7 @@ messages:
                                             recordProjectSkillAuthorizationOutcome(
                                                 ctx: ctx,
                                                 dispatch: dispatch,
+                                                config: resolvedConfig,
                                                 decision: authorization
                                             )
                                         }
@@ -1839,6 +1865,7 @@ messages:
                             recordProjectSkillAuthorizationOutcome(
                                 ctx: ctx,
                                 dispatch: dispatch,
+                                config: resolvedConfig,
                                 decision: authorization
                             )
                         }
@@ -3241,16 +3268,16 @@ Tool policy:
                 }
             }
             lines.append("恢复建议：检查 Hub 的远端模型配置后，再运行 `/models` 或重新 `/model <id>`。")
+        } else if let routeStatus = slashRouteStatusSummary(
+            configuredModelId: current,
+            routeDecision: routeDecision,
+            routeMemory: routeMemory,
+            snapshot: baseSnapshot
+        ) {
+            lines.append(routeStatus)
         }
         if let routeMemory, !routeMemory.lastHealthyRemoteModelId.isEmpty {
             lines.append("上次稳定远端模型：\(routeMemory.lastHealthyRemoteModelId)")
-        }
-        if !routeDecision.forceLocalExecution,
-           routeDecision.usedRememberedRemoteModel,
-           let remembered = routeDecision.preferredModelId,
-           let configured = routeDecision.configuredModelId,
-           remembered.caseInsensitiveCompare(configured) != .orderedSame {
-            lines.append("路由记忆：如果 `\(configured)` 现在不可执行，会先改试 `\(remembered)`。")
         }
 
         if models.isEmpty {
@@ -3275,11 +3302,7 @@ Tool policy:
             return lines.joined(separator: "\n")
         }
 
-        let modelLines = models.map { m in
-            let remote = isRemoteModelForSlash(m) ? "Remote" : "Local"
-            let name = m.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? m.id : m.name
-            return "- \(name) · \(m.id) · \(remote) · \(m.backend)"
-        }
+        let modelLines = models.flatMap { slashLoadedModelLines($0) }
         lines.append("")
         lines.append("Hub loaded 模型：")
         lines.append(contentsOf: modelLines)
@@ -3294,6 +3317,49 @@ Tool policy:
         }
 
         return lines.joined(separator: "\n")
+    }
+
+    private func slashLoadedModelLines(_ model: HubModel) -> [String] {
+        let remote = isRemoteModelForSlash(model) ? "Remote" : "Local"
+        let name = model.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? model.id : model.name
+        var lines = ["- \(name) · \(model.id) · \(remote) · \(model.backend)"]
+        lines.append("  \(model.defaultLoadConfigDisplayLine)")
+        if let localLoadConfigLimitLine = model.localLoadConfigLimitLine {
+            lines.append("  \(localLoadConfigLimitLine)")
+        }
+        return lines
+    }
+
+    private func slashRouteStatusSummary(
+        configuredModelId: String,
+        routeDecision: AXProjectPreferredModelRouteDecision,
+        routeMemory: AXProjectModelRouteMemory?,
+        snapshot: ModelStateSnapshot
+    ) -> String? {
+        let configured = configuredModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if routeDecision.usedRememberedRemoteModel,
+           let remembered = routeDecision.preferredModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           let requested = routeDecision.configuredModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !remembered.isEmpty,
+           !requested.isEmpty,
+           remembered.caseInsensitiveCompare(requested) != .orderedSame {
+            return "路由状态：当前配置的 `\(requested)` 还不能直接执行；XT 这轮会先自动试上次稳定远端 `\(remembered)`，不用手动切模型。"
+        }
+
+        guard let routeMemory,
+              routeMemory.shouldSuggestLocalModeNotice,
+              !configured.isEmpty else {
+            return nil
+        }
+        let configuredAssessment = HubModelSelectionAdvisor.assess(
+            requestedId: configured,
+            snapshot: snapshot
+        )
+        guard configuredAssessment?.isExactMatchLoaded == true else {
+            return nil
+        }
+        return "路由状态：之前因连续 fallback 触发的本地锁已自动解除；`\(configured)` 现在恢复可执行。"
     }
 
     private func unavailableSlashModelSelectionText(
@@ -3327,7 +3393,7 @@ Tool policy:
         let suggestedCandidates = slashSuggestedCandidates(from: assessment)
         if !suggestedCandidates.isEmpty {
             lines.append("")
-            lines.append("可先切到这些候选：\(suggestedCandidates.joined(separator: "、"))")
+            lines.append("如果你要立刻继续，可改用这些候选：\(suggestedCandidates.joined(separator: "、"))")
         }
 
         lines.append("")
@@ -3350,6 +3416,100 @@ Tool policy:
     ) -> Bool {
         guard !snapshot.models.isEmpty, let assessment else { return false }
         return !assessment.isExactMatchLoaded
+    }
+
+    private struct SlashModelSelectionPreflightGuidance {
+        var detailLines: [String]
+        var actionItems: [String]
+    }
+
+    private func slashSelectionRoutePreflightGuidance(
+        role: AXRole,
+        requestedModelId rawRequestedModelId: String,
+        ctx: AXProjectContext,
+        snapshot: ModelStateSnapshot,
+        suggestions: [String]
+    ) -> SlashModelSelectionPreflightGuidance? {
+        let requestedModelId = rawRequestedModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !requestedModelId.isEmpty else { return nil }
+
+        let routeDecision = AXProjectModelRouteMemoryStore.resolvePreferredModel(
+            configuredModelId: requestedModelId,
+            role: role,
+            ctx: ctx,
+            snapshot: snapshot,
+            localSnapshot: snapshot
+        )
+
+        if routeDecision.usedRememberedRemoteModel,
+           let rememberedRaw = routeDecision.preferredModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !rememberedRaw.isEmpty,
+           rememberedRaw.caseInsensitiveCompare(requestedModelId) != .orderedSame {
+            let rememberedAssessment = HubModelSelectionAdvisor.assess(
+                requestedId: rememberedRaw,
+                snapshot: snapshot
+            )
+            let rememberedLoaded = rememberedAssessment?.isExactMatchLoaded == true
+            let rememberedCommand = slashModelSelectionCommand(role: role, modelId: rememberedRaw)
+            let requestedCommand = slashModelSelectionCommand(role: role, modelId: requestedModelId)
+
+            if rememberedLoaded {
+                return SlashModelSelectionPreflightGuidance(
+                    detailLines: [
+                        "项目路由记忆：`\(requestedModelId)` 当前还不能直接执行，但这个项目上次稳定的远端 `\(rememberedRaw)` 已恢复可用。",
+                        "如果你只是想继续，不用手动切模型；XT 下一轮会先试 `\(rememberedRaw)`。"
+                    ],
+                    actionItems: [
+                        "如果你是要固定到 `\(requestedModelId)`，先去 Hub -> Models 把它加载好，再运行 `/models`，然后重试 `\(requestedCommand)`。",
+                        "如果你只是想继续，保持当前配置即可；XT 会先自动试 `\(rememberedRaw)`。",
+                        "如果你要把 `\(rememberedRaw)` 固定成当前配置，可执行 `\(rememberedCommand)`。"
+                    ]
+                )
+            }
+
+            return SlashModelSelectionPreflightGuidance(
+                detailLines: [
+                    "项目路由记忆：`\(requestedModelId)` 当前还不能直接执行；XT 下一轮会先把这个项目上次稳定的远端 `\(rememberedRaw)` 当作优先候选。",
+                    "如果你只是想继续，XT 仍会先按 `\(rememberedRaw)` 去尝试；但它自己也可能还需要在 Hub 里恢复加载。"
+                ],
+                actionItems: [
+                    "如果你是要固定到 `\(requestedModelId)`，先去 Hub -> Models 把它加载好，再运行 `/models`，然后重试 `\(requestedCommand)`。",
+                    "如果你只是想继续，也最好顺手在 Hub -> Models 确认 `\(rememberedRaw)` 已加载；否则 XT 改试它时仍可能继续 fallback。",
+                    "如果你要把 `\(rememberedRaw)` 固定成当前配置，可执行 `\(rememberedCommand)`。"
+                ]
+            )
+        }
+
+        if routeDecision.forceLocalExecution,
+           let routeMemory = AXProjectModelRouteMemoryStore.load(for: ctx, role: role) {
+            let localModelId = (routeDecision.preferredLocalModelId ?? routeDecision.preferredModelId)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let localModelText = localModelId.isEmpty ? "本地模型" : "`\(localModelId)`"
+            let reason = routeMemory.lastFailureReasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
+            let reasonSuffix = reason.isEmpty ? "" : "（最近原因：\(reason)）"
+            let requestedCommand = slashModelSelectionCommand(role: role, modelId: requestedModelId)
+
+            var detailLines = [
+                "项目路由记忆：这个项目最近连续 \(routeMemory.consecutiveRemoteFallbackCount) 次没有稳定命中 `\(requestedModelId)`\(reasonSuffix)，XT 当前仍会先锁到本地 \(localModelText)。"
+            ]
+            var actionItems = [
+                "如果你是要固定到 `\(requestedModelId)`，先去 Hub -> Models 把它恢复到已加载，再运行 `/models`，然后重试 `\(requestedCommand)`。",
+                "当前项目级本地锁还在；就算现在重新选择 `\(requestedModelId)`，这轮也不会立刻避开本地。"
+            ]
+            if let first = suggestions.first {
+                detailLines.append("如果你现在只是想继续，可显式改用已加载的可执行模型 `\(first)`；否则这轮仍更可能由本地接管。")
+                actionItems.append("如果你要显式改到可执行候选，可执行 `\(slashModelSelectionCommand(role: role, modelId: first))`。")
+            } else {
+                detailLines.append("如果你现在只是想继续，这轮只能先接受本地模式；等 `\(requestedModelId)` 在 Hub 恢复后再重试。")
+                actionItems.append("如果你只是想继续，只能先接受本地模式回答，再检查 Hub 配置。")
+            }
+            return SlashModelSelectionPreflightGuidance(
+                detailLines: detailLines,
+                actionItems: actionItems
+            )
+        }
+
+        return nil
     }
 
     private func blockedSlashModelSelectionText(
@@ -3393,17 +3553,45 @@ Tool policy:
             ctx: ctx,
             snapshot: snapshot
         )
+        let routeGuidance = slashSelectionRoutePreflightGuidance(
+            role: role,
+            requestedModelId: requestedModelId,
+            ctx: ctx,
+            snapshot: snapshot,
+            suggestions: suggestions
+        )
         var lines = ["未修改当前 \(role.rawValue) 模型配置。"]
         if let exact = assessment?.exactMatch {
             lines.append("`\(exact.id)` 当前还不能直接执行，状态是 \(HubModelSelectionAdvisor.stateLabel(exact.state))。")
         } else {
             lines.append("当前 inventory 里没有找到 `\(requestedModelId)` 的精确匹配。")
         }
-        if let first = suggestions.first {
+        if let routeGuidance {
+            lines.append("")
+            lines.append(contentsOf: routeGuidance.detailLines)
+        } else if let first = suggestions.first {
             lines.append("建议直接执行 `\(slashModelSelectionCommand(role: role, modelId: first))`，或先去 Hub -> Models 把目标模型加载好再试。")
         } else {
             lines.append("建议先去 Hub -> Models 确认目标模型已加载，再运行 `/models` 刷新。")
         }
+        let actionItems = routeGuidance?.actionItems ?? {
+            var items = [
+                "先去 Hub -> Models 确认 `\(requestedModelId)` 已加载。",
+                "运行 `/models` 刷新当前视图。"
+            ]
+            if let first = suggestions.first {
+                items.append("如果你现在就要继续，可先执行 `\(slashModelSelectionCommand(role: role, modelId: first))`。")
+            } else {
+                items.append("如果你现在就要继续，可先接受本地模式回答，再检查 Hub 配置。")
+            }
+            return items
+        }()
+        lines.append("")
+        lines.append("建议动作：")
+        for (index, item) in actionItems.enumerated() {
+            lines.append("\(index + 1). \(item)")
+        }
+        lines.append("\(actionItems.count + 1). transport=\(HubAIClient.transportMode().rawValue)")
         return lines.joined(separator: "\n")
     }
 
@@ -3557,7 +3745,7 @@ Tool policy:
             )
         )
         lines.append("")
-        lines.append("当前决策：\(projectRouteDecisionSummary(routeDecision))")
+        lines.append("当前决策：\(projectRouteDecisionSummary(routeDecision, routeMemory: routeMemory, routeSnapshot: routeSnapshot))")
         lines.append("远端备选：\(remoteRetryPlan)")
         lines.append("")
         lines.append("route memory：")
@@ -3575,11 +3763,16 @@ Tool policy:
         lines.append("")
         lines.append("最近一次 coder 真实记录：")
         lines.append(projectExecutionSnapshotDiagnosis(executionSnapshot))
+        if let auditHint = projectRouteHubAuditHint(executionSnapshot) {
+            lines.append("Hub 审计锚点：\(auditHint)")
+        }
         lines.append("")
         lines.append("判定：")
         lines.append(projectRouteDiagnosisConclusion(
             configuredModelId: configuredModelId,
             routeDecision: routeDecision,
+            routeMemory: routeMemory,
+            routeSnapshot: routeSnapshot,
             executionSnapshot: executionSnapshot,
             transport: transport,
             mismatchSummary: mismatch
@@ -3587,6 +3780,36 @@ Tool policy:
         lines.append("")
         lines.append("提示：project override 会优先于 coder 全局 assignment；Supervisor 只看自己的全局 assignment，不读取 project override 或 project route memory。要排除项目级影响，可先执行 `/model auto`。")
         return lines.joined(separator: "\n")
+    }
+
+    private func projectRouteHubAuditHint(_ snapshot: AXRoleExecutionSnapshot) -> String? {
+        let auditRef = snapshot.auditRef.trimmingCharacters(in: .whitespacesAndNewlines)
+        let denyCode = snapshot.denyCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let reason = normalizedRouteReasonCode(snapshot.fallbackReasonCode)
+
+        guard !auditRef.isEmpty || !denyCode.isEmpty else {
+            return nil
+        }
+
+        var tokens: [String] = []
+        if !auditRef.isEmpty {
+            tokens.append("audit_ref=\(auditRef)")
+        }
+        if !denyCode.isEmpty {
+            tokens.append("deny_code=\(denyCode)")
+        }
+
+        let evidence = tokens.joined(separator: " ")
+        switch reason {
+        case "remote_export_blocked":
+            return "\(evidence)。去 Hub Recovery / Hub 审计优先查 `remote_export_blocked`。"
+        case "downgrade_to_local":
+            return "\(evidence)。去 Hub 审计优先查 `ai.generate.downgraded_to_local`。"
+        case "model_not_found", "remote_model_not_found":
+            return "\(evidence)。去 Hub Models / 审计优先核对目标模型是否真的可执行。"
+        default:
+            return "\(evidence)。去 Hub 审计优先按这条证据查。"
+        }
     }
 
     private func projectConfiguredModelSourceText(
@@ -3686,7 +3909,11 @@ Tool policy:
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func projectRouteDecisionSummary(_ decision: AXProjectPreferredModelRouteDecision) -> String {
+    private func projectRouteDecisionSummary(
+        _ decision: AXProjectPreferredModelRouteDecision,
+        routeMemory: AXProjectModelRouteMemory? = nil,
+        routeSnapshot: ModelStateSnapshot? = nil
+    ) -> String {
         if decision.forceLocalExecution {
             let localModel = (decision.preferredLocalModelId ?? decision.preferredModelId)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown_local_model"
@@ -3696,10 +3923,28 @@ Tool policy:
         }
         if decision.usedRememberedRemoteModel,
            let remembered = decision.preferredModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           let configured = decision.configuredModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
            !remembered.isEmpty {
             let reason = decision.reasonCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let reasonSuffix = reason.isEmpty ? "" : "，reason=\(reason)"
+            if !configured.isEmpty,
+               remembered.caseInsensitiveCompare(configured) != .orderedSame {
+                return "当前配置还不能直接执行；XT 这轮会先自动试上次稳定远端：\(remembered)\(reasonSuffix)"
+            }
             return "优先改试上次稳定远端：\(remembered)\(reasonSuffix)"
+        }
+        if let routeMemory,
+           routeMemory.shouldSuggestLocalModeNotice,
+           let routeSnapshot,
+           let preferred = decision.preferredModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !preferred.isEmpty,
+           let configured = decision.configuredModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !configured.isEmpty,
+           HubModelSelectionAdvisor.assess(
+                requestedId: configured,
+                snapshot: routeSnapshot
+           )?.isExactMatchLoaded == true {
+            return "之前的本地锁已自动解除；当前按配置继续尝试：\(preferred)"
         }
         if let preferred = decision.preferredModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
            !preferred.isEmpty {
@@ -3787,7 +4032,7 @@ Tool policy:
             if let modelNotFound = reasonCounts["model_not_found"], modelNotFound > 0 {
                 return ProjectRouteIncidentTrendDiagnosis(
                     summary: "最近 \(modelNotFound) 次主要是 `model_not_found`，更像目标远端模型没加载、模型 id 不匹配，或当前 assignment 指向了不可执行模型。",
-                    actionHint: "先去 Hub -> Models 确认目标模型已加载，再运行 `/models`；如果要先继续工作，切到已加载的推荐远端。"
+                    actionHint: "先去 Hub -> Models 确认目标模型已加载，再运行 `/models`；如果只是想先继续，先看当前 project 的路由状态是否已提示会自动改试上次稳定远端。"
                 )
             }
             if let remoteModelNotFound = reasonCounts["remote_model_not_found"], remoteModelNotFound > 0 {
@@ -3851,6 +4096,12 @@ Tool policy:
         if !snapshot.fallbackReasonCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             lines.append("- fallback_reason=\(snapshot.fallbackReasonCode)")
         }
+        if !snapshot.auditRef.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.append("- audit_ref=\(snapshot.auditRef)")
+        }
+        if !snapshot.denyCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.append("- deny_code=\(snapshot.denyCode)")
+        }
         if snapshot.remoteRetryAttempted {
             lines.append("- remote_retry_attempted=true")
         }
@@ -3872,12 +4123,37 @@ Tool policy:
     private func projectRouteDiagnosisConclusion(
         configuredModelId: String,
         routeDecision: AXProjectPreferredModelRouteDecision,
+        routeMemory: AXProjectModelRouteMemory?,
+        routeSnapshot: ModelStateSnapshot,
         executionSnapshot: AXRoleExecutionSnapshot,
         transport: HubTransportMode,
         mismatchSummary: String?
     ) -> String {
         if routeDecision.forceLocalExecution {
             return "XT 当前仍会优先走本地。这通常表示近期远端连续 fallback，且当前 configured/remembered remote 都还不可直接执行。先检查 Hub 远端模型状态，再用 `/models` 或重新 `/model <id>` 验证。"
+        }
+        if routeDecision.usedRememberedRemoteModel,
+           let remembered = routeDecision.preferredModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           let configured = routeDecision.configuredModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !remembered.isEmpty,
+           !configured.isEmpty,
+           remembered.caseInsensitiveCompare(configured) != .orderedSame {
+            return "XT 当前不会再直接掉回本地；因为 `\(configured)` 还不能直接执行，这轮会先自动试上次稳定远端 `\(remembered)`。如果你要验证原目标是否已恢复，先去 Hub -> Models 确认后再试。"
+        }
+        if let routeMemory,
+           routeMemory.shouldSuggestLocalModeNotice,
+           !configuredModelId.isEmpty,
+           HubModelSelectionAdvisor.assess(
+                requestedId: configuredModelId,
+                snapshot: routeSnapshot
+           )?.isExactMatchLoaded == true {
+            if transport == .fileIPC {
+                return "从 XT 这层看，之前因连续 fallback 触发的项目级本地锁已经解除；只是当前 transport 是 fileIPC，所以这轮本来就不会强制走远端。先把 transport 切回 `/hub route auto` 或 `/hub route grpc` 再验证。"
+            }
+            if let mismatchSummary, !mismatchSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return mismatchSummary
+            }
+            return "从 XT 这层看，之前因连续 fallback 触发的项目级本地锁已经解除；当前 project 会按 `\(configuredModelId)` 正常继续尝试。如果你仍看到本地接管，优先去查 Hub 审计或执行阶段 downgrade。"
         }
         if transport == .fileIPC {
             return "XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端。先把 transport 切回 `/hub route auto` 或 `/hub route grpc` 再验证。"
@@ -4314,6 +4590,146 @@ Previous non-executing response:
         AXRoleExecutionSnapshots.latestSnapshots(for: ctx)[role] ?? .empty(role: role)
     }
 
+    private func strictProjectRemoteModelMismatchResponse(
+        configuredModelId rawConfiguredModelId: String,
+        routeDecision: AXProjectPreferredModelRouteDecision,
+        usage: LLMUsage?
+    ) -> String? {
+        guard HubAIClient.transportMode() == .grpc else { return nil }
+
+        let configuredModelId = rawConfiguredModelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let actualModelId = usage?.actualModelId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !configuredModelId.isEmpty, !actualModelId.isEmpty else { return nil }
+        guard !projectModelIdentitiesMatch(configuredModelId, actualModelId) else { return nil }
+
+        let executionPath = usage?.executionPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let runtimeProvider = usage?.runtimeProvider?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let fallbackReasonToken =
+            usage?.fallbackReasonCode?.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? routeDecision.reasonCode?.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? ""
+        let fallbackReason = normalizedRouteReasonCode(
+            fallbackReasonToken
+        )
+        let auditRef = usage?.auditRef?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let denyCode = usage?.denyCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let rememberedRemoteModelId = routeDecision.preferredModelId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let preferredLocalModelId = (routeDecision.preferredLocalModelId ?? routeDecision.preferredModelId)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        var evidenceLines: [String] = []
+        if !executionPath.isEmpty {
+            evidenceLines.append("- execution_path=\(executionPath)")
+        }
+        if !runtimeProvider.isEmpty {
+            evidenceLines.append("- runtime_provider=\(runtimeProvider)")
+        }
+        if !fallbackReason.isEmpty {
+            evidenceLines.append("- fallback_reason=\(fallbackReason)")
+        }
+        if !auditRef.isEmpty {
+            evidenceLines.append("- audit_ref=\(auditRef)")
+        }
+        if !denyCode.isEmpty {
+            evidenceLines.append("- deny_code=\(denyCode)")
+        }
+        let evidenceBlock = evidenceLines.isEmpty
+            ? ""
+            : "\n\n执行证据：\n" + evidenceLines.joined(separator: "\n")
+
+        if routeDecision.forceLocalExecution {
+            let localLabel = preferredLocalModelId.isEmpty ? actualModelId : preferredLocalModelId
+            return """
+❌ Project AI 已拒绝接受本次回复：当前配置首选是 \(configuredModelId)，但这轮实际执行返回的是 \(actualModelId)。
+
+XT 当前 transport 是 grpc-only，但这个项目在发请求前就被 project route-memory 强制切到了本地执行（当前本地目标：\(localLabel)）。这不是 Hub 静默降级；是当前项目自己的本地锁仍在生效。
+为了避免“界面选了 GPT，但项目实际还是本地模型继续执行”，这轮结果已按 fail-closed 丢弃。\(evidenceBlock.isEmpty ? "" : evidenceBlock)
+
+下一步：
+1. 在当前项目运行 `/route diagnose`，确认是不是连续 fallback 触发了本地锁
+2. 到 Hub Models 确认 \(configuredModelId) 已真正可执行
+3. 修完后重新 `/model \(configuredModelId)` 或 `/model auto` 再重试
+"""
+        }
+
+        if routeDecision.usedRememberedRemoteModel,
+           !rememberedRemoteModelId.isEmpty,
+           !projectModelIdentitiesMatch(configuredModelId, rememberedRemoteModelId) {
+            return """
+❌ Project AI 已拒绝接受本次回复：当前配置首选是 \(configuredModelId)，但这轮实际执行返回的是 \(actualModelId)。
+
+XT 当前 transport 是 grpc-only。这轮不是按你选的模型精确命中，而是 project route-memory 改试了另一个远端模型 \(rememberedRemoteModelId)。
+为了避免“界面选了 GPT，但项目 quietly 改走别的模型继续执行”，这轮结果已按 fail-closed 丢弃。\(evidenceBlock.isEmpty ? "" : evidenceBlock)
+
+下一步：
+1. 在当前项目运行 `/route diagnose`，确认为什么改试了 \(rememberedRemoteModelId)
+2. 如果你只接受 \(configuredModelId)，先去 Hub Models 确认它已加载且可执行
+3. 修完后再重试当前请求
+"""
+        }
+
+        let executionPathLower = executionPath.lowercased()
+        let runtimeProviderLower = runtimeProvider.lowercased()
+        let localPath = executionPathLower == "hub_downgraded_to_local"
+            || executionPathLower == "local_fallback_after_remote_error"
+            || executionPathLower == "local_runtime"
+        let localProvider = runtimeProviderLower.contains("local")
+
+        if localPath || localProvider {
+            let routeExplanation: String
+            switch fallbackReason {
+            case "remote_export_blocked":
+                routeExplanation = "Hub 的 remote_export gate 拦下了远端请求，并改派到了本地模型。"
+            case "downgrade_to_local":
+                routeExplanation = "Hub 在执行阶段把远端请求降到了本地模型。"
+            case "model_not_found", "remote_model_not_found":
+                routeExplanation = "远端目标模型没有真正命中，随后回复被本地兜底运行时接管。"
+            default:
+                switch executionPathLower {
+                case "hub_downgraded_to_local":
+                    routeExplanation = "Hub 在执行阶段把远端请求改派到了本地模型。"
+                case "local_fallback_after_remote_error":
+                    routeExplanation = "远端阶段失败后，回复由本地兜底运行时接管。"
+                case "local_runtime":
+                    routeExplanation = "这轮实际直接走了本地 runtime。"
+                default:
+                    routeExplanation = "运行层返回的是本地 provider，不是你配置的远端模型。"
+                }
+            }
+
+            let repairStep: String
+            switch fallbackReason {
+            case "model_not_found", "remote_model_not_found":
+                repairStep = "3. 到 Hub Models 确认 \(configuredModelId) 已真正可执行，再重试当前请求"
+            default:
+                repairStep = "3. 修完 Hub export / route gate 后，再重试当前请求"
+            }
+
+            return """
+❌ Project AI 已拒绝接受本次回复：当前配置首选是 \(configuredModelId)，但这轮实际执行返回的是 \(actualModelId)。
+
+XT 当前 transport 是 grpc-only，但本轮实际没有命中所选远端模型。\(routeExplanation)
+为了避免“界面选了 GPT，但项目 quietly 用本地模型继续执行”，这轮结果已按 fail-closed 丢弃。\(evidenceBlock.isEmpty ? "" : evidenceBlock)
+
+下一步：
+1. 到 Hub 审计里查 `ai.generate.downgraded_to_local`
+2. 查同 request_id 对应的 `remote_export_blocked` deny_code
+\(repairStep)
+"""
+        }
+
+        return """
+❌ Project AI 已拒绝接受本次回复：当前配置首选是 \(configuredModelId)，但这轮实际执行返回的是 \(actualModelId)。
+
+XT 当前 transport 是 grpc-only，但这轮实际命中的是另一条执行路由，而不是你当前配置的模型。由于 XT 不能证明它是可接受的等价替代，这轮结果已按 fail-closed 丢弃。\(evidenceBlock.isEmpty ? "" : evidenceBlock)
+
+下一步：
+1. 在当前项目运行 `/route diagnose`
+2. 核对 configured / requested / actual model 是否一致
+3. 修完后再重试当前请求
+"""
+    }
+
     private func configuredProjectModelID(
         for role: AXRole,
         config: AXProjectConfig?,
@@ -4397,8 +4813,21 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         configuredModelId: String,
         snapshot: AXRoleExecutionSnapshot
     ) -> String {
+        func withEvidence(_ summary: String) -> String {
+            var lines: [String] = [summary]
+            let auditRef = snapshot.auditRef.trimmingCharacters(in: .whitespacesAndNewlines)
+            let denyCode = snapshot.denyCode.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !auditRef.isEmpty {
+                lines.append("audit_ref=\(auditRef)")
+            }
+            if !denyCode.isEmpty {
+                lines.append("deny_code=\(denyCode)")
+            }
+            return lines.joined(separator: "\n")
+        }
+
         if let mismatch = projectModelMismatchSummary(configuredModelId: configuredModelId, snapshot: snapshot) {
-            return "最近一次实际执行没有按当前配置模型命中；实际执行的是：\(snapshot.actualModelId)\n\n\(mismatch)"
+            return withEvidence("最近一次实际执行没有按当前配置模型命中；实际执行的是：\(snapshot.actualModelId)\n\n\(mismatch)")
         }
 
         switch snapshot.executionPath {
@@ -4409,22 +4838,22 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
                     let from = snapshot.remoteRetryFromModelId.isEmpty ? snapshot.requestedModelId : snapshot.remoteRetryFromModelId
                     let reason = snapshot.remoteRetryReasonCode.trimmingCharacters(in: .whitespacesAndNewlines)
                     let reasonSuffix = reason.isEmpty ? "" : "；retry_reason=\(reason)"
-                    return "最近一次先请求了 \(from)，随后 XT 在远端层改试 \(snapshot.remoteRetryToModelId) 并成功命中；最终 actual model_id 是：\(snapshot.actualModelId)\(reasonSuffix)"
+                    return withEvidence("最近一次先请求了 \(from)，随后 XT 在远端层改试 \(snapshot.remoteRetryToModelId) 并成功命中；最终 actual model_id 是：\(snapshot.actualModelId)\(reasonSuffix)")
                 }
-                return "最近一次 Project AI / coder 真实调用返回的 actual model_id 是：\(snapshot.actualModelId)"
+                return withEvidence("最近一次 Project AI / coder 真实调用返回的 actual model_id 是：\(snapshot.actualModelId)")
             }
             if !snapshot.requestedModelId.isEmpty {
-                return "最近一次 Project AI / coder 真实调用已经发生，首选模型是 \(snapshot.requestedModelId)，但运行层没有回传明确的 actual model_id。"
+                return withEvidence("最近一次 Project AI / coder 真实调用已经发生，首选模型是 \(snapshot.requestedModelId)，但运行层没有回传明确的 actual model_id。")
             }
-            return "最近一次真实调用已经发生，但运行层没有回传明确的 actual model_id。"
+            return withEvidence("最近一次真实调用已经发生，但运行层没有回传明确的 actual model_id。")
         case "hub_downgraded_to_local":
             if !snapshot.requestedModelId.isEmpty, !snapshot.actualModelId.isEmpty {
                 if !snapshot.fallbackReasonCode.isEmpty {
-                    return "最近一次先请求了 \(snapshot.requestedModelId)，但 Hub 在执行阶段把它降到了本地模型 \(snapshot.actualModelId)；reason=\(snapshot.fallbackReasonCode)。"
+                    return withEvidence("最近一次先请求了 \(snapshot.requestedModelId)，但 Hub 在执行阶段把它降到了本地模型 \(snapshot.actualModelId)；reason=\(snapshot.fallbackReasonCode)。")
                 }
-                return "最近一次先请求了 \(snapshot.requestedModelId)，但 Hub 在执行阶段把它降到了本地模型 \(snapshot.actualModelId)。"
+                return withEvidence("最近一次先请求了 \(snapshot.requestedModelId)，但 Hub 在执行阶段把它降到了本地模型 \(snapshot.actualModelId)。")
             }
-            return "最近一次 paid 远端请求被 Hub 侧改派到了本地模型。"
+            return withEvidence("最近一次 paid 远端请求被 Hub 侧改派到了本地模型。")
         case "local_fallback_after_remote_error":
             if snapshot.remoteRetryAttempted,
                !snapshot.remoteRetryToModelId.isEmpty,
@@ -4440,33 +4869,33 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
                     reasonParts.append("fallback_reason=\(fallbackReason)")
                 }
                 let suffix = reasonParts.isEmpty ? "" : "；" + reasonParts.joined(separator: "，")
-                return "最近一次先请求了 \(from)，随后 XT 又改试了远端备选 \(snapshot.remoteRetryToModelId)，但仍未成功，最后由本地 \(snapshot.actualModelId) 兜底接管\(suffix)"
+                return withEvidence("最近一次先请求了 \(from)，随后 XT 又改试了远端备选 \(snapshot.remoteRetryToModelId)，但仍未成功，最后由本地 \(snapshot.actualModelId) 兜底接管\(suffix)")
             }
             if !snapshot.actualModelId.isEmpty {
                 if !snapshot.requestedModelId.isEmpty, !snapshot.fallbackReasonCode.isEmpty {
-                    return "最近一次先请求了 \(snapshot.requestedModelId)，但因 \(snapshot.fallbackReasonCode) 失败，随后由本地兜底接管；实际落到的 model_id 是：\(snapshot.actualModelId)"
+                    return withEvidence("最近一次先请求了 \(snapshot.requestedModelId)，但因 \(snapshot.fallbackReasonCode) 失败，随后由本地兜底接管；实际落到的 model_id 是：\(snapshot.actualModelId)")
                 }
-                return "最近一次最终由本地兜底接管；实际落到的 model_id 是：\(snapshot.actualModelId)"
+                return withEvidence("最近一次最终由本地兜底接管；实际落到的 model_id 是：\(snapshot.actualModelId)")
             }
             if !snapshot.requestedModelId.isEmpty, !snapshot.fallbackReasonCode.isEmpty {
-                return "最近一次先请求了 \(snapshot.requestedModelId)，但因 \(snapshot.fallbackReasonCode) 失败，随后由本地兜底接管；没有拿到可确认的实际 model_id。"
+                return withEvidence("最近一次先请求了 \(snapshot.requestedModelId)，但因 \(snapshot.fallbackReasonCode) 失败，随后由本地兜底接管；没有拿到可确认的实际 model_id。")
             }
-            return "最近一次远端尝试后由本地兜底接管，但没有拿到可确认的实际 model_id。"
+            return withEvidence("最近一次远端尝试后由本地兜底接管，但没有拿到可确认的实际 model_id。")
         case "local_runtime":
             if !snapshot.actualModelId.isEmpty {
-                return "最近一次这一路实际走的是本地 runtime；model_id 是 \(snapshot.actualModelId)。"
+                return withEvidence("最近一次这一路实际走的是本地 runtime；model_id 是 \(snapshot.actualModelId)。")
             }
-            return "最近一次这一路实际走的是本地 runtime，但没有拿到明确的 model_id。"
+            return withEvidence("最近一次这一路实际走的是本地 runtime，但没有拿到明确的 model_id。")
         case "remote_error":
             if !snapshot.requestedModelId.isEmpty, !snapshot.fallbackReasonCode.isEmpty {
-                return "最近一次请求了 \(snapshot.requestedModelId)，但在远端阶段被 \(snapshot.fallbackReasonCode) 直接拦下，没有形成成功回复。"
+                return withEvidence("最近一次请求了 \(snapshot.requestedModelId)，但在远端阶段被 \(snapshot.fallbackReasonCode) 直接拦下，没有形成成功回复。")
             }
-            return "最近一次远端调用失败，没有形成成功回复。"
+            return withEvidence("最近一次远端调用失败，没有形成成功回复。")
         case "no_record":
             return "当前还没有 coder 角色的真实调用记录。"
         default:
             if snapshot.hasRecord {
-                return snapshot.detailedSummary
+                return withEvidence(snapshot.detailedSummary)
             }
             return "当前还没有 coder 角色的真实调用记录。"
         }
@@ -4639,6 +5068,18 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         directProjectReplyIfApplicable(userText: userText, ctx: ctx, config: config, router: router)
     }
 
+    func strictProjectRemoteModelMismatchResponseForTesting(
+        configuredModelId: String,
+        routeDecision: AXProjectPreferredModelRouteDecision,
+        usage: LLMUsage?
+    ) -> String? {
+        strictProjectRemoteModelMismatchResponse(
+            configuredModelId: configuredModelId,
+            routeDecision: routeDecision,
+            usage: usage
+        )
+    }
+
     func projectRouteDiagnosisTextForTesting(
         ctx: AXProjectContext,
         config: AXProjectConfig?,
@@ -4651,6 +5092,20 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
             config: config,
             router: router,
             routeSnapshot: routeSnapshot,
+            localSnapshot: localSnapshot
+        )
+    }
+
+    func slashModelsTextForTesting(
+        ctx: AXProjectContext? = nil,
+        config: AXProjectConfig?,
+        snapshot: ModelStateSnapshot,
+        localSnapshot: ModelStateSnapshot? = nil
+    ) -> String {
+        slashModelsText(
+            ctx: ctx,
+            config: config,
+            snapshot: snapshot,
             localSnapshot: localSnapshot
         )
     }
@@ -5118,7 +5573,7 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         assistantIndexForStreaming: Int? = nil,
         visibleStreamMode: VisibleLLMStreamMode = .none
     ) async throws -> String {
-        let (t, _) = try await llmGenerateWithUsage(
+        let (t, _, _) = try await llmGenerateWithUsage(
             role: role,
             prompt: prompt,
             router: router,
@@ -5134,7 +5589,7 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
         router: LLMRouter,
         assistantIndexForStreaming: Int? = nil,
         visibleStreamMode: VisibleLLMStreamMode = .none
-    ) async throws -> (String, LLMUsage?) {
+    ) async throws -> (String, LLMUsage?, AXProjectPreferredModelRouteDecision) {
         let provider = router.provider(for: role)
         let configuredPreferredHub = router.preferredModelIdForHub(for: role, projectConfig: activeConfig)
         let projectContext = currentProjectContextForLLM()
@@ -5205,7 +5660,7 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
             }
             AXProjectStore.appendRawLog(routeLog, for: projectContext)
         }
-        return (out, usage)
+        return (out, usage, routeDecision)
     }
 
     private func currentProjectIdForLLM() -> String? {
@@ -5691,25 +6146,39 @@ XT 当前 transport 是 fileIPC，所以这轮本来就不会强制走远端 pai
     private func recordProjectSkillAuthorizationOutcome(
         ctx: AXProjectContext,
         dispatch: XTProjectMappedSkillDispatch,
+        config: AXProjectConfig,
         decision: XTToolAuthorizationDecision
     ) {
-        AXProjectStore.appendRawLog(
-            [
-                "type": "project_skill_call",
-                "created_at": Date().timeIntervalSince1970,
-                "status": "blocked",
-                "request_id": dispatch.toolCall.id,
-                "skill_id": dispatch.skillId,
-                "tool_name": dispatch.toolName,
-                "tool_args": jsonArgs(dispatch.toolCall.args),
-                "authorization_disposition": decision.disposition.rawValue,
-                "deny_code": decision.denyCode,
-                "detail": decision.detail,
-                "policy_source": decision.policySource,
-                "policy_reason": decision.policyReason
-            ],
-            for: ctx
+        let resultSummary = xtToolAuthorizationDeniedSummaryText(
+            call: dispatch.toolCall,
+            decision: decision
         )
+        var row: [String: Any] = [
+            "type": "project_skill_call",
+            "created_at": Date().timeIntervalSince1970,
+            "status": "blocked",
+            "request_id": dispatch.toolCall.id,
+            "skill_id": dispatch.skillId,
+            "tool_name": dispatch.toolName,
+            "tool_args": jsonArgs(dispatch.toolCall.args),
+            "result_summary": resultSummary,
+            "authorization_disposition": decision.disposition.rawValue,
+            "deny_code": decision.denyCode,
+            "detail": decision.detail,
+            "policy_source": decision.policySource,
+            "policy_reason": decision.policyReason
+        ]
+        if let runtimeDecision = decision.runtimePolicyDecision {
+            let summary = xtToolRuntimePolicyDeniedSummary(
+                call: dispatch.toolCall,
+                projectRoot: ctx.root,
+                config: config,
+                decision: runtimeDecision,
+                effectiveRuntimeSurface: decision.runtimeEffectiveSurface
+            )
+            appendGovernanceTruthSnapshot(to: &row, from: summary)
+        }
+        AXProjectStore.appendRawLog(row, for: ctx)
     }
 
     private func recordProjectSkillManualRejection(
@@ -9042,6 +9511,15 @@ effective_work_order_depth: \(contract.effectiveWorkOrderDepth.isEmpty ? "(none)
             var out: [String: Any] = [:]
             for (k, vv) in o { out[k] = jsonValueToAny(vv) }
             return out
+        }
+    }
+
+    private func appendGovernanceTruthSnapshot(
+        to row: inout [String: Any],
+        from summary: [String: JSONValue]
+    ) {
+        for (key, value) in XTGovernanceTruthPresentation.snapshotFields(from: summary) {
+            row[key] = jsonValueToAny(value)
         }
     }
 

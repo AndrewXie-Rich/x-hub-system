@@ -79,8 +79,7 @@ struct ModelSelectorView: View {
                     inheritedModelPresentation: routingSelectionState.inheritedPresentation,
                     models: selectableModels,
                     focusContext: focusContext,
-                    recommendedModelId: selectedModelRecommendation?.modelId,
-                    recommendationMessage: selectedModelRecommendation?.message,
+                    recommendation: selectedModelRecommendation,
                     showContextDetails: false,
                     automaticTitle: "自动（使用全局 / Hub 路由）",
                     automaticSelectedBadge: "当前生效",
@@ -162,7 +161,7 @@ struct ModelSelectorView: View {
         )
     }
 
-    private var selectedModelRecommendation: (modelId: String, message: String)? {
+    private var selectedModelRecommendation: HubModelPickerRecommendationState? {
         let projectContext = appModel.projectRoot.map { AXProjectContext(root: $0) }
         if let guidance = AXProjectModelRouteMemoryStore.selectionGuidance(
             configuredModelId: selectedModelId,
@@ -173,9 +172,10 @@ struct ModelSelectorView: View {
            let recommendedModelId = guidance.recommendedModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
            !recommendedModelId.isEmpty {
             let message = guidance.recommendationText?.trimmingCharacters(in: .whitespacesAndNewlines)
-            return (
-                recommendedModelId,
-                (message?.isEmpty == false ? message! : guidance.warningText)
+            return HubModelPickerRecommendationState(
+                kind: HubModelPickerRecommendationKind(guidance.recommendationKind),
+                modelId: recommendedModelId,
+                message: (message?.isEmpty == false ? message! : guidance.warningText)
             )
         }
 
@@ -194,22 +194,25 @@ struct ModelSelectorView: View {
         }
 
         if let blocked = assessment.nonInteractiveExactMatch {
-            return (
-                candidate,
-                "`\(blocked.id)` 是检索专用模型，Supervisor 会按需调用它做 retrieval；当前对话先切到 `\(candidate)` 更稳。"
+            return HubModelPickerRecommendationState(
+                kind: .switchRecommended,
+                modelId: candidate,
+                message: "`\(blocked.id)` 是检索专用模型，Supervisor 会按需调用它做 retrieval；如果你要立刻继续，可改用 `\(candidate)`。"
             )
         }
 
         if let exact = assessment.exactMatch {
-            return (
-                candidate,
-                "`\(exact.id)` 当前是 \(HubModelSelectionAdvisor.stateLabel(exact.state))；如果你现在就要继续，先切到已加载的 `\(candidate)` 更稳。"
+            return HubModelPickerRecommendationState(
+                kind: .switchRecommended,
+                modelId: candidate,
+                message: "`\(exact.id)` 当前是 \(HubModelSelectionAdvisor.stateLabel(exact.state))；如果你要立刻继续，可改用已加载的 `\(candidate)`。"
             )
         }
 
-        return (
-            candidate,
-            "`\(selectedModelId)` 当前不在可直接执行的 inventory 里；先切到已加载的 `\(candidate)`，可以避免这轮直接掉到本地。"
+        return HubModelPickerRecommendationState(
+            kind: .switchRecommended,
+            modelId: candidate,
+            message: "`\(selectedModelId)` 当前不在可直接执行的 inventory 里；如果你要立刻继续，可改用已加载的 `\(candidate)`，避免这轮直接掉到本地。"
         )
     }
 
@@ -233,7 +236,7 @@ struct ModelSelectorView: View {
            let reason = assessment.interactiveRoutingBlockedReason {
             let suggestions = suggestedCandidates(from: assessment)
             if let first = suggestions.first {
-                return "\(sourceLabel) `\(blocked.id)` 当前是检索专用模型。\(reason) 可先改用 `\(first)`，或恢复 Auto。"
+                return "\(sourceLabel) `\(blocked.id)` 当前是检索专用模型。\(reason) 如果你要立刻继续，可改用 `\(first)`，或恢复 Auto。"
             }
             return "\(sourceLabel) `\(blocked.id)` 当前是检索专用模型。\(reason)"
         }
@@ -241,14 +244,14 @@ struct ModelSelectorView: View {
         if let exact = assessment.exactMatch {
             let suggestions = suggestedCandidates(from: assessment)
             if let first = suggestions.first {
-                return "\(sourceLabel) `\(exact.id)` 当前状态是 \(HubModelSelectionAdvisor.stateLabel(exact.state))，这轮请求可能回退到本地。可先改用 `\(first)`。"
+                return "\(sourceLabel) `\(exact.id)` 当前状态是 \(HubModelSelectionAdvisor.stateLabel(exact.state))，这轮请求可能回退到本地。如果你要立刻继续，可改用 `\(first)`。"
             }
             return "\(sourceLabel) `\(exact.id)` 当前状态是 \(HubModelSelectionAdvisor.stateLabel(exact.state))，这轮请求可能回退到本地。"
         }
 
         let suggestions = suggestedCandidates(from: assessment)
         if !suggestions.isEmpty {
-            return "\(sourceLabel) `\(selectedModelId)` 不在当前 inventory 里。可先改用 `\(suggestions.joined(separator: "`, `"))`。"
+            return "\(sourceLabel) `\(selectedModelId)` 不在当前 inventory 里。如果你要立刻继续，可改用 `\(suggestions.joined(separator: "`, `"))`。"
         }
         return "\(sourceLabel) `\(selectedModelId)` 不在当前 inventory 里，这轮请求可能直接走本地模式。"
     }

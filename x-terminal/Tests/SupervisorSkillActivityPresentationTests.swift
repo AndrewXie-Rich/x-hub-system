@@ -507,6 +507,8 @@ struct SupervisorSkillActivityPresentationTests {
     func displayMetadataFieldsLocalizeCommonSupervisorFieldLabels() {
         let fields = [
             ProjectSkillRecordField(label: "policy_reason", value: "execution_tier_missing_browser_runtime"),
+            ProjectSkillRecordField(label: "blocked_summary", value: "当前项目执行档位不允许浏览器自动化。"),
+            ProjectSkillRecordField(label: "governance_truth", value: "当前生效 A1/S2 · 审查 Periodic。"),
             ProjectSkillRecordField(label: "work_order_depth", value: "execution_ready"),
             ProjectSkillRecordField(label: "result_evidence_ref", value: "local://supervisor_skill_results/skill-1.json"),
             ProjectSkillRecordField(label: "audit_ref", value: "audit-skill-1")
@@ -515,6 +517,8 @@ struct SupervisorSkillActivityPresentationTests {
         let localized = SupervisorSkillActivityPresentation.displayMetadataFields(fields)
 
         #expect(localized.contains(where: { $0.label == "策略原因" && $0.value == "execution_tier_missing_browser_runtime" }))
+        #expect(localized.contains(where: { $0.label == "阻塞说明" && $0.value == "当前项目执行档位不允许浏览器自动化。" }))
+        #expect(localized.contains(where: { $0.label == "治理真相" && $0.value == "当前生效 A1/S2 · 审查 Periodic。" }))
         #expect(localized.contains(where: { $0.label == "工单深度" && $0.value == "execution_ready" }))
         #expect(localized.contains(where: { $0.label == "结果证据引用" && $0.value == "local://supervisor_skill_results/skill-1.json" }))
         #expect(localized.contains(where: { $0.label == "审计引用" && $0.value == "audit-skill-1" }))
@@ -917,6 +921,10 @@ struct SupervisorSkillActivityPresentationTests {
             triggerSource: "user_turn",
             ctx: ctx
         )
+        let raw = """
+        {"type":"supervisor_skill_call","action":"blocked","request_id":"skill-policy-1","project_id":"project-alpha","job_id":"job-3","plan_id":"plan-2","step_id":"step-8","skill_id":"agent-browser","tool_name":"device.browser.control","status":"blocked","result_summary":"browser automation blocked by governance","deny_code":"governance_capability_denied","policy_source":"project_governance","policy_reason":"execution_tier_missing_browser_runtime","execution_tier":"\(AXProjectExecutionTier.a1Plan.rawValue)","effective_execution_tier":"\(AXProjectExecutionTier.a1Plan.rawValue)","supervisor_intervention_tier":"\(AXProjectSupervisorInterventionTier.s2PeriodicReview.rawValue)","effective_supervisor_intervention_tier":"\(AXProjectSupervisorInterventionTier.s2PeriodicReview.rawValue)","review_policy_mode":"\(AXProjectReviewPolicyMode.periodic.rawValue)","progress_heartbeat_sec":900,"review_pulse_sec":1800,"brainstorm_review_sec":0,"governance_compat_source":"\(AXProjectGovernanceCompatSource.explicitDualDial.rawValue)","timestamp_ms":2000,"audit_ref":"audit-policy-1"}
+        """
+        try #require(raw.data(using: .utf8)).write(to: ctx.rawLogURL, options: .atomic)
 
         let fullRecord = try #require(
             SupervisorSkillActivityPresentation.fullRecord(
@@ -928,7 +936,11 @@ struct SupervisorSkillActivityPresentationTests {
 
         #expect(fullRecord.approvalFields.contains(where: { $0.label == "policy_source" && $0.value == "project_governance" }))
         #expect(fullRecord.approvalFields.contains(where: { $0.label == "policy_reason" && $0.value == "execution_tier_missing_browser_runtime" }))
+        #expect(fullRecord.approvalFields.contains(where: { $0.label == "blocked_summary" && $0.value.contains("不允许浏览器自动化") }))
+        #expect(fullRecord.governanceFields.contains(where: { $0.label == "governance_truth" && $0.value.contains("当前生效 A1/S2") }))
         #expect(SupervisorSkillActivityPresentation.fullRecordText(fullRecord).contains("policy_reason=execution_tier_missing_browser_runtime"))
+        #expect(SupervisorSkillActivityPresentation.fullRecordText(fullRecord).contains("blocked_summary=当前项目执行档位不允许浏览器自动化。"))
+        #expect(SupervisorSkillActivityPresentation.fullRecordText(fullRecord).contains("governance_truth=当前生效 A1/S2 · 审查 Periodic · 节奏 心跳 15m / 脉冲 30m / 脑暴 off"))
     }
 
     @Test

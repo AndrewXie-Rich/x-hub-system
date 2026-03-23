@@ -103,7 +103,7 @@ struct SupervisorSettingsView: View {
                 .font(.body)
                 .foregroundStyle(.secondary)
 
-            Text("如果某台已配对终端需要更大的或更小的本地上下文长度，请在 Hub 的设备编辑页调整该设备的本地模型覆盖；这里显示的是 Hub 模型目录的默认值。")
+            Text("如果某台已配对终端需要独立的本地加载配置覆盖，例如更大的 `ctx`、不同的 `ttl / par / identifier`，请在 Hub 的设备编辑页调整该设备的本地模型覆盖；这里显示的是 Hub 模型目录的默认值。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -1329,8 +1329,7 @@ struct SupervisorSettingsView: View {
                         inheritedModelId: globalModelId(selectedRole),
                         inheritedModelPresentation: globalModelPresentation(for: selectedRole),
                         models: sortedAvailableHubModels,
-                        recommendedModelId: recommendation?.modelId,
-                        recommendationMessage: recommendation?.message,
+                        recommendation: recommendation,
                         onSelect: { modelId in
                             updateProjectRoleModelAssignment(
                                 projectId: projectId,
@@ -1450,7 +1449,7 @@ struct SupervisorSettingsView: View {
     private func projectModelSelectionRecommendation(
         for projectId: String,
         role: AXRole
-    ) -> (modelId: String, message: String)? {
+    ) -> HubModelPickerRecommendationState? {
         let configured = selectedModelIdentifier(for: projectId, role: role)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !configured.isEmpty else { return nil }
@@ -1464,9 +1463,10 @@ struct SupervisorSettingsView: View {
            let recommendedModelId = guidance.recommendedModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
            !recommendedModelId.isEmpty {
             let message = guidance.recommendationText?.trimmingCharacters(in: .whitespacesAndNewlines)
-            return (
-                recommendedModelId,
-                (message?.isEmpty == false ? message! : guidance.warningText)
+            return HubModelPickerRecommendationState(
+                kind: HubModelPickerRecommendationKind(guidance.recommendationKind),
+                modelId: recommendedModelId,
+                message: (message?.isEmpty == false ? message! : guidance.warningText)
             )
         }
 
@@ -1486,22 +1486,25 @@ struct SupervisorSettingsView: View {
         }
 
         if let blocked = assessment.nonInteractiveExactMatch {
-            return (
-                candidate,
-                "`\(blocked.id)` 是检索专用模型，Supervisor 会按需调用它做 retrieval；当前对话先切到 `\(candidate)` 更稳。"
+            return HubModelPickerRecommendationState(
+                kind: .switchRecommended,
+                modelId: candidate,
+                message: "`\(blocked.id)` 是检索专用模型，Supervisor 会按需调用它做 retrieval；如果你要立刻继续，可改用 `\(candidate)`。"
             )
         }
 
         if let exact = assessment.exactMatch {
-            return (
-                candidate,
-                "`\(exact.id)` 当前是 \(HubModelSelectionAdvisor.stateLabel(exact.state))；如果你现在就要继续，先切到已加载的 `\(candidate)` 更稳。"
+            return HubModelPickerRecommendationState(
+                kind: .switchRecommended,
+                modelId: candidate,
+                message: "`\(exact.id)` 当前是 \(HubModelSelectionAdvisor.stateLabel(exact.state))；如果你要立刻继续，可改用已加载的 `\(candidate)`。"
             )
         }
 
-        return (
-            candidate,
-            "`\(configured)` 当前不在可直接执行的 inventory 里；先切到已加载的 `\(candidate)`，可以避免这轮继续掉本地。"
+        return HubModelPickerRecommendationState(
+            kind: .switchRecommended,
+            modelId: candidate,
+            message: "`\(configured)` 当前不在可直接执行的 inventory 里；如果你要立刻继续，可改用已加载的 `\(candidate)`，避免这轮继续掉本地。"
         )
     }
 
@@ -1529,7 +1532,7 @@ struct SupervisorSettingsView: View {
            let reason = assessment.interactiveRoutingBlockedReason {
             let candidates = suggestedModelIDs(from: assessment)
             if let first = candidates.first {
-                return "\(configuredBinding.subject) `\(blocked.id)`，但它是检索专用模型。\(reason) 可先切到 `\(first)`。"
+                return "\(configuredBinding.subject) `\(blocked.id)`，但它是检索专用模型。\(reason) 如果你要立刻继续，可改用 `\(first)`。"
             }
             return "\(configuredBinding.subject) `\(blocked.id)`，但它是检索专用模型。\(reason)"
         }
@@ -1537,7 +1540,7 @@ struct SupervisorSettingsView: View {
         if let assessment, let exact = assessment.exactMatch {
             let candidates = suggestedModelIDs(from: assessment)
             if let first = candidates.first {
-                return "\(configuredBinding.subject) `\(exact.id)`，但它现在是 \(HubModelSelectionAdvisor.stateLabel(exact.state))。若你现在执行，这一路可能会回退到本地；可先切到 `\(first)`。"
+                return "\(configuredBinding.subject) `\(exact.id)`，但它现在是 \(HubModelSelectionAdvisor.stateLabel(exact.state))。若你现在执行，这一路可能会回退到本地；如果你要立刻继续，可改用 `\(first)`。"
             }
             return "\(configuredBinding.subject) `\(exact.id)`，但它现在是 \(HubModelSelectionAdvisor.stateLabel(exact.state))。若你现在执行，这一路可能会回退到本地。"
         }

@@ -47,6 +47,11 @@ struct SupervisorCrossLinkStoreTests {
 
         let summary = SupervisorCrossLinkSummaryBuilder.build(
             snapshot: snapshot,
+            lastWriteObservation: SupervisorLocalMemoryWriteObservation(
+                surface: .crossLink,
+                intent: SupervisorCrossLinkStoreWriteIntent.afterTurnCacheRefresh.rawValue,
+                updatedAtMs: 3
+            ),
             projects: [
                 makeProject(id: "proj-liangliang", name: "亮亮"),
                 makeProject(id: "proj-alpha", name: "Alpha")
@@ -59,6 +64,12 @@ struct SupervisorCrossLinkStoreTests {
         )
 
         #expect(summary.selectedCount == 1)
+        #expect(summary.localStoreRole == SupervisorLocalMemoryStoreRole.rawValue)
+        #expect(summary.lastLocalWriteIntent == SupervisorCrossLinkStoreWriteIntent.afterTurnCacheRefresh.rawValue)
+        #expect(summary.statusLine.contains("XT local cross-link cache"))
+        #expect(summary.promptContext.contains("XT local store role: \(SupervisorLocalMemoryStoreRole.rawValue)"))
+        #expect(summary.promptContext.contains("Latest XT local write intent: \(SupervisorCrossLinkStoreWriteIntent.afterTurnCacheRefresh.rawValue)"))
+        #expect(summary.promptContext.contains("not treat it as the durable source of truth"))
         #expect(summary.promptContext.contains("Alex 在等亮亮 demo"))
         #expect(!summary.promptContext.contains("Sam 在等 Alpha"))
     }
@@ -97,6 +108,8 @@ struct SupervisorCrossLinkStoreTests {
         #expect(stored.kind == .personWaitingOnProject)
         #expect(stored.personName == "Alex")
         #expect(stored.projectId == project.projectId)
+        #expect(crossLinkStore.lastWriteObservation?.surface == .crossLink)
+        #expect(crossLinkStore.lastWriteObservation?.intent == SupervisorCrossLinkStoreWriteIntent.afterTurnCacheRefresh.rawValue)
 
         let nextDecision = manager.resolveSupervisorTurnRoutingDecisionForTesting(
             "Alex 还在等什么？",

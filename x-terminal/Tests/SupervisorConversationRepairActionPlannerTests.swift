@@ -3,6 +3,17 @@ import Testing
 @testable import XTerminal
 
 struct SupervisorConversationRepairActionPlannerTests {
+    @Test
+    func xtChooseModelMapsToSettingsAIModelSection() {
+        let plan = SupervisorConversationRepairActionPlanner.plan(for: .xtChooseModel)
+
+        #expect(
+            plan == SupervisorConversationRepairActionPlan(
+                buttonTitle: "打开 XT AI 模型",
+                action: .openXTSettings(sectionId: "choose_model")
+            )
+        )
+    }
 
     @Test
     func xtDiagnosticsMapsToSettingsDiagnosticsSection() {
@@ -66,6 +77,18 @@ struct SupervisorConversationRepairActionPlannerTests {
             plan == SupervisorConversationRepairActionPlan(
                 buttonTitle: "打开 Pair Progress",
                 action: .openHubSetup(sectionId: "pair_progress")
+            )
+        )
+    }
+
+    @Test
+    func hubModelsMapsToHubChooseModelSectionWithClearerLabel() {
+        let plan = SupervisorConversationRepairActionPlanner.plan(for: .hubModels)
+
+        #expect(
+            plan == SupervisorConversationRepairActionPlan(
+                buttonTitle: "打开 Hub 模型与付费访问",
+                action: .openHubSetup(sectionId: "choose_model")
             )
         )
     }

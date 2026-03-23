@@ -651,8 +651,43 @@ enum HubIPCClient {
         var updatedAtMs: Int64
         var reasonCode: String?
         var detail: String?
+        var deliveryState: String?
+        var auditRefs: [String]?
+        var evidenceRefs: [String]?
+        var writebackRefs: [String]?
 
         var id: String { "\(scopeKind)::\(scopeId)" }
+        var primaryAuditRef: String? { auditRefs?.first }
+        var primaryEvidenceRef: String? { evidenceRefs?.first }
+        var primaryWritebackRef: String? { writebackRefs?.first }
+
+        init(
+            scopeKind: String,
+            scopeId: String,
+            displayName: String,
+            source: String,
+            ok: Bool,
+            updatedAtMs: Int64,
+            reasonCode: String? = nil,
+            detail: String? = nil,
+            deliveryState: String? = nil,
+            auditRefs: [String]? = nil,
+            evidenceRefs: [String]? = nil,
+            writebackRefs: [String]? = nil
+        ) {
+            self.scopeKind = scopeKind
+            self.scopeId = scopeId
+            self.displayName = displayName
+            self.source = source
+            self.ok = ok
+            self.updatedAtMs = updatedAtMs
+            self.reasonCode = reasonCode
+            self.detail = detail
+            self.deliveryState = deliveryState
+            self.auditRefs = auditRefs
+            self.evidenceRefs = evidenceRefs
+            self.writebackRefs = writebackRefs
+        }
 
         enum CodingKeys: String, CodingKey {
             case scopeKind = "scope_kind"
@@ -663,6 +698,10 @@ enum HubIPCClient {
             case updatedAtMs = "updated_at_ms"
             case reasonCode = "reason_code"
             case detail
+            case deliveryState = "delivery_state"
+            case auditRefs = "audit_refs"
+            case evidenceRefs = "evidence_refs"
+            case writebackRefs = "writeback_refs"
         }
     }
 
@@ -2329,6 +2368,10 @@ enum HubIPCClient {
     private struct CanonicalMemorySyncDispatchResult {
         var ok: Bool
         var source: String
+        var deliveryState: String? = nil
+        var auditRefs: [String] = []
+        var evidenceRefs: [String] = []
+        var writebackRefs: [String] = []
         var reasonCode: String? = nil
         var detail: String? = nil
     }
@@ -3352,14 +3395,22 @@ enum HubIPCClient {
                 await remoteMemorySnapshotCache.invalidate(projectId: payload.projectId)
                 return CanonicalMemorySyncDispatchResult(
                     ok: true,
-                    source: "grpc",
+                    source: normalized(remote.source) ?? "grpc",
+                    deliveryState: "delivered_remote",
+                    auditRefs: remote.auditRefs,
+                    evidenceRefs: remote.evidenceRefs,
+                    writebackRefs: remote.writebackRefs,
                     detail: normalized(remote.logText)
                 )
             }
             if !allowFileFallback {
                 return CanonicalMemorySyncDispatchResult(
                     ok: false,
-                    source: "grpc",
+                    source: normalized(remote.source) ?? "grpc",
+                    deliveryState: "remote_delivery_failed",
+                    auditRefs: remote.auditRefs,
+                    evidenceRefs: remote.evidenceRefs,
+                    writebackRefs: remote.writebackRefs,
                     reasonCode: normalizedReasonCode(
                         remote.reasonCode,
                         fallback: "project_canonical_memory_remote_failed"
@@ -3399,6 +3450,7 @@ enum HubIPCClient {
             return CanonicalMemorySyncDispatchResult(
                 ok: false,
                 source: "local_ipc",
+                deliveryState: "local_ipc_unavailable",
                 reasonCode: "project_canonical_memory_local_ipc_unavailable",
                 detail: "project canonical memory local IPC unavailable"
             )
@@ -3419,6 +3471,7 @@ enum HubIPCClient {
                 return CanonicalMemorySyncDispatchResult(
                     ok: false,
                     source: "file_ipc",
+                    deliveryState: "local_file_ipc_encode_failed",
                     reasonCode: "project_canonical_memory_encode_failed",
                     detail: "project canonical memory request encoding failed"
                 )
@@ -3434,16 +3487,22 @@ enum HubIPCClient {
                 return CanonicalMemorySyncDispatchResult(
                     ok: false,
                     source: "file_ipc",
+                    deliveryState: "local_file_ipc_write_failed",
                     reasonCode: "project_canonical_memory_write_failed",
                     detail: normalized(writeStatus.requestError)
                 )
             }
-            return CanonicalMemorySyncDispatchResult(ok: true, source: "file_ipc")
+            return CanonicalMemorySyncDispatchResult(
+                ok: true,
+                source: "file_ipc",
+                deliveryState: "queued_local_file_ipc"
+            )
         case "socket":
             guard let ack: AckIPCResponse = sendSocketRequest(req, socketURL: transport.ipcURL, timeoutSec: 2.0) else {
                 return CanonicalMemorySyncDispatchResult(
                     ok: false,
                     source: "socket_ipc",
+                    deliveryState: "local_socket_ipc_request_failed",
                     reasonCode: "socket_request_failed",
                     detail: "project canonical memory socket request failed"
                 )
@@ -3452,6 +3511,7 @@ enum HubIPCClient {
                 return CanonicalMemorySyncDispatchResult(
                     ok: false,
                     source: "socket_ipc",
+                    deliveryState: "local_socket_ipc_rejected",
                     reasonCode: normalizedReasonCode(
                         ack.error,
                         fallback: "project_canonical_memory_ipc_rejected"
@@ -3459,11 +3519,16 @@ enum HubIPCClient {
                     detail: normalized(ack.error)
                 )
             }
-            return CanonicalMemorySyncDispatchResult(ok: true, source: "socket_ipc")
+            return CanonicalMemorySyncDispatchResult(
+                ok: true,
+                source: "socket_ipc",
+                deliveryState: "accepted_local_socket_ipc"
+            )
         default:
             return CanonicalMemorySyncDispatchResult(
                 ok: false,
                 source: "local_ipc",
+                deliveryState: "local_ipc_mode_unsupported",
                 reasonCode: "unsupported_ipc_mode",
                 detail: "project canonical memory local IPC mode unsupported"
             )
@@ -3489,14 +3554,22 @@ enum HubIPCClient {
                 await invalidateSupervisorMemoryCache()
                 return CanonicalMemorySyncDispatchResult(
                     ok: true,
-                    source: "grpc",
+                    source: normalized(remote.source) ?? "grpc",
+                    deliveryState: "delivered_remote",
+                    auditRefs: remote.auditRefs,
+                    evidenceRefs: remote.evidenceRefs,
+                    writebackRefs: remote.writebackRefs,
                     detail: normalized(remote.logText)
                 )
             }
             if !allowFileFallback {
                 return CanonicalMemorySyncDispatchResult(
                     ok: false,
-                    source: "grpc",
+                    source: normalized(remote.source) ?? "grpc",
+                    deliveryState: "remote_delivery_failed",
+                    auditRefs: remote.auditRefs,
+                    evidenceRefs: remote.evidenceRefs,
+                    writebackRefs: remote.writebackRefs,
                     reasonCode: normalizedReasonCode(
                         remote.reasonCode,
                         fallback: "device_canonical_memory_remote_failed"
@@ -3527,6 +3600,7 @@ enum HubIPCClient {
             return CanonicalMemorySyncDispatchResult(
                 ok: false,
                 source: "local_ipc",
+                deliveryState: "local_ipc_unavailable",
                 reasonCode: "device_canonical_memory_local_ipc_unavailable",
                 detail: "device canonical memory local IPC unavailable"
             )
@@ -3547,6 +3621,7 @@ enum HubIPCClient {
                 return CanonicalMemorySyncDispatchResult(
                     ok: false,
                     source: "file_ipc",
+                    deliveryState: "local_file_ipc_encode_failed",
                     reasonCode: "device_canonical_memory_encode_failed",
                     detail: "device canonical memory request encoding failed"
                 )
@@ -3562,16 +3637,22 @@ enum HubIPCClient {
                 return CanonicalMemorySyncDispatchResult(
                     ok: false,
                     source: "file_ipc",
+                    deliveryState: "local_file_ipc_write_failed",
                     reasonCode: "device_canonical_memory_write_failed",
                     detail: normalized(writeStatus.requestError)
                 )
             }
-            return CanonicalMemorySyncDispatchResult(ok: true, source: "file_ipc")
+            return CanonicalMemorySyncDispatchResult(
+                ok: true,
+                source: "file_ipc",
+                deliveryState: "queued_local_file_ipc"
+            )
         case "socket":
             guard let ack: AckIPCResponse = sendSocketRequest(req, socketURL: transport.ipcURL, timeoutSec: 2.0) else {
                 return CanonicalMemorySyncDispatchResult(
                     ok: false,
                     source: "socket_ipc",
+                    deliveryState: "local_socket_ipc_request_failed",
                     reasonCode: "socket_request_failed",
                     detail: "device canonical memory socket request failed"
                 )
@@ -3580,6 +3661,7 @@ enum HubIPCClient {
                 return CanonicalMemorySyncDispatchResult(
                     ok: false,
                     source: "socket_ipc",
+                    deliveryState: "local_socket_ipc_rejected",
                     reasonCode: normalizedReasonCode(
                         ack.error,
                         fallback: "device_canonical_memory_ipc_rejected"
@@ -3587,11 +3669,16 @@ enum HubIPCClient {
                     detail: normalized(ack.error)
                 )
             }
-            return CanonicalMemorySyncDispatchResult(ok: true, source: "socket_ipc")
+            return CanonicalMemorySyncDispatchResult(
+                ok: true,
+                source: "socket_ipc",
+                deliveryState: "accepted_local_socket_ipc"
+            )
         default:
             return CanonicalMemorySyncDispatchResult(
                 ok: false,
                 source: "local_ipc",
+                deliveryState: "local_ipc_mode_unsupported",
                 reasonCode: "unsupported_ipc_mode",
                 detail: "device canonical memory local IPC mode unsupported"
             )
@@ -9356,7 +9443,11 @@ compression_policy: \(compressionPolicy)
             ok: result.ok,
             updatedAtMs: max(0, updatedAtMs),
             reasonCode: normalizedReasonCode(result.reasonCode, fallback: result.ok ? nil : "canonical_memory_sync_failed"),
-            detail: normalized(result.detail)
+            detail: normalized(result.detail),
+            deliveryState: normalized(result.deliveryState),
+            auditRefs: orderedUniqueNormalizedStrings(result.auditRefs).nonEmptyArray,
+            evidenceRefs: orderedUniqueNormalizedStrings(result.evidenceRefs).nonEmptyArray,
+            writebackRefs: orderedUniqueNormalizedStrings(result.writebackRefs).nonEmptyArray
         )
         let existing = canonicalMemorySyncStatusSnapshot(limit: 500)
         var deduped: [String: CanonicalMemorySyncStatusItem] = [:]
@@ -9434,10 +9525,26 @@ compression_policy: \(compressionPolicy)
         secondary: CanonicalMemorySyncDispatchResult?
     ) -> CanonicalMemorySyncDispatchResult {
         if primary.ok {
-            return CanonicalMemorySyncDispatchResult(ok: true, source: primary.source)
+            return CanonicalMemorySyncDispatchResult(
+                ok: true,
+                source: primary.source,
+                deliveryState: primary.deliveryState,
+                auditRefs: primary.auditRefs,
+                evidenceRefs: primary.evidenceRefs,
+                writebackRefs: primary.writebackRefs,
+                detail: primary.detail
+            )
         }
         if let secondary, secondary.ok {
-            return CanonicalMemorySyncDispatchResult(ok: true, source: secondary.source)
+            return CanonicalMemorySyncDispatchResult(
+                ok: true,
+                source: secondary.source,
+                deliveryState: secondary.deliveryState,
+                auditRefs: secondary.auditRefs,
+                evidenceRefs: secondary.evidenceRefs,
+                writebackRefs: secondary.writebackRefs,
+                detail: secondary.detail
+            )
         }
 
         let sources = [normalized(primary.source), normalized(secondary?.source)]
@@ -9452,6 +9559,10 @@ compression_policy: \(compressionPolicy)
         return CanonicalMemorySyncDispatchResult(
             ok: false,
             source: sources.isEmpty ? "unknown" : sources.joined(separator: "+"),
+            deliveryState: normalized(primary.deliveryState) ?? normalized(secondary?.deliveryState),
+            auditRefs: orderedUniqueNormalizedStrings(primary.auditRefs + (secondary?.auditRefs ?? [])),
+            evidenceRefs: orderedUniqueNormalizedStrings(primary.evidenceRefs + (secondary?.evidenceRefs ?? [])),
+            writebackRefs: orderedUniqueNormalizedStrings(primary.writebackRefs + (secondary?.writebackRefs ?? [])),
             reasonCode: normalizedReasonCode(
                 primary.reasonCode,
                 fallback: secondary?.reasonCode
@@ -9518,6 +9629,18 @@ compression_policy: \(compressionPolicy)
             guard seen.insert(token).inserted else { return nil }
             return token
         }
+    }
+
+    private static func orderedUniqueNormalizedStrings(_ raw: [String]) -> [String] {
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for item in raw {
+            guard let trimmed = normalized(item) else { continue }
+            let dedupeKey = trimmed.lowercased()
+            guard seen.insert(dedupeKey).inserted else { continue }
+            ordered.append(trimmed)
+        }
+        return ordered
     }
 
     private static func localModelStateSnapshot() -> ModelStateSnapshot? {
@@ -9665,5 +9788,11 @@ compression_policy: \(compressionPolicy)
         withTestingOverrideLock {
             agentImportRecordOverrideForTesting = nil
         }
+    }
+}
+
+private extension Array where Element == String {
+    var nonEmptyArray: [String]? {
+        isEmpty ? nil : self
     }
 }

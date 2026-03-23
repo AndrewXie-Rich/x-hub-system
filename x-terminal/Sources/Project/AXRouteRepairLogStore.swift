@@ -190,9 +190,9 @@ enum AXRouteRepairLogStore {
         case "reconnect_hub_and_diagnose":
             return "重连并重诊断"
         case "open_choose_model":
-            return "打开 Choose Model"
+            return "打开 XT AI 模型"
         case "open_model_settings":
-            return "打开模型设置"
+            return "打开 Supervisor 控制中心 · AI 模型"
         case "open_xt_diagnostics":
             return "打开 XT Diagnostics"
         case "open_hub_recovery":

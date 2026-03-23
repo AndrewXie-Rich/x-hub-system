@@ -124,6 +124,21 @@ struct XTToolAuthorizationDecision: Equatable {
     }
 }
 
+func xtToolAuthorizationDeniedSummaryText(
+    call: ToolCall,
+    decision: XTToolAuthorizationDecision
+) -> String {
+    XTGuardrailMessagePresentation.blockedBody(
+        tool: call.tool,
+        toolLabel: XTPendingApprovalPresentation.displayToolName(for: call.tool),
+        denyCode: decision.denyCode,
+        policySource: decision.policySource,
+        policyReason: decision.policyReason,
+        fallbackSummary: "",
+        fallbackDetail: decision.detail
+    )
+}
+
 func xtApprovedToolExecutionPlan(
     calls: [ToolCall],
     config: AXProjectConfig,

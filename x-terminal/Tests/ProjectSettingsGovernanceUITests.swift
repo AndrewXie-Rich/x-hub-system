@@ -94,7 +94,7 @@ struct ProjectSettingsGovernanceUITests {
             "A4 Agent"
         ])
         #expect(AXProjectExecutionTier.a0Observe.allowedHighlights.contains("读项目记忆"))
-        #expect(AXProjectExecutionTier.a1Plan.oneLineSummary.contains("job / plan"))
+        #expect(AXProjectExecutionTier.a1Plan.oneLineSummary.contains("工单 / 计划"))
         #expect(AXProjectExecutionTier.a2RepoAuto.defaultBudgetSummary.contains("45m run"))
         #expect(
             AXProjectExecutionTier.a4OpenClaw.blockedHighlights.contains(

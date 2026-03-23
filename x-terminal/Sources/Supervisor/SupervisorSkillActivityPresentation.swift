@@ -580,6 +580,24 @@ enum SupervisorSkillActivityPresentation {
             evidenceToolArgs: evidence?.toolArgs,
             eventToolArgs: events.reversed().first(where: { !$0.toolArgs.isEmpty })?.toolArgs
         )
+        let approvalDenyCode = firstNonEmpty(record?.denyCode, evidence?.denyCode, events.last?.denyCode)
+        let approvalPolicySource = firstNonEmpty(record?.policySource, evidence?.policySource, events.last?.policySource)
+        let approvalPolicyReason = firstNonEmpty(record?.policyReason, evidence?.policyReason, events.last?.policyReason)
+        let approvalRequiredCapability = firstNonEmpty(record?.requiredCapability, events.last?.requiredCapability)
+        let latestResultSummary = firstNonEmpty(evidence?.resultSummary, record?.resultSummary, events.last?.resultSummary)
+        let approvalBlockedSummary = XTGuardrailMessagePresentation.blockedSummary(
+            tool: firstNonEmpty(record?.toolName, evidence?.toolName, events.last?.toolName).flatMap(ToolName.init(rawValue:)),
+            toolLabel: displayToolName(
+                firstNonEmpty(record?.toolName, evidence?.toolName, events.last?.toolName) ?? "",
+                tool: nil
+            ),
+            denyCode: approvalDenyCode ?? "",
+            policySource: approvalPolicySource ?? "",
+            policyReason: approvalPolicyReason ?? "",
+            requiredCapability: approvalRequiredCapability ?? "",
+            fallbackSummary: latestResultSummary ?? "",
+            fallbackDetail: ""
+        )
 
         let requestMetadata = recordFields([
             ("project_name", projectName),
@@ -610,16 +628,22 @@ enum SupervisorSkillActivityPresentation {
         ])
 
         let approvalFields = recordFields([
-            ("required_capability", firstNonEmpty(record?.requiredCapability, events.last?.requiredCapability)),
+            ("required_capability", approvalRequiredCapability),
             ("grant_request_id", firstNonEmpty(record?.grantRequestId, events.last?.grantRequestId)),
             ("grant_id", firstNonEmpty(record?.grantId, events.last?.grantId)),
-            ("deny_code", firstNonEmpty(record?.denyCode, evidence?.denyCode, events.last?.denyCode)),
-            ("policy_source", firstNonEmpty(record?.policySource, evidence?.policySource, events.last?.policySource)),
-            ("policy_reason", firstNonEmpty(record?.policyReason, evidence?.policyReason, events.last?.policyReason)),
+            ("deny_code", approvalDenyCode),
+            ("policy_source", approvalPolicySource),
+            ("policy_reason", approvalPolicyReason),
+            ("blocked_summary", approvalBlockedSummary),
             ("trigger_source", firstNonEmpty(evidence?.triggerSource, events.last?.triggerSource))
         ])
+        let governanceTruth = events
+            .reversed()
+            .compactMap { XTGovernanceTruthPresentation.effectiveTierSummary(from: $0.rawObject) }
+            .first
 
         let governanceFields = recordFields([
+            ("governance_truth", governanceTruth),
             ("latest_review_id", latestReview?.reviewId),
             ("review_verdict", latestReview?.verdict.displayName),
             ("review_level", latestReview?.reviewLevel.displayName),
@@ -650,7 +674,7 @@ enum SupervisorSkillActivityPresentation {
 
         let resultFields = recordFields([
             ("result_status", firstNonEmpty(evidence?.status, record?.status.rawValue, events.last?.status)),
-            ("result_summary", firstNonEmpty(evidence?.resultSummary, record?.resultSummary, events.last?.resultSummary)),
+            ("result_summary", latestResultSummary),
             ("raw_output_chars", evidence.flatMap { $0.rawOutputChars > 0 ? String($0.rawOutputChars) : nil })
         ])
 
@@ -1215,6 +1239,10 @@ enum SupervisorSkillActivityPresentation {
             return "策略来源"
         case "policy_reason":
             return "策略原因"
+        case "blocked_summary":
+            return "阻塞说明"
+        case "governance_truth":
+            return "治理真相"
         case "trigger_source":
             return "触发源"
         case "latest_review_id":

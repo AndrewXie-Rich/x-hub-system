@@ -2047,6 +2047,349 @@ struct SupervisorManagerVoiceAuthorizationTests {
         }
     }
 
+    @Test
+    func expiredVoiceAuthorizationChallengeClearsPendingGrantVoiceState() async throws {
+        try await Self.gate.run {
+            let manager = SupervisorManager.makeForTesting()
+            manager.resetVoiceAuthorizationState()
+            manager.clearMessages()
+            defer {
+                manager.resetVoiceAuthorizationState()
+                manager.clearMessages()
+            }
+
+            let root = try makeProjectRoot(named: "voice-pending-grant-expired-cleanup")
+            defer { try? FileManager.default.removeItem(at: root) }
+
+            let project = makeProjectEntry(root: root, displayName: "Release Runtime")
+            let grant = makePendingGrant(
+                project: project,
+                grantRequestId: "grant-expired-cleanup-1",
+                capability: "web.fetch",
+                reason: "release production deploy"
+            )
+
+            let appModel = AppModel()
+            appModel.registry = registry(with: [project])
+            appModel.selectedProjectId = project.projectId
+            appModel.settingsStore.settings = configuredSettings(from: appModel.settingsStore.settings)
+            manager.setAppModel(appModel)
+            manager.setPendingHubGrantsForTesting([grant])
+            manager.installSchedulerSnapshotRefreshOverrideForTesting { _ in }
+            manager.installVoiceAuthorizationBridgeForTesting(
+                SupervisorVoiceAuthorizationBridge(
+                    issueHandler: { payload in
+                        HubIPCClient.VoiceGrantChallengeResult(
+                            ok: true,
+                            source: "test",
+                            challenge: makeChallenge(
+                                challengeId: "voice_chal_expired_cleanup",
+                                templateId: payload.templateId,
+                                actionDigest: payload.actionDigest,
+                                scopeDigest: payload.scopeDigest,
+                                amountDigest: payload.amountDigest ?? "",
+                                challengeCode: "554400",
+                                requiresMobileConfirm: payload.requiresMobileConfirm,
+                                allowVoiceOnly: payload.allowVoiceOnly,
+                                riskLevel: payload.riskLevel,
+                                boundDeviceId: payload.boundDeviceId ?? "",
+                                mobileTerminalId: payload.mobileTerminalId ?? ""
+                            ),
+                            reasonCode: nil
+                        )
+                    },
+                    verifyHandler: { _ in
+                        makeVerifyFailure(reasonCode: "challenge_expired")
+                    }
+                )
+            )
+
+            manager.sendMessage("批准这个 grant", fromVoice: true)
+
+            try await waitUntil("expired challenge issued for pending grant") {
+                manager.activeVoiceChallenge?.challengeId == "voice_chal_expired_cleanup" &&
+                    manager.activeVoicePendingGrantActionRequestIDForTesting() != nil
+            }
+
+            let resolution = await manager.retryVoiceAuthorizationVerification(
+                transcript: "Approve Hub grant for Release Runtime",
+                semanticMatchScore: 0.99,
+                mobileConfirmed: true
+            )
+
+            #expect(resolution.state == .failClosed)
+            #expect(resolution.reasonCode == "challenge_expired")
+            #expect(manager.activeVoiceChallenge == nil)
+            #expect(manager.voiceAuthorizationMobileConfirmationLatched == false)
+            #expect(manager.activeVoicePendingGrantActionRequestIDForTesting() == nil)
+            #expect(manager.pendingHubGrants.count == 1)
+
+            let retryAfterCleanup = await manager.retryVoiceAuthorizationVerification(
+                transcript: "Approve Hub grant for Release Runtime",
+                semanticMatchScore: 0.99,
+                mobileConfirmed: true
+            )
+
+            #expect(retryAfterCleanup.state == .failClosed)
+            #expect(retryAfterCleanup.reasonCode == "voice_authorization_not_started")
+        }
+    }
+
+    @Test
+    func mobileConfirmationMissingFailClosedPreservesChallengeForRetry() async throws {
+        try await Self.gate.run {
+            let manager = SupervisorManager.makeForTesting()
+            manager.resetVoiceAuthorizationState()
+            manager.clearMessages()
+            defer {
+                manager.resetVoiceAuthorizationState()
+                manager.clearMessages()
+            }
+
+            let verifyProbe = SupervisorVoiceAuthorizationVerifyProbe()
+            manager.installVoiceAuthorizationBridgeForTesting(
+                SupervisorVoiceAuthorizationBridge(
+                    issueHandler: { payload in
+                        HubIPCClient.VoiceGrantChallengeResult(
+                            ok: true,
+                            source: "test",
+                            challenge: makeChallenge(
+                                challengeId: "voice_chal_mobile_missing_retry",
+                                templateId: payload.templateId,
+                                actionDigest: payload.actionDigest,
+                                scopeDigest: payload.scopeDigest,
+                                amountDigest: payload.amountDigest ?? "",
+                                challengeCode: "118822",
+                                requiresMobileConfirm: true,
+                                allowVoiceOnly: false,
+                                riskLevel: payload.riskLevel,
+                                boundDeviceId: payload.boundDeviceId ?? "",
+                                mobileTerminalId: payload.mobileTerminalId ?? ""
+                            ),
+                            reasonCode: nil
+                        )
+                    },
+                    verifyHandler: { payload in
+                        await verifyProbe.record(payload)
+                        if !payload.mobileConfirmed {
+                            return makeVerifyFailure(reasonCode: "mobile_confirmation_missing")
+                        }
+                        return makeVerifySuccess(
+                            challengeId: payload.challengeId,
+                            transcriptHash: "sha256:mobile-missing-retry",
+                            semanticMatchScore: payload.semanticMatchScore ?? 0,
+                            mobileConfirmed: payload.mobileConfirmed
+                        )
+                    }
+                )
+            )
+
+            _ = await manager.startVoiceAuthorization(
+                SupervisorVoiceAuthorizationRequest(
+                    requestId: "voice-mobile-missing-retry",
+                    projectId: "project-mobile-missing-retry",
+                    actionText: "Approve production release",
+                    scopeText: "Release Runtime production path",
+                    amountText: nil,
+                    riskTier: .high,
+                    boundDeviceId: "bt-headset-1",
+                    mobileTerminalId: "mobile-1",
+                    challengeCode: nil,
+                    ttlMs: 120_000
+                )
+            )
+
+            let firstResolution = await manager.retryVoiceAuthorizationVerification(
+                transcript: "Approve production release",
+                semanticMatchScore: 0.99,
+                mobileConfirmed: false
+            )
+
+            #expect(firstResolution.state == .failClosed)
+            #expect(firstResolution.reasonCode == "mobile_confirmation_missing")
+            #expect(manager.activeVoiceChallenge?.challengeId == "voice_chal_mobile_missing_retry")
+            #expect(manager.voiceAuthorizationMobileConfirmationLatched == false)
+
+            manager.sendMessage("手机已确认", fromVoice: true)
+
+            try await waitUntil("mobile confirmation relatched after fail closed") {
+                manager.voiceAuthorizationMobileConfirmationLatched &&
+                    manager.activeVoiceChallenge?.challengeId == "voice_chal_mobile_missing_retry"
+            }
+
+            let secondResolution = await manager.retryVoiceAuthorizationVerification(
+                transcript: "Approve production release",
+                semanticMatchScore: 0.99
+            )
+
+            #expect(secondResolution.state == .verified)
+            #expect(manager.activeVoiceChallenge == nil)
+            #expect(manager.voiceAuthorizationMobileConfirmationLatched == false)
+            #expect(await verifyProbe.count() == 2)
+        }
+    }
+
+    @Test
+    func externalMobileConfirmationLatchFeedsLaterVerificationWithoutAutoVerifying() async {
+        await Self.gate.run {
+            let manager = SupervisorManager.makeForTesting()
+            manager.resetVoiceAuthorizationState()
+            manager.clearMessages()
+            defer {
+                manager.resetVoiceAuthorizationState()
+                manager.clearMessages()
+            }
+
+            let verifyProbe = SupervisorVoiceAuthorizationVerifyProbe()
+            manager.installVoiceAuthorizationBridgeForTesting(
+                SupervisorVoiceAuthorizationBridge(
+                    issueHandler: { payload in
+                        HubIPCClient.VoiceGrantChallengeResult(
+                            ok: true,
+                            source: "test",
+                            challenge: makeChallenge(
+                                challengeId: "voice_chal_external_mobile_latch",
+                                templateId: payload.templateId,
+                                actionDigest: payload.actionDigest,
+                                scopeDigest: payload.scopeDigest,
+                                amountDigest: payload.amountDigest ?? "",
+                                challengeCode: "442211",
+                                requiresMobileConfirm: true,
+                                allowVoiceOnly: false,
+                                riskLevel: payload.riskLevel,
+                                boundDeviceId: payload.boundDeviceId ?? "",
+                                mobileTerminalId: payload.mobileTerminalId ?? ""
+                            ),
+                            reasonCode: nil
+                        )
+                    },
+                    verifyHandler: { payload in
+                        await verifyProbe.record(payload)
+                        if !payload.mobileConfirmed {
+                            return makeVerifyFailure(reasonCode: "mobile_confirmation_missing")
+                        }
+                        return makeVerifySuccess(
+                            challengeId: payload.challengeId,
+                            transcriptHash: "sha256:external-mobile-latch",
+                            semanticMatchScore: payload.semanticMatchScore ?? 0,
+                            mobileConfirmed: payload.mobileConfirmed
+                        )
+                    }
+                )
+            )
+
+            _ = await manager.startVoiceAuthorization(
+                SupervisorVoiceAuthorizationRequest(
+                    requestId: "voice-external-mobile-latch",
+                    projectId: "project-external-mobile-latch",
+                    actionText: "Approve production release",
+                    scopeText: "Release Runtime production path",
+                    amountText: nil,
+                    riskTier: .high,
+                    boundDeviceId: "bt-headset-1",
+                    mobileTerminalId: "mobile-1",
+                    challengeCode: nil,
+                    ttlMs: 120_000
+                )
+            )
+
+            manager.setVoiceAuthorizationMobileConfirmed(
+                true,
+                source: "voice_authorization_card",
+                emitSystemMessage: false
+            )
+
+            #expect(manager.voiceAuthorizationMobileConfirmationLatched)
+            #expect(manager.activeVoiceChallenge?.challengeId == "voice_chal_external_mobile_latch")
+            #expect(await verifyProbe.count() == 0)
+
+            let resolution = await manager.retryVoiceAuthorizationVerification(
+                transcript: "Approve production release",
+                semanticMatchScore: 0.99
+            )
+
+            #expect(resolution.state == .verified)
+            #expect(manager.activeVoiceChallenge == nil)
+            #expect(manager.voiceAuthorizationMobileConfirmationLatched == false)
+            #expect(await verifyProbe.count() == 1)
+        }
+    }
+
+    @Test
+    func externalMobileConfirmationLatchClearsAfterTerminalFailClosed() async {
+        await Self.gate.run {
+            let manager = SupervisorManager.makeForTesting()
+            manager.resetVoiceAuthorizationState()
+            manager.clearMessages()
+            defer {
+                manager.resetVoiceAuthorizationState()
+                manager.clearMessages()
+            }
+
+            let verifyProbe = SupervisorVoiceAuthorizationVerifyProbe()
+            manager.installVoiceAuthorizationBridgeForTesting(
+                SupervisorVoiceAuthorizationBridge(
+                    issueHandler: { payload in
+                        HubIPCClient.VoiceGrantChallengeResult(
+                            ok: true,
+                            source: "test",
+                            challenge: makeChallenge(
+                                challengeId: "voice_chal_external_mobile_expired",
+                                templateId: payload.templateId,
+                                actionDigest: payload.actionDigest,
+                                scopeDigest: payload.scopeDigest,
+                                amountDigest: payload.amountDigest ?? "",
+                                challengeCode: "664422",
+                                requiresMobileConfirm: true,
+                                allowVoiceOnly: false,
+                                riskLevel: payload.riskLevel,
+                                boundDeviceId: payload.boundDeviceId ?? "",
+                                mobileTerminalId: payload.mobileTerminalId ?? ""
+                            ),
+                            reasonCode: nil
+                        )
+                    },
+                    verifyHandler: { payload in
+                        await verifyProbe.record(payload)
+                        return makeVerifyFailure(reasonCode: "challenge_expired")
+                    }
+                )
+            )
+
+            _ = await manager.startVoiceAuthorization(
+                SupervisorVoiceAuthorizationRequest(
+                    requestId: "voice-external-mobile-expired",
+                    projectId: "project-external-mobile-expired",
+                    actionText: "Approve production release",
+                    scopeText: "Release Runtime production path",
+                    amountText: nil,
+                    riskTier: .high,
+                    boundDeviceId: "bt-headset-1",
+                    mobileTerminalId: "mobile-1",
+                    challengeCode: nil,
+                    ttlMs: 120_000
+                )
+            )
+
+            manager.setVoiceAuthorizationMobileConfirmed(
+                true,
+                source: "voice_authorization_card",
+                emitSystemMessage: false
+            )
+
+            let resolution = await manager.retryVoiceAuthorizationVerification(
+                transcript: "Approve production release",
+                semanticMatchScore: 0.99
+            )
+
+            #expect(resolution.state == .failClosed)
+            #expect(resolution.reasonCode == "challenge_expired")
+            #expect(manager.activeVoiceChallenge == nil)
+            #expect(manager.voiceAuthorizationMobileConfirmationLatched == false)
+            #expect(await verifyProbe.count() == 1)
+        }
+    }
+
     private func makeChallenge(
         challengeId: String,
         templateId: String = "voice.grant.v1",

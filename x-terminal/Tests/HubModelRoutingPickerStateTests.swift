@@ -101,6 +101,7 @@ struct HubModelRoutingPickerStateTests {
             HubModelPickerRecommendationState.resolved(
                 explicitModelId: "openai/gpt-4.1",
                 explicitMessage: "直接切这个。",
+                explicitKind: .continueWithoutSwitch,
                 selectedModelId: "openai/gpt-5.4",
                 models: [
                     makeModel(id: "openai/gpt-5.4", name: "GPT 5.4", state: .available),
@@ -111,6 +112,7 @@ struct HubModelRoutingPickerStateTests {
 
         #expect(recommendation.modelId == "openai/gpt-4.1")
         #expect(recommendation.message == "直接切这个。")
+        #expect(recommendation.kind == .continueWithoutSwitch)
     }
 
     @Test
@@ -128,6 +130,7 @@ struct HubModelRoutingPickerStateTests {
         )
 
         #expect(recommendation.modelId == "openai/gpt-4.1")
+        #expect(recommendation.kind == .switchRecommended)
         #expect(recommendation.message.contains("openai/gpt-4.1"))
         #expect(recommendation.message.contains("openai/gpt-5.4"))
     }
@@ -160,6 +163,7 @@ struct HubModelRoutingPickerStateTests {
         )
 
         #expect(recommendation.modelId == "mlx-community/qwen3-8b-4bit")
+        #expect(recommendation.kind == .switchRecommended)
         #expect(recommendation.message.contains("检索专用"))
         #expect(recommendation.message.contains("retrieval"))
     }

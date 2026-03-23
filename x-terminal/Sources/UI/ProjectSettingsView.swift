@@ -179,9 +179,9 @@ struct ProjectSettingsView: View {
         GroupBox("最近一次 UI 审查") {
             ProjectUIReviewWorkspaceView(
                 ctx: ctx,
-                emptyTitle: "暂无浏览器 UI review",
-                emptyMessage: "当前项目还没有浏览器 UI review。执行一次 `device.browser.control snapshot` 后，系统会在这里展示最近一次受治理 UI 观察结果。",
-                helperText: "这条 review 会被 project AI / supervisor memory / resume brief 共同消费。它的作用不是替代人工验收，而是让系统先判断“当前页面是否真的可执行”。"
+                emptyTitle: "暂无浏览器 UI 审查",
+                emptyMessage: "当前项目还没有浏览器 UI 审查。执行一次 `device.browser.control snapshot` 后，系统会在这里展示最近一次受治理 UI 观察结果。",
+                helperText: "这条审查会被项目 AI / Supervisor 记忆 / 恢复摘要共同消费。它的作用不是替代人工验收，而是让系统先判断“当前页面是否真的可执行”。"
             )
             .padding(8)
         }
@@ -263,19 +263,18 @@ struct ProjectSettingsView: View {
         }
         .frame(maxWidth: 420, alignment: .leading)
         .popover(isPresented: modelPickerBinding(for: role), arrowEdge: .bottom) {
-            HubModelPickerPopover(
-                title: "为 \(roleLabel(role)) 选择模型",
-                selectedModelId: projectModelOverrideId(for: role),
-                inheritedModelId: globalModelId(role),
-                inheritedModelPresentation: globalModelPresentation(for: role),
-                models: sortedAvailableHubModels,
-                recommendedModelId: modelSelectionRecommendation(for: role)?.modelId,
-                recommendationMessage: modelSelectionRecommendation(for: role)?.message,
-                onSelect: { modelId in
-                    updateProjectRoleModelAssignment(role: role, modelId: modelId)
-                    modelPickerRole = nil
-                }
-            )
+                HubModelPickerPopover(
+                    title: "为 \(roleLabel(role)) 选择模型",
+                    selectedModelId: projectModelOverrideId(for: role),
+                    inheritedModelId: globalModelId(role),
+                    inheritedModelPresentation: globalModelPresentation(for: role),
+                    models: sortedAvailableHubModels,
+                    recommendation: modelSelectionRecommendation(for: role),
+                    onSelect: { modelId in
+                        updateProjectRoleModelAssignment(role: role, modelId: modelId)
+                        modelPickerRole = nil
+                    }
+                )
             .frame(width: 460, height: 420)
         }
     }
@@ -305,7 +304,7 @@ struct ProjectSettingsView: View {
 
         return GroupBox("治理模板") {
             VStack(alignment: .leading, spacing: 12) {
-                Text("这些模板只是 A-tier / S-tier / review cadence 的快捷映射。真正生效的执行权限、supervisor 介入、TTL、trusted automation 与 read roots，仍以下方治理设置和运行时收束为准。")
+                Text("这些模板只是 A-tier / S-tier / 审查节奏 的快捷映射。真正生效的执行权限、Supervisor 介入、TTL、受治理自动化与可读根目录，仍以下方治理设置和运行时收束为准。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -319,7 +318,7 @@ struct ProjectSettingsView: View {
                 }
 
                 if templatePreview.configuredProfile == .custom {
-                    Text("当前模板已偏离默认映射：系统会以实际保存的 A-tier / S-tier / review 配置为准。")
+                    Text("当前模板已偏离默认映射：系统会以实际保存的 A-tier / S-tier / 审查配置为准。")
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
@@ -355,7 +354,7 @@ struct ProjectSettingsView: View {
                 }
 
                 if templatePreview.hasConfiguredEffectiveDrift {
-                    Text("模板输入和运行时投影当前不完全一致。真正放行动作仍继续受执行面 TTL、收束规则、trusted automation、grant 和 kill-switch 共同约束。")
+                    Text("模板输入和运行时投影当前不完全一致。真正放行动作仍继续受执行面 TTL、收束规则、受治理自动化、授权门和紧急回收共同约束。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -387,14 +386,14 @@ struct ProjectSettingsView: View {
                 }
 
                 if !templatePreview.configuredDeviationReasons.isEmpty {
-                    Text("template_delta: \(templatePreview.configuredDeviationReasons.joined(separator: " · "))")
+                    Text("配置偏差：\(templatePreview.configuredDeviationReasons.joined(separator: " · "))")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
 
                 if !templatePreview.effectiveDeviationReasons.isEmpty {
-                    Text("runtime_notes: \(templatePreview.effectiveDeviationReasons.joined(separator: " · "))")
+                    Text("运行时备注：\(templatePreview.effectiveDeviationReasons.joined(separator: " · "))")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
@@ -416,7 +415,7 @@ struct ProjectSettingsView: View {
         return GroupBox("Hub 记忆治理") {
             VStack(alignment: .leading, spacing: 10) {
                 Toggle(
-                    "当前项目优先使用 Hub memory",
+                    "当前项目优先使用 Hub 记忆",
                     isOn: Binding(
                         get: { appModel.projectConfig?.preferHubMemory ?? true },
                         set: { appModel.setProjectHubMemoryPreference(enabled: $0) }
@@ -424,18 +423,18 @@ struct ProjectSettingsView: View {
                 )
                 .toggleStyle(.switch)
 
-                Text("default: on · mode: \(mode)")
+                Text("默认：开 · 模式：\(mode)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
 
                 Text(preferHubMemory
-                     ? "开启后：X-Terminal 会优先用 Hub memory 组装 prompt，并继续保留本地 `.xterminal/AX_MEMORY.md` / `recent_context.json` 作为 continuity/fallback 层。Hub 侧 X-宪章、remote export gate、skills revoked gate、kill-switch 会参与约束。"
-                     : "关闭后：当前项目只使用本地 `.xterminal/AX_MEMORY.md` / `recent_context.json` 组装 prompt，不请求 Hub memory context。适合离线或临时隔离场景。")
+                     ? "开启后：X-Terminal 会优先用 Hub 记忆组装上下文，并继续保留本地 `.xterminal/AX_MEMORY.md` / `recent_context.json` 作为连续上下文 / 兜底层。Hub 侧 X-宪章、远端导出门、技能撤销门和紧急回收会参与约束。"
+                     : "关闭后：当前项目只使用本地 `.xterminal/AX_MEMORY.md` / `recent_context.json` 组装上下文，不请求 Hub 记忆上下文。适合离线或临时隔离场景。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Text("注意：当前实现仍保留本地 memory 文件用于崩溃恢复与 fallback，所以这还不是单一 Hub 真源；这里只控制 prompt 组装时是否优先走 Hub。")
+                Text("注意：当前实现仍保留本地记忆文件用于崩溃恢复与兜底，所以这还不是单一 Hub 真源；这里只控制上下文组装时是否优先走 Hub。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -448,7 +447,7 @@ struct ProjectSettingsView: View {
 
         return GroupBox("上下文组装") {
             VStack(alignment: .leading, spacing: 12) {
-                Text("这里控制 project AI 最近能看到多少项目对话，以及项目背景带多完整。它不会改变执行权限、Supervisor 介入强度或 heartbeat。")
+                Text("这里控制项目 AI 最近能看到多少项目对话，以及项目背景带多完整。它不会改变执行权限、Supervisor 介入强度或心跳节奏。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -520,7 +519,7 @@ struct ProjectSettingsView: View {
                     )
                 }
 
-                Text("上面两项就是 project AI 的主要背景开关：前者决定保留多少最近项目对话，后者决定带入多少项目材料。实际运行后，下面会显示它这轮真正吃到的背景。")
+                Text("上面两项就是项目 AI 的主要背景开关：前者决定保留多少最近项目对话，后者决定带入多少项目材料。实际运行后，下面会显示它这轮真正吃到的背景。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -570,7 +569,7 @@ struct ProjectSettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Text("这是一条 project 级设备执行绑定，不等于把整个 X-Terminal 永久全开；高档治理模板也不等于自动拥有全部设备权限。")
+                Text("这是一条项目级设备执行绑定，不等于把整个 X-Terminal 永久全开；高档治理模板也不等于自动拥有全部设备权限。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -664,7 +663,7 @@ struct ProjectSettingsView: View {
                 .disabled(status.mode != .trustedAutomation)
 
                 Text(configuredAutoApprove
-                     ? "开启后：当前 project 下的低风险 needs-confirm 本地工具会直接执行，不再等待本地审批。高风险 shell 和网络 grant 仍保留人工 / Hub 门禁。"
+                     ? "开启后：当前项目下的低风险待确认本地工具会直接执行，不再等待本地审批。高风险 shell 和网络授权仍保留人工 / Hub 门禁。"
                      : "关闭后：写文件、跑命令、设备浏览器控制、UI 动作等本地高风险操作仍会停在本地审批。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -707,7 +706,7 @@ struct ProjectSettingsView: View {
                         Spacer()
                     }
 
-                    Text("每行一个路径；支持绝对路径，也支持相对当前 project root 的路径。这里只扩展 `read_file` / `list_dir` / `search(path=...)`，不会放开 project 外的 `write_file` / `run_command`。")
+                    Text("每行一个路径；支持绝对路径，也支持相对当前项目根目录的路径。这里只扩展 `read_file` / `list_dir` / `search(path=...)`，不会放开项目外的 `write_file` / `run_command`。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
 
@@ -893,9 +892,9 @@ struct ProjectSettingsView: View {
     }
 
     private var runtimeSurfaceSection: some View {
-        GroupBox("Execution Surface Runtime") {
+        GroupBox("执行面运行时") {
             VStack(alignment: .leading, spacing: 12) {
-                Text("A-tier / S-tier / Heartbeat & Review 已拆到各自独立页面。这里仅保留执行面、TTL 与 Hub 收束相关细项。")
+                Text("A-tier / S-tier / 心跳与审查 已拆到各自独立页面。这里仅保留执行面、TTL 与 Hub 收束相关细项。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -911,7 +910,7 @@ struct ProjectSettingsView: View {
                 }
 
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Text("本地执行面收束")
+                    Text("终端本地收束")
                         .font(.system(.body, design: .monospaced))
                         .frame(width: 140, alignment: .leading)
 
@@ -959,12 +958,12 @@ struct ProjectSettingsView: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
 
-                Text("Hub 收束来源：\(effectiveRuntimeSurface.remoteOverrideSource.isEmpty ? "(none)" : effectiveRuntimeSurface.remoteOverrideSource) · Hub 收束更新时间：\(hubOverrideUpdatedAtText)")
+                Text("Hub 收束来源：\(effectiveRuntimeSurface.remoteOverrideSource.isEmpty ? "无" : effectiveRuntimeSurface.remoteOverrideSource) · Hub 收束更新时间：\(hubOverrideUpdatedAtText)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
 
-                Text("执行档位会同步默认执行面，但真正放行动作仍继续受 TTL、收束规则、设备执行绑定、权限宿主和 kill-switch 共同约束。")
+                Text("执行档位会同步默认执行面，但真正放行动作仍继续受 TTL、收束规则、设备执行绑定、权限宿主和紧急回收共同约束。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
 
@@ -977,14 +976,14 @@ struct ProjectSettingsView: View {
     }
 
     private var advancedGovernanceSection: some View {
-        GroupBox("Execution Surface & Trusted Automation") {
+        GroupBox("执行面与受治理自动化") {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("这里保留执行面、设备执行绑定、可读目录和本地自动审批细项。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Text("A-tier / S-tier / Heartbeat & Review 已拆到各自独立页面；点治理摘要卡即可进入对应编辑器。")
+                        Text("A-tier / S-tier / 心跳与审查 已拆到各自独立页面；点治理摘要卡即可进入对应编辑器。")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -1229,7 +1228,7 @@ struct ProjectSettingsView: View {
         return "当前不选项目覆盖时，会回到全局自动路由。"
     }
 
-    private func modelSelectionRecommendation(for role: AXRole) -> (modelId: String, message: String)? {
+    private func modelSelectionRecommendation(for role: AXRole) -> HubModelPickerRecommendationState? {
         let configured = selectedModelIdentifier(for: role)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !configured.isEmpty else { return nil }
 
@@ -1242,9 +1241,10 @@ struct ProjectSettingsView: View {
            let recommendedModelId = guidance.recommendedModelId?.trimmingCharacters(in: .whitespacesAndNewlines),
            !recommendedModelId.isEmpty {
             let message = guidance.recommendationText?.trimmingCharacters(in: .whitespacesAndNewlines)
-            return (
-                recommendedModelId,
-                (message?.isEmpty == false ? message! : guidance.warningText)
+            return HubModelPickerRecommendationState(
+                kind: HubModelPickerRecommendationKind(guidance.recommendationKind),
+                modelId: recommendedModelId,
+                message: (message?.isEmpty == false ? message! : guidance.warningText)
             )
         }
 
@@ -1266,22 +1266,25 @@ struct ProjectSettingsView: View {
         }
 
         if let blocked = assessment.nonInteractiveExactMatch {
-            return (
-                candidate,
-                "`\(blocked.id)` 是检索专用模型，Supervisor 会按需调用它做 retrieval；当前对话先切到 `\(candidate)` 更稳。"
+            return HubModelPickerRecommendationState(
+                kind: .switchRecommended,
+                modelId: candidate,
+                message: "`\(blocked.id)` 是检索专用模型，Supervisor 会按需调用它做 retrieval；如果你要立刻继续，可改用 `\(candidate)`。"
             )
         }
 
         if let exact = assessment.exactMatch {
-            return (
-                candidate,
-                "`\(exact.id)` 当前是 \(HubModelSelectionAdvisor.stateLabel(exact.state))；如果你现在就要继续，先切到已加载的 `\(candidate)` 更稳。"
+            return HubModelPickerRecommendationState(
+                kind: .switchRecommended,
+                modelId: candidate,
+                message: "`\(exact.id)` 当前是 \(HubModelSelectionAdvisor.stateLabel(exact.state))；如果你要立刻继续，可改用已加载的 `\(candidate)`。"
             )
         }
 
-        return (
-            candidate,
-            "`\(configured)` 当前不在可直接执行的 inventory 里；先切到已加载的 `\(candidate)`，可以避免这轮继续掉本地。"
+        return HubModelPickerRecommendationState(
+            kind: .switchRecommended,
+            modelId: candidate,
+            message: "`\(configured)` 当前不在可直接执行的 inventory 里；如果你要立刻继续，可改用已加载的 `\(candidate)`，避免这轮继续掉本地。"
         )
     }
 
@@ -1307,7 +1310,7 @@ struct ProjectSettingsView: View {
            let reason = assessment.interactiveRoutingBlockedReason {
             let candidates = suggestedModelIDs(from: assessment)
             if let first = candidates.first {
-                return "\(configuredBinding.subject) `\(blocked.id)`，但它是检索专用模型。\(reason) 可先切到 `\(first)`。"
+                return "\(configuredBinding.subject) `\(blocked.id)`，但它是检索专用模型。\(reason) 如果你要立刻继续，可改用 `\(first)`。"
             }
             return "\(configuredBinding.subject) `\(blocked.id)`，但它是检索专用模型。\(reason)"
         }
@@ -1315,7 +1318,7 @@ struct ProjectSettingsView: View {
         if let assessment, let exact = assessment.exactMatch {
             let candidates = suggestedModelIDs(from: assessment)
             if let first = candidates.first {
-                return "\(configuredBinding.subject) `\(exact.id)`，但它现在是 \(HubModelSelectionAdvisor.stateLabel(exact.state))。若你现在执行，这一路可能会回退到本地；可先切到 `\(first)`。"
+                return "\(configuredBinding.subject) `\(exact.id)`，但它现在是 \(HubModelSelectionAdvisor.stateLabel(exact.state))。若你现在执行，这一路可能会回退到本地；如果你要立刻继续，可改用 `\(first)`。"
             }
             return "\(configuredBinding.subject) `\(exact.id)`，但它现在是 \(HubModelSelectionAdvisor.stateLabel(exact.state))。若你现在执行，这一路可能会回退到本地。"
         }
@@ -1334,7 +1337,7 @@ struct ProjectSettingsView: View {
            !projectModelId.isEmpty {
             return (
                 projectModelId,
-                "当前 project 为 \(roleLabel(role)) 配的是"
+                "当前项目为 \(roleLabel(role)) 配的是"
             )
         }
 

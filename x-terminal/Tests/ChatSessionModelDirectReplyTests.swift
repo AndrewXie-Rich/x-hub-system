@@ -144,6 +144,128 @@ struct ChatSessionModelDirectReplyTests {
     }
 
     @Test
+    func routeDiagnoseExplainsRememberedRemoteWillBeTriedAutomatically() throws {
+        let root = try makeProjectRoot(named: "project-route-diagnose-remembered-remote")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        AXProjectStore.appendUsage(
+            [
+                "type": "ai_usage",
+                "created_at": 100,
+                "stage": "chat_plan",
+                "role": "coder",
+                "requested_model_id": "openai/gpt-4.1",
+                "actual_model_id": "openai/gpt-4.1",
+                "runtime_provider": "Hub (Remote)",
+                "execution_path": "remote_model",
+            ],
+            for: ctx
+        )
+        AXProjectStore.appendUsage(
+            [
+                "type": "ai_usage",
+                "created_at": 200,
+                "stage": "chat_plan",
+                "role": "coder",
+                "requested_model_id": "openai/gpt-5.4",
+                "actual_model_id": "qwen3-14b-mlx",
+                "runtime_provider": "Hub (Local)",
+                "execution_path": "local_fallback_after_remote_error",
+                "fallback_reason_code": "model_not_found",
+            ],
+            for: ctx
+        )
+
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingModelOverride(role: .coder, modelId: "openai/gpt-5.4")
+
+        let router = LLMRouter(settingsStore: SettingsStore())
+        let session = ChatSessionModel()
+
+        let rendered = session.projectRouteDiagnosisTextForTesting(
+            ctx: ctx,
+            config: config,
+            router: router,
+            routeSnapshot: ModelStateSnapshot(
+                models: [
+                    makeModel(id: "openai/gpt-5.4", name: "GPT 5.4", state: .available),
+                    makeModel(id: "openai/gpt-4.1", name: "GPT 4.1", state: .loaded)
+                ],
+                updatedAt: 300
+            ),
+            localSnapshot: ModelStateSnapshot(
+                models: [
+                    makeModel(id: "qwen3-14b-mlx", name: "Qwen 3 14B", state: .loaded, backend: "mlx", modelPath: "/models/qwen3")
+                ],
+                updatedAt: 300
+            )
+        )
+
+        #expect(rendered.contains("当前决策：当前配置还不能直接执行；XT 这轮会先自动试上次稳定远端：openai/gpt-4.1"))
+        #expect(rendered.contains("判定："))
+        #expect(rendered.contains("XT 当前不会再直接掉回本地；因为 `openai/gpt-5.4` 还不能直接执行，这轮会先自动试上次稳定远端 `openai/gpt-4.1`"))
+    }
+
+    @Test
+    func routeDiagnoseExplainsRecoveredConfiguredModelClearedLocalLock() throws {
+        let root = try makeProjectRoot(named: "project-route-diagnose-recovered-lock")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        let now = Date().timeIntervalSince1970
+
+        for offset in [60.0, 40.0, 20.0] {
+            AXProjectStore.appendUsage(
+                [
+                    "type": "ai_usage",
+                    "created_at": now - offset,
+                    "stage": "chat_plan",
+                    "role": "coder",
+                    "requested_model_id": "openai/gpt-5.4",
+                    "actual_model_id": "qwen3-14b-mlx",
+                    "runtime_provider": "Hub (Local)",
+                    "execution_path": "local_fallback_after_remote_error",
+                    "fallback_reason_code": "model_not_found",
+                ],
+                for: ctx
+            )
+        }
+
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingModelOverride(role: .coder, modelId: "openai/gpt-5.4")
+
+        let router = LLMRouter(settingsStore: SettingsStore())
+        let session = ChatSessionModel()
+
+        let rendered = session.projectRouteDiagnosisTextForTesting(
+            ctx: ctx,
+            config: config,
+            router: router,
+            routeSnapshot: ModelStateSnapshot(
+                models: [
+                    makeModel(id: "openai/gpt-5.4", name: "GPT 5.4", state: .loaded),
+                    makeModel(id: "qwen3-14b-mlx", name: "Qwen 3 14B", state: .loaded, backend: "mlx", modelPath: "/models/qwen3")
+                ],
+                updatedAt: now
+            ),
+            localSnapshot: ModelStateSnapshot(
+                models: [
+                    makeModel(id: "qwen3-14b-mlx", name: "Qwen 3 14B", state: .loaded, backend: "mlx", modelPath: "/models/qwen3")
+                ],
+                updatedAt: now
+            )
+        )
+
+        #expect(rendered.contains("当前决策：之前的本地锁已自动解除；当前按配置继续尝试：openai/gpt-5.4"))
+        #expect(rendered.contains("判定："))
+        #expect(rendered.contains("之前因连续 fallback 触发的项目级本地锁已经解除"))
+    }
+
+    @Test
     func routeDiagnoseShowsGlobalAssignmentIssueWhenSupervisorAndCoderMatch() throws {
         let root = try makeProjectRoot(named: "project-route-diagnose-global-match")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -390,6 +512,60 @@ struct ChatSessionModelDirectReplyTests {
     }
 
     @Test
+    func routeDiagnoseSurfacesHubAuditAnchorForDowngradeEvidence() throws {
+        let root = try makeProjectRoot(named: "project-route-diagnose-audit-anchor")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        AXProjectStore.appendUsage(
+            [
+                "type": "ai_usage",
+                "created_at": 210,
+                "stage": "chat_plan",
+                "role": "coder",
+                "requested_model_id": "openai/gpt-5.4",
+                "actual_model_id": "qwen3-17b-mlx-bf16",
+                "runtime_provider": "Hub (Local)",
+                "execution_path": "hub_downgraded_to_local",
+                "fallback_reason_code": "remote_export_blocked",
+                "audit_ref": "audit-route-789",
+                "deny_code": "grant_required",
+            ],
+            for: ctx
+        )
+
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingModelOverride(role: .coder, modelId: "openai/gpt-5.4")
+
+        let router = LLMRouter(settingsStore: SettingsStore())
+        let session = ChatSessionModel()
+
+        let rendered = session.projectRouteDiagnosisTextForTesting(
+            ctx: ctx,
+            config: config,
+            router: router,
+            routeSnapshot: ModelStateSnapshot(
+                models: [
+                    makeModel(id: "openai/gpt-5.4", name: "GPT 5.4", state: .available)
+                ],
+                updatedAt: 250
+            ),
+            localSnapshot: ModelStateSnapshot(
+                models: [
+                    makeModel(id: "qwen3-17b-mlx-bf16", name: "Qwen 3 17B", state: .loaded, backend: "mlx", modelPath: "/models/qwen3")
+                ],
+                updatedAt: 250
+            )
+        )
+
+        #expect(rendered.contains("Hub 审计锚点：audit_ref=audit-route-789 deny_code=grant_required。去 Hub Recovery / Hub 审计优先查 `remote_export_blocked`。"))
+        #expect(rendered.contains("- audit_ref=audit-route-789"))
+        #expect(rendered.contains("- deny_code=grant_required"))
+    }
+
+    @Test
     func identityQuestionDoesNotPretendRemoteModelWasUsed() throws {
         let root = try makeProjectRoot(named: "project-direct-identity")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -474,6 +650,127 @@ struct ChatSessionModelDirectReplyTests {
         #expect(!rendered.contains("最近一次实际执行没有按当前配置模型命中"))
         #expect(!rendered.contains("当前配置首选是 gpt-5.4"))
         #expect(rendered.contains("最近一次 Project AI / coder 真实调用返回的 actual model_id 是：openai/gpt-5.4"))
+    }
+
+    @Test
+    func actualModelReplyIncludesAuditReferenceFromUsageRecord() throws {
+        let root = try makeProjectRoot(named: "project-direct-audit-ref")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        AXProjectStore.appendUsage(
+            [
+                "type": "ai_usage",
+                "created_at": 320,
+                "stage": "chat_plan",
+                "role": "coder",
+                "requested_model_id": "openai/gpt-5.4",
+                "actual_model_id": "openai/gpt-5.4",
+                "runtime_provider": "Hub (Remote)",
+                "execution_path": "remote_model",
+                "audit_ref": "audit:project-remote-hit-1",
+            ],
+            for: ctx
+        )
+
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingModelOverride(role: .coder, modelId: "openai/gpt-5.4")
+
+        let store = SettingsStore()
+        let router = LLMRouter(settingsStore: store)
+        let session = ChatSessionModel()
+
+        let rendered = try #require(
+            session.directProjectReplyIfApplicableForTesting(
+                "刚刚上一轮实际调用了什么模型",
+                ctx: ctx,
+                config: config,
+                router: router
+            )
+        )
+
+        #expect(rendered.contains("最近一次 Project AI / coder 真实调用返回的 actual model_id 是：openai/gpt-5.4"))
+        #expect(rendered.contains("audit_ref=audit:project-remote-hit-1"))
+    }
+
+    @Test
+    func strictProjectMismatchFailClosedSurfacesAuditEvidenceForLocalFallback() throws {
+        let originalMode = HubAIClient.transportMode()
+        defer { HubAIClient.setTransportMode(originalMode) }
+        HubAIClient.setTransportMode(.grpc)
+
+        let session = ChatSessionModel()
+        let rendered = session.strictProjectRemoteModelMismatchResponseForTesting(
+            configuredModelId: "openai/gpt-5.4",
+            routeDecision: AXProjectPreferredModelRouteDecision(
+                preferredModelId: "openai/gpt-5.4",
+                configuredModelId: "openai/gpt-5.4",
+                rememberedRemoteModelId: nil,
+                preferredLocalModelId: nil,
+                usedRememberedRemoteModel: false,
+                forceLocalExecution: false,
+                reasonCode: nil
+            ),
+            usage: LLMUsage(
+                promptTokens: 10,
+                completionTokens: 20,
+                requestedModelId: "openai/gpt-5.4",
+                actualModelId: "qwen3-17b-mlx-bf16",
+                runtimeProvider: "Hub (Local)",
+                executionPath: "local_fallback_after_remote_error",
+                fallbackReasonCode: "model_not_found",
+                auditRef: "audit:project-mismatch-1",
+                denyCode: "model_not_found"
+            )
+        )
+
+        let message = try #require(rendered)
+        #expect(message.contains("❌ Project AI 已拒绝接受本次回复"))
+        #expect(message.contains("当前配置首选是 openai/gpt-5.4，但这轮实际执行返回的是 qwen3-17b-mlx-bf16"))
+        #expect(message.contains("远端目标模型没有真正命中，随后回复被本地兜底运行时接管"))
+        #expect(message.contains("- audit_ref=audit:project-mismatch-1"))
+        #expect(message.contains("- deny_code=model_not_found"))
+        #expect(message.contains("到 Hub Models 确认 openai/gpt-5.4 已真正可执行"))
+    }
+
+    @Test
+    func strictProjectMismatchFailClosedExplainsProjectLocalLock() throws {
+        let originalMode = HubAIClient.transportMode()
+        defer { HubAIClient.setTransportMode(originalMode) }
+        HubAIClient.setTransportMode(.grpc)
+
+        let session = ChatSessionModel()
+        let rendered = session.strictProjectRemoteModelMismatchResponseForTesting(
+            configuredModelId: "openai/gpt-5.4",
+            routeDecision: AXProjectPreferredModelRouteDecision(
+                preferredModelId: "qwen3-32b-mlx",
+                configuredModelId: "openai/gpt-5.4",
+                rememberedRemoteModelId: nil,
+                preferredLocalModelId: "qwen3-32b-mlx",
+                usedRememberedRemoteModel: false,
+                forceLocalExecution: true,
+                reasonCode: "project_remote_fallback_lock_local_recent_actual"
+            ),
+            usage: LLMUsage(
+                promptTokens: 10,
+                completionTokens: 20,
+                requestedModelId: "qwen3-32b-mlx",
+                actualModelId: "qwen3-32b-mlx",
+                runtimeProvider: "Hub (Local)",
+                executionPath: "local_runtime",
+                fallbackReasonCode: nil,
+                auditRef: nil,
+                denyCode: nil
+            )
+        )
+
+        let message = try #require(rendered)
+        #expect(message.contains("project route-memory 强制切到了本地执行"))
+        #expect(message.contains("当前本地目标：qwen3-32b-mlx"))
+        #expect(message.contains("在当前项目运行 `/route diagnose`"))
+        #expect(message.contains("重新 `/model openai/gpt-5.4` 或 `/model auto` 再重试"))
     }
 
     @Test
@@ -621,7 +918,7 @@ struct ChatSessionModelDirectReplyTests {
         )
 
         #expect(history.contains("summary="))
-        #expect(history.contains("Secret Vault credential"))
+        #expect(history.contains("已使用 Secret Vault 凭据填充"))
         #expect(history.contains("browser_runtime_driver_state"))
     }
 
@@ -918,6 +1215,245 @@ struct ChatSessionModelDirectReplyTests {
         #expect(reply.contains("未修改当前 coder 模型配置。"))
         #expect(reply.contains("`openai/gpt-5.4` 当前还不能直接执行"))
         #expect(reply.contains("/model openai/gpt-4.1"))
+    }
+
+    @Test
+    func modelSlashExplainsRememberedRemoteWillBeAutoTriedDuringPreflight() throws {
+        let root = try makeProjectRoot(named: "project-slash-model-preflight-remembered")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingModelOverride(role: .coder, modelId: "openai/gpt-4.1")
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        AXProjectStore.appendUsage(
+            [
+                "type": "ai_usage",
+                "created_at": 100,
+                "stage": "chat_plan",
+                "role": "coder",
+                "requested_model_id": "openai/gpt-4.1",
+                "actual_model_id": "openai/gpt-4.1",
+                "runtime_provider": "Hub (Remote)",
+                "execution_path": "remote_model",
+            ],
+            for: ctx
+        )
+        AXProjectStore.appendUsage(
+            [
+                "type": "ai_usage",
+                "created_at": 200,
+                "stage": "chat_plan",
+                "role": "coder",
+                "requested_model_id": "openai/gpt-5.4",
+                "actual_model_id": "qwen3-14b-mlx",
+                "runtime_provider": "Hub (Local)",
+                "execution_path": "local_fallback_after_remote_error",
+                "fallback_reason_code": "model_not_found",
+            ],
+            for: ctx
+        )
+
+        let session = ChatSessionModel()
+        let reply = session.handleSlashModelForTesting(
+            args: ["openai/gpt-5.4"],
+            userText: "/model openai/gpt-5.4",
+            ctx: ctx,
+            config: nil,
+            snapshot: ModelStateSnapshot(
+                models: [
+                    makeModel(id: "openai/gpt-5.4", name: "GPT 5.4", state: .available),
+                    makeModel(id: "openai/gpt-4.1", name: "GPT 4.1", state: .loaded),
+                    makeModel(id: "qwen3-14b-mlx", name: "Qwen 3 14B", state: .loaded, backend: "mlx", modelPath: "/models/qwen3")
+                ],
+                updatedAt: 300
+            )
+        )
+
+        let reloaded = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        #expect(reloaded.modelOverride(for: .coder) == "openai/gpt-4.1")
+        #expect(reply.contains("项目路由记忆：`openai/gpt-5.4` 当前还不能直接执行"))
+        #expect(reply.contains("不用手动切模型"))
+        #expect(reply.contains("XT 下一轮会先试 `openai/gpt-4.1`"))
+        #expect(reply.contains("/model openai/gpt-4.1"))
+    }
+
+    @Test
+    func modelSlashExplainsFreshLocalLockDuringPreflight() throws {
+        let root = try makeProjectRoot(named: "project-slash-model-preflight-local-lock")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        let now = Date().timeIntervalSince1970
+
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingModelOverride(role: .coder, modelId: "openai/gpt-4.1")
+        try AXProjectStore.saveConfig(config, for: ctx)
+
+        for offset in [60.0, 40.0, 20.0] {
+            AXProjectStore.appendUsage(
+                [
+                    "type": "ai_usage",
+                    "created_at": now - offset,
+                    "stage": "chat_plan",
+                    "role": "coder",
+                    "requested_model_id": "openai/gpt-5.4",
+                    "actual_model_id": "qwen3-14b-mlx",
+                    "runtime_provider": "Hub (Local)",
+                    "execution_path": "local_fallback_after_remote_error",
+                    "fallback_reason_code": "model_not_found",
+                ],
+                for: ctx
+            )
+        }
+
+        let session = ChatSessionModel()
+        let reply = session.handleSlashModelForTesting(
+            args: ["openai/gpt-5.4"],
+            userText: "/model openai/gpt-5.4",
+            ctx: ctx,
+            config: nil,
+            snapshot: ModelStateSnapshot(
+                models: [
+                    makeModel(id: "openai/gpt-5.4", name: "GPT 5.4", state: .available),
+                    makeModel(id: "openai/gpt-4.1", name: "GPT 4.1", state: .loaded),
+                    makeModel(id: "qwen3-14b-mlx", name: "Qwen 3 14B", state: .loaded, backend: "mlx", modelPath: "/models/qwen3")
+                ],
+                updatedAt: now
+            )
+        )
+
+        let reloaded = try AXProjectStore.loadOrCreateConfig(for: ctx)
+        #expect(reloaded.modelOverride(for: .coder) == "openai/gpt-4.1")
+        #expect(reply.contains("项目路由记忆：这个项目最近连续 3 次没有稳定命中 `openai/gpt-5.4`"))
+        #expect(reply.contains("XT 当前仍会先锁到本地"))
+        #expect(reply.contains("当前项目级本地锁还在"))
+        #expect(reply.contains("/model openai/gpt-4.1"))
+    }
+
+    @Test
+    func modelsSlashExplainsRememberedRemoteWillBeTriedAutomatically() throws {
+        let root = try makeProjectRoot(named: "project-slash-models-remembered-remote")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+
+        AXProjectStore.appendUsage(
+            [
+                "type": "ai_usage",
+                "created_at": 100,
+                "stage": "chat_plan",
+                "role": "coder",
+                "requested_model_id": "openai/gpt-4.1",
+                "actual_model_id": "openai/gpt-4.1",
+                "runtime_provider": "Hub (Remote)",
+                "execution_path": "remote_model",
+            ],
+            for: ctx
+        )
+        AXProjectStore.appendUsage(
+            [
+                "type": "ai_usage",
+                "created_at": 200,
+                "stage": "chat_plan",
+                "role": "coder",
+                "requested_model_id": "openai/gpt-5.4",
+                "actual_model_id": "qwen3-14b-mlx",
+                "runtime_provider": "Hub (Local)",
+                "execution_path": "local_fallback_after_remote_error",
+                "fallback_reason_code": "model_not_found",
+            ],
+            for: ctx
+        )
+
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingModelOverride(role: .coder, modelId: "openai/gpt-5.4")
+
+        let session = ChatSessionModel()
+        let rendered = session.slashModelsTextForTesting(
+            ctx: ctx,
+            config: config,
+            snapshot: ModelStateSnapshot(
+                models: [
+                    makeModel(id: "openai/gpt-5.4", name: "GPT 5.4", state: .available),
+                    makeModel(id: "openai/gpt-4.1", name: "GPT 4.1", state: .loaded),
+                    makeModel(id: "qwen3-14b-mlx", name: "Qwen 3 14B", state: .loaded, backend: "mlx", modelPath: "/models/qwen3")
+                ],
+                updatedAt: 300
+            ),
+            localSnapshot: ModelStateSnapshot(
+                models: [
+                    makeModel(id: "qwen3-14b-mlx", name: "Qwen 3 14B", state: .loaded, backend: "mlx", modelPath: "/models/qwen3")
+                ],
+                updatedAt: 300
+            )
+        )
+
+        #expect(rendered.contains("路由状态：当前配置的 `openai/gpt-5.4` 还不能直接执行；XT 这轮会先自动试上次稳定远端 `openai/gpt-4.1`，不用手动切模型。"))
+        #expect(rendered.contains("上次稳定远端模型：openai/gpt-4.1"))
+        #expect(rendered.contains("默认加载配置：ctx 128000"))
+        #expect(rendered.contains("本地加载上限：ctx 128000"))
+        #expect(!rendered.contains("当前 project 已锁到本地模式"))
+    }
+
+    @Test
+    func modelsSlashExplainsRecoveredConfiguredModelClearedLocalLock() throws {
+        let root = try makeProjectRoot(named: "project-slash-models-recovered-lock")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ctx = AXProjectContext(root: root)
+        try ctx.ensureDirs()
+        let now = Date().timeIntervalSince1970
+
+        for offset in [60.0, 40.0, 20.0] {
+            AXProjectStore.appendUsage(
+                [
+                    "type": "ai_usage",
+                    "created_at": now - offset,
+                    "stage": "chat_plan",
+                    "role": "coder",
+                    "requested_model_id": "openai/gpt-5.4",
+                    "actual_model_id": "qwen3-14b-mlx",
+                    "runtime_provider": "Hub (Local)",
+                    "execution_path": "local_fallback_after_remote_error",
+                    "fallback_reason_code": "model_not_found",
+                ],
+                for: ctx
+            )
+        }
+
+        var config = AXProjectConfig.default(forProjectRoot: root)
+        config = config.settingModelOverride(role: .coder, modelId: "openai/gpt-5.4")
+
+        let session = ChatSessionModel()
+        let rendered = session.slashModelsTextForTesting(
+            ctx: ctx,
+            config: config,
+            snapshot: ModelStateSnapshot(
+                models: [
+                    makeModel(id: "openai/gpt-5.4", name: "GPT 5.4", state: .loaded),
+                    makeModel(id: "qwen3-14b-mlx", name: "Qwen 3 14B", state: .loaded, backend: "mlx", modelPath: "/models/qwen3")
+                ],
+                updatedAt: now
+            ),
+            localSnapshot: ModelStateSnapshot(
+                models: [
+                    makeModel(id: "qwen3-14b-mlx", name: "Qwen 3 14B", state: .loaded, backend: "mlx", modelPath: "/models/qwen3")
+                ],
+                updatedAt: now
+            )
+        )
+
+        #expect(rendered.contains("路由状态：之前因连续 fallback 触发的本地锁已自动解除；`openai/gpt-5.4` 现在恢复可执行。"))
+        #expect(rendered.contains("Hub loaded 模型："))
+        #expect(rendered.contains("默认加载配置：ctx 128000"))
+        #expect(rendered.contains("本地加载上限：ctx 128000"))
+        #expect(!rendered.contains("当前 project 已锁到本地模式"))
     }
 
     @Test

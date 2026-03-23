@@ -40,6 +40,11 @@ struct SupervisorPersonalMemoryStoreTests {
 
         let summary = SupervisorPersonalMemorySummaryBuilder.build(
             snapshot: snapshot,
+            lastWriteObservation: SupervisorLocalMemoryWriteObservation(
+                surface: .personalMemory,
+                intent: SupervisorPersonalMemoryStoreWriteIntent.manualEditBufferCommit.rawValue,
+                updatedAtMs: 40
+            ),
             now: now,
             timeZone: try #require(TimeZone(identifier: "Asia/Shanghai")),
             locale: Locale(identifier: "en_US_POSIX")
@@ -49,7 +54,13 @@ struct SupervisorPersonalMemoryStoreTests {
         #expect(summary.activeCommitmentCount == 1)
         #expect(summary.overdueCommitmentCount == 1)
         #expect(summary.peopleCount == 1)
+        #expect(summary.localStoreRole == SupervisorLocalMemoryStoreRole.rawValue)
+        #expect(summary.lastLocalWriteIntent == SupervisorPersonalMemoryStoreWriteIntent.manualEditBufferCommit.rawValue)
+        #expect(summary.statusLine.contains("XT local personal memory cache"))
         #expect(summary.statusLine.contains("1 overdue"))
+        #expect(summary.promptContext.contains("XT local store role: \(SupervisorLocalMemoryStoreRole.rawValue)"))
+        #expect(summary.promptContext.contains("Latest XT local write intent: \(SupervisorPersonalMemoryStoreWriteIntent.manualEditBufferCommit.rawValue)"))
+        #expect(summary.promptContext.contains("not treat it as the durable source of truth"))
         #expect(summary.promptContext.contains("Key people: Alex"))
         #expect(summary.promptContext.contains("Overdue commitments: Reply to Alex about the partnership draft"))
         #expect(summary.promptContext.contains("Stable preferences and habits: Prefer deep work before noon"))
@@ -70,14 +81,16 @@ struct SupervisorPersonalMemoryStoreTests {
             updatedAtMs: 100
         )
 
-        store.upsert(record)
+        store.upsert(record, intent: .testSeed)
         #expect(store.snapshot.items.count == 1)
+        #expect(store.lastWriteObservation?.surface == .personalMemory)
+        #expect(store.lastWriteObservation?.intent == SupervisorPersonalMemoryStoreWriteIntent.testSeed.rawValue)
 
         let reloaded = SupervisorPersonalMemoryStore(url: tempURL)
         #expect(reloaded.snapshot.items.count == 1)
         #expect(reloaded.snapshot.items.first?.title == "Send follow-up note")
 
-        reloaded.delete(memoryId: "commitment-1")
+        reloaded.delete(memoryId: "commitment-1", intent: .manualEditBufferCommit)
         let afterDelete = SupervisorPersonalMemoryStore(url: tempURL)
         #expect(afterDelete.snapshot.items.isEmpty)
     }

@@ -162,7 +162,7 @@ focus=\(focusedProjectId) context_refs=\(snapshot.contextRefsSelected)/\(snapsho
                     severity: severity,
                     summary: "Supervisor recent raw continuity 没达到硬底线",
                     detail: """
-review=\(reviewLevel.rawValue) focus=\(focusedProjectId.isEmpty ? "(none)" : focusedProjectId) raw_source=\(snapshot.rawWindowSource) raw_profile=\(snapshot.rawWindowProfile) selected_pairs=\(snapshot.rawWindowSelectedPairs) floor_pairs=\(snapshot.rawWindowFloorPairs) eligible_messages=\(snapshot.eligibleMessages)
+review=\(reviewLevel.rawValue) focus=\(focusedProjectId.isEmpty ? "(none)" : focusedProjectId) raw_source=\(snapshot.rawWindowSource) raw_source_label=\(snapshot.rawWindowSourceLabel) raw_source_class=\(snapshot.rawWindowSourceClass) raw_profile=\(snapshot.rawWindowProfile) selected_pairs=\(snapshot.rawWindowSelectedPairs) floor_pairs=\(snapshot.rawWindowFloorPairs) eligible_messages=\(snapshot.eligibleMessages)
 continuity_trace=\(snapshot.continuityTraceLines.prefix(2).joined(separator: " | "))
 low_signal_samples=\(dropSamples)
 """
@@ -211,10 +211,17 @@ low_signal_samples=\(dropSamples)
         let severity: SupervisorMemoryAssemblyIssueSeverity =
             (focusedStrategicReview || reviewLevel == .r3Rescue) ? .blocking : .warning
         let detail = failures.prefix(3).map { item in
+            func suffix(_ value: String?, label: String) -> String {
+                let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return trimmed.isEmpty ? "" : " \(label)=\(trimmed)"
+            }
             let reason = item.reasonCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
             let extra = item.detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let detailSuffix = extra.isEmpty ? "" : " detail=\(extra)"
-            return "scope=\(item.scopeKind) scope_id=\(item.scopeId) source=\(item.source) reason=\(reason)\(detailSuffix)"
+            let deliverySuffix = suffix(item.deliveryState, label: "delivery")
+            let auditSuffix = suffix(item.primaryAuditRef, label: "audit_ref")
+            let writebackSuffix = suffix(item.primaryWritebackRef, label: "writeback_ref")
+            return "scope=\(item.scopeKind) scope_id=\(item.scopeId) source=\(item.source) reason=\(reason)\(deliverySuffix)\(auditSuffix)\(writebackSuffix)\(detailSuffix)"
         }
         .joined(separator: "\n")
         return SupervisorMemoryAssemblyIssue(

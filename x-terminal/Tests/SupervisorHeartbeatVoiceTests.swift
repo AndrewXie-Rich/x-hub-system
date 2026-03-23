@@ -1214,7 +1214,7 @@ struct SupervisorHeartbeatVoiceTests {
     }
 
     @Test
-    func explicitVoiceStatusQueryFallsBackToLocalGovernanceBriefWhenProjectionUnavailable() async throws {
+    func explicitVoiceStatusQuerySurfacesHubBriefUnavailableInsteadOfLocalBrief() async throws {
         var spoken: [String] = []
         let synthesizer = SupervisorSpeechSynthesizer(
             deduper: SupervisorVoiceBriefDeduper(cooldown: 60),
@@ -1274,28 +1274,30 @@ struct SupervisorHeartbeatVoiceTests {
 
         manager.sendMessage("现在状态怎么样", fromVoice: true)
 
-        try await waitUntil("voice status local governance fallback emitted") {
-            spoken.contains(where: { $0.contains("Hub 待处理授权") }) &&
+        try await waitUntil("voice status hub brief unavailable emitted") {
+            spoken.contains(where: { $0.contains("Hub 简报当前不可用") }) &&
             manager.messages.contains(where: {
                 $0.role == .assistant &&
-                $0.content.contains("🧭 Supervisor Brief") &&
-                $0.content.contains("Hub 待处理授权") &&
-                $0.content.contains("查看：查看授权板")
+                $0.content.contains("⚠️ Hub Brief 暂不可用") &&
+                $0.content.contains("Hub 没有返回这次统一简报") &&
+                $0.content.contains("XT 本地信号：Hub 待处理授权") &&
+                $0.content.contains("你现在可以先：查看授权板。")
             })
         }
 
         #expect(spoken.count == 1)
-        #expect(spoken[0].contains("Hub 待处理授权"))
+        #expect(spoken[0].contains("Hub 简报当前不可用"))
         #expect(spoken[0].contains("查看授权板"))
         #expect(manager.messages.contains(where: {
             $0.role == .assistant &&
-            $0.content.contains("打开授权并批准设备级权限") &&
-            $0.content.contains("查看：查看授权板")
+            $0.content.contains("按当前 fail-closed 规则，我先不在 XT 本地即兴拼接 Supervisor brief。") &&
+            !$0.content.contains("🧭 Supervisor Brief") &&
+            !$0.content.contains("打开授权并批准设备级权限")
         }))
     }
 
     @Test
-    func explicitVoiceStatusQueryFallsBackToLocalGovernanceBriefForLaneHealth() async throws {
+    func explicitVoiceStatusQuerySurfacesHubBriefUnavailableForLaneHealth() async throws {
         var spoken: [String] = []
         let synthesizer = SupervisorSpeechSynthesizer(
             deduper: SupervisorVoiceBriefDeduper(cooldown: 60),
@@ -1355,28 +1357,28 @@ struct SupervisorHeartbeatVoiceTests {
 
         manager.sendMessage("现在状态怎么样", fromVoice: true)
 
-        try await waitUntil("voice status local lane health fallback emitted") {
-            spoken.contains(where: { $0.contains("泳道健康需要关注") }) &&
+        try await waitUntil("voice status lane health hub brief unavailable emitted") {
+            spoken.contains(where: { $0.contains("Hub 简报当前不可用") }) &&
             manager.messages.contains(where: {
                 $0.role == .assistant &&
-                $0.content.contains("🧭 Supervisor Brief") &&
-                $0.content.contains("泳道健康需要关注") &&
-                $0.content.contains("查看：查看泳道健康")
+                $0.content.contains("⚠️ Hub Brief 暂不可用") &&
+                $0.content.contains("XT 本地信号：泳道健康需要关注") &&
+                $0.content.contains("你现在可以先：查看泳道健康。")
             })
         }
 
         #expect(spoken.count == 1)
-        #expect(spoken[0].contains("泳道健康需要关注"))
+        #expect(spoken[0].contains("Hub 简报当前不可用"))
         #expect(spoken[0].contains("查看泳道健康"))
         #expect(manager.messages.contains(where: {
             $0.role == .assistant &&
-            $0.content.contains("grant_pending") &&
-            $0.content.contains("查看：查看泳道健康")
+            !$0.content.contains("🧭 Supervisor Brief") &&
+            !$0.content.contains("grant_pending")
         }))
     }
 
     @Test
-    func explicitTextStatusQueryFallsBackToLocalGovernanceBriefWhenProjectionUnavailable() async throws {
+    func explicitTextStatusQuerySurfacesHubBriefUnavailableInsteadOfLocalBrief() async throws {
         var spoken: [String] = []
         let synthesizer = SupervisorSpeechSynthesizer(
             deduper: SupervisorVoiceBriefDeduper(cooldown: 60),
@@ -1432,25 +1434,26 @@ struct SupervisorHeartbeatVoiceTests {
 
         manager.sendMessage("现在状态怎么样")
 
-        try await waitUntil("text status local governance fallback emitted") {
+        try await waitUntil("text status hub brief unavailable emitted") {
             manager.messages.contains(where: {
                 $0.role == .assistant &&
-                $0.content.contains("🧭 Supervisor Brief") &&
-                $0.content.contains("Hub 待处理授权") &&
-                $0.content.contains("查看：查看授权板")
+                $0.content.contains("⚠️ Hub Brief 暂不可用") &&
+                $0.content.contains("Hub 没有返回这次统一简报") &&
+                $0.content.contains("XT 本地信号：Hub 待处理授权") &&
+                $0.content.contains("你现在可以先：查看授权板。")
             })
         }
 
         #expect(spoken.isEmpty)
         #expect(manager.messages.contains(where: {
             $0.role == .assistant &&
-            $0.content.contains("打开授权并批准设备级权限") &&
-            $0.content.contains("查看：查看授权板")
+            !$0.content.contains("🧭 Supervisor Brief") &&
+            !$0.content.contains("打开授权并批准设备级权限")
         }))
     }
 
     @Test
-    func explicitTextStatusQueryWithoutFocusedProjectUsesGlobalGovernanceBrief() async throws {
+    func explicitTextStatusQueryWithoutFocusedProjectRequiresProjectBinding() async throws {
         var spoken: [String] = []
         let synthesizer = SupervisorSpeechSynthesizer(
             deduper: SupervisorVoiceBriefDeduper(cooldown: 60),
@@ -1508,25 +1511,25 @@ struct SupervisorHeartbeatVoiceTests {
 
         manager.sendMessage("现在状态怎么样")
 
-        try await waitUntil("text global governance brief emitted") {
+        try await waitUntil("text binding-required reply emitted") {
             manager.messages.contains(where: {
                 $0.role == .assistant &&
-                $0.content.contains("🧭 Supervisor Brief · 当前工作台") &&
-                $0.content.contains("Hub 待处理授权") &&
-                $0.content.contains("查看：查看授权板")
+                $0.content.contains("⚠️ Hub Brief 需要项目绑定") &&
+                $0.content.contains("Hub 统一投影现在按项目生成") &&
+                $0.content.contains("按当前 fail-closed 规则，我先不在 XT 本地即兴拼接 Supervisor brief。")
             })
         }
 
         #expect(spoken.isEmpty)
         #expect(manager.messages.contains(where: {
             $0.role == .assistant &&
-            $0.content.contains("打开授权并批准设备级权限") &&
-            $0.content.contains("🧭 Supervisor Brief · 当前工作台")
+            !$0.content.contains("🧭 Supervisor Brief · 当前工作台") &&
+            !$0.content.contains("Hub 待处理授权")
         }))
     }
 
     @Test
-    func explicitVoiceStatusQueryWithoutFocusedProjectUsesGlobalGovernanceBrief() async throws {
+    func explicitVoiceStatusQueryWithoutFocusedProjectRequiresProjectBinding() async throws {
         var spoken: [String] = []
         let synthesizer = SupervisorSpeechSynthesizer(
             deduper: SupervisorVoiceBriefDeduper(cooldown: 60),
@@ -1588,18 +1591,19 @@ struct SupervisorHeartbeatVoiceTests {
 
         manager.sendMessage("现在状态怎么样", fromVoice: true)
 
-        try await waitUntil("voice global governance brief emitted") {
-            spoken.contains(where: { $0.contains("Hub 待处理授权") }) &&
+        try await waitUntil("voice binding-required reply emitted") {
+            spoken.contains(where: { $0.contains("要给你正式的 Hub 简报") }) &&
             manager.messages.contains(where: {
                 $0.role == .assistant &&
-                $0.content.contains("🧭 Supervisor Brief · 当前工作台") &&
-                $0.content.contains("查看：查看授权板")
+                $0.content.contains("⚠️ Hub Brief 需要项目绑定") &&
+                $0.content.contains("Hub 统一投影现在按项目生成") &&
+                $0.content.contains("按当前 fail-closed 规则，我先不在 XT 本地即兴拼接 Supervisor brief。")
             })
         }
 
         #expect(spoken.count == 1)
-        #expect(spoken[0].contains("Hub 待处理授权"))
-        #expect(spoken[0].contains("查看授权板"))
+        #expect(spoken[0].contains("要给你正式的 Hub 简报"))
+        #expect(spoken[0].contains("先绑定项目"))
     }
 
     @Test
@@ -2080,6 +2084,52 @@ struct SupervisorHeartbeatVoiceTests {
         #expect(spoken.count == 1)
         #expect(spoken[0].contains("Supervisor Hub 简报"))
         #expect(spoken[0].contains("处理 release grant"))
+        #expect(!spoken[0].contains("等待本地 blocker 文案"))
+    }
+
+    @Test
+    func heartbeatVoiceFailsClosedWhenProjectionRequestExistsButFetcherReturnsUnavailable() async throws {
+        var spoken: [String] = []
+        let synthesizer = SupervisorSpeechSynthesizer(
+            deduper: SupervisorVoiceBriefDeduper(cooldown: 60),
+            speakSink: { spoken.append($0) }
+        )
+        let manager = SupervisorManager.makeForTesting(
+            supervisorSpeechSynthesizer: synthesizer
+        )
+        manager.installSupervisorBriefProjectionFetcherForTesting { _ in
+            HubIPCClient.SupervisorBriefProjectionResult(
+                ok: false,
+                source: "test",
+                projection: nil,
+                reasonCode: "projection_unavailable"
+            )
+        }
+
+        let root = try makeProjectRoot(named: "heartbeat-hub-brief-unavailable")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = makeProjectEntry(
+            root: root,
+            displayName: "Release Runtime",
+            blockerSummary: "等待本地 blocker 文案",
+            nextStepSummary: "完成本地 heartbeat next step"
+        )
+        let appModel = AppModel()
+        appModel.registry = registry(with: [project])
+        appModel.settingsStore.settings = configuredSettings(
+            from: appModel.settingsStore.settings,
+            autoReportMode: .summary
+        )
+
+        manager.setAppModel(appModel)
+        let emission = await manager.emitHeartbeatForTesting(reason: "hub_projection_unavailable_test")
+
+        #expect(emission.path == "projection_unavailable")
+        #expect(emission.outcome == "spoken")
+        #expect(spoken.count == 1)
+        #expect(spoken[0].contains("Hub 简报当前不可用"))
+        #expect(spoken[0].contains("打开 Hub Diagnostics"))
         #expect(!spoken[0].contains("等待本地 blocker 文案"))
     }
 

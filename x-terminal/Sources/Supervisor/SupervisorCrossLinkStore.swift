@@ -150,12 +150,19 @@ struct SupervisorCrossLinkSnapshot: Equatable, Codable, Sendable {
         next.updatedAtMs = max(next.updatedAtMs, normalizedItem.updatedAtMs)
         return next.normalized()
     }
+
+    var localStoreRole: String {
+        SupervisorLocalMemoryStoreRole.rawValue
+    }
 }
 
 struct SupervisorCrossLinkSummary: Equatable {
     var totalCount: Int
     var activeCount: Int
     var selectedCount: Int
+    var localStoreRole: String
+    var lastLocalWriteIntent: String?
+    var lastLocalWriteAtMs: Int64?
     var statusLine: String
     var promptContext: String
 }
@@ -166,6 +173,7 @@ enum SupervisorCrossLinkSummaryBuilder {
 
     static func build(
         snapshot: SupervisorCrossLinkSnapshot,
+        lastWriteObservation: SupervisorLocalMemoryWriteObservation? = nil,
         projects: [AXProjectEntry],
         focusedProjectId: String?,
         focusedPersonName: String?,
@@ -175,6 +183,7 @@ enum SupervisorCrossLinkSummaryBuilder {
     ) -> SupervisorCrossLinkSummary {
         let normalizedSnapshot = snapshot.normalized()
         let activeItems = normalizedSnapshot.items.filter(\.isActiveLike)
+        let localWriteObservation = lastWriteObservation?.surface == .crossLink ? lastWriteObservation : nil
         let selected = selectedItems(
             from: activeItems,
             projects: projects,
@@ -185,22 +194,35 @@ enum SupervisorCrossLinkSummaryBuilder {
         )
         let statusLine: String
         if activeItems.isEmpty {
-            statusLine = "No durable cross-links recorded."
+            statusLine = SupervisorLocalMemoryStoreRole.cacheStatusLine(
+                surface: "cross-link",
+                detail: "empty"
+            )
         } else if selected.isEmpty {
-            statusLine = "No relevant cross-links selected for this turn."
+            statusLine = SupervisorLocalMemoryStoreRole.cacheStatusLine(
+                surface: "cross-link",
+                detail: "no relevant refs selected for this turn"
+            )
         } else {
-            statusLine = "\(selected.count) cross-link refs selected · active total \(activeItems.count)"
+            statusLine = SupervisorLocalMemoryStoreRole.cacheStatusLine(
+                surface: "cross-link",
+                detail: "\(selected.count) refs selected · active total \(activeItems.count)"
+            )
         }
         return SupervisorCrossLinkSummary(
             totalCount: normalizedSnapshot.items.count,
             activeCount: activeItems.count,
             selectedCount: selected.count,
+            localStoreRole: normalizedSnapshot.localStoreRole,
+            lastLocalWriteIntent: localWriteObservation?.intent,
+            lastLocalWriteAtMs: localWriteObservation?.updatedAtMs,
             statusLine: statusLine,
             promptContext: promptContext(
                 selected,
                 projects: projects,
                 now: now,
-                statusLine: statusLine
+                statusLine: statusLine,
+                lastWriteObservation: localWriteObservation
             )
         )
     }
@@ -285,13 +307,17 @@ enum SupervisorCrossLinkSummaryBuilder {
         _ items: [SupervisorCrossLinkRecord],
         projects: [AXProjectEntry],
         now: Date,
-        statusLine: String
+        statusLine: String,
+        lastWriteObservation: SupervisorLocalMemoryWriteObservation?
     ) -> String {
         guard !items.isEmpty else { return "" }
         let projectNames = projects.reduce(into: [String: String]()) { partial, project in
             partial[project.projectId] = project.displayName
         }
-        let lines = items.map { item -> String in
+        let lines = SupervisorLocalMemoryStoreRole.promptBoundaryLines(
+            surface: "cross_link",
+            lastWriteObservation: lastWriteObservation
+        ) + items.map { item -> String in
             let projectName = projectNames[item.projectId] ?? item.projectName
             let backingRefs = item.backingRecordRefs.isEmpty
                 ? "(none)"
@@ -323,6 +349,7 @@ final class SupervisorCrossLinkStore: ObservableObject {
     static let shared = SupervisorCrossLinkStore()
 
     @Published private(set) var snapshot: SupervisorCrossLinkSnapshot
+    private(set) var lastWriteObservation: SupervisorLocalMemoryWriteObservation? = nil
 
     private let url: URL
 
@@ -352,17 +379,28 @@ final class SupervisorCrossLinkStore: ObservableObject {
         }
     }
 
-    func replaceSnapshot(_ snapshot: SupervisorCrossLinkSnapshot) {
+    func replaceSnapshot(
+        _ snapshot: SupervisorCrossLinkSnapshot,
+        intent: SupervisorCrossLinkStoreWriteIntent
+    ) {
         self.snapshot = snapshot.normalized()
-        persist()
+        persist(intent: intent)
     }
 
-    func upsert(_ record: SupervisorCrossLinkRecord) {
+    func upsert(
+        _ record: SupervisorCrossLinkRecord,
+        intent: SupervisorCrossLinkStoreWriteIntent
+    ) {
         snapshot = snapshot.upserting(record)
-        persist()
+        persist(intent: intent)
     }
 
-    private func persist() {
+    private func persist(intent: SupervisorCrossLinkStoreWriteIntent) {
+        lastWriteObservation = SupervisorLocalMemoryWriteObservation(
+            surface: .crossLink,
+            intent: intent.rawValue,
+            updatedAtMs: currentSupervisorLocalMemoryWriteTimestampMs()
+        )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(snapshot.normalized()) else { return }

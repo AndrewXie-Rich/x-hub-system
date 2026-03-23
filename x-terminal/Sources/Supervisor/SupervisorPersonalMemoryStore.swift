@@ -1,5 +1,63 @@
 import Foundation
 
+enum SupervisorLocalMemoryWriteSurface: String, Sendable {
+    case personalMemory = "personal_memory"
+    case crossLink = "cross_link"
+    case personalReview = "personal_review"
+}
+
+struct SupervisorLocalMemoryWriteObservation: Equatable, Sendable {
+    var surface: SupervisorLocalMemoryWriteSurface
+    var intent: String
+    var updatedAtMs: Int64
+}
+
+enum SupervisorLocalMemoryStoreRole {
+    static let rawValue = XTSupervisorDurableCandidateMirror.localStoreRole
+
+    static func cacheStatusLine(surface: String, detail: String) -> String {
+        let trimmedDetail = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedDetail.isEmpty else {
+            return "XT local \(surface) cache"
+        }
+        return "XT local \(surface) cache · \(trimmedDetail)"
+    }
+
+    static func promptBoundaryLines(
+        surface: String,
+        lastWriteObservation: SupervisorLocalMemoryWriteObservation? = nil
+    ) -> [String] {
+        var lines = [
+            "- XT local store surface: \(surface)",
+            "- XT local store role: \(rawValue)",
+            "- Boundary: XT local \(surface) data is a cache/fallback/edit buffer only. Do not treat it as the durable source of truth."
+        ]
+        if let lastWriteObservation,
+           lastWriteObservation.surface.rawValue == surface {
+            lines.append("- Latest XT local write intent: \(lastWriteObservation.intent)")
+        }
+        return lines
+    }
+}
+
+enum SupervisorPersonalMemoryStoreWriteIntent: String, Sendable {
+    case afterTurnCacheRefresh = "after_turn_cache_refresh"
+    case directCaptureFallback = "direct_capture_fallback"
+    case manualEditBufferCommit = "manual_edit_buffer_commit"
+    case testSeed = "test_seed"
+}
+
+enum SupervisorCrossLinkStoreWriteIntent: String, Sendable {
+    case afterTurnCacheRefresh = "after_turn_cache_refresh"
+    case testSeed = "test_seed"
+}
+
+enum SupervisorPersonalReviewNoteStoreWriteIntent: String, Sendable {
+    case derivedRefresh = "derived_refresh"
+    case completionMark = "completion_mark"
+    case testSeed = "test_seed"
+}
+
 enum SupervisorPersonalMemoryCategory: String, Codable, CaseIterable, Identifiable, Sendable {
     case personalFact = "personal_fact"
     case habit
@@ -236,6 +294,10 @@ struct SupervisorPersonalMemorySnapshot: Equatable, Codable, Sendable {
     func preferredUserName() -> String? {
         SupervisorPersonalMemoryAutoCapture.preferredUserName(from: normalized())
     }
+
+    var localStoreRole: String {
+        SupervisorLocalMemoryStoreRole.rawValue
+    }
 }
 
 struct SupervisorPersonalMemorySummary: Equatable {
@@ -252,6 +314,9 @@ struct SupervisorPersonalMemorySummary: Equatable {
     var peopleCount: Int
     var categoryCounts: [CategoryCount]
     var highlightedItems: [String]
+    var localStoreRole: String
+    var lastLocalWriteIntent: String?
+    var lastLocalWriteAtMs: Int64?
     var statusLine: String
     var promptContext: String
 }
@@ -259,6 +324,7 @@ struct SupervisorPersonalMemorySummary: Equatable {
 enum SupervisorPersonalMemorySummaryBuilder {
     static func build(
         snapshot: SupervisorPersonalMemorySnapshot,
+        lastWriteObservation: SupervisorLocalMemoryWriteObservation? = nil,
         now: Date = Date(),
         timeZone: TimeZone = .current,
         locale: Locale = .current
@@ -285,6 +351,7 @@ enum SupervisorPersonalMemorySummaryBuilder {
             timeZone: timeZone,
             locale: locale
         )
+        let localWriteObservation = lastWriteObservation?.surface == .personalMemory ? lastWriteObservation : nil
 
         let statusParts = [
             "\(visible.count) items",
@@ -300,13 +367,20 @@ enum SupervisorPersonalMemorySummaryBuilder {
             peopleCount: people.count,
             categoryCounts: categoryCounts,
             highlightedItems: highlights,
-            statusLine: statusParts.isEmpty ? "No structured personal memory yet." : statusParts.joined(separator: " · "),
+            localStoreRole: normalized.localStoreRole,
+            lastLocalWriteIntent: localWriteObservation?.intent,
+            lastLocalWriteAtMs: localWriteObservation?.updatedAtMs,
+            statusLine: SupervisorLocalMemoryStoreRole.cacheStatusLine(
+                surface: "personal memory",
+                detail: statusParts.isEmpty ? "empty" : statusParts.joined(separator: " · ")
+            ),
             promptContext: promptContext(
                 visible: visible,
                 people: Array(people).sorted(),
                 activeCommitments: activeCommitments,
                 overdueCommitments: overdueCommitments,
                 categoryCounts: categoryCounts,
+                lastWriteObservation: localWriteObservation,
                 now: now,
                 timeZone: timeZone,
                 locale: locale
@@ -344,6 +418,7 @@ enum SupervisorPersonalMemorySummaryBuilder {
         activeCommitments: [SupervisorPersonalMemoryRecord],
         overdueCommitments: [SupervisorPersonalMemoryRecord],
         categoryCounts: [SupervisorPersonalMemorySummary.CategoryCount],
+        lastWriteObservation: SupervisorLocalMemoryWriteObservation?,
         now: Date,
         timeZone: TimeZone,
         locale: Locale
@@ -351,6 +426,10 @@ enum SupervisorPersonalMemorySummaryBuilder {
         guard !visible.isEmpty else { return "" }
 
         var lines: [String] = []
+        lines.append(contentsOf: SupervisorLocalMemoryStoreRole.promptBoundaryLines(
+            surface: "personal_memory",
+            lastWriteObservation: lastWriteObservation
+        ))
         lines.append("- Structured personal memory items: \(visible.count)")
         if let preferredUserName = SupervisorPersonalMemoryAutoCapture.preferredUserName(
             from: SupervisorPersonalMemorySnapshot(
@@ -428,6 +507,7 @@ final class SupervisorPersonalMemoryStore: ObservableObject {
     static let shared = SupervisorPersonalMemoryStore()
 
     @Published private(set) var snapshot: SupervisorPersonalMemorySnapshot
+    private(set) var lastWriteObservation: SupervisorLocalMemoryWriteObservation? = nil
 
     private let url: URL
 
@@ -458,30 +538,51 @@ final class SupervisorPersonalMemoryStore: ObservableObject {
     }
 
     var summary: SupervisorPersonalMemorySummary {
-        SupervisorPersonalMemorySummaryBuilder.build(snapshot: snapshot)
+        SupervisorPersonalMemorySummaryBuilder.build(
+            snapshot: snapshot,
+            lastWriteObservation: lastWriteObservation
+        )
     }
 
-    func replaceSnapshot(_ snapshot: SupervisorPersonalMemorySnapshot) {
+    func replaceSnapshot(
+        _ snapshot: SupervisorPersonalMemorySnapshot,
+        intent: SupervisorPersonalMemoryStoreWriteIntent
+    ) {
         self.snapshot = snapshot.normalized()
-        persist()
+        persist(intent: intent)
     }
 
-    func upsert(_ record: SupervisorPersonalMemoryRecord) {
+    func upsert(
+        _ record: SupervisorPersonalMemoryRecord,
+        intent: SupervisorPersonalMemoryStoreWriteIntent
+    ) {
         snapshot = snapshot.upserting(record)
-        persist()
+        persist(intent: intent)
     }
 
-    func delete(memoryId: String) {
+    func delete(
+        memoryId: String,
+        intent: SupervisorPersonalMemoryStoreWriteIntent
+    ) {
         snapshot = snapshot.deleting(memoryId: memoryId)
-        persist()
+        persist(intent: intent)
     }
 
-    private func persist() {
+    private func persist(intent: SupervisorPersonalMemoryStoreWriteIntent) {
+        lastWriteObservation = SupervisorLocalMemoryWriteObservation(
+            surface: .personalMemory,
+            intent: intent.rawValue,
+            updatedAtMs: currentSupervisorLocalMemoryWriteTimestampMs()
+        )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(snapshot.normalized()) else { return }
         try? SupervisorStoreWriteSupport.writeSnapshotData(data, to: url)
     }
+}
+
+func currentSupervisorLocalMemoryWriteTimestampMs() -> Int64 {
+    Int64((Date().timeIntervalSince1970 * 1000.0).rounded())
 }
 
 private func normalizedPersonalMemorySingleLine(_ value: String) -> String {

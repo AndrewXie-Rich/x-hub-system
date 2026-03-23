@@ -135,12 +135,19 @@ struct SupervisorPersonalReviewNoteSnapshot: Equatable, Codable, Sendable {
         next.updatedAtMs = max(next.updatedAtMs, completedAtMs, 0)
         return next.normalized()
     }
+
+    var localStoreRole: String {
+        SupervisorLocalMemoryStoreRole.rawValue
+    }
 }
 
 struct SupervisorPersonalReviewPreview: Equatable {
     var scheduleSummary: String
     var dueCount: Int
     var overdueCount: Int
+    var localStoreRole: String
+    var lastLocalWriteIntent: String?
+    var lastLocalWriteAtMs: Int64?
     var statusLine: String
     var dueNotes: [SupervisorPersonalReviewNoteRecord]
     var recentNotes: [SupervisorPersonalReviewNoteRecord]
@@ -152,6 +159,7 @@ enum SupervisorPersonalReviewNoteBuilder {
 
     static func preview(
         snapshot: SupervisorPersonalReviewNoteSnapshot,
+        lastWriteObservation: SupervisorLocalMemoryWriteObservation? = nil,
         policy: SupervisorPersonalPolicy,
         personalMemory: SupervisorPersonalMemorySnapshot,
         now: Date = Date(),
@@ -175,25 +183,36 @@ enum SupervisorPersonalReviewNoteBuilder {
             .prefix(maxRecentNotes)
             .map { $0 }
         let overdueCount = context.dueNotes.filter(\.overdue).count
+        let localWriteObservation = lastWriteObservation?.surface == .personalReview ? lastWriteObservation : nil
         let statusLine: String
         if context.dueNotes.isEmpty {
-            statusLine = "No personal reviews are due right now. Schedule: \(context.scheduleSummary)."
+            statusLine = SupervisorLocalMemoryStoreRole.cacheStatusLine(
+                surface: "personal review",
+                detail: "no reviews due right now · \(context.scheduleSummary)"
+            )
         } else {
             let overdueLabel = overdueCount > 0 ? " · \(overdueCount) overdue" : ""
-            statusLine = "\(context.dueNotes.count) personal reviews due\(overdueLabel) · \(context.scheduleSummary)"
+            statusLine = SupervisorLocalMemoryStoreRole.cacheStatusLine(
+                surface: "personal review",
+                detail: "\(context.dueNotes.count) personal reviews due\(overdueLabel) · \(context.scheduleSummary)"
+            )
         }
 
         return SupervisorPersonalReviewPreview(
             scheduleSummary: context.scheduleSummary,
             dueCount: context.dueNotes.count,
             overdueCount: overdueCount,
+            localStoreRole: normalizedSnapshot.localStoreRole,
+            lastLocalWriteIntent: localWriteObservation?.intent,
+            lastLocalWriteAtMs: localWriteObservation?.updatedAtMs,
             statusLine: statusLine,
             dueNotes: context.dueNotes,
             recentNotes: recentNotes,
             promptContext: promptContext(
                 scheduleSummary: context.scheduleSummary,
                 dueNotes: context.dueNotes,
-                recentNotes: recentNotes
+                recentNotes: recentNotes,
+                lastWriteObservation: localWriteObservation
             )
         )
     }
@@ -412,9 +431,14 @@ enum SupervisorPersonalReviewNoteBuilder {
     private static func promptContext(
         scheduleSummary: String,
         dueNotes: [SupervisorPersonalReviewNoteRecord],
-        recentNotes: [SupervisorPersonalReviewNoteRecord]
+        recentNotes: [SupervisorPersonalReviewNoteRecord],
+        lastWriteObservation: SupervisorLocalMemoryWriteObservation?
     ) -> String {
         var lines: [String] = []
+        lines.append(contentsOf: SupervisorLocalMemoryStoreRole.promptBoundaryLines(
+            surface: "personal_review",
+            lastWriteObservation: lastWriteObservation
+        ))
         lines.append("- Personal review schedule: \(scheduleSummary)")
         if dueNotes.isEmpty {
             lines.append("- No personal reviews are currently due.")
@@ -448,6 +472,7 @@ final class SupervisorPersonalReviewNoteStore: ObservableObject {
     static let shared = SupervisorPersonalReviewNoteStore()
 
     @Published private(set) var snapshot: SupervisorPersonalReviewNoteSnapshot
+    private(set) var lastWriteObservation: SupervisorLocalMemoryWriteObservation? = nil
 
     private let url: URL
     private let maxNotes = 48
@@ -488,6 +513,7 @@ final class SupervisorPersonalReviewNoteStore: ObservableObject {
     ) -> SupervisorPersonalReviewPreview {
         SupervisorPersonalReviewNoteBuilder.preview(
             snapshot: snapshot,
+            lastWriteObservation: lastWriteObservation,
             policy: policy,
             personalMemory: personalMemory,
             now: now,
@@ -503,7 +529,8 @@ final class SupervisorPersonalReviewNoteStore: ObservableObject {
         now: Date = Date(),
         timeZone: TimeZone = .current,
         locale: Locale = .current,
-        calendar: Calendar = Calendar(identifier: .gregorian)
+        calendar: Calendar = Calendar(identifier: .gregorian),
+        intent: SupervisorPersonalReviewNoteStoreWriteIntent
     ) {
         snapshot = SupervisorPersonalReviewNoteBuilder.refreshedSnapshot(
             snapshot: snapshot,
@@ -515,14 +542,15 @@ final class SupervisorPersonalReviewNoteStore: ObservableObject {
             calendar: calendar,
             maxNotes: maxNotes
         )
-        persist()
+        persist(intent: intent)
     }
 
     func markCompleted(
         type: SupervisorPersonalReviewType,
         at date: Date = Date(),
         timeZone: TimeZone = .current,
-        calendar: Calendar = Calendar(identifier: .gregorian)
+        calendar: Calendar = Calendar(identifier: .gregorian),
+        intent: SupervisorPersonalReviewNoteStoreWriteIntent
     ) {
         let anchor = SupervisorPersonalReviewScheduler.completionAnchor(
             for: type,
@@ -535,10 +563,15 @@ final class SupervisorPersonalReviewNoteStore: ObservableObject {
             anchor: anchor,
             completedAtMs: Int64((date.timeIntervalSince1970 * 1000.0).rounded())
         )
-        persist()
+        persist(intent: intent)
     }
 
-    private func persist() {
+    private func persist(intent: SupervisorPersonalReviewNoteStoreWriteIntent) {
+        lastWriteObservation = SupervisorLocalMemoryWriteObservation(
+            surface: .personalReview,
+            intent: intent.rawValue,
+            updatedAtMs: currentSupervisorLocalMemoryWriteTimestampMs()
+        )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(snapshot.normalized()) else { return }

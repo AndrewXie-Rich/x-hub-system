@@ -22,6 +22,8 @@ struct AXModelRouteDiagnosticsProjectionTests {
                 runtimeProvider: "Hub (Local)",
                 executionPath: "hub_downgraded_to_local",
                 fallbackReasonCode: "downgrade_to_local",
+                auditRef: "audit-route-123",
+                denyCode: "credential_finding",
                 remoteRetryAttempted: false,
                 remoteRetryFromModelId: "",
                 remoteRetryToModelId: "",
@@ -40,7 +42,8 @@ struct AXModelRouteDiagnosticsProjectionTests {
         #expect(projection?.routeResult.routeSource == "hub_downgraded_to_local")
         #expect(projection?.routeResult.routeReasonCode == "downgrade_to_local")
         #expect(projection?.routeResult.fallbackApplied == "true")
-        #expect(projection?.routeResult.auditRef.contains("project-alpha") == true)
+        #expect(projection?.routeResult.auditRef == "audit-route-123")
+        #expect(projection?.routeResult.denyCode == "credential_finding")
         #expect(projection?.resolutionChain.count == 5)
     }
 
@@ -52,7 +55,7 @@ struct AXModelRouteDiagnosticsProjectionTests {
                 "recent_route_events_24h=2",
                 "recent_route_failures_24h=1",
                 "recent_remote_retry_recoveries_24h=1",
-                "route_event_1=project=Smoke Project role=coder path=local_fallback_after_remote_error remote_retry=hub.model.remote->hub.model.backup retry_reason=remote_timeout requested=hub.model.remote actual=mlx.qwen reason=remote_unreachable provider=mlx",
+                "route_event_1=project=Smoke Project role=coder path=local_fallback_after_remote_error remote_retry=hub.model.remote->hub.model.backup retry_reason=remote_timeout requested=hub.model.remote actual=mlx.qwen reason=remote_unreachable deny_code=credential_finding provider=mlx audit_ref=audit-route-1",
                 "route_event_2=project=Smoke Project role=supervisor path=remote_model requested=hub.model.supervisor actual=hub.model.supervisor provider=openai"
             ]
         )
@@ -65,7 +68,8 @@ struct AXModelRouteDiagnosticsProjectionTests {
         #expect(projection?.routeResult.routeReasonCode == "remote_unreachable")
         #expect(projection?.routeResult.fallbackApplied == "true")
         #expect(projection?.routeResult.fallbackReason == "remote_unreachable")
-        #expect(projection?.routeResult.auditRef == "route_event_1")
+        #expect(projection?.routeResult.auditRef == "audit-route-1")
+        #expect(projection?.routeResult.denyCode == "credential_finding")
     }
 
     @Test

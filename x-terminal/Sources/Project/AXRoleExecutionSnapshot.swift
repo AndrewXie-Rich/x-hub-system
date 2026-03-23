@@ -9,6 +9,8 @@ struct AXRoleExecutionSnapshot: Equatable, Identifiable, Sendable {
     var runtimeProvider: String
     var executionPath: String
     var fallbackReasonCode: String
+    var auditRef: String = ""
+    var denyCode: String = ""
     var remoteRetryAttempted: Bool
     var remoteRetryFromModelId: String
     var remoteRetryToModelId: String
@@ -27,6 +29,8 @@ struct AXRoleExecutionSnapshot: Equatable, Identifiable, Sendable {
             runtimeProvider: "",
             executionPath: "no_record",
             fallbackReasonCode: "",
+            auditRef: "",
+            denyCode: "",
             remoteRetryAttempted: false,
             remoteRetryFromModelId: "",
             remoteRetryToModelId: "",
@@ -42,6 +46,8 @@ struct AXRoleExecutionSnapshot: Equatable, Identifiable, Sendable {
             || !runtimeProvider.isEmpty
             || executionPath != "no_record"
             || !fallbackReasonCode.isEmpty
+            || !auditRef.isEmpty
+            || !denyCode.isEmpty
             || remoteRetryAttempted
             || !remoteRetryFromModelId.isEmpty
             || !remoteRetryToModelId.isEmpty
@@ -111,6 +117,9 @@ struct AXRoleExecutionSnapshot: Equatable, Identifiable, Sendable {
             if !fallbackReasonCode.isEmpty {
                 parts.append("reason=\(fallbackReasonCode)")
             }
+            if !auditRef.isEmpty {
+                parts.append("audit_ref=\(auditRef)")
+            }
             return parts.isEmpty ? "hub_downgraded_to_local" : parts.joined(separator: " | ")
         case "local_fallback_after_remote_error":
             var parts: [String] = []
@@ -122,6 +131,9 @@ struct AXRoleExecutionSnapshot: Equatable, Identifiable, Sendable {
             }
             if !fallbackReasonCode.isEmpty {
                 parts.append("reason=\(fallbackReasonCode)")
+            }
+            if !auditRef.isEmpty {
+                parts.append("audit_ref=\(auditRef)")
             }
             if remoteRetryAttempted {
                 let retryFrom = remoteRetryFromModelId.isEmpty ? requestedModelId : remoteRetryFromModelId
@@ -152,6 +164,9 @@ struct AXRoleExecutionSnapshot: Equatable, Identifiable, Sendable {
             if !fallbackReasonCode.isEmpty {
                 parts.append("reason=\(fallbackReasonCode)")
             }
+            if !auditRef.isEmpty {
+                parts.append("audit_ref=\(auditRef)")
+            }
             return parts.isEmpty ? "remote_error" : parts.joined(separator: " | ")
         case "direct_provider":
             if !effectiveModelId.isEmpty {
@@ -176,6 +191,12 @@ struct AXRoleExecutionSnapshot: Equatable, Identifiable, Sendable {
         }
         if !fallbackReasonCode.isEmpty {
             lines.append("fallback_reason=\(fallbackReasonCode)")
+        }
+        if !auditRef.isEmpty {
+            lines.append("audit_ref=\(auditRef)")
+        }
+        if !denyCode.isEmpty {
+            lines.append("deny_code=\(denyCode)")
         }
         if remoteRetryAttempted {
             lines.append("remote_retry_attempted=true")
@@ -251,6 +272,8 @@ enum AXRoleExecutionSnapshots {
         runtimeProvider: String,
         executionPath: String,
         fallbackReasonCode: String,
+        auditRef: String = "",
+        denyCode: String = "",
         remoteRetryAttempted: Bool = false,
         remoteRetryFromModelId: String = "",
         remoteRetryToModelId: String = "",
@@ -270,6 +293,8 @@ enum AXRoleExecutionSnapshots {
                 fallbackReasonCode: fallbackReasonCode
             ),
             fallbackReasonCode: normalizedReasonCode(fallbackReasonCode),
+            auditRef: normalize(auditRef),
+            denyCode: normalizedReasonCode(denyCode),
             remoteRetryAttempted: remoteRetryAttempted,
             remoteRetryFromModelId: normalize(remoteRetryFromModelId),
             remoteRetryToModelId: normalize(remoteRetryToModelId),
@@ -296,6 +321,8 @@ enum AXRoleExecutionSnapshots {
         let fallbackReasonCode = text(obj["fallback_reason_code"])
             ?? text(obj["failure_reason_code"])
             ?? ""
+        let auditRef = text(obj["audit_ref"]) ?? ""
+        let denyCode = text(obj["deny_code"]) ?? ""
         let remoteRetryAttempted = bool(obj["remote_retry_attempted"]) ?? false
         let remoteRetryFromModelId = text(obj["remote_retry_from_model_id"]) ?? ""
         let remoteRetryToModelId = text(obj["remote_retry_to_model_id"]) ?? ""
@@ -310,6 +337,8 @@ enum AXRoleExecutionSnapshots {
             runtimeProvider: runtimeProvider,
             executionPath: executionPath,
             fallbackReasonCode: fallbackReasonCode,
+            auditRef: auditRef,
+            denyCode: denyCode,
             remoteRetryAttempted: remoteRetryAttempted,
             remoteRetryFromModelId: remoteRetryFromModelId,
             remoteRetryToModelId: remoteRetryToModelId,
