@@ -168,7 +168,7 @@ struct CreateProjectSheet: View {
             Text("治理模板（可选）")
                 .font(.headline)
 
-            Text("这些模板只是创建项目时的快捷映射。真正生效的 execution/supervisor 档位、review cadence、绑定关系与运行时收束，仍以下方 Governance Composer 为准。")
+            Text("这些模板只是创建项目时的快捷映射。真正生效的 A-tier / S-tier、审查节奏、绑定关系与运行时收束，仍以下方治理编排为准。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -218,7 +218,7 @@ struct CreateProjectSheet: View {
             }
 
             if templatePreview.hasConfiguredEffectiveDrift {
-                Text("这里只展示创建前的运行时预演。真正运行时仍继续受 trusted automation、grant、TTL、kill-switch 和是否绑定真实 project 共同约束。")
+                Text("这里只展示创建前的运行时预演。真正运行时仍继续受受治理自动化、授权门、TTL、紧急回收和是否绑定真实项目共同约束。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -250,14 +250,14 @@ struct CreateProjectSheet: View {
             }
 
             if !templatePreview.configuredDeviationReasons.isEmpty {
-                Text("template_delta: \(templatePreview.configuredDeviationReasons.joined(separator: " · "))")
+                Text("配置偏差：\(templatePreview.configuredDeviationReasons.joined(separator: " · "))")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
 
             if !templatePreview.effectiveDeviationReasons.isEmpty {
-                Text("runtime_notes: \(templatePreview.effectiveDeviationReasons.joined(separator: " · "))")
+                Text("运行时备注：\(templatePreview.effectiveDeviationReasons.joined(separator: " · "))")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
@@ -273,10 +273,10 @@ struct CreateProjectSheet: View {
         let presentation = draftGovernancePresentation
 
         return VStack(alignment: .leading, spacing: 12) {
-            Text("Governance Composer")
+            Text("治理编排")
                 .font(.headline)
 
-            Text("创建阶段也保持三根独立治理拨盘：Execution Tier 决定能做什么，Supervisor Tier 决定盯多深，Heartbeat & Review 决定多久做一次审查。")
+            Text("创建阶段也保持三根独立治理拨盘：A-tier 决定能做什么，S-tier 决定盯多深，心跳与审查决定多久做一次审查。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -305,7 +305,7 @@ struct CreateProjectSheet: View {
                 .foregroundColor(.secondary)
 
             Picker("", selection: $selectedRegisteredProjectId) {
-                Text("不绑定真实 Project").tag(Self.unboundProjectSelection)
+                Text("不绑定真实项目").tag(Self.unboundProjectSelection)
 
                 ForEach(bindableProjects, id: \.projectId) { entry in
                     Text("\(entry.displayName) · \(String(entry.projectId.suffix(8)))")
@@ -316,17 +316,17 @@ struct CreateProjectSheet: View {
             .frame(width: 320, alignment: .leading)
 
             if let selectedBoundProject {
-                Text("当前会直接读取 \(selectedBoundProject.displayName) 的治理活动。Heartbeat & Review 子页会显示真实的审查 / 指导 / 调度时间线。")
+                Text("当前会直接读取 \(selectedBoundProject.displayName) 的治理活动。心跳与审查子页会显示真实的审查 / 指导 / 调度时间线。")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else if bindableProjects.isEmpty {
-                Text("当前 registry 里还没有可绑定的 project。先导入真实 project，这里才能接到 supervisor 的上下文记忆和治理记录。")
+                Text("当前 registry 里还没有可绑定的项目。先导入真实项目，这里才能接到 Supervisor 的上下文记忆和治理记录。")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                Text("未绑定时，这个多项目卡片只保存治理草稿；Heartbeat & Review 子页不会显示真实的审查 / 指导时间线。")
+                Text("未绑定时，这个多项目卡片只保存治理草稿；心跳与审查子页不会显示真实的审查 / 指导时间线。")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -650,11 +650,11 @@ struct CreateProjectSheet: View {
 
         switch profile {
         case .agent:
-            governanceInlineMessage = "已切到 Agent 治理模板（默认 A4 Agent + S3）。创建后如果要真正放开设备级执行面，仍需要绑定真实 project 并完成 trusted automation 与权限就绪。"
+            governanceInlineMessage = "已切到 Agent 治理模板（默认 A4 Agent + S3）。创建后如果要真正放开设备级执行面，仍需要绑定真实项目并完成受治理自动化与权限就绪。"
             governanceInlineMessageIsError = false
             selectedGovernanceDestination = .executionTier
         case .safe:
-            governanceInlineMessage = "已切到推荐治理模板（默认 A3 + S3）。项目会优先持续推进，但高风险动作仍继续受 grant 与收束规则约束。"
+            governanceInlineMessage = "已切到推荐治理模板（默认 A3 + S3）。项目会优先持续推进，但高风险动作仍继续受授权门与收束规则约束。"
             governanceInlineMessageIsError = false
         case .conservative:
             governanceInlineMessage = "已切到保守治理模板（默认 A1 + S2）。当前更偏向理解、规划与审阅，不主动放大执行面。"
@@ -688,7 +688,7 @@ struct CreateProjectSheet: View {
         )
 
         if updatedBundle.supervisorInterventionTier != previousSupervisor {
-            governanceInlineMessage = "\(tier.displayName) 至少需要 \(tier.minimumSafeSupervisorTier.displayName)，已自动抬升 supervisor 安全下限。"
+            governanceInlineMessage = "\(tier.displayName) 至少需要 \(tier.minimumSafeSupervisorTier.displayName)，已自动抬升 Supervisor 安全下限。"
             governanceInlineMessageIsError = false
         } else {
             clearGovernanceInlineMessage()
@@ -705,7 +705,7 @@ struct CreateProjectSheet: View {
 
         supervisorInterventionTier = tier
         if tier < executionTier.defaultSupervisorInterventionTier {
-            governanceInlineMessage = "\(executionTier.displayName) 推荐 \(executionTier.defaultSupervisorInterventionTier.displayName) 及以上；当前组合允许，但会放松 review 纠偏强度。"
+            governanceInlineMessage = "\(executionTier.displayName) 推荐 \(executionTier.defaultSupervisorInterventionTier.displayName) 及以上；当前组合允许，但会放松审查纠偏强度。"
             governanceInlineMessageIsError = false
         } else {
             clearGovernanceInlineMessage()

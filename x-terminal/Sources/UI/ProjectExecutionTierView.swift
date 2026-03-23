@@ -14,9 +14,9 @@ struct ProjectExecutionTierView: View {
     ]
 
     var body: some View {
-        GroupBox("Execution Tier") {
+        GroupBox("执行档位（Execution Tier）") {
             VStack(alignment: .leading, spacing: 14) {
-                Text("这里只控制项目 AI 能做多大动作，包括 repo / browser / device 的执行边界；不负责决定 Supervisor 审查多深，也不负责 Recent Project Dialogue / Context Depth。后两者请到 Project Settings 里的 Context Assembly 单独设置。")
+                Text("这里只控制项目 AI 能做多大动作，包括 repo / browser / device 的执行边界；不负责决定 Supervisor 审查多深，也不负责 `Recent Project Dialogue / Context Depth`。后两者请到 `Project Settings` 里的 `Context Assembly` 单独设置。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -100,51 +100,51 @@ struct ProjectExecutionTierView: View {
 
                 LazyVGrid(columns: summaryColumns, alignment: .leading, spacing: 10) {
                     summaryMetric(
-                        title: "Serving Ceiling",
+                        title: "上下文上限（Serving Ceiling）",
                         value: tier.defaultProjectMemoryCeiling.rawValue,
                         tone: tint
                     )
                     summaryMetric(
-                        title: "Recommended S",
+                        title: "推荐 S 档（Recommended S）",
                         value: tier.defaultSupervisorInterventionTier.displayName,
                         tone: .orange
                     )
                     summaryMetric(
-                        title: "Safe Floor",
+                        title: "安全下限（Safe Floor）",
                         value: tier.minimumSafeSupervisorTier.displayName,
                         tone: .red
                     )
                     summaryMetric(
-                        title: "Surface Preset",
+                        title: "执行面预设（Surface Preset）",
                         value: tier.defaultRuntimeSurfacePreset.displayName,
                         tone: .teal
                     )
                     summaryMetric(
-                        title: "Run Budget",
+                        title: "运行预算（Run Budget）",
                         value: tier.defaultBudgetSummary,
                         tone: .secondary
                     )
                 }
 
                 tierTagGroup(
-                    title: "Allows",
+                    title: "允许范围（Allows）",
                     labels: tier.allowedHighlights,
                     tint: tint
                 )
 
                 tierTagGroup(
-                    title: "Blocked",
+                    title: "阻止范围（Blocked）",
                     labels: tier.blockedHighlights,
                     tint: .secondary
                 )
 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Core Capability Bundle")
+                    Text("核心能力包（Core Capability Bundle）")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
 
                     if tier.baseCapabilityBundle.allowedCapabilityLabels.isEmpty {
-                        Text("(none)")
+                        Text("（无）")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     } else {

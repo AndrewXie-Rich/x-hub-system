@@ -95,7 +95,7 @@ struct ProjectDetailGovernanceSummaryTests {
         )
 
         #expect(summary.capabilitySummary.contains("device.tools"))
-        #expect(summary.clampSummary.contains("trusted automation readiness"))
+        #expect(summary.clampSummary.contains("受治理自动化就绪检查"))
         #expect(!summary.sourceLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 }

@@ -491,7 +491,7 @@ struct ProjectDetailView: View {
                 help: "打开治理概览"
             )
             InfoRow(
-                label: "Clamp / 收束",
+                label: "收束 / 限制",
                 value: governanceDetailSummary.clampSummary,
                 destination: projectSettingsContext == nil ? nil : .overview,
                 help: "打开治理概览"

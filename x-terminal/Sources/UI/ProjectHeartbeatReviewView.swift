@@ -29,9 +29,9 @@ struct ProjectHeartbeatReviewView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            GroupBox("Heartbeat & Review") {
+            GroupBox("心跳与审查（Heartbeat & Review）") {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text("这里单独治理进度心跳、Supervisor 审查节奏、事件触发和安全点指导。A-tier 决定哪些审查检查点必须存在，但心跳 / 审查频率仍然独立配置；Recent Project Dialogue / Supervisor Recent Raw Context 不在这里调整。")
+                    Text("这里单独治理进度心跳、Supervisor 审查节奏、事件触发和安全点指导。A-tier 决定哪些审查检查点必须存在，但心跳 / 审查频率仍然独立配置；`Recent Project Dialogue / Supervisor Recent Raw Context` 不在这里调整。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
@@ -66,7 +66,7 @@ struct ProjectHeartbeatReviewView: View {
 
                     configurationSection(
                         title: "进度心跳",
-                        subtitle: "Heartbeat 只负责看进度，不做战略纠偏。它可以比审查更频繁，也不要求指导确认。"
+                        subtitle: "进度心跳只负责看进度，不做战略纠偏。它可以比审查更频繁，也不要求指导确认。"
                     ) {
                         Stepper(
                             value: minutesBinding(
@@ -112,7 +112,7 @@ struct ProjectHeartbeatReviewView: View {
 
                         Text(configuredReviewPolicyMode.supportsPulseCadence
                              ? "脉冲审查当前可用，适合轻量周期复盘。"
-                             : "当前策略不启用脉冲节奏；如需周期复盘，请切到 Periodic / Hybrid / Aggressive。")
+                             : "当前策略不启用脉冲节奏；如需周期复盘，请切到 `Periodic / Hybrid / Aggressive`。")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
 
@@ -132,13 +132,13 @@ struct ProjectHeartbeatReviewView: View {
                             in: 0...240,
                             step: 5
                         ) {
-                            Text("Brainstorm 复盘：\(governanceDurationLabel(brainstormReviewSeconds))")
+                            Text("脑暴复盘（Brainstorm）：\(governanceDurationLabel(brainstormReviewSeconds))")
                         }
                         .disabled(!configuredReviewPolicyMode.supportsBrainstormCadence)
 
                         Text(configuredReviewPolicyMode.supportsBrainstormCadence
-                             ? "脑暴审查会围绕 no-progress window 做更深的方向复盘。"
-                             : "当前策略不启用脑暴节奏；如需战略复盘，请切到 Hybrid / Aggressive。")
+                             ? "脑暴审查会围绕 `no-progress window` 做更深的方向复盘。"
+                             : "当前策略不启用脑暴节奏；如需战略复盘，请切到 `Hybrid / Aggressive`。")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
 
@@ -163,7 +163,7 @@ struct ProjectHeartbeatReviewView: View {
                              ? (eventDrivenReviewEnabled
                                 ? "当前会监听 blocker / drift / high-risk 等事件；A-tier 强制检查点始终保留。"
                                 : "当前只保留 A-tier 强制检查点；下面的可选事件会先保存，重新开启后生效。")
-                             : "Off 模式不会启用事件驱动审查，但 manual request / user override 仍可触发。")
+                             : "`Off` 模式不会启用事件驱动审查，但 `manual request / user override` 仍可触发。")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
 
@@ -399,9 +399,9 @@ struct ProjectHeartbeatReviewView: View {
                 }
 
                 HStack(spacing: 8) {
-                    capabilityBadge("Pulse", active: mode.supportsPulseCadence, tint: tint)
-                    capabilityBadge("Brainstorm", active: mode.supportsBrainstormCadence, tint: .indigo)
-                    capabilityBadge("Events", active: mode.supportsEventDrivenReview, tint: .teal)
+                    capabilityBadge("脉冲（Pulse）", active: mode.supportsPulseCadence, tint: tint)
+                    capabilityBadge("脑暴（Brainstorm）", active: mode.supportsBrainstormCadence, tint: .indigo)
+                    capabilityBadge("事件（Events）", active: mode.supportsEventDrivenReview, tint: .teal)
                 }
             }
             .padding(14)
@@ -438,7 +438,7 @@ struct ProjectHeartbeatReviewView: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             if triggers.isEmpty {
-                Text("(none)")
+                Text("（无）")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             } else {
@@ -502,13 +502,13 @@ struct ProjectHeartbeatReviewView: View {
     ) -> [(label: String, tint: Color)] {
         var badges: [(String, Color)] = []
         if configuredReviewPolicyMode == mode && resolvedGovernance.effectiveBundle.reviewPolicyMode == mode {
-            badges.append(("Current", reviewPolicyTint(mode)))
+            badges.append(("当前", reviewPolicyTint(mode)))
         } else {
             if configuredReviewPolicyMode == mode {
-                badges.append(("Configured", reviewPolicyTint(mode)))
+                badges.append(("已配置", reviewPolicyTint(mode)))
             }
             if resolvedGovernance.effectiveBundle.reviewPolicyMode == mode {
-                badges.append(("Effective", .orange))
+                badges.append(("生效中", .orange))
             }
         }
         return badges
@@ -542,15 +542,15 @@ struct ProjectHeartbeatReviewView: View {
     private func derivedTriggerStatus(_ trigger: AXProjectReviewTrigger) -> String {
         switch trigger {
         case .manualRequest:
-            return "Always allowed"
+            return "始终允许"
         case .userOverride:
-            return "Always allowed"
+            return "始终允许"
         case .periodicPulse:
-            return "Derived from pulse cadence"
+            return "由脉冲节奏派生"
         case .noProgressWindow:
-            return "Derived from brainstorm cadence"
+            return "由脑暴节奏派生"
         default:
-            return "Derived"
+            return "自动派生"
         }
     }
 
@@ -579,13 +579,13 @@ struct ProjectHeartbeatReviewView: View {
     private func accessibilityStateLabel(isConfigured: Bool, isEffective: Bool) -> String {
         switch (isConfigured, isEffective) {
         case (true, true):
-            return "current"
+            return "当前"
         case (true, false):
-            return "configured"
+            return "已配置"
         case (false, true):
-            return "effective"
+            return "生效中"
         default:
-            return "available"
+            return "可用"
         }
     }
 
