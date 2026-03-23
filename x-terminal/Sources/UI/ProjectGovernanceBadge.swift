@@ -131,8 +131,8 @@ struct ProjectGovernancePresentation {
             ? ["\(executionTier.shortToken) 推荐搭配 \(recommended.shortToken) 及以上，当前配置更容易拉长 drift / rescue 的发现窗口。"]
             : []
         self.compatSource = compatSource
-        statusSummary = invalidMessages.isEmpty ? "治理组合已接受，后续仍会受 runtime clamp 和 TTL 影响。" : "当前组合无效，创建后应调整到最低安全监督档。"
-        clampSummary = "未连接 runtime clamp；这里只展示配置意图。"
+        statusSummary = invalidMessages.isEmpty ? "治理组合已接受，后续仍会受运行时收束和 TTL 影响。" : "当前组合无效，创建后应调整到最低安全监督档。"
+        clampSummary = "当前未连接运行时收束；这里只展示配置意图。"
         adaptationSummary = "当前还没有 Project AI 强弱自适应评估。"
         guidanceSummary = ProjectGovernancePresentation.guidanceSummary(
             supervisorInterventionTier.defaultInterventionMode
@@ -224,9 +224,9 @@ struct ProjectGovernancePresentation {
         let normalized = clampSummary.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { return nil }
         switch normalized {
-        case "当前没有额外 clamp；但仍继续受 Hub 授权、runtime surface TTL、readiness 与 kill-switch 约束。":
+        case "当前没有额外收束；但仍继续受 Hub 授权、执行面 TTL、readiness 与 kill-switch 约束。":
             return nil
-        case "未连接 runtime clamp；这里只展示配置意图。":
+        case "当前未连接运行时收束；这里只展示配置意图。":
             return nil
         default:
             return normalized
@@ -325,7 +325,7 @@ struct ProjectGovernancePresentation {
             && (!resolved.trustedAutomationStatus.trustedAutomationReady || !resolved.trustedAutomationStatus.permissionOwnerReady) {
             return "A4 Agent 已配置，但 device/browser 仍受 trusted automation readiness 和 permission owner gate 约束。"
         }
-        return "当前没有额外 clamp；但仍继续受 Hub 授权、runtime surface TTL、readiness 与 kill-switch 约束。"
+        return "当前没有额外收束；但仍继续受 Hub 授权、执行面 TTL、readiness 与 kill-switch 约束。"
     }
 
     private static func guidanceSummary(_ mode: SupervisorGuidanceInterventionMode) -> String {
@@ -647,7 +647,7 @@ struct ProjectGovernanceInspector: View {
                 }
             }
 
-            governanceRow("Clamp / 收束") {
+            governanceRow("收束 / 限制") {
                 Text(presentation.clampSummary)
                     .foregroundStyle(.secondary)
             }

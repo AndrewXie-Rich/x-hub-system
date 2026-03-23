@@ -332,7 +332,7 @@ struct ProjectGovernanceActivityView: View {
         GroupBox("治理动态") {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Text("展示当前项目最近一次 supervisor 审查、指导注入、确认状态，以及下一次 heartbeat / review 的计划时间。")
+                    Text("展示当前项目最近一次 Supervisor 审查、指导注入、确认状态，以及下一次心跳 / 审查的计划时间。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

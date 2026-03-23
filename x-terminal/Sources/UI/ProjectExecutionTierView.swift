@@ -16,33 +16,33 @@ struct ProjectExecutionTierView: View {
     var body: some View {
         GroupBox("Execution Tier") {
             VStack(alignment: .leading, spacing: 14) {
-                Text("这里只控制 project AI 能做多大动作，包括 repo / browser / device 的执行边界；不负责决定 Supervisor review 多深，也不负责 Recent Project Dialogue / Context Depth。后两者请到 Project Settings 里的 Context Assembly 单独设置。")
+                Text("这里只控制项目 AI 能做多大动作，包括 repo / browser / device 的执行边界；不负责决定 Supervisor 审查多深，也不负责 Recent Project Dialogue / Context Depth。后两者请到 Project Settings 里的 Context Assembly 单独设置。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                 LazyVGrid(columns: summaryColumns, alignment: .leading, spacing: 10) {
                     summaryMetric(
-                        title: "Configured",
+                        title: "已配置",
                         value: configuredTier.displayName,
                         tone: tierTint(configuredTier)
                     )
 
                     if effectiveTier != configuredTier {
                         summaryMetric(
-                            title: "Effective",
+                            title: "当前生效",
                             value: effectiveTier.displayName,
                             tone: .orange
                         )
                     }
 
                     summaryMetric(
-                        title: "Coder Serving",
+                        title: "Coder 上下文",
                         value: effectiveProjectMemoryCeiling.rawValue,
                         tone: .blue
                     )
 
                     summaryMetric(
-                        title: "Runtime Surface",
+                        title: "执行面",
                         value: effectiveRuntimeSurfaceMode.displayName,
                         tone: .teal
                     )

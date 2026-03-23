@@ -16,28 +16,28 @@ struct ProjectSupervisorTierView: View {
     var body: some View {
         GroupBox("Supervisor Tier") {
             VStack(alignment: .leading, spacing: 14) {
-                Text("这里只控制 Supervisor review / guidance / replan 的介入强度。不直接放行 repo、browser 或 device 权限。")
+                Text("这里只控制 Supervisor 审查 / 指导 / 重规划的介入强度。不直接放行 repo、browser 或 device 权限。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                 LazyVGrid(columns: summaryColumns, alignment: .leading, spacing: 10) {
                     summaryMetric(
-                        title: "Current A-tier",
+                        title: "当前 A-tier",
                         value: currentExecutionTier.displayName,
                         tone: executionTierTint(currentExecutionTier)
                     )
                     summaryMetric(
-                        title: "Recommended S",
+                        title: "推荐 S 档位",
                         value: currentExecutionTier.defaultSupervisorInterventionTier.displayName,
                         tone: .orange
                     )
                     summaryMetric(
-                        title: "Safe Floor",
+                        title: "安全下限",
                         value: currentExecutionTier.minimumSafeSupervisorTier.displayName,
                         tone: .red
                     )
                     summaryMetric(
-                        title: "Effective Review Depth",
+                        title: "审查上下文深度",
                         value: effectiveReviewMemoryCeiling.rawValue,
                         tone: .blue
                     )
@@ -96,23 +96,23 @@ struct ProjectSupervisorTierView: View {
 
                 LazyVGrid(columns: summaryColumns, alignment: .leading, spacing: 10) {
                     summaryMetric(
-                        title: "Review Memory",
+                        title: "审查上下文",
                         value: tier.defaultReviewMemoryCeiling.rawValue,
                         tone: .blue
                     )
                     summaryMetric(
-                        title: "Guidance",
-                        value: tier.defaultInterventionMode.displayName,
+                        title: "指导方式",
+                        value: ProjectGovernanceActivityDisplay.displayValue(label: "intervention", value: tier.defaultInterventionMode.displayName),
                         tone: tint
                     )
                     summaryMetric(
-                        title: "Work Order",
-                        value: tier.defaultWorkOrderDepth.displayName,
+                        title: "工单深度",
+                        value: ProjectGovernanceActivityDisplay.displayValue(label: "work_order_depth", value: tier.defaultWorkOrderDepth.displayName),
                         tone: .teal
                     )
                     summaryMetric(
-                        title: "Ack",
-                        value: tier.defaultAckSummary,
+                        title: "确认要求",
+                        value: tier.defaultAckRequired ? "需要确认" : "可选确认",
                         tone: tier.defaultAckRequired ? .orange : .secondary
                     )
                 }
