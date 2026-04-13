@@ -1,6 +1,6 @@
 # X-Terminal Work Orders Index
 
-- updatedAt: 2026-03-21
+- updatedAt: 2026-04-02
 - scope: `x-terminal/` module only
 
 This page is the priority-ordered execution map for X-Terminal work orders.
@@ -81,13 +81,17 @@ Use this family when the question is:
 
 ### P0-C Project Governance And The Main Supervisor Execution Loop
 
-Start here when the task touches project execution tiers, supervision depth, review cadence, big-task intake, or the single main Supervisor flow.
+Start here when the task touches project `A-Tier`, `S-Tier`, `Heartbeat / Review` cadence, big-task intake, or the single main Supervisor flow.
 
+- `docs/memory-new/xhub-coding-mode-fit-and-governed-engineering-strategy-v1.md`
+- `docs/memory-new/xhub-coding-mode-fit-and-governed-engineering-work-orders-v1.md`
+- `docs/memory-new/xhub-a-tier-execution-graduation-work-orders-v1.md`
 - `xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md`
 - `xt-w3-26-supervisor-one-shot-intake-adaptive-pool-planner-implementation-pack-v1.md`
 - `xt-w3-29-supervisor-conversation-window-persistent-session-implementation-pack-v1.md`
 - `xt-w3-36-project-autonomy-tier-and-supervisor-intervention-implementation-pack-v1.md`
 - `xt-w3-36-b-project-governance-surface-split-implementation-pack-v1.md`
+- `xt-w3-42-supervisor-project-intent-and-transaction-repair-implementation-pack-v1.md`
 
 Completed child pack:
 
@@ -95,9 +99,9 @@ Completed child pack:
 
 Governance product truth:
 
-- `Execution Tier` = `A0..A4`, with highest user-facing label `A4 Agent`
-- `Supervisor Tier` = `S0..S4`
-- `Heartbeat & Review` stays independent from the tier dials
+- `A-Tier` = `A0..A4`, with highest user-facing label `A4 Agent`
+- `S-Tier` = `S0..S4`
+- `Heartbeat / Review` stays independent from the tier dials
 
 Evidence and release hooks:
 
@@ -107,8 +111,14 @@ Evidence and release hooks:
 Use this family when the question is:
 
 - how users start a real project or big task
+- which coding mode X-Hub should default to, and how `Supervisor + Project Coder + Hub` should cooperate
+- how to turn that coding strategy into detailed executable work orders without reopening the mode debate
 - how `A0..A4` and `S0..S4` should behave
 - how one Supervisor window should own the main execution loop
+- why Supervisor accidentally created the wrong project from a question
+- how recent project create / rename / delete / undo should behave as real transactions
+- how to turn `A4 Agent` from “policy configured” into “runtime ready”
+- why the engineering order should be `A2 -> A3 -> A4` rather than trying to hard-rush `A4`
 
 ### P0-D Voice, Guided Authorization, And Governed Remote Approval
 
@@ -139,12 +149,14 @@ Start here when the task touches skills UX, compatibility, preflight, manifest b
 - `xt-skills-compat-reliability-work-orders-v1.md`
 - `xt-l1-skills-ux-preflight-runner-contract-v1.md`
 - `xt-assistant-runtime-alignment-implementation-pack-v1.md`
+- `xt-w3-41-skill-capability-profiles-and-readiness-surface-implementation-pack-v1.md`
 
 Use this family when the question is:
 
 - how skills become usable without becoming plugin roulette
 - how doctor / preflight / runner constraints should work
 - how assistant-runtime ideas can be absorbed without weakening Hub authority
+- how capability profile / readiness truth should stop depending on string inference
 
 ## P1 - Important Next, But Not The First Default
 
@@ -247,6 +259,7 @@ Use this section when you need a fast starting point.
   - `xt-w3-21-w3-22-supervisor-intake-acceptance-implementation-pack-v1.md`
   - `xt-w3-26-supervisor-one-shot-intake-adaptive-pool-planner-implementation-pack-v1.md`
   - `xt-w3-29-supervisor-conversation-window-persistent-session-implementation-pack-v1.md`
+  - `xt-w3-42-supervisor-project-intent-and-transaction-repair-implementation-pack-v1.md`
 
 - voice briefing / guided authorization / TTS productization
   - `xt-w3-29-whisperkit-funasr-voice-runtime-implementation-pack-v1.md`
